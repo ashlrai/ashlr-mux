@@ -4,6 +4,7 @@ members = [
   "crates/cmux-agent",
   "crates/cmux-cli",
   "crates/cmux-core",
+  "crates/cmux-golden",
   "crates/cmux-ipc",
   "crates/cmux-terminal",
 ]

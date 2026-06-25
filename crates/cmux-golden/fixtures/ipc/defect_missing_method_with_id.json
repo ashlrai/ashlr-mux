@@ -1,0 +1,8 @@
+{
+  "code": "missingMethod",
+  "id": {
+    "kind": "int",
+    "value": 3
+  },
+  "outcome": "error"
+}

@@ -1,0 +1,88 @@
+{
+  "created_at": 1718900000,
+  "version": 1,
+  "windows": [
+    {
+      "tab_manager": {
+        "selected_workspace_index": 0,
+        "workspace_groups": [
+          {
+            "anchor_member_index": 0,
+            "anchor_workspace_id": "3F2504E0-4F89-41D3-9A0C-0305E82C3301",
+            "custom_color": "#ff8800",
+            "icon_symbol": "server.rack",
+            "id": "group-1",
+            "is_collapsed": false,
+            "is_pinned": true,
+            "name": "Backend"
+          }
+        ],
+        "workspaces": [
+          {
+            "canvas_panes": [
+              {
+                "height": 600,
+                "panel_id": "panel-a",
+                "panel_ids": [
+                  "panel-a"
+                ],
+                "selected_panel_id": "panel-a",
+                "width": 800,
+                "x": 0,
+                "y": 0
+              }
+            ],
+            "current_directory": "/home/u/proj",
+            "custom_title": "editor",
+            "custom_title_source": "user",
+            "layout": {
+              "split": {
+                "divider_position": 0.5,
+                "first": {
+                  "pane": {
+                    "panel_ids": [
+                      "panel-a",
+                      "panel-b"
+                    ],
+                    "selected_panel_id": "panel-a"
+                  },
+                  "type": "pane"
+                },
+                "orientation": "horizontal",
+                "second": {
+                  "split": {
+                    "divider_position": 0.25,
+                    "first": {
+                      "pane": {
+                        "panel_ids": [
+                          "panel-c"
+                        ]
+                      },
+                      "type": "pane"
+                    },
+                    "orientation": "vertical",
+                    "second": {
+                      "pane": {
+                        "panel_ids": [
+                          "panel-d"
+                        ],
+                        "selected_panel_id": "panel-d"
+                      },
+                      "type": "pane"
+                    }
+                  },
+                  "type": "split"
+                }
+              },
+              "type": "split"
+            },
+            "layout_mode": "split",
+            "process_title": "zsh",
+            "workspace_id": "3F2504E0-4F89-41D3-9A0C-0305E82C3301"
+          }
+        ]
+      },
+      "window_id": "window-1"
+    }
+  ]
+}

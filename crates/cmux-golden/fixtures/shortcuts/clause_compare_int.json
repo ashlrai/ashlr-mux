@@ -1,0 +1,8 @@
+{
+  "key": "paneCount",
+  "node": "compare",
+  "op": "gte",
+  "operand": {
+    "int": 2
+  }
+}

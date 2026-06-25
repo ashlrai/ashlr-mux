@@ -1,0 +1,18 @@
+{
+  "key": "mode",
+  "node": "compare",
+  "op": "in",
+  "operand": {
+    "list": [
+      {
+        "string": "a"
+      },
+      {
+        "string": "b"
+      },
+      {
+        "int": 3
+      }
+    ]
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "key": "sidebarMode",
+  "node": "compare",
+  "op": "matches",
+  "operand": {
+    "regex": "^fi"
+  }
+}

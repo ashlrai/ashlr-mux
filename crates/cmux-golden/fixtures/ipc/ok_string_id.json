@@ -1,0 +1,9 @@
+{
+  "id": {
+    "kind": "string",
+    "value": "abc"
+  },
+  "method": "surface.list",
+  "outcome": "ok",
+  "params": {}
+}

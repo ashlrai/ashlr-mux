@@ -1,0 +1,7 @@
+{
+  "child": {
+    "key": "commandPaletteVisible",
+    "node": "key"
+  },
+  "node": "not"
+}

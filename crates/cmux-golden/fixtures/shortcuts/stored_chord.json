@@ -1,0 +1,16 @@
+{
+  "first": {
+    "command": true,
+    "control": false,
+    "key": "k",
+    "option": false,
+    "shift": false
+  },
+  "second": {
+    "command": false,
+    "control": false,
+    "key": "s",
+    "option": false,
+    "shift": true
+  }
+}

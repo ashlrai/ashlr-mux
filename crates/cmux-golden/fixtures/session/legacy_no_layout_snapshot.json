@@ -1,0 +1,16 @@
+{
+  "created_at": 1500000000,
+  "version": 1,
+  "windows": [
+    {
+      "tab_manager": {
+        "workspaces": [
+          {
+            "layout": null,
+            "process_title": "sh"
+          }
+        ]
+      }
+    }
+  ]
+}

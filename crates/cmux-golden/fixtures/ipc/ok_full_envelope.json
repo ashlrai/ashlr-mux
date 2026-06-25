@@ -1,0 +1,11 @@
+{
+  "id": {
+    "kind": "int",
+    "value": 7
+  },
+  "method": "system.ping",
+  "outcome": "ok",
+  "params": {
+    "k": "v"
+  }
+}

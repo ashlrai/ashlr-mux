@@ -1,0 +1,18 @@
+{
+  "lhs": {
+    "atom": "terminalFocus",
+    "node": "atom"
+  },
+  "node": "or",
+  "rhs": {
+    "lhs": {
+      "atom": "browserFocus",
+      "node": "atom"
+    },
+    "node": "and",
+    "rhs": {
+      "atom": "markdownFocus",
+      "node": "atom"
+    }
+  }
+}
