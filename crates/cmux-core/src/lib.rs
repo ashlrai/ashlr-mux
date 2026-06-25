@@ -1,6 +1,9 @@
 pub mod notifications;
 pub mod session;
 pub mod shortcuts;
+pub mod shortcuts_action;
+
+pub use shortcuts_action::Action;
 
 pub const CMUX_PLATFORM: &str = "windows-m1-core";
 
