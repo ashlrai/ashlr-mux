@@ -68,6 +68,109 @@ def test_validate_socket_fixture_requires_newline_and_expected_payload() -> None
         raise AssertionError("invalid socket fixtures should fail validation")
 
 
+# ---------------------------------------------------------------------------
+# Rust <-> web contract parity.
+#
+# These tests catch drift between the Rust Tauri commands and the TypeScript
+# bridge that consumes them WITHOUT needing a native launch (which is blocked
+# on Application-Control-locked machines with os error 4551). They read the
+# source files as text and assert the shared contract values agree.
+# ---------------------------------------------------------------------------
+
+DESKTOP_TAURI_LIB = ROOT / "apps" / "desktop" / "src-tauri" / "src" / "lib.rs"
+BRIDGE_TS = ROOT / "apps" / "desktop" / "web" / "src" / "tauri-bridge.ts"
+CORE_LIB = ROOT / "crates" / "cmux-core" / "src" / "lib.rs"
+AGENT_LIB = ROOT / "crates" / "cmux-agent" / "src" / "lib.rs"
+
+
+def _read(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def test_desktop_lib_exposes_the_two_tauri_commands_the_bridge_calls() -> None:
+    lib = _read(DESKTOP_TAURI_LIB)
+    # Both commands are registered in the invoke handler.
+    assert "tauri::generate_handler![ping, desktop_core_status]" in lib
+    # Each is a #[tauri::command].
+    assert lib.count("#[tauri::command]") == 2
+    assert "fn ping()" in lib
+    assert "fn desktop_core_status()" in lib
+
+
+def test_desktop_core_status_struct_keys_match_the_documented_contract() -> None:
+    lib = _read(DESKTOP_TAURI_LIB)
+    # The serialized field names the web layer consumes. serde uses the Rust
+    # field identifiers verbatim (no rename attribute present).
+    assert '#[serde(rename' not in lib, "a rename would change the wire keys"
+    for field in (
+        "milestone:",
+        "platform:",
+        "agent_providers:",
+        "ipc_fixture_request:",
+    ):
+        assert field in lib, f"DesktopCoreStatus missing field {field!r}"
+
+
+def test_ping_command_returns_a_bare_string_matching_the_golden_fixture() -> None:
+    lib = _read(DESKTOP_TAURI_LIB)
+    # ping() returns the bare "pong" string the bridge passes straight through.
+    assert 'fn ping_response() -> &\'static str {\n    "pong"' in lib
+    # The golden socket response fixture agrees that a successful ping is pong.
+    response = _read(module.RESPONSE_PATH)
+    assert '"pong":true' in response
+
+
+def test_milestone_and_platform_constants_match_the_rust_test_expectations() -> None:
+    core = _read(CORE_LIB)
+    # These are the exact values desktop_core_status surfaces to the web layer.
+    assert 'CMUX_PLATFORM: &str = "windows-m1-core"' in core
+    assert '"M1"' in core
+
+
+def test_agent_provider_order_is_codex_claude_opencode() -> None:
+    agent = _read(AGENT_LIB)
+    # The web layer renders providers by index; order is part of the contract.
+    assert "pub const ALL: [Self; 3] = [Self::Codex, Self::Claude, Self::OpenCode];" in agent
+    assert '"codex"' in agent and '"claude"' in agent and '"opencode"' in agent
+
+
+def test_ipc_fixture_request_matches_the_golden_ping_request_line() -> None:
+    lib = _read(DESKTOP_TAURI_LIB)
+    # The literal the Rust command frames into ipc_fixture_request.
+    assert r'{"id":2,"method":"ping","params":{}}' in lib
+
+    # That literal is exactly the first (non-blank) line of the golden request.
+    request_lines = [
+        line for line in _read(module.REQUEST_PATH).splitlines() if line.strip()
+    ]
+    assert request_lines, "golden ping request fixture is empty"
+    assert request_lines[0] == '{"id":2,"method":"ping","params":{}}'
+
+
+def test_bridge_consumes_status_as_a_bare_object_not_an_envelope() -> None:
+    bridge = _read(BRIDGE_TS)
+    # callNative only unwraps a reply that is a non-null object WITH an `ok`
+    # field; otherwise it passes it through. desktop_core_status has no `ok`
+    # key, so it must be passed through. Assert the membership-guarded branch
+    # the contract relies on still exists.
+    assert '"ok" in reply' in bridge
+    assert "return reply as T" in bridge
+
+
+def test_bridge_native_reply_envelope_shapes_match_rust_outputs() -> None:
+    bridge = _read(BRIDGE_TS)
+    # The three NativeReply<T> shapes the bridge handles. Rust currently emits
+    # only bare values (ping -> string, desktop_core_status -> object), but the
+    # bridge must still support the ok/err envelopes for future commands.
+    assert "{ ok: true; value: T }" in bridge
+    assert "{ ok: false; error?: { code?: string; userMessage?: string } }" in bridge
+    # Default error message used when userMessage is absent.
+    assert '"Native bridge request failed."' in bridge
+    # Browser fallback used when window.__TAURI__ is absent.
+    assert '"pong (browser fallback)"' in bridge
+    assert '"Tauri bridge is unavailable in the current runtime."' in bridge
+
+
 if __name__ == "__main__":
     for name, value in sorted(globals().items()):
         if name.startswith("test_") and callable(value):

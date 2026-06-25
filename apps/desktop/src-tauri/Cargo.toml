@@ -19,3 +19,6 @@ cmux-core = { path = "../../../crates/cmux-core" }
 cmux-ipc = { path = "../../../crates/cmux-ipc" }
 serde = { workspace = true }
 tauri = { version = "2" }
+
+[dev-dependencies]
+serde_json = { workspace = true }
