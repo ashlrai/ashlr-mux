@@ -104,3 +104,40 @@ impl ControlResponseEncoder {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encode_rejects_non_container_values() {
+        let encoder = ControlResponseEncoder;
+        assert_eq!(
+            encoder.encode(JsonValue::Int(1)),
+            ControlResponseEncoder::ENCODE_FAILURE_RESPONSE
+        );
+        assert_eq!(
+            encoder.encode(JsonValue::String("x".into())),
+            ControlResponseEncoder::ENCODE_FAILURE_RESPONSE
+        );
+        assert!(encoder
+            .encode(JsonValue::Array(vec![JsonValue::Int(1)]))
+            .contains("[1]"));
+    }
+
+    #[test]
+    fn encoded_responses_never_contain_raw_newlines() {
+        // NDJSON framing puts one response per line, so any CR/LF reaching the
+        // wire must be escaped rather than emitted raw (guards against a future
+        // switch to pretty-printed output, which would break framing).
+        let encoder = ControlResponseEncoder;
+        let encoded = encoder.ok(
+            Some(JsonValue::Int(7)),
+            JsonValue::String("line1\nline2\rend".into()),
+        );
+        assert!(!encoded.contains('\n'));
+        assert!(!encoded.contains('\r'));
+        assert!(encoded.contains("\\n"));
+        assert!(encoded.contains("\\r"));
+    }
+}
