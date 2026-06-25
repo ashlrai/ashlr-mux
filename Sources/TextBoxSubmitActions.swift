@@ -72,7 +72,7 @@ extension TextBoxInputContainer {
         allowsCommandTemplateSubmit: Bool,
         terminalAgentContext: String
     ) -> Bool {
-        !allowsCommandTemplateSubmit && TextBoxAgentDetection.supportsAgentPrefixes(context: terminalAgentContext)
+        !allowsCommandTemplateSubmit
     }
 
     static func textEntryTerminalAgentContext(
@@ -104,9 +104,10 @@ extension TextBoxInputContainer {
         selectedSubmitAction: TextBoxSubmitAction,
         shouldForceTextEntrySubmit: Bool
     ) -> TextBoxSubmitActionPresentation {
+        let action = shouldForceTextEntrySubmit ? TextBoxSubmitAction.textEntryAction : selectedSubmitAction
         TextBoxSubmitActionPresentation(
-            action: selectedSubmitAction,
-            isForcedTextEntry: shouldForceTextEntrySubmit && selectedSubmitAction.kind != .textEntry
+            action: action,
+            isForcedTextEntry: shouldForceTextEntrySubmit
         )
     }
 
@@ -337,11 +338,25 @@ extension TextBoxInputContainer {
     }
 
     func cycleSubmitAction() {
-        let actions = submitActions
-        guard !actions.isEmpty else { return }
-        let currentIndex = actions.firstIndex(where: { $0.id == defaultSubmitActionID }) ?? 0
-        let nextIndex = actions.index(after: currentIndex)
-        defaultSubmitActionID = actions[nextIndex == actions.endIndex ? actions.startIndex : nextIndex].id
+        guard let nextID = Self.nextCycledSubmitActionID(
+            defaultSubmitActionID: defaultSubmitActionID,
+            submitActions: submitActions,
+            shouldForceTextEntrySubmit: shouldForceTextEntrySubmit
+        ) else {
+            return
+        }
+        defaultSubmitActionID = nextID
+    }
+
+    static func nextCycledSubmitActionID(
+        defaultSubmitActionID: String,
+        submitActions: [TextBoxSubmitAction],
+        shouldForceTextEntrySubmit: Bool
+    ) -> String? {
+        guard !shouldForceTextEntrySubmit, !submitActions.isEmpty else { return nil }
+        let currentIndex = submitActions.firstIndex(where: { $0.id == defaultSubmitActionID }) ?? 0
+        let nextIndex = submitActions.index(after: currentIndex)
+        return submitActions[nextIndex == submitActions.endIndex ? submitActions.startIndex : nextIndex].id
     }
 
     func openSubmitActionsDocumentation() {

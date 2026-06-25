@@ -178627,15 +178627,15 @@
     "textbox.submitAction.activeAgent": {
       "extractionState": "manual",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Text Entry for Active Agent" } },
-        "ja": { "stringUnit": { "state": "translated", "value": "アクティブなエージェントにはテキスト入力" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Text Entry" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "テキスト入力" } }
       }
     },
     "textbox.submitAction.activeAgent.tooltip": {
       "extractionState": "manual",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Active agent sessions use Text Entry. Shift-Tab changes the default for new sessions." } },
-        "ja": { "stringUnit": { "state": "translated", "value": "アクティブなエージェントセッションではテキスト入力を使います。Shift-Tab で新規セッションのデフォルトを変更します。" } }
+        "en": { "stringUnit": { "state": "translated", "value": "This terminal uses Text Entry until command launch is available. Shift-Tab is disabled while Text Entry is forced." } },
+        "ja": { "stringUnit": { "state": "translated", "value": "コマンド起動が利用可能になるまで、このターミナルではテキスト入力を使います。テキスト入力が強制されている間、Shift-Tab は無効です。" } }
       }
     },
     "textbox.submitAction.claude": {
