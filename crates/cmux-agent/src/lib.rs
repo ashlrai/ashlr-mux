@@ -1,3 +1,17 @@
+//! Agent executable resolution and launch-plan computation.
+//!
+//! Pure (environment + filesystem injected) port of the macOS agent resolver:
+//! parses `PATH`, walks Windows package-manager roots (scoop, choco, winget,
+//! nvm-windows, volta, fnm, bun), filters cmux's own bundled shims, and produces
+//! an `AgentSessionLaunchPlan` with a rewritten `PATH` and seeded `CMUX_*`
+//! environment. Process spawning is deferred to M3; this crate only computes the
+//! plan, which keeps it unit-testable on any OS.
+//!
+//! Swift parity sources:
+//! - `Sources/AgentExecutableResolver.swift`
+//! - `Sources/AgentSessionLaunchPlan.swift`
+//! - `Sources/AgentSessionProvider.swift`
+
 use std::{
     collections::BTreeMap,
     fs,
