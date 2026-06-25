@@ -167792,6 +167792,13 @@
         "ja": { "stringUnit": { "state": "translated", "value": "高性能" } }
       }
     },
+    "sleepyMode.button.exit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Exit" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "終了" } }
+      }
+    },
     "sleepyMode.dismissHint": {
       "extractionState": "manual",
       "localizations": {
