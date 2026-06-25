@@ -364,6 +364,7 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           targets: x86_64-pc-windows-msvc
+          components: clippy
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
@@ -393,10 +394,16 @@ jobs:
         run: ./scripts/desktop/stage-sidecars.ps1 -AllowPlaceholderDaemon:$false
 
       - name: Run bootstrap crate tests
-        run: cargo test -p cmux-core -p cmux-agent -p cmux-terminal -p cmux-ipc -p cmux-cli
+        run: cargo test -p cmux-core -p cmux-agent -p cmux-terminal -p cmux-ipc -p cmux-cli -p cmux-golden
+
+      - name: Lint core crates (clippy -D warnings)
+        run: cargo clippy -p cmux-core -p cmux-agent -p cmux-terminal -p cmux-ipc -p cmux-cli -p cmux-golden --all-targets -- -D warnings
 
       - name: Check desktop workspace
         run: cargo check --workspace
+
+      - name: Check core-types TS bindings have no drift
+        run: bun run core-types:check-drift
 
       - name: Run desktop test matrix
         run: bun run desktop:test
