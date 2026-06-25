@@ -1,3 +1,16 @@
+//! OSC 133 shell-integration command segmentation.
+//!
+//! Incremental parser that turns a raw PTY character stream into
+//! `TerminalCommandBlock`s using OSC 133 prompt/command/output/end markers
+//! (`A`/`B`/`C`/`D`), with BEL and `ESC \` (ST) terminators, carriage-return
+//! progress folding, alt-screen interactive detection, and split-escape
+//! carry-over across `consume` calls. Input is validated UTF-8; the byte->str
+//! decode is owned by the M2/M3 PTY pump. Consumed by the terminal renderer
+//! (M2) and agent transcripts (M8).
+//!
+//! Swift parity source:
+//! `Packages/Shared/CmuxAgentChat/Sources/CmuxAgentChat/Parsing/OSC133CommandParser.swift`
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
