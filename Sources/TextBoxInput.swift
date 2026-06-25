@@ -2573,10 +2573,11 @@ struct TextBoxInputContainer: View {
         .task(id: submitActionImageCacheTaskKey) {
             await refreshSubmitActionImageCache(keys: submitActionImageCacheKeys)
         }
-        .onChange(of: terminalAgentContext) { _, terminalAgentContext in
-            if TextBoxAgentDetection.supportsAgentPrefixes(context: terminalAgentContext) {
-                clearPendingProviderLaunch()
-            }
+        .onChange(of: terminalAgentContext) { _, _ in
+            reconcilePendingProviderLaunch()
+        }
+        .onChange(of: allowsCommandTemplateSubmit) { _, _ in
+            reconcilePendingProviderLaunch()
         }
         .onChange(of: defaultSubmitActionID) { _, _ in clearPendingProviderLaunch() }
     }
