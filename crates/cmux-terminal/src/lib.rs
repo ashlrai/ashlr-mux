@@ -402,4 +402,21 @@ mod tests {
         assert_eq!(parser.blocks[0].output, "start\n100%\ndone\n");
         assert_eq!(parser.blocks[0].exit_code, Some(0));
     }
+
+    #[test]
+    fn runaway_unterminated_escape_is_bounded_and_recovers() {
+        let mut parser = Osc133Parser::new();
+        // An OSC sequence whose body never terminates and exceeds the runaway
+        // guard must be abandoned rather than accumulated unboundedly, and the
+        // parser must keep working on the next well-formed sequence.
+        let runaway = format!("\u{1b}]{}", "x".repeat(Osc133Parser::MAX_ESCAPE_LENGTH + 500));
+        parser.consume(&runaway);
+        assert!(parser.blocks.is_empty());
+
+        parser.consume(&(mark("A") + &mark("B") + "echo ok" + &mark("C") + "ok\n" + &mark("D;0")));
+        assert_eq!(parser.blocks.len(), 1);
+        assert_eq!(parser.blocks[0].command, "echo ok");
+        assert_eq!(parser.blocks[0].output, "ok\n");
+        assert_eq!(parser.blocks[0].exit_code, Some(0));
+    }
 }
