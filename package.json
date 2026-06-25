@@ -1,8 +1,18 @@
 {
+  "workspaces": [
+    "apps/desktop/web"
+  ],
   "scripts": {
     "agent-session-web:build": "sh scripts/build-agent-session-web.sh",
     "agent-session-web:test": "bun test webviews/src/agent-session/shared/*.test.ts",
     "biome:check": "biome check .",
+    "desktop:contracts:check": "python scripts/desktop/verify_cmux_contracts.py",
+    "desktop:sidecars:stage": "powershell -ExecutionPolicy Bypass -File scripts/desktop/stage-sidecars.ps1",
+    "desktop:test": "python scripts/desktop/run_desktop_test_matrix.py",
+    "desktop:test:e2e": "python scripts/desktop/run_desktop_test_matrix.py e2e",
+    "desktop:test:integration": "python scripts/desktop/run_desktop_test_matrix.py integration",
+    "desktop:test:unit": "python scripts/desktop/run_desktop_test_matrix.py unit",
+    "desktop:web:build": "bun scripts/desktop/build-desktop-web.mjs",
     "feed-tui": "bun Resources/feed-tui/index.ts"
   },
   "dependencies": {

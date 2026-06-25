@@ -144,6 +144,9 @@ Give a million developers composable primitives and they'll collectively find th
 
 For more info on how to configure cmux, [head over to our docs](https://cmux.com/docs/getting-started?utm_source=readme).
 
+The in-progress Windows shell scaffold and architecture decision live in
+[`../windows-port-plan/00-architecture-decision.md`](../windows-port-plan/00-architecture-decision.md).
+
 ## Keyboard Shortcuts
 
 ### Workspaces

@@ -18,10 +18,11 @@ class ChangeAreas:
     web: bool
     go: bool
     agent_session_web: bool
+    desktop: bool
 
     @classmethod
     def all(cls) -> ChangeAreas:
-        return cls(macos=True, web=True, go=True, agent_session_web=True)
+        return cls(macos=True, web=True, go=True, agent_session_web=True, desktop=True)
 
     def as_output_lines(self) -> list[str]:
         return [
@@ -29,6 +30,7 @@ class ChangeAreas:
             f"web={bool_output(self.web)}",
             f"go={bool_output(self.go)}",
             f"agent_session_web={bool_output(self.agent_session_web)}",
+            f"desktop={bool_output(self.desktop)}",
         ]
 
 
@@ -85,6 +87,35 @@ def is_go_change(path: str) -> bool:
     }
 
 
+def is_desktop_change(path: str) -> bool:
+    if path.startswith(
+        (
+            "apps/desktop/",
+            "contracts/",
+            "crates/",
+        )
+    ):
+        return True
+    if path.startswith(("webviews/", "Resources/markdown-viewer/")):
+        return True
+    if path.startswith("daemon/remote/"):
+        return True
+    return path in {
+        "Cargo.toml",
+        "Cargo.lock",
+        "package.json",
+        "bun.lock",
+        "rust-toolchain.toml",
+        ".cargo/config.toml",
+        "web/data/cmux.schema.json",
+        "scripts/desktop/build-desktop-web.mjs",
+        "scripts/desktop/verify_cmux_contracts.py",
+        "scripts/desktop/stage-sidecars.ps1",
+        "scripts/desktop/smoke-launch-windows.ps1",
+        "scripts/desktop/generate-tauri-icon.ps1",
+    }
+
+
 def is_agent_session_web_change(path: str) -> bool:
     if path.startswith(
         (
@@ -105,7 +136,20 @@ def is_agent_session_web_change(path: str) -> bool:
 
 
 def is_macos_neutral(path: str) -> bool:
-    if path.startswith(("docs/", "design/", "plans/", "ios/", "web/", "webviews/", "daemon/remote/")):
+    if path.startswith(
+        (
+            "apps/desktop/",
+            "contracts/",
+            "crates/",
+            "docs/",
+            "design/",
+            "plans/",
+            "ios/",
+            "web/",
+            "webviews/",
+            "daemon/remote/",
+        )
+    ):
         return True
     return path == "README.md" or (path.startswith("README.") and path.endswith(".md"))
 
@@ -127,6 +171,7 @@ def classify_files(paths: Iterable[str]) -> ChangeAreas:
     web = False
     go = False
     agent_session_web = False
+    desktop = False
 
     for raw_path in paths:
         path = normalize_path(raw_path)
@@ -137,11 +182,14 @@ def classify_files(paths: Iterable[str]) -> ChangeAreas:
             web = True
             go = True
             agent_session_web = True
+            desktop = True
             continue
         if is_web_change(path):
             web = True
         if is_go_change(path):
             go = True
+        if is_desktop_change(path):
+            desktop = True
         if is_agent_session_web_change(path):
             agent_session_web = True
         if is_macos_change(path):
@@ -152,6 +200,7 @@ def classify_files(paths: Iterable[str]) -> ChangeAreas:
         web=web,
         go=go,
         agent_session_web=agent_session_web,
+        desktop=desktop,
     )
 
 

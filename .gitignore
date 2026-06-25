@@ -43,11 +43,15 @@ zig-out/
 # Node
 node_modules/
 .next/
+apps/desktop/web/dist/
 
 # Test outputs
 tests/visual_output/
 tests/visual_report.html
 experiments/*/target/
+target/
+apps/desktop/src-tauri/gen/
+apps/desktop/src-tauri/binaries/
 
 # Generated docs search index
 web/.pagefind-site/

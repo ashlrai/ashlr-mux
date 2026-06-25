@@ -1,4 +1,7 @@
+//go:build !windows
+
 package main
+
 
 import (
 	"bytes"

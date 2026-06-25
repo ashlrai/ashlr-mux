@@ -1,0 +1,10 @@
+[package]
+name = "cmux-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "cmux"
+path = "src/main.rs"
+

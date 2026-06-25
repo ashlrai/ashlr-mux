@@ -1,0 +1,21 @@
+[package]
+name = "cmux-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[lib]
+name = "cmux_desktop_lib"
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[build-dependencies]
+tauri-build = { version = "2" }
+
+[dependencies]
+cmux-agent = { path = "../../../crates/cmux-agent" }
+cmux-core = { path = "../../../crates/cmux-core" }
+cmux-ipc = { path = "../../../crates/cmux-ipc" }
+serde = { workspace = true }
+tauri = { version = "2" }

@@ -1,0 +1,44 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "cmux",
+  "version": "0.1.0",
+  "identifier": "com.cmuxterm.app",
+  "build": {
+    "beforeBuildCommand": "bun run desktop:web:build",
+    "frontendDist": "../web/dist"
+  },
+  "app": {
+    "security": {
+      "csp": null
+    },
+    "windows": [
+      {
+        "label": "main",
+        "title": "cmux for Windows - bootstrap",
+        "width": 1280,
+        "height": 840,
+        "resizable": true
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "externalBin": [
+      "binaries/cmux",
+      "binaries/cmuxd-remote"
+    ],
+    "icon": [
+      "icons/icon.ico",
+      "../../../Assets.xcassets/AppIcon.appiconset/512.png"
+    ],
+    "resources": [
+      "../../../Resources/markdown-viewer/webviews-app/**/*"
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      }
+    }
+  }
+}

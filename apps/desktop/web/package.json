@@ -1,0 +1,9 @@
+{
+  "name": "@cmux/desktop-web",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "build": "bun ../../../scripts/desktop/build-desktop-web.mjs",
+    "test": "bun test src/tauri-bridge.test.ts"
+  }
+}

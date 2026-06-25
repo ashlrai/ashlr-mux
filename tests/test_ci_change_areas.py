@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -30,12 +31,14 @@ def assert_areas(
     web: bool,
     go: bool,
     agent_session_web: bool = False,
+    desktop: bool = False,
 ) -> None:
     actual = module.classify_files(paths)
     assert actual.macos is macos, (paths, actual)
     assert actual.web is web, (paths, actual)
     assert actual.go is go, (paths, actual)
     assert actual.agent_session_web is agent_session_web, (paths, actual)
+    assert actual.desktop is desktop, (paths, actual)
 
 
 def test_docs_only_skips_expensive_areas() -> None:
@@ -51,11 +54,24 @@ def test_changelog_runs_web_validation() -> None:
 
 
 def test_web_only_runs_web_without_macos() -> None:
-    assert_areas(["web/app/page.tsx", "webviews/src/diff/App.tsx"], macos=False, web=True, go=False)
+    assert_areas(
+        ["web/app/page.tsx", "webviews/src/diff/App.tsx"],
+        macos=False,
+        web=True,
+        go=False,
+        desktop=True,
+    )
 
 
 def test_website_only_does_not_run_agent_session_resource_check() -> None:
-    assert_areas(["web/app/page.tsx"], macos=False, web=True, go=False, agent_session_web=False)
+    assert_areas(
+        ["web/app/page.tsx"],
+        macos=False,
+        web=True,
+        go=False,
+        agent_session_web=False,
+        desktop=False,
+    )
 
 
 def test_agent_session_webview_sources_run_bundled_asset_check() -> None:
@@ -65,6 +81,7 @@ def test_agent_session_webview_sources_run_bundled_asset_check() -> None:
         web=True,
         go=False,
         agent_session_web=True,
+        desktop=True,
     )
 
 
@@ -75,6 +92,7 @@ def test_markdown_viewer_resources_run_webviews_asset_guard() -> None:
         web=True,
         go=False,
         agent_session_web=True,
+        desktop=True,
     )
 
 
@@ -85,6 +103,7 @@ def test_markdown_viewer_webview_app_does_not_run_agent_session_resource_check()
         web=True,
         go=False,
         agent_session_web=False,
+        desktop=True,
     )
 
 
@@ -95,6 +114,7 @@ def test_root_agent_web_dependencies_run_web_and_macos() -> None:
         web=True,
         go=False,
         agent_session_web=True,
+        desktop=True,
     )
 
 
@@ -105,6 +125,7 @@ def test_agent_session_resources_run_web_and_macos() -> None:
         web=True,
         go=False,
         agent_session_web=True,
+        desktop=False,
     )
     assert_areas(
         ["Resources/agent-session-solid/index.js"],
@@ -112,8 +133,9 @@ def test_agent_session_resources_run_web_and_macos() -> None:
         web=True,
         go=False,
         agent_session_web=True,
+        desktop=False,
     )
-    assert_areas(["Resources/agent-session-backup/index.js"], macos=True, web=False, go=False)
+    assert_areas(["Resources/agent-session-backup/index.js"], macos=True, web=False, go=False, desktop=False)
 
 
 def test_ios_only_skips_main_macos_ci() -> None:
@@ -121,11 +143,17 @@ def test_ios_only_skips_main_macos_ci() -> None:
 
 
 def test_remote_daemon_runs_go_only() -> None:
-    assert_areas(["daemon/remote/main.go"], macos=False, web=False, go=True)
+    assert_areas(["daemon/remote/main.go"], macos=False, web=False, go=True, desktop=True)
 
 
 def test_remote_daemon_asset_builder_runs_go_validation() -> None:
-    assert_areas(["scripts/build_remote_daemon_release_assets.sh"], macos=True, web=False, go=True)
+    assert_areas(["scripts/build_remote_daemon_release_assets.sh"], macos=True, web=False, go=True, desktop=False)
+
+
+def test_desktop_scaffold_runs_desktop_only() -> None:
+    assert_areas(["apps/desktop/web/src/main.tsx"], macos=False, web=False, go=False, desktop=True)
+    assert_areas(["contracts/golden/socket-v2/ping-request.jsonl"], macos=False, web=False, go=False, desktop=True)
+    assert_areas(["crates/cmux-ipc/src/lib.rs"], macos=False, web=False, go=False, desktop=True)
 
 
 def test_app_source_runs_macos() -> None:
@@ -139,6 +167,7 @@ def test_workflow_changes_run_everything() -> None:
         web=True,
         go=True,
         agent_session_web=True,
+        desktop=True,
     )
 
 
@@ -180,6 +209,10 @@ def run_detect_step_for_paths(
     paths: list[str],
     workflow_path: Path = CI_WORKFLOW,
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    bash = shutil.which("bash")
+    if bash is None:
+        raise FileNotFoundError("bash is unavailable")
+
     script = detect_step_script(workflow_path)
     with tempfile.TemporaryDirectory() as temp_dir:
         repo = Path(temp_dir)
@@ -214,7 +247,7 @@ def run_detect_step_for_paths(
             "GITHUB_OUTPUT": str(output_path),
         }
         result = subprocess.run(
-            ["bash", "-c", script],
+            [bash, "-c", script],
             cwd=repo,
             env=env,
             text=True,
@@ -226,13 +259,18 @@ def run_detect_step_for_paths(
 
 
 def test_workflow_self_change_guard_runs_before_detector_imports() -> None:
+    if shutil.which("bash") is None:
+        return
     result, outputs = run_detect_step_for_paths(["scripts/ci/subprocess.py"])
 
     assert "CI router changed; running all CI areas." in result.stdout
-    assert outputs == ["macos=true", "web=true", "go=true", "agent_session_web=true"]
+    assert outputs == ["macos=true", "web=true", "go=true", "agent_session_web=true", "desktop=true"]
 
 
 def test_workflow_diff_failure_runs_all_areas() -> None:
+    bash = shutil.which("bash")
+    if bash is None:
+        return
     script = detect_step_script()
     with tempfile.TemporaryDirectory() as temp_dir:
         repo = Path(temp_dir)
@@ -245,7 +283,7 @@ def test_workflow_diff_failure_runs_all_areas() -> None:
             "GITHUB_OUTPUT": str(output_path),
         }
         result = subprocess.run(
-            ["bash", "-c", script],
+            [bash, "-c", script],
             cwd=repo,
             env=env,
             text=True,
@@ -260,14 +298,17 @@ def test_workflow_diff_failure_runs_all_areas() -> None:
             "web=true",
             "go=true",
             "agent_session_web=true",
+            "desktop=true",
         ]
 
 
 def test_workflow_empty_diff_runs_all_areas() -> None:
+    if shutil.which("bash") is None:
+        return
     result, outputs = run_detect_step_for_paths([])
 
     assert "PR diff is empty; running all CI areas." in result.stdout
-    assert outputs == ["macos=true", "web=true", "go=true", "agent_session_web=true"]
+    assert outputs == ["macos=true", "web=true", "go=true", "agent_session_web=true", "desktop=true"]
 
 
 def test_router_changes_run_everything() -> None:
@@ -277,6 +318,7 @@ def test_router_changes_run_everything() -> None:
         web=True,
         go=True,
         agent_session_web=True,
+        desktop=True,
     )
     assert_areas(
         ["scripts/ci/subprocess.py"],
@@ -284,6 +326,7 @@ def test_router_changes_run_everything() -> None:
         web=True,
         go=True,
         agent_session_web=True,
+        desktop=True,
     )
     assert_areas(
         ["tests/test_ci_change_areas.py"],
@@ -291,6 +334,7 @@ def test_router_changes_run_everything() -> None:
         web=True,
         go=True,
         agent_session_web=True,
+        desktop=True,
     )
 
 
@@ -329,12 +373,13 @@ def test_cli_writes_github_outputs() -> None:
             stderr=subprocess.PIPE,
         )
 
-        assert "Resolved areas: macos=false web=true go=false" in result.stdout
+        assert "Resolved areas: macos=false web=true go=false agent_session_web=false desktop=false" in result.stdout
         assert output_path.read_text(encoding="utf-8").splitlines() == [
             "macos=false",
             "web=true",
             "go=false",
             "agent_session_web=false",
+            "desktop=false",
         ]
 
 
@@ -362,12 +407,13 @@ def test_cli_empty_diff_runs_all_areas() -> None:
         )
 
         assert "PR diff is empty; running all CI areas." in result.stdout
-        assert "Resolved areas: macos=true web=true go=true agent_session_web=true" in result.stdout
+        assert "Resolved areas: macos=true web=true go=true agent_session_web=true desktop=true" in result.stdout
         assert output_path.read_text(encoding="utf-8").splitlines() == [
             "macos=true",
             "web=true",
             "go=true",
             "agent_session_web=true",
+            "desktop=true",
         ]
 
 
@@ -380,7 +426,7 @@ def test_non_pr_events_run_all_areas() -> None:
         stderr=subprocess.PIPE,
     )
 
-    assert "Resolved areas: macos=true web=true go=true agent_session_web=true" in result.stdout
+    assert "Resolved areas: macos=true web=true go=true agent_session_web=true desktop=true" in result.stdout
 
 
 def test_ci_status_job_accepts_skipped_routed_jobs() -> None:
@@ -393,6 +439,7 @@ def test_ci_status_job_accepts_skipped_routed_jobs() -> None:
         "web-typecheck",
         "react-apps-check",
         "web-db-migrations",
+        "desktop-bootstrap",
         "app-host-unit-tests",
         "tests",
         "tests-build-and-lag",
@@ -423,11 +470,20 @@ def test_agent_session_web_resources_runs_only_for_agent_session_web_area() -> N
     assert "if: ${{ needs.changes.outputs.agent_session_web == 'true' }}" in block
 
 
+def test_desktop_bootstrap_job_runs_m0_suite() -> None:
+    block = workflow_job_block("desktop-bootstrap")
+
+    assert "if: ${{ needs.changes.outputs.desktop == 'true' }}" in block
+    assert "bun run desktop:test" in block
+
+
 def test_perf_activation_workflow_keeps_required_status_while_gating_benchmark() -> None:
+    if shutil.which("bash") is None:
+        return
     result, outputs = run_detect_step_for_paths(["docs/ci-runners.md"], PERF_ACTIVATION_WORKFLOW)
 
-    assert "Resolved areas: macos=false web=false go=false" in result.stdout
-    assert outputs == ["macos=false", "web=false", "go=false", "agent_session_web=false"]
+    assert "Resolved areas: macos=false web=false go=false agent_session_web=false desktop=false" in result.stdout
+    assert outputs == ["macos=false", "web=false", "go=false", "agent_session_web=false", "desktop=false"]
 
     benchmark = workflow_job_block("activation-session-benchmark", PERF_ACTIVATION_WORKFLOW)
     sentinel = workflow_job_block("activation-session", PERF_ACTIVATION_WORKFLOW)
