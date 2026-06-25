@@ -1,3 +1,16 @@
+//! Socket v2 RPC codec for the cmux control channel.
+//!
+//! Owns the newline-delimited JSON-RPC wire contract shared verbatim with the
+//! macOS app: the `{ "id", "method", "params" }` request envelope, its lenient
+//! and strict parsers, the response encoder, and the NDJSON framing helpers. The
+//! transport (AF_UNIX on macOS, named pipes on Windows) sits beneath this codec
+//! unchanged.
+//!
+//! Swift parity sources:
+//! - `Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Wire/ControlRequest.swift`
+//! - `Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Wire/ControlRequestParser.swift`
+//! - `Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Wire/ControlResponseEncoder.swift`
+
 mod control_call_result;
 mod control_request;
 mod control_request_parse_error;
