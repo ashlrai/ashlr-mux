@@ -351,6 +351,7 @@ dependencies = [
  "cmux-core",
  "cmux-ipc",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
 ]
