@@ -62,3 +62,57 @@ impl From<JsonValue> for serde_json::Value {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn round_trip(value: serde_json::Value) -> serde_json::Value {
+        serde_json::Value::from(JsonValue::try_from(value).expect("convert"))
+    }
+
+    #[test]
+    fn scalars_round_trip() {
+        for value in [
+            serde_json::json!(null),
+            serde_json::json!(true),
+            serde_json::json!(false),
+            serde_json::json!(42),
+            serde_json::json!(-7),
+            serde_json::json!(2.5),
+            serde_json::json!("hello"),
+        ] {
+            assert_eq!(round_trip(value.clone()), value);
+        }
+    }
+
+    #[test]
+    fn whole_numbers_decode_as_int_not_double() {
+        assert!(matches!(
+            JsonValue::try_from(serde_json::json!(5)).unwrap(),
+            JsonValue::Int(5)
+        ));
+        assert!(matches!(
+            JsonValue::try_from(serde_json::json!(1.5)).unwrap(),
+            JsonValue::Double(_)
+        ));
+    }
+
+    #[test]
+    fn u64_above_i64_max_falls_back_to_double() {
+        let big = (i64::MAX as u64) + 1;
+        assert!(matches!(
+            JsonValue::try_from(serde_json::json!(big)).unwrap(),
+            JsonValue::Double(_)
+        ));
+    }
+
+    #[test]
+    fn nested_array_and_object_round_trip() {
+        let input = serde_json::json!({
+            "method": "ping",
+            "params": [1, "two", false, null, {"nested": 3}],
+        });
+        assert_eq!(round_trip(input.clone()), input);
+    }
+}
