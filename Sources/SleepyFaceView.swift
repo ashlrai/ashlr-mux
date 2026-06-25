@@ -7,7 +7,7 @@ import SwiftUI
 /// art stays crisp; all motion is a pure function of the timeline date.
 struct SleepyFaceView: View {
     var store = SleepyModeSettingsStore.shared
-    @State private var energyMode: SleepyEnergyMode = .automatic
+    @State private var lowPowerOn = false
 
     var body: some View {
         let config = store.snapshot()
@@ -29,8 +29,24 @@ struct SleepyFaceView: View {
             }
             bottomBar(config: config)
         }
+        .overlay(alignment: .topLeading) { keepAwakeBadge(config: config).padding(26) }
         .ignoresSafeArea()
-        .task { energyMode = await Task.detached { SleepyPowerControls.currentEnergyMode() }.value }
+        .task { lowPowerOn = await Task.detached { SleepyPowerControls.isLowPowerOn() }.value }
+    }
+
+    /// Reassures the user the Mac is being kept awake (caffeinate is running).
+    private func keepAwakeBadge(config: SleepyModeConfig) -> some View {
+        let accent = SleepyPalette.colors(for: config)["O"] ?? .white
+        return HStack(spacing: 7) {
+            Image(systemName: "cup.and.saucer.fill")
+            Text(String(localized: "sleepyMode.keepAwake", defaultValue: "Mac staying awake"))
+        }
+        .font(.system(size: 13, weight: .bold, design: .monospaced))
+        .foregroundStyle(accent.opacity(0.7))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(accent.opacity(0.08))
+        .overlay(Rectangle().strokeBorder(accent.opacity(0.22), lineWidth: 2))
     }
 
     private func bottomBar(config: SleepyModeConfig) -> some View {
@@ -58,14 +74,20 @@ struct SleepyFaceView: View {
 
                 Button {
                     // Off the main thread: the admin prompt blocks until answered.
+                    let turnOn = !lowPowerOn
                     Task.detached {
-                        let mode = SleepyPowerControls.cycleEnergyMode()
-                        await MainActor.run { energyMode = mode }
+                        let state = SleepyPowerControls.setLowPowerMode(turnOn)
+                        await MainActor.run { lowPowerOn = state }
                     }
                 } label: {
-                    Label("\(String(localized: "sleepyMode.button.energy", defaultValue: "Energy")): \(energyMode.displayName)", systemImage: "bolt.fill")
+                    Label(
+                        lowPowerOn
+                            ? String(localized: "sleepyMode.button.lowPowerOn", defaultValue: "Low Power: On")
+                            : String(localized: "sleepyMode.button.lowPowerOff", defaultValue: "Low Power: Off"),
+                        systemImage: lowPowerOn ? "leaf.fill" : "leaf"
+                    )
                 }
-                .buttonStyle(PixelButtonStyle(tint: Color(red: 0.18, green: 0.50, blue: 0.44)))
+                .buttonStyle(PixelButtonStyle(tint: lowPowerOn ? Color(red: 0.24, green: 0.56, blue: 0.32) : Color(red: 0.30, green: 0.42, blue: 0.46)))
             }
             Spacer().frame(height: 50)
             Text(hintText)
@@ -137,19 +159,24 @@ struct SleepyFaceView: View {
         add(counts.claude, Color(red: 0.96, green: 0.55, blue: 0.26))
         add(counts.codex, Color(red: 0.62, green: 0.86, blue: 0.97))
         add(counts.opencode, Color(red: 0.45, green: 0.86, blue: 0.55))
+        add(counts.pi, Color(red: 0.70, green: 0.52, blue: 0.97))
         add(counts.other, Color(red: 1.0, green: 0.70, blue: 0.80))
 
-        let span = size.width + CGFloat(petWidthCells * 2) * cell
+        // Pets ping-pong within the screen — they never walk off the edges.
+        let petW = CGFloat(petWidthCells) * cell
+        let left = 2 * cell
+        let right = max(left, size.width - petW - 2 * cell)
+        let track = max(1, Double(right - left))
         for (i, color) in colors.enumerated() {
-            let rightward = i % 2 == 0
-            let speed = Double(cell) * (5 + Double(i % 4) * 2)
-            let offset = Double(i) * 0.137 * Double(span)
-            let p = (t * speed + offset).truncatingRemainder(dividingBy: Double(span))
-            let travel = CGFloat(p) - CGFloat(petWidthCells) * cell
-            let x = (rightward ? travel : size.width - travel).rounded()
+            let speed = Double(cell) * (4 + Double(i % 4) * 2)
+            let offset = Double(i) * 0.31 * track
+            let phase = (t * speed + offset).truncatingRemainder(dividingBy: 2 * track)
+            let goingRight = phase < track
+            let pos = goingRight ? phase : (2 * track - phase)
+            let x = (left + CGFloat(pos)).rounded()
             let step = Int(t * 6 + Double(i)) % 2
             let hop = sin(t * 7 + Double(i)) > 0.6 ? -cell : 0
-            drawPet(in: &ctx, x: x, y: baseline - 5 * cell + hop, cell: cell, color: color, step: step, facingRight: rightward)
+            drawPet(in: &ctx, x: x, y: baseline - 5 * cell + hop, cell: cell, color: color, step: step, facingRight: goingRight)
         }
     }
 

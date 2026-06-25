@@ -167855,6 +167855,27 @@
         "ja": { "stringUnit": { "state": "translated", "value": "背景" } }
       }
     },
+    "sleepyMode.keepAwake": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Mac staying awake" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "Mac は起きたまま" } }
+      }
+    },
+    "sleepyMode.button.lowPowerOn": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Low Power: On" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "低電力: オン" } }
+      }
+    },
+    "sleepyMode.button.lowPowerOff": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Low Power: Off" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "低電力: オフ" } }
+      }
+    },
     "sleepyMode.dismissHint": {
       "extractionState": "manual",
       "localizations": {
