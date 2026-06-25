@@ -419,4 +419,19 @@ mod tests {
         assert_eq!(parser.blocks[0].output, "ok\n");
         assert_eq!(parser.blocks[0].exit_code, Some(0));
     }
+
+    #[test]
+    fn st_terminator_parses_like_bel() {
+        // OSC 133 markers may be terminated by ST (ESC \) instead of BEL; both
+        // must segment identically.
+        let st = |body: &str| format!("\u{1b}]{}\u{1b}\\", body);
+        let mut parser = Osc133Parser::new();
+        parser.consume(
+            &(st("133;A") + &st("133;B") + "echo hi" + &st("133;C") + "hi\n" + &st("133;D;0")),
+        );
+        assert_eq!(parser.blocks.len(), 1);
+        assert_eq!(parser.blocks[0].command, "echo hi");
+        assert_eq!(parser.blocks[0].output, "hi\n");
+        assert_eq!(parser.blocks[0].exit_code, Some(0));
+    }
 }
