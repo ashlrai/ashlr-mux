@@ -1,0 +1,14 @@
+{
+  "child": {
+    "lhs": {
+      "atom": "sidebarFocus",
+      "node": "atom"
+    },
+    "node": "and",
+    "rhs": {
+      "key": "commandPaletteVisible",
+      "node": "key"
+    }
+  },
+  "node": "not"
+}

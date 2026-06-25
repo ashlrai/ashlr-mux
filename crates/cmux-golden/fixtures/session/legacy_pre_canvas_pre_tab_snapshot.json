@@ -1,0 +1,23 @@
+{
+  "created_at": 1600000000,
+  "version": 1,
+  "windows": [
+    {
+      "tab_manager": {
+        "workspaces": [
+          {
+            "layout": {
+              "pane": {
+                "panel_ids": [
+                  "legacy-panel"
+                ]
+              },
+              "type": "pane"
+            },
+            "process_title": "bash"
+          }
+        ]
+      }
+    }
+  ]
+}

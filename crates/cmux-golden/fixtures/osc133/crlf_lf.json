@@ -1,0 +1,10 @@
+[
+  {
+    "command": "x",
+    "exit_code": 0,
+    "id": 0,
+    "is_interactive": false,
+    "is_running": false,
+    "output": "line1\nline2\n"
+  }
+]

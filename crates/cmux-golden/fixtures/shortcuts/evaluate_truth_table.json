@@ -1,0 +1,122 @@
+{
+  "clauses": [
+    {
+      "label": "palette",
+      "raw": "commandPaletteVisible"
+    },
+    {
+      "label": "not_palette",
+      "raw": "!commandPaletteVisible"
+    },
+    {
+      "label": "panes_ge_2",
+      "raw": "paneCount >= 2"
+    },
+    {
+      "label": "regex_find",
+      "raw": "sidebarMode =~ /^fi/"
+    },
+    {
+      "label": "compound",
+      "raw": "commandPaletteVisible && (paneCount >= 2 || sidebarMode == 'find')"
+    }
+  ],
+  "rows": [
+    {
+      "commandPaletteVisible": false,
+      "paneCount": 1,
+      "results": {
+        "compound": false,
+        "not_palette": true,
+        "palette": false,
+        "panes_ge_2": false,
+        "regex_find": true
+      },
+      "sidebarMode": "find"
+    },
+    {
+      "commandPaletteVisible": false,
+      "paneCount": 1,
+      "results": {
+        "compound": false,
+        "not_palette": true,
+        "palette": false,
+        "panes_ge_2": false,
+        "regex_find": true
+      },
+      "sidebarMode": "files"
+    },
+    {
+      "commandPaletteVisible": false,
+      "paneCount": 2,
+      "results": {
+        "compound": false,
+        "not_palette": true,
+        "palette": false,
+        "panes_ge_2": true,
+        "regex_find": true
+      },
+      "sidebarMode": "find"
+    },
+    {
+      "commandPaletteVisible": false,
+      "paneCount": 2,
+      "results": {
+        "compound": false,
+        "not_palette": true,
+        "palette": false,
+        "panes_ge_2": true,
+        "regex_find": true
+      },
+      "sidebarMode": "files"
+    },
+    {
+      "commandPaletteVisible": true,
+      "paneCount": 1,
+      "results": {
+        "compound": true,
+        "not_palette": false,
+        "palette": true,
+        "panes_ge_2": false,
+        "regex_find": true
+      },
+      "sidebarMode": "find"
+    },
+    {
+      "commandPaletteVisible": true,
+      "paneCount": 1,
+      "results": {
+        "compound": false,
+        "not_palette": false,
+        "palette": true,
+        "panes_ge_2": false,
+        "regex_find": true
+      },
+      "sidebarMode": "files"
+    },
+    {
+      "commandPaletteVisible": true,
+      "paneCount": 2,
+      "results": {
+        "compound": true,
+        "not_palette": false,
+        "palette": true,
+        "panes_ge_2": true,
+        "regex_find": true
+      },
+      "sidebarMode": "find"
+    },
+    {
+      "commandPaletteVisible": true,
+      "paneCount": 2,
+      "results": {
+        "compound": true,
+        "not_palette": false,
+        "palette": true,
+        "panes_ge_2": true,
+        "regex_find": true
+      },
+      "sidebarMode": "files"
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+[
+  {
+    "command": "vim",
+    "id": 0,
+    "is_interactive": true,
+    "is_running": true,
+    "output": ""
+  }
+]

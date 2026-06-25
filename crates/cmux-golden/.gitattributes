@@ -1,0 +1,11 @@
+# Golden fixtures are compared BYTE-FOR-BYTE against canonical JSON that the
+# harness renders with LF newlines. Pin LF on disk on every platform so a
+# Windows checkout (core.autocrlf=true) does not rewrite fixture newlines to
+# CRLF and break the byte comparison. The macOS Swift exporter also writes LF.
+fixtures/**/*.json text eol=lf
+
+# Keep harness sources and the Swift exporter LF so behavior is identical on
+# the windows-latest and macos-latest CI runners.
+*.rs text eol=lf
+swift-exporter/**/*.swift text eol=lf
+swift-exporter/**/*.md text eol=lf

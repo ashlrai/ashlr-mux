@@ -1,0 +1,23 @@
+[package]
+name = "cmux-golden"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Dev/test parity harness for M1 (WS6). This crate ships only a canonicalizer
+# library plus integration tests that assert the Rust ports produce
+# byte-identical canonical JSON against committed reference fixtures.
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+serde_json.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+cmux-core = { path = "../cmux-core" }
+cmux-ipc = { path = "../cmux-ipc" }
+cmux-terminal = { path = "../cmux-terminal" }
+serde = { workspace = true }
+serde_json = { workspace = true }

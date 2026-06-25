@@ -1,0 +1,18 @@
+[
+  {
+    "command": "pwd",
+    "exit_code": 0,
+    "id": 0,
+    "is_interactive": false,
+    "is_running": false,
+    "output": "/home/u\n"
+  },
+  {
+    "command": "ls",
+    "exit_code": 0,
+    "id": 1,
+    "is_interactive": false,
+    "is_running": false,
+    "output": "a\nb\n"
+  }
+]

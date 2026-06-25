@@ -358,6 +358,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmux-golden"
+version = "0.1.0"
+dependencies = [
+ "cmux-core",
+ "cmux-ipc",
+ "cmux-terminal",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "cmux-ipc"
 version = "0.1.0"
 dependencies = [
