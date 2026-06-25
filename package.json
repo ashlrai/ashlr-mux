@@ -1,11 +1,14 @@
 {
   "workspaces": [
+    "apps/desktop/packages/*",
     "apps/desktop/web"
   ],
   "scripts": {
     "agent-session-web:build": "sh scripts/build-agent-session-web.sh",
     "agent-session-web:test": "bun test webviews/src/agent-session/shared/*.test.ts",
     "biome:check": "biome check .",
+    "core-types:generate": "bun apps/desktop/packages/core-types/scripts/generate.mjs",
+    "core-types:check-drift": "bun apps/desktop/packages/core-types/scripts/check-drift.mjs",
     "desktop:contracts:check": "python scripts/desktop/verify_cmux_contracts.py",
     "desktop:sidecars:stage": "powershell -ExecutionPolicy Bypass -File scripts/desktop/stage-sidecars.ps1",
     "desktop:test": "python scripts/desktop/run_desktop_test_matrix.py",

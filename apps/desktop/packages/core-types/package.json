@@ -1,0 +1,20 @@
+{
+  "name": "@cmux/core-types",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TypeScript bindings for the cmux Rust core session/layout wire models, generated from crates/cmux-core via ts-rs. Do not hand-edit src/generated.",
+  "type": "module",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./generated": "./src/generated/index.ts"
+  },
+  "scripts": {
+    "generate": "bun ./scripts/generate.mjs",
+    "check-drift": "bun ./scripts/check-drift.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}
