@@ -167799,6 +167799,62 @@
         "ja": { "stringUnit": { "state": "translated", "value": "終了" } }
       }
     },
+    "sleepyMode.theme.custom": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Custom" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "カスタム" } }
+      }
+    },
+    "sleepyMode.glow.custom": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Custom" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "カスタム" } }
+      }
+    },
+    "sleepyMode.color.face": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Face" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "顔" } }
+      }
+    },
+    "sleepyMode.color.cap": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Nightcap" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "ナイトキャップ" } }
+      }
+    },
+    "sleepyMode.color.blush": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Blush" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "ほお" } }
+      }
+    },
+    "sleepyMode.color.eyes": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Eyes" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "目" } }
+      }
+    },
+    "sleepyMode.color.logo": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Logo" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "ロゴ" } }
+      }
+    },
+    "sleepyMode.color.background": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Background" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "背景" } }
+      }
+    },
     "sleepyMode.dismissHint": {
       "extractionState": "manual",
       "localizations": {
