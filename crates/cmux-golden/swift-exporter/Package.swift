@@ -11,7 +11,7 @@ import PackageDescription
 
 let package = Package(
     name: "CmuxGoldenExport",
-    platforms: [.macOS(.v13)],
+    platforms: [.macOS(.v14)],
     products: [
         .executable(name: "cmux-golden-export", targets: ["CmuxGoldenExport"])
     ],

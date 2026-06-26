@@ -7,10 +7,40 @@ fixture exporter for the M1 golden-file parity harness (WS6).
 
 The exporter is **not built/run on the Windows porting machine** (no Swift
 toolchain; the codecs depend on Foundation/AppKit and the macOS-only SPM
-packages). The fixtures currently committed under
-`crates/cmux-golden/fixtures/` are **Rust-seeded placeholders**. On macOS CI the
-exporter below MUST regenerate them; its output is **authoritative**, and the
-Rust `cmux-golden` tests assert byte-identical canonical JSON against it.
+packages). On macOS the exporter regenerates the fixtures under
+`crates/cmux-golden/fixtures/`; its output is **authoritative**, and the Rust
+`cmux-golden` tests assert byte-identical canonical JSON against it.
+
+### M1 golden-parity: regenerated and proven (macOS)
+
+The exporter has been completed, compiled, and run on macOS; the committed
+fixtures are now **authoritative Swift output** (no longer Rust-seeded
+placeholders). `cargo test -p cmux-golden` passes (30 tests: 8 ipc, 8 osc133,
+5 session, 9 shortcuts). Two decisions made during this work:
+
+1. **Session domain → option (a), mirror the Codables.** `AppSessionSnapshot`
+   lives in the app target and, more importantly, its `JSONEncoder` output is a
+   *different* wire shape from the Rust port (camelCase keys + ~15 extra fields:
+   `frame`, `display`, `sidebar`, `panels`, `statusEntries`, … ). No importable
+   Swift codec emits the port's minimal snake_case contract. So the session
+   snapshot Codables are mirrored as a standalone `Encodable` graph in
+   `Sources/CmuxGoldenExport/SessionMirror.swift` (snake_case `CodingKeys`,
+   integer time/dimension fields, `layout` nullable-not-omitted, the
+   `{type, pane|split}` tagged union). This proves a Swift implementation of the
+   on-disk contract emits byte-identical canonical JSON to the Rust port, while
+   keeping the exporter a self-contained SPM executable (no heavyweight
+   app-target XCTest host). The live-app `AppSessionSnapshot` ↔ port divergence
+   (camelCase + extra fields) is a pre-existing gap outside M1's golden scope and
+   is flagged for follow-up.
+
+2. **One Rust port divergence found & fixed: `keyCode`.** The authoritative
+   macOS `ShortcutStroke` (CmuxSettings) uses synthesized `Codable`, so the
+   on-disk key is `keyCode` (camelCase) — matching the web/webviews
+   `keyCode` field. The Rust port serialized `key_code` (snake_case). Fixed the
+   port (`crates/cmux-core/src/shortcuts.rs`: `#[serde(rename = "keyCode")]`) and
+   updated `fixtures/shortcuts/stored_single_stroke.json`. Every other byte
+   across all 32 fixtures was already identical between the Rust ports and the
+   Swift codecs.
 
 ## Why an exporter, not hand-written fixtures
 

@@ -12,7 +12,15 @@ pub struct ShortcutStroke {
     pub option: bool,
     #[serde(default)]
     pub control: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    // Wire key is `keyCode` (camelCase) to match the authoritative macOS Swift
+    // codec (`ShortcutStroke` in CmuxSettings uses synthesized Codable, so the
+    // on-disk `cmux.json` shortcut bindings carry `keyCode`). The Rust field stays
+    // snake_case idiomatically; only the serialized key is renamed.
+    #[serde(
+        rename = "keyCode",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub key_code: Option<u16>,
 }
 

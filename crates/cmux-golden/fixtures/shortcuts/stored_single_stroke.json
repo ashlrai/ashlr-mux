@@ -3,7 +3,7 @@
     "command": true,
     "control": false,
     "key": "t",
-    "key_code": 17,
+    "keyCode": 17,
     "option": false,
     "shift": false
   }
