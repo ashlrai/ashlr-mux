@@ -361,7 +361,11 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
+        # The @<channel> ref is how dtolnay/rust-toolchain receives its toolchain.
+        # @master carries none and this action does not auto-read rust-toolchain.toml,
+        # so it failed with "'toolchain' is a required input" before installing Rust.
+        # @stable matches rust-toolchain.toml's channel = "stable".
+        uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
           components: clippy
