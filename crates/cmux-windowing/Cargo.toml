@@ -1,0 +1,14 @@
+[package]
+name = "cmux-windowing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# M5 (App shell + windowing) platform-neutral core: the value types and pure
+# geometry the window-management layer reuses verbatim from the macOS
+# `CmuxWindowing` package. Win32 leaf calls live in the desktop shell; this
+# crate stays OS-independent so the placement/clamping math is unit-tested on
+# any platform. (window.* JSON summary types — golden-pinned vs Swift fixtures —
+# land here later alongside serde.)
+[lib]
+path = "src/lib.rs"

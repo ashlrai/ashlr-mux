@@ -8,6 +8,7 @@ members = [
   "crates/cmux-ipc",
   "crates/cmux-process",
   "crates/cmux-terminal",
+  "crates/cmux-windowing",
 ]
 resolver = "2"
 
