@@ -14,6 +14,7 @@
 pub mod conpty;
 pub mod engine;
 pub mod geometry;
+pub mod links;
 pub mod surface;
 pub mod theme;
 pub mod transcript;
