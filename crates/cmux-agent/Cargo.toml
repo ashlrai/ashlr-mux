@@ -8,5 +8,6 @@ license.workspace = true
 path = "src/lib.rs"
 
 [dependencies]
+cmux-process = { path = "../cmux-process" }
 thiserror.workspace = true
 uuid.workspace = true

@@ -24,8 +24,9 @@ mod env_policy;
 mod version;
 
 pub use env_policy::{
-    claude_config_preferred_path, sanitized_node_options, sanitized_value, selected_environment,
-    ClaudeConfigContext, HERMES_AGENT_ENVIRONMENT_KEYS, SAFE_ENVIRONMENT_KEYS,
+    claude_config_preferred_path, launch_environment, sanitized_node_options, sanitized_value,
+    selected_environment, ClaudeConfigContext, ESSENTIAL_WINDOWS_ENV_KEYS,
+    HERMES_AGENT_ENVIRONMENT_KEYS, SAFE_ENVIRONMENT_KEYS,
 };
 pub use version::{
     opencode_version_supports_fork, SemanticVersion, MINIMUM_OPENCODE_FORK_VERSION,
@@ -114,6 +115,19 @@ impl AgentSessionLaunchPlan {
         working_directory: Option<&str>,
     ) -> BTreeMap<String, String> {
         let mut launch_environment = self.environment.clone();
+        self.apply_working_directory_overrides(&mut launch_environment, working_directory);
+        launch_environment
+    }
+
+    /// Inject the OpenCode loopback credentials (when missing) and the `PWD`
+    /// working-directory override into an already-assembled environment map.
+    /// Shared by [`environment_with_working_directory`](Self::environment_with_working_directory)
+    /// and [`to_spawn_spec`](Self::to_spawn_spec) so both apply identical overrides.
+    fn apply_working_directory_overrides(
+        &self,
+        launch_environment: &mut BTreeMap<String, String>,
+        working_directory: Option<&str>,
+    ) {
         if self.provider == AgentSessionProviderId::OpenCode
             && launch_environment
                 .get("OPENCODE_SERVER_PASSWORD")
@@ -142,8 +156,40 @@ impl AgentSessionLaunchPlan {
                     .replace('\\', "/"),
             );
         }
+    }
 
-        launch_environment
+    /// Convert this plan into a [`cmux_process::SpawnSpec`] ready for the Job-Object
+    /// supervisor. This is the resolve→env→spawn integration seam.
+    ///
+    /// The launch environment is the **curated** set, not the resolver's full
+    /// inherited block:
+    /// * agent-config keys via the [`selected_environment`] allowlist (secrets
+    ///   like `AMP_API_KEY` stay excluded — rule 7),
+    /// * plus the Windows essential-system-var passthrough ([`ESSENTIAL_WINDOWS_ENV_KEYS`],
+    ///   matched case-insensitively) so the child actually runs — unlike macOS,
+    ///   where replacing the env with only the allowlist is fine, a Windows child
+    ///   needs `SystemRoot`/`TEMP`/`PATHEXT`/… or it fails to start,
+    /// * plus the rewritten `PATH` (carried as an essential key) and the OpenCode
+    ///   credentials / `PWD` working-directory overrides.
+    pub fn to_spawn_spec(
+        &self,
+        working_directory: Option<&str>,
+        kind: Option<&str>,
+        claude_context: &ClaudeConfigContext,
+    ) -> cmux_process::SpawnSpec {
+        let mut environment = env_policy::launch_environment(&self.environment, kind, claude_context);
+        self.apply_working_directory_overrides(&mut environment, working_directory);
+
+        let mut spec = cmux_process::SpawnSpec::new(self.executable_path.clone())
+            .args(self.arguments.clone())
+            .env(environment);
+        if let Some(directory) = working_directory
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            spec = spec.current_dir(directory);
+        }
+        spec
     }
 }
 
@@ -310,6 +356,11 @@ impl AgentExecutableResolver {
         search_directories: &[PathBuf],
     ) -> AgentSessionLaunchPlan {
         let mut environment = self.environment.clone();
+        // Windows env var names are case-insensitive; the inherited block often
+        // spells it `Path`. Drop every case-variant before inserting the single
+        // canonical rewritten `PATH`, so the child never sees two PATH-like vars
+        // (which would resolve ambiguously).
+        environment.retain(|key, _| !key.eq_ignore_ascii_case("PATH"));
         environment.insert(
             "PATH".into(),
             self.runtime_search_path(search_directories, &executable_path),
@@ -701,5 +752,56 @@ mod tests {
             resolver.path_extensions(),
             vec![".ps1", ".exe", ".cmd"]
         );
+    }
+
+    #[test]
+    fn to_spawn_spec_curates_env_sets_program_args_cwd() {
+        let plan = AgentSessionLaunchPlan {
+            provider: AgentSessionProviderId::Claude,
+            executable_path: PathBuf::from("C:\\rt\\claude.cmd"),
+            arguments: AgentSessionProviderId::Claude.launch_arguments(),
+            environment: BTreeMap::from([
+                ("PATH".into(), "C:\\rt;C:\\Windows\\System32".into()),
+                ("SystemRoot".into(), "C:\\Windows".into()),
+                ("AMP_API_KEY".into(), "secret".into()),
+                ("ANTHROPIC_MODEL".into(), "claude-opus-4-8".into()),
+            ]),
+        };
+
+        let spec = plan.to_spawn_spec(Some("C:\\work\\proj"), None, &ClaudeConfigContext::inert());
+
+        assert_eq!(spec.program, PathBuf::from("C:\\rt\\claude.cmd"));
+        assert_eq!(spec.args, AgentSessionProviderId::Claude.launch_arguments());
+        assert_eq!(spec.current_dir, Some(PathBuf::from("C:\\work\\proj")));
+        // Curated env: rewritten PATH + system var + allowlisted config kept.
+        assert_eq!(spec.env.get("PATH").map(String::as_str), Some("C:\\rt;C:\\Windows\\System32"));
+        assert_eq!(spec.env.get("SystemRoot").map(String::as_str), Some("C:\\Windows"));
+        assert_eq!(spec.env.get("ANTHROPIC_MODEL").map(String::as_str), Some("claude-opus-4-8"));
+        // Secret excluded; PWD override applied (forward-slash normalized).
+        assert!(!spec.env.contains_key("AMP_API_KEY"), "secret must not cross into launch env");
+        assert_eq!(spec.env.get("PWD").map(String::as_str), Some("C:/work/proj"));
+    }
+
+    #[test]
+    fn to_spawn_spec_mints_opencode_credentials() {
+        let plan = AgentSessionLaunchPlan {
+            provider: AgentSessionProviderId::OpenCode,
+            executable_path: PathBuf::from("C:\\rt\\opencode.exe"),
+            arguments: AgentSessionProviderId::OpenCode.launch_arguments(),
+            environment: BTreeMap::from([("PATH".into(), "C:\\rt".into())]),
+        };
+
+        let spec = plan.to_spawn_spec(None, None, &ClaudeConfigContext::inert());
+
+        assert_eq!(
+            spec.env.get("OPENCODE_SERVER_USERNAME").map(String::as_str),
+            Some("opencode")
+        );
+        assert!(spec
+            .env
+            .get("OPENCODE_SERVER_PASSWORD")
+            .is_some_and(|value| value.len() >= 32));
+        assert_eq!(spec.current_dir, None);
+        assert!(!spec.env.contains_key("PWD"), "no working dir → no PWD");
     }
 }

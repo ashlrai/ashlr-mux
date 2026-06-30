@@ -81,6 +81,55 @@ pub const SAFE_ENVIRONMENT_KEYS: &[&str] = &[
     "USE_BUILTIN_RIPGREP",
 ];
 
+/// Windows system environment variables forwarded to every agent so the child
+/// process can actually run.
+///
+/// The macOS policy forwards *only* the agent-config allowlist
+/// ([`SAFE_ENVIRONMENT_KEYS`]) and replaces the process env wholesale — fine for
+/// a macOS GUI child. A Windows child, however, needs the base OS variables
+/// (`SystemRoot`, `TEMP`, `PATHEXT`, the processor/program-files roots, the user
+/// profile dirs) or it fails to start. These are *not* secrets, so forwarding
+/// them does not violate rule 7; arbitrary user/secret variables outside this
+/// set and the allowlist are still dropped. `PATH` is included so the resolver's
+/// rewritten search path (carried in the launch plan) reaches the child.
+///
+/// Matched case-insensitively against the source env, since Windows var names
+/// are case-insensitive (the inherited block commonly spells `Path`, `TEMP`,
+/// `SystemRoot`).
+pub const ESSENTIAL_WINDOWS_ENV_KEYS: &[&str] = &[
+    "ALLUSERSPROFILE",
+    "APPDATA",
+    "CommonProgramFiles",
+    "CommonProgramFiles(x86)",
+    "CommonProgramW6432",
+    "COMPUTERNAME",
+    "ComSpec",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "LOCALAPPDATA",
+    "NUMBER_OF_PROCESSORS",
+    "OS",
+    "PATH",
+    "PATHEXT",
+    "PROCESSOR_ARCHITECTURE",
+    "PROCESSOR_IDENTIFIER",
+    "PROCESSOR_LEVEL",
+    "PROCESSOR_REVISION",
+    "ProgramData",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "ProgramW6432",
+    "PUBLIC",
+    "SystemDrive",
+    "SystemRoot",
+    "TEMP",
+    "TMP",
+    "USERDOMAIN",
+    "USERNAME",
+    "USERPROFILE",
+    "windir",
+];
+
 /// Keys only forwarded when `kind == "hermes-agent"`.
 ///
 /// Mirrors `AgentLaunchEnvironmentPolicy.hermesAgentEnvironmentKeys`
@@ -239,6 +288,42 @@ pub fn selected_environment(
     }
 
     result
+}
+
+/// Assemble the full launch environment for a Windows agent: the curated
+/// agent-config allowlist ([`selected_environment`]) plus the Windows
+/// essential-system-var passthrough ([`ESSENTIAL_WINDOWS_ENV_KEYS`], matched
+/// case-insensitively against `source_env`).
+///
+/// Allowlisted values win over essential ones if a key appears in both (it
+/// won't in practice — the two sets are disjoint). The essential var is copied
+/// under its *actual* casing from `source_env` so the child sees the exact
+/// Windows spelling (`Path`, `SystemRoot`, …). Working-directory / OpenCode
+/// credential overrides are applied separately by the launch-plan conversion.
+pub fn launch_environment(
+    source_env: &BTreeMap<String, String>,
+    kind: Option<&str>,
+    claude_ctx: &ClaudeConfigContext,
+) -> BTreeMap<String, String> {
+    let mut environment = selected_environment(source_env, kind, claude_ctx);
+    for &essential in ESSENTIAL_WINDOWS_ENV_KEYS {
+        if let Some((actual_key, value)) = get_ignore_ascii_case(source_env, essential) {
+            environment
+                .entry(actual_key.clone())
+                .or_insert_with(|| value.clone());
+        }
+    }
+    environment
+}
+
+/// Case-insensitive (ASCII) lookup into an environment map, returning the actual
+/// stored key/value so the caller can preserve the source casing.
+fn get_ignore_ascii_case<'a>(
+    env: &'a BTreeMap<String, String>,
+    key: &str,
+) -> Option<(&'a String, &'a String)> {
+    env.iter()
+        .find(|(candidate, _)| candidate.eq_ignore_ascii_case(key))
 }
 
 /// Port of `AgentLaunchEnvironmentPolicy.sanitizedValue(key:value:)`.
@@ -530,6 +615,48 @@ mod tests {
         };
         let path = claude_config_preferred_path("/home/u/.config/./claude/", &ctx);
         assert_eq!(path, "/home/u/.config/claude");
+    }
+
+    #[test]
+    fn launch_environment_keeps_system_vars_and_allowlist_drops_secrets() {
+        let source = env(&[
+            ("AMP_API_KEY", "secret"),
+            ("OPENAI_API_KEY", "secret"),
+            ("RANDOM_USER_VAR", "should-not-cross"),
+            ("ANTHROPIC_MODEL", "claude-opus-4-8"),
+            ("PATH", "C:\\rt\\bin;C:\\Windows\\System32"),
+            ("SystemRoot", "C:\\Windows"),
+            ("TEMP", "C:\\Users\\u\\AppData\\Local\\Temp"),
+            ("PATHEXT", ".COM;.EXE;.CMD"),
+        ]);
+        let launch = launch_environment(&source, None, &ClaudeConfigContext::inert());
+
+        // Allowlisted agent config kept.
+        assert_eq!(launch.get("ANTHROPIC_MODEL").map(String::as_str), Some("claude-opus-4-8"));
+        // Essential Windows system vars kept (incl. rewritten PATH).
+        assert_eq!(launch.get("PATH").map(String::as_str), Some("C:\\rt\\bin;C:\\Windows\\System32"));
+        assert_eq!(launch.get("SystemRoot").map(String::as_str), Some("C:\\Windows"));
+        assert_eq!(launch.get("TEMP").map(String::as_str), Some("C:\\Users\\u\\AppData\\Local\\Temp"));
+        assert_eq!(launch.get("PATHEXT").map(String::as_str), Some(".COM;.EXE;.CMD"));
+        // Secrets and arbitrary user vars never cross.
+        assert!(!launch.contains_key("AMP_API_KEY"));
+        assert!(!launch.contains_key("OPENAI_API_KEY"));
+        assert!(!launch.contains_key("RANDOM_USER_VAR"));
+    }
+
+    #[test]
+    fn launch_environment_matches_system_vars_case_insensitively() {
+        // Inherited Windows blocks commonly spell these `Path` / `Systemroot`;
+        // they must still be forwarded, under their actual source casing.
+        let source = env(&[
+            ("Path", "C:\\Windows\\System32"),
+            ("Systemroot", "C:\\Windows"),
+            ("tEmP", "C:\\Temp"),
+        ]);
+        let launch = launch_environment(&source, None, &ClaudeConfigContext::inert());
+        assert_eq!(launch.get("Path").map(String::as_str), Some("C:\\Windows\\System32"));
+        assert_eq!(launch.get("Systemroot").map(String::as_str), Some("C:\\Windows"));
+        assert_eq!(launch.get("tEmP").map(String::as_str), Some("C:\\Temp"));
     }
 
     #[test]

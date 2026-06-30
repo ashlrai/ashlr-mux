@@ -362,6 +362,7 @@ dependencies = [
 name = "cmux-agent"
 version = "0.1.0"
 dependencies = [
+ "cmux-process",
  "thiserror 1.0.69",
  "uuid",
 ]
