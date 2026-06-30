@@ -6,6 +6,7 @@ members = [
   "crates/cmux-core",
   "crates/cmux-golden",
   "crates/cmux-ipc",
+  "crates/cmux-process",
   "crates/cmux-terminal",
 ]
 resolver = "2"

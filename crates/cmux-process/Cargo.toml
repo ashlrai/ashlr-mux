@@ -1,0 +1,29 @@
+[package]
+name = "cmux-process"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# M3 WS1: the process supervisor that owns the keystroke-to-agent process
+# boundary on Windows. A per-session Win32 Job Object is the unit of lifecycle:
+# KILL_ON_JOB_CLOSE + TerminateJobObject give the only reliable analogue of
+# POSIX process-group kill + parent-death (Windows has neither). The pure
+# cancel-before-launch state machine (`ProcessTerminationGate`) and the
+# cross-platform contract types build on every OS; the Job-Object supervisor is
+# `#[cfg(windows)]` with a stub elsewhere so macOS/Linux CI still compiles.
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+thiserror.workspace = true
+uuid.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_System_Threading",
+  "Win32_System_JobObjects",
+  "Win32_System_Console",
+  "Win32_System_Diagnostics_ToolHelp",
+] }
