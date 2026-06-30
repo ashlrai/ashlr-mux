@@ -335,14 +335,65 @@ impl AgentExecutableResolver {
         Some(normalize_path(candidate))
     }
 
+    /// The PATHEXT-driven candidate filenames for `executable_name` in
+    /// `directory`, in resolution order. Mirrors Windows command resolution:
+    /// a name that already carries an extension is tried verbatim first, then
+    /// each `%PATHEXT%` entry is appended in order (the milestone default
+    /// `.COM;.EXE;.BAT;.CMD;.PS1` when the env var is absent), and finally the
+    /// bare extensionless name as a fallback for runtime managers that ship
+    /// raw scripts. Duplicates are removed while preserving first-seen order.
     fn candidate_paths(&self, directory: &Path, executable_name: &str) -> Vec<PathBuf> {
         let mut paths = Vec::new();
-        let raw = directory.join(executable_name);
-        paths.push(raw.clone());
-        for extension in [".exe", ".cmd", ".bat"] {
-            paths.push(directory.join(format!("{executable_name}{extension}")));
+        let mut seen = std::collections::BTreeSet::new();
+        let mut push = |path: PathBuf, paths: &mut Vec<PathBuf>| {
+            if seen.insert(path.clone()) {
+                paths.push(path);
+            }
+        };
+
+        let has_extension = Path::new(executable_name).extension().is_some();
+        if has_extension {
+            push(directory.join(executable_name), &mut paths);
+        }
+        for extension in self.path_extensions() {
+            push(
+                directory.join(format!("{executable_name}{extension}")),
+                &mut paths,
+            );
+        }
+        if !has_extension {
+            push(directory.join(executable_name), &mut paths);
         }
         paths
+    }
+
+    /// Parse `%PATHEXT%` into lowercased, dot-prefixed extensions in declared
+    /// order (deduped). Falls back to the milestone default set when the env
+    /// var is missing or blank. Lowercasing gives a stable canonical form;
+    /// Windows filename matching is case-insensitive regardless.
+    fn path_extensions(&self) -> Vec<String> {
+        let raw = self
+            .environment
+            .get("PATHEXT")
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD;.PS1".to_string());
+
+        let mut seen = std::collections::BTreeSet::new();
+        raw.split(';')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|extension| {
+                let lower = extension.to_ascii_lowercase();
+                if lower.starts_with('.') {
+                    lower
+                } else {
+                    format!(".{lower}")
+                }
+            })
+            .filter(|extension| seen.insert(extension.clone()))
+            .collect()
     }
 
     fn should_skip_search_directory(&self, directory: &Path) -> bool {
@@ -572,5 +623,79 @@ mod tests {
         assert!(AgentSessionProviderId::Codex.should_auto_start_session());
         assert!(AgentSessionProviderId::OpenCode.should_auto_start_session());
         assert!(!AgentSessionProviderId::Claude.should_auto_start_session());
+    }
+
+    #[test]
+    fn resolves_powershell_shim_via_default_pathext() {
+        // A provider shipped only as a .ps1 shim must resolve — .ps1 is in the
+        // milestone-default PATHEXT set but was missing from the old hardcoded
+        // [.exe, .cmd, .bat] list.
+        let root = temp_dir();
+        let bin = root.join("bin");
+        let executable = bin.join("opencode.ps1");
+        write_executable(&executable, "opencode");
+
+        let resolver = AgentExecutableResolver {
+            environment: BTreeMap::from([
+                ("PATH".into(), bin.to_string_lossy().to_string()),
+                ("USERPROFILE".into(), root.to_string_lossy().to_string()),
+            ]),
+            bundle_resource_path: Some(root.join("Resources")),
+            include_standard_search_directories: false,
+            ..Default::default()
+        };
+
+        let plan = resolver.resolve(AgentSessionProviderId::OpenCode).expect("plan");
+        assert_eq!(plan.executable_path, normalize_path(executable));
+    }
+
+    #[test]
+    fn pathext_order_decides_cmd_shadowing_exe() {
+        // With a custom PATHEXT putting .CMD before .EXE, the .cmd shadows the
+        // .exe in the same directory — proving resolution follows PATHEXT order,
+        // not a hardcoded list (WS5 ".cmd shadowing .exe" case).
+        let root = temp_dir();
+        let bin = root.join("bin");
+        write_executable(&bin.join("codex.exe"), "exe");
+        write_executable(&bin.join("codex.cmd"), "cmd");
+
+        let resolver = AgentExecutableResolver {
+            environment: BTreeMap::from([
+                ("PATH".into(), bin.to_string_lossy().to_string()),
+                ("PATHEXT".into(), ".CMD;.EXE;.BAT".into()),
+                ("USERPROFILE".into(), root.to_string_lossy().to_string()),
+            ]),
+            bundle_resource_path: Some(root.join("Resources")),
+            include_standard_search_directories: false,
+            ..Default::default()
+        };
+
+        let plan = resolver.resolve(AgentSessionProviderId::Codex).expect("plan");
+        assert_eq!(plan.executable_path, normalize_path(bin.join("codex.cmd")));
+    }
+
+    #[test]
+    fn path_extensions_default_includes_ps1_and_com_in_order() {
+        let resolver = AgentExecutableResolver {
+            environment: BTreeMap::new(),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolver.path_extensions(),
+            vec![".com", ".exe", ".bat", ".cmd", ".ps1"]
+        );
+    }
+
+    #[test]
+    fn path_extensions_honors_env_order_and_dedupes() {
+        let resolver = AgentExecutableResolver {
+            environment: BTreeMap::from([("PATHEXT".into(), ".PS1; EXE ;.ps1;.CMD".into())]),
+            ..Default::default()
+        };
+        // Lowercased, dot-prefixed, declared order, first-seen dedupe.
+        assert_eq!(
+            resolver.path_extensions(),
+            vec![".ps1", ".exe", ".cmd"]
+        );
     }
 }
