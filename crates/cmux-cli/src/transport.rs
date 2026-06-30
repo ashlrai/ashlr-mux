@@ -11,10 +11,12 @@
 
 use std::time::Duration;
 
-use cmux_ipc::{authenticate_client, connect_pipe, read_frame, write_frame, MAX_RPC_FRAME_BYTES};
+use cmux_ipc::{
+    authenticate_client, build_v2_request, connect_pipe, interpret_v2_response, read_frame,
+    write_frame, MAX_RPC_FRAME_BYTES,
+};
 
 use crate::invocation::CliError;
-use crate::rpc::{build_rpc_request, interpret_rpc_response};
 
 /// How long to wait for the control pipe to accept a connection (covers the
 /// app's first-instance startup race).
@@ -41,7 +43,7 @@ pub async fn run_rpc(
             .map_err(|error| CliError::new(format!("socket authentication failed: {error}")))?;
     }
 
-    let request = build_rpc_request(method, params);
+    let request = build_v2_request(method, params);
     write_frame(&mut writer, &request)
         .await
         .map_err(|error| CliError::new(format!("failed to send request: {error}")))?;
@@ -52,7 +54,7 @@ pub async fn run_rpc(
         .ok_or_else(|| CliError::new("connection closed before a response"))?;
     let raw = String::from_utf8(frame)
         .map_err(|_| CliError::new("response was not valid UTF-8"))?;
-    interpret_rpc_response(&raw)
+    interpret_v2_response(&raw).map_err(|error| CliError::new(error.to_string()))
 }
 
 #[cfg(test)]

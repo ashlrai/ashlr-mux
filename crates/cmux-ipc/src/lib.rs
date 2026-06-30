@@ -25,7 +25,10 @@ mod named_pipe;
 pub mod server;
 
 pub use auth::{PasswordAuthGate, PasswordVerifier};
-pub use client::{authenticate_client, resolve_password, PasswordSources};
+pub use client::{
+    authenticate_client, build_v2_request, interpret_v2_response, resolve_password,
+    PasswordSources, V2ResponseError,
+};
 pub use control_call_result::ControlCallResult;
 pub use control_request::ControlRequest;
 pub use control_request_parse_error::ControlRequestParseError;

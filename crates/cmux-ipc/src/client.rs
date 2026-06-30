@@ -95,6 +95,87 @@ where
     Ok(())
 }
 
+/// The request id used by the v2 client. A single request is issued per
+/// connection, so a fixed id suffices — the server echoes it and nothing
+/// correlates on it.
+const V2_REQUEST_ID: i64 = 1;
+
+/// Build the one-line v2 request envelope (`{"id","method","params"}`) for
+/// `method` + `params`. `serde_json` emits compact single-line JSON with any
+/// embedded newlines escaped, so the result is a valid NDJSON frame body. This
+/// is the client counterpart to [`crate::ControlResponseEncoder`].
+pub fn build_v2_request(method: &str, params: &serde_json::Value) -> String {
+    serde_json::json!({
+        "id": V2_REQUEST_ID,
+        "method": method,
+        "params": params,
+    })
+    .to_string()
+}
+
+/// A v2 response that did not yield a result. `Display` is the exact
+/// human-facing message; a CLI wraps it in its own error type for an exit code.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum V2ResponseError {
+    /// A plain-text `ERROR:` reply, surfaced verbatim (e.g. from a server that
+    /// rejected before the JSON protocol started).
+    #[error("{0}")]
+    PlainText(String),
+    /// The reply was not parseable JSON, or not a JSON object.
+    #[error("Invalid v2 response: {0}")]
+    Invalid(String),
+    /// `{"ok":false}` carrying an `error` object: `<code>: <message>`.
+    #[error("{code}: {message}")]
+    Failed { code: String, message: String },
+    /// `{"ok":false}` with no usable `error` object.
+    #[error("v2 request failed")]
+    Unspecified,
+}
+
+/// Interpret a v2 response line into the result value, or a [`V2ResponseError`].
+///
+/// Mirrors the macOS CLI's `sendV2` tail: a plain-text `ERROR:` reply is
+/// surfaced verbatim; a non-object / unparseable reply is "Invalid v2
+/// response"; `{"ok":true}` yields its `result` (an empty object if absent);
+/// `{"ok":false}` with an `error` becomes `<code>: <message>`.
+///
+/// A non-object `result` is returned **as-is** rather than coerced to `{}` — the
+/// caller (e.g. the `rpc` passthrough) prints whatever the method returned (the
+/// Swift `[String: Any]` coercion is a type artifact, not intent).
+pub fn interpret_v2_response(raw: &str) -> Result<serde_json::Value, V2ResponseError> {
+    if raw.starts_with("ERROR:") {
+        return Err(V2ResponseError::PlainText(raw.to_owned()));
+    }
+
+    // An unparseable reply and a non-object reply mean the same thing here.
+    let invalid = || V2ResponseError::Invalid(raw.to_owned());
+    let response: serde_json::Value = serde_json::from_str(raw).map_err(|_| invalid())?;
+    let object = response.as_object().ok_or_else(invalid)?;
+
+    if object.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
+        return Ok(object
+            .get("result")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({})));
+    }
+
+    if let Some(error) = object.get("error").and_then(serde_json::Value::as_object) {
+        let code = error
+            .get("code")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("error")
+            .to_owned();
+        let message = error
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("Unknown v2 error")
+            .to_owned();
+        return Err(V2ResponseError::Failed { code, message });
+    }
+
+    Err(V2ResponseError::Unspecified)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,5 +305,76 @@ mod tests {
     async fn handshake_fails_on_invalid_password() {
         let error = run_handshake("ERROR: Invalid password").await.unwrap_err();
         assert!(error.to_string().contains("Invalid password"));
+    }
+
+    #[test]
+    fn v2_request_envelope_shape() {
+        let line = build_v2_request("surface.list", &serde_json::json!({"n": 2}));
+        let value: serde_json::Value = serde_json::from_str(&line).expect("json");
+        assert_eq!(value["id"], serde_json::json!(1));
+        assert_eq!(value["method"], serde_json::json!("surface.list"));
+        assert_eq!(value["params"], serde_json::json!({"n": 2}));
+        assert!(!line.contains('\n'));
+    }
+
+    #[test]
+    fn v2_ok_response_yields_result() {
+        let result = interpret_v2_response(r#"{"id":1,"ok":true,"result":{"pong":true}}"#).unwrap();
+        assert_eq!(result, serde_json::json!({"pong": true}));
+    }
+
+    #[test]
+    fn v2_ok_response_without_result_is_empty_object() {
+        assert_eq!(
+            interpret_v2_response(r#"{"ok":true}"#).unwrap(),
+            serde_json::json!({})
+        );
+    }
+
+    #[test]
+    fn v2_non_object_result_returned_as_is() {
+        // Deliberate divergence from Swift's [String: Any] coercion to {}.
+        assert_eq!(
+            interpret_v2_response(r#"{"ok":true,"result":[1,2]}"#).unwrap(),
+            serde_json::json!([1, 2])
+        );
+    }
+
+    #[test]
+    fn v2_error_response_formats_code_and_message() {
+        let error =
+            interpret_v2_response(r#"{"ok":false,"error":{"code":"auth_required","message":"need auth"}}"#)
+                .unwrap_err();
+        assert_eq!(error, V2ResponseError::Failed {
+            code: "auth_required".to_owned(),
+            message: "need auth".to_owned(),
+        });
+        assert_eq!(error.to_string(), "auth_required: need auth");
+    }
+
+    #[test]
+    fn v2_plain_text_error_is_surfaced_verbatim() {
+        let error = interpret_v2_response("ERROR: Access denied").unwrap_err();
+        assert_eq!(error.to_string(), "ERROR: Access denied");
+    }
+
+    #[test]
+    fn v2_unparseable_and_non_object_are_invalid() {
+        assert_eq!(
+            interpret_v2_response("not json").unwrap_err().to_string(),
+            "Invalid v2 response: not json"
+        );
+        assert_eq!(
+            interpret_v2_response("[1,2]").unwrap_err().to_string(),
+            "Invalid v2 response: [1,2]"
+        );
+    }
+
+    #[test]
+    fn v2_ok_false_without_error_is_unspecified() {
+        assert_eq!(
+            interpret_v2_response(r#"{"ok":false}"#).unwrap_err(),
+            V2ResponseError::Unspecified
+        );
     }
 }
