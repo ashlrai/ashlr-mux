@@ -12,6 +12,7 @@
 //! `Packages/Shared/CmuxAgentChat/Sources/CmuxAgentChat/Parsing/OSC133CommandParser.swift`
 
 pub mod conpty;
+pub mod engine;
 pub mod geometry;
 pub mod theme;
 pub mod transcript;
