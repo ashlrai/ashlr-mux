@@ -11,4 +11,20 @@ path = "src/lib.rs"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { version = "1", features = ["io-util", "rt", "macros"] }
+# `net` brings in the Windows named-pipe transport (tokio::net::windows::named_pipe).
+tokio = { version = "1", features = ["io-util", "net", "rt", "macros"] }
+
+# Windows named-pipe control server: bind the pipe with an explicit current-user
+# DACL (token SID → SDDL → SECURITY_ATTRIBUTES) instead of the default
+# named-pipe security descriptor, which grants broader access than the
+# password-gated control socket should expose.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["io-util", "net", "rt", "rt-multi-thread", "macros", "time"] }

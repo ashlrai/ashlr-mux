@@ -19,6 +19,8 @@ mod control_request_parser;
 mod control_response_encoder;
 mod framing;
 mod json_value;
+#[cfg(windows)]
+mod named_pipe;
 pub mod server;
 
 pub use auth::{PasswordAuthGate, PasswordVerifier};
@@ -29,6 +31,8 @@ pub use control_request_parser::ControlRequestParser;
 pub use control_response_encoder::ControlResponseEncoder;
 pub use framing::{append_line, split_lines};
 pub use json_value::JsonValue;
+#[cfg(windows)]
+pub use named_pipe::{control_pipe_path, serve_named_pipe, serve_named_pipe_authenticated};
 pub use server::{
     read_frame, serve_connection, serve_connection_authenticated, write_frame,
     ControlRequestHandler, MAX_RPC_FRAME_BYTES,
