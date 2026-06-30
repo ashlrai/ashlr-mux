@@ -5,7 +5,9 @@
 //! workspace still compiles and the contract types stay exercised on macOS/Linux
 //! CI. The pure `ProcessTerminationGate` is tested on all platforms regardless.
 
-use crate::{ProcessError, ProcessSupervisor, SessionHandle, SessionId, SpawnSpec, TerminateMode};
+use crate::{
+    AgentIo, ProcessError, ProcessSupervisor, SessionHandle, SessionId, SpawnSpec, TerminateMode,
+};
 
 /// Stub supervisor for non-Windows builds.
 #[derive(Debug, Default)]
@@ -20,6 +22,13 @@ impl JobObjectSupervisor {
 
 impl ProcessSupervisor for JobObjectSupervisor {
     fn spawn(&self, _spec: SpawnSpec) -> Result<SessionHandle, ProcessError> {
+        Err(ProcessError::Unsupported)
+    }
+
+    fn spawn_captured(
+        &self,
+        _spec: SpawnSpec,
+    ) -> Result<(SessionHandle, AgentIo), ProcessError> {
         Err(ProcessError::Unsupported)
     }
 

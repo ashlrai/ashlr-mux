@@ -17,13 +17,18 @@
 use std::{
     collections::{BTreeMap, HashMap},
     ffi::c_void,
-    sync::Mutex,
+    fs::File,
+    io::Read,
+    os::windows::io::FromRawHandle,
+    sync::{mpsc, Mutex},
+    thread,
 };
 
 use windows::{
     core::{PCWSTR, PWSTR},
     Win32::{
-        Foundation::{CloseHandle, HANDLE},
+        Foundation::{CloseHandle, SetHandleInformation, HANDLE, HANDLE_FLAGS, HANDLE_FLAG_INHERIT},
+        Security::SECURITY_ATTRIBUTES,
         System::{
             Console::{GenerateConsoleCtrlEvent, CTRL_BREAK_EVENT},
             JobObjects::{
@@ -33,16 +38,20 @@ use windows::{
                 JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
                 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
             },
+            Pipes::CreatePipe,
             Threading::{
                 CreateProcessW, ResumeThread, WaitForSingleObject, CREATE_NEW_PROCESS_GROUP,
                 CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
-                PROCESS_INFORMATION, STARTUPINFOW,
+                PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOW,
             },
         },
     },
 };
 
-use crate::{ProcessError, ProcessSupervisor, SessionHandle, SessionId, SpawnSpec, TerminateMode};
+use crate::{
+    transport::LineFramer, AgentIo, AgentOutputChunk, AgentStream, ProcessError, ProcessSupervisor,
+    SessionHandle, SessionId, SpawnSpec, TerminateMode,
+};
 
 /// Grace window (ms) before a `Graceful` terminate escalates to a forced
 /// `TerminateJobObject`. Mirrors the macOS two-stage `terminate()`→`SIGKILL`
@@ -97,27 +106,35 @@ impl JobObjectSupervisor {
         }
         Ok(accounting.ActiveProcesses)
     }
-}
 
-impl ProcessSupervisor for JobObjectSupervisor {
-    fn spawn(&self, spec: SpawnSpec) -> Result<SessionHandle, ProcessError> {
-        let id = SessionId::new();
-
-        // 1. Create the per-session NAMED job and arm kill-on-close (unless this
-        //    is a survive-disconnect daemon session). The name is derived from
-        //    the session id so the orphan sweep can reopen it after a crash.
+    /// Shared spawn core: create the per-session NAMED job (armed with
+    /// kill-on-close unless `survive_disconnect`), launch the child SUSPENDED
+    /// with the caller's `startup_info`, `AssignProcessToJobObject` BEFORE
+    /// resuming (closing the assign-before-spawn race), then resume, record the
+    /// session, and return its handle. `inherit_handles` is `true` only for the
+    /// captured-stdio path (so the child inherits the pipe ends).
+    ///
+    /// # Safety
+    /// `startup_info` must be a valid `STARTUPINFOW`; any handles it references
+    /// (captured path) must outlive this call.
+    unsafe fn launch_and_confine(
+        &self,
+        id: SessionId,
+        spec: &SpawnSpec,
+        startup_info: STARTUPINFOW,
+        inherit_handles: bool,
+    ) -> Result<SessionHandle, ProcessError> {
         let job_name = to_wide(&crate::job_object_name(id));
-        let job = unsafe { CreateJobObjectW(None, PCWSTR(job_name.as_ptr())) }
-            .map_err(|_| os_error("CreateJobObjectW"))?;
+        let job =
+            CreateJobObjectW(None, PCWSTR(job_name.as_ptr())).map_err(|_| os_error("CreateJobObjectW"))?;
         if !spec.survive_disconnect {
             if let Err(error) = arm_kill_on_job_close(job) {
-                unsafe { close(job) };
+                close(job);
                 return Err(error);
             }
         }
 
-        // 2. Spawn the child SUSPENDED so it cannot fork before we confine it.
-        let mut command_line = build_command_line(&spec);
+        let mut command_line = build_command_line(spec);
         let program_wide = to_wide(&spec.program.to_string_lossy());
         let current_dir_wide = spec
             .current_dir
@@ -125,8 +142,7 @@ impl ProcessSupervisor for JobObjectSupervisor {
             .map(|dir| to_wide(&dir.to_string_lossy()));
         let mut env_block = environment_block(&spec.env);
 
-        let mut creation_flags =
-            CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW;
+        let mut creation_flags = CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW;
         let environment_ptr = match env_block.as_mut() {
             Some(block) => {
                 creation_flags |= CREATE_UNICODE_ENVIRONMENT;
@@ -135,66 +151,49 @@ impl ProcessSupervisor for JobObjectSupervisor {
             None => None,
         };
 
-        let startup_info = STARTUPINFOW {
-            cb: std::mem::size_of::<STARTUPINFOW>() as u32,
-            ..Default::default()
-        };
         let mut process_info = PROCESS_INFORMATION::default();
-
-        let spawn_result = unsafe {
-            CreateProcessW(
-                PCWSTR(program_wide.as_ptr()),
-                Some(PWSTR(command_line.as_mut_ptr())),
-                None,
-                None,
-                false,
-                creation_flags,
-                environment_ptr,
-                current_dir_wide
-                    .as_ref()
-                    .map_or(PCWSTR::null(), |dir| PCWSTR(dir.as_ptr())),
-                &startup_info,
-                &mut process_info,
-            )
-        };
+        let spawn_result = CreateProcessW(
+            PCWSTR(program_wide.as_ptr()),
+            Some(PWSTR(command_line.as_mut_ptr())),
+            None,
+            None,
+            inherit_handles,
+            creation_flags,
+            environment_ptr,
+            current_dir_wide
+                .as_ref()
+                .map_or(PCWSTR::null(), |dir| PCWSTR(dir.as_ptr())),
+            &startup_info,
+            &mut process_info,
+        );
         if spawn_result.is_err() {
-            unsafe { close(job) };
+            close(job);
             return Err(ProcessError::Spawn {
                 program: spec.program.to_string_lossy().into_owned(),
                 source: std::io::Error::last_os_error(),
             });
         }
 
-        // 3. Confine BEFORE resuming, then resume.
-        let assign = unsafe { AssignProcessToJobObject(job, process_info.hProcess) };
-        if assign.is_err() {
-            // The child is suspended and unconfined; kill it directly and bail.
+        // Confine BEFORE resuming.
+        if AssignProcessToJobObject(job, process_info.hProcess).is_err() {
             let error = os_error("AssignProcessToJobObject");
-            unsafe {
-                let _ = TerminateJobObject(job, 1);
-                terminate_loose_process(process_info.hProcess);
-                close(process_info.hThread);
-                close(process_info.hProcess);
-                close(job);
-            }
+            let _ = TerminateJobObject(job, 1);
+            terminate_loose_process(process_info.hProcess);
+            close(process_info.hThread);
+            close(process_info.hProcess);
+            close(job);
             return Err(error);
         }
 
-        let resume = unsafe { ResumeThread(process_info.hThread) };
-        // ResumeThread returns u32::MAX (-1) on failure.
-        if resume == u32::MAX {
+        if ResumeThread(process_info.hThread) == u32::MAX {
             let error = os_error("ResumeThread");
-            unsafe {
-                let _ = TerminateJobObject(job, 1);
-                close(process_info.hThread);
-                close(process_info.hProcess);
-                close(job);
-            }
+            let _ = TerminateJobObject(job, 1);
+            close(process_info.hThread);
+            close(process_info.hProcess);
+            close(job);
             return Err(error);
         }
-
-        // The thread handle is no longer needed once the process runs.
-        unsafe { close(process_info.hThread) };
+        close(process_info.hThread);
 
         let root_pid = process_info.dwProcessId;
         self.sessions.lock().expect("sessions mutex poisoned").insert(
@@ -206,8 +205,79 @@ impl ProcessSupervisor for JobObjectSupervisor {
                 survive_disconnect: spec.survive_disconnect,
             },
         );
-
         Ok(SessionHandle { id, root_pid })
+    }
+}
+
+impl ProcessSupervisor for JobObjectSupervisor {
+    fn spawn(&self, spec: SpawnSpec) -> Result<SessionHandle, ProcessError> {
+        let id = SessionId::new();
+        let startup_info = STARTUPINFOW {
+            cb: std::mem::size_of::<STARTUPINFOW>() as u32,
+            ..Default::default()
+        };
+        // No stdio redirection → inherit handles need not be inheritable.
+        unsafe { self.launch_and_confine(id, &spec, startup_info, false) }
+    }
+
+    fn spawn_captured(
+        &self,
+        spec: SpawnSpec,
+    ) -> Result<(SessionHandle, AgentIo), ProcessError> {
+        let id = SessionId::new();
+        unsafe {
+            // Three pipes; the child gets the inheritable ends, the parent keeps
+            // the others (made NON-inheritable so the child can't hold a copy
+            // that would prevent EOF).
+            let (stdout_read, stdout_write) = create_pipe()?;
+            let (stderr_read, stderr_write) = create_pipe()?;
+            let (stdin_read, stdin_write) = create_pipe()?;
+            let parent_ends = [stdout_read, stderr_read, stdin_write];
+            let child_ends = [stdout_write, stderr_write, stdin_read];
+            for &parent_end in &parent_ends {
+                if let Err(error) = set_no_inherit(parent_end) {
+                    for &h in parent_ends.iter().chain(child_ends.iter()) {
+                        close(h);
+                    }
+                    return Err(error);
+                }
+            }
+
+            let startup_info = STARTUPINFOW {
+                cb: std::mem::size_of::<STARTUPINFOW>() as u32,
+                dwFlags: STARTF_USESTDHANDLES,
+                hStdInput: stdin_read,
+                hStdOutput: stdout_write,
+                hStdError: stderr_write,
+                ..Default::default()
+            };
+
+            let handle = match self.launch_and_confine(id, &spec, startup_info, true) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    for &h in parent_ends.iter().chain(child_ends.iter()) {
+                        close(h);
+                    }
+                    return Err(error);
+                }
+            };
+
+            // The child now owns its inherited copies; close the parent's copies
+            // of the child ends so EOF propagates once the child exits.
+            for &h in &child_ends {
+                close(h);
+            }
+
+            let stdout_file = File::from_raw_handle(stdout_read.0 as _);
+            let stderr_file = File::from_raw_handle(stderr_read.0 as _);
+            let stdin_file = File::from_raw_handle(stdin_write.0 as _);
+
+            let (sender, receiver) = mpsc::channel();
+            spawn_reader(stdout_file, AgentStream::Stdout, sender.clone());
+            spawn_reader(stderr_file, AgentStream::Stderr, sender);
+
+            Ok((handle, AgentIo::new(receiver, Box::new(stdin_file))))
+        }
     }
 
     fn terminate(&self, id: SessionId, mode: TerminateMode) -> Result<(), ProcessError> {
@@ -299,6 +369,54 @@ fn arm_kill_on_job_close(job: HANDLE) -> Result<(), ProcessError> {
 unsafe fn terminate_loose_process(process: HANDLE) {
     use windows::Win32::System::Threading::TerminateProcess;
     let _ = TerminateProcess(process, 1);
+}
+
+/// Create an anonymous pipe whose handles are inheritable; returns
+/// `(read_end, write_end)`. The caller marks the parent-retained end
+/// non-inheritable via [`set_no_inherit`].
+unsafe fn create_pipe() -> Result<(HANDLE, HANDLE), ProcessError> {
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        bInheritHandle: true.into(),
+        ..Default::default()
+    };
+    let mut read = HANDLE::default();
+    let mut write = HANDLE::default();
+    CreatePipe(&mut read, &mut write, Some(&attributes), 0).map_err(|_| os_error("CreatePipe"))?;
+    Ok((read, write))
+}
+
+/// Clear the inherit flag on `handle` so a spawned child does not receive a copy
+/// (required for the parent-retained pipe ends, else EOF never arrives).
+unsafe fn set_no_inherit(handle: HANDLE) -> Result<(), ProcessError> {
+    SetHandleInformation(handle, HANDLE_FLAG_INHERIT.0, HANDLE_FLAGS(0))
+        .map_err(|_| os_error("SetHandleInformation"))
+}
+
+/// Spawn a thread that drains `file` through a [`LineFramer`], sending each
+/// completed frame as an [`AgentOutputChunk`] tagged with `stream`. The thread
+/// exits at EOF (or read error), after flushing any trailing partial line.
+fn spawn_reader(file: File, stream: AgentStream, sender: mpsc::Sender<AgentOutputChunk>) {
+    thread::spawn(move || {
+        let mut file = file;
+        let mut framer = LineFramer::new();
+        let mut buffer = [0u8; 8192];
+        loop {
+            match file.read(&mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(read) => {
+                    for frame in framer.push(&buffer[..read]) {
+                        if sender.send(AgentOutputChunk { stream, frame }).is_err() {
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(frame) = framer.flush() {
+            let _ = sender.send(AgentOutputChunk { stream, frame });
+        }
+    });
 }
 
 /// Encode a `&str` as a null-terminated UTF-16 buffer.
@@ -426,5 +544,40 @@ mod tests {
         let block = environment_block(&env).expect("block");
         // "A=1\0\0"
         assert_eq!(block, vec![65, 61, 49, 0, 0]);
+    }
+
+    /// End-to-end: spawn a child whose stdout emits two lines and assert both
+    /// arrive as tagged stdout frames, with the channel closing at EOF. Proves
+    /// the pipe redirection + reader-thread + LineFramer wiring. Lives in the lib
+    /// binary (Application Control reliably allows it; standalone test exes get
+    /// os error 4551 — see ledger.rs sweep test).
+    #[test]
+    fn spawn_captured_streams_tagged_stdout_frames() {
+        use crate::{AgentStream, ProcessSupervisor, SpawnSpec};
+        use std::time::Duration;
+
+        let comspec =
+            std::env::var("ComSpec").unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".into());
+        let supervisor = JobObjectSupervisor::new();
+        let (handle, io) = supervisor
+            .spawn_captured(SpawnSpec::new(comspec).args(["/c", "echo line-1&echo line-2"]))
+            .expect("spawn_captured");
+        assert_ne!(handle.root_pid, 0);
+
+        let mut stdout_lines = Vec::new();
+        // Drain until the channel disconnects (both reader threads exit at EOF).
+        while let Ok(chunk) = io.chunks().recv_timeout(Duration::from_secs(8)) {
+            if chunk.stream == AgentStream::Stdout {
+                if let Ok(line) = chunk.frame {
+                    let line = line.trim().to_string();
+                    if !line.is_empty() {
+                        stdout_lines.push(line);
+                    }
+                }
+            }
+        }
+
+        assert!(stdout_lines.contains(&"line-1".to_string()), "got {stdout_lines:?}");
+        assert!(stdout_lines.contains(&"line-2".to_string()), "got {stdout_lines:?}");
     }
 }

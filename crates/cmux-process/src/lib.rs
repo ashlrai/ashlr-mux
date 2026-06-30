@@ -192,11 +192,79 @@ pub enum ProcessError {
     Unsupported,
 }
 
+/// Which child stream a captured frame came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentStream {
+    /// The child's standard output (the protocol stream for stdio agents).
+    Stdout,
+    /// The child's standard error (diagnostic/log lines).
+    Stderr,
+}
+
+/// One framed line of captured agent output, tagged by source stream. Mirrors
+/// the M3 `AgentOutputChunk` contract.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentOutputChunk {
+    /// Which stream produced this frame.
+    pub stream: AgentStream,
+    /// The strict-UTF-8 decoded line, or a framing error (rule 5).
+    pub frame: Result<String, FrameError>,
+}
+
+/// Captured stdio for a spawned agent: a tagged stream of strict-UTF-8 NDJSON
+/// frames from the child's stdout/stderr, plus a writer for its stdin.
+///
+/// Background reader threads drain each pipe through a [`LineFramer`], sending
+/// tagged [`AgentOutputChunk`]s here; the channel closes once both streams reach
+/// EOF and the threads finish. `stdin` writes go straight to the child's stdin
+/// pipe. Dropping `AgentIo` closes stdin (signalling EOF to the child).
+pub struct AgentIo {
+    chunks: std::sync::mpsc::Receiver<AgentOutputChunk>,
+    stdin: Box<dyn std::io::Write + Send>,
+}
+
+impl AgentIo {
+    /// Construct from the chunk receiver and a stdin writer (used by the
+    /// platform supervisor).
+    pub fn new(
+        chunks: std::sync::mpsc::Receiver<AgentOutputChunk>,
+        stdin: Box<dyn std::io::Write + Send>,
+    ) -> Self {
+        Self { chunks, stdin }
+    }
+
+    /// The receiver of tagged output chunks. A recv error (channel closed) means
+    /// both child streams hit EOF.
+    pub fn chunks(&self) -> &std::sync::mpsc::Receiver<AgentOutputChunk> {
+        &self.chunks
+    }
+
+    /// Write one NDJSON line (a `\n` is appended) to the child's stdin and flush.
+    pub fn write_line(&mut self, line: &str) -> std::io::Result<()> {
+        self.stdin.write_all(&transport::encode_line(line))?;
+        self.stdin.flush()
+    }
+}
+
+impl std::fmt::Debug for AgentIo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentIo").finish_non_exhaustive()
+    }
+}
+
 /// The supervisor contract (M3 §"Interfaces & contracts produced").
 pub trait ProcessSupervisor {
     /// Spawn `spec` into a fresh per-session Job Object and return its handle.
     /// The child is confined to the job *before* it can spawn grandchildren.
     fn spawn(&self, spec: SpawnSpec) -> Result<SessionHandle, ProcessError>;
+
+    /// Like [`spawn`](Self::spawn), but redirects the child's stdin/stdout
+    /// through pipes and returns an [`AgentIo`] that frames stdout as NDJSON and
+    /// writes stdin. The transport seam for the stdio agents (Claude/Codex).
+    fn spawn_captured(
+        &self,
+        spec: SpawnSpec,
+    ) -> Result<(SessionHandle, AgentIo), ProcessError>;
 
     /// Terminate the session's entire descendant tree with the given force.
     /// Idempotent: terminating an already-dead session is `Ok(())`.
