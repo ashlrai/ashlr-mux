@@ -75,6 +75,48 @@ impl Rect {
     pub fn max_y(&self) -> f64 {
         self.y + self.height
     }
+    /// Horizontal midpoint.
+    pub fn mid_x(&self) -> f64 {
+        self.x + self.width / 2.0
+    }
+    /// Vertical midpoint.
+    pub fn mid_y(&self) -> f64 {
+        self.y + self.height / 2.0
+    }
+
+    /// Whether all four components are finite.
+    pub fn is_finite(&self) -> bool {
+        self.x.is_finite() && self.y.is_finite() && self.width.is_finite() && self.height.is_finite()
+    }
+
+    /// A copy with non-negative width/height (origin adjusted), matching
+    /// `CGRect.standardized`.
+    pub fn standardized(&self) -> Rect {
+        let (x, width) = if self.width < 0.0 {
+            (self.x + self.width, -self.width)
+        } else {
+            (self.x, self.width)
+        };
+        let (y, height) = if self.height < 0.0 {
+            (self.y + self.height, -self.height)
+        } else {
+            (self.y, self.height)
+        };
+        Rect::new(x, y, width, height)
+    }
+
+    /// Whether the two rectangles overlap with positive area (matching
+    /// `CGRect.intersects`; edge-only contact is not an intersection).
+    pub fn intersects(&self, other: &Rect) -> bool {
+        let intersection = self.intersection(other);
+        intersection.width > 0.0 && intersection.height > 0.0
+    }
+
+    /// Area of the overlap with `other` (0 when disjoint).
+    pub fn intersection_area(&self, other: &Rect) -> f64 {
+        let intersection = self.intersection(other);
+        intersection.width.max(0.0) * intersection.height.max(0.0)
+    }
 
     /// The overlapping rectangle, or [`Rect::ZERO`] when the rectangles do not
     /// overlap — matching `CGRect.intersection` for the purposes here (a
