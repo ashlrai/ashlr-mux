@@ -10,7 +10,7 @@
 //! Bytes are decoded as UTF-8 by the VT parser (cross-cutting rule 5) — never
 //! as CP-437 — so box-drawing and emoji survive intact.
 
-use alacritty_terminal::event::VoidListener;
+use alacritty_terminal::event::{EventListener, VoidListener};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::{Config, Term};
@@ -48,16 +48,28 @@ impl Dimensions for GridSize {
 }
 
 /// The VT state machine + cell grid for one terminal surface.
-pub struct TerminalGrid {
-    term: Term<VoidListener>,
+///
+/// Generic over the `EventListener` so a byte-fed grid can use the no-op
+/// [`VoidListener`] (the default) while a live surface plugs in a listener that
+/// forwards terminal query responses back to the PTY.
+pub struct TerminalGrid<L: EventListener = VoidListener> {
+    term: Term<L>,
     parser: Processor,
     size: GridSize,
 }
 
-impl TerminalGrid {
-    /// Create an empty grid of `size`.
+impl TerminalGrid<VoidListener> {
+    /// Create an empty grid of `size` with no event sink.
     pub fn new(size: GridSize) -> Self {
-        let term = Term::new(Config::default(), &size, VoidListener);
+        Self::with_listener(size, VoidListener)
+    }
+}
+
+impl<L: EventListener> TerminalGrid<L> {
+    /// Create an empty grid of `size` whose `Term` reports events (query
+    /// responses, bell, title, child exit) to `listener`.
+    pub fn with_listener(size: GridSize, listener: L) -> Self {
+        let term = Term::new(Config::default(), &size, listener);
         Self {
             term,
             parser: Processor::new(),
