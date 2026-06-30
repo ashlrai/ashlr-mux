@@ -11,6 +11,7 @@
 //! Windows named-pipe transport) build on top of this and are added next.
 
 pub mod classify;
+pub mod dispatch;
 pub mod invocation;
 pub mod password;
 pub mod rpc;
@@ -19,6 +20,7 @@ pub mod socket;
 pub mod transport;
 
 pub use classify::{classify_command, ClassifyEnv, PreSocketAction};
+pub use dispatch::{plan, DispatchPlan};
 pub use invocation::{parse_global_options, CliError, GlobalOptions, ParseOutcome};
 pub use password::{password_file_path, read_password_file};
 pub use rpc::parse_rpc_params;

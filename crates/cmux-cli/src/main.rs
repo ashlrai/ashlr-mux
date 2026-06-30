@@ -1,11 +1,15 @@
 //! `cmux` CLI entry point. A thin shell over [`cmux_cli`]: parse the
-//! invocation, handle the no-socket meta-outcomes (`--version`/`--help`), and
-//! surface errors with the correct exit code. Command dispatch over the control
-//! socket is added next (see `cmux_cli` module docs).
+//! invocation, classify the command into its pre-socket action, and execute the
+//! resulting [`DispatchPlan`] — printing version/help, running the `rpc`
+//! control-socket round-trip, or failing with the correct exit code.
 
+use std::path::Path;
 use std::process::ExitCode;
 
-use cmux_cli::{parse_global_options, CliError, GlobalOptions, ParseOutcome};
+use cmux_cli::{
+    classify_command, parse_global_options, plan, ClassifyEnv, CliError, DispatchPlan,
+    GlobalOptions, ParseOutcome,
+};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
@@ -21,11 +25,11 @@ fn main() -> ExitCode {
 fn run(args: &[String]) -> Result<(), CliError> {
     match parse_global_options(args)? {
         ParseOutcome::PrintVersion => {
-            println!("cmux {}", env!("CARGO_PKG_VERSION"));
+            print_version();
             Ok(())
         }
         ParseOutcome::PrintHelp => {
-            println!("{}", usage());
+            print_top_level_help();
             Ok(())
         }
         ParseOutcome::Command {
@@ -36,15 +40,54 @@ fn run(args: &[String]) -> Result<(), CliError> {
     }
 }
 
+/// Classify the command into its pre-socket action, then execute the resulting
+/// [`DispatchPlan`]. Classification and planning are pure (and unit-tested in
+/// the library); this function is the thin I/O executor — it reads the current
+/// directory and path existence for path-open classification, prints, or hands
+/// off to the `rpc` round-trip.
 fn dispatch(options: &GlobalOptions, command: &str, command_args: &[String]) -> Result<(), CliError> {
-    match command {
-        // The no-socket command taxonomy (classify_command) lands next; for now
-        // only the raw `rpc` passthrough is wired end-to-end.
-        "rpc" => run_rpc_command(options, command_args),
-        _ => Err(CliError::new(format!(
-            "Unknown command '{command}'. Run 'cmux help' to see available commands."
-        ))),
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let path_exists = |path: &Path| path.exists();
+    let env = ClassifyEnv {
+        cwd: &cwd,
+        path_exists: &path_exists,
+    };
+    let action = classify_command(
+        command,
+        command_args,
+        options.explicit_socket_path.as_deref(),
+        &env,
+    );
+
+    match plan(&action, command) {
+        DispatchPlan::PrintVersion => {
+            print_version();
+            Ok(())
+        }
+        DispatchPlan::PrintTopLevelHelp => {
+            print_top_level_help();
+            Ok(())
+        }
+        DispatchPlan::PrintLine(line) => {
+            println!("{line}");
+            Ok(())
+        }
+        DispatchPlan::RunRpc => run_rpc_command(options, command_args),
+        DispatchPlan::Fail(error) => Err(error),
     }
+}
+
+/// Print the version summary to stdout. The standalone Rust CLI reports the
+/// crate version; the macOS CLI's bundle/commit suffix has no analogue here yet.
+fn print_version() {
+    println!("cmux {}", env!("CARGO_PKG_VERSION"));
+}
+
+/// Print the top-level help to stdout. The full macOS `usage()` block (the
+/// 150-command listing, with its macOS-specific paths) is a later, platform-
+/// adapted slice; for now this is the one-line synopsis.
+fn print_top_level_help() {
+    println!("Usage: cmux <path>|<command> [options]");
 }
 
 /// `cmux rpc <method> [json-params]` — resolve the socket address and password
@@ -105,8 +148,4 @@ fn run_rpc_command(_options: &GlobalOptions, _command_args: &[String]) -> Result
     Err(CliError::new(
         "socket commands are only supported on Windows in this build",
     ))
-}
-
-fn usage() -> &'static str {
-    "Usage: cmux <path>|<command> [options]"
 }
