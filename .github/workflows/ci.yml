@@ -341,6 +341,47 @@ jobs:
           DIRECT_DATABASE_URL: postgres://cmux:cmux@localhost:5432/cmux_test
         run: bun run test:db:behavior
 
+  web-db-migrations-windows:
+    needs: changes
+    if: ${{ needs.changes.outputs.web == 'true' }}
+    # windows-latest cannot host Linux `services:` containers, so Postgres comes
+    # from Docker Desktop via `bun run db:up` (db-local.ps1) instead. The derived
+    # dev DB lives on CMUX_PORT(3777)+offset(10000)=13777.
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: web
+    env:
+      DATABASE_URL: postgres://cmux:cmux@localhost:13777/cmux
+      DIRECT_DATABASE_URL: postgres://cmux:cmux@localhost:13777/cmux
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Start local Postgres (Docker Desktop)
+        run: bun run db:up
+
+      - name: Apply migrations
+        run: bunx drizzle-kit migrate --config drizzle.config.ts
+
+      - name: Re-apply migrations
+        run: bunx drizzle-kit migrate --config drizzle.config.ts
+
+      - name: Database behavior tests
+        env:
+          CMUX_DB_TEST: "1"
+        run: bun run test:db:behavior
+
+      - name: Stop local Postgres
+        if: ${{ always() }}
+        run: bun run db:down
+
   desktop-bootstrap:
     needs: changes
     if: ${{ needs.changes.outputs.desktop == 'true' }}

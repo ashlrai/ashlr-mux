@@ -12,3 +12,10 @@ Resources/markdown-viewer/diff-viewer-app/** linguist-generated
 # runner (which defaults to core.autocrlf=true). Pin them to LF so a CRLF
 # checkout cannot masquerade as content drift in core-types:check-drift.
 apps/desktop/packages/core-types/src/generated/** text eol=lf
+
+# Drizzle migration SQL is hashed by the applied-migration journal. A Windows
+# checkout with core.autocrlf=true would rewrite these to CRLF and drift the
+# stored hashes, making the migrate-twice idempotency check falsely fail. Pin
+# them (and SQL broadly) to LF.
+web/db/migrations/** text eol=lf
+*.sql text eol=lf
