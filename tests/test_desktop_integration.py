@@ -66,7 +66,7 @@ def test_desktop_web_build_emits_referenced_assets() -> None:
     assert "cmux for Windows" in index_html
     assert "./assets/styles.css" in index_html
     assert "./assets/main.js" in index_html
-    assert "Milestone M0" in (DESKTOP_WEB_DIST / "assets" / "main.js").read_text(encoding="utf-8")
+    assert "Milestone M1" in (DESKTOP_WEB_DIST / "assets" / "main.js").read_text(encoding="utf-8")
     assert (DESKTOP_WEB_DIST / "assets" / "styles.css").exists()
     assert (DESKTOP_WEB_DIST / "assets" / "main.js").exists()
     assert not (DESKTOP_WEB_DIST / "assets" / "src").exists()
