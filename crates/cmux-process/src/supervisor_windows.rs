@@ -103,9 +103,11 @@ impl ProcessSupervisor for JobObjectSupervisor {
     fn spawn(&self, spec: SpawnSpec) -> Result<SessionHandle, ProcessError> {
         let id = SessionId::new();
 
-        // 1. Create the per-session job and arm kill-on-close (unless this is a
-        //    survive-disconnect daemon session).
-        let job = unsafe { CreateJobObjectW(None, PCWSTR::null()) }
+        // 1. Create the per-session NAMED job and arm kill-on-close (unless this
+        //    is a survive-disconnect daemon session). The name is derived from
+        //    the session id so the orphan sweep can reopen it after a crash.
+        let job_name = to_wide(&crate::job_object_name(id));
+        let job = unsafe { CreateJobObjectW(None, PCWSTR(job_name.as_ptr())) }
             .map_err(|_| os_error("CreateJobObjectW"))?;
         if !spec.survive_disconnect {
             if let Err(error) = arm_kill_on_job_close(job) {

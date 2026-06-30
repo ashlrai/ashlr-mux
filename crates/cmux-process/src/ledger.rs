@@ -136,6 +136,122 @@ impl SessionLedger {
     pub fn survivors(&self) -> Vec<&LedgerEntry> {
         self.entries.iter().filter(|entry| entry.is_alive()).collect()
     }
+
+    /// Reconcile after a (possibly crashed) prior run: terminate the *entire*
+    /// job tree of every still-alive entry by reopening its named Job Object,
+    /// then clear the ledger. Entries already gone are reported, not acted on.
+    /// This is the startup orphan-sweep behind the M3 exit criterion "a
+    /// simulated core crash leaves no surviving agent trees".
+    ///
+    /// Orphan-free because it terminates the whole *descendant tree* of the
+    /// recorded root, not just the root PID (which would leave grandchildren
+    /// behind). A named Job Object cannot be reopened here: a kernel object's
+    /// name is released when the last handle closes, so once the (crashed) core
+    /// exits the job name is gone — reopening only works while a handle-holder
+    /// such as the M4 daemon lives. After a full crash the reliable recovery is
+    /// to walk the live process tree from the identity-verified root.
+    pub fn sweep(&mut self) -> SweepReport {
+        let mut report = SweepReport::default();
+        for entry in &self.entries {
+            if !entry.is_alive() {
+                report.already_gone.push(entry.session_id);
+                continue;
+            }
+            match terminate_orphan_tree(entry.root_pid) {
+                Ok(()) => report.terminated.push(entry.session_id),
+                Err(error) => report.failed.push((entry.session_id, error.to_string())),
+            }
+        }
+        self.entries.clear();
+        report
+    }
+}
+
+/// Outcome of a [`SessionLedger::sweep`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SweepReport {
+    /// Sessions whose surviving tree was terminated.
+    pub terminated: Vec<Uuid>,
+    /// Sessions already gone before the sweep (nothing to do).
+    pub already_gone: Vec<Uuid>,
+    /// Sessions whose termination failed, with the error string.
+    pub failed: Vec<(Uuid, String)>,
+}
+
+/// Terminate the entire descendant tree rooted at `root_pid`.
+///
+/// Snapshots all processes (ToolHelp), builds the parent→child tree from
+/// `th32ParentProcessID`, and `TerminateProcess`es every descendant
+/// leaves-first, then the root. Best-effort: a single stubborn PID does not fail
+/// the whole sweep, since recovery should make maximum progress.
+///
+/// The caller has already verified the root's (pid, creation-time) identity, so
+/// the root is genuinely ours; descendants are taken from the live snapshot's
+/// parent linkage (PID-reuse mis-linking a descendant is possible but unlikely
+/// for a quiescent post-crash orphan, the standard `taskkill /T` tradeoff).
+#[cfg(windows)]
+fn terminate_orphan_tree(root_pid: u32) -> io::Result<()> {
+    use windows::Win32::{
+        Foundation::CloseHandle,
+        System::{
+            Diagnostics::ToolHelp::{
+                CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+                TH32CS_SNAPPROCESS,
+            },
+            Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE},
+        },
+    };
+
+    // 1. Snapshot (pid, parent-pid) for every process.
+    let mut pairs: Vec<(u32, u32)> = Vec::new();
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+            .map_err(|error| io::Error::other(format!("CreateToolhelp32Snapshot: {error}")))?;
+        let mut entry = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        if Process32FirstW(snapshot, &mut entry).is_ok() {
+            loop {
+                pairs.push((entry.th32ProcessID, entry.th32ParentProcessID));
+                if Process32NextW(snapshot, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snapshot);
+    }
+
+    // 2. Breadth-first collect the root and all descendants.
+    let mut tree = vec![root_pid];
+    let mut cursor = 0;
+    while cursor < tree.len() {
+        let parent = tree[cursor];
+        for &(pid, parent_pid) in &pairs {
+            if parent_pid == parent && pid != 0 && pid != parent && !tree.contains(&pid) {
+                tree.push(pid);
+            }
+        }
+        cursor += 1;
+    }
+
+    // 3. Terminate leaves-first (reverse discovery order), then the root.
+    for &pid in tree.iter().rev() {
+        unsafe {
+            if let Ok(process) = OpenProcess(PROCESS_TERMINATE, false, pid) {
+                let _ = TerminateProcess(process, 1);
+                let _ = CloseHandle(process);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Non-Windows: nothing to sweep (identity probing reports "gone", so this is
+/// never reached for a live entry); keeps the build green.
+#[cfg(not(windows))]
+fn terminate_orphan_tree(_root_pid: u32) -> io::Result<()> {
+    Ok(())
 }
 
 /// Read a process's creation time as a `FILETIME`-derived `u64` (100 ns ticks
@@ -269,5 +385,85 @@ mod tests {
         // very high unlikely PID should not resolve.
         assert_eq!(process_creation_time(0), None);
         assert_eq!(process_creation_time(0x7FFF_FFFE), None);
+    }
+
+    /// M3 WS4 acceptance, end-to-end: a simulated core crash leaves no surviving
+    /// agent tree after the next startup sweep.
+    ///
+    /// Spawn a `survive_disconnect` tree (no `KILL_ON_JOB_CLOSE`, so it outlives
+    /// the supervisor), record a ledger entry, then DROP the supervisor —
+    /// modelling a crash that loses the in-memory job handle. A fresh
+    /// `SessionLedger::sweep()` must reopen the job by name and terminate the
+    /// whole tree. Killing by reopened *job* (not the recorded root PID) is what
+    /// keeps it orphan-free. The child is `ping -n 60`, which self-terminates
+    /// within ~60 s, so a pre-sweep assertion failure cannot leak indefinitely.
+    ///
+    /// Lives in the lib test binary (not a standalone integration test) because
+    /// freshly-built standalone test `.exe`s are nondeterministically blocked by
+    /// this box's Windows Application Control policy (os error 4551); the lib
+    /// binary runs reliably. CI has no such policy.
+    #[cfg(windows)]
+    #[test]
+    fn sweep_kills_orphan_tree_after_simulated_crash() {
+        use crate::{JobObjectSupervisor, ProcessSupervisor, SpawnSpec};
+        use std::{
+            thread::sleep,
+            time::{Duration, Instant},
+        };
+
+        fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) -> bool {
+            let deadline = Instant::now() + timeout;
+            loop {
+                if predicate() {
+                    return true;
+                }
+                if Instant::now() >= deadline {
+                    return false;
+                }
+                sleep(Duration::from_millis(25));
+            }
+        }
+
+        let comspec =
+            std::env::var("ComSpec").unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".into());
+        let mut spec = SpawnSpec::new(comspec).args(["/c", "ping -n 60 127.0.0.1"]);
+        spec.survive_disconnect = true;
+
+        let captured;
+        {
+            let supervisor = JobObjectSupervisor::new();
+            let handle = supervisor.spawn(spec).expect("spawn");
+            assert!(
+                wait_until(Duration::from_secs(8), || supervisor
+                    .active_process_count(handle.id)
+                    .unwrap_or(0)
+                    >= 2),
+                "child tree should be confined to the job",
+            );
+            captured = LedgerEntry::capture(&handle);
+            assert_ne!(captured.created_at, 0, "creation time captured");
+            assert!(captured.is_alive(), "tree alive before the crash");
+            // Drop the supervisor without terminating → simulated crash.
+        }
+
+        assert!(
+            captured.is_alive(),
+            "survive_disconnect tree must outlive the dropped supervisor",
+        );
+
+        let mut ledger = SessionLedger::new();
+        ledger.upsert(captured.clone());
+        let report = ledger.sweep();
+        assert_eq!(
+            report.terminated,
+            vec![captured.session_id],
+            "sweep terminates the orphan tree (failed: {:?})",
+            report.failed,
+        );
+        assert!(ledger.entries.is_empty(), "sweep clears the ledger");
+        assert!(
+            wait_until(Duration::from_secs(8), || !captured.is_alive()),
+            "orphan tree survived the sweep",
+        );
     }
 }

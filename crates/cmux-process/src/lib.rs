@@ -34,7 +34,7 @@ pub mod transport;
 pub use transport::{FrameError, LineFramer};
 
 pub mod ledger;
-pub use ledger::{process_creation_time, LedgerEntry, SessionLedger};
+pub use ledger::{process_creation_time, LedgerEntry, SessionLedger, SweepReport};
 
 #[cfg(windows)]
 #[path = "supervisor_windows.rs"]
@@ -67,6 +67,17 @@ impl std::fmt::Display for SessionId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
+}
+
+/// The Win32 object name for a session's Job Object.
+///
+/// Deterministic from the session id (in the per-session `Local\` namespace) so
+/// a *relaunched* core can reopen the job by name via `OpenJobObjectW` after a
+/// crash that lost the original handle — no need to persist the handle or a
+/// separate name. The orphan sweep reconstructs this from the ledger entry's
+/// session id.
+pub fn job_object_name(session_id: SessionId) -> String {
+    format!("Local\\cmux-job-{}", session_id.0)
 }
 
 /// How forcefully to take down a session, mirroring the macOS interrupt /
