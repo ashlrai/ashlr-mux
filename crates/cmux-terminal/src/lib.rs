@@ -11,6 +11,9 @@
 //! Swift parity source:
 //! `Packages/Shared/CmuxAgentChat/Sources/CmuxAgentChat/Parsing/OSC133CommandParser.swift`
 
+pub mod geometry;
+pub mod theme;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
