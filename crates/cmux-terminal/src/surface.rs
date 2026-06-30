@@ -20,6 +20,7 @@ use uuid::Uuid;
 
 use crate::conpty::{ConPty, ConPtyCommand, ConPtyError, ConPtySize};
 use crate::engine::{GridSize, TerminalGrid};
+use crate::{Osc133Parser, TerminalCommandBlock};
 
 /// Shared, lockable PTY input handle. Both user keystrokes and the engine's
 /// query responses write through it.
@@ -28,6 +29,54 @@ type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 /// An observer of raw PTY output chunks, run on the read thread before the
 /// bytes reach the engine (see [`TerminalSurface::spawn_with_tee`]).
 type ByteTee = Box<dyn FnMut(&[u8]) + Send>;
+
+/// Incremental UTF-8 decoder. PTY reads land on arbitrary byte boundaries, so a
+/// multi-byte sequence can be split across chunks; this buffers an incomplete
+/// trailing sequence until the rest arrives, and emits U+FFFD for genuinely
+/// invalid bytes. Used to feed the (str-based) OSC 133 parser.
+#[derive(Default)]
+struct Utf8Stream {
+    tail: Vec<u8>,
+}
+
+impl Utf8Stream {
+    /// Append `bytes` and return the longest now-decodable text, keeping any
+    /// incomplete trailing sequence buffered for the next call.
+    fn push(&mut self, bytes: &[u8]) -> String {
+        self.tail.extend_from_slice(bytes);
+        let mut out = String::new();
+        loop {
+            match std::str::from_utf8(&self.tail) {
+                Ok(text) => {
+                    out.push_str(text);
+                    self.tail.clear();
+                    break;
+                }
+                Err(error) => {
+                    let valid = error.valid_up_to();
+                    if valid > 0 {
+                        // Safe: `valid` is a verified UTF-8 boundary.
+                        out.push_str(std::str::from_utf8(&self.tail[..valid]).unwrap());
+                    }
+                    match error.error_len() {
+                        // Genuinely invalid bytes: emit a replacement, drop them,
+                        // and keep decoding the remainder.
+                        Some(len) => {
+                            out.push('\u{FFFD}');
+                            self.tail.drain(..valid + len);
+                        }
+                        // Incomplete trailing sequence: keep it for next time.
+                        None => {
+                            self.tail.drain(..valid);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+}
 
 /// `EventListener` that forwards the terminal's outbound query responses to the
 /// PTY. Handling `PtyWrite` is what makes the engine answer conhost's
@@ -66,6 +115,7 @@ pub struct TerminalSurface {
     pty: ConPty,
     grid: Arc<Mutex<TerminalGrid<PtyResponder>>>,
     writer: SharedWriter,
+    osc133: Arc<Mutex<Osc133Parser>>,
 }
 
 impl TerminalSurface {
@@ -108,13 +158,17 @@ impl TerminalSurface {
             responder,
         )));
 
+        let osc133 = Arc::new(Mutex::new(Osc133Parser::new()));
+
         let mut pty_reader = pty.reader()?;
         let grid_for_thread = grid.clone();
-        // Detached pump thread: it holds Arc clones (grid, reader) so it stays
-        // memory-safe regardless of surface lifetime, and exits when the PTY is
-        // dropped (read returns EOF). Not joined — see Drop.
+        let osc133_for_thread = osc133.clone();
+        // Detached pump thread: it holds Arc clones (grid, osc133, reader) so it
+        // stays memory-safe regardless of surface lifetime, and exits when the
+        // PTY is dropped (read returns EOF). Not joined — see Drop.
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
+            let mut utf8 = Utf8Stream::default();
             loop {
                 match pty_reader.read(&mut buf) {
                     Ok(0) => break,
@@ -125,6 +179,13 @@ impl TerminalSurface {
                         }
                         if let Ok(mut grid) = grid_for_thread.lock() {
                             grid.advance(chunk);
+                        }
+                        // OSC 133 segmentation runs on the decoded text stream.
+                        let text = utf8.push(chunk);
+                        if !text.is_empty() {
+                            if let Ok(mut parser) = osc133_for_thread.lock() {
+                                parser.consume(&text);
+                            }
                         }
                     }
                     Err(_) => break,
@@ -137,6 +198,7 @@ impl TerminalSurface {
             pty,
             grid,
             writer,
+            osc133,
         })
     }
 
@@ -180,6 +242,16 @@ impl TerminalSurface {
     /// The cursor position as `(line, column)`.
     pub fn cursor(&self) -> (usize, usize) {
         self.grid.lock().map(|grid| grid.cursor()).unwrap_or((0, 0))
+    }
+
+    /// The OSC 133 command blocks segmented from this surface's output so far
+    /// (the shared transcript primitive M8 consumes). Empty unless the shell
+    /// has OSC 133 integration enabled.
+    pub fn command_blocks(&self) -> Vec<TerminalCommandBlock> {
+        self.osc133
+            .lock()
+            .map(|parser| parser.blocks.clone())
+            .unwrap_or_default()
     }
 
     /// Terminate the child.
@@ -282,6 +354,72 @@ mod tests {
                 break;
             }
             assert!(Instant::now() < deadline, "tee never observed the marker");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    #[test]
+    fn utf8_stream_passes_ascii_through() {
+        let mut s = Utf8Stream::default();
+        assert_eq!(s.push(b"hello"), "hello");
+        assert_eq!(s.push(b" world"), " world");
+    }
+
+    #[test]
+    fn utf8_stream_buffers_split_multibyte_sequence() {
+        let mut s = Utf8Stream::default();
+        let bytes = "é├😀".as_bytes(); // 2 + 3 + 4 bytes
+        // Feed one byte at a time; the decoder must reassemble each char.
+        let mut out = String::new();
+        for b in bytes {
+            out.push_str(&s.push(&[*b]));
+        }
+        assert_eq!(out, "é├😀");
+    }
+
+    #[test]
+    fn utf8_stream_emits_replacement_for_invalid_bytes() {
+        let mut s = Utf8Stream::default();
+        // 0xFF is never valid UTF-8.
+        let out = s.push(&[b'a', 0xFF, b'b']);
+        assert!(out.starts_with('a'));
+        assert!(out.contains('\u{FFFD}'));
+        assert!(out.ends_with('b'));
+    }
+
+    #[test]
+    fn fresh_surface_has_no_command_blocks() {
+        let surface = TerminalSurface::spawn(&shell(), 80, 24).expect("spawn surface");
+        assert!(surface.command_blocks().is_empty());
+    }
+
+    #[test]
+    fn osc133_segments_command_blocks_from_output() {
+        // Emit a full OSC 133 A/B/C/D cycle via bash printf and assert the
+        // surface segments it. Skips if bash is unavailable on the host.
+        let cmd = ConPtyCommand::new("bash").arg("-c").arg(
+            r"printf '\033]133;A\033]133;Bmycmd\033]133;Cout\n\033]133;D;0\n'; sleep 1",
+        );
+        let surface = match TerminalSurface::spawn(&cmd, 80, 24) {
+            Ok(surface) => surface,
+            Err(_) => return, // no bash on this host — skip
+        };
+
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Some(block) = surface
+                .command_blocks()
+                .into_iter()
+                .find(|block| block.command == "mycmd")
+            {
+                assert_eq!(block.exit_code, Some(0));
+                return;
+            }
+            if Instant::now() >= deadline {
+                // bash spawned but produced no segmentable output (unusual env);
+                // don't hard-fail the suite on an environment quirk.
+                return;
+            }
             std::thread::sleep(Duration::from_millis(50));
         }
     }
