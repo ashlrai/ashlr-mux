@@ -11,6 +11,7 @@
 //! Swift parity source:
 //! `Packages/Shared/CmuxAgentChat/Sources/CmuxAgentChat/Parsing/OSC133CommandParser.swift`
 
+pub mod conpty;
 pub mod geometry;
 pub mod theme;
 pub mod transcript;
