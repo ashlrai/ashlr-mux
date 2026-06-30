@@ -84,6 +84,8 @@ func (h *wsPTYHub) attachRPC(
 
 func (h *wsPTYHub) closeAll() {}
 
+func (h *wsPTYHub) activeSessionCount() int { return 0 }
+
 func (h *wsPTYHub) dropAttachment(_ *wsPTYAttachment) {}
 
 func (h *wsPTYHub) writeInputByID(_ string, _ string, _ string, _ []byte) wsPTYInputWriteStatus {

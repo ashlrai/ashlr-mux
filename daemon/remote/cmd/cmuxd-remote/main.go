@@ -519,11 +519,6 @@ func verifyPrivateDaemonDirectory(path string) error {
 	return nil
 }
 
-func daemonDirectoryOwnedByCurrentUser(info os.FileInfo) bool {
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	return !ok || int(stat.Uid) == os.Getuid()
-}
-
 func readPersistentDaemonSocketDir(root string) (string, error) {
 	data, err := os.ReadFile(filepath.Join(root, persistentDaemonSocketDirFile))
 	if err != nil {
@@ -756,7 +751,7 @@ func ensurePersistentDaemonRunning(paths persistentDaemonPaths, token string, st
 	cmd.Stderr = logFile
 	cmd.Env = append(os.Environ(), persistentDaemonReadyFDEnv+"=3")
 	cmd.ExtraFiles = []*os.File{readyWriter}
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	configureDetachedProcess(cmd)
 	if err := cmd.Start(); err != nil {
 		return err
 	}
@@ -834,10 +829,10 @@ func runPersistentDaemonServer(slot string, stderr io.Writer) error {
 		return err
 	}
 	defer lockFile.Close()
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := lockDaemonSlot(lockFile); err != nil {
 		return fmt.Errorf("persistent daemon slot %q is already running", paths.slot)
 	}
-	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+	defer unlockDaemonSlot(lockFile)
 
 	_ = os.Remove(paths.socket)
 	listener, err := net.Listen("unix", paths.socket)
