@@ -20,6 +20,13 @@ use std::{
 
 use uuid::Uuid;
 
+mod env_policy;
+
+pub use env_policy::{
+    claude_config_preferred_path, sanitized_node_options, sanitized_value, selected_environment,
+    ClaudeConfigContext, HERMES_AGENT_ENVIRONMENT_KEYS, SAFE_ENVIRONMENT_KEYS,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AgentSessionProviderId {
     Codex,

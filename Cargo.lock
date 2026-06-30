@@ -398,6 +398,7 @@ dependencies = [
 name = "cmux-golden"
 version = "0.1.0"
 dependencies = [
+ "cmux-agent",
  "cmux-core",
  "cmux-ipc",
  "cmux-terminal",

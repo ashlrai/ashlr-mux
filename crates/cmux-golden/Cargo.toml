@@ -16,6 +16,7 @@ serde_json.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+cmux-agent = { path = "../cmux-agent" }
 cmux-core = { path = "../cmux-core" }
 cmux-ipc = { path = "../cmux-ipc" }
 cmux-terminal = { path = "../cmux-terminal" }

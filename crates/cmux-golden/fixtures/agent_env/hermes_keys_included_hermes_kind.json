@@ -1,0 +1,6 @@
+{
+  "CUSTOM_BASE_URL": "https://hermes.example",
+  "GH_HOST": "github.example",
+  "HERMES_CODEX_BASE_URL": "https://codex.example",
+  "HERMES_HOME": "/home/u/.hermes"
+}
