@@ -17,8 +17,10 @@
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 
 use crate::{
-    append_line, ControlCallResult, ControlRequest, ControlRequestParseError,
-    ControlRequestParser, ControlResponseEncoder,
+    append_line,
+    auth::{AuthState, ConnectionAuthenticator, NoAuth, PasswordAuthGate, PasswordVerifier},
+    ControlCallResult, ControlRequest, ControlRequestParseError, ControlRequestParser,
+    ControlResponseEncoder,
 };
 
 /// Maximum bytes in a single newline-framed RPC frame (4 MiB), mirroring the
@@ -51,27 +53,71 @@ where
 /// per-line resilience.
 pub async fn serve_connection<R, W, H>(
     reader: R,
-    mut writer: W,
-    mut handler: H,
+    writer: W,
+    handler: H,
 ) -> std::io::Result<()>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
     H: ControlRequestHandler,
 {
+    serve_connection_inner(reader, writer, handler, NoAuth).await
+}
+
+/// Like [`serve_connection`] but gates every command behind a password auth
+/// handshake (`auth <password>` / `auth.login`). Until the connection
+/// authenticates, non-auth commands are answered with an `auth_required`
+/// rejection; once it authenticates the flag sticks for the connection's life.
+/// Use this when the socket access mode requires a password
+/// (`accessMode.requiresPasswordAuth`); otherwise use [`serve_connection`].
+pub async fn serve_connection_authenticated<R, W, H, V>(
+    reader: R,
+    writer: W,
+    handler: H,
+    gate: PasswordAuthGate<V>,
+) -> std::io::Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+    H: ControlRequestHandler,
+    V: PasswordVerifier,
+{
+    serve_connection_inner(reader, writer, handler, gate).await
+}
+
+/// Shared serve loop for the authenticated and unauthenticated paths. `auth`
+/// intercepts each decoded command line: when it returns a response that line is
+/// answered directly (and not dispatched); otherwise the request is parsed and
+/// handed to `handler`.
+async fn serve_connection_inner<R, W, H, A>(
+    reader: R,
+    mut writer: W,
+    mut handler: H,
+    auth: A,
+) -> std::io::Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+    H: ControlRequestHandler,
+    A: ConnectionAuthenticator,
+{
     let mut reader = BufReader::new(reader);
     let encoder = ControlResponseEncoder;
     let parser = ControlRequestParser;
+    let mut auth_state = AuthState::default();
 
     while let Some(frame) = read_frame(&mut reader, MAX_RPC_FRAME_BYTES).await? {
         let response = match std::str::from_utf8(&frame) {
             Err(_) => encoder.response_for_parse_error(ControlRequestParseError::InvalidUtf8),
-            Ok(line) => match parser.request(line) {
-                Ok(request) => {
-                    let id = request.id.clone();
-                    encoder.response(id, handler.handle(request))
-                }
-                Err(error) => encoder.response_for_parse_error(error),
+            Ok(line) => match auth.intercept(line, &mut auth_state) {
+                Some(auth_response) => auth_response,
+                None => match parser.request(line) {
+                    Ok(request) => {
+                        let id = request.id.clone();
+                        encoder.response(id, handler.handle(request))
+                    }
+                    Err(error) => encoder.response_for_parse_error(error),
+                },
             },
         };
         writer.write_all(append_line(&response).as_bytes()).await?;
@@ -132,6 +178,67 @@ mod tests {
     use super::*;
     use crate::JsonValue;
     use tokio::io::{duplex, AsyncWriteExt};
+
+    /// One-password verifier for the authenticated serve-loop test.
+    struct OnePassword(&'static str);
+    impl PasswordVerifier for OnePassword {
+        fn has_configured_password(&self) -> bool {
+            true
+        }
+        fn verify(&self, password: &str) -> bool {
+            password == self.0
+        }
+    }
+
+    /// Drive the authenticated serve loop over a duplex and collect responses.
+    async fn round_trip_authenticated(
+        gate: PasswordAuthGate<OnePassword>,
+        requests: &[&str],
+    ) -> Vec<String> {
+        let (mut client, server) = duplex(64 * 1024);
+        let (server_reader, server_writer) = tokio::io::split(server);
+        let server_task = tokio::spawn(async move {
+            serve_connection_authenticated(server_reader, server_writer, echo_handler, gate).await
+        });
+
+        for request in requests {
+            write_frame(&mut client, request).await.expect("write");
+        }
+        client.shutdown().await.expect("shutdown");
+
+        let mut responses = Vec::new();
+        while let Some(frame) = read_frame(&mut client, MAX_RPC_FRAME_BYTES)
+            .await
+            .expect("read")
+        {
+            responses.push(String::from_utf8(frame).expect("utf8"));
+        }
+        server_task.await.expect("join").expect("serve");
+        responses
+    }
+
+    #[tokio::test]
+    async fn authenticated_loop_rejects_then_admits_after_auth() {
+        let responses = round_trip_authenticated(
+            PasswordAuthGate::new(OnePassword("s3cret")),
+            &[
+                r#"{"id":1,"method":"surface.list"}"#, // before auth → rejected
+                "auth s3cret",                          // authenticate
+                r#"{"id":2,"method":"ping"}"#,          // after auth → dispatched
+            ],
+        )
+        .await;
+        assert_eq!(responses.len(), 3);
+
+        let first: serde_json::Value = serde_json::from_str(&responses[0]).unwrap();
+        assert_eq!(first["error"]["code"], serde_json::json!("auth_required"));
+
+        assert_eq!(responses[1], "OK: Authenticated");
+
+        let third: serde_json::Value = serde_json::from_str(&responses[2]).unwrap();
+        assert_eq!(third["ok"], serde_json::json!(true));
+        assert_eq!(third["result"], serde_json::json!("ping"));
+    }
 
     /// Drive a handler over an in-memory duplex: spawn the server on one end,
     /// send `requests` from the other, and collect the response lines.
