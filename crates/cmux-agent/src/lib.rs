@@ -21,7 +21,10 @@ use std::{
 use uuid::Uuid;
 
 mod env_policy;
+mod opencode;
 mod version;
+
+pub use opencode::OpenCodeServerAuth;
 
 pub use env_policy::{
     claude_config_preferred_path, launch_environment, sanitized_node_options, sanitized_value,

@@ -155,6 +155,53 @@ pub fn encode_line(line: &str) -> Vec<u8> {
     bytes
 }
 
+/// Scrape the OpenCode HTTP-loopback base URL from a `serve --print-logs` line.
+///
+/// OpenCode (launched with `serve --hostname 127.0.0.1 --port 0 --print-logs`)
+/// chooses an ephemeral port and announces it on stdout as
+/// `opencode server listening on <url>`. We extract the first token after that
+/// marker and accept it only if it is an `http(s)` URL on a loopback host
+/// (`localhost` / `127.0.0.1` / `::1`) — verbatim parity with the macOS
+/// `AgentSessionProcessStore.openCodeServerURL` + `agentSessionIsLoopbackURL`.
+/// Returns the validated base URL, or `None` if the line isn't the announcement
+/// or the host isn't loopback (a guard against connecting off-box).
+pub fn opencode_server_url(line: &str) -> Option<String> {
+    const MARKER: &str = "opencode server listening on ";
+    let marker_at = line.find(MARKER)?;
+    let candidate = line[marker_at + MARKER.len()..]
+        .split_whitespace()
+        .next()?;
+    if is_loopback_http_url(candidate) {
+        Some(candidate.to_string())
+    } else {
+        None
+    }
+}
+
+/// Whether `raw` is an `http`/`https` URL whose host is a loopback address.
+fn is_loopback_http_url(raw: &str) -> bool {
+    loopback_candidate_host(raw).is_some_and(|host| {
+        let host = host.to_ascii_lowercase();
+        host == "localhost" || host == "127.0.0.1" || host == "::1"
+    })
+}
+
+/// Extract the host from an `http(s)://[user@]host[:port][/…]` URL, handling a
+/// bracketed IPv6 literal (`[::1]`). `None` if the scheme isn't http(s).
+fn loopback_candidate_host(raw: &str) -> Option<&str> {
+    let rest = raw
+        .strip_prefix("http://")
+        .or_else(|| raw.strip_prefix("https://"))?;
+    let authority = rest.split('/').next().unwrap_or(rest);
+    let authority = authority.rsplit('@').next().unwrap_or(authority); // drop userinfo
+    let host = if let Some(after_bracket) = authority.strip_prefix('[') {
+        after_bracket.split(']').next().unwrap_or(after_bracket) // IPv6 literal
+    } else {
+        authority.split(':').next().unwrap_or(authority) // strip :port
+    };
+    Some(host)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,5 +313,63 @@ mod tests {
         let wire = encode_line("{\"jsonrpc\":\"2.0\",\"id\":1}");
         let frames = framer.push(&wire);
         assert_eq!(oks(frames), vec!["{\"jsonrpc\":\"2.0\",\"id\":1}"]);
+    }
+
+    #[test]
+    fn scrapes_loopback_url_from_announcement() {
+        assert_eq!(
+            opencode_server_url("INFO  opencode server listening on http://127.0.0.1:54321"),
+            Some("http://127.0.0.1:54321".to_string())
+        );
+    }
+
+    #[test]
+    fn scrapes_url_ignoring_trailing_text() {
+        assert_eq!(
+            opencode_server_url("opencode server listening on http://127.0.0.1:8080 (ctrl-c to quit)"),
+            Some("http://127.0.0.1:8080".to_string())
+        );
+    }
+
+    #[test]
+    fn accepts_localhost_and_ipv6_loopback() {
+        assert_eq!(
+            opencode_server_url("opencode server listening on http://localhost:1234"),
+            Some("http://localhost:1234".to_string())
+        );
+        assert_eq!(
+            opencode_server_url("opencode server listening on http://[::1]:9999"),
+            Some("http://[::1]:9999".to_string())
+        );
+    }
+
+    #[test]
+    fn rejects_non_loopback_host() {
+        assert_eq!(
+            opencode_server_url("opencode server listening on http://8.8.8.8:80"),
+            None
+        );
+        assert_eq!(
+            opencode_server_url("opencode server listening on http://example.com:3000"),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_lines_without_marker_or_scheme() {
+        assert_eq!(opencode_server_url("some unrelated log line"), None);
+        assert_eq!(
+            opencode_server_url("opencode server listening on 127.0.0.1:54321"),
+            None,
+            "no scheme → not accepted"
+        );
+    }
+
+    #[test]
+    fn ignores_userinfo_when_checking_host() {
+        assert_eq!(
+            opencode_server_url("opencode server listening on http://user:pw@127.0.0.1:7000"),
+            Some("http://user:pw@127.0.0.1:7000".to_string())
+        );
     }
 }
