@@ -1,0 +1,4 @@
+# Go build artifacts: `go build ./...` emits the cmuxd-remote main package
+# binary into the module root. Never commit it.
+/cmuxd-remote
+/cmuxd-remote.exe

@@ -858,7 +858,7 @@ func dialSocket(addr string, refreshAddr func() string) (net.Conn, error) {
 		}
 		return conn, nil
 	}
-	return net.Dial("unix", addr)
+	return dialControlSocket(addr, 0)
 }
 
 func dialTCP(addr string) (net.Conn, string, error) {

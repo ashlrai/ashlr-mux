@@ -686,9 +686,7 @@ func proxyPersistentDaemonConn(stdin io.Reader, stdout io.Writer, conn net.Conn)
 	errCh := make(chan persistentProxyCopyResult, 2)
 	go func() {
 		_, copyErr := io.Copy(conn, stdin)
-		if unixConn, ok := conn.(*net.UnixConn); ok {
-			_ = unixConn.CloseWrite()
-		}
+		_ = halfCloseWrite(conn)
 		errCh <- persistentProxyCopyResult{stream: "stdin", err: copyErr}
 	}()
 	go func() {
@@ -834,14 +832,12 @@ func runPersistentDaemonServer(slot string, stderr io.Writer) error {
 	}
 	defer unlockDaemonSlot(lockFile)
 
-	_ = os.Remove(paths.socket)
-	listener, err := net.Listen("unix", paths.socket)
+	listener, err := listenControlSocket(paths.socket)
 	if err != nil {
 		return err
 	}
 	defer listener.Close()
 	defer os.Remove(paths.socket)
-	_ = os.Chmod(paths.socket, 0o600)
 
 	signalPersistentDaemonReady()
 	return servePersistentDaemonWithVerifierConfig(
@@ -1133,7 +1129,7 @@ func runRPCServerWithReader(reader *bufio.Reader, writer *stdioFrameWriter, ptyH
 }
 
 func dialPersistentDaemon(socketPath string, token string) (net.Conn, error) {
-	conn, err := net.DialTimeout("unix", socketPath, 2*time.Second)
+	conn, err := dialControlSocket(socketPath, 2*time.Second)
 	if err != nil {
 		return nil, err
 	}
