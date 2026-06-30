@@ -25,6 +25,10 @@ use crate::engine::{GridSize, TerminalGrid};
 /// query responses write through it.
 type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
+/// An observer of raw PTY output chunks, run on the read thread before the
+/// bytes reach the engine (see [`TerminalSurface::spawn_with_tee`]).
+type ByteTee = Box<dyn FnMut(&[u8]) + Send>;
+
 /// `EventListener` that forwards the terminal's outbound query responses to the
 /// PTY. Handling `PtyWrite` is what makes the engine answer conhost's
 /// cursor-position handshake (and DA / DSR / DECRQM responses) on its own.
@@ -68,6 +72,32 @@ impl TerminalSurface {
     /// Spawn `command` on a `cols`×`rows` PTY and start pumping its output into
     /// the grid on a dedicated read thread.
     pub fn spawn(command: &ConPtyCommand, cols: u16, rows: u16) -> Result<Self, ConPtyError> {
+        Self::spawn_inner(command, cols, rows, None)
+    }
+
+    /// Like [`TerminalSurface::spawn`], but `tee` observes every raw output
+    /// chunk before it reaches the engine — the analogue of cmux's
+    /// `ghostty_surface_set_pty_tee_cb`. Lets M8 transcript / mobile consumers
+    /// watch PTY output without re-implementing the read loop. The tee runs on
+    /// the read thread, so it must be cheap and non-blocking.
+    pub fn spawn_with_tee<F>(
+        command: &ConPtyCommand,
+        cols: u16,
+        rows: u16,
+        tee: F,
+    ) -> Result<Self, ConPtyError>
+    where
+        F: FnMut(&[u8]) + Send + 'static,
+    {
+        Self::spawn_inner(command, cols, rows, Some(Box::new(tee)))
+    }
+
+    fn spawn_inner(
+        command: &ConPtyCommand,
+        cols: u16,
+        rows: u16,
+        mut tee: Option<ByteTee>,
+    ) -> Result<Self, ConPtyError> {
         let pty = ConPty::spawn(command, ConPtySize::new(cols, rows))?;
         let writer: SharedWriter = Arc::new(Mutex::new(pty.take_writer()?));
         let responder = PtyResponder {
@@ -89,8 +119,12 @@ impl TerminalSurface {
                 match pty_reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
+                        let chunk = &buf[..n];
+                        if let Some(tee) = tee.as_mut() {
+                            tee(chunk);
+                        }
                         if let Ok(mut grid) = grid_for_thread.lock() {
-                            grid.advance(&buf[..n]);
+                            grid.advance(chunk);
                         }
                     }
                     Err(_) => break,
@@ -218,5 +252,37 @@ mod tests {
         assert_eq!(surface.visible_lines().len(), 24);
         surface.resize(100, 30).expect("resize");
         assert_eq!(surface.visible_lines().len(), 30);
+    }
+
+    #[test]
+    fn byte_tee_observes_raw_pty_output() {
+        let captured = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let sink = captured.clone();
+        let surface = TerminalSurface::spawn_with_tee(&shell(), 80, 24, move |bytes| {
+            if let Ok(mut buf) = sink.lock() {
+                buf.extend_from_slice(bytes);
+            }
+        })
+        .expect("spawn surface");
+
+        let script = if cfg!(windows) {
+            "echo tee_marker_88\r\n"
+        } else {
+            "echo tee_marker_88\n"
+        };
+        surface.write_input(script.as_bytes()).expect("write input");
+
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let seen = captured
+                .lock()
+                .map(|buf| String::from_utf8_lossy(&buf).contains("tee_marker_88"))
+                .unwrap_or(false);
+            if seen {
+                break;
+            }
+            assert!(Instant::now() < deadline, "tee never observed the marker");
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 }
