@@ -26,8 +26,8 @@ pub mod server;
 
 pub use auth::{PasswordAuthGate, PasswordVerifier};
 pub use client::{
-    authenticate_client, build_v2_request, interpret_v2_response, resolve_password,
-    PasswordSources, V2ResponseError,
+    authenticate_client, build_v1_command_line, build_v2_request, interpret_v1_response,
+    interpret_v2_response, resolve_password, PasswordSources, V1ResponseError, V2ResponseError,
 };
 pub use control_call_result::ControlCallResult;
 pub use control_request::ControlRequest;

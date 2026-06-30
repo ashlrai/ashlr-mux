@@ -4,6 +4,45 @@ Running log of non-obvious design decisions made while porting cmux to Windows,
 so future iterations (and reviewers) can see the *why*, not just the *what*.
 Newest first.
 
+## M4 WS5 — v1 client wire codec + the "no generic forward" finding
+
+An understand-workflow over `CLI/cmux.swift`'s ~50 socket-command handlers
+established the architecture of the socket command layer, and why a generic
+forward is not a faithful port:
+
+- **No name-deriving forwarder.** Each handler hardcodes its *socket* command
+  name as an underscore_case string literal at the `sendV1Command` call site.
+  The hyphen→underscore correspondence (CLI `list-windows` → socket
+  `list_windows`) is a hand-typed convention, not a transform; `notify` →
+  `notify_target` is a genuine rename. There is no mapping table.
+- **Two transports.** Many modern verbs (`send`, `new-split`, `new-workspace`,
+  `capture-pane`, `resize-pane`, all `browser.*`) emit **v2 JSON-RPC** with a
+  typed params dict, not a v1 line (`send` → `surface.send_text`, `resize-pane`
+  → `pane.resize`).
+- **Args are not forwarded verbatim.** Handlers do per-flag work: renaming
+  (`--name` → `title`), **handle resolution** (`--workspace`/`--surface` refs →
+  uuids via *socket round-trips*), env defaulting (`CMUX_WORKSPACE_ID`), and the
+  v1/v2 choice. Even the closest-to-verbatim v1 path rewrites `--workspace` →
+  `--tab=`, strips `--window`, and injects a default `--tab=`.
+
+**Consequence:** the per-command socket layer must be ported as bespoke handlers,
+and handle resolution requires a *server* implementing those methods — i.e. it is
+blocked on the app/server side (a HARD BOUNDARY). The headless CLI-side primitives
+of M4 are otherwise complete.
+
+**What was built:** the one frozen, reusable artifact the finding supports — the
+**v1 client wire codec** in `cmux-ipc/client.rs` (`shell_quote`,
+`build_v1_command_line`, `interpret_v1_response`, `V1ResponseError`), the dual of
+the v2 codec (`build_v2_request` / `interpret_v2_response`). It is pure and
+parity-pinned to exact Swift lines (`shellQuote` 12004-12010; forwarder
+16294-16297; `sendV1Command` 5765-5771), so its shape is verifiable without a
+caller. The CLI→socket command-name mapping is deliberately the *caller's*
+responsibility (kept out of the codec). `V1ResponseError` is a newtype (not an
+enum like `V2ResponseError`) because a v1 reply carries exactly one failure bit
+(`ERROR:`-prefixed or not) — modeling it as an enum would fabricate distinctions
+the protocol lacks. Watch-item: land the first real v1 handler before long so the
+frozen primitive gets one end-to-end integration exercise.
+
 ## M4 WS5 — wire `classify_command` into dispatch (`cmux-cli`)
 
 - **Two-step `classify → plan → executor` split.** `classify_command`

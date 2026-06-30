@@ -176,6 +176,64 @@ pub fn interpret_v2_response(raw: &str) -> Result<serde_json::Value, V2ResponseE
     Err(V2ResponseError::Unspecified)
 }
 
+/// Shell-quote a single v1 line token the way the macOS CLI's `shellQuote`
+/// does (`CLI/cmux.swift:12004-12010`): a token made entirely of the safe set
+/// `[A-Za-z0-9_@%+=:,./-]` is emitted verbatim; anything else (including the
+/// empty string, spaces, and embedded quotes) is wrapped in POSIX single quotes
+/// with each `'` rewritten as `'\''`, so the server tokenizes the line
+/// shell-style and recovers the exact token.
+fn shell_quote(value: &str) -> String {
+    let is_safe = !value.is_empty()
+        && value.bytes().all(|b| {
+            b.is_ascii_alphanumeric() || matches!(b, b'_' | b'@' | b'%' | b'+' | b'=' | b':' | b',' | b'.' | b'/' | b'-')
+        });
+    if is_safe {
+        value.to_owned()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
+}
+
+/// Build the v1 command line for `command` + `args`: each token is
+/// [`shell_quote`]d and joined with single spaces, matching the macOS CLI's
+/// generic forwarder (`([command] + args).map(shellQuote).joined(separator:
+/// " ")`, `CLI/cmux.swift:16294-16297`). The transport appends the trailing
+/// `\n` (the NDJSON frame delimiter), so this returns the bare line.
+///
+/// Note: `command` is the *socket* command name, which the macOS CLI hardcodes
+/// per handler (e.g. the CLI `list-windows` is sent as `list_windows`); there
+/// is no universal CLI→socket transform, so the caller supplies the resolved
+/// name. This is the v1 counterpart to [`build_v2_request`].
+pub fn build_v1_command_line(command: &str, args: &[String]) -> String {
+    std::iter::once(command)
+        .chain(args.iter().map(String::as_str))
+        .map(shell_quote)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// A v1 command that the server rejected: the reply began with `ERROR:`.
+/// `Display` is the verbatim reply line (including the `ERROR:` prefix), exactly
+/// as the macOS CLI surfaces it (`sendV1Command` throws `CLIError(message:
+/// response)`, `CLI/cmux.swift:5765-5771`). A CLI wraps this for an exit code.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
+pub struct V1ResponseError(pub String);
+
+/// Interpret a v1 response line: a reply beginning with `ERROR:` is a failure
+/// surfaced verbatim; anything else is the success body, returned as-is for the
+/// caller to print. The transport has already stripped the single trailing
+/// newline. This is the v1 counterpart to [`interpret_v2_response`]; unlike v2,
+/// the success body is **not** parsed as JSON — v1 replies are opaque text the
+/// command handler prints or reformats.
+pub fn interpret_v1_response(raw: &str) -> Result<&str, V1ResponseError> {
+    if raw.starts_with("ERROR:") {
+        Err(V1ResponseError(raw.to_owned()))
+    } else {
+        Ok(raw)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,5 +434,41 @@ mod tests {
             interpret_v2_response(r#"{"ok":false}"#).unwrap_err(),
             V2ResponseError::Unspecified
         );
+    }
+
+    #[test]
+    fn shell_quote_passes_safe_tokens_verbatim() {
+        for safe in ["list_windows", "ws-1", "a.b/c", "user@host", "k=v", "100%", "a,b", "x:y", "_"] {
+            assert_eq!(shell_quote(safe), safe, "{safe:?} should pass verbatim");
+        }
+    }
+
+    #[test]
+    fn shell_quote_wraps_unsafe_tokens_and_escapes_quotes() {
+        // Space, empty, and embedded single quote all force single-quote wrapping.
+        assert_eq!(shell_quote("echo hi"), "'echo hi'");
+        assert_eq!(shell_quote(""), "''");
+        // `'` becomes `'\''`: close-quote, escaped quote, reopen-quote.
+        assert_eq!(shell_quote("it's"), r"'it'\''s'");
+    }
+
+    #[test]
+    fn build_v1_command_line_joins_quoted_tokens() {
+        // Zero-arg command (e.g. the literal `list_windows`).
+        assert_eq!(build_v1_command_line("list_windows", &[]), "list_windows");
+        // Mixed safe + unsafe args are quoted independently.
+        assert_eq!(
+            build_v1_command_line("set_status", &["busy".to_owned(), "on a call".to_owned()]),
+            "set_status busy 'on a call'",
+        );
+    }
+
+    #[test]
+    fn interpret_v1_response_passes_body_and_flags_error() {
+        assert_eq!(interpret_v1_response("OK: 3 windows").unwrap(), "OK: 3 windows");
+        // A bare success body is returned as-is (not JSON-parsed, unlike v2).
+        assert_eq!(interpret_v1_response("[1,2]").unwrap(), "[1,2]");
+        let error = interpret_v1_response("ERROR: no such window").unwrap_err();
+        assert_eq!(error.to_string(), "ERROR: no such window");
     }
 }
