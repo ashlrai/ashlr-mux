@@ -30,6 +30,9 @@ use uuid::Uuid;
 mod gate;
 pub use gate::ProcessTerminationGate;
 
+pub mod transport;
+pub use transport::{FrameError, LineFramer};
+
 #[cfg(windows)]
 #[path = "supervisor_windows.rs"]
 mod supervisor;
