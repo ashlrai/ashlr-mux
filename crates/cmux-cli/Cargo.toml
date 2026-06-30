@@ -14,4 +14,11 @@ path = "src/main.rs"
 
 [dependencies]
 cmux-ipc = { path = "../cmux-ipc" }
+serde_json = { workspace = true }
+# rt drives the one-shot socket round-trip; io-util backs tokio::io::split.
+tokio = { version = "1", features = ["io-util", "rt"] }
+
+[dev-dependencies]
+# `macros` only powers #[tokio::test]; kept out of the shipped binary.
+tokio = { version = "1", features = ["io-util", "rt", "macros"] }
 

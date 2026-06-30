@@ -12,10 +12,14 @@
 
 pub mod invocation;
 pub mod password;
+pub mod rpc;
 pub mod socket;
+#[cfg(windows)]
+pub mod transport;
 
 pub use invocation::{parse_global_options, CliError, GlobalOptions, ParseOutcome};
 pub use password::{password_file_path, read_password_file};
+pub use rpc::{build_rpc_request, interpret_rpc_response, parse_rpc_params};
 pub use socket::{
     resolve_socket_path, EnvView, SocketPathSource, SocketResolution,
     CONFLICTING_ENVIRONMENT_MESSAGE,

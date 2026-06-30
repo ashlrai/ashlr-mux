@@ -372,6 +372,8 @@ name = "cmux-cli"
 version = "0.1.0"
 dependencies = [
  "cmux-ipc",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
