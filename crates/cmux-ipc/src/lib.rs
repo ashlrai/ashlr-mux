@@ -18,6 +18,7 @@ mod control_request_parser;
 mod control_response_encoder;
 mod framing;
 mod json_value;
+pub mod server;
 
 pub use control_call_result::ControlCallResult;
 pub use control_request::ControlRequest;
@@ -26,6 +27,9 @@ pub use control_request_parser::ControlRequestParser;
 pub use control_response_encoder::ControlResponseEncoder;
 pub use framing::{append_line, split_lines};
 pub use json_value::JsonValue;
+pub use server::{
+    read_frame, serve_connection, write_frame, ControlRequestHandler, MAX_RPC_FRAME_BYTES,
+};
 
 #[cfg(test)]
 mod tests {

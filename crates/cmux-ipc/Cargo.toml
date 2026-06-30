@@ -11,3 +11,4 @@ path = "src/lib.rs"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tokio = { version = "1", features = ["io-util", "rt", "macros"] }
