@@ -12,6 +12,7 @@
 //! - `Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Wire/ControlResponseEncoder.swift`
 
 mod auth;
+mod client;
 mod control_call_result;
 mod control_request;
 mod control_request_parse_error;
@@ -24,6 +25,7 @@ mod named_pipe;
 pub mod server;
 
 pub use auth::{PasswordAuthGate, PasswordVerifier};
+pub use client::{authenticate_client, resolve_password, PasswordSources};
 pub use control_call_result::ControlCallResult;
 pub use control_request::ControlRequest;
 pub use control_request_parse_error::ControlRequestParseError;
@@ -32,7 +34,9 @@ pub use control_response_encoder::ControlResponseEncoder;
 pub use framing::{append_line, split_lines};
 pub use json_value::JsonValue;
 #[cfg(windows)]
-pub use named_pipe::{control_pipe_path, serve_named_pipe, serve_named_pipe_authenticated};
+pub use named_pipe::{
+    connect_pipe, control_pipe_path, serve_named_pipe, serve_named_pipe_authenticated,
+};
 pub use server::{
     read_frame, serve_connection, serve_connection_authenticated, write_frame,
     ControlRequestHandler, MAX_RPC_FRAME_BYTES,

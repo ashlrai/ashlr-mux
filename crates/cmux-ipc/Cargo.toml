@@ -11,8 +11,9 @@ path = "src/lib.rs"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-# `net` brings in the Windows named-pipe transport (tokio::net::windows::named_pipe).
-tokio = { version = "1", features = ["io-util", "net", "rt", "macros"] }
+# `net` brings in the Windows named-pipe transport (tokio::net::windows::named_pipe);
+# `time` backs the client connect-retry backoff.
+tokio = { version = "1", features = ["io-util", "net", "rt", "macros", "time"] }
 
 # Windows named-pipe control server: bind the pipe with an explicit current-user
 # DACL (token SID → SDDL → SECURITY_ATTRIBUTES) instead of the default

@@ -27,11 +27,14 @@
 use std::ffi::c_void;
 use std::io;
 use std::mem::size_of;
+use std::time::{Duration, Instant};
 
-use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
+use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient, NamedPipeServer, ServerOptions};
 
 use windows::core::{PCWSTR, PWSTR};
-use windows::Win32::Foundation::{CloseHandle, LocalFree, HANDLE, HLOCAL};
+use windows::Win32::Foundation::{
+    CloseHandle, LocalFree, ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY, HANDLE, HLOCAL,
+};
 use windows::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
 };
@@ -84,6 +87,34 @@ pub fn control_pipe_path(base_name: &str) -> io::Result<String> {
         ));
     }
     Ok(path)
+}
+
+/// Connect a client to the control pipe at `addr`, retrying transient failures
+/// until `timeout` elapses.
+///
+/// Two conditions are retried: `ERROR_PIPE_BUSY` (the server is up but all pipe
+/// instances are momentarily in use — the canonical named-pipe client wait) and
+/// `ERROR_FILE_NOT_FOUND` (the server's first instance is not listening *yet*,
+/// e.g. the app is still launching). Any other error, or expiry of `timeout`,
+/// returns the error so the caller can decide whether to launch the app or give
+/// up. A zero `timeout` makes exactly one attempt.
+pub async fn connect_pipe(addr: &str, timeout: Duration) -> io::Result<NamedPipeClient> {
+    let options = ClientOptions::new();
+    let deadline = Instant::now() + timeout;
+    loop {
+        match options.open(addr) {
+            Ok(client) => return Ok(client),
+            Err(error) => {
+                let code = error.raw_os_error();
+                let retryable = code == Some(ERROR_PIPE_BUSY.0 as i32)
+                    || code == Some(ERROR_FILE_NOT_FOUND.0 as i32);
+                if !retryable || Instant::now() >= deadline {
+                    return Err(error);
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        }
+    }
 }
 
 /// The SDDL string for a DACL granting `GENERIC_ALL` to `sid` only, protected
@@ -290,10 +321,9 @@ fn win_err(error: windows::core::Error) -> io::Error {
 mod tests {
     use super::*;
     use crate::{
-        read_frame, write_frame, ControlCallResult, ControlRequest, JsonValue, MAX_RPC_FRAME_BYTES,
+        authenticate_client, read_frame, write_frame, ControlCallResult, ControlRequest, JsonValue,
+        MAX_RPC_FRAME_BYTES,
     };
-    use tokio::net::windows::named_pipe::ClientOptions;
-    use tokio::time::{sleep, Duration};
 
     fn echo_handler(request: ControlRequest) -> ControlCallResult {
         ControlCallResult::Ok(JsonValue::String(request.method))
@@ -306,16 +336,12 @@ mod tests {
             .expect("valid pipe name")
     }
 
-    /// Open a client to `addr`, retrying briefly while the first server instance
-    /// is still being created.
-    async fn connect_client(addr: &str) -> tokio::net::windows::named_pipe::NamedPipeClient {
-        for _ in 0..50 {
-            match ClientOptions::new().open(addr) {
-                Ok(client) => return client,
-                Err(_) => sleep(Duration::from_millis(10)).await,
-            }
-        }
-        panic!("client could not connect to {addr}");
+    /// Open a client to `addr` via the production connector, allowing time for
+    /// the first server instance to come up.
+    async fn connect_client(addr: &str) -> NamedPipeClient {
+        connect_pipe(addr, Duration::from_secs(2))
+            .await
+            .expect("connect")
     }
 
     #[test]
@@ -385,6 +411,46 @@ mod tests {
         fn verify(&self, password: &str) -> bool {
             password == self.0
         }
+    }
+
+    /// Spawn an auth-gated echo server on a fresh pipe and connect a client.
+    async fn spawn_authenticated_server(tag: &str) -> NamedPipeClient {
+        let addr = test_addr(tag);
+        let server_addr = addr.clone();
+        tokio::spawn(async move {
+            let gate = PasswordAuthGate::new(OnePassword("s3cret"));
+            let _ = serve_named_pipe_authenticated(&server_addr, || echo_handler, gate).await;
+        });
+        connect_client(&addr).await
+    }
+
+    #[tokio::test]
+    async fn client_handshake_then_command_succeeds() {
+        let client = spawn_authenticated_server("client-ok").await;
+        let (mut reader, mut writer) = tokio::io::split(client);
+        authenticate_client(&mut reader, &mut writer, "s3cret")
+            .await
+            .expect("auth");
+
+        write_frame(&mut writer, r#"{"id":1,"method":"ping"}"#)
+            .await
+            .expect("write");
+        let frame = read_frame(&mut reader, MAX_RPC_FRAME_BYTES)
+            .await
+            .expect("read")
+            .expect("frame");
+        let value: serde_json::Value = serde_json::from_slice(&frame).expect("json");
+        assert_eq!(value["result"], serde_json::json!("ping"));
+    }
+
+    #[tokio::test]
+    async fn client_handshake_rejects_wrong_password() {
+        let client = spawn_authenticated_server("client-bad").await;
+        let (mut reader, mut writer) = tokio::io::split(client);
+        let error = authenticate_client(&mut reader, &mut writer, "wrong")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("Invalid password"));
     }
 
     #[tokio::test]
