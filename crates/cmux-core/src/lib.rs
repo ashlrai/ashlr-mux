@@ -5,6 +5,19 @@ pub mod shortcuts_action;
 
 pub use shortcuts_action::Action;
 
+// Re-export the notification-store public surface so the future `cmux-notify`
+// delivery crate can consume it, mirroring how `Action` is re-exported.
+pub use notifications::badge::dock_badge_label;
+pub use notifications::policy::{
+    delivery_decision, has_any_notification_effect, should_suppress_external_delivery,
+    DeliveryDecision, TerminalNotificationPolicyEffects,
+};
+pub use notifications::sound::NotificationSound;
+pub use notifications::{
+    AddNotificationRequest, ApplyOutcome, NotificationClickAction, NotificationRequest,
+    NotificationState, NotificationStore, TerminalNotification,
+};
+
 pub const CMUX_PLATFORM: &str = "windows-m1-core";
 
 pub fn milestone() -> &'static str {
