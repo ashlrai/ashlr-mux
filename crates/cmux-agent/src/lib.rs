@@ -21,10 +21,14 @@ use std::{
 use uuid::Uuid;
 
 mod env_policy;
+mod version;
 
 pub use env_policy::{
     claude_config_preferred_path, sanitized_node_options, sanitized_value, selected_environment,
     ClaudeConfigContext, HERMES_AGENT_ENVIRONMENT_KEYS, SAFE_ENVIRONMENT_KEYS,
+};
+pub use version::{
+    opencode_version_supports_fork, SemanticVersion, MINIMUM_OPENCODE_FORK_VERSION,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
