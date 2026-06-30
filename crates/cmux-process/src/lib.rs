@@ -33,6 +33,9 @@ pub use gate::ProcessTerminationGate;
 pub mod transport;
 pub use transport::{FrameError, LineFramer};
 
+pub mod ledger;
+pub use ledger::{process_creation_time, LedgerEntry, SessionLedger};
+
 #[cfg(windows)]
 #[path = "supervisor_windows.rs"]
 mod supervisor;
