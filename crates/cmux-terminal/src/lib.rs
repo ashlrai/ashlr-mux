@@ -13,6 +13,7 @@
 
 pub mod geometry;
 pub mod theme;
+pub mod transcript;
 
 use serde::{Deserialize, Serialize};
 
