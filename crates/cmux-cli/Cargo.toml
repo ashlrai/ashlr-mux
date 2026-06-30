@@ -4,7 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+name = "cmux_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "cmux"
 path = "src/main.rs"
+
+[dependencies]
+cmux-ipc = { path = "../cmux-ipc" }
 

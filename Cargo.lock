@@ -370,6 +370,9 @@ dependencies = [
 [[package]]
 name = "cmux-cli"
 version = "0.1.0"
+dependencies = [
+ "cmux-ipc",
+]
 
 [[package]]
 name = "cmux-core"
