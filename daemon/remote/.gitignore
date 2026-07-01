@@ -2,3 +2,7 @@
 # binary into the module root. Never commit it.
 /cmuxd-remote
 /cmuxd-remote.exe
+
+# Go build artifacts also land in the package dir (cmd/cmuxd-remote/).
+/cmd/cmuxd-remote/cmuxd-remote
+/cmd/cmuxd-remote/cmuxd-remote.exe

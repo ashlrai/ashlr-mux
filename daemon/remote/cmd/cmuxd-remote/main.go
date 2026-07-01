@@ -750,7 +750,7 @@ func ensurePersistentDaemonRunning(paths persistentDaemonPaths, token string, st
 	cmd.Env = append(os.Environ(), persistentDaemonReadyFDEnv+"=3")
 	cmd.ExtraFiles = []*os.File{readyWriter}
 	configureDetachedProcess(cmd)
-	if err := cmd.Start(); err != nil {
+	if err := startDetachedDaemon(cmd); err != nil {
 		return err
 	}
 	_ = readyWriter.Close()

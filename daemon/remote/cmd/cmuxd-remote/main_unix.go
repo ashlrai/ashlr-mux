@@ -18,8 +18,18 @@ func daemonDirectoryOwnedByCurrentUser(info os.FileInfo) bool {
 
 // configureDetachedProcess detaches the spawned persistent daemon from the
 // caller's controlling terminal/session so it survives the parent exiting.
+// Setsid places the daemon in a new session with no controlling terminal, which
+// is the POSIX analogue of the Windows console + Job Object breakaway used to
+// keep the daemon alive after the launcher exits.
 func configureDetachedProcess(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+}
+
+// startDetachedDaemon starts the detached daemon process. On Unix, Setsid alone
+// is sufficient for the daemon to outlive its launcher, so there is no
+// breakaway fallback to perform (unlike the Windows Job Object case).
+func startDetachedDaemon(cmd *exec.Cmd) error {
+	return cmd.Start()
 }
 
 // lockDaemonSlot takes a non-blocking exclusive advisory lock on the slot lock
