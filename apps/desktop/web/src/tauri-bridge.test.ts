@@ -376,14 +376,16 @@ describe("subscribeToAgentEvents", () => {
     const listenDeferred = deferred<() => void>();
     let listenCalls = 0;
     let unlistenCalls = 0;
-    let nativeCallback: ListenCallback | null = null;
+    // Hold the captured callback on an object: a bare `let` assigned only inside
+    // the closure gets control-flow-narrowed to `null` at the later call site.
+    const captured: { nativeCallback: ListenCallback | null } = { nativeCallback: null };
 
     installWindow({
       __TAURI__: {
         event: {
           listen: (_name, callback) => {
             listenCalls += 1;
-            nativeCallback = callback;
+            captured.nativeCallback = callback;
             return listenDeferred.promise;
           },
         },
@@ -408,9 +410,9 @@ describe("subscribeToAgentEvents", () => {
     const off2 = await p2;
 
     expect(listenCalls).toBe(1);
-    expect(nativeCallback).not.toBeNull();
+    expect(captured.nativeCallback).not.toBeNull();
 
-    nativeCallback?.({ payload: { type: "raced-event" } });
+    captured.nativeCallback?.({ payload: { type: "raced-event" } });
     expect(firstEvents).toEqual([{ type: "raced-event" }]);
     expect(secondEvents).toEqual([{ type: "raced-event" }]);
 

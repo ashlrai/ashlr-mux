@@ -70,6 +70,26 @@ export async function callNative<T>(
 }
 
 /**
+ * Invoke a native Tauri command and return its reply verbatim, WITHOUT the
+ * `NativeReply` envelope-unwrapping that {@link callNative} performs. The macOS
+ * `webkit.messageHandlers.*` contract requires the raw `{ ok, value | error }`
+ * envelope to reach the reused `webviews/` bridges (they unwrap it themselves),
+ * so the host shim in `host/` routes through this instead of `callNative`.
+ *
+ * In a plain-browser runtime (no Tauri) it throws {@link NativeBridgeError}.
+ */
+export async function invokeRaw<T>(
+  method: string,
+  params: Record<string, unknown> = {},
+): Promise<T> {
+  const invoke = window.__TAURI__?.core?.invoke;
+  if (!invoke) {
+    throw new NativeBridgeError("Tauri bridge is unavailable in the current runtime.");
+  }
+  return invoke<T>(method, params);
+}
+
+/**
  * Subscribe to a native Tauri event by name. Returns an unlisten function; in a
  * plain-browser runtime (no Tauri) it resolves to a no-op so the caller can run
  * unconditionally.

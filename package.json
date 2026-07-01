@@ -1,7 +1,8 @@
 {
   "workspaces": [
     "apps/desktop/packages/*",
-    "apps/desktop/web"
+    "apps/desktop/web",
+    "webviews"
   ],
   "scripts": {
     "agent-session-web:build": "sh scripts/build-agent-session-web.sh",
@@ -15,7 +16,8 @@
     "desktop:test:e2e": "python scripts/desktop/run_desktop_test_matrix.py e2e",
     "desktop:test:integration": "python scripts/desktop/run_desktop_test_matrix.py integration",
     "desktop:test:unit": "python scripts/desktop/run_desktop_test_matrix.py unit",
-    "desktop:web:build": "bun scripts/desktop/build-desktop-web.mjs",
+    "desktop:web:build": "bun run --cwd apps/desktop/web build",
+    "desktop:web:dev": "bun run --cwd apps/desktop/web dev",
     "feed-tui": "bun Resources/feed-tui/index.ts"
   },
   "dependencies": {

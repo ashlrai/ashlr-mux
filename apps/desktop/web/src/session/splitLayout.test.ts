@@ -1,0 +1,153 @@
+import { describe, expect, test } from "bun:test";
+
+import {
+  MAX_DIVIDER,
+  MIN_DIVIDER,
+  clampDivider,
+  countLeaves,
+  equalizeDivider,
+  resizeDivider,
+  setDividerAtPath,
+  type Layout,
+  type Split,
+} from "./splitLayout";
+
+function pane(...panelIds: string[]): Layout {
+  return { type: "pane", pane: { panel_ids: panelIds } };
+}
+
+function split(
+  orientation: "horizontal" | "vertical",
+  divider: number,
+  first: Layout,
+  second: Layout,
+): Layout {
+  return { type: "split", split: { orientation, divider_position: divider, first, second } };
+}
+
+describe("clampDivider", () => {
+  test("passes values already in range through", () => {
+    expect(clampDivider(0.5)).toBe(0.5);
+    expect(clampDivider(MIN_DIVIDER)).toBe(MIN_DIVIDER);
+    expect(clampDivider(MAX_DIVIDER)).toBe(MAX_DIVIDER);
+  });
+
+  test("clamps out-of-range values to [0.1, 0.9]", () => {
+    expect(clampDivider(-1)).toBe(MIN_DIVIDER);
+    expect(clampDivider(0)).toBe(MIN_DIVIDER);
+    expect(clampDivider(1)).toBe(MAX_DIVIDER);
+    expect(clampDivider(42)).toBe(MAX_DIVIDER);
+  });
+
+  test("NaN falls back to centered", () => {
+    expect(clampDivider(Number.NaN)).toBe(0.5);
+  });
+});
+
+describe("countLeaves", () => {
+  test("a bare pane is one leaf", () => {
+    expect(countLeaves(pane("a"))).toBe(1);
+  });
+
+  test("counts leaves across a nested tree", () => {
+    // split( pane, split( pane, pane ) ) => 3 leaves
+    const tree = split("horizontal", 0.5, pane("a"), split("vertical", 0.5, pane("b"), pane("c")));
+    expect(countLeaves(tree)).toBe(3);
+  });
+});
+
+describe("resizeDivider", () => {
+  test("adds delta/axis to the current ratio", () => {
+    // 0.5 + 100/400 = 0.75
+    expect(resizeDivider(0.5, 100, 400)).toBeCloseTo(0.75, 10);
+  });
+
+  test("negative delta drags the divider back", () => {
+    expect(resizeDivider(0.5, -100, 400)).toBeCloseTo(0.25, 10);
+  });
+
+  test("clamps the result into the legal range", () => {
+    expect(resizeDivider(0.8, 1000, 400)).toBe(MAX_DIVIDER);
+    expect(resizeDivider(0.2, -1000, 400)).toBe(MIN_DIVIDER);
+  });
+
+  test("a non-positive axis is a no-op (returns the clamped current)", () => {
+    expect(resizeDivider(0.5, 100, 0)).toBe(0.5);
+    expect(resizeDivider(0.05, 100, -10)).toBe(MIN_DIVIDER);
+  });
+});
+
+describe("equalizeDivider", () => {
+  test("two equal leaves centre the divider", () => {
+    const s = { orientation: "horizontal", divider_position: 0.8, first: pane("a"), second: pane("b") } as Split;
+    expect(equalizeDivider(s)).toBe(0.5);
+  });
+
+  test("weights by leaf count, not depth (2 vs 1 => 2/3)", () => {
+    const s = {
+      orientation: "horizontal",
+      divider_position: 0.5,
+      first: split("vertical", 0.5, pane("a"), pane("b")),
+      second: pane("c"),
+    } as Split;
+    expect(equalizeDivider(s)).toBeCloseTo(2 / 3, 10);
+  });
+
+  test("an extreme leaf ratio is clamped", () => {
+    // 9 leaves vs 1 => 0.9 exactly (edge of range)
+    let left: Layout = pane("l0");
+    for (let i = 1; i < 9; i += 1) {
+      left = split("horizontal", 0.5, left, pane(`l${i}`));
+    }
+    const s = { orientation: "horizontal", divider_position: 0.5, first: left, second: pane("r") } as Split;
+    expect(countLeaves(left)).toBe(9);
+    expect(equalizeDivider(s)).toBe(MAX_DIVIDER);
+  });
+});
+
+describe("setDividerAtPath", () => {
+  const tree = split(
+    "horizontal",
+    0.5,
+    pane("a"),
+    split("vertical", 0.5, pane("b"), pane("c")),
+  );
+
+  test("empty path updates the root split", () => {
+    const next = setDividerAtPath(tree, [], 0.3);
+    expect(next.type).toBe("split");
+    if (next.type === "split") {
+      expect(next.split.divider_position).toBe(0.3);
+    }
+  });
+
+  test("updates a nested split addressed by path", () => {
+    const next = setDividerAtPath(tree, ["second"], 0.2);
+    if (next.type === "split" && next.split.second.type === "split") {
+      expect(next.split.second.split.divider_position).toBe(0.2);
+      // Root divider untouched.
+      expect(next.split.divider_position).toBe(0.5);
+    } else {
+      throw new Error("expected a nested split");
+    }
+  });
+
+  test("clamps the new position", () => {
+    const next = setDividerAtPath(tree, [], 5);
+    if (next.type === "split") {
+      expect(next.split.divider_position).toBe(MAX_DIVIDER);
+    }
+  });
+
+  test("a path running off a leaf is a no-op returning the same subtree ref", () => {
+    // ["first"] is a pane; ["first","second"] runs past it.
+    const next = setDividerAtPath(tree, ["first", "second"], 0.3);
+    expect(next).toEqual(tree);
+  });
+
+  test("does not mutate the input tree", () => {
+    const before = JSON.stringify(tree);
+    setDividerAtPath(tree, ["second"], 0.1);
+    expect(JSON.stringify(tree)).toBe(before);
+  });
+});
