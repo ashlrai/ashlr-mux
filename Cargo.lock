@@ -394,6 +394,7 @@ dependencies = [
  "cmux-agent",
  "cmux-core",
  "cmux-ipc",
+ "cmux-terminal",
  "serde",
  "serde_json",
  "tauri",

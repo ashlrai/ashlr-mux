@@ -34,8 +34,23 @@ const normalizedEntry = path.join(assetsRoot, "main.js");
 await rename(emittedEntry, normalizedEntry);
 await rmdir(path.join(assetsRoot, "src"));
 
+// xterm ships its own stylesheet; prepend it so the terminal renders correctly
+// without a CSS-in-JS import in the entrypoint.
+const xtermCssPath = path.join(
+  webRoot,
+  "node_modules",
+  "@xterm",
+  "xterm",
+  "css",
+  "xterm.css",
+);
+const xtermStyles = await readFile(xtermCssPath, "utf8");
 const styles = await readFile(path.join(srcRoot, "styles.css"), "utf8");
-await writeFile(path.join(assetsRoot, "styles.css"), styles, "utf8");
+await writeFile(
+  path.join(assetsRoot, "styles.css"),
+  `${xtermStyles}\n${styles}`,
+  "utf8",
+);
 
 const html = `<!doctype html>
 <html lang="en">

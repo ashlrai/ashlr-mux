@@ -17,6 +17,7 @@ tauri-build = { version = "2" }
 cmux-agent = { path = "../../../crates/cmux-agent" }
 cmux-core = { path = "../../../crates/cmux-core" }
 cmux-ipc = { path = "../../../crates/cmux-ipc" }
+cmux-terminal = { path = "../../../crates/cmux-terminal" }
 serde = { workspace = true }
 tauri = { version = "2" }
 

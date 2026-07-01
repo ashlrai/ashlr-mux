@@ -5,5 +5,9 @@
   "scripts": {
     "build": "bun ../../../scripts/desktop/build-desktop-web.mjs",
     "test": "bun test src/tauri-bridge.test.ts"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0"
   }
 }

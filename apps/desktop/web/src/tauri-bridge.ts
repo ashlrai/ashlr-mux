@@ -69,6 +69,22 @@ export async function callNative<T>(
   return reply.value;
 }
 
+/**
+ * Subscribe to a native Tauri event by name. Returns an unlisten function; in a
+ * plain-browser runtime (no Tauri) it resolves to a no-op so the caller can run
+ * unconditionally.
+ */
+export async function listenNative<T>(
+  event: string,
+  handler: (payload: T) => void,
+): Promise<() => void> {
+  const listen = window.__TAURI__?.event?.listen;
+  if (!listen) {
+    return () => {};
+  }
+  return listen(event, (received) => handler(received.payload as T));
+}
+
 function fanOutAgentEvent(event: AgentEvent): void {
   for (const handler of listeners) {
     handler(event);

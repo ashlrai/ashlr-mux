@@ -1,3 +1,5 @@
+mod terminal;
+
 fn ping_response() -> &'static str {
     "pong"
 }
@@ -31,7 +33,15 @@ fn desktop_core_status() -> DesktopCoreStatus {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![ping, desktop_core_status])
+        .manage(terminal::TerminalState::default())
+        .invoke_handler(tauri::generate_handler![
+            ping,
+            desktop_core_status,
+            terminal::terminal_open,
+            terminal::terminal_write,
+            terminal::terminal_resize,
+            terminal::terminal_close
+        ])
         .run(tauri::generate_context!())
         .expect("failed to run cmux desktop bootstrap");
 }

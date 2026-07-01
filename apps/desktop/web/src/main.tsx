@@ -1,4 +1,7 @@
-import { callNative } from "./tauri-bridge";
+import { FitAddon } from "@xterm/addon-fit";
+import { Terminal } from "@xterm/xterm";
+
+import { callNative, listenNative } from "./tauri-bridge";
 
 const container = document.getElementById("root");
 
@@ -6,69 +9,77 @@ if (!container) {
   throw new Error("Desktop root element is missing.");
 }
 
-container.innerHTML = `
-  <main class="bootstrap-shell">
-    <header class="bootstrap-header">
-      <div class="brand-mark" aria-hidden="true">cm</div>
-      <div>
-        <p class="eyebrow">Windows bootstrap</p>
-        <h1>cmux for Windows</h1>
-      </div>
-    </header>
-    <section class="hero">
-      <div class="surface surface-primary">
-        <div class="surface-title">Placeholder chrome</div>
-        <p class="surface-copy">
-          The shared Rust core is now live under the desktop shell, so session models, control
-          IPC, and agent-provider contracts can move forward without depending on AppKit.
-        </p>
-      </div>
-      <div class="surface surface-secondary">
-        <div class="surface-title">Bridge status</div>
-        <p class="status-text" id="bridge-status">Connecting to the native shell...</p>
-      </div>
-      <div class="surface surface-secondary">
-        <div class="surface-title">Core status</div>
-        <p class="status-text" id="core-status">Loading M1 contract snapshot...</p>
-      </div>
-    </section>
-    <footer class="bootstrap-footer">
-      <span>Milestone M1</span>
-      <span>Cross-platform core extraction</span>
-      <span>WebView2-ready</span>
-    </footer>
-  </main>
-`;
-
-const statusNode = document.getElementById("bridge-status");
-const coreStatusNode = document.getElementById("core-status");
-
-if (!statusNode || !coreStatusNode) {
-  throw new Error("Desktop status element is missing.");
-}
-
-callNative<string>("ping")
-  .then((result) => {
-    statusNode.textContent = `Native bridge ready: ${result}`;
-  })
-  .catch((error) => {
-    const message = error instanceof Error ? error.message : "Native bridge unavailable";
-    statusNode.textContent = `Native bridge fallback: ${message}`;
-  });
-
-type DesktopCoreStatus = {
-  milestone: string;
-  platform: string;
-  agent_providers: string[];
-  ipc_fixture_request: string;
+type TerminalOutput = {
+  id: number;
+  data: string;
 };
 
-callNative<DesktopCoreStatus>("desktop_core_status")
-  .then((result) => {
-    coreStatusNode.textContent =
-      `${result.milestone} · ${result.platform} · ${result.agent_providers.join(", ")}`;
-  })
-  .catch((error) => {
-    const message = error instanceof Error ? error.message : "Shared core unavailable";
-    coreStatusNode.textContent = `Shared core fallback: ${message}`;
+type TerminalExit = {
+  id: number;
+};
+
+/** Decode base64 (the Rust output bridge) into the raw bytes xterm expects. */
+function decodeBase64(data: string): Uint8Array {
+  const binary = atob(data);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+const term = new Terminal({
+  cursorBlink: true,
+  fontFamily:
+    '"Cascadia Mono", "Cascadia Code", Consolas, "Courier New", monospace',
+  fontSize: 14,
+  theme: {
+    background: "#0b0e14",
+    foreground: "#e6e6e6",
+  },
+});
+
+const fitAddon = new FitAddon();
+term.loadAddon(fitAddon);
+term.open(container);
+fitAddon.fit();
+
+async function boot(): Promise<void> {
+  const { cols, rows } = term;
+  const sessionId = await callNative<number>("terminal_open", { cols, rows });
+
+  await listenNative<TerminalOutput>("cmux://terminal-output", (payload) => {
+    if (payload.id === sessionId) {
+      term.write(decodeBase64(payload.data));
+    }
   });
+
+  await listenNative<TerminalExit>("cmux://terminal-exit", (payload) => {
+    if (payload.id === sessionId) {
+      term.write("\r\n\x1b[2m[process exited]\x1b[0m\r\n");
+    }
+  });
+
+  term.onData((data) => {
+    void callNative("terminal_write", { id: sessionId, data });
+  });
+
+  const applyResize = (): void => {
+    fitAddon.fit();
+    void callNative("terminal_resize", {
+      id: sessionId,
+      cols: term.cols,
+      rows: term.rows,
+    });
+  };
+
+  window.addEventListener("resize", applyResize);
+  new ResizeObserver(applyResize).observe(container);
+
+  term.focus();
+}
+
+boot().catch((error) => {
+  const message = error instanceof Error ? error.message : String(error);
+  term.write(`\r\n\x1b[31mFailed to start terminal: ${message}\x1b[0m\r\n`);
+});
