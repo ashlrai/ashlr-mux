@@ -31,40 +31,87 @@ shell, `3377646` core-types ts-rs, `4cf2eae` cmuxd survival, `b6a341f` docs):
 - **Phase 3/4/5 research** folded into `docs/windows-port/phases/phase-{3,4,5}-*.md`
   (verified host-bridge contracts, concrete build order, open decisions).
 
-## The plan (execute this) — Phase 3 GUI-wiring slice
+## The plan — Phase 3 GUI-wiring slice: CLAUDE DONE, awaiting live verify
 
-The **headless** half of Phase 3's transport wave is DONE (accumulators +
-process_store state machine + `handle()` dispatcher, over an injected
-`AgentTransport` trait + event sink — deliberately tokio/cmux-process/Tauri-free
-so it stays lib-testable). **This slice = the GUI-coupled tail** that needs live
-iteration (held for fresh context on purpose). Steps:
+The Claude vertical is BUILT + fully green (see `LOOP-LOG.md` newest entry +
+`DECISIONS.md` "Phase 3 — agent-session GUI-wiring"). What landed:
 
-1. **Concrete transport impl** in `cmux-agent-chat` (or a thin `src-tauri` layer):
-   implement the `AgentTransport` trait with real `tokio` + `cmux-process`
-   (`SpawnSpec`, `AgentIo::write_line`/`chunks`, Job-Object supervisor). Resolve
-   the executable via `cmux-agent` (`AgentExecutableResolver`, launch plans,
-   env policy — all already ported). Pump stdout/stderr chunks → the provider
-   accumulator → the event sink. Respect `provider.started` timing (codex/opencode
-   emit AFTER their async handshake; others immediately).
-2. **`apps/desktop/src-tauri/src/agent_session.rs`** — `#[tauri::command] async fn
-   agent_session_rpc(app, state, message)` → deserialize `{id,method,params}`,
-   dispatch via `cmux-agent-chat::handle` over a managed `ProcessStore`; `app.pickFiles`
-   via the Tauri dialog+fs plugin (honor 512KB/2MB image caps). Route ALL events
-   through ONE mpsc→emitter task calling `app.emit("cmux://agent-event", value)`
-   (ordering parity with Swift's serial MainActor). Register in `lib.rs`
-   `generate_handler!` + `.manage(AgentSessionState::default())`. NOTE: the web
-   shim (`host.ts` `MAC_HOST_CHANNELS.agentSession='agent_session_rpc'`,
-   `MAC_HOST_EVENT='cmux://agent-event'`) is ALREADY built — do not touch it.
-   Command args are **camelCase** on the JS side (Tauri maps to snake_case).
-3. **Mount the reused `webviews/src/agent-session` React app** inside the desktop
-   web shell (its shims already exist); ensure `installMacHostShims()` runs before
-   it boots and `app.theme` applies on load. Add it as a workspace surface type
-   (a pane can be a shell OR an agent session).
-4. **Verify LIVE** (can't unit-test: process-spawn hits os-4551): launch the app,
-   open an agent session, watch a real Codex/Claude stream render in the reused
-   chat UI, converse, stop. This is a "report back for testing" point.
+- `apps/desktop/src-tauri/src/agent_session.rs` — a single-owner **actor thread**
+  owns `cmux-agent-chat::ProcessStore` (it is `!Send`), fed by `mpsc<ActorMsg>`
+  (`Rpc`/`Feed`/`Exit`). **No tokio** — `cmux-process` is blocking std, so the
+  transport is std threads + mpsc like `terminal.rs`. `ClaudeAgentTransport`
+  resolves via `cmux-agent` → spawns Job-Object-supervised → a reader thread pumps
+  framed output into `feed_output`. `agent_session_rpc` returns the RAW
+  `{ok,value|error}` envelope; the sink emits tagged `AgentEvent` over
+  `cmux://agent-event`. `app.context` (67-key copy + dark theme) + `app.pickFiles`
+  stub are host-serviced; `provider.*` → `handle()`. **Windows fix:**
+  `wrap_windows_shim` runs `claude.cmd` via `%ComSpec% /C` (CreateProcessW can't
+  exec a `.cmd`).
+- Canonical surface type: `surface_kind` on `SessionPaneLayoutSnapshot` +
+  `session_ops::set_surface_kind` + `session_set_surface_kind` command; web
+  `Workspace` renders `AgentSessionSurface` vs `TerminalSurface` per pane, with an
+  agent toggle (✦) in PaneControls. `AgentIo::into_parts()` added to cmux-process.
 
-Full contract + open decisions: `docs/windows-port/phases/phase-3-agents.md`.
+### LIVE STATUS (2026-07-01 — partially verified in the running app)
+
+- The reused agent-session UI **mounts + boots** (app.context + provider.list load,
+  provider dropdown shows Codex/Claude/OpenCode, Start renders).
+- **Claude Start → spawn → stream → converse WORKS.** Two live bugs were found and
+  fixed during verification:
+  1. **Streaming rendered all-at-once.** The current `claude` CLI wraps partial
+     deltas as `{"type":"stream_event","event":{"type":"content_block_delta",…}}`;
+     our accumulator only matched TOP-LEVEL `content_block_delta`, so it ignored
+     every delta and emitted only the final full `assistant` message. FIXED:
+     `cmux-agent-chat/src/claude.rs` `unwrap_stream_event` unwraps the envelope so
+     the inner Anthropic events drive the existing delta logic (verified against
+     captured real CLI output; +2 tests). Deltas now stream token-by-token.
+  2. **Dev-server orphans.** Stopping `tauri dev` on Windows does NOT kill its child
+     Vite/app tree (breakaway) → port 1420 stays held + a stale app window lingers.
+     Free it: kill the `node` PID on 1420 (`Get-NetTCPConnection -LocalPort 1420`)
+     before relaunch. (tauri DOES watch the dep crates incl. cmux-agent-chat, so a
+     Rust dep change auto-rebuilds — a manual restart is usually unnecessary.)
+
+### STYLING — agent surface (guarded import; CONFIRMED live-styled ✓)
+
+The reused `agent-session/shared/styles.css` is a WHOLE-DOCUMENT Tailwind sheet:
+it sets `html, body, #root { background: transparent }` (+ `overflow:hidden`,
+`height:100%`) on the assumption it OWNS a webview. Importing it into the shared
+desktop shell first blacked out everything (transparent root → WebView2 black
+shows through). CURRENT approach (applied): **import the sheet** (for the styled
+look) in `AgentSessionSurface.tsx`, and **guard the shell root background** in
+`apps/desktop/web/src/styles.css` with `html, body, #root { background: #0b0e14
+!important }` so the later-loaded agent sheet can only style the agent surface, not
+transparent-ize the shared root. The agent surfaces' translucent backgrounds
+composite over the dark shell → reads correctly. NEEDS a live re-confirm (styled +
+not black; toggle a pane to agent, refresh the window if a stale stylesheet
+lingers). If the guard proves fragile (global `overflow`/`color`/font leakage from
+the sheet onto terminal panes), the robust fix is document isolation: an
+**`<iframe>`** per agent pane loading a standalone agent-session entry (mirrors
+macOS's per-surface webview) OR a **shadow root**, with the stylesheet AND the host
+shims (`window.webkit.messageHandlers.agentSession`, `cmuxAgentBridge`,
+`installMacHostShims`) scoped INTO that document/frame (the singleton-bridge-on-top-
+window assumption must be reworked for iframes — install shims into the frame or
+proxy via postMessage).
+
+### NEXT — after style isolation
+
+1. **Re-verify Claude live** end-to-end with proper styling (stream + multi-turn +
+   Stop). Stop calls transport `terminate` (Ctrl-Break + 500ms grace + tree-kill +
+   reap) → provider.exit → idle.
+2. **Codex** — reuse this transport: add the app-server **JSON-RPC handshake**
+   write side (initialize on spawn → on init response send initialized +
+   thread/start → drain queued turn/start; single-queued-input backpressure via
+   `CodexAccumulator`). Read path already flows through `feed_output`. Codex is
+   `autoStart:true`.
+3. **OpenCode** — add the `reqwest` HTTP-loopback client: after stdout announces
+   the loopback URL (`active_session().opencode_base_url()`), POST `/session` →
+   `complete_opencode_handshake` (emits the deferred `provider.started`) → pump
+   `/event` SSE into `feed_opencode_sse_line`; `writeLine` = POST prompt_async with
+   the `OpenCodeServerAuth` header. Creds already minted by `cmux-agent`.
+4. **`app.pickFiles`** — real Tauri dialog+fs plugin (honor 512KB/2MB image caps,
+   `isImage`/`mimeType`); currently a `{files:[]}` stub.
+
+Full contract: `docs/windows-port/phases/phase-3-agents.md`.
 
 ### Also open (backlog)
 - **cmuxd breakaway needs the Rust side** — the `cmux-process` supervisor job must
@@ -107,7 +154,7 @@ Full contract + open decisions: `docs/windows-port/phases/phase-3-agents.md`.
   use native Read/Grep/Edit.
 
 ## Resume prompt to give me after reset
-"Read docs/windows-port/ULTRACODE-RESUME.md and continue: build the Phase 3
-GUI-wiring slice — the concrete AgentTransport impl (tokio + cmux-process),
-the agent_session_rpc Tauri command, and mount the reused webviews agent-session
-app — then have me launch the app to test a live agent session."
+"Read docs/windows-port/ULTRACODE-RESUME.md. The Claude agent-session vertical is
+built + green; continue from 'NEXT': either help me live-verify a Claude session
+in the running app, or build the Codex app-server handshake / OpenCode HTTP-SSE
+clients on top of the same actor + AgentTransport plumbing in agent_session.rs."

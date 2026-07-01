@@ -144,3 +144,85 @@ One line per completed slice (milestone/result/commit/next). Newest last.
   to the GUI-wiring slice: concrete async AgentTransport (tokio + cmux-process spawn
   + stdio pump, codex/opencode write side + backpressure, SIGKILL timer),
   agent_session_rpc Tauri command, app.context/pickFiles, webview agent-session mount.
+- Phase 3 GUI-wiring slice — Claude agent session live end-to-end (agent,
+  2026-07-01). Wired the reused `webviews/agent-session` React app to a concrete
+  Windows host. NEW `apps/desktop/src-tauri/src/agent_session.rs`: a single-owner
+  ACTOR thread owns `cmux-agent-chat::ProcessStore` (it is !Send — sink is FnMut)
+  and drains one `mpsc<ActorMsg>` — `Rpc` (per-request oneshot reply), `Feed`
+  (stdout/stderr chunk, empty=EOF), `Exit` — giving serial event ordering (macOS
+  MainActor parity). NO tokio: `cmux-process` is blocking std (AgentIo →
+  `mpsc::Receiver<AgentOutputChunk>` + stdin), so the transport = std threads +
+  mpsc, mirroring `terminal.rs`. `ClaudeAgentTransport` impl AgentTransport:
+  resolve via `cmux-agent` (`AgentExecutableResolver`→`to_spawn_spec`), spawn
+  Job-Object-supervised via `cmux-process::spawn_captured`, per-session reader
+  thread pushes framed lines (re-adds `\n`) → `feed_output`; on pipe disconnect
+  sends both-stream EOF + Exit(0). `write_line` (Claude) = `write_claude_stream_json`
+  → stdin; `terminate` = Graceful tree-kill. app.context (full 67-key English copy
+  + canonical dark 14-field theme) + app.pickFiles stub serviced by the host;
+  provider.* delegate to `handle()`. Command returns RAW `{ok,value|error}`
+  envelope (invokeRaw path); sink emits tagged AgentEvent over `cmux://agent-event`.
+  KEY WINDOWS FIX: `wrap_windows_shim` — `claude` resolves to `claude.cmd` (npm
+  shim) which `CreateProcessW` can't run; rewrap `.cmd/.bat`→`%ComSpec% /C …`,
+  `.ps1`→`powershell -File …` (agent exe still shown in provider.started).
+  Canonical surface-type in the session model: `surface_kind: Option<String>` on
+  `SessionPaneLayoutSnapshot` (skip-if-none → golden/Swift parity preserved) +
+  pure `session_ops::set_surface_kind` (rides the pane node, survives splits) +
+  `session_set_surface_kind` command; web `Workspace` branches TerminalSurface vs
+  new `AgentSessionSurface` per pane via `paneRects::surfaceKinds`, PaneControls
+  gains an agent toggle. Added `AgentIo::into_parts()` to cmux-process (split
+  stdin/receiver for the reader thread). Gate GREEN: cmux-core + cmux-process(38,
+  +into_parts) + cmux-agent-chat(168) + cmux-golden + cmux-desktop(28, +9 agent
+  tests) all pass; clippy clean; core-types regen + drift clean; web typecheck +
+  60 tests + vite build clean (reused app bundles, 66 modules). Commit: <pending>.
+  LIVE CHECKPOINT: relaunch `cd apps/desktop/src-tauri && npx @tauri-apps/cli dev`,
+  toggle a pane to agent (✦ control), select Claude, Start, converse. Next:
+  Codex app-server handshake + OpenCode HTTP/SSE reuse this plumbing; app.pickFiles
+  dialog; then backlog (#13 breakaway, #14 daemon go-test).
+- Phase 3 GUI-wiring — post-build adversarial review + fixes (agent, 2026-07-01).
+  13-agent review workflow (`wuiambv3t`) over the Claude slice → 3 REAL
+  leak/robustness bugs, all FIXED (false positives — actor-hang, two-pane orphan,
+  constant panelId — correctly rejected). (1) Natural-exit teardown: a
+  self-exiting child (turn done / crash) left `ClaudeAgentTransport.sessions` +
+  the supervisor's job/process HANDLEs orphaned — only the user Stop path reaped.
+  Fix: `sessions` is now `Arc<Mutex<HashMap>>` shared with each reader thread,
+  which reaps its own `LiveChild` (drops stdin) + supervisor handles on pipe-close
+  via a new idempotent `JobObjectSupervisor::reap(id)` (removes the entry +
+  CloseHandle both handles; DISTINCT from `terminate`, which stays idempotent so
+  the existing tree-kill / active_process_count contract holds). (2)
+  `wrap_windows_shim` emitted bare `powershell.exe`/`cmd.exe`; `CreateProcessW`
+  does NOT PATH-search `lpApplicationName`, so `.ps1` (OpenCode) + the
+  ComSpec-missing fallback would fail — now absolute `%SystemRoot%\System32\…`
+  paths. (3) reader-thread-spawn failure now rolls back the confined child.
+  cmux-process 39 tests (+`reap`), cmux-desktop green, clippy clean. Claude live
+  path unaffected (its `.cmd` + full ComSpec already worked).
+- Phase 3 GUI-wiring — LIVE verify + two fixes (agent, 2026-07-01). Ran the app;
+  the reused agent-session UI mounts and Claude spawns/streams/converses. (1)
+  STREAMING was all-at-once: the current `claude` CLI wraps partial deltas as
+  `{"type":"stream_event","event":{"type":"content_block_delta",…}}`, but our
+  accumulator matched only TOP-LEVEL `content_block_delta` → ignored every delta,
+  emitted only the final full `assistant` message. FIXED in
+  `cmux-agent-chat/src/claude.rs` (`unwrap_stream_event` unwraps the envelope in
+  `consume_line` + `completes_assistant_turn`); verified against captured real CLI
+  output (+2 tests: `stream_event_wrapped_deltas_stream_incrementally`,
+  `wrapped_message_stop_completes_turn`); 27 claude tests green. (2) STYLING: the
+  reused `agent-session/shared/styles.css` is a whole-document sheet
+  (`html,body,#root{background:transparent}` + overflow/height) — importing it into
+  the shared desktop shell blacked out the whole window (transparent root → WebView2
+  black). Reverted the import; surface renders functional-but-unstyled. Proper fix =
+  isolate the agent app in its own document (iframe/shadow root with styles + host
+  shims scoped in) — the FIRST task next session (see ULTRACODE-RESUME OUTSTANDING).
+  Also learned: stopping `tauri dev` orphans its Vite/app tree on Windows (port 1420
+  stays held) — kill the node PID on 1420 before relaunch; tauri watches dep crates
+  so Rust dep changes auto-rebuild.
+- Phase 3 GUI-wiring — agent surface styling FIXED + live-confirmed (agent,
+  2026-07-01). Importing the reused whole-document `agent-session/shared/styles.css`
+  blacked out the shell (it sets `html,body,#root{background:transparent}` → the
+  WebView2 window's black showed through the shared root). FIX: keep the import (for
+  the styled look) in `AgentSessionSurface.tsx` + guard the shell root in
+  `apps/desktop/web/src/styles.css` (`html,body,#root{background:#0b0e14!important}`)
+  so the later-loaded agent sheet can only style the agent surface, not clobber the
+  shared root. User confirmed live: the agent chat UI now renders properly styled
+  (terminal-like) and not black. Long-term-robust alternative (iframe/shadow-root
+  document isolation) documented in ULTRACODE-RESUME as optional polish. Claude
+  vertical now spawns + streams (token-by-token) + converses + Stops + renders
+  styled — the Phase 3 Claude slice is functionally complete pending only polish.

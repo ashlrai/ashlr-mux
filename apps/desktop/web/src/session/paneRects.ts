@@ -89,6 +89,29 @@ export function paneRects(layout: Layout, rect: Rect = FULL): Map<string, Rect> 
   }
 }
 
+/**
+ * Map each leaf pane's representative `panel_id` to its `surface_kind`
+ * (`"agent"` for an agent session, `undefined` for a terminal). Keyed exactly
+ * like {@link paneRects}, so the flat portal can branch each pane's surface.
+ */
+export function surfaceKinds(layout: Layout): Map<string, string | undefined> {
+  const out = new Map<string, string | undefined>();
+  walk(layout);
+  return out;
+
+  function walk(node: Layout): void {
+    if (isPane(node)) {
+      const id = representativeId(node.pane);
+      if (id !== undefined) {
+        out.set(id, node.pane.surface_kind);
+      }
+      return;
+    }
+    walk(node.split.first);
+    walk(node.split.second);
+  }
+}
+
 /** One {@link DividerHandle} per split node, in depth-first order. */
 export function dividerHandles(layout: Layout, rect: Rect = FULL): DividerHandle[] {
   const out: DividerHandle[] = [];

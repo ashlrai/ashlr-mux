@@ -413,8 +413,10 @@ name = "cmux-desktop"
 version = "0.1.0"
 dependencies = [
  "cmux-agent",
+ "cmux-agent-chat",
  "cmux-core",
  "cmux-ipc",
+ "cmux-process",
  "cmux-terminal",
  "serde",
  "serde_json",

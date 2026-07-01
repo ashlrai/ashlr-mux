@@ -244,6 +244,24 @@ impl AgentIo {
         self.stdin.write_all(&transport::encode_line(line))?;
         self.stdin.flush()
     }
+
+    /// Split into the owned stdin writer and the chunk receiver.
+    ///
+    /// The read side (a blocking `mpsc::Receiver`) and the write side (stdin)
+    /// have opposite ownership needs for an async/actor transport: a dedicated
+    /// reader thread must *own* the receiver to block on `recv()`, while the
+    /// command/actor side keeps the writer to push stdin lines. `chunks()` only
+    /// lends `&Receiver` (can't move it out) and `write_line` needs `&mut self`,
+    /// so the two can't run concurrently through the glued handle. This consumes
+    /// the `AgentIo` and hands back both halves for independent ownership.
+    pub fn into_parts(
+        self,
+    ) -> (
+        Box<dyn std::io::Write + Send>,
+        std::sync::mpsc::Receiver<AgentOutputChunk>,
+    ) {
+        (self.stdin, self.chunks)
+    }
 }
 
 impl std::fmt::Debug for AgentIo {

@@ -15,11 +15,11 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 cmux-agent = { path = "../../../crates/cmux-agent" }
+cmux-agent-chat = { path = "../../../crates/cmux-agent-chat" }
 cmux-core = { path = "../../../crates/cmux-core" }
 cmux-ipc = { path = "../../../crates/cmux-ipc" }
+cmux-process = { path = "../../../crates/cmux-process" }
 cmux-terminal = { path = "../../../crates/cmux-terminal" }
 serde = { workspace = true }
-tauri = { version = "2", features = [] }
-
-[dev-dependencies]
 serde_json = { workspace = true }
+tauri = { version = "2", features = [] }

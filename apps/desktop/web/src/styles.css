@@ -26,6 +26,21 @@ body {
   flex-direction: column;
 }
 
+/* Shell background guard. The reused agent-session stylesheet
+   (`AgentSessionSurface` imports it when an agent pane mounts) is a whole-document
+   Tailwind sheet that sets `html, body, #root { background: transparent }` on the
+   assumption it owns an entire webview. Loaded later than this file, it would
+   otherwise win and make the shared shell root transparent — letting the WebView2
+   window's black show through (whole-window blackout). `!important` on the shell
+   background wins regardless of load order, so that sheet can only style the agent
+   surface, never clobber the shell. The agent surfaces' own (often translucent)
+   backgrounds then composite over this dark shell, which reads correctly. */
+html,
+body,
+#root {
+  background: #0b0e14 !important;
+}
+
 /* Reused webviews icons are stroked line-art with no intrinsic fill/size; give
    them the canonical webviews styling (webviews/src/styles.css toolbar icons). */
 .cmux-icon svg {

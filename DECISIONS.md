@@ -4,6 +4,62 @@ Running log of non-obvious design decisions made while porting cmux to Windows,
 so future iterations (and reviewers) can see the *why*, not just the *what*.
 Newest first.
 
+## Phase 3 — agent-session GUI-wiring (Claude live) — non-obvious decisions
+
+- **The concrete transport lives in `src-tauri`, not `cmux-agent-chat`.** The
+  `AgentTransport` trait is in `cmux-agent-chat`, but that crate is deliberately
+  Tauri/OS/tokio-free (its 168 tests run headless behind a `FakeTransport`, dodging
+  os-4551). Putting the real `cmux-process`+`cmux-agent` implementation there would
+  add those deps and break that purity. So `ClaudeAgentTransport` is a `src-tauri`
+  concern; the crate stays pure and the concrete transport is verified LIVE.
+- **No tokio anywhere.** The mapping agents established that `cmux-process` is pure
+  blocking `std` (`spawn_captured` → `AgentIo` = a blocking `mpsc::Receiver<Agent
+  OutputChunk>` + a stdin writer; NO wait/exit-code API — channel disconnect is the
+  only exit signal), and `ProcessStore` is single-threaded by construction (its sink
+  is `FnMut(AgentEvent)`, not `Send`). Both point at ONE design: a single **actor
+  thread** owning the store, fed by an `mpsc<ActorMsg>` (`Rpc`/`Feed`/`Exit`), exactly
+  like `terminal.rs`. Draining serially = the macOS serial-`MainActor` event ordering
+  the renderer's state machine needs. The resume doc's "tokio + stdio pump" framing
+  was superseded by the actual (blocking) `cmux-process` shape.
+- **`AgentIo::into_parts()` added to cmux-process.** The reader thread must OWN the
+  receiver (to block on `recv()`), while the actor keeps the stdin writer (for
+  `write_line`); `AgentIo` glued them with private fields and no split (`chunks()`
+  only lends `&Receiver`). A small, natural `into_parts(self) -> (stdin, receiver)`
+  resolves the opposite ownership needs.
+- **Windows shim wrapping is mandatory and lives in the transport.** `claude`
+  resolves (correct PATHEXT order) to `claude.cmd` (npm shim); `CreateProcessW` can
+  only launch a real PE image, so it would fail on `.cmd`/`.bat`/`.ps1`.
+  `wrap_windows_shim` rewrites the resolved `SpawnSpec`: `.cmd`/`.bat` → `%ComSpec%
+  /C <shim> <args>`, `.ps1` → `powershell -NoProfile -ExecutionPolicy Bypass -File
+  <shim> <args>`. The AGENT executable + args are captured BEFORE wrapping so
+  `provider.started` shows `claude.cmd`, not `cmd.exe` (canonical). Simple single-
+  quoted-path `cmd /C` form is correct because the agent launch args carry no spaces.
+- **exit + teardown needs three signals; the reader emits all three.** `ProcessStore`
+  clears the session + emits `provider.exit` only after `notify_exit` AND stdout-EOF
+  AND stderr-EOF. `cmux-process` merges both pipes onto one receiver and signals a
+  single disconnect, so on disconnect the reader sends `Feed(stdout,∅)` +
+  `Feed(stderr,∅)` + `Exit`. Exit status is 0 (cmux-process exposes no code — a known
+  minor fidelity gap vs the Swift terminationHandler).
+- **`app.context` copy has 67 keys, not 68.** The extraction miscounted; the
+  authoritative `types.ts AgentSessionCopy` has 67. Built from a `(key,value)` slice
+  into a `serde_json::Map` (a 67-entry `json!` literal overflows the macro recursion
+  limit). Localization deferred to Phase 5 (source of truth `Localizable.xcstrings`).
+- **Canonical surface kind in the session model, not a web-only toggle.** Per "stay
+  true to cmux", `surface_kind: Option<String>` rides `SessionPaneLayoutSnapshot`
+  (the authoritative snapshot), `skip_serializing_if none` so absent = terminal and
+  the Swift-authored golden fixtures stay byte-identical (Swift doesn't emit it yet).
+  `session_ops::set_surface_kind` puts the kind on the pane node so it survives splits
+  (the pane keeps its side) and closes. The web flat portal keys by `panelId`, so a
+  terminal↔agent swap under the same key remounts only that one surface.
+- **`agent_session_rpc` returns the RAW `{ok,value|error}` envelope.** The `host.ts`
+  shim routes the `agentSession` channel via `invokeRaw` (bridge.ts unwraps
+  `{ok,value}` itself), so — unlike the bare-value `session_*`/`terminal_*` commands —
+  this command must hand back the envelope. Error `code` is load-bearing
+  (`providerNotReady` → the renderer silently retries `writeLine`).
+- **Single active agent session (store-enforced).** `ProcessStore` allows one live
+  session; the singleton `cmuxAgentBridge` has no per-pane routing. So v1 supports one
+  agent pane at a time; a second is safe (start rejects with `sessionAlreadyRunning`).
+
 ## Phase 1 — React/Vite/Tailwind foundation + host bridge
 
 The desktop app moved off the Phase-0 vanilla-TS + `Bun.build` shell onto the

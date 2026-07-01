@@ -1,3 +1,4 @@
+mod agent_session;
 mod session;
 mod terminal;
 
@@ -36,6 +37,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(terminal::TerminalState::default())
         .manage(session::SessionState::default())
+        .manage(agent_session::AgentSessionState::default())
         .invoke_handler(tauri::generate_handler![
             ping,
             desktop_core_status,
@@ -46,7 +48,9 @@ pub fn run() {
             session::session_snapshot,
             session::session_split,
             session::session_close,
-            session::session_set_divider
+            session::session_set_divider,
+            session::session_set_surface_kind,
+            agent_session::agent_session_rpc
         ])
         .run(tauri::generate_context!())
         .expect("failed to run cmux desktop bootstrap");

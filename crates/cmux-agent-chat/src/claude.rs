@@ -130,7 +130,7 @@ impl ClaudeStreamAccumulator {
             return Vec::new();
         }
         let object = match serde_json::from_str::<Value>(trimmed) {
-            Ok(Value::Object(map)) => map,
+            Ok(Value::Object(map)) => unwrap_stream_event(map),
             _ => return Vec::new(),
         };
 
@@ -219,6 +219,7 @@ impl ClaudeStreamAccumulator {
         }
         match serde_json::from_str::<Value>(trimmed) {
             Ok(Value::Object(map)) => {
+                let map = unwrap_stream_event(map);
                 completes_assistant_turn_type(map.get("type").and_then(Value::as_str))
             }
             _ => false,
@@ -286,6 +287,28 @@ impl ClaudeStreamAccumulator {
         self.current_message_id = None;
         self.pending_delta_char_count = 0;
     }
+}
+
+/// Unwrap the Claude CLI's `stream_event` envelope.
+///
+/// With `--include-partial-messages`, the current `claude` CLI wraps each raw
+/// Anthropic streaming event in `{"type":"stream_event","event":{…}}` — e.g.
+/// `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":
+/// "text_delta","text":"…"}}}`. The inner `event` object is exactly the shape the
+/// accumulator's `message_start` / `content_block_delta` / `message_stop`
+/// handling expects, so we substitute it. Non-enveloped lines (the top-level
+/// `assistant` full message, `result`) pass through unchanged. Without this, the
+/// wrapped deltas are ignored and only the final full `assistant` message emits —
+/// i.e. the whole reply arrives at once instead of streaming.
+fn unwrap_stream_event(
+    object: serde_json::Map<String, Value>,
+) -> serde_json::Map<String, Value> {
+    if object.get("type").and_then(Value::as_str) == Some("stream_event") {
+        if let Some(event) = object.get("event").and_then(Value::as_object) {
+            return event.clone();
+        }
+    }
+    object
 }
 
 fn completes_assistant_turn_type(type_field: Option<&str>) -> bool {
@@ -643,6 +666,54 @@ mod tests {
         }
         assert!(acc.message_id_order.len() <= MAX_TRACKED_MESSAGES);
         assert!(acc.emitted_char_count_by_message_id.len() <= MAX_TRACKED_MESSAGES);
+    }
+
+    // ---- stream_event envelope (real claude CLI shape) ----
+
+    #[test]
+    fn stream_event_wrapped_deltas_stream_incrementally() {
+        // The exact shapes the current `claude --include-partial-messages` CLI
+        // emits: partial events wrapped in {"type":"stream_event","event":{…}},
+        // then an unwrapped top-level full `assistant` message, then `result`.
+        // Deltas must stream one-by-one; the final full message must de-dup to
+        // nothing; the result must not double-emit.
+        let mut acc = ClaudeStreamAccumulator::new();
+        let lines = [
+            r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_1","role":"assistant","content":[]}}}"#,
+            r#"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}"#,
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello there,"}}}"#,
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" fellow human friend."}}}"#,
+            r#"{"type":"assistant","message":{"id":"msg_1","content":[{"type":"text","text":"Hello there, fellow human friend."}]}}"#,
+            r#"{"type":"stream_event","event":{"type":"content_block_stop","index":0}}"#,
+            r#"{"type":"stream_event","event":{"type":"message_stop"}}"#,
+            r#"{"type":"result","subtype":"success","result":"Hello there, fellow human friend."}"#,
+        ];
+        let mut outputs: Vec<String> = Vec::new();
+        let mut completed = false;
+        for line in lines {
+            for ev in acc.consume_line_to_events(line, "s", ProviderId::Claude) {
+                match ev {
+                    AgentEvent::ProviderOutput { text, .. } => outputs.push(text),
+                    AgentEvent::ProviderTurnComplete { .. } => completed = true,
+                    other => panic!("unexpected event {other:?}"),
+                }
+            }
+        }
+        // Two incremental deltas — NOT one lump — and the full message + result
+        // added nothing on top.
+        assert_eq!(
+            outputs,
+            vec!["Hello there,".to_string(), " fellow human friend.".to_string()]
+        );
+        assert_eq!(outputs.concat(), "Hello there, fellow human friend.");
+        assert!(completed, "the turn must complete (result / message_stop)");
+    }
+
+    #[test]
+    fn wrapped_message_stop_completes_turn() {
+        assert!(ClaudeStreamAccumulator::completes_assistant_turn(
+            r#"{"type":"stream_event","event":{"type":"message_stop"}}"#
+        ));
     }
 
     // ---- full streaming turn integration ----

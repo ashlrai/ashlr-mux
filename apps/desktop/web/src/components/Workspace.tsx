@@ -4,10 +4,12 @@ import { useSession } from "../hooks/useSession";
 import {
   dividerHandles,
   paneRects,
+  surfaceKinds,
   type DividerHandle,
   type Rect,
 } from "../session/paneRects";
 import { resizeDivider, setDividerAtPath, type Layout } from "../session/splitLayout";
+import { AgentSessionSurface } from "./AgentSessionSurface";
 import { TerminalSurface } from "./TerminalSurface";
 
 /** Thickness of the draggable divider handle, in px (matches `SplitTree`). */
@@ -28,7 +30,7 @@ const EDGE_EPS = 0.001;
  * per-pane split/close controls, all driven by `useSession`.
  */
 export function Workspace(): React.JSX.Element {
-  const { activeLayout, split, close, setDivider } = useSession();
+  const { activeLayout, split, close, setDivider, setSurfaceKind } = useSession();
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   // Optimistic layout while a divider is dragged: mutate locally for a smooth,
@@ -101,20 +103,28 @@ export function Workspace(): React.JSX.Element {
 
   const rects = paneRects(layout);
   const handles = dividerHandles(layout);
+  const kinds = surfaceKinds(layout);
 
   return (
     <div ref={containerRef} className="cmux-workspace-portal" style={{ position: "relative", width: "100%", height: "100%", overflow: "hidden" }}>
-      {[...rects.entries()].map(([panelId, rect]) => (
-        <div key={panelId} style={{ ...paneStyle(rect), display: "flex", overflow: "hidden", zIndex: 0 }}>
-          <TerminalSurface />
-          <PaneControls
-            onSplitHorizontal={() => split(panelId, "horizontal")}
-            onSplitVertical={() => split(panelId, "vertical")}
-            onClose={() => close(panelId)}
-            closable={rects.size > 1}
-          />
-        </div>
-      ))}
+      {[...rects.entries()].map(([panelId, rect]) => {
+        const isAgent = kinds.get(panelId) === "agent";
+        return (
+          <div key={panelId} style={{ ...paneStyle(rect), display: "flex", overflow: "hidden", zIndex: 0 }}>
+            {/* Flat portal: one surface per stable panel_id. A shell OR a
+                canonical agent session, per the pane's surface_kind. */}
+            {isAgent ? <AgentSessionSurface /> : <TerminalSurface />}
+            <PaneControls
+              onSplitHorizontal={() => split(panelId, "horizontal")}
+              onSplitVertical={() => split(panelId, "vertical")}
+              onClose={() => close(panelId)}
+              onToggleAgent={() => setSurfaceKind(panelId, isAgent ? null : "agent")}
+              isAgent={isAgent}
+              closable={rects.size > 1}
+            />
+          </div>
+        );
+      })}
       {handles.map((handle) => (
         <div
           key={handle.path.join("/") || "root"}
@@ -182,16 +192,34 @@ interface PaneControlsProps {
   onSplitHorizontal: () => void;
   onSplitVertical: () => void;
   onClose: () => void;
+  onToggleAgent: () => void;
+  isAgent: boolean;
   closable: boolean;
 }
 
-/** Tiny hover-in-corner controls: split side-by-side, split stacked, close. */
-function PaneControls({ onSplitHorizontal, onSplitVertical, onClose, closable }: PaneControlsProps): React.JSX.Element {
+/**
+ * Tiny hover-in-corner controls: toggle agent session, split side-by-side,
+ * split stacked, close.
+ */
+function PaneControls({
+  onSplitHorizontal,
+  onSplitVertical,
+  onClose,
+  onToggleAgent,
+  isAgent,
+  closable,
+}: PaneControlsProps): React.JSX.Element {
   return (
     <div
       className="cmux-pane-controls"
       style={{ position: "absolute", top: 4, right: 4, zIndex: 20, display: "flex", gap: 2 }}
     >
+      <ControlButton
+        label={isAgent ? "Switch to terminal" : "Start agent session"}
+        onClick={onToggleAgent}
+      >
+        {isAgent ? "⌨" : "✦"}
+      </ControlButton>
       <ControlButton label="Split side by side" onClick={onSplitHorizontal}>
         ▐
       </ControlButton>

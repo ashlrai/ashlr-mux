@@ -52,6 +52,7 @@ fn full_modern_snapshot() {
             SessionPaneLayoutSnapshot {
                 panel_ids: vec!["panel-a".into(), "panel-b".into()],
                 selected_panel_id: Some("panel-a".into()),
+                surface_kind: None,
             },
         )),
         second: Box::new(SessionWorkspaceLayoutSnapshot::Split(
@@ -62,12 +63,14 @@ fn full_modern_snapshot() {
                     SessionPaneLayoutSnapshot {
                         panel_ids: vec!["panel-c".into()],
                         selected_panel_id: None,
+                        surface_kind: None,
                     },
                 )),
                 second: Box::new(SessionWorkspaceLayoutSnapshot::Pane(
                     SessionPaneLayoutSnapshot {
                         panel_ids: vec!["panel-d".into()],
                         selected_panel_id: Some("panel-d".into()),
+                        surface_kind: None,
                     },
                 )),
             },
@@ -136,6 +139,7 @@ fn legacy_pre_canvas_pre_tab_snapshot() {
             SessionPaneLayoutSnapshot {
                 panel_ids: vec!["legacy-panel".into()],
                 selected_panel_id: None,
+                surface_kind: None,
             },
         )),
         layout_mode: None,

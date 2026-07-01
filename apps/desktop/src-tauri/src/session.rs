@@ -121,6 +121,22 @@ fn apply_set_divider(snapshot: &mut AppSessionSnapshot, path: &[SplitChild], pos
     session_ops::set_divider_at_path(root, path, position)
 }
 
+/// Set the surface kind of the pane holding `panel_id` (`None` = terminal).
+/// Returns whether a matching pane was found. Pure.
+fn apply_set_surface_kind(
+    snapshot: &mut AppSessionSnapshot,
+    panel_id: &str,
+    kind: Option<String>,
+) -> bool {
+    let Some(slot) = active_layout_slot(snapshot) else {
+        return false;
+    };
+    let Some(root) = slot.as_mut() else {
+        return false;
+    };
+    session_ops::set_surface_kind(root, panel_id, kind)
+}
+
 fn emit_session_changed(app: &AppHandle, snapshot: &AppSessionSnapshot) {
     let _ = app.emit(SESSION_CHANGED_EVENT, snapshot);
 }
@@ -192,6 +208,26 @@ pub fn session_set_divider(
     let snapshot = {
         let mut guard = state.snapshot.lock().expect("session snapshot mutex poisoned");
         apply_set_divider(&mut guard, &path, position);
+        guard.clone()
+    };
+    emit_session_changed(&app, &snapshot);
+    snapshot
+}
+
+/// Set (or clear) the surface kind of the pane holding `panelId`: `"agent"` for
+/// a canonical agent session, or `null`/absent to revert to a terminal. Emits
+/// `cmux://session-changed` and returns the snapshot. A no-op (still returns the
+/// snapshot) if no pane holds the id.
+#[tauri::command]
+pub fn session_set_surface_kind(
+    app: AppHandle,
+    state: State<'_, SessionState>,
+    panel_id: String,
+    kind: Option<String>,
+) -> AppSessionSnapshot {
+    let snapshot = {
+        let mut guard = state.snapshot.lock().expect("session snapshot mutex poisoned");
+        apply_set_surface_kind(&mut guard, &panel_id, kind);
         guard.clone()
     };
     emit_session_changed(&app, &snapshot);

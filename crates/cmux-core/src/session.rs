@@ -16,6 +16,15 @@ pub struct SessionPaneLayoutSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub selected_panel_id: Option<String>,
+    /// The kind of surface this pane hosts: a terminal shell (the default, when
+    /// absent) or a canonical agent session (`"agent"`). Mirrors the macOS model
+    /// where a pane's surface is a terminal *or* an agent-session — the web
+    /// renderer branches on this to mount a `TerminalSurface` or the reused
+    /// agent-session app. Absent = terminal, so existing snapshots decode
+    /// unchanged and the wire stays backward-compatible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub surface_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -364,10 +373,12 @@ mod tests {
             first: Box::new(SessionWorkspaceLayoutSnapshot::Pane(SessionPaneLayoutSnapshot {
                 panel_ids: vec!["A".into()],
                 selected_panel_id: Some("A".into()),
+                surface_kind: None,
             })),
             second: Box::new(SessionWorkspaceLayoutSnapshot::Pane(SessionPaneLayoutSnapshot {
                 panel_ids: vec!["B".into()],
                 selected_panel_id: Some("B".into()),
+                surface_kind: None,
             })),
         });
 

@@ -107,6 +107,32 @@ impl JobObjectSupervisor {
         Ok(accounting.ActiveProcesses)
     }
 
+    /// Reap a finished session: remove it from the table and close its job +
+    /// process handles. Idempotent — reaping an unknown/already-reaped session is
+    /// a no-op.
+    ///
+    /// Distinct from [`terminate`](ProcessSupervisor::terminate), which stays
+    /// idempotent and leaves the session *tracked* so post-kill queries (e.g.
+    /// [`active_process_count`](Self::active_process_count)) still resolve. A
+    /// long-lived supervisor (held in an `Arc` for a whole session) would
+    /// otherwise never release a terminated/exited session's kernel handles until
+    /// `Drop`; call `reap` once the caller knows the session is finished (the
+    /// child exited, or `terminate` has run) to release them promptly. Closing
+    /// the job handle also fires `KILL_ON_JOB_CLOSE`, tearing down any straggler
+    /// tree that outlived the caller's expectation.
+    pub fn reap(&self, id: SessionId) {
+        let session = {
+            let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            sessions.remove(&id)
+        };
+        if let Some(session) = session {
+            unsafe {
+                close(handle(session.process));
+                close(handle(session.job));
+            }
+        }
+    }
+
     /// Shared spawn core: create the per-session NAMED job (armed with
     /// kill-on-close unless `survive_disconnect`), launch the child SUSPENDED
     /// with the caller's `startup_info`, `AssignProcessToJobObject` BEFORE
@@ -579,5 +605,36 @@ mod tests {
 
         assert!(stdout_lines.contains(&"line-1".to_string()), "got {stdout_lines:?}");
         assert!(stdout_lines.contains(&"line-2".to_string()), "got {stdout_lines:?}");
+    }
+
+    /// After a session's child exits and is drained, `reap` removes it from the
+    /// session table (releasing its kernel handles), so subsequent queries by id
+    /// report `UnknownSession`, and a second `reap` is a harmless no-op. This is
+    /// the natural-exit cleanup path a long-lived supervisor needs so terminated
+    /// sessions don't accumulate handles until `Drop`.
+    #[test]
+    fn reap_removes_session_and_is_idempotent() {
+        use crate::{ProcessError, ProcessSupervisor, SpawnSpec};
+        use std::time::Duration;
+
+        let comspec =
+            std::env::var("ComSpec").unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".into());
+        let supervisor = JobObjectSupervisor::new();
+        let (handle, io) = supervisor
+            .spawn_captured(SpawnSpec::new(comspec).args(["/c", "echo done"]))
+            .expect("spawn_captured");
+
+        // Drain to EOF so the child has exited before we reap.
+        while io.chunks().recv_timeout(Duration::from_secs(8)).is_ok() {}
+
+        // The session is still tracked immediately after exit (terminate stays
+        // idempotent by design), then reap releases it.
+        supervisor.reap(handle.id);
+        assert!(matches!(
+            supervisor.active_process_count(handle.id),
+            Err(ProcessError::UnknownSession(_))
+        ));
+        // Idempotent: reaping again does nothing (and does not panic).
+        supervisor.reap(handle.id);
     }
 }

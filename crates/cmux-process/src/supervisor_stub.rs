@@ -18,6 +18,9 @@ impl JobObjectSupervisor {
     pub fn new() -> Self {
         Self
     }
+
+    /// No-op on non-Windows (no session is ever created).
+    pub fn reap(&self, _id: SessionId) {}
 }
 
 impl ProcessSupervisor for JobObjectSupervisor {

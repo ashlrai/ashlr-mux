@@ -33,6 +33,11 @@ export interface UseSession {
   close: (panelId: string) => void;
   /** Persist the divider ratio of the split reached by `path`. */
   setDivider: (path: SplitPath, position: number) => void;
+  /**
+   * Set the surface kind of the pane holding `panelId`: `"agent"` for a
+   * canonical agent session, or `null` to revert it to a terminal.
+   */
+  setSurfaceKind: (panelId: string, kind: string | null) => void;
 }
 
 /** The layout of the selected workspace of the first window, or `null`. */
@@ -109,5 +114,19 @@ export function useSession(): UseSession {
       .catch((error) => console.error("session_set_divider failed", error));
   }, []);
 
-  return { snapshot, activeLayout: activeLayoutOf(snapshot), split, close, setDivider };
+  const setSurfaceKind = useCallback((panelId: string, kind: string | null) => {
+    void host
+      .invoke<AppSessionSnapshot>("session_set_surface_kind", { panelId, kind })
+      .then(setSnapshot)
+      .catch((error) => console.error("session_set_surface_kind failed", error));
+  }, []);
+
+  return {
+    snapshot,
+    activeLayout: activeLayoutOf(snapshot),
+    split,
+    close,
+    setDivider,
+    setSurfaceKind,
+  };
 }

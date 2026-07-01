@@ -54,12 +54,15 @@ pub fn clamp_divider(position: f64) -> f64 {
     position.clamp(MIN_DIVIDER, MAX_DIVIDER)
 }
 
-/// A fresh single-pane layout holding one panel.
+/// A fresh single-pane layout holding one panel. New panes default to a terminal
+/// surface (`surface_kind: None`); flip to an agent session with
+/// [`set_surface_kind`].
 pub fn single_pane(panel_id: impl Into<String>) -> Layout {
     let id = panel_id.into();
     Layout::Pane(SessionPaneLayoutSnapshot {
         selected_panel_id: Some(id.clone()),
         panel_ids: vec![id],
+        surface_kind: None,
     })
 }
 
@@ -67,7 +70,29 @@ fn empty_pane() -> Layout {
     Layout::Pane(SessionPaneLayoutSnapshot {
         panel_ids: Vec::new(),
         selected_panel_id: None,
+        surface_kind: None,
     })
+}
+
+/// Set the `surface_kind` of the pane that holds `panel_id` (`None` clears it
+/// back to a terminal). Returns `false` (a no-op) if no pane holds `panel_id`.
+/// The kind rides on the pane node, so it survives splits (the pane keeps its
+/// side of the new split) and divider moves.
+pub fn set_surface_kind(node: &mut Layout, panel_id: &str, kind: Option<String>) -> bool {
+    match node {
+        Layout::Pane(p) => {
+            if p.panel_ids.iter().any(|id| id == panel_id) {
+                p.surface_kind = kind;
+                true
+            } else {
+                false
+            }
+        }
+        Layout::Split(s) => {
+            set_surface_kind(&mut s.first, panel_id, kind.clone())
+                || set_surface_kind(&mut s.second, panel_id, kind)
+        }
+    }
 }
 
 /// Number of leaf panes in a subtree.
@@ -397,6 +422,7 @@ mod tests {
         let mut layout = Some(Layout::Pane(SessionPaneLayoutSnapshot {
             panel_ids: vec!["a".into(), "b".into()],
             selected_panel_id: Some("a".into()),
+            surface_kind: None,
         }));
         assert_eq!(close_panel(&mut layout, "a"), CloseOutcome::Removed);
         // Pane survives with `b`, and selection moved off the closed panel.
@@ -448,6 +474,43 @@ mod tests {
         let mut tree = pane("a");
         assert!(!set_divider_at_path(&mut tree, &[], 0.3));
         assert_eq!(tree, pane("a"));
+    }
+
+    #[test]
+    fn set_surface_kind_marks_the_pane_and_survives_a_split() {
+        let mut tree = pane("a");
+        // Unknown panel → no-op.
+        assert!(!set_surface_kind(&mut tree, "zzz", Some("agent".into())));
+        // Mark pane `a` as an agent surface.
+        assert!(set_surface_kind(&mut tree, "a", Some("agent".into())));
+        if let Layout::Pane(p) = &tree {
+            assert_eq!(p.surface_kind.as_deref(), Some("agent"));
+        } else {
+            panic!("expected a pane");
+        }
+        // Splitting keeps `a`'s agent kind on its side; the new pane defaults off.
+        assert!(split_pane(&mut tree, "a", SessionSplitOrientation::Horizontal, "b", false));
+        if let Layout::Split(s) = &tree {
+            if let Layout::Pane(first) = s.first.as_ref() {
+                assert_eq!(first.surface_kind.as_deref(), Some("agent"));
+            } else {
+                panic!("expected pane a first");
+            }
+            if let Layout::Pane(second) = s.second.as_ref() {
+                assert_eq!(second.surface_kind, None);
+            } else {
+                panic!("expected pane b second");
+            }
+        } else {
+            panic!("expected a split");
+        }
+        // Clearing it back to a terminal.
+        assert!(set_surface_kind(&mut tree, "a", None));
+        if let Layout::Split(s) = &tree {
+            if let Layout::Pane(first) = s.first.as_ref() {
+                assert_eq!(first.surface_kind, None);
+            }
+        }
     }
 
     #[test]
