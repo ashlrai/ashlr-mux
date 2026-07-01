@@ -93,21 +93,49 @@ shims (`window.webkit.messageHandlers.agentSession`, `cmuxAgentBridge`,
 window assumption must be reworked for iframes — install shims into the frame or
 proxy via postMessage).
 
-### NEXT — after style isolation
+### Codex + OpenCode transports — BUILT (2026-07-01), awaiting live verify
 
-1. **Re-verify Claude live** end-to-end with proper styling (stream + multi-turn +
-   Stop). Stop calls transport `terminate` (Ctrl-Break + 500ms grace + tree-kill +
-   reap) → provider.exit → idle.
-2. **Codex** — reuse this transport: add the app-server **JSON-RPC handshake**
-   write side (initialize on spawn → on init response send initialized +
-   thread/start → drain queued turn/start; single-queued-input backpressure via
-   `CodexAccumulator`). Read path already flows through `feed_output`. Codex is
-   `autoStart:true`.
-3. **OpenCode** — add the `reqwest` HTTP-loopback client: after stdout announces
-   the loopback URL (`active_session().opencode_base_url()`), POST `/session` →
-   `complete_opencode_handshake` (emits the deferred `provider.started`) → pump
-   `/event` SSE into `feed_opencode_sse_line`; `writeLine` = POST prompt_async with
-   the `OpenCodeServerAuth` header. Creds already minted by `cmux-agent`.
+Both providers are now wired end-to-end via a pure **`TransportAction`** intent
+list (store produces, actor performs I/O — see `DECISIONS.md` "Codex + OpenCode
+transports"). All headless: cmux-agent-chat 184 tests + cmux-desktop 36 tests +
+full workspace green, clippy clean. What landed:
+
+- **Codex** (dep-free): `RunningSession::handle_codex_line` runs the read→write
+  machine after each `consume_line` (init → `initialized`+`thread/start` → drain
+  queued turn → approval replies → startup-fail teardown); `codex_submit` queue
+  (cap 1) + guards; `start` writes `initialize`; `codex::parse_server_request`.
+  The actor's `execute_actions` writes raw `encode_line` frames to child stdin.
+- **OpenCode**: `ureq` (blocking, no tokio, `default-features=false`) in
+  `apps/desktop/src-tauri/src/opencode_http.rs`; actor worker threads +
+  `ActorMsg::{OpenCodeSessionCreated,OpenCodeSessionCreateFailed,OpenCodeSse,
+  OpenCodeStreamEnded}`; per-session `OpenCodeContext` (auth from `spec.env`).
+  `provider.started` deferred to `complete_opencode_handshake`.
+
+### Live-run findings (2026-07-01, first session in the running app)
+
+- **Codex/OpenCode showed a red "not ready" box on Start** — root cause: the
+  `codex` / `opencode` CLIs are NOT installed on the dev box (only `claude` is), so
+  `transport.spawn` fails at executable resolution. FIXED the misleading message:
+  a spawn/resolve failure now surfaces `BridgeError::ProviderLaunchFailed(detail)`
+  → "<Provider> could not be started. <reason>" (mirrors the macOS
+  `AgentExecutableResolverError` `{userMessage}` envelope) instead of the generic
+  `providerNotReady`. **To live-verify Codex/OpenCode you must install their CLIs**
+  (`npm i -g @openai/codex` / opencode) so they resolve on PATH.
+- **One agent session per WINDOW** (`sessionAlreadyRunning` when a 2nd pane
+  Starts). Known limitation: the reused `cmuxAgentBridge` is a window singleton and
+  `ProcessStore` enforces single-active-session. macOS supports one agent per pane.
+  Lifting it = per-pane bridge routing (session-id-keyed) + a multi-session store /
+  actor managing N children. A real next feature, deferred (needs live multi-pane
+  testing).
+
+### NEXT
+
+1. **Install codex + opencode CLIs, then live-verify** their converse (Codex
+   streams token-by-token, `initialize`→`thread/start` ordering, approvals auto-
+   decline unless full-access; OpenCode waits for the loopback-URL sniff +
+   `POST /session` before `provider.started`, `?directory=`/auth on every call).
+2. **Multi-session-per-window** (lift the single-session limitation — see above).
+3. **Re-verify Claude live** (regression — unchanged, works).
 4. **`app.pickFiles`** — real Tauri dialog+fs plugin (honor 512KB/2MB image caps,
    `isImage`/`mimeType`); currently a `{files:[]}` stub.
 

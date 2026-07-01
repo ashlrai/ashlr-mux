@@ -36,15 +36,19 @@
 
 use std::collections::HashMap;
 use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
-use cmux_agent::{AgentExecutableResolver, AgentSessionProviderId, ClaudeConfigContext};
+use crate::opencode_http::{self, OpenCodeContext, OpenCodeContexts, StreamEnd};
+use cmux_agent::{
+    AgentExecutableResolver, AgentSessionProviderId, ClaudeConfigContext, OpenCodeServerAuth,
+};
 use cmux_agent_chat::process_store::{SpawnRequest, SpawnedSession, TransportError};
 use cmux_process::SpawnSpec;
 use cmux_agent_chat::{
     handle, write_claude_stream_json, AgentEvent, AgentTransport, BridgeRequest, DispatchContext,
-    PermissionMode, ProcessStore, ProviderId, ProviderStream,
+    PermissionMode, ProcessStore, ProviderId, ProviderStream, TransportAction,
 };
 use cmux_process::{
     AgentStream, JobObjectSupervisor, ProcessSupervisor, SessionId, TerminateMode,
@@ -76,6 +80,18 @@ enum ActorMsg {
     },
     /// The child of `session_id` exited (reader thread saw the pipe close).
     Exit { session_id: String, status: i32 },
+    /// OpenCode `POST /session` succeeded with the created loopback session id
+    /// (the create worker thread reports back).
+    OpenCodeSessionCreated {
+        session_id: String,
+        opencode_session_id: String,
+    },
+    /// OpenCode `POST /session` failed (missing id, non-2xx, or network error).
+    OpenCodeSessionCreateFailed { session_id: String },
+    /// One raw line from the OpenCode `/event` SSE stream.
+    OpenCodeSse { session_id: String, line: String },
+    /// The OpenCode `/event` stream ended (`errored` = a failure, not a clean EOF).
+    OpenCodeStreamEnded { session_id: String, errored: bool },
 }
 
 /// Managed Tauri state: a lazily-started actor thread, addressed by its sender.
@@ -96,11 +112,28 @@ impl AgentSessionState {
             return sender.clone();
         }
         let (tx, rx) = channel::<ActorMsg>();
-        let transport = ClaudeAgentTransport::new(Arc::new(JobObjectSupervisor::new()), tx.clone());
+        // The supervisor + live-child map are shared between the transport (which
+        // spawns + registers children and writes the Claude path) and the actor
+        // (which executes TransportActions: raw Codex stdin frames + teardown).
+        let supervisor = Arc::new(JobObjectSupervisor::new());
+        let sessions: LiveChildren = Arc::new(Mutex::new(HashMap::new()));
+        let opencode: OpenCodeContexts = Arc::new(Mutex::new(HashMap::new()));
+        let transport = ClaudeAgentTransport::new(
+            supervisor.clone(),
+            tx.clone(),
+            sessions.clone(),
+            opencode.clone(),
+        );
+        let host = ActorHost {
+            supervisor,
+            sessions,
+            opencode,
+            feedback: tx.clone(),
+        };
         let app = app.clone();
         std::thread::Builder::new()
             .name("cmux-agent-session-actor".to_string())
-            .spawn(move || run_actor(rx, transport, app))
+            .spawn(move || run_actor(rx, transport, app, host))
             .expect("spawn agent session actor thread");
         *guard = Some(tx.clone());
         tx
@@ -108,7 +141,12 @@ impl AgentSessionState {
 }
 
 /// The actor loop: owns the [`ProcessStore`] and drains [`ActorMsg`]s serially.
-fn run_actor(rx: Receiver<ActorMsg>, transport: ClaudeAgentTransport, app: AppHandle) {
+///
+/// After every message it drains the store's [`TransportAction`]s and performs
+/// them against the shared `sessions` / `supervisor` handles: raw Codex stdin
+/// frames ([`TransportAction::WriteStdin`]) and startup-failure teardown
+/// ([`TransportAction::Terminate`]). OpenCode HTTP actions are wired in slice 2.
+fn run_actor(rx: Receiver<ActorMsg>, transport: ClaudeAgentTransport, app: AppHandle, host: ActorHost) {
     // The event sink: serialize each AgentEvent to its tagged wire object and
     // push it to the renderer over cmux://agent-event. Emitted from this one
     // thread, preserving order.
@@ -140,9 +178,269 @@ fn run_actor(rx: Receiver<ActorMsg>, transport: ClaudeAgentTransport, app: AppHa
             }
             ActorMsg::Exit { session_id, status } => {
                 store.notify_exit(&session_id, status);
+                // Natural exit (the reader saw the child's pipes close): no
+                // teardown action runs on this route, so drop any OpenCode HTTP
+                // context here to avoid leaking it across sessions. Idempotent with
+                // the stop/terminate paths. A later clean `/event` EOF then finds
+                // no context and correctly declines to fail the (already-exited)
+                // session.
+                forget_opencode_context(&host, &session_id);
+            }
+            ActorMsg::OpenCodeSessionCreated {
+                session_id,
+                opencode_session_id,
+            } => {
+                // Records the loopback session id + emits the deferred
+                // provider.started, then begins the /event SSE stream.
+                store.complete_opencode_handshake(&session_id, opencode_session_id);
+                let base_url = store
+                    .active_session()
+                    .filter(|session| session.session_id() == session_id)
+                    .and_then(|session| session.opencode_base_url())
+                    .map(str::to_string);
+                if let Some(base_url) = base_url {
+                    spawn_event_stream(&host, session_id, base_url);
+                }
+            }
+            ActorMsg::OpenCodeSessionCreateFailed { session_id } => {
+                // Swift create-catch: synthetic stderr + provider.exit(1) + kill.
+                store.fail_opencode_session_create(&session_id);
+                terminate_session(&host, &session_id);
+            }
+            ActorMsg::OpenCodeSse { session_id, line } => {
+                store.feed_opencode_sse_line(&session_id, &line);
+            }
+            ActorMsg::OpenCodeStreamEnded {
+                session_id,
+                errored,
+            } => {
+                // Swift `openCodeEventStreamEOFRequiresFailure`: an error always
+                // fails; a clean EOF fails only while the child is still running
+                // and the session was not cancelled. `fail_opencode_event_stream`
+                // itself no-ops if the session already exited (no duplicate exit).
+                if errored || should_fail_on_clean_eof(&host, &session_id) {
+                    store.fail_opencode_event_stream(&session_id);
+                    terminate_session(&host, &session_id);
+                }
             }
         }
+        // Perform any I/O the store queued while handling this message.
+        execute_actions(store.take_transport_actions(), &host);
     }
+}
+
+/// Perform the store's queued [`TransportAction`]s against the live children.
+///
+/// `WriteStdin` writes the already-`encode_line`-framed bytes RAW to the child's
+/// stdin (no re-newline). `Terminate` tree-kills + reaps the session. The OpenCode
+/// HTTP variants are handled in the OpenCode slice.
+fn execute_actions(actions: Vec<TransportAction>, host: &ActorHost) {
+    for action in actions {
+        match action {
+            TransportAction::WriteStdin { session_id, line } => {
+                write_child_stdin(&host.sessions, &session_id, line.as_bytes());
+            }
+            TransportAction::Terminate { session_id } => {
+                terminate_session(host, &session_id);
+            }
+            // OpenCode call A: create the loopback session on a worker thread.
+            TransportAction::OpenCodeCreateSession {
+                session_id,
+                base_url,
+            } => spawn_create_session(host, session_id, base_url),
+            // OpenCode call C: submit the prompt fire-and-forget.
+            TransportAction::OpenCodePostPrompt {
+                session_id,
+                base_url,
+                opencode_session_id,
+                text,
+            } => spawn_post_prompt(host, session_id, base_url, opencode_session_id, text),
+        }
+    }
+}
+
+/// Write raw bytes to a live session's child stdin (best-effort).
+fn write_child_stdin(sessions: &LiveChildren, session_id: &str, bytes: &[u8]) {
+    let mut guard = sessions.lock().expect("agent sessions mutex poisoned");
+    if let Some(child) = guard.get_mut(session_id) {
+        let _ = child
+            .stdin
+            .write_all(bytes)
+            .and_then(|()| child.stdin.flush());
+    }
+}
+
+/// Tear down a session: cancel its OpenCode event stream (so a resulting EOF is
+/// not counted a failure), tree-kill + reap the child, and drop its OpenCode
+/// context. Idempotent.
+fn terminate_session(host: &ActorHost, session_id: &str) {
+    if let Some(context) = host
+        .opencode
+        .lock()
+        .expect("opencode contexts mutex poisoned")
+        .get(session_id)
+    {
+        context.cancelled.store(true, Ordering::SeqCst);
+    }
+    let handle_id = host
+        .sessions
+        .lock()
+        .expect("agent sessions mutex poisoned")
+        .get(session_id)
+        .map(|child| child.handle_id);
+    if let Some(handle_id) = handle_id {
+        let _ = host
+            .supervisor
+            .terminate(handle_id, TerminateMode::Graceful);
+    }
+    reap_session(&host.supervisor, &host.sessions, session_id);
+    host.opencode
+        .lock()
+        .expect("opencode contexts mutex poisoned")
+        .remove(session_id);
+}
+
+/// Drop a session's OpenCode HTTP context (auth header + liveness flags), if any.
+/// Idempotent — a no-op for non-OpenCode sessions or an already-removed entry.
+fn forget_opencode_context(host: &ActorHost, session_id: &str) {
+    host.opencode
+        .lock()
+        .expect("opencode contexts mutex poisoned")
+        .remove(session_id);
+}
+
+/// Whether a clean OpenCode `/event` EOF should fail the session (Swift
+/// `openCodeEventStreamEOFRequiresFailure = !isCancelled && processIsRunning`).
+///
+/// `process_running` is cleared by the reader thread the instant the child pipes
+/// close, and the natural-exit path removes the context entirely (via the `Exit`
+/// handler), so the common orderings resolve correctly. A narrow race remains: if
+/// this fires before the reader observes the pipe close, a clean shutdown can be
+/// mislabeled (a synthetic "disconnected" stderr + exit 1 instead of exit 0). This
+/// is inherited from the canonical Swift (`Process.isRunning` is likewise updated
+/// asynchronously) and is a cosmetic status mislabel, not a lifecycle bug — the
+/// cleared session prevents any double `provider.exit`.
+fn should_fail_on_clean_eof(host: &ActorHost, session_id: &str) -> bool {
+    host.opencode
+        .lock()
+        .expect("opencode contexts mutex poisoned")
+        .get(session_id)
+        .map(|context| {
+            !context.cancelled.load(Ordering::SeqCst)
+                && context.process_running.load(Ordering::SeqCst)
+        })
+        .unwrap_or(false)
+}
+
+/// Read the OpenCode auth header + working directory for a session (cloned out so
+/// the caller does not hold the contexts lock).
+fn opencode_auth_and_dir(
+    opencode: &OpenCodeContexts,
+    session_id: &str,
+) -> (Option<String>, Option<String>) {
+    opencode
+        .lock()
+        .expect("opencode contexts mutex poisoned")
+        .get(session_id)
+        .map(|context| {
+            (
+                context.auth_header.clone(),
+                context.working_directory.clone(),
+            )
+        })
+        .unwrap_or((None, None))
+}
+
+/// OpenCode call A worker: `POST /session`, reporting the created id (or failure)
+/// back to the actor.
+fn spawn_create_session(host: &ActorHost, session_id: String, base_url: String) {
+    let feedback = host.feedback.clone();
+    let (auth, dir) = opencode_auth_and_dir(&host.opencode, &session_id);
+    std::thread::spawn(move || {
+        let message =
+            match opencode_http::create_session(&base_url, auth.as_deref(), dir.as_deref()) {
+                Ok(opencode_session_id) => ActorMsg::OpenCodeSessionCreated {
+                    session_id,
+                    opencode_session_id,
+                },
+                Err(_) => ActorMsg::OpenCodeSessionCreateFailed { session_id },
+            };
+        let _ = feedback.send(message);
+    });
+}
+
+/// OpenCode call C worker: `POST …/prompt_async`, fire-and-forget.
+///
+/// The `provider.writeLine` RPC already returned optimistically (the actor cannot
+/// block up to 30s on the POST without stalling all event ordering — a documented
+/// divergence from Swift's awaited `postOpenCodePrompt`), so a failure here is
+/// surfaced as an OpenCode `stderr` line (emitted verbatim by the store) rather
+/// than a synchronous RPC error.
+fn spawn_post_prompt(
+    host: &ActorHost,
+    session_id: String,
+    base_url: String,
+    opencode_session_id: String,
+    text: String,
+) {
+    let feedback = host.feedback.clone();
+    let (auth, dir) = opencode_auth_and_dir(&host.opencode, &session_id);
+    std::thread::spawn(move || {
+        if let Err(error) = opencode_http::post_prompt(
+            &base_url,
+            auth.as_deref(),
+            dir.as_deref(),
+            &opencode_session_id,
+            &text,
+        ) {
+            let line = format!("OpenCode prompt failed: {error}\n");
+            let _ = feedback.send(ActorMsg::Feed {
+                session_id,
+                stream: ProviderStream::Stderr,
+                data: line.into_bytes(),
+            });
+        }
+    });
+}
+
+/// OpenCode call B worker: open the `/event` SSE stream, pumping each line to the
+/// actor and reporting how it ended.
+fn spawn_event_stream(host: &ActorHost, session_id: String, base_url: String) {
+    let feedback = host.feedback.clone();
+    let (auth, dir) = opencode_auth_and_dir(&host.opencode, &session_id);
+    let cancelled = host
+        .opencode
+        .lock()
+        .expect("opencode contexts mutex poisoned")
+        .get(&session_id)
+        .map(|context| context.cancelled.clone());
+    let Some(cancelled) = cancelled else {
+        return;
+    };
+    std::thread::spawn(move || {
+        let is_cancelled = || cancelled.load(Ordering::SeqCst);
+        let end = {
+            let feedback = &feedback;
+            let session_id = &session_id;
+            let mut on_line = |line: String| {
+                let _ = feedback.send(ActorMsg::OpenCodeSse {
+                    session_id: session_id.clone(),
+                    line,
+                });
+            };
+            opencode_http::stream_events(
+                &base_url,
+                auth.as_deref(),
+                dir.as_deref(),
+                &is_cancelled,
+                &mut on_line,
+            )
+        };
+        let _ = feedback.send(ActorMsg::OpenCodeStreamEnded {
+            session_id,
+            errored: end == StreamEnd::Errored,
+        });
+    });
 }
 
 /// Dispatch one renderer message to a reply envelope.
@@ -250,16 +548,35 @@ struct ClaudeAgentTransport {
     /// can push `Feed`/`Exit` messages back.
     feedback: Sender<ActorMsg>,
     sessions: LiveChildren,
+    /// Per-session OpenCode HTTP context (auth header + working dir + liveness
+    /// flags), created on spawn for OpenCode sessions and read by the HTTP workers.
+    opencode: OpenCodeContexts,
 }
 
 impl ClaudeAgentTransport {
-    fn new(supervisor: Arc<JobObjectSupervisor>, feedback: Sender<ActorMsg>) -> Self {
+    fn new(
+        supervisor: Arc<JobObjectSupervisor>,
+        feedback: Sender<ActorMsg>,
+        sessions: LiveChildren,
+        opencode: OpenCodeContexts,
+    ) -> Self {
         Self {
             supervisor,
             feedback,
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions,
+            opencode,
         }
     }
+}
+
+/// The handles the actor uses to execute [`TransportAction`]s: the child-process
+/// supervisor + live-child map (shared with the transport) and the OpenCode HTTP
+/// context registry + a feedback sender the HTTP worker threads report back on.
+struct ActorHost {
+    supervisor: Arc<JobObjectSupervisor>,
+    sessions: LiveChildren,
+    opencode: OpenCodeContexts,
+    feedback: Sender<ActorMsg>,
 }
 
 /// Reap a finished session: drop its `LiveChild` (closing the child's stdin) and
@@ -296,6 +613,16 @@ impl AgentTransport for ClaudeAgentTransport {
         let executable_path = spec.program.to_string_lossy().to_string();
         let arguments = spec.args.clone();
 
+        // OpenCode: derive the loopback Basic-auth header from the launch env
+        // (`OPENCODE_SERVER_*`, minted by `cmux-agent`) BEFORE `spec` is moved
+        // into `spawn_captured`. The secret stays host-side (out of the store).
+        let opencode_auth = if provider == ProviderId::Opencode {
+            OpenCodeServerAuth::from_environment(&spec.env)
+                .map(|auth| auth.authorization_header)
+        } else {
+            None
+        };
+
         // Windows npm/pnpm agents resolve to `.cmd`/`.bat`/`.ps1` shims (here
         // `claude.cmd`), which `CreateProcessW` cannot execute directly — only a
         // real PE image. Wrap the shim with its interpreter so the real spawn
@@ -319,6 +646,29 @@ impl AgentTransport for ClaudeAgentTransport {
             },
         );
 
+        // OpenCode: register the HTTP context (auth header + working dir + the
+        // liveness flags the event-stream failure rule needs). `process_running`
+        // is shared with the reader thread, which clears it the instant the child
+        // pipes close (so an event-stream EOF then is a real disconnect).
+        let process_running: Option<Arc<AtomicBool>> = if provider == ProviderId::Opencode {
+            let flag = Arc::new(AtomicBool::new(true));
+            self.opencode
+                .lock()
+                .expect("opencode contexts mutex poisoned")
+                .insert(
+                    request.session_id.clone(),
+                    OpenCodeContext {
+                        auth_header: opencode_auth,
+                        working_directory: request.working_directory.clone(),
+                        cancelled: Arc::new(AtomicBool::new(false)),
+                        process_running: flag.clone(),
+                    },
+                );
+            Some(flag)
+        } else {
+            None
+        };
+
         // A dedicated reader thread forwards framed output (and EOF/exit) to the
         // actor, then reaps its own session on the natural-exit path (cmux-process
         // has no exit-code API — channel disconnect is the only exit signal — so
@@ -330,11 +680,19 @@ impl AgentTransport for ClaudeAgentTransport {
         let session_id = request.session_id.clone();
         let spawned = std::thread::Builder::new()
             .name(format!("cmux-agent-reader-{session_id}"))
-            .spawn(move || reader_loop(chunks, session_id, feedback, supervisor, sessions));
+            .spawn(move || {
+                reader_loop(chunks, session_id, feedback, supervisor, sessions, process_running)
+            });
         if let Err(error) = spawned {
             // Roll back the just-confined child: no reader means no drain/exit
-            // signal would ever fire, so tear it down now.
+            // signal would ever fire, so tear it down now. Also drop the OpenCode
+            // context registered above (the child/handle rollback via reap_session
+            // does not touch it), mirroring the terminate paths.
             reap_session(&self.supervisor, &self.sessions, &request.session_id);
+            self.opencode
+                .lock()
+                .expect("opencode contexts mutex poisoned")
+                .remove(&request.session_id);
             return Err(TransportError::Failed(error.to_string()));
         }
 
@@ -380,6 +738,16 @@ impl AgentTransport for ClaudeAgentTransport {
         // release the child + supervisor handles. The reader thread will still
         // observe EOF and drive the store's drain/exit; its own reap is then an
         // idempotent no-op.
+        // Cancel any OpenCode event stream first, so its disconnect EOF is not
+        // treated as a failure, then drop the context.
+        if let Some(context) = self
+            .opencode
+            .lock()
+            .expect("opencode contexts mutex poisoned")
+            .get(session_id)
+        {
+            context.cancelled.store(true, Ordering::SeqCst);
+        }
         let handle_id = self
             .sessions
             .lock()
@@ -390,6 +758,10 @@ impl AgentTransport for ClaudeAgentTransport {
             let _ = self.supervisor.terminate(handle_id, TerminateMode::Graceful);
         }
         reap_session(&self.supervisor, &self.sessions, session_id);
+        self.opencode
+            .lock()
+            .expect("opencode contexts mutex poisoned")
+            .remove(session_id);
         Ok(())
     }
 }
@@ -405,6 +777,7 @@ fn reader_loop(
     feedback: Sender<ActorMsg>,
     supervisor: Arc<JobObjectSupervisor>,
     sessions: LiveChildren,
+    process_running: Option<Arc<AtomicBool>>,
 ) {
     loop {
         match chunks.recv() {
@@ -434,8 +807,14 @@ fn reader_loop(
                 }
             }
             Err(_) => {
-                // Both pipes reached EOF. Flush both streams + report exit so the
-                // store emits provider.exit and clears its session.
+                // Both pipes reached EOF: the child has exited. Clear the OpenCode
+                // liveness flag FIRST (before any exit message races an event-stream
+                // EOF) so a concurrent stream EOF is treated as a benign shutdown.
+                if let Some(flag) = &process_running {
+                    flag.store(false, Ordering::SeqCst);
+                }
+                // Flush both streams + report exit so the store emits provider.exit
+                // and clears its session.
                 let _ = feedback.send(ActorMsg::Feed {
                     session_id: session_id.clone(),
                     stream: ProviderStream::Stdout,
@@ -798,7 +1177,12 @@ mod tests {
     fn app_context_is_wrapped_in_ok_envelope_by_dispatch() {
         // Build a throwaway store to exercise dispatch_message's app.context arm.
         let (tx, _rx) = channel::<ActorMsg>();
-        let transport = ClaudeAgentTransport::new(Arc::new(JobObjectSupervisor::new()), tx);
+        let transport = ClaudeAgentTransport::new(
+            Arc::new(JobObjectSupervisor::new()),
+            tx,
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(HashMap::new())),
+        );
         let mut store = ProcessStore::new(transport, |_event: AgentEvent| {}, "9.9.9");
         let ctx = DispatchContext::default();
         let reply = dispatch_message(&mut store, json!({ "method": "app.context" }), &ctx);
@@ -809,7 +1193,12 @@ mod tests {
     #[test]
     fn pick_files_stub_returns_empty_selection() {
         let (tx, _rx) = channel::<ActorMsg>();
-        let transport = ClaudeAgentTransport::new(Arc::new(JobObjectSupervisor::new()), tx);
+        let transport = ClaudeAgentTransport::new(
+            Arc::new(JobObjectSupervisor::new()),
+            tx,
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(HashMap::new())),
+        );
         let mut store = ProcessStore::new(transport, |_event: AgentEvent| {}, "9.9.9");
         let ctx = DispatchContext::default();
         let reply = dispatch_message(&mut store, json!({ "method": "app.pickFiles" }), &ctx);
@@ -820,7 +1209,12 @@ mod tests {
     #[test]
     fn provider_list_flows_through_dispatch_wrapped() {
         let (tx, _rx) = channel::<ActorMsg>();
-        let transport = ClaudeAgentTransport::new(Arc::new(JobObjectSupervisor::new()), tx);
+        let transport = ClaudeAgentTransport::new(
+            Arc::new(JobObjectSupervisor::new()),
+            tx,
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(HashMap::new())),
+        );
         let mut store = ProcessStore::new(transport, |_event: AgentEvent| {}, "9.9.9");
         let ctx = DispatchContext::default();
         let reply = dispatch_message(
@@ -838,7 +1232,12 @@ mod tests {
     #[test]
     fn unknown_method_maps_to_unsupported_error_envelope() {
         let (tx, _rx) = channel::<ActorMsg>();
-        let transport = ClaudeAgentTransport::new(Arc::new(JobObjectSupervisor::new()), tx);
+        let transport = ClaudeAgentTransport::new(
+            Arc::new(JobObjectSupervisor::new()),
+            tx,
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(HashMap::new())),
+        );
         let mut store = ProcessStore::new(transport, |_event: AgentEvent| {}, "9.9.9");
         let ctx = DispatchContext::default();
         let reply = dispatch_message(

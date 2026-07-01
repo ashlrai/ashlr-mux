@@ -1,4 +1,5 @@
 mod agent_session;
+mod opencode_http;
 mod session;
 mod terminal;
 

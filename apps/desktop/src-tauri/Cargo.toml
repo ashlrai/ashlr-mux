@@ -23,3 +23,7 @@ cmux-terminal = { path = "../../../crates/cmux-terminal" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tauri = { version = "2", features = [] }
+# OpenCode's loopback control API is plain HTTP (no TLS). `ureq` is a pure
+# blocking client with no tokio dependency (honoring the no-async-runtime rule);
+# default-features disabled drops the TLS/json/gzip features we do not need.
+ureq = { version = "2", default-features = false }

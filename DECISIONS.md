@@ -4,6 +4,85 @@ Running log of non-obvious design decisions made while porting cmux to Windows,
 so future iterations (and reviewers) can see the *why*, not just the *what*.
 Newest first.
 
+## Phase 3 — Codex + OpenCode transports (the read→write feedback loop)
+
+The crux: Codex (stdio JSON-RPC handshake) and OpenCode (HTTP-loopback + SSE)
+both need to *react to reads by writing* — send `initialized`+`thread/start`
+after the `initialize` response, drain the queued turn after the thread is ready,
+reply to server approval requests, `POST /session` after the loopback URL is
+sniffed. The pure store's `feed_output` only produced events; it had no way to
+trigger writes, and the `AgentTransport` trait is `{spawn, write_line,
+terminate}` (store-initiated only). Decisions (settled by an understand→design
+ultracode workflow grounded in the Swift sources):
+
+- **`TransportAction` intent list, NOT a trait extension or an actor-held
+  transport.** The single `CodexAccumulator` lives in `RunningSession` and serves
+  BOTH read (`consume_line` mutates `thread_id`/`did_initialize`) AND write
+  (`initialize`/`thread_start`/`turn_start` builders) — so frame construction MUST
+  stay in the store; a second accumulator would desync id allocation. But I/O
+  cannot run in the pure crate. Resolution: the store appends pure
+  `TransportAction`s (`WriteStdin`/`Terminate`/`OpenCodeCreateSession`/
+  `OpenCodePostPrompt`) that the `src-tauri` actor drains via
+  `take_transport_actions()` after EVERY message and executes against shared
+  handles. This keeps `cmux-agent-chat` dependency-pure + os-4551-safe (unit tests
+  assert the emitted `Vec<TransportAction>` with no transport, no spawn), leaves
+  the `AgentTransport` trait + Claude path untouched, and honors no-tokio.
+- **Codex reactive machine lives in `RunningSession::handle_codex_line`.** After
+  `consume_line`, react in spec order: (a) `initialize` resolved → push
+  `initialized` THEN `thread/start` (two separate `encode_line` frames); (b)
+  `thread_id` first known → drain the queue (`MAX_QUEUED_INPUT_COUNT == 1`); (c)
+  the line was a server request (`parse_server_request`, raw id echoed verbatim) →
+  push the approval / `-32601` reply; (d) `take_startup_failure_signal()` →
+  `fail_codex_queue` + `pending_terminate`. The `&mut accumulator` borrow is
+  dropped (bools+events extracted first) before the `self.*` helpers run.
+- **`WriteStdin.line` is already `encode_line`-terminated; the actor writes it
+  RAW** (no `AgentIo::write_line`, which would double the newline and corrupt the
+  JSON-RPC framing).
+- **OpenCode HTTP = `ureq` (blocking, no tokio), on worker threads.** `reqwest`
+  transitively pulls tokio → rejected. Loopback is plain HTTP → `default-features
+  = false` (no TLS). `create_session`/`post_prompt`/`stream_events` run on
+  short-lived / long-lived `std::thread`s that report back as new `ActorMsg`
+  variants; the actor stays responsive. `provider.started` stays deferred to
+  `complete_opencode_handshake` (after `POST /session` returns a valid id). Auth
+  header is derived from `spec.env` (the `OPENCODE_SERVER_*` creds `cmux-agent`
+  mints) in `spawn`, BEFORE the spec is moved into `spawn_captured`, and stored in
+  a host-side `OpenCodeContexts` map — the secret never enters the pure store.
+- **Documented divergence: OpenCode `writeLine` is optimistic.** Swift awaits the
+  `POST prompt_async` and throws `providerNotReady` on failure; our single-threaded
+  actor cannot block up to 30s on the POST without stalling all event ordering, so
+  the RPC returns `{sent:true}` and a failed POST surfaces as a synthetic OpenCode
+  `stderr` line (emitted verbatim by the store) instead of a synchronous error.
+- **EOF-vs-error rule is actor-side** (`!cancelled && process_running`), needing
+  live process state the pure store lacks. `process_running` is an `AtomicBool`
+  cleared by the reader thread the instant the child pipes close; the natural-exit
+  path also drops the whole context in the actor's `Exit` handler (so a later clean
+  `/event` EOF finds no context and declines to fail an already-exited session).
+  A narrow mislabel race remains (inherited from Swift's async `Process.isRunning`)
+  — cosmetic only, never a double `provider.exit`.
+- **Intentional Codex parity divergence:** `{"id":null,...}` is treated as a
+  notification (no reply), not a server request. A null request id is malformed per
+  JSON-RPC 2.0 and Codex never emits one; matching Swift's NSNull-is-non-nil reply
+  would fabricate a reply to a malformed frame.
+
+Verified by a 4-lens adversarial review workflow (9 agents): 4 confirmed findings,
+all LOW; the two real context leaks (reader-spawn-failure rollback + natural-exit)
+were fixed, the other two documented as inherited/intentional.
+
+Live-run fix: a spawn/resolve failure (e.g. the CLI is not installed) now maps to a
+new `BridgeError::ProviderLaunchFailed(detail)` — its detail IS the user-facing
+message ("<Provider> could not be started. <reason>"), mirroring the macOS
+`AgentExecutableResolverError` envelope (`{ok:false, error:{userMessage}}`, no code;
+`AgentSessionWebRendererCoordinator.swift:175`) — instead of the misleading generic
+`providerNotReady` ("The provider is not ready yet."). `TransportError::NotReady`
+still maps to `providerNotReady` (transient; its code is load-bearing — the renderer
+silently retries `writeLine`). Note: `BridgeError` is otherwise a verbatim port of
+Swift `AgentSessionBridgeError`; this variant stands in for the *separate* Swift
+resolver-error type so the renderer shows the real reason (faithful to the macOS
+user experience, not the enum shape). KNOWN LIMITATION surfaced live: one agent
+session per WINDOW (singleton `cmuxAgentBridge` + single-active-session store);
+macOS is one-per-pane. Lifting it (per-pane bridge routing + multi-session store)
+is a deferred feature.
+
 ## Phase 3 — agent-session GUI-wiring (Claude live) — non-obvious decisions
 
 - **The concrete transport lives in `src-tauri`, not `cmux-agent-chat`.** The

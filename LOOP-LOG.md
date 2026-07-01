@@ -226,3 +226,35 @@ One line per completed slice (milestone/result/commit/next). Newest last.
   document isolation) documented in ULTRACODE-RESUME as optional polish. Claude
   vertical now spawns + streams (token-by-token) + converses + Stops + renders
   styled — the Phase 3 Claude slice is functionally complete pending only polish.
+- Phase 3 — Codex + OpenCode transports (ultracode, 2026-07-01). Built the
+  read→write feedback loop both providers need, via a NEW pure `TransportAction`
+  intent list: the store (cmux-agent-chat) appends `WriteStdin`/`Terminate`/
+  `OpenCodeCreateSession`/`OpenCodePostPrompt`; the src-tauri actor drains them
+  (`take_transport_actions`) after every message and performs the I/O. Trait +
+  Claude path UNCHANGED; crate stays dependency-pure + os-4551-safe. CODEX (dep-
+  free): `RunningSession::handle_codex_line` reacts after `consume_line` (init→
+  `initialized`+`thread/start`→queue-drain→approval-reply→startup-fail, in order);
+  single-input queue (`codex_queue`, cap 1); `codex_submit` guard order; `start`
+  writes `initialize`; `parse_server_request` (raw id echoed) added to codex.rs.
+  OPENCODE: `ureq` (blocking, no tokio, no-TLS) in new `opencode_http.rs`
+  (`build_url`+percent-encode, `post_json`, `create_session`, `post_prompt`, SSE
+  `stream_events`); actor worker threads + 4 new `ActorMsg` variants; per-session
+  `OpenCodeContext` (auth from `spec.env`, `cancelled`+`process_running` flags);
+  `provider.started` deferred to `complete_opencode_handshake`; EOF-vs-error rule;
+  optimistic-writeLine divergence documented. Understand→design workflow (6
+  agents) settled the architecture; 4-lens adversarial review (9 agents) → 4 LOW
+  findings, 2 real leaks FIXED (spawn-rollback + natural-exit context cleanup), 2
+  documented (inherited EOF race + intentional null-id). Gate GREEN: cmux-agent-
+  chat 185 (+17), cmux-desktop 36 (+8), full workspace tests pass, clippy clean
+  workspace-wide. Also FIXED (live-run feedback): a spawn/resolve failure now maps
+  to a new `BridgeError::ProviderLaunchFailed(detail)` ("<Provider> could not be
+  started. <reason>") instead of the misleading `providerNotReady` ("The provider
+  is not ready yet.") — mirrors the macOS `AgentExecutableResolverError` envelope
+  (`{userMessage: error.message}`, no code). Surfaced because Codex/OpenCode CLIs
+  are not installed on this box (only `claude` is), so their Start correctly fails
+  now with a clear reason. KNOWN LIMITATION (not a regression): one agent session
+  per WINDOW — the singleton `cmuxAgentBridge` + single-active-session `ProcessStore`
+  reject a second pane's Start with `sessionAlreadyRunning`; macOS supports one per
+  pane. Lifting it needs per-pane bridge routing + a multi-session store (future
+  slice). Commit: <pending>. NEXT: install codex/opencode to live-verify their
+  converse; multi-session-per-window; `app.pickFiles`; backlog (#13/#14).

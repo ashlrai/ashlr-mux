@@ -33,6 +33,7 @@ pub mod permission_mode;
 pub mod process_store;
 pub mod request;
 pub mod running_session;
+pub mod transport_action;
 
 pub use claude::{write_claude_stream_json, ClaudeStreamAccumulator};
 pub use codex::{
@@ -55,6 +56,7 @@ pub use process_store::{
 };
 pub use request::BridgeRequest;
 pub use running_session::{ProviderAccumulator, RunningSession};
+pub use transport_action::TransportAction;
 
 use serde_json::{json, Value};
 

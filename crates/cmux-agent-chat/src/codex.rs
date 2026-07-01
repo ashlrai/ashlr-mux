@@ -749,6 +749,36 @@ impl CodexAccumulator {
     }
 }
 
+/// A parsed server→client request: `(raw id, method, params)`. The `id` is the
+/// verbatim JSON [`Value`] so the reply echoes it exactly.
+pub type ServerRequest = (Value, String, Option<Map<String, Value>>);
+
+/// Parse a server→client request line into `(raw id, method, params)`.
+///
+/// A line is a server request iff it is a JSON object carrying BOTH a `method`
+/// string AND a non-`null` `id` (Swift `handleLine` checks this branch before the
+/// notification branch). The `id` is returned as the RAW [`Value`] so the reply
+/// echoes it verbatim — it is never coerced to an integer (Swift echoes
+/// `object["id"]` directly). Returns `None` for anything that is not a server
+/// request, so the transport can build the approval / `-32601` reply with
+/// [`CodexAccumulator::approval_response`] + [`unsupported_server_request_error`].
+///
+/// Intentional divergence from Swift: a line with an explicit `"id": null` is
+/// treated as a notification (no reply), whereas Swift's `object["id"] != nil`
+/// (NSNull is non-nil) would reply echoing `id: null`. A null request id is
+/// malformed per JSON-RPC 2.0 and Codex never emits one; treating it as absent
+/// keeps this in lockstep with `consume_line`'s `has_id` check.
+pub fn parse_server_request(line: &str) -> Option<ServerRequest> {
+    let object = match serde_json::from_str::<Value>(line.trim()) {
+        Ok(Value::Object(map)) => map,
+        _ => return None,
+    };
+    let method = object.get("method").and_then(Value::as_str)?.to_string();
+    let id = object.get("id").filter(|value| !value.is_null())?.clone();
+    let params = object.get("params").and_then(Value::as_object).cloned();
+    Some((id, method, params))
+}
+
 /// Build the `-32601` error reply for an unsupported server request.
 ///
 /// Mirrors the `default` arm of Swift `handleServerRequest`. `id` is the raw id
@@ -1443,6 +1473,30 @@ mod tests {
             "s",
         );
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn parse_server_request_extracts_raw_id_method_params() {
+        let (id, method, params) = parse_server_request(
+            r#"  {"id":"req-9","method":"item/fileChange/requestApproval","params":{"k":1}}  "#,
+        )
+        .expect("server request");
+        // Raw id echoed verbatim (a string stays a string, never coerced to Int).
+        assert_eq!(id, json!("req-9"));
+        assert_eq!(method, "item/fileChange/requestApproval");
+        assert_eq!(params.unwrap().get("k"), Some(&json!(1)));
+    }
+
+    #[test]
+    fn parse_server_request_rejects_notifications_and_responses() {
+        // Notification (method, no id) is not a server request.
+        assert!(parse_server_request(r#"{"method":"turn/completed","params":{}}"#).is_none());
+        // Null id is not a server request.
+        assert!(parse_server_request(r#"{"id":null,"method":"x"}"#).is_none());
+        // Response (id, no method) is not a server request.
+        assert!(parse_server_request(r#"{"id":5,"result":{}}"#).is_none());
+        // Non-object / garbage.
+        assert!(parse_server_request("not json").is_none());
     }
 
     #[test]

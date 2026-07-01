@@ -31,16 +31,22 @@
 //! * everything else (any provider's `stderr`, plus Codex/Claude non-stdout)
 //!   is emitted verbatim as `provider.output`.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
+
+use serde_json::json;
 
 use crate::claude::ClaudeStreamAccumulator;
-use crate::codex::CodexAccumulator;
+use crate::codex::{
+    encode_line, parse_server_request, unsupported_server_request_error, CodexAccumulator,
+    SubmitRejection,
+};
 use crate::event::{AgentEvent, ProviderId, ProviderStream};
 use crate::line_buffer::OutputLineBuffer;
 use crate::opencode::{
     opencode_process_output_disposition, OpenCodeEvent, OpenCodeEventStreamParser,
     OpenCodeEventTextAccumulator, OpenCodeProcessOutputDisposition,
 };
+use crate::permission_mode::PermissionMode;
 
 /// The provider-specific stateful accumulator for a running session.
 ///
@@ -105,6 +111,22 @@ pub struct RunningSession {
     started_emitted: bool,
     drained_streams: HashSet<ProviderStream>,
     pending_exit_status: Option<i32>,
+    /// Codex: user prompts queued before the thread exists (Swift `queuedInputs`;
+    /// capped at `MAX_QUEUED_INPUT_COUNT == 1`). The accumulator keeps the pure
+    /// byte/count mirror; this holds the actual `(text, permission_mode)` FIFO.
+    codex_queue: VecDeque<(String, PermissionMode)>,
+    /// Reactive stdin frames the store should turn into
+    /// [`TransportAction::WriteStdin`](crate::TransportAction::WriteStdin). Each is
+    /// already `encode_line`-terminated. Drained by the store after each feed /
+    /// write / start.
+    pending_outbound: Vec<String>,
+    /// Set when the Codex startup-failure edge fired: the store must emit
+    /// `provider.exit(1)` and terminate the child (once).
+    pending_terminate: bool,
+    /// Set on the OpenCode loopback-URL `None → Some` transition: the store must
+    /// emit an
+    /// [`OpenCodeCreateSession`](crate::TransportAction::OpenCodeCreateSession).
+    pending_opencode_create: bool,
 }
 
 impl RunningSession {
@@ -136,6 +158,10 @@ impl RunningSession {
             started_emitted: false,
             drained_streams: HashSet::new(),
             pending_exit_status: None,
+            codex_queue: VecDeque::new(),
+            pending_outbound: Vec::new(),
+            pending_terminate: false,
+            pending_opencode_create: false,
         }
     }
 
@@ -275,8 +301,10 @@ impl RunningSession {
                 OpenCodeProcessOutputDisposition::ServerUrl(base_url) => {
                     if self.opencode_base_url.is_none() {
                         self.opencode_base_url = Some(base_url);
-                        // The transport reacts by creating the loopback session
-                        // (deferred). No event is emitted here.
+                        // Flag the loopback-URL `None → Some` transition so the
+                        // store emits `OpenCodeCreateSession` (POST /session). No
+                        // renderer event is emitted here.
+                        self.pending_opencode_create = true;
                     }
                     return Vec::new();
                 }
@@ -289,8 +317,8 @@ impl RunningSession {
 
         if stream == ProviderStream::Stdout {
             match &mut self.accumulator {
-                ProviderAccumulator::Codex(codex) => {
-                    return codex.consume_line(text, &self.session_id);
+                ProviderAccumulator::Codex(_) => {
+                    return self.handle_codex_line(text);
                 }
                 ProviderAccumulator::Claude(claude) => {
                     return claude.consume_line_to_events(text, &self.session_id, self.provider_id);
@@ -304,6 +332,75 @@ impl RunningSession {
         vec![self.output_event(stream, text.to_string())]
     }
 
+    /// Consume one Codex `stdout` line and run the read→write reactive machine.
+    ///
+    /// Faithful port of the ordering in `CodexAppServerSession.handleLine` +
+    /// `AgentSessionProcessStore`: after the pure [`CodexAccumulator::consume_line`]
+    /// updates protocol state and yields renderer events, react in this exact
+    /// order (Codex spec §7):
+    ///
+    /// 1. **initialize just resolved** → queue `initialized` then `thread/start`
+    ///    (two separate newline-framed frames, in that order).
+    /// 2. **thread id just became known** → drain the queued input (FIFO, ≤1) into
+    ///    `turn/start` frames.
+    /// 3. **the line was a server request** → queue the approval / `-32601` reply,
+    ///    echoing the raw id verbatim.
+    /// 4. **the startup-failure edge fired** → fail the queue and flag teardown.
+    ///
+    /// Every reactive frame lands in `pending_outbound` for the store to turn into
+    /// [`WriteStdin`](crate::TransportAction::WriteStdin) actions.
+    fn handle_codex_line(&mut self, text: &str) -> Vec<AgentEvent> {
+        let session_id = self.session_id.clone();
+        let (was_initialized, had_thread, events) = match &mut self.accumulator {
+            ProviderAccumulator::Codex(codex) => {
+                let was_initialized = codex.did_initialize();
+                let had_thread = codex.thread_id().is_some();
+                let events = codex.consume_line(text, &session_id);
+                (was_initialized, had_thread, events)
+            }
+            // Unreachable: only called from the Codex branch above.
+            _ => return Vec::new(),
+        };
+
+        // (1) initialize → `initialized`, then `thread/start`.
+        if !was_initialized && self.codex_ref().is_some_and(CodexAccumulator::did_initialize) {
+            if let Some(initialized) = self.codex_ref().map(CodexAccumulator::initialized) {
+                self.pending_outbound.push(encode_line(&initialized));
+            }
+            if let Some(thread_start) = self.codex_mut().and_then(CodexAccumulator::thread_start) {
+                self.pending_outbound.push(encode_line(&thread_start));
+            }
+        }
+
+        // (2) thread id just became known → drain queued input.
+        if !had_thread && self.codex_ref().is_some_and(|c| c.thread_id().is_some()) {
+            self.drain_codex_queue();
+        }
+
+        // (3) server request → approval / unsupported reply (raw id echoed).
+        if let Some((id, method, params)) = parse_server_request(text) {
+            let reply = match self
+                .codex_ref()
+                .and_then(|codex| codex.approval_response(&method, params.as_ref()))
+            {
+                Some(result) => json!({ "id": id, "result": result }),
+                None => unsupported_server_request_error(id, &method),
+            };
+            self.pending_outbound.push(encode_line(&reply));
+        }
+
+        // (4) startup-failure edge → fail the queue + flag teardown (once).
+        if self
+            .codex_mut()
+            .is_some_and(CodexAccumulator::take_startup_failure_signal)
+        {
+            self.fail_codex_queue();
+            self.pending_terminate = true;
+        }
+
+        events
+    }
+
     fn output_event(&self, stream: ProviderStream, text: String) -> AgentEvent {
         AgentEvent::ProviderOutput {
             session_id: self.session_id.clone(),
@@ -311,6 +408,128 @@ impl RunningSession {
             stream,
             text,
         }
+    }
+
+    // ---- Codex write side (reactive + user submit) ----
+
+    /// Borrow the Codex accumulator, if this is a Codex session.
+    fn codex_ref(&self) -> Option<&CodexAccumulator> {
+        match &self.accumulator {
+            ProviderAccumulator::Codex(codex) => Some(codex),
+            _ => None,
+        }
+    }
+
+    /// Mutably borrow the Codex accumulator, if this is a Codex session.
+    fn codex_mut(&mut self) -> Option<&mut CodexAccumulator> {
+        match &mut self.accumulator {
+            ProviderAccumulator::Codex(codex) => Some(codex),
+            _ => None,
+        }
+    }
+
+    /// Begin the Codex handshake: queue the initial `initialize` request.
+    ///
+    /// Mirrors Swift `CodexAppServerSession.start()` (the one unconditional write
+    /// before any read). A no-op for non-Codex sessions. The store calls this once
+    /// after spawning, so the frame is drained + written before any stdout arrives.
+    pub fn begin_codex_handshake(&mut self) {
+        if let Some(frame) = self.codex_mut().map(CodexAccumulator::initialize) {
+            self.pending_outbound.push(encode_line(&frame));
+        }
+    }
+
+    /// Handle a user `writeLine` for a Codex session (Swift `submit`).
+    ///
+    /// Reproduces the guard order exactly: empty text is a silent success; a
+    /// startup failure or an in-flight turn rejects; before the thread exists the
+    /// input is queued (subject to [`CodexAccumulator::can_queue_input`]) and, if
+    /// `initialize` has already resolved, a `thread/start` is (re)issued (spec
+    /// §3.4); once the thread exists the `turn/start` frame is queued immediately.
+    /// Built frames land in `pending_outbound`.
+    pub fn codex_submit(
+        &mut self,
+        permission_mode: PermissionMode,
+        text: &str,
+    ) -> Result<(), SubmitRejection> {
+        if text.is_empty() {
+            return Ok(());
+        }
+        let attempt = match self.codex_mut() {
+            Some(codex) => codex.turn_start(text, permission_mode),
+            // Not a Codex session — nothing to do (the store routes by provider).
+            None => return Ok(()),
+        };
+        match attempt {
+            Ok(frame) => {
+                self.pending_outbound.push(encode_line(&frame));
+                Ok(())
+            }
+            Err(SubmitRejection::ThreadNotReady) => {
+                if !self.codex_ref().is_some_and(|codex| codex.can_queue_input(text)) {
+                    return Err(SubmitRejection::ThreadNotReady);
+                }
+                self.codex_queue
+                    .push_back((text.to_string(), permission_mode));
+                if let Some(codex) = self.codex_mut() {
+                    codex.note_queued(text);
+                }
+                // Swift: if already initialized when a prompt is queued, kick a
+                // (re)`thread/start` so the queue can eventually drain.
+                if self.codex_ref().is_some_and(CodexAccumulator::did_initialize) {
+                    if let Some(frame) = self.codex_mut().and_then(CodexAccumulator::thread_start) {
+                        self.pending_outbound.push(encode_line(&frame));
+                    }
+                }
+                Ok(())
+            }
+            Err(other) => Err(other),
+        }
+    }
+
+    /// Drain the queued input(s) into `turn/start` frames (Swift
+    /// `drainCodexAppServerQueuedInputs`). Called when the thread id first becomes
+    /// known. `MAX_QUEUED_INPUT_COUNT == 1`, so at most one input is drained.
+    fn drain_codex_queue(&mut self) {
+        let mut frames = Vec::new();
+        while let Some((text, permission_mode)) = self.codex_queue.pop_front() {
+            if let Some(frame) = self
+                .codex_mut()
+                .and_then(|codex| codex.turn_start(&text, permission_mode).ok())
+            {
+                frames.push(encode_line(&frame));
+            }
+        }
+        if let Some(codex) = self.codex_mut() {
+            codex.clear_queue();
+        }
+        self.pending_outbound.extend(frames);
+    }
+
+    /// Fail + clear the queued inputs (Swift `failQueuedInputs`). Called from the
+    /// startup-failure edge; the pending prompts never get sent.
+    fn fail_codex_queue(&mut self) {
+        self.codex_queue.clear();
+        if let Some(codex) = self.codex_mut() {
+            codex.clear_queue();
+        }
+    }
+
+    // ---- reactive pending-action accessors (drained by the store) ----
+
+    /// Take the queued stdin frames (each already `encode_line`-terminated).
+    pub fn take_pending_outbound(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.pending_outbound)
+    }
+
+    /// Take + clear the Codex startup-failure teardown flag.
+    pub fn take_pending_terminate(&mut self) -> bool {
+        std::mem::take(&mut self.pending_terminate)
+    }
+
+    /// Take + clear the OpenCode "create loopback session" flag.
+    pub fn take_pending_opencode_create(&mut self) -> bool {
+        std::mem::take(&mut self.pending_opencode_create)
     }
 
     // ---- OpenCode SSE feeding ----

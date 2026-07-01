@@ -45,6 +45,15 @@ pub enum BridgeError {
     #[error("The provider is not ready yet.")]
     ProviderNotReady(String),
 
+    /// The provider's executable could not be resolved or launched (e.g. the CLI
+    /// is not installed / not on PATH). Stands in for the macOS
+    /// `AgentExecutableResolverError` envelope, which the renderer coordinator
+    /// surfaces as `{ok:false, error:{userMessage: error.message}}` — so, unlike
+    /// the other variants, the carried detail IS the user-facing message (it names
+    /// the real reason instead of a generic "not ready").
+    #[error("{0}")]
+    ProviderLaunchFailed(String),
+
     /// The provider declares a transport kind this host cannot drive.
     #[error("Agent transport is not supported.")]
     UnsupportedTransport(String),
@@ -63,6 +72,7 @@ impl BridgeError {
             Self::SessionNotFound(_) => "sessionNotFound",
             Self::SessionAlreadyRunning => "sessionAlreadyRunning",
             Self::ProviderNotReady(_) => "providerNotReady",
+            Self::ProviderLaunchFailed(_) => "providerLaunchFailed",
             Self::UnsupportedTransport(_) => "unsupportedTransport",
         }
     }
@@ -85,7 +95,16 @@ mod tests {
         assert_eq!(BridgeError::UnsupportedMethod("x".into()).code(), "unsupportedMethod");
         assert_eq!(BridgeError::SessionNotFound("x".into()).code(), "sessionNotFound");
         assert_eq!(BridgeError::SessionAlreadyRunning.code(), "sessionAlreadyRunning");
+        assert_eq!(BridgeError::ProviderLaunchFailed("x".into()).code(), "providerLaunchFailed");
         assert_eq!(BridgeError::UnsupportedTransport("x".into()).code(), "unsupportedTransport");
+    }
+
+    #[test]
+    fn provider_launch_failed_message_is_the_carried_detail() {
+        // Unlike the other variants, the detail IS the user-facing message (it
+        // mirrors the macOS resolver-error envelope's verbatim `userMessage`).
+        let err = BridgeError::ProviderLaunchFailed("Codex could not be started. not found".into());
+        assert_eq!(err.user_message(), "Codex could not be started. not found");
     }
 
     #[test]
