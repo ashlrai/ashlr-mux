@@ -7,12 +7,11 @@
 .DESCRIPTION
   Host side of the turnkey sandbox harness:
     1. Builds the web frontend + the cmux-desktop debug exe (unless -SkipBuild).
-    2. Stages the VC++ 2015-2022 runtime DLLs next to the exe - a fresh Windows
-       Sandbox has no VC++ redistributable, and the exe's own directory is first
-       in the DLL search order, so this needs no in-VM download.
-    3. Generates a .wsb with absolute mapped-folder paths and launches it.
-  The in-VM setup (WebView2 install + app launch) is handled by
-  sandbox-setup.ps1, mapped in and run on logon.
+    2. Generates a .wsb with absolute mapped-folder paths and launches it.
+  The exe statically links the MSVC CRT (see .cargo/config.toml), so it needs no
+  VC++ redistributable inside the fresh sandbox. The in-VM setup (WebView2
+  install + app launch) is handled by sandbox-setup.ps1, mapped in and run on
+  logon.
 
 .NOTES
   Requires the "Containers-DisposableClientVM" (Windows Sandbox) optional feature.
@@ -51,21 +50,6 @@ if (-not $SkipBuild) {
 
 if (-not (Test-Path $Exe)) {
   throw "cmux-desktop.exe not found at $Exe - run without -SkipBuild first."
-}
-
-# Stage the VC++ runtime DLLs next to the exe (fresh sandbox has no redist).
-$dlls = 'VCRUNTIME140.dll', 'VCRUNTIME140_1.dll', 'MSVCP140.dll'
-foreach ($d in $dlls) {
-  $dest = Join-Path $TargetDir $d
-  if (-not (Test-Path $dest)) {
-    $src = Join-Path $env:WINDIR "System32\$d"
-    if (Test-Path $src) {
-      Copy-Item $src $dest -Force
-      Write-Host "staged $d" -ForegroundColor DarkGray
-    } else {
-      Write-Warning "host is missing $d - the app may fail to start in the sandbox"
-    }
-  }
 }
 
 # Generate the .wsb with absolute paths (Windows Sandbox requires absolute

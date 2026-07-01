@@ -2,4 +2,8 @@
 target-dir = "target"
 
 [target.x86_64-pc-windows-msvc]
-rustflags = ["-Dwarnings"]
+# Statically link the MSVC C runtime so the produced binaries do not depend on
+# the VC++ redistributable (VCRUNTIME140.dll / MSVCP140.dll) being installed —
+# important for running the unsigned dev build in a bare Windows Sandbox and for
+# distributing self-contained binaries.
+rustflags = ["-Dwarnings", "-C", "target-feature=+crt-static"]
