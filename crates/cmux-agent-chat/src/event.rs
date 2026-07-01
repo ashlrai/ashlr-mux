@@ -20,6 +20,10 @@ pub enum ProviderId {
 }
 
 impl ProviderId {
+    /// Every provider, in the canonical `provider.list` order (Swift
+    /// `AgentSessionProviderID.allCases`).
+    pub const ALL: [ProviderId; 3] = [Self::Codex, Self::Claude, Self::Opencode];
+
     /// Parse from the renderer's raw string, returning `None` for unknown values.
     pub fn from_raw(raw: &str) -> Option<Self> {
         match raw {
@@ -38,10 +42,81 @@ impl ProviderId {
             Self::Opencode => "opencode",
         }
     }
+
+    /// The English display name (Swift `displayName` `defaultValue`s).
+    ///
+    /// Mirrors `AgentSessionProviderID.displayName` / the sibling
+    /// `cmux_agent::AgentSessionProviderId::display_name`. The crate is headless
+    /// and carries no localization catalog, so the English copy is used verbatim.
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Self::Codex => "Codex",
+            Self::Claude => "Claude Code",
+            Self::Opencode => "OpenCode",
+        }
+    }
+
+    /// The executable basename (Swift `executableName`, equal to the raw value).
+    pub fn executable_name(&self) -> &'static str {
+        self.as_str()
+    }
+
+    /// The transport kind string (Swift `transportKind`).
+    pub fn transport_kind(&self) -> &'static str {
+        match self {
+            Self::Codex => "stdio-jsonrpc",
+            Self::Claude => "stdio-jsonl",
+            Self::Opencode => "http-loopback",
+        }
+    }
+
+    /// The transport launch arguments (Swift `launchArguments`).
+    pub fn launch_arguments(&self) -> Vec<String> {
+        match self {
+            Self::Codex => vec!["app-server".into(), "--listen".into(), "stdio://".into()],
+            Self::Claude => vec![
+                "-p".into(),
+                "--output-format".into(),
+                "stream-json".into(),
+                "--input-format".into(),
+                "stream-json".into(),
+                "--include-partial-messages".into(),
+                "--verbose".into(),
+            ],
+            Self::Opencode => vec![
+                "serve".into(),
+                "--hostname".into(),
+                "127.0.0.1".into(),
+                "--port".into(),
+                "0".into(),
+                "--print-logs".into(),
+            ],
+        }
+    }
+
+    /// Whether a session for this provider auto-starts (Swift
+    /// `shouldAutoStartSession`: Codex/OpenCode yes, Claude no).
+    pub fn should_auto_start_session(&self) -> bool {
+        match self {
+            Self::Codex | Self::Opencode => true,
+            Self::Claude => false,
+        }
+    }
+
+    /// Whether `provider.started` is emitted immediately on spawn.
+    ///
+    /// Faithful to `AgentSessionProcessStore.start`: every provider *except*
+    /// OpenCode emits `provider.started` right after the process is launched
+    /// (`if plan.provider != .opencode { emitStarted(...) }`). OpenCode defers
+    /// its `provider.started` until the loopback HTTP session has been created
+    /// (Swift `createOpenCodeSession`).
+    pub fn emits_started_on_spawn(&self) -> bool {
+        !matches!(self, Self::Opencode)
+    }
 }
 
 /// The stdio stream an output chunk arrived on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub enum ProviderStream {

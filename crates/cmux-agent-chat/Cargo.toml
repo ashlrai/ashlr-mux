@@ -11,6 +11,7 @@ path = "src/lib.rs"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+uuid.workspace = true
 ts-rs = { version = "10.1", optional = true }
 
 [features]
