@@ -108,7 +108,6 @@ def is_desktop_change(path: str) -> bool:
         "rust-toolchain.toml",
         ".cargo/config.toml",
         "web/data/cmux.schema.json",
-        "scripts/desktop/build-desktop-web.mjs",
         "scripts/desktop/verify_cmux_contracts.py",
         "scripts/desktop/stage-sidecars.ps1",
         "scripts/desktop/smoke-launch-windows.ps1",
