@@ -368,12 +368,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmux-agent-chat"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "ts-rs",
+]
+
+[[package]]
 name = "cmux-cli"
 version = "0.1.0"
 dependencies = [
  "cmux-ipc",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "cmux-config"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "serde",
+ "serde_json",
+ "ts-rs",
 ]
 
 [[package]]
@@ -399,6 +419,17 @@ dependencies = [
  "serde_json",
  "tauri",
  "tauri-build",
+]
+
+[[package]]
+name = "cmux-diff"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "serde",
+ "serde_json",
+ "sha2",
+ "ts-rs",
 ]
 
 [[package]]

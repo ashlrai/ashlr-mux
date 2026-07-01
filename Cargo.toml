@@ -2,8 +2,11 @@
 members = [
   "apps/desktop/src-tauri",
   "crates/cmux-agent",
+  "crates/cmux-agent-chat",
   "crates/cmux-cli",
+  "crates/cmux-config",
   "crates/cmux-core",
+  "crates/cmux-diff",
   "crates/cmux-golden",
   "crates/cmux-ipc",
   "crates/cmux-process",

@@ -1,0 +1,22 @@
+[package]
+name = "cmux-diff"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+dirs = "6"
+ts-rs = { version = "10.1", optional = true }
+
+[features]
+# Opt-in feature that derives `ts_rs::TS` on the serde wire models so the
+# `@cmux/core-types` TypeScript bindings can be regenerated. Kept out of the
+# default build so normal `cargo test`/`clippy` do not pull in ts-rs. Mirrors
+# `cmux-core`'s `ts` feature convention.
+ts = ["dep:ts-rs"]

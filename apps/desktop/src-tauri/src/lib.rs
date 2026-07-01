@@ -1,3 +1,4 @@
+mod session;
 mod terminal;
 
 fn ping_response() -> &'static str {
@@ -34,13 +35,18 @@ fn desktop_core_status() -> DesktopCoreStatus {
 pub fn run() {
     tauri::Builder::default()
         .manage(terminal::TerminalState::default())
+        .manage(session::SessionState::default())
         .invoke_handler(tauri::generate_handler![
             ping,
             desktop_core_status,
             terminal::terminal_open,
             terminal::terminal_write,
             terminal::terminal_resize,
-            terminal::terminal_close
+            terminal::terminal_close,
+            session::session_snapshot,
+            session::session_split,
+            session::session_close,
+            session::session_set_divider
         ])
         .run(tauri::generate_context!())
         .expect("failed to run cmux desktop bootstrap");

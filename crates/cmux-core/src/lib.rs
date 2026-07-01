@@ -1,5 +1,6 @@
 pub mod notifications;
 pub mod session;
+pub mod session_ops;
 pub mod shortcuts;
 pub mod shortcuts_action;
 

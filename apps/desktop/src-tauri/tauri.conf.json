@@ -4,7 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.cmuxterm.app",
   "build": {
+    "beforeDevCommand": "bun run desktop:web:dev",
     "beforeBuildCommand": "bun run desktop:web:build",
+    "devUrl": "http://localhost:1420",
     "frontendDist": "../web/dist"
   },
   "app": {
