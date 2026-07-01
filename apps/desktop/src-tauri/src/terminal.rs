@@ -16,7 +16,6 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
 
-use cmux_agent::{AgentExecutableResolver, AgentSessionLaunchPlan, AgentSessionProviderId};
 use cmux_terminal::conpty::{ConPty, ConPtyCommand, ConPtySize};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
@@ -61,37 +60,6 @@ fn default_shell_command() -> ConPtyCommand {
     }
 }
 
-/// Map a provider id string (`codex`/`claude`/`opencode`) to its enum.
-fn parse_provider(agent_id: &str) -> Option<AgentSessionProviderId> {
-    AgentSessionProviderId::ALL
-        .into_iter()
-        .find(|provider| provider.raw_value() == agent_id)
-}
-
-/// Build the interactive-launch command for a resolved agent plan.
-///
-/// The agent runs as its normal terminal TUI (no arguments) — deliberately
-/// *not* `plan.arguments`, which are the headless stdio-transport flags a
-/// terminal surface does not want. The resolver's rewritten `PATH` is carried
-/// over so the agent's runtime (node/bun) resolves from the right place.
-fn command_from_plan(plan: &AgentSessionLaunchPlan) -> ConPtyCommand {
-    let mut command = ConPtyCommand::new(plan.executable_path.to_string_lossy().into_owned());
-    if let Some(path) = plan.environment.get("PATH") {
-        command = command.env("PATH", path);
-    }
-    command
-}
-
-/// Resolve an agent provider on this machine into an interactive-launch command.
-fn resolve_agent_command(agent_id: &str) -> Result<ConPtyCommand, String> {
-    let provider =
-        parse_provider(agent_id).ok_or_else(|| format!("unknown agent provider {agent_id:?}"))?;
-    let plan = AgentExecutableResolver::default()
-        .resolve(provider)
-        .map_err(|e| e.to_string())?;
-    Ok(command_from_plan(&plan))
-}
-
 /// Open a new shell session on a pseudo console of `cols`x`rows` and start a
 /// dedicated thread pumping its output to the webview. Returns the session id.
 #[tauri::command]
@@ -100,18 +68,9 @@ pub fn terminal_open(
     state: State<'_, TerminalState>,
     cols: Option<u16>,
     rows: Option<u16>,
-    agent: Option<String>,
-    cwd: Option<String>,
 ) -> Result<u32, String> {
     let size = ConPtySize::new(cols.unwrap_or(80).max(1), rows.unwrap_or(24).max(1));
-
-    let mut command = match agent.as_deref() {
-        Some(agent_id) => resolve_agent_command(agent_id)?,
-        None => default_shell_command(),
-    };
-    if let Some(dir) = cwd.as_deref().map(str::trim).filter(|dir| !dir.is_empty()) {
-        command = command.cwd(dir);
-    }
+    let command = default_shell_command();
 
     let pty = ConPty::spawn(&command, size).map_err(|e| e.to_string())?;
     // Clone the reader before taking the writer; both are independent handles
@@ -240,61 +199,7 @@ fn base64_encode(input: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{base64_encode, command_from_plan, parse_provider};
-    use cmux_agent::{AgentSessionLaunchPlan, AgentSessionProviderId};
-    use std::collections::BTreeMap;
-    use std::path::PathBuf;
-
-    #[test]
-    fn parse_provider_maps_known_ids_and_rejects_others() {
-        assert_eq!(parse_provider("codex"), Some(AgentSessionProviderId::Codex));
-        assert_eq!(parse_provider("claude"), Some(AgentSessionProviderId::Claude));
-        assert_eq!(
-            parse_provider("opencode"),
-            Some(AgentSessionProviderId::OpenCode)
-        );
-        assert_eq!(parse_provider("bogus"), None);
-        // Case-sensitive: the JS layer sends the canonical lowercase id.
-        assert_eq!(parse_provider("Claude"), None);
-    }
-
-    #[test]
-    fn command_from_plan_launches_interactively_with_rewritten_path() {
-        let plan = AgentSessionLaunchPlan {
-            provider: AgentSessionProviderId::Claude,
-            executable_path: PathBuf::from("C:\\rt\\claude.cmd"),
-            // The headless transport args must NOT leak into the interactive TUI.
-            arguments: AgentSessionProviderId::Claude.launch_arguments(),
-            environment: BTreeMap::from([("PATH".into(), "C:\\rt;C:\\Windows".into())]),
-        };
-
-        let command = command_from_plan(&plan);
-
-        assert_eq!(command.program, "C:\\rt\\claude.cmd");
-        assert!(
-            command.args.is_empty(),
-            "interactive launch must drop plan.arguments (headless transport flags)"
-        );
-        assert_eq!(
-            command.env.get("PATH").map(String::as_str),
-            Some("C:\\rt;C:\\Windows")
-        );
-    }
-
-    #[test]
-    fn command_from_plan_without_path_sets_no_env_override() {
-        let plan = AgentSessionLaunchPlan {
-            provider: AgentSessionProviderId::Codex,
-            executable_path: PathBuf::from("C:\\rt\\codex.exe"),
-            arguments: Vec::new(),
-            environment: BTreeMap::new(),
-        };
-
-        let command = command_from_plan(&plan);
-
-        assert_eq!(command.program, "C:\\rt\\codex.exe");
-        assert!(command.env.is_empty());
-    }
+    use super::base64_encode;
 
     #[test]
     fn base64_matches_rfc_test_vectors() {

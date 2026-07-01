@@ -17,55 +17,14 @@ body,
 body {
   background: #0b0e14;
   overflow: hidden;
-  font-family: "Segoe UI", system-ui, sans-serif;
 }
 
-/* #root is a column: a launcher bar on top, the terminal filling the rest. */
+/* xterm mounts into #root; give it the full viewport with a little breathing room. */
 #root {
-  display: flex;
-  flex-direction: column;
-}
-
-#bar {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 8px;
-  background: #11151f;
-  border-bottom: 1px solid #1e2431;
-}
-
-#bar button.launch {
-  appearance: none;
-  border: 1px solid #2a3242;
-  background: #171c28;
-  color: #d5dfec;
-  font-size: 12px;
-  padding: 4px 12px;
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-#bar button.launch:hover {
-  background: #202838;
-  border-color: #3a4456;
-}
-
-#bar #session-label {
-  margin-left: auto;
-  font-size: 11px;
-  color: #6f7d92;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
-#term {
-  flex: 1;
-  min-height: 0;
   padding: 8px;
 }
 
-#term .xterm {
+#root .xterm {
   height: 100%;
 }
 
