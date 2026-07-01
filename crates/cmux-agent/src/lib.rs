@@ -285,7 +285,12 @@ impl AgentExecutableResolver {
                 ]);
             }
             if let Some(local_app_data) = self.environment.get("LOCALAPPDATA") {
-                directories.push(PathBuf::from(local_app_data).join("Microsoft").join("WinGet").join("Links"));
+                let local_app_data = PathBuf::from(local_app_data);
+                directories.push(local_app_data.join("Microsoft").join("WinGet").join("Links"));
+                // The official OpenAI Codex native installer drops `codex.exe`
+                // under %LOCALAPPDATA%\OpenAI\Codex\bin and does NOT add it to
+                // PATH, so a PATH-only search misses it.
+                directories.push(local_app_data.join("OpenAI").join("Codex").join("bin"));
             }
             if let Some(program_data) = self.environment.get("ProgramData") {
                 directories.push(PathBuf::from(program_data).join("chocolatey").join("bin"));
@@ -594,6 +599,34 @@ mod tests {
         let plan = resolver.resolve(AgentSessionProviderId::Codex).expect("plan");
         assert_eq!(plan.executable_path, normalize_path(executable));
         assert_eq!(plan.arguments, AgentSessionProviderId::Codex.launch_arguments());
+    }
+
+    #[test]
+    fn resolves_codex_from_openai_native_install_location() {
+        // The official OpenAI Codex installer drops codex.exe under
+        // %LOCALAPPDATA%\OpenAI\Codex\bin and does NOT add it to PATH.
+        let root = temp_dir();
+        let local_app_data = root.join("LocalAppData");
+        let codex = local_app_data
+            .join("OpenAI")
+            .join("Codex")
+            .join("bin")
+            .join("codex.exe");
+        write_executable(&codex, "codex");
+
+        let resolver = AgentExecutableResolver {
+            environment: BTreeMap::from([
+                // PATH deliberately excludes the codex bin dir.
+                ("PATH".into(), root.join("empty").to_string_lossy().to_string()),
+                ("LOCALAPPDATA".into(), local_app_data.to_string_lossy().to_string()),
+                ("USERPROFILE".into(), root.to_string_lossy().to_string()),
+            ]),
+            include_standard_search_directories: true,
+            ..Default::default()
+        };
+
+        let plan = resolver.resolve(AgentSessionProviderId::Codex).expect("plan");
+        assert_eq!(plan.executable_path, normalize_path(codex));
     }
 
     #[test]
