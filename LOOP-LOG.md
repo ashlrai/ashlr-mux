@@ -131,3 +131,16 @@ One line per completed slice (milestone/result/commit/next). Newest last.
   in full-message de-dup. cmux-agent-chat now 55 tests (+24), clippy clean; combined
   crates gate 62 tests green. Commit: <pending>. Next: codex + opencode transports,
   then process_store + the agent_session_rpc Tauri command.
+- Phase 3 headless process-store slice (agent, 2026-07-01) — `cmux-agent-chat`
+  gained `running_session.rs` (RunningSession + ProviderAccumulator enum; per-
+  provider chunk routing mirroring handleOutputLine) + `process_store.rs`
+  (ProcessStore<T,S> over an injected `AgentTransport` trait + `FnMut(AgentEvent)`
+  sink; single-active-session invariant; start/select/writeLine/stop/close_all/
+  feed_output/notify_exit; OpenCode handshake hook) + a `handle()` dispatcher for
+  provider.list/select/start/writeLine/stop. provider.started timing matches
+  canonical (`if provider != opencode` → immediate; opencode deferred to handshake).
+  Tauri/OS/async-free (only new dep: uuid); 168 lib tests (+31, FakeTransport +
+  Vec sink), clippy clean -D warnings, ts-rs no drift. Commit: <pending>. DEFERRED
+  to the GUI-wiring slice: concrete async AgentTransport (tokio + cmux-process spawn
+  + stdio pump, codex/opencode write side + backpressure, SIGKILL timer),
+  agent_session_rpc Tauri command, app.context/pickFiles, webview agent-session mount.
