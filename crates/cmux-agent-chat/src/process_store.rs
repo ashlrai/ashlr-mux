@@ -32,6 +32,8 @@
 //! (`activeProviderSink`). The active-provider bool is intentionally omitted —
 //! callers can derive it from [`ProcessStore::has_active_session`].
 
+use std::collections::HashMap;
+
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -155,9 +157,21 @@ impl StartedSession {
     }
 }
 
-/// The single-active-session lifecycle store.
+/// The agent-session lifecycle store.
 ///
 /// Generic over an [`AgentTransport`] `T` and an `FnMut(AgentEvent)` sink `S`.
+///
+/// ## Concurrency model — multiple sessions, keyed by id
+///
+/// The canonical macOS `AgentSessionProcessStore` guards `sessions.isEmpty` on
+/// `start` (single-session PER STORE) but instantiates one store PER pane webview
+/// (`AgentSessionWebRenderer.makeCoordinator`), so N panes run N isolated agents.
+/// The Windows MVP renders every pane inside ONE WebView2 (one JS realm, one
+/// `agent_session_rpc` seam), so the equivalent is ONE store holding MANY sessions
+/// keyed by id. This is a deliberate, MVP-forced divergence from the per-webview
+/// Swift store; the renderer already routes each `AgentEvent` to the owning pane by
+/// `sessionId` (`reduceSession` ignores events for other sessions), so a single
+/// broadcasting store is correct here.
 pub struct ProcessStore<T, S>
 where
     T: AgentTransport,
@@ -166,7 +180,7 @@ where
     transport: T,
     sink: S,
     client_version: String,
-    session: Option<RunningSession>,
+    sessions: HashMap<String, RunningSession>,
     selected_provider: Option<ProviderId>,
     /// Pure I/O intents the host must perform (Codex stdin frames, OpenCode HTTP
     /// calls, teardown). Appended by `start`/`write_line`/`feed_output`; drained by
@@ -188,7 +202,7 @@ where
             transport,
             sink,
             client_version: client_version.into(),
-            session: None,
+            sessions: HashMap::new(),
             selected_provider: None,
             pending_actions: Vec::new(),
         }
@@ -202,9 +216,9 @@ where
         std::mem::take(&mut self.pending_actions)
     }
 
-    /// Whether a session is currently running (Swift `hasActiveProviderSession`).
+    /// Whether any session is currently running (Swift `hasActiveProviderSession`).
     pub fn has_active_session(&self) -> bool {
-        self.session.is_some()
+        !self.sessions.is_empty()
     }
 
     /// The most recently selected/started provider, if any.
@@ -212,9 +226,9 @@ where
         self.selected_provider
     }
 
-    /// Immutable access to the active session, if any.
-    pub fn active_session(&self) -> Option<&RunningSession> {
-        self.session.as_ref()
+    /// Immutable access to a running session by id, if present.
+    pub fn session(&self, session_id: &str) -> Option<&RunningSession> {
+        self.sessions.get(session_id)
     }
 
     /// Record a `provider.select` (Swift updates `initialProviderID`).
@@ -222,20 +236,19 @@ where
         self.selected_provider = Some(provider_id);
     }
 
-    /// Start a provider session, enforcing the single-active-session invariant.
+    /// Start a provider session, adding it to the keyed session set.
     ///
-    /// Returns [`BridgeError::SessionAlreadyRunning`] when one is already live.
-    /// On success the [`RunningSession`] is created and `provider.started` is
-    /// emitted immediately for every provider except OpenCode (whose
-    /// `provider.started` is deferred to [`complete_opencode_handshake`](Self::complete_opencode_handshake)).
+    /// Each call allocates a fresh session id, so concurrent panes each get their
+    /// own running session (the single-webview equivalent of the macOS per-webview
+    /// stores — see the type-level docs). On success the [`RunningSession`] is
+    /// created and `provider.started` is emitted immediately for every provider
+    /// except OpenCode (whose `provider.started` is deferred to
+    /// [`complete_opencode_handshake`](Self::complete_opencode_handshake)).
     pub fn start(
         &mut self,
         provider_id: ProviderId,
         working_directory: Option<String>,
     ) -> Result<StartedSession, BridgeError> {
-        if self.session.is_some() {
-            return Err(BridgeError::SessionAlreadyRunning);
-        }
         let session_id = Uuid::new_v4().to_string();
         let request = SpawnRequest {
             session_id: session_id.clone(),
@@ -255,12 +268,15 @@ where
             working_directory,
             self.client_version.clone(),
         );
-        self.session = Some(session);
+        self.sessions.insert(session_id.clone(), session);
         self.selected_provider = Some(provider_id);
 
         if provider_id.emits_started_on_spawn() {
             let event = {
-                let session = self.session.as_mut().expect("session just inserted");
+                let session = self
+                    .sessions
+                    .get_mut(&session_id)
+                    .expect("session just inserted");
                 session.mark_started_emitted();
                 session.started_event()
             };
@@ -272,7 +288,7 @@ where
         // reader-thread registers the child's stdin before returning, so this
         // action is drained + written first.
         if provider_id == ProviderId::Codex {
-            if let Some(session) = self.session.as_mut() {
+            if let Some(session) = self.sessions.get_mut(&session_id) {
                 session.begin_codex_handshake();
             }
             self.collect_session_actions(&session_id);
@@ -297,9 +313,9 @@ where
         permission_mode: PermissionMode,
         text: &str,
     ) -> Result<(), BridgeError> {
-        let provider = match self.session.as_ref() {
-            Some(session) if session.session_id() == session_id => session.provider_id(),
-            _ => return Err(BridgeError::SessionNotFound(session_id.to_string())),
+        let provider = match self.sessions.get(session_id) {
+            Some(session) => session.provider_id(),
+            None => return Err(BridgeError::SessionNotFound(session_id.to_string())),
         };
         match provider {
             // Claude's write path is stateless (`write_claude_stream_json`) and
@@ -311,9 +327,9 @@ where
             // Codex frames `turn/start` on the single accumulator (queueing if the
             // thread is not ready yet); the resulting stdin frames drain as actions.
             ProviderId::Codex => {
-                self.session
-                    .as_mut()
-                    .expect("active session present")
+                self.sessions
+                    .get_mut(session_id)
+                    .expect("session present")
                     .codex_submit(permission_mode, text)
                     .map_err(|_| {
                         BridgeError::ProviderNotReady(provider.display_name().to_string())
@@ -326,7 +342,7 @@ where
             // mode is intentionally ignored for OpenCode.
             ProviderId::Opencode => {
                 let (base_url, opencode_session_id) = {
-                    let session = self.session.as_ref().expect("active session present");
+                    let session = self.sessions.get(session_id).expect("session present");
                     (
                         session.opencode_base_url().map(str::to_string),
                         session.opencode_session_id().map(str::to_string),
@@ -358,9 +374,8 @@ where
     /// [`notify_exit`](Self::notify_exit) + stream drain), matching Swift's
     /// `requestTermination` → `finishSessionIfExitedAndDrained`.
     pub fn stop(&mut self, session_id: &str) -> Result<(), BridgeError> {
-        match self.session.as_ref() {
-            Some(session) if session.session_id() == session_id => {}
-            _ => return Err(BridgeError::SessionNotFound(session_id.to_string())),
+        if !self.sessions.contains_key(session_id) {
+            return Err(BridgeError::SessionNotFound(session_id.to_string()));
         }
         let _ = self.transport.terminate(session_id);
         Ok(())
@@ -368,7 +383,8 @@ where
 
     /// Request termination of every session (Swift `closeAll`).
     pub fn close_all(&mut self) {
-        if let Some(session_id) = self.session.as_ref().map(|s| s.session_id().to_string()) {
+        let session_ids: Vec<String> = self.sessions.keys().cloned().collect();
+        for session_id in session_ids {
             let _ = self.transport.terminate(&session_id);
         }
     }
@@ -379,11 +395,9 @@ where
     /// process has exited and both streams have drained, `provider.exit` is
     /// emitted and the active session cleared.
     pub fn feed_output(&mut self, session_id: &str, stream: ProviderStream, data: &[u8]) {
-        let events = match self.session.as_mut() {
-            Some(session) if session.session_id() == session_id => {
-                session.consume_output(stream, data)
-            }
-            _ => return,
+        let events = match self.sessions.get_mut(session_id) {
+            Some(session) => session.consume_output(stream, data),
+            None => return,
         };
         self.emit_all(events);
         self.collect_session_actions(session_id);
@@ -397,13 +411,13 @@ where
     /// and turns them into ordered [`TransportAction`]s. Called after `start`,
     /// `write_line`, and `feed_output`.
     fn collect_session_actions(&mut self, session_id: &str) {
-        let (outbound, opencode_create, terminate) = match self.session.as_mut() {
-            Some(session) if session.session_id() == session_id => (
+        let (outbound, opencode_create, terminate) = match self.sessions.get_mut(session_id) {
+            Some(session) => (
                 session.take_pending_outbound(),
                 session.take_pending_opencode_create(),
                 session.take_pending_terminate(),
             ),
-            _ => return,
+            None => return,
         };
         for line in outbound {
             self.pending_actions.push(TransportAction::WriteStdin {
@@ -414,8 +428,8 @@ where
         if opencode_create {
             // Only when the loopback session has not already been created.
             let base_url = self
-                .session
-                .as_ref()
+                .sessions
+                .get(session_id)
                 .filter(|session| session.opencode_session_id().is_none())
                 .and_then(|session| session.opencode_base_url())
                 .map(str::to_string);
@@ -444,9 +458,9 @@ where
     /// Bypasses the exit-and-drain gate; because the session is cleared, any later
     /// `feed_output` / `notify_exit` for this id no-op (no duplicate exit).
     fn fail_session(&mut self, session_id: &str, status: i32, stderr: Option<&str>) {
-        let provider = match self.session.as_ref() {
-            Some(session) if session.session_id() == session_id => session.provider_id(),
-            _ => return,
+        let provider = match self.sessions.get(session_id) {
+            Some(session) => session.provider_id(),
+            None => return,
         };
         if let Some(text) = stderr {
             self.emit(AgentEvent::ProviderOutput {
@@ -456,7 +470,7 @@ where
                 text: text.to_string(),
             });
         }
-        self.session = None;
+        self.sessions.remove(session_id);
         self.emit(AgentEvent::ProviderExit {
             session_id: session_id.to_string(),
             provider_id: provider,
@@ -478,22 +492,18 @@ where
 
     /// Feed a raw SSE line from the OpenCode `/event` stream (deferred transport).
     pub fn feed_opencode_sse_line(&mut self, session_id: &str, line: &str) {
-        let events = match self.session.as_mut() {
-            Some(session) if session.session_id() == session_id => {
-                session.consume_opencode_sse_line(line)
-            }
-            _ => return,
+        let events = match self.sessions.get_mut(session_id) {
+            Some(session) => session.consume_opencode_sse_line(line),
+            None => return,
         };
         self.emit_all(events);
     }
 
     /// Feed one parsed OpenCode SSE event (deferred transport).
     pub fn feed_opencode_event(&mut self, session_id: &str, event: &OpenCodeEvent) {
-        let events = match self.session.as_mut() {
-            Some(session) if session.session_id() == session_id => {
-                session.consume_opencode_event(event)
-            }
-            _ => return,
+        let events = match self.sessions.get_mut(session_id) {
+            Some(session) => session.consume_opencode_event(event),
+            None => return,
         };
         self.emit_all(events);
     }
@@ -508,8 +518,8 @@ where
         session_id: &str,
         opencode_session_id: impl Into<String>,
     ) {
-        let event = match self.session.as_mut() {
-            Some(session) if session.session_id() == session_id => {
+        let event = match self.sessions.get_mut(session_id) {
+            Some(session) => {
                 session.set_opencode_session_id(opencode_session_id);
                 if session.started_emitted() {
                     return;
@@ -517,7 +527,7 @@ where
                 session.mark_started_emitted();
                 session.started_event()
             }
-            _ => return,
+            None => return,
         };
         self.emit(event);
     }
@@ -526,24 +536,24 @@ where
     ///
     /// Faithful to Swift's `terminationHandler` → `finishSessionIfExitedAndDrained`.
     pub fn notify_exit(&mut self, session_id: &str, status: i32) {
-        if let Some(session) = self.session.as_mut() {
-            if session.session_id() == session_id {
-                session.set_pending_exit_status(status);
-            }
+        if let Some(session) = self.sessions.get_mut(session_id) {
+            session.set_pending_exit_status(status);
         }
         self.finish_if_exited_and_drained(session_id);
     }
 
     fn finish_if_exited_and_drained(&mut self, session_id: &str) {
         let ready = matches!(
-            self.session.as_ref(),
-            Some(session)
-                if session.session_id() == session_id && session.is_exited_and_drained()
+            self.sessions.get(session_id),
+            Some(session) if session.is_exited_and_drained()
         );
         if !ready {
             return;
         }
-        let session = self.session.take().expect("session checked present");
+        let session = self
+            .sessions
+            .remove(session_id)
+            .expect("session checked present");
         let status = session
             .pending_exit_status()
             .expect("exit status checked present");
@@ -637,15 +647,20 @@ mod tests {
     // ---- single-active-session guard ----
 
     #[test]
-    fn start_twice_is_session_already_running() {
+    fn start_supports_multiple_concurrent_sessions() {
+        // The single-webview MVP runs one store for many panes, so a second start
+        // creates a second independent session (a distinct id) rather than being
+        // rejected — the equivalent of macOS's per-webview stores.
         let (mut store, _events) = store_with(FakeTransport::default());
-        start_codex(&mut store);
-        assert_eq!(
-            store.start(ProviderId::Claude, None),
-            Err(BridgeError::SessionAlreadyRunning)
-        );
+        let first = start_codex(&mut store);
+        let second = store.start(ProviderId::Claude, None).expect("second start");
+        assert_ne!(first.session_id, second.session_id);
+        assert!(store.session(&first.session_id).is_some());
+        assert!(store.session(&second.session_id).is_some());
         assert!(store.has_active_session());
-        assert_eq!(store.selected_provider(), Some(ProviderId::Codex));
+        // Each session keeps its own provider; the last selection wins the
+        // (vestigial) selected_provider field.
+        assert_eq!(store.selected_provider(), Some(ProviderId::Claude));
     }
 
     // ---- provider.started timing ----
@@ -687,7 +702,7 @@ mod tests {
         );
         assert!(events.borrow().is_empty());
         assert_eq!(
-            store.active_session().unwrap().opencode_base_url(),
+            store.session(&started.session_id).unwrap().opencode_base_url(),
             Some("http://127.0.0.1:4096")
         );
 
@@ -783,6 +798,42 @@ mod tests {
             recorded[1],
             AgentEvent::ProviderExit {
                 session_id: started.session_id.clone(),
+                provider_id: ProviderId::Codex,
+                status: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn concurrent_sessions_are_isolated_on_exit() {
+        // Two panes running at once: exiting one must not disturb the other, and
+        // the exit event must carry the exited session's id.
+        let (mut store, events) = store_with(FakeTransport::default());
+        let a = start_codex(&mut store);
+        let b = start_codex(&mut store);
+        assert_ne!(a.session_id, b.session_id);
+
+        // Drain + exit only session A.
+        store.feed_output(&a.session_id, ProviderStream::Stdout, b"");
+        store.feed_output(&a.session_id, ProviderStream::Stderr, b"");
+        store.notify_exit(&a.session_id, 0);
+
+        // A is gone; B is untouched and still running.
+        assert!(store.session(&a.session_id).is_none());
+        assert!(store.session(&b.session_id).is_some());
+        assert!(store.has_active_session());
+
+        let recorded = events.borrow();
+        // [started_a, started_b, exit_a] — exactly one exit, for A.
+        let exits: Vec<_> = recorded
+            .iter()
+            .filter(|e| matches!(e, AgentEvent::ProviderExit { .. }))
+            .collect();
+        assert_eq!(exits.len(), 1);
+        assert_eq!(
+            exits[0],
+            &AgentEvent::ProviderExit {
+                session_id: a.session_id.clone(),
                 provider_id: ProviderId::Codex,
                 status: 0,
             }

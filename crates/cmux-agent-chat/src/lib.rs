@@ -248,23 +248,25 @@ mod dispatch_tests {
     }
 
     #[test]
-    fn provider_start_twice_is_session_already_running() {
+    fn provider_start_supports_concurrent_sessions() {
+        // Two panes (one store, single webview) each start their own agent.
         let (mut store, _events) = make_store();
         let ctx = DispatchContext::default();
-        handle(
+        let first = handle(
             &request("provider.start", json!({ "providerId": "codex" })),
             &mut store,
             &ctx,
         )
         .unwrap();
-        assert_eq!(
-            handle(
-                &request("provider.start", json!({ "providerId": "claude" })),
-                &mut store,
-                &ctx,
-            ),
-            Err(BridgeError::SessionAlreadyRunning)
-        );
+        let second = handle(
+            &request("provider.start", json!({ "providerId": "claude" })),
+            &mut store,
+            &ctx,
+        )
+        .unwrap();
+        assert!(first["sessionId"].as_str().is_some());
+        assert!(second["sessionId"].as_str().is_some());
+        assert_ne!(first["sessionId"], second["sessionId"]);
     }
 
     #[test]

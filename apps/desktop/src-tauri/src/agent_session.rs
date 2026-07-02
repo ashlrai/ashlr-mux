@@ -194,8 +194,7 @@ fn run_actor(rx: Receiver<ActorMsg>, transport: ClaudeAgentTransport, app: AppHa
                 // provider.started, then begins the /event SSE stream.
                 store.complete_opencode_handshake(&session_id, opencode_session_id);
                 let base_url = store
-                    .active_session()
-                    .filter(|session| session.session_id() == session_id)
+                    .session(&session_id)
                     .and_then(|session| session.opencode_base_url())
                     .map(str::to_string);
                 if let Some(base_url) = base_url {
