@@ -128,16 +128,58 @@ full workspace green, clippy clean. What landed:
   actor managing N children. A real next feature, deferred (needs live multi-pane
   testing).
 
-### NEXT
+### DONE since (2026-07-02)
+- **Codex resolves** from `%LOCALAPPDATA%\OpenAI\Codex\bin` (native install,
+  off-PATH) — commit `c49189d5a`.
+- **OpenCode installed** (`npm i -g opencode-ai`, 1.17.13); `--print-logs`
+  INFO/DEBUG stderr noise suppressed — commit `b12c71193`.
+- **OpenCode reply now renders** — commit `f0d46cce9`. ROOT CAUSE was a
+  session-id mixup, NOT the parser/stream (both proven fine via
+  `tests/opencode_replay.rs` on a real capture + a live ureq stream test): the
+  text accumulator stamped `provider.output` with the OpenCode *loopback* id
+  (`ses_…`) instead of the cmux session id the frontend routes on, so every
+  reply token was delivered to a session the UI didn't know about and dropped.
+  `consume_event_to_events` now takes a separate `emit_session_id` (cmux id) for
+  emitted events while `session_id` stays the match id — mirrors the Claude path.
+  ⚠️ NOT yet live-confirmed by the user on the fixed binary (unit-proven only).
 
-1. **Install codex + opencode CLIs, then live-verify** their converse (Codex
-   streams token-by-token, `initialize`→`thread/start` ordering, approvals auto-
-   decline unless full-access; OpenCode waits for the loopback-URL sniff +
-   `POST /session` before `provider.started`, `?directory=`/auth on every call).
-2. **Multi-session-per-window** (lift the single-session limitation — see above).
-3. **Re-verify Claude live** (regression — unchanged, works).
-4. **`app.pickFiles`** — real Tauri dialog+fs plugin (honor 512KB/2MB image caps,
-   `isImage`/`mimeType`); currently a `{files:[]}` stub.
+### NEXT — MULTIPLE CONCURRENT AGENTS (user's explicit top priority)
+
+Today a 2nd pane's `provider.start` fails with "An agent session is already
+running." This is the biggest blocker. It is a TWO-LAYER divergence forced by the
+single-webview MVP (canonical macOS is one WKWebView + one store PER PANE):
+
+- **macOS model (verified in Swift):** `AgentSessionProcessStore` guards
+  `sessions.isEmpty` on `start` (single-session PER STORE), but each pane is an
+  `NSViewRepresentable` `AgentSessionWebRenderer` whose `makeCoordinator()` owns
+  its OWN store. N panes → N stores → N concurrent agents, each isolated by
+  webview.
+- **Windows MVP reality:** ONE webview renders both panes as two
+  `AgentSessionApp` instances sharing GLOBAL singletons — one
+  `window.cmuxAgentBridge` and one `agent_session_rpc` → ONE global actor +
+  ONE single-session `ProcessStore` (`agent_session.rs::AgentSessionState`,
+  memoized). So (a) the store rejects the 2nd `start`, and (b) `host.ts:152`
+  fans the native push to a SINGLE `window.cmuxAgentBridge.receive` — a 2nd
+  `AgentSessionApp` clobbers the 1st, so only one pane ever gets events.
+
+**Plan (needs both layers; do NOT just make the Rust store multi-session — that
+alone leaves the frontend receive-clobber unfixed):**
+1. Give each pane a stable **bridgeId** (per `AgentSessionSurface` mount).
+2. **Frontend `host.ts`:** de-multiplex — keep a registry of `bridgeId →
+   receive`; attach the caller's bridgeId to every `agent_session_rpc` message;
+   route each incoming `cmux://agent-event` to the right instance's receive by a
+   bridgeId the event carries. Verify how the reused `@cmux/webviews`
+   `AgentSessionApp` handles an event for a session it didn't start (it assumes
+   sole ownership — confirm it filters by its own sessionId or it'll cross-wire).
+3. **Backend `agent_session.rs`:** replace the single memoized actor with
+   `HashMap<bridgeId, Sender<ActorMsg>>` (one actor+single-session store per
+   bridge, faithful to macOS per-coordinator stores); `agent_session_rpc` reads
+   bridgeId and routes/creates. The event sink tags each emit with its bridgeId.
+   Keep `ProcessStore` single-session (matches Swift) — the multiplicity lives in
+   the app layer, exactly like macOS.
+4. Also fixes the split-screen "already running" report.
+
+Then: live-verify Codex + OpenCode converse; `app.pickFiles` real dialog.
 
 Full contract: `docs/windows-port/phases/phase-3-agents.md`.
 
