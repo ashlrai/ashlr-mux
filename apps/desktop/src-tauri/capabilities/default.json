@@ -3,6 +3,6 @@
   "identifier": "default",
   "description": "Default capability set for the cmux desktop bootstrap shell.",
   "windows": ["main"],
-  "permissions": ["core:default", "core:event:default"]
+  "permissions": ["core:default", "core:event:default", "dialog:default"]
 }
 

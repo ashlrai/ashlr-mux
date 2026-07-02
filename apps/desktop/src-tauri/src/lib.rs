@@ -1,5 +1,6 @@
 mod agent_session;
 mod opencode_http;
+mod pick_files;
 mod session;
 mod terminal;
 
@@ -36,6 +37,7 @@ fn desktop_core_status() -> DesktopCoreStatus {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(terminal::TerminalState::default())
         .manage(session::SessionState::default())
         .manage(agent_session::AgentSessionState::default())

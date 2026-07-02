@@ -27,3 +27,8 @@ tauri = { version = "2", features = [] }
 # blocking client with no tokio dependency (honoring the no-async-runtime rule);
 # default-features disabled drops the TLS/json/gzip features we do not need.
 ureq = { version = "2", default-features = false }
+# Native file picker for the agent composer's `app.pickFiles` (photos & files).
+tauri-plugin-dialog = "2"
+# Extension→MIME lookup (macOS parity: UTType.preferredMIMEType) + image data URLs.
+mime_guess = "2"
+base64 = "0.22"

@@ -143,11 +143,38 @@ full workspace green, clippy clean. What landed:
   emitted events while `session_id` stays the match id — mirrors the Claude path.
   ⚠️ NOT yet live-confirmed by the user on the fixed binary (unit-proven only).
 
-### NEXT — MULTIPLE CONCURRENT AGENTS (user's explicit top priority)
+### DONE — MULTIPLE CONCURRENT AGENTS ✓ (commit `b6b9ed726`, user-live-confirmed 2026-07-02)
 
-Today a 2nd pane's `provider.start` fails with "An agent session is already
-running." This is the biggest blocker. It is a TWO-LAYER divergence forced by the
-single-webview MVP (canonical macOS is one WKWebView + one store PER PANE):
+Turned out to be a ONE-layer fix, not two. The reused chat UI ALREADY routes each
+`AgentEvent` to the owning pane by `sessionId` (`reduceSession` in
+`webviews/.../shared/sessionModel.ts` ignores events whose sessionId≠its
+`runningSessionId`; `provider.started` also guards by `selectedProviderId`), and
+`bridge.ts` broadcasts every event to all instances — so a single multi-session
+store "just works" with the existing frontend, no bridge de-multiplex needed.
+Fix: `ProcessStore.session: Option<RunningSession>` → `sessions: HashMap<String,
+RunningSession>` keyed by id; `start` drops the single-session guard + inserts a
+fresh session per call; `active_session()`→`session(id)`. 189 tests (2 new
+isolation guards), clippy clean. The `provider.select` guard (lib.rs:102) was
+LEFT as-is — it's cosmetic (frontend `selectProvider` updates local state
+optimistically then fires `provider.select` fire-and-forget with `.catch`).
+NOTE the remaining same-provider simultaneous-start race: two panes starting the
+SAME provider in the same tick could have a `provider.started` grabbed by the
+wrong pane (the `!runningSessionId && providerId===selectedProviderId` arm);
+different-provider panes are race-free. Tighten later if it bites (e.g. echo a
+client token through start).
+
+### NEXT
+
+1. **`app.pickFiles`** — real Tauri dialog+fs plugin (honor 512KB/2MB image caps,
+   `isImage`/`mimeType`); currently a `{files:[]}` stub. Rounds out the agent chat
+   surface the user is actively on.
+2. **"IDE context" button** — user pressed it, it did nothing then vanished.
+   Likely `app.context`/IDE-integration stub; decide port vs hide.
+3. Live-verify Codex converse specifically (token streaming, approvals).
+
+Superseded single-webview two-layer plan (kept for reference):
+It was a TWO-LAYER divergence forced by the single-webview MVP (canonical macOS is
+one WKWebView + one store PER PANE):
 
 - **macOS model (verified in Swift):** `AgentSessionProcessStore` guards
   `sessions.isEmpty` on `start` (single-session PER STORE), but each pane is an

@@ -460,9 +460,9 @@ fn dispatch_message(
 
     match method.as_str() {
         "app.context" => ok_envelope(app_context_value(ctx)),
-        // Native file picking is a later slice (needs a Tauri dialog plugin);
-        // report "no files selected" so the composer's attach action no-ops
-        // cleanly rather than erroring.
+        // `app.pickFiles` is normally intercepted in `agent_session_rpc` (it needs
+        // the AppHandle for the native dialog + must not block the actor). This arm
+        // is only a defensive fallback if it ever reaches the actor: no selection.
         "app.pickFiles" => ok_envelope(json!({ "files": [] })),
         _ => match BridgeRequest::from_value(message) {
             Ok(request) => match handle(&request, store, ctx) {
@@ -506,6 +506,13 @@ pub fn agent_session_rpc(
     state: State<'_, AgentSessionState>,
     message: Value,
 ) -> Value {
+    // `app.pickFiles` opens a native dialog: handle it HERE (on the command's
+    // worker thread, which owns the `AppHandle`) rather than on the actor thread,
+    // so the modal file picker never blocks live agent-event processing.
+    if message.get("method").and_then(Value::as_str) == Some("app.pickFiles") {
+        return ok_envelope(pick_local_files_reply(&app));
+    }
+
     let sender = state.ensure(&app);
     let (reply_tx, reply_rx) = channel::<Value>();
     if sender
@@ -520,6 +527,31 @@ pub fn agent_session_rpc(
     reply_rx
         .recv()
         .unwrap_or_else(|_| err_envelope("actorUnavailable", "Agent session host stopped."))
+}
+
+/// Open the native "Add photos & files" picker and map the selection to the
+/// `app.pickFiles` reply (`{ files: [...] }`). A cancelled dialog yields an empty
+/// selection. Mirrors macOS `pickLocalFiles`; the per-file byte→`data:` URL
+/// mapping + shared 2MB image budget live in the pure [`crate::pick_files`].
+fn pick_local_files_reply(app: &AppHandle) -> Value {
+    use tauri_plugin_dialog::DialogExt;
+
+    let picked = app
+        .dialog()
+        .file()
+        .set_title("Add photos & files")
+        .blocking_pick_files();
+
+    match picked {
+        Some(entries) => {
+            let paths: Vec<std::path::PathBuf> = entries
+                .into_iter()
+                .filter_map(|entry| entry.into_path().ok())
+                .collect();
+            crate::pick_files::picked_files_value(paths)
+        }
+        None => json!({ "files": [] }),
+    }
 }
 
 // ---------------------------------------------------------------------------
