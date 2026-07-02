@@ -304,3 +304,34 @@ clean; workspace check green. NEXT: the Tauri wiring slice (diff/markdown
 commands + register_asynchronous_uri_scheme_protocol handlers + generate_handler!
 + tauri.conf.json bundle.resources) then the live-WebView2 token-gate spike — the
 remaining Phase-4 pieces are mount-DEPENDENT so they need the running app.
+
+## 2026-07-02 (iteration 2) — remote-image SSRF gate + mention-link + config sections + main.go errno
+
+`/loop ultracode` continued. main.go:784 had the SAME latent Windows errno bug as
+dialSocket (bare errors.Is(err, syscall.ECONNREFUSED) never fires on Windows) —
+fixed via the isRefusedErrno helper + a cross-platform regression test that forces
+a real refused connect. Then scouted 3 more headless lanes (read-only workflow);
+built the two disjoint ones — remote_image myself, config-sections as a concurrent
+background implement→verify workflow (SOLID) — plus mention_link. Commits:
+
+- `af6ff20cb` main.go refused-dial errno fix + TestShouldRemovePersistentSocketAfterRefusedDial.
+- `b584fbf05` **cmux-markdown/remote_image.rs** — the remote-image SSRF security
+  gate (port of MarkdownRemoteImageSecurity): cmux-remote-image:// scheme gate,
+  HTTPS-only/no-userinfo/default-port, IPv4+IPv6 private/reserved-range blocklists
+  (incl. v4-mapped delegation) + is_allowed_resolved_ip for the DNS layer, MIME
+  allowlist (incl svg+xml), HTTP request framing, header-injection guard. DIVERGENCE
+  (documented + tested): WHATWG `url` crate parsing is STRICTER than Swift inet_pton
+  — classifies decimal/hex IPv4 forms (https://2130706433/) as literals, closing an
+  SSRF bypass. DNS + TLS fetch stay in host layer. 72 tests.
+- `ed31721bd` **cmux-markdown/mention_link.rs** — TextBoxMentionMarkdown port (label
+  escaping order + path angle-wrap/percent-encode); canonical golden test verbatim.
+  79 tests total for cmux-markdown (7 modules now).
+- `bede7b191` **cmux-config** vault + workspaceGroups + newWorkspaceCommand typed
+  serde structs (untagged sessionIdSource, VaultAgent flatten, reused
+  NewWorkspacePlacement). 9/49(ts) tests.
+
+Gate ALL GREEN: cmux-markdown 79 + cmux-config 9(+49 ts) + cmux-diff 55 tests,
+clippy clean, cargo check --workspace clean (incl cmux-desktop), go build+vet+test
+clean. NOTE crates/cmux-config/bindings/ is gitignored ts-rs output (not committed).
+NEXT: the mount-DEPENDENT Tauri layer (needs `tauri dev`) OR more headless ports
+(remote-image chunked-body decoder + redirect decision; more cmux-config sections).
