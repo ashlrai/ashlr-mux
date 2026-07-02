@@ -525,3 +525,33 @@ func TestDialSocketFailsFastWhenTCPAddressStaysStale(t *testing.T) {
 		t.Fatalf("dialSocket should fail fast without polling, took %v", elapsed)
 	}
 }
+
+// A stale persistent-socket file must be removed when a dial gets refused, on
+// every OS. On Windows the refused connect carries WSAECONNREFUSED, which only
+// matches through isRefusedErrno — a bare errors.Is(err, syscall.ECONNREFUSED)
+// would miss it and leave the dead socket in place, so this test would fail
+// before the main.go fix.
+func TestShouldRemovePersistentSocketAfterRefusedDial(t *testing.T) {
+	if !shouldRemovePersistentSocketAfterDialError(os.ErrNotExist) {
+		t.Fatal("os.ErrNotExist should trigger persistent-socket removal")
+	}
+
+	// Force a real refused connect: bind to capture a port, close, then dial it.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+
+	conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+	if conn != nil {
+		conn.Close()
+	}
+	if err == nil {
+		t.Skip("expected the connect to the closed port to be refused")
+	}
+	if !shouldRemovePersistentSocketAfterDialError(err) {
+		t.Fatalf("a refused connect should trigger persistent-socket removal, got: %v", err)
+	}
+}

@@ -779,9 +779,13 @@ func ensurePersistentDaemonRunning(paths persistentDaemonPaths, token string, st
 }
 
 func shouldRemovePersistentSocketAfterDialError(err error) bool {
+	// isRefusedErrno (not a bare errors.Is(err, syscall.ECONNREFUSED)) so a
+	// refused connect is detected on Windows too: syscall.ECONNREFUSED is a
+	// synthetic value there and never matches the real winsock WSAECONNREFUSED in
+	// the error chain (see cli_refused_windows.go / DECISIONS.md).
 	return errors.Is(err, os.ErrNotExist) ||
 		errors.Is(err, syscall.ENOENT) ||
-		errors.Is(err, syscall.ECONNREFUSED)
+		isRefusedErrno(err)
 }
 
 func waitPersistentDaemonReady(reader *os.File, logFile string) error {
