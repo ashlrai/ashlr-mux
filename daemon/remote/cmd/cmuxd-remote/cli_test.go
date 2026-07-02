@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func captureStdout(t *testing.T, fn func()) string {
@@ -447,5 +448,80 @@ func TestParseFlagsCollectsKnownFlagsAndPositionalArgs(t *testing.T) {
 	}
 	if len(result.positional) == 0 || result.positional[0] != "positional-cmd" {
 		t.Errorf("expected first positional=positional-cmd, got %v", result.positional)
+	}
+}
+
+// These two tests exercise dialSocket's TCP address-refresh fail-over path.
+// They use only 127.0.0.1 TCP (bind, capture the addr, Close to force a
+// refused connect), so they are fully portable — including Windows, once
+// isConnectionRefused matches WSAECONNREFUSED. They stay 100% in-process
+// (never spawn cmuxd) to avoid Windows Application Control (os error 4551).
+func TestDialSocketRefreshesToUpdatedTCPAddressWithoutPolling(t *testing.T) {
+	staleListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen stale: %v", err)
+	}
+	staleAddr := staleListener.Addr().String()
+	staleListener.Close()
+
+	readyListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen ready: %v", err)
+	}
+	defer readyListener.Close()
+
+	accepted := make(chan struct{})
+	go func() {
+		defer close(accepted)
+		conn, acceptErr := readyListener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		conn.Close()
+	}()
+
+	refreshCalls := 0
+	start := time.Now()
+	conn, err := dialSocket(staleAddr, func() string {
+		refreshCalls++
+		return readyListener.Addr().String()
+	})
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("dialSocket should refresh to updated address, got: %v", err)
+	}
+	conn.Close()
+	<-accepted
+	if refreshCalls != 1 {
+		t.Fatalf("refreshAddr should be called once, got %d", refreshCalls)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("dialSocket should fail over without polling, took %v", elapsed)
+	}
+}
+
+func TestDialSocketFailsFastWhenTCPAddressStaysStale(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+
+	refreshCalls := 0
+	start := time.Now()
+	_, err = dialSocket(addr, func() string {
+		refreshCalls++
+		return addr
+	})
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("dialSocket should fail when the relay address stays stale")
+	}
+	if refreshCalls != 1 {
+		t.Fatalf("refreshAddr should be called once on stale TCP failure, got %d", refreshCalls)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("dialSocket should fail fast without polling, took %v", elapsed)
 	}
 }

@@ -871,6 +871,18 @@ func dialTCP(addr string) (net.Conn, string, error) {
 }
 
 func isConnectionRefused(err error) bool {
+	// Match the refused errno cross-platform via isRefusedErrno (platform-split).
+	// DIVERGENCE from the prescribed errors.Is(err, syscall.ECONNREFUSED): on
+	// Windows a refused connect surfaces as the winsock errno WSAECONNREFUSED
+	// (10061, "connectex: ... actively refused it"), while Go's
+	// syscall.ECONNREFUSED is a distinct synthetic value (0x20000016), so that
+	// match returns false on Windows (verified on go1.26.4). The Windows helper
+	// matches golang.org/x/sys/windows.WSAECONNREFUSED instead; the unix helper
+	// keeps syscall.ECONNREFUSED for byte-identical unix behavior. The substring
+	// fallback is retained so wrapped/non-syscall errors still match.
+	if isRefusedErrno(err) {
+		return true
+	}
 	if opErr, ok := err.(*net.OpError); ok {
 		return strings.Contains(opErr.Err.Error(), "connection refused")
 	}
