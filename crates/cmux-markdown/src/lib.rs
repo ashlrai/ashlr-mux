@@ -2,7 +2,7 @@
 //! ported faithfully from the canonical macOS Swift sources under
 //! `Sources/Panels/Markdown*.swift`.
 //!
-//! Seven pure pieces live here today:
+//! Eight pure pieces live here today:
 //!
 //! - [`file_link`] — [`file_link::resolve`] / [`file_link::is_markdown_path_like`],
 //!   a verbatim port of `MarkdownPanelFileLinkResolver` (`MarkdownPanelFileLinkResolver.swift`):
@@ -27,6 +27,13 @@
 //!   loopback/private/link-local/CGNAT/reserved ranges, MIME canonicalization,
 //!   and HTTP request framing. DNS resolution + the TLS fetch stay in the host
 //!   layer, which screens each resolved address via `is_allowed_resolved_ip`.
+//! - [`remote_image_loader`] — the pure byte-level HTTP response processing for
+//!   remote images (`MarkdownRemoteImageLoader.swift`): the chunked-body decoder
+//!   ([`remote_image_loader::decode_chunked_body`]), the header parser /
+//!   status classifier ([`remote_image_loader::parse_headers`]), the host-fed
+//!   streaming accumulator ([`remote_image_loader::RemoteImageAccumulator`]), and
+//!   the redirect-follow decision ([`remote_image_loader::redirect_decision`]).
+//!   The socket read loop, TLS, timeouts, and DNS pinning stay in the host layer.
 //! - [`typography`] — [`MarkdownTypography`] + the `font_size` / `max_width` /
 //!   `font_family` domain logic (`MarkdownFontSizeSettings.swift` et al.): clamp
 //!   ranges, `page_zoom`, CSS `font-family` escaping, and the defaults
@@ -44,6 +51,7 @@ pub mod file_link;
 pub mod local_image_jail;
 pub mod mention_link;
 pub mod remote_image;
+pub mod remote_image_loader;
 pub mod theme;
 pub mod typography;
 mod path_util;
@@ -51,5 +59,9 @@ mod path_util;
 pub use assets::MarkdownViewerAssets;
 pub use local_image_jail::{resolve_local_image, ResolvedLocalImage, LOCAL_IMAGE_URL_SCHEME};
 pub use remote_image::{remote_image_url, REMOTE_IMAGE_URL_SCHEME};
+pub use remote_image_loader::{
+    decode_chunked_body, parse_headers, redirect_decision, HeaderOutcome,
+    MarkdownRemoteImageFetchResult, Outcome, ProcessResult, RemoteImageAccumulator,
+};
 pub use theme::MarkdownWebTheme;
 pub use typography::MarkdownTypography;
