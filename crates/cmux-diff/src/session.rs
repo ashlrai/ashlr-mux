@@ -20,11 +20,13 @@
 //! custom-scheme handler live above this in the desktop crate; this module is
 //! deliberately transport-free so it is unit-testable with no live WebView2.
 //!
-//! DEFERRED (matches the macOS handler but out of this slice): the on-disk
-//! manifest session-restore (`registerFromManifest` :2348) that lets a token
-//! survive an app restart, and the `maxRegisteredFiles = 1024` cap that only
-//! guards that manifest path — Swift `register` itself enforces no count cap, so
-//! neither does this port.
+//! On-disk manifest session-restore (`registerFromManifest` :2348) — which lets a
+//! token survive an app restart — lives in the sibling `manifest` module and is
+//! wired in here via `register_from_manifest`, the `has_active_session` fallback
+//! (:2006-2009), and the `registered_file` reload-on-miss retry (:2033-2047).
+//! There is deliberately NO file-count cap: `maxRegisteredFiles = 1024` guards
+//! only the live RPC ingest (`TerminalController.swift:6194`), not `register`
+//! (:1947) or the manifest path (:2362), so neither does this port.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf, MAIN_SEPARATOR};
@@ -93,6 +95,11 @@ struct Session {
 /// across threads (wrap in `Arc`); all mutation goes through the inner `Mutex`.
 pub struct DiffSessionRegistry {
     sessions: Mutex<HashMap<String, Session>>,
+    /// The raw trusted-root directory, kept so `register_from_manifest` can read
+    /// `.manifest-<token>.json` from it (Swift `trustedRootURL`,
+    /// `BrowserPanel.swift:1942`). `trusted_root_key` below is its
+    /// canonicalized+normalized form used only for the jail prefix check.
+    trusted_root: PathBuf,
     /// The only directory registered files may live under. Stored as its
     /// canonicalized+normalized string form so it composes with
     /// `canonical_repo_root` on candidate files. Ports Swift `trustedRootURL`
@@ -111,9 +118,12 @@ impl DiffSessionRegistry {
 
     /// Build a registry with an explicit session lifetime (used by tests).
     pub fn with_max_age(trusted_root: impl AsRef<Path>, max_age: Duration) -> Self {
+        let trusted_root = trusted_root.as_ref().to_path_buf();
+        let trusted_root_key = canonical_repo_root(&trusted_root.to_string_lossy());
         Self {
             sessions: Mutex::new(HashMap::new()),
-            trusted_root_key: canonical_repo_root(&trusted_root.as_ref().to_string_lossy()),
+            trusted_root,
+            trusted_root_key,
             max_age,
         }
     }
@@ -181,24 +191,53 @@ impl DiffSessionRegistry {
         Ok(())
     }
 
-    /// Whether `token` currently has a live session. Used to trust-gate native
-    /// bridge calls (e.g. `diff_comments_rpc`) from diff-viewer pages. Ports
-    /// Swift `hasActiveSession` (`BrowserPanel.swift:2000`); the manifest-restore
-    /// fallback is deferred, so an unregistered token is simply inactive.
+    /// Whether `token` currently has a live (or manifest-restorable) session.
+    /// Used to trust-gate native bridge calls (e.g. `diff_comments_rpc`) from
+    /// diff-viewer pages. Faithful port of Swift `hasActiveSession`
+    /// (`BrowserPanel.swift:2000`): on an in-memory miss it falls back to
+    /// restoring the token from its on-disk manifest (:2006-2009), so a surface
+    /// survives an app restart.
     pub fn has_active_session(&self, token: &str, now: SystemTime) -> bool {
         if !Self::is_valid_token(token) {
             return false;
         }
-        let mut sessions = self.sessions.lock().expect("diff session lock poisoned");
-        Self::prune_expired(&mut sessions, self.max_age, now);
-        sessions.contains_key(token)
+        let is_registered = {
+            let mut sessions = self.sessions.lock().expect("diff session lock poisoned");
+            Self::prune_expired(&mut sessions, self.max_age, now);
+            sessions.contains_key(token)
+        };
+        if is_registered {
+            return true;
+        }
+        // `register_from_manifest` takes the lock itself, so call it unlocked.
+        self.register_from_manifest(token, now)
+    }
+
+    /// Re-registers a token from its on-disk `.manifest-<token>.json` under the
+    /// trusted root so its surface can be served again after an app restart (the
+    /// in-memory registry is lost, but the manifest + files persist). Faithful
+    /// port of Swift `registerFromManifest` (`BrowserPanel.swift:2348`): loads the
+    /// manifest file list, then re-runs the full `register` validation
+    /// (standardize + trusted-root jail + mime/extension checks). Returns `true`
+    /// when the token is registered and ready to serve.
+    pub fn register_from_manifest(&self, token: &str, now: SystemTime) -> bool {
+        let Some(files) = crate::manifest::load_manifest_files(&self.trusted_root, token) else {
+            return false;
+        };
+        self.register(token, files, now).is_ok()
     }
 
     /// Look up the file a `(token, request_path)` resolves to, if the session is
-    /// live. Ports the session-lookup half of Swift `registeredFile(for:)`
-    /// (`BrowserPanel.swift:2012`); URL decomposition (scheme/host/query checks)
-    /// belongs to the scheme-handler adapter above this module. `request_path`
-    /// is re-validated so an adapter bug cannot smuggle a traversal path.
+    /// live. Faithful port of the session-lookup half of Swift
+    /// `registeredFile(for:)` (`BrowserPanel.swift:2012`); URL decomposition
+    /// (scheme/host/query checks) belongs to the scheme-handler adapter above this
+    /// module. `request_path` is re-validated so an adapter bug cannot smuggle a
+    /// traversal path.
+    ///
+    /// On a miss against an *active* session, the on-disk manifest may have grown
+    /// out-of-band (the branch-picker regenerate route appends a freshly-written
+    /// page without updating this in-memory allowlist), so it reloads the
+    /// manifest once and retries (:2033-2047).
     pub fn registered_file(
         &self,
         token: &str,
@@ -208,8 +247,26 @@ impl DiffSessionRegistry {
         if !Self::is_valid_token(token) || !Self::is_valid_request_path(request_path) {
             return None;
         }
-        let mut sessions = self.sessions.lock().expect("diff session lock poisoned");
-        Self::prune_expired(&mut sessions, self.max_age, now);
+        let (has_session, file) = {
+            let mut sessions = self.sessions.lock().expect("diff session lock poisoned");
+            Self::prune_expired(&mut sessions, self.max_age, now);
+            let has_session = sessions.contains_key(token);
+            let file = sessions
+                .get(token)
+                .and_then(|s| s.files_by_path.get(request_path))
+                .cloned();
+            (has_session, file)
+        };
+        if let Some(file) = file {
+            return Some(file);
+        }
+        // Miss on an active session: reload the manifest from disk once and retry
+        // so a newly-appended entry resolves instead of missing.
+        // (`register_from_manifest` takes the lock itself, so call it unlocked.)
+        if !has_session || !self.register_from_manifest(token, now) {
+            return None;
+        }
+        let sessions = self.sessions.lock().expect("diff session lock poisoned");
         sessions
             .get(token)
             .and_then(|s| s.files_by_path.get(request_path))
@@ -542,5 +599,100 @@ mod tests {
         // Old path is gone, new path is present.
         assert!(reg.registered_file("tok-abcdef0123456789", "/a.html", now).is_none());
         assert!(reg.registered_file("tok-abcdef0123456789", "/b.html", now).is_some());
+    }
+
+    // --- manifest session-restore ---
+
+    /// Write a `.manifest-<token>.json` under `root` for `(request_path,
+    /// file_path, mime)` entries, JSON-escaping the (Windows-backslash) paths.
+    fn write_manifest(root: &TempRoot, token: &str, entries: &[(&str, &Path, &str)]) {
+        let files: Vec<serde_json::Value> = entries
+            .iter()
+            .map(|(rp, fp, mime)| {
+                serde_json::json!({
+                    "request_path": rp,
+                    "file_path": fp.to_string_lossy(),
+                    "mime_type": mime,
+                })
+            })
+            .collect();
+        let manifest = serde_json::json!({ "files": files }).to_string();
+        root.file(&crate::manifest::manifest_file_name(token), &manifest);
+    }
+
+    #[test]
+    fn has_active_session_restores_from_manifest() {
+        let root = TempRoot::new();
+        let f = root.file("index.html", "<html>ok</html>");
+        let token = "tok-manifest-abc12345";
+        write_manifest(&root, token, &[("/index.html", &f, "text/html")]);
+
+        let reg = DiffSessionRegistry::new(&root.path);
+        let now = SystemTime::now();
+        // No in-memory session, but the manifest fallback restores it.
+        assert!(reg.has_active_session(token, now));
+        let got = reg
+            .registered_file(token, "/index.html", now)
+            .expect("restored file");
+        assert_eq!(got.request_path, "/index.html");
+        assert_eq!(got.mime_type, "text/html");
+    }
+
+    #[test]
+    fn register_from_manifest_jails_files_outside_trusted_root() {
+        let root = TempRoot::new();
+        let outside = TempRoot::new();
+        let evil = outside.file("evil.html", "<html>evil</html>");
+        let token = "tok-outside-abcd12345";
+        // The manifest points at a file outside the trusted root; the reused
+        // `register` jail must reject it, leaving no active session.
+        write_manifest(&root, token, &[("/evil.html", &evil, "text/html")]);
+
+        let reg = DiffSessionRegistry::new(&root.path);
+        let now = SystemTime::now();
+        assert!(!reg.register_from_manifest(token, now));
+        assert!(!reg.has_active_session(token, now));
+        assert!(reg.registered_file(token, "/evil.html", now).is_none());
+    }
+
+    #[test]
+    fn registered_file_reloads_manifest_on_miss() {
+        let root = TempRoot::new();
+        let a = root.file("a.html", "<html>a</html>");
+        let token = "tok-reload-abcd1234567";
+        write_manifest(&root, token, &[("/a.html", &a, "text/html")]);
+
+        let reg = DiffSessionRegistry::new(&root.path);
+        let now = SystemTime::now();
+        // Prime the in-memory session via the manifest fallback.
+        assert!(reg.has_active_session(token, now));
+        assert!(reg.registered_file(token, "/a.html", now).is_some());
+        // b.html is not registered yet.
+        assert!(reg.registered_file(token, "/b.html", now).is_none());
+
+        // Append b.html to the manifest out-of-band (as the branch-picker
+        // regenerate route would), then miss -> reload -> hit.
+        let b = root.file("b.html", "<html>b</html>");
+        write_manifest(
+            &root,
+            token,
+            &[("/a.html", &a, "text/html"), ("/b.html", &b, "text/html")],
+        );
+        assert!(reg.registered_file(token, "/b.html", now).is_some());
+    }
+
+    #[test]
+    fn manifest_missing_or_malformed_yields_no_session() {
+        let root = TempRoot::new();
+        let token = "tok-missing-abcd12345";
+        let reg = DiffSessionRegistry::new(&root.path);
+        let now = SystemTime::now();
+        // No manifest on disk.
+        assert!(!reg.has_active_session(token, now));
+
+        // Malformed manifest -> None -> no session.
+        root.file(&crate::manifest::manifest_file_name(token), "not json");
+        assert!(!reg.register_from_manifest(token, now));
+        assert!(!reg.has_active_session(token, now));
     }
 }
