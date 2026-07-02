@@ -1,3 +1,11 @@
+//go:build !windows
+
+// This launcher-shim test exercises the Unix tmux/opencode integration
+// (bun/npm PATH probe + XDG ~/.config/opencode) and asserts Unix-oriented
+// launcher behavior, so it is gated off Windows. omoEnsurePlugin on Windows
+// short-circuits on the bun/npm PATH probe before it ever reaches the
+// invalid-JSON path this test asserts.
+
 package main
 
 import (
