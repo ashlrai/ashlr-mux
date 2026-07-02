@@ -10,6 +10,15 @@
 //! handle, via `KILL_ON_JOB_CLOSE`) then tears the whole tree down with zero
 //! orphans.
 //!
+//! The kill-on-close job also sets `JOB_OBJECT_LIMIT_BREAKAWAY_OK` so a child
+//! that explicitly requests `CREATE_BREAKAWAY_FROM_JOB` (the long-lived cmuxd
+//! daemon, which must outlive the supervisor and re-job itself standalone) can
+//! detach. This is opt-in only: any child that does NOT pass that flag stays
+//! assigned to the job and is still killed on close, preserving the zero-orphan
+//! tree-kill guarantee. We deliberately never set
+//! `JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK`, which would auto-detach *every*
+//! child and silently break confinement.
+//!
 //! Raw `HANDLE`s are stored as `isize` in the session table so the supervisor is
 //! `Send + Sync` without wrapping every handle; they are reconstituted at the
 //! Win32 call sites.
@@ -36,6 +45,7 @@ use windows::{
                 SetInformationJobObject, TerminateJobObject,
                 JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
                 JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+                JOB_OBJECT_LIMIT, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
                 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
             },
             Pipes::CreatePipe,
@@ -376,10 +386,23 @@ fn os_error(api: &'static str) -> ProcessError {
     }
 }
 
-/// Set `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` on the job's extended limits.
+/// Limit flags for a normal (non-survive-disconnect) session job:
+/// `KILL_ON_JOB_CLOSE` tears down the whole tree on close, while `BREAKAWAY_OK`
+/// lets a child that explicitly requests `CREATE_BREAKAWAY_FROM_JOB` (the cmuxd
+/// daemon) detach. `BREAKAWAY_OK` affects ONLY opt-in children — every other
+/// child stays confined and is still killed on close (NOT `SILENT_BREAKAWAY_OK`,
+/// which would auto-detach all children and defeat zero-orphan tree-kill).
+fn kill_on_job_close_limit_flags() -> JOB_OBJECT_LIMIT {
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK
+}
+
+/// Set `KILL_ON_JOB_CLOSE | BREAKAWAY_OK` on the job's extended limits. The
+/// `BREAKAWAY_OK` bit is what makes the cmuxd daemon's
+/// `CREATE_BREAKAWAY_FROM_JOB` spawn actually take effect (detach from this
+/// supervisor's kill-on-close job); non-breakaway children stay confined.
 fn arm_kill_on_job_close(job: HANDLE) -> Result<(), ProcessError> {
     let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    info.BasicLimitInformation.LimitFlags = kill_on_job_close_limit_flags();
     unsafe {
         SetInformationJobObject(
             job,
@@ -533,6 +556,18 @@ const _: () = {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kill_on_job_close_flags_permit_optin_breakaway_only() {
+        use windows::Win32::System::JobObjects::JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK;
+        let flags = kill_on_job_close_limit_flags();
+        // Tree-kill guarantee preserved.
+        assert_ne!(flags.0 & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.0, 0);
+        // Opt-in breakaway available for CREATE_BREAKAWAY_FROM_JOB children.
+        assert_ne!(flags.0 & JOB_OBJECT_LIMIT_BREAKAWAY_OK.0, 0);
+        // Never silent breakaway (would auto-detach every child, breaking zero-orphan).
+        assert_eq!(flags.0 & JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK.0, 0);
+    }
 
     #[test]
     fn quotes_argument_with_spaces() {
