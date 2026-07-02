@@ -2,7 +2,7 @@
 //! ported faithfully from the canonical macOS Swift sources under
 //! `Sources/Panels/Markdown*.swift`.
 //!
-//! Six pure pieces live here today:
+//! Seven pure pieces live here today:
 //!
 //! - [`file_link`] — [`file_link::resolve`] / [`file_link::is_markdown_path_like`],
 //!   a verbatim port of `MarkdownPanelFileLinkResolver` (`MarkdownPanelFileLinkResolver.swift`):
@@ -31,6 +31,9 @@
 //!   `font_family` domain logic (`MarkdownFontSizeSettings.swift` et al.): clamp
 //!   ranges, `page_zoom`, CSS `font-family` escaping, and the defaults
 //!   orchestration, kept in sync with `cmux_config::MarkdownConfig`.
+//! - [`mention_link`] — [`mention_link::link`], a port of `TextBoxMentionMarkdown`
+//!   (`TextBoxMentionMarkdown.swift`): the composer mention-link builder (label
+//!   escaping + path angle-wrapping/percent-encoding).
 //!
 //! Everything requiring a live `WKWebView` / GPU / AppKit (the renderer wiring,
 //! the remote-image consent UI, typography *controls*) stays in the GUI layer and
@@ -39,6 +42,7 @@
 pub mod assets;
 pub mod file_link;
 pub mod local_image_jail;
+pub mod mention_link;
 pub mod remote_image;
 pub mod theme;
 pub mod typography;
