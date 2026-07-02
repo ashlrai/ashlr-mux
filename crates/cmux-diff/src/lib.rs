@@ -10,7 +10,9 @@
 //! deferred (see the crate README/task notes).
 
 pub mod comment_store;
+pub mod rpc;
 pub mod session;
 
 pub use comment_store::{DiffComment, DiffCommentStore};
+pub use rpc::dispatch_comment_rpc;
 pub use session::{DiffSessionError, DiffSessionRegistry, RegisteredFile};

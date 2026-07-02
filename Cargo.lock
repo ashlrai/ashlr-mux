@@ -437,6 +437,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "ts-rs",
+ "uuid",
 ]
 
 [[package]]
