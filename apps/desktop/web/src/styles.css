@@ -84,3 +84,51 @@ body,
   /* Let the fit addon own sizing; keep the native scrollbar out of the layout. */
   scrollbar-width: thin;
 }
+
+/*
+ * WebView2 fix: the reused agent-session composer dropdowns (the "+" add-context
+ * menu, the provider menu, the permissions menu) mount correctly but stay at
+ * `opacity: 0`. They rely on a CSS entry animation (`_dropdown-content-enter`,
+ * 0%: opacity 0 -> 100%: opacity 1) that does not progress to its end state in
+ * WebView2, so the menu renders fully transparent and looks like the button
+ * "does nothing". Force the opened content opaque and drop the entry animation
+ * for these menus inside our surface. Divergence from macOS (which keeps the
+ * fade/slide-in) forced by the WebView2 renderer; the menus are otherwise styled
+ * identically. `!important` overrides the keyframe per the CSS cascade.
+ */
+.cmux-agent-session-surface ._content_1hiti_1[data-state="open"],
+.cmux-agent-session-surface .add-context-dropdown,
+.cmux-agent-session-surface .provider-dropdown,
+.cmux-agent-session-surface [role="menu"] {
+  opacity: 1 !important;
+  animation: none !important;
+}
+
+/*
+ * The composer's menus ("+" add-context, provider, permissions) open UPWARD, out
+ * of the composer and over the message list. In WebView2 they render BEHIND
+ * `.agent-thread`: `.codex-composer-inner { isolation: isolate }` traps the menu's
+ * z-index inside the composer's own stacking context, which paints below the
+ * thread. Lift that whole stacking context above the thread so the menu shows.
+ *
+ * Two independent fixes are needed, and one dangerous thing to avoid:
+ *   1. Un-cover: lift the composer's `isolation: isolate` stacking context above
+ *      `.agent-thread` with a z-index so the menu paints over the message list.
+ *   2. Un-clip: `.codex-left-rail` (the "+" button's own container) has
+ *      `overflow-x: auto`, which clips the upward-opening menu. Make it visible.
+ *   AVOID: do NOT set `overflow: visible` on `.codex-composer-frame/surface/inner`.
+ *      The footer-collapse hook (`useMeasuredComposerLayout`) measures
+ *      `.codex-secondary-controls` width; loosening overflow on its ancestors
+ *      destabilises that measurement and spins an infinite measure -> setState
+ *      loop ("Maximum update depth exceeded") when an attachment is added.
+ *      `.codex-left-rail` is a *sibling* of the measured element, so making only
+ *      it overflow-visible is safe.
+ * macOS/WKWebView happens to layer this correctly without help; WebView2 shim.
+ */
+.cmux-agent-session-surface .codex-composer-inner {
+  position: relative;
+  z-index: 30 !important;
+}
+.cmux-agent-session-surface .codex-left-rail {
+  overflow: visible !important;
+}

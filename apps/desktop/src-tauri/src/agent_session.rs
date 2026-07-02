@@ -501,16 +501,22 @@ fn err_envelope(code: &str, user_message: &str) -> Value {
 /// the `{id, method, params}` object (single-word arg key, so no camelCase
 /// mapping surprises).
 #[tauri::command]
-pub fn agent_session_rpc(
+pub async fn agent_session_rpc(
     app: AppHandle,
     state: State<'_, AgentSessionState>,
     message: Value,
-) -> Value {
-    // `app.pickFiles` opens a native dialog: handle it HERE (on the command's
-    // worker thread, which owns the `AppHandle`) rather than on the actor thread,
-    // so the modal file picker never blocks live agent-event processing.
+) -> Result<Value, ()> {
+    // `app.pickFiles` opens a native modal file dialog. It MUST NOT run on the
+    // command's own thread: Tauri drives sync commands on the main/UI thread, so a
+    // blocking dialog there freezes the whole window ("not responding"). Make the
+    // command async and run the blocking picker on the blocking thread pool, so the
+    // main event loop keeps pumping while the dialog is open.
     if message.get("method").and_then(Value::as_str) == Some("app.pickFiles") {
-        return ok_envelope(pick_local_files_reply(&app));
+        let app = app.clone();
+        let reply = tauri::async_runtime::spawn_blocking(move || pick_local_files_reply(&app))
+            .await
+            .unwrap_or_else(|_| json!({ "files": [] }));
+        return Ok(ok_envelope(reply));
     }
 
     let sender = state.ensure(&app);
@@ -522,17 +528,23 @@ pub fn agent_session_rpc(
         })
         .is_err()
     {
-        return err_envelope("actorUnavailable", "Agent session host is not running.");
+        return Ok(err_envelope(
+            "actorUnavailable",
+            "Agent session host is not running.",
+        ));
     }
-    reply_rx
+    Ok(reply_rx
         .recv()
-        .unwrap_or_else(|_| err_envelope("actorUnavailable", "Agent session host stopped."))
+        .unwrap_or_else(|_| err_envelope("actorUnavailable", "Agent session host stopped.")))
 }
 
 /// Open the native "Add photos & files" picker and map the selection to the
 /// `app.pickFiles` reply (`{ files: [...] }`). A cancelled dialog yields an empty
 /// selection. Mirrors macOS `pickLocalFiles`; the per-file byte→`data:` URL
 /// mapping + shared 2MB image budget live in the pure [`crate::pick_files`].
+///
+/// Blocking: the caller runs this on the blocking thread pool (never the UI
+/// thread) — see [`agent_session_rpc`].
 fn pick_local_files_reply(app: &AppHandle) -> Value {
     use tauri_plugin_dialog::DialogExt;
 
