@@ -1,0 +1,22 @@
+[package]
+name = "cmux-markdown"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+serde_json.workspace = true
+# Faithful port of `MarkdownViewerAssets.loadAsset`, which reads a zlib-compressed
+# `<name>.<ext>.deflate` variant (Apple `NSData.decompressed(using: .zlib)`) in
+# preference to the plain asset. flate2's zlib decoder reads the same RFC-1950
+# stream.
+flate2 = "1"
+
+[dev-dependencies]
+tempfile = "3"
+# Cross-crate guard: the typography defaults test asserts our numeric defaults
+# match the persisted `MarkdownConfig` serde model so the two never drift.
+cmux-config = { path = "../cmux-config" }

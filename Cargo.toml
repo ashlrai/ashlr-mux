@@ -9,6 +9,7 @@ members = [
   "crates/cmux-diff",
   "crates/cmux-golden",
   "crates/cmux-ipc",
+  "crates/cmux-markdown",
   "crates/cmux-process",
   "crates/cmux-terminal",
   "crates/cmux-windowing",
