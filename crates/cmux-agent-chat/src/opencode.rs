@@ -672,8 +672,32 @@ pub fn opencode_process_output_disposition(
     }
     match stream {
         ProviderStream::Stdout => OpenCodeProcessOutputDisposition::Suppress,
+        // INTENTIONAL DIVERGENCE from canonical macOS (which emits ALL stderr):
+        // opencode >= 1.17 routes its `--print-logs` structured diagnostics to
+        // stderr (`timestamp=… level=INFO … message=…`), which would flood the
+        // transcript and bury the assistant reply. We pass `--print-logs` only so
+        // the loopback URL is announced (captured above), so suppress the INFO/
+        // DEBUG log noise while still surfacing WARN/ERROR + any unstructured
+        // stderr (real failures). The assistant reply arrives over the `/event`
+        // SSE stream, not this path, so it is unaffected.
+        ProviderStream::Stderr if is_opencode_server_log_noise(text) => {
+            OpenCodeProcessOutputDisposition::Suppress
+        }
         ProviderStream::Stderr => OpenCodeProcessOutputDisposition::Emit,
     }
+}
+
+/// Whether a stderr line is one of opencode's structured `--print-logs` INFO/DEBUG
+/// diagnostics (noise), as opposed to a genuine error worth surfacing.
+///
+/// opencode's structured logs are `key=value` records carrying both a
+/// `level=INFO`/`level=DEBUG` token and a `message=` field. Matching on that shape
+/// (rather than any line containing "INFO") avoids suppressing real error output,
+/// which is either unstructured or carries `level=WARN`/`level=ERROR`.
+fn is_opencode_server_log_noise(text: &str) -> bool {
+    let trimmed = text.trim();
+    (trimmed.contains("level=INFO") || trimmed.contains("level=DEBUG"))
+        && trimmed.contains("message=")
 }
 
 /// Swift `openCodeServerURL(from:)`: extract the announced loopback URL, if any.
@@ -1239,6 +1263,50 @@ mod tests {
             opencode_process_output_disposition("some log line", ProviderStream::Stderr),
             OpenCodeProcessOutputDisposition::Emit
         );
+    }
+
+    #[test]
+    fn structured_info_debug_server_logs_are_suppressed_on_stderr() {
+        for line in [
+            r#"timestamp=2026-07-02T15:38:01.593Z level=INFO run=d8c76528 message="loop session.id=ses_x step=0""#,
+            "timestamp=2026-07-02T15:33:59.516Z level=INFO run=d8c76528 message=init",
+            "level=DEBUG message=\"tracking hash=abc\"",
+        ] {
+            assert_eq!(
+                opencode_process_output_disposition(line, ProviderStream::Stderr),
+                OpenCodeProcessOutputDisposition::Suppress,
+                "should suppress: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn genuine_errors_and_warnings_still_emit() {
+        for line in [
+            "level=ERROR message=\"failed to reach provider\"",
+            "level=WARN message=\"deprecated flag\"",
+            "panic: runtime error: nil pointer",
+            "Error: connection refused",
+        ] {
+            assert_eq!(
+                opencode_process_output_disposition(line, ProviderStream::Stderr),
+                OpenCodeProcessOutputDisposition::Emit,
+                "should emit: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn server_url_check_precedes_the_noise_filter() {
+        // A clean announcement on stderr must still be captured as ServerUrl (the
+        // URL check runs before the INFO/DEBUG suppression), not dropped as noise.
+        assert!(matches!(
+            opencode_process_output_disposition(
+                "opencode server listening on http://127.0.0.1:4096",
+                ProviderStream::Stderr,
+            ),
+            OpenCodeProcessOutputDisposition::ServerUrl(_)
+        ));
     }
 
     #[test]
