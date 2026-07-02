@@ -258,3 +258,49 @@ One line per completed slice (milestone/result/commit/next). Newest last.
   pane. Lifting it needs per-pane bridge routing + a multi-session store (future
   slice). Commit: <pending>. NEXT: install codex/opencode to live-verify their
   converse; multi-session-per-window; `app.pickFiles`; backlog (#13/#14).
+
+## 2026-07-02 — Phase-4 headless core: cmux-markdown + dialSocket + cmux-diff restore (3 concurrent lanes)
+
+`/loop ultracode`. Scouted 4 candidate headless lanes with a read-only workflow
+(4 Explore agents → implementation-ready specs w/ canonical Swift file:line
+refs), partitioned into provably-disjoint file sets, then ran the two disjoint
+lanes as a background implement→adversarial-verify workflow WHILE hand-building
+the markdown core (which shares its crate's lib.rs/Cargo.toml with the deferred
+typography lane, so those two were sequenced). Zero file overwrite. Three commits:
+
+- `92cffcf56` **cmux-markdown** (NEW crate, hand-ported by me): five pure modules
+  — file_link (MarkdownPanelFileLinkResolver), local_image_jail
+  (cmux-local-image:// path jail, security-critical, trailing-sep prefix +
+  canonicalize like the diff session jail), theme (MarkdownWebTheme + WCAG
+  luminance/contrast + 18-iter binary-search overlay + applyTheme 6-token map),
+  assets (MarkdownViewerAssets: 6 {{token}} shell.html subs, deflate-preferred
+  loader, lazy cache, 10-key localizedStringsJSON), typography (font-size/
+  max-width/font-family clamp+zoom+css-escape + defaults orchestration, cross-
+  crate default-sync test vs cmux_config::MarkdownConfig). 52 tests, clippy clean.
+  Windows path/URL adaptations documented inline. Excluded (needs GUI): CoreText
+  font enumeration, UserDefaults persistence, live renderer wiring.
+- `7e34981e6` **cmux-diff manifest+pool** (workflow lane B, verify SOLID): the
+  deferred manifest session-restore (session.rs now keeps raw trusted_root +
+  register_from_manifest + has_active_session/registered_file manifest fallbacks,
+  reusing register()'s full jail) + DiffCommentSubmissionPool (standalone, NOT
+  wired into rpc.rs — dispatch has no workspace id). No 1024 cap on the manifest
+  path (cap is RPC-ingest-only). 55 tests (+20), clippy clean.
+- `c507355ee` **dialSocket Windows refused fix** (workflow lane A, verify SOLID):
+  isConnectionRefused now matches the refused errno via a platform-split
+  isRefusedErrno helper + retained substring fallback; 2 gated tests relocated to
+  cross-platform cli_test.go, pass on Windows.
+
+KEY SWARM WIN (adversarial verify earned its keep): the dialSocket implement
+agent EMPIRICALLY DISPROVED the scout's prescribed fix — `errors.Is(err,
+syscall.ECONNREFUSED)` does NOT fire on Windows/Go 1.26.4 (syscall.ECONNREFUSED
+is a synthetic 0x20000016, not the real winsock 10061 in the error chain); only
+`golang.org/x/sys/windows.WSAECONNREFUSED` matches. The "obvious" one-line fix
+would have silently no-op'd. Lesson: platform errno identity is not portable —
+verify the predicate actually fires on the target OS, don't trust errors.Is
+across GOOS.
+
+Gate: cmux-markdown 52 + cmux-diff 55 tests, clippy clean on both; go build+vet
+clean; workspace check green. NEXT: the Tauri wiring slice (diff/markdown
+commands + register_asynchronous_uri_scheme_protocol handlers + generate_handler!
++ tauri.conf.json bundle.resources) then the live-WebView2 token-gate spike — the
+remaining Phase-4 pieces are mount-DEPENDENT so they need the running app.

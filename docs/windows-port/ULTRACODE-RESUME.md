@@ -175,24 +175,30 @@ already matches macOS-React; the real gap is host-side `workingDirectory` — se
 mount-independent, iframe-over-custom-scheme recommended, child-webview deferred
 (unstable feature)** — see `DECISIONS.md` "Phase 4 — surface MOUNT model".
 
-**Phase-4 headless Rust core — IN PROGRESS (all mount-independent):**
-1. ✅ `crates/cmux-diff/src/session.rs` — token/session registry (validators +
-   trusted-root jail + 24h expiry), port of `CmuxDiffViewerURLSchemeHandler`
-   (`BrowserPanel.swift:1904`). 14 tests. Commit `f5a83839c`.
-2. **NEXT `crates/cmux-diff/src/rpc.rs`** — pure `diff_comments_rpc` contract
-   mapper over the DONE `DiffCommentStore`, session-gated. Read the wire contract
-   from `Sources/Panels/DiffCommentsBridge.swift` (comments.list/save/delete;
-   params `{repoRoot, comment, id}`; NativeReply envelope). Unit-test vs a
-   temp-dir store. (R2 was meant to spec this but hit the StructuredOutput cap —
-   read the Swift bridge directly.)
-3. `crates/cmux-markdown` (NEW crate; needs a workspace-root `Cargo.toml` members
-   edit) — `MarkdownPanelFileLinkResolver` + local-image path-jail + shell.html
-   theme substitution (`MarkdownWebRenderer.swift`). Pure + tests.
-4. Tauri layer (`apps/desktop/src-tauri/src/{diff,markdown,schemes}.rs`) +
-   `generate_handler!` wiring + `register_asynchronous_uri_scheme_protocol`
-   handlers + `tauri.conf.json` bundle.resources for `Resources/markdown-viewer/**`.
-5. The one live-WebView2 spike: can `diff_comments_rpc` read the calling iframe's
-   frame URL for the token gate? (decides iframe vs unstable child-webview mount).
+**Phase-4 headless Rust core — DONE (all mount-independent; next is the Tauri
+mount layer, which needs the running app):**
+1. ✅ `crates/cmux-diff/src/session.rs` — token/session registry. Commit `f5a83839c`.
+2. ✅ `crates/cmux-diff/src/rpc.rs` — `diff_comments_rpc` contract mapper. `86566a173`.
+3. ✅ `crates/cmux-diff` manifest session-restore + `DiffCommentSubmissionPool`
+   (`manifest.rs` + `submission_pool.rs`; session.rs manifest fallbacks). 55 tests.
+   Commit `7e34981e6`.
+4. ✅ `crates/cmux-markdown` (NEW crate) — file_link + local_image_jail + theme +
+   assets + typography. 52 tests. Commit `92cffcf56`.
+5. ✅ `dialSocket` Windows refused-connect fix (unblocked M4 backlog). `c507355ee`.
+
+**NEXT — the Tauri mount layer (mount-DEPENDENT; needs `tauri dev`):**
+1. `apps/desktop/src-tauri/src/{diff,markdown,schemes}.rs` — commands over the
+   headless cores (`cmux-diff` DiffSessionRegistry/dispatch_comment_rpc,
+   `cmux-markdown` MarkdownViewerAssets/resolve_local_image/MarkdownWebTheme),
+   wired into `generate_handler!` in the same edit (denies-warnings crate).
+2. `register_asynchronous_uri_scheme_protocol` handlers for `cmux-diff-viewer://`
+   and `cmux-local-image://`; `tauri.conf.json` bundle.resources for
+   `Resources/markdown-viewer/**` (so `MarkdownViewerAssets::load` finds them).
+3. The live-WebView2 spike: can `diff_comments_rpc` read the calling iframe's
+   frame URL for the token gate? (decides iframe vs unstable child-webview mount —
+   see `DECISIONS.md` "Phase 4 — surface MOUNT model").
+Also still open: relocate the ineffective `main.go:783` `syscall.ECONNREFUSED`
+predicate onto the x/sys errno (same Windows latent bug as dialSocket).
 
 Also open: live-verify Codex converse (token streaming, approvals); the
 `dialSocket` Windows fail-over fix (see `DECISIONS.md` findings).

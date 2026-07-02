@@ -405,3 +405,31 @@ of `CmuxDiffViewerURLSchemeHandler` (`BrowserPanel.swift:1904`). 14 tests.
   (R2/R3/R4) hit the 5-retry StructuredOutput cap (oversized objects failing a
   6-required-field `additionalProperties:false` schema). Keep research-return
   schemas loose (one freeform field) or chunk the extraction.
+
+## Windows errno identity is not portable — verify the predicate fires (2026-07-02)
+
+- **`syscall.ECONNREFUSED` ≠ WinSock `WSAECONNREFUSED` under `errors.Is` on
+  Windows/Go 1.26.4.** `syscall.ECONNREFUSED` is a synthetic constant
+  (`0x20000016`); a real refused connect carries winsock errno `10061` in its
+  `OpError → SyscallError → syscall.Errno` chain, so `errors.Is(err,
+  syscall.ECONNREFUSED)` returns false. The match that fires is
+  `errors.Is(err, golang.org/x/sys/windows.WSAECONNREFUSED)`. The pre-existing
+  `main.go:783` precedent using `syscall.ECONNREFUSED` is itself ineffective on
+  Windows for the same reason (latent bug; not fixed in this slice — flagged).
+- **Process:** the scout PRESCRIBED the `syscall.ECONNREFUSED` fix; the implement
+  agent ran the relocated test on `GOOS=windows`, saw it still fail
+  (`refreshCalls==0`), and switched to the x/sys errno. Adversarial "verify by
+  RUNNING on the target OS" caught a plausible-but-wrong fix. Do not trust
+  `errors.Is` across GOOS on synthetic syscall constants — confirm the predicate
+  actually matches a real error from the target platform.
+
+## Swarm partitioning that held (2026-07-02)
+
+- Read-only scout workflow (4 agents) → disjoint-lane specs, then a 2-lane
+  implement→verify workflow run in the BACKGROUND while the orchestrator
+  hand-built a third lane. Overwrite-free because: the third lane (cmux-markdown)
+  owns a brand-new crate + the root Cargo.toml/lock, lane A owns Go files, lane B
+  owns cmux-diff/{session,lib,manifest,submission_pool}. The one true conflict
+  (typography wants cmux-markdown's lib.rs/Cargo.toml) was SEQUENCED after the
+  core, not parallelized. Verify agents correctly flagged the other lanes' files
+  as "scope contamination" in the shared tree — expected; committed per-lane.
