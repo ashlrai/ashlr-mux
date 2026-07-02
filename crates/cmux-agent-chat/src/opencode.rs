@@ -223,17 +223,24 @@ impl OpenCodeEventTextAccumulator {
     /// [`AgentEvent::ProviderOutput`] on `stdout`, and finally a
     /// [`AgentEvent::ProviderTurnComplete`] is appended when the event completes
     /// the turn.
+    /// `session_id` is the OpenCode loopback session id used to *match* incoming
+    /// events; `emit_session_id` is the cmux agent session id stamped onto the
+    /// emitted renderer events (the id the frontend routes on). These differ for
+    /// OpenCode — the loopback id (`ses_…`) is an internal detail and must never
+    /// leak into the renderer, or the reply is delivered to a session the UI does
+    /// not know about and silently dropped.
     pub fn consume_event_to_events(
         &mut self,
         event: &OpenCodeEvent,
         session_id: &str,
+        emit_session_id: &str,
         provider_id: ProviderId,
     ) -> Vec<AgentEvent> {
         let completes_turn = Self::completes_assistant_turn(event, session_id);
         let mut events = Vec::new();
         for delta in self.consume_event(event, session_id) {
             events.push(AgentEvent::ProviderOutput {
-                session_id: session_id.to_string(),
+                session_id: emit_session_id.to_string(),
                 provider_id,
                 stream: ProviderStream::Stdout,
                 text: delta,
@@ -241,7 +248,7 @@ impl OpenCodeEventTextAccumulator {
         }
         if completes_turn {
             events.push(AgentEvent::ProviderTurnComplete {
-                session_id: session_id.to_string(),
+                session_id: emit_session_id.to_string(),
                 provider_id,
             });
         }
@@ -1120,15 +1127,17 @@ mod tests {
         let mut acc = OpenCodeEventTextAccumulator::new();
         acc.consume_event(&message_updated_assistant("s", "m1"), "s");
         acc.consume_event(&part_updated_text("s", "p1", "m1", ""), "s");
+        // Match on the OpenCode loopback id "s"; emit under the distinct cmux id.
         let out = acc.consume_event_to_events(
             &part_delta("s", "p1", "m1", "chunk"),
             "s",
+            "cmux-session",
             ProviderId::Opencode,
         );
         assert_eq!(
             out,
             vec![AgentEvent::ProviderOutput {
-                session_id: "s".into(),
+                session_id: "cmux-session".into(),
                 provider_id: ProviderId::Opencode,
                 stream: ProviderStream::Stdout,
                 text: "chunk".into(),
@@ -1140,11 +1149,11 @@ mod tests {
     fn consume_event_to_events_appends_turn_complete() {
         let mut acc = OpenCodeEventTextAccumulator::new();
         let idle = obj(json!({"type": "session.idle", "properties": {"sessionID": "s"}}));
-        let out = acc.consume_event_to_events(&idle, "s", ProviderId::Opencode);
+        let out = acc.consume_event_to_events(&idle, "s", "cmux-session", ProviderId::Opencode);
         assert_eq!(
             out,
             vec![AgentEvent::ProviderTurnComplete {
-                session_id: "s".into(),
+                session_id: "cmux-session".into(),
                 provider_id: ProviderId::Opencode,
             }]
         );
@@ -1164,7 +1173,7 @@ mod tests {
             obj(json!({"type": "session.idle", "properties": {"sessionID": "s"}})),
         ];
         for event in &events {
-            for ev in acc.consume_event_to_events(event, "s", ProviderId::Opencode) {
+            for ev in acc.consume_event_to_events(event, "s", "cmux-session", ProviderId::Opencode) {
                 match ev {
                     AgentEvent::ProviderOutput { text, .. } => collected.push_str(&text),
                     AgentEvent::ProviderTurnComplete { .. } => completed = true,

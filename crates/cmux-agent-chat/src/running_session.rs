@@ -563,10 +563,16 @@ impl RunningSession {
             return Vec::new();
         };
         let provider_id = self.provider_id;
+        // Match on the OpenCode loopback id; stamp the emitted renderer events with
+        // this session's cmux id (what the frontend routes on).
+        let emit_session_id = self.session_id.clone();
         match &mut self.accumulator {
-            ProviderAccumulator::OpenCode { text, .. } => {
-                text.consume_event_to_events(event, &opencode_session_id, provider_id)
-            }
+            ProviderAccumulator::OpenCode { text, .. } => text.consume_event_to_events(
+                event,
+                &opencode_session_id,
+                &emit_session_id,
+                provider_id,
+            ),
             _ => Vec::new(),
         }
     }

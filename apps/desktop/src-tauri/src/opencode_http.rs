@@ -354,6 +354,45 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "manual diagnostic: hits a live opencode server on 127.0.0.1:4599"]
+    fn live_opencode_streams_incrementally() {
+        // base64("opencode:testpass")
+        let auth = Some("Basic b3BlbmNvZGU6dGVzdHBhc3M=");
+        let base = "http://127.0.0.1:4599";
+        let sid = create_session(base, auth, None).expect("create session");
+        let lines = Arc::new(Mutex::new(Vec::<String>::new()));
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let lines_w = lines.clone();
+        let cancelled_r = cancelled.clone();
+        let base_owned = base.to_string();
+        std::thread::spawn(move || {
+            let mut on_line = |line: String| lines_w.lock().unwrap().push(line);
+            stream_events(
+                &base_owned,
+                Some("Basic b3BlbmNvZGU6dGVzdHBhc3M="),
+                None,
+                &|| cancelled_r.load(Ordering::SeqCst),
+                &mut on_line,
+            )
+        });
+        std::thread::sleep(Duration::from_millis(500));
+        let count_before_prompt = lines.lock().unwrap().len();
+        post_prompt(base, auth, None, &sid, "hello").expect("prompt");
+        std::thread::sleep(Duration::from_secs(8));
+        cancelled.store(true, Ordering::SeqCst);
+        let received = lines.lock().unwrap();
+        eprintln!(
+            "lines before prompt = {count_before_prompt}, total = {}, sample = {:?}",
+            received.len(),
+            received.iter().take(3).collect::<Vec<_>>()
+        );
+        assert!(
+            received.len() > count_before_prompt,
+            "ureq streamed NO new SSE lines after the prompt (buffering the chunked body?)"
+        );
+    }
+
+    #[test]
     fn stream_events_non_2xx_is_errored() {
         let (base, _c) = serve_once("404 Not Found", "nope");
         let cancelled = AtomicBool::new(false);
