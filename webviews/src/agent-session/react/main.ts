@@ -148,6 +148,16 @@ function useMeasuredComposerLayout(input: string, hasVisibleAttachments: boolean
   };
 }
 
+// The footer-collapse measurement re-runs itself after every state change it
+// makes (via `setItemRef` and the layout effect below). Normally it settles in
+// one or two iterations, but a layout that sits exactly on the collapse
+// threshold — e.g. after a composer attachment nudges the available width — can
+// flip-flop between two states forever, which React aborts with "Maximum update
+// depth exceeded" and unmounts the whole surface. Cap the number of consecutive
+// self-induced re-measures so it converges instead of looping; genuine external
+// triggers (ResizeObserver, a settled measurement) reset the budget.
+const MAX_FOOTER_MEASURE_ITERATIONS = 10;
+
 function useMeasuredFooterControlCollapse(specs: FooterControlSpec[]) {
   "use no memo";
 
@@ -158,6 +168,7 @@ function useMeasuredFooterControlCollapse(specs: FooterControlSpec[]) {
   const compactWidths = useRef(new Map<string, number>());
   const specsRef = useRef(specs);
   const collapseStateRef = useRef(collapseState);
+  const measureIterationsRef = useRef(0);
   specsRef.current = specs;
   collapseStateRef.current = collapseState;
 
@@ -196,9 +207,17 @@ function useMeasuredFooterControlCollapse(specs: FooterControlSpec[]) {
       items,
       previousState: collapseStateRef.current,
     });
-    if (!footerCollapseStatesEqual(nextState, collapseStateRef.current)) {
-      setCollapseState(nextState);
+    if (footerCollapseStatesEqual(nextState, collapseStateRef.current)) {
+      // Converged: this measurement agrees with the current state.
+      measureIterationsRef.current = 0;
+      return;
     }
+    if (measureIterationsRef.current >= MAX_FOOTER_MEASURE_ITERATIONS) {
+      // Oscillating between two states — stop flipping and let it settle.
+      return;
+    }
+    measureIterationsRef.current += 1;
+    setCollapseState(nextState);
   }, []);
 
   const setContainerRef = useCallback((node: HTMLDivElement | null) => {
@@ -225,7 +244,13 @@ function useMeasuredFooterControlCollapse(specs: FooterControlSpec[]) {
     if (typeof ResizeObserver === "undefined") {
       return;
     }
-    const observer = new ResizeObserver(measure);
+    // A real size change is an external trigger — reset the convergence budget so
+    // the collapse can re-evaluate from scratch (vs. the internal re-measure loop
+    // the budget guards against).
+    const observer = new ResizeObserver(() => {
+      measureIterationsRef.current = 0;
+      measure();
+    });
     if (containerRef.current) {
       observer.observe(containerRef.current);
     }
