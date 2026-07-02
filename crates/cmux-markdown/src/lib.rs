@@ -2,7 +2,7 @@
 //! ported faithfully from the canonical macOS Swift sources under
 //! `Sources/Panels/Markdown*.swift`.
 //!
-//! Five pure pieces live here today:
+//! Six pure pieces live here today:
 //!
 //! - [`file_link`] — [`file_link::resolve`] / [`file_link::is_markdown_path_like`],
 //!   a verbatim port of `MarkdownPanelFileLinkResolver` (`MarkdownPanelFileLinkResolver.swift`):
@@ -21,6 +21,12 @@
 //!   `MarkdownViewerAssets` (`MarkdownViewerAssets.swift`): the six-placeholder
 //!   `shell.html` template substitution ([`assets::MarkdownViewerAssets::shell_html`]),
 //!   the lazy asset cache, and the remote-image `localizedStringsJSON` map.
+//! - [`remote_image`] — [`remote_image_url`] + the SSRF gate for the
+//!   `cmux-remote-image://` scheme (`MarkdownRemoteImageLoader.swift`): HTTPS-only,
+//!   no-userinfo, default-port, hostname/IP-literal allowlist rejecting
+//!   loopback/private/link-local/CGNAT/reserved ranges, MIME canonicalization,
+//!   and HTTP request framing. DNS resolution + the TLS fetch stay in the host
+//!   layer, which screens each resolved address via `is_allowed_resolved_ip`.
 //! - [`typography`] — [`MarkdownTypography`] + the `font_size` / `max_width` /
 //!   `font_family` domain logic (`MarkdownFontSizeSettings.swift` et al.): clamp
 //!   ranges, `page_zoom`, CSS `font-family` escaping, and the defaults
@@ -33,11 +39,13 @@
 pub mod assets;
 pub mod file_link;
 pub mod local_image_jail;
+pub mod remote_image;
 pub mod theme;
 pub mod typography;
 mod path_util;
 
 pub use assets::MarkdownViewerAssets;
 pub use local_image_jail::{resolve_local_image, ResolvedLocalImage, LOCAL_IMAGE_URL_SCHEME};
+pub use remote_image::{remote_image_url, REMOTE_IMAGE_URL_SCHEME};
 pub use theme::MarkdownWebTheme;
 pub use typography::MarkdownTypography;

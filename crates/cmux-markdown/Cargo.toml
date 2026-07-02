@@ -9,6 +9,11 @@ path = "src/lib.rs"
 
 [dependencies]
 serde_json.workspace = true
+# WHATWG URL parser for the remote-image SSRF gate. Hand-rolling URL parsing for
+# a security boundary is error-prone, so the `remote_image` port parses with this
+# audited crate instead of Foundation URL/URLComponents (documented divergence);
+# the security predicates themselves are ported byte-identically.
+url = "2"
 # Faithful port of `MarkdownViewerAssets.loadAsset`, which reads a zlib-compressed
 # `<name>.<ext>.deflate` variant (Apple `NSData.decompressed(using: .zlib)`) in
 # preference to the plain asset. flate2's zlib decoder reads the same RFC-1950

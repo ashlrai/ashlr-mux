@@ -472,6 +472,7 @@ dependencies = [
  "flate2",
  "serde_json",
  "tempfile",
+ "url",
 ]
 
 [[package]]
