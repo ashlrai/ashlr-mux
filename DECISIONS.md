@@ -341,3 +341,67 @@ are single words, identical in both cases. Fix: send `panelId`; single-word keys
 `.catch(() => {})` on the session mutators with `console.error` so a failed
 command is visible next time. (The prior resume-doc "snake_case" note was a wrong
 guess never exercised until a multi-word-arg command reached the frontend.)
+
+## Phase 4 — diff/markdown surface MOUNT model (swarm-derived, 2026-07-02)
+
+A read-only planning swarm resolved the central Phase-4 open question. **The
+headless Rust core is mount-independent — build it first, decide the mount
+later.** Evidence (R1, high confidence): the Windows shell renders *every* pane
+(terminals AND the reused agent-session app) as **React in ONE document**
+(`Workspace.tsx` flat DOM portal); no child webviews exist anywhere. Tauri's
+child-webview embedding (`Window::add_child`, `Webview::url/set_position/set_size`)
+is `#[cfg(feature = "unstable")]` in tauri 2.11.3 — **semver-exempt and OFF
+today** (`Cargo.toml` features = []). But `register_asynchronous_uri_scheme_protocol`
+is **stable** and embedding-independent.
+
+**Decision:** build the diff/markdown backend + custom-URI-scheme handlers now;
+treat the surface mount as a separate deferred choice. Recommended mount when we
+get there: an **`<iframe>` whose `src` is the custom scheme**
+(`cmux-diff-viewer://<token>/index.html`) positioned by the existing paneRects
+DOM layout — because it (a) keeps the frozen `webviews/src/comments/bridge.ts`
+verbatim (that bridge sends only `{repoRoot, comment}`, **no token** — so the
+token MUST ride in the frame URL, which an iframe carries but a main-document
+mount cannot without editing the frozen seam), (b) needs only the stable scheme
+API, (c) is pure DOM (no native rect-sync, no WebView2 airspace occlusion of the
+z-10 dividers / z-20 PaneControls that unstable child-webviews would cause). The
+one unit-untestable risk to spike on a live WebView2: whether `diff_comments_rpc`
+can read the calling **iframe's** frame URL for the token gate (`webview.url()`
+may return the main frame, not the sub-iframe). If it can't → fall back to
+unstable child-webview (explicit go/no-go), **never** to main-document.
+
+Landed this session: `crates/cmux-diff/src/session.rs` — the token/session
+registry (validators + trusted-root jail + 24h expiry), a faithful headless port
+of `CmuxDiffViewerURLSchemeHandler` (`BrowserPanel.swift:1904`). 14 tests.
+
+## Findings parked for follow-up (2026-07-02)
+
+- **`dialSocket` has a Windows fail-over gap (real, production).** The two
+  `TestDialSocket*` tests in `cmuxd-remote` fail on Windows: a WinSock
+  `connectex: ... actively refused` error is NOT matched by `dialSocket`'s
+  address-refresh trigger, so `refreshAddr` is called 0 times and the dial does
+  not fail over to a refreshed relay address. Gated `//go:build !windows` for now
+  (tests-only slice); fix `dialSocket`'s error classification when the Windows
+  CLI relay dial is actually ported.
+- **Windows sends a meaningless `workingDirectory` (agent chat).** The "IDE
+  context" composer chip is NOT an IDE integration — it's the auto-context chip
+  (workspace dir → @-mention), gated only on `state.context.workingDirectory`,
+  and Windows already matches macOS-React exactly. The real (host-side) gap:
+  `agent_session.rs` sends `std::env::current_dir()` (the app/exe launch dir)
+  unconditionally, so the chip always shows with a meaningless dir. Faithful fix
+  lives in `agent_session.rs`: send the actual workspace cwd, or `None` when
+  there is no real workspace (the existing webview gate then hides the chip with
+  zero frontend change). No frontend change is correct.
+
+## Swarm-quality lessons (2026-07-02)
+
+- **Verify by RUNNING, not compiling.** The Go-test-port implement agent
+  self-reported "PASS" from a compile-only check (`go test -run XXNONE`, "no
+  tests to run") — my verify instruction handed it that shortcut and framed the
+  goal as "compile." Running the suite surfaced 4 Windows runtime failures its
+  scout had explicitly predicted. For test-porting, the acceptance command must
+  be "tests green," never "tests compile."
+- **Strict StructuredOutput schemas + huge payloads = retry-cap failures.** The
+  Phase-4 research agents that had to return byte-level canonical-contract dumps
+  (R2/R3/R4) hit the 5-retry StructuredOutput cap (oversized objects failing a
+  6-required-field `additionalProperties:false` schema). Keep research-return
+  schemas loose (one freeform field) or chunk the extraction.

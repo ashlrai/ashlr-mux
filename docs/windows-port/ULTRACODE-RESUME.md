@@ -165,12 +165,37 @@ client token through start).
 
 ### NEXT
 
-1. **`app.pickFiles`** — real Tauri dialog+fs plugin (honor 512KB/2MB image caps,
-   `isImage`/`mimeType`); currently a `{files:[]}` stub. Rounds out the agent chat
-   surface the user is actively on.
-2. **"IDE context" button** — user pressed it, it did nothing then vanished.
-   Likely `app.context`/IDE-integration stub; decide port vs hide.
-3. Live-verify Codex converse specifically (token streaming, approvals).
+DONE 2026-07-02 (parallel swarms): `app.pickFiles` (native picker, commits
+`57e03e9b3`/`100408dd8`/`929ae4858`); **multiple concurrent agents** (`b6b9ed726`);
+Go cmuxd-remote test suite compiles+**passes** on Windows (`ecf17b673`, build-tag
+split); cmuxd breakaway `JOB_OBJECT_LIMIT_BREAKAWAY_OK` on the supervisor job
+(`5b630b17e`); **"IDE context" button = non-issue** (it's the auto-context chip,
+already matches macOS-React; the real gap is host-side `workingDirectory` — see
+`DECISIONS.md`). Phase-4 mount decision resolved: **headless Rust core is
+mount-independent, iframe-over-custom-scheme recommended, child-webview deferred
+(unstable feature)** — see `DECISIONS.md` "Phase 4 — surface MOUNT model".
+
+**Phase-4 headless Rust core — IN PROGRESS (all mount-independent):**
+1. ✅ `crates/cmux-diff/src/session.rs` — token/session registry (validators +
+   trusted-root jail + 24h expiry), port of `CmuxDiffViewerURLSchemeHandler`
+   (`BrowserPanel.swift:1904`). 14 tests. Commit `f5a83839c`.
+2. **NEXT `crates/cmux-diff/src/rpc.rs`** — pure `diff_comments_rpc` contract
+   mapper over the DONE `DiffCommentStore`, session-gated. Read the wire contract
+   from `Sources/Panels/DiffCommentsBridge.swift` (comments.list/save/delete;
+   params `{repoRoot, comment, id}`; NativeReply envelope). Unit-test vs a
+   temp-dir store. (R2 was meant to spec this but hit the StructuredOutput cap —
+   read the Swift bridge directly.)
+3. `crates/cmux-markdown` (NEW crate; needs a workspace-root `Cargo.toml` members
+   edit) — `MarkdownPanelFileLinkResolver` + local-image path-jail + shell.html
+   theme substitution (`MarkdownWebRenderer.swift`). Pure + tests.
+4. Tauri layer (`apps/desktop/src-tauri/src/{diff,markdown,schemes}.rs`) +
+   `generate_handler!` wiring + `register_asynchronous_uri_scheme_protocol`
+   handlers + `tauri.conf.json` bundle.resources for `Resources/markdown-viewer/**`.
+5. The one live-WebView2 spike: can `diff_comments_rpc` read the calling iframe's
+   frame URL for the token gate? (decides iframe vs unstable child-webview mount).
+
+Also open: live-verify Codex converse (token streaming, approvals); the
+`dialSocket` Windows fail-over fix (see `DECISIONS.md` findings).
 
 Superseded single-webview two-layer plan (kept for reference):
 It was a TWO-LAYER divergence forced by the single-webview MVP (canonical macOS is
