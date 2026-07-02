@@ -487,6 +487,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmux-scrub"
+version = "0.1.0"
+dependencies = [
+ "fancy-regex",
+ "regex",
+]
+
+[[package]]
+name = "cmux-ssh"
+version = "0.1.0"
+
+[[package]]
 name = "cmux-terminal"
 version = "0.1.0"
 dependencies = [
@@ -497,6 +509,14 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "uuid",
+]
+
+[[package]]
+name = "cmux-tmux"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -929,6 +949,17 @@ checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "fancy-regex"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1e1dacd0d2082dfcf1351c4bdd566bbe89a2b263235a2b50058f1e130a47277"
+dependencies = [
+ "bit-set",
+ "regex-automata",
+ "regex-syntax",
 ]
 
 [[package]]

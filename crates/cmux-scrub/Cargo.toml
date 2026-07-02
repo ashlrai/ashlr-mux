@@ -1,0 +1,15 @@
+[package]
+name = "cmux-scrub"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+regex.workspace = true
+# DIVERGENCE: stock `regex` has no lookahead, but the Swift home-directory
+# pattern uses `(?=[/\s"']|$)`. `fancy-regex` provides the lookahead for that one
+# pattern; every other rule stays on stock `regex`.
+fancy-regex = "0.18"

@@ -11,7 +11,10 @@ members = [
   "crates/cmux-ipc",
   "crates/cmux-markdown",
   "crates/cmux-process",
+  "crates/cmux-scrub",
+  "crates/cmux-ssh",
   "crates/cmux-terminal",
+  "crates/cmux-tmux",
   "crates/cmux-windowing",
 ]
 resolver = "2"
