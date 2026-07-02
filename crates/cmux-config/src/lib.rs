@@ -4,13 +4,16 @@
 //! It models the CORE, load-bearing sections that the Settings UI binds to
 //! (app, terminal, notifications, sidebar, workspace colors, sidebar
 //! appearance, automation, browser, markdown, canvas, file editor, file
-//! explorer, diff viewer, shortcuts) as strongly-typed serde structs/enums.
+//! explorer, diff viewer, shortcuts, vault, workspace groups, actions, ui,
+//! commands, surface tab bar buttons) as strongly-typed serde structs/enums.
 //!
 //! Deliberately NOT strict: the top-level [`Config`] does not use
-//! `deny_unknown_fields`. Unmodeled top-level sections (`actions`, `ui`,
-//! `commands`, `surfaceTabBarButtons`) are captured verbatim in
-//! [`Config::extra`] so a decode → encode round-trip does not silently drop
-//! them.
+//! `deny_unknown_fields`. Any top-level section this crate does not model is
+//! captured verbatim in [`Config::extra`] so a decode → encode round-trip does
+//! not silently drop it. The four previously-unmodeled polymorphic sections
+//! (`actions`, `ui`, `commands`, `surfaceTabBarButtons`) are now strongly
+//! typed, mirroring the canonical Swift decoders in `Sources/CmuxConfig.swift`
+//! and `Sources/CmuxConfigUI.swift`.
 //!
 //! The `ts` feature gates `ts_rs::TS` derives, exactly mirroring `cmux-core`.
 //! It is inert in the default build (ts-rs is an optional dependency).
@@ -18,7 +21,9 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::ser::SerializeMap;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 #[cfg(feature = "ts")]
 use ts_rs::TS;
@@ -1101,16 +1106,1025 @@ pub struct WorkspaceGroupsConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Shared leaf types for `actions`, `ui`, `surfaceTabBarButtons`
+//
+// LENIENCY POLICY (applies to every custom decoder below).
+// DIVERGENCE: the canonical Swift decoders trim `whitespacesAndNewlines` off
+// every string field and hard-error on blank/required values; this crate keeps
+// its established leniency and preserves string values verbatim (no trimming),
+// defaulting absent-but-required leaf strings to `""` instead of erroring. Only
+// the *structural* rules that are needed to disambiguate a polymorphic union
+// (or that the task/Swift schema explicitly enforces — icon `type`,
+// action `type`, `pane` vs `direction`, command `workspace`-xor-`command`) are
+// reproduced as hard errors, so a malformed config fails to parse exactly as it
+// does on macOS. Whitespace trimming is intentionally NOT reproduced because it
+// would mutate data and break the lossless round-trip this crate guarantees.
+// ---------------------------------------------------------------------------
+
+/// `CmuxConfigTerminalCommandTarget` (`Sources/CmuxConfig.swift:328-333`): where
+/// a terminal-command action runs. Swift `String` enum whose raw values are the
+/// case names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, rename_all = "camelCase"))]
+#[serde(rename_all = "camelCase")]
+pub enum CmuxConfigTerminalCommandTarget {
+    CurrentTerminal,
+    NewTabInCurrentPane,
+}
+
+/// `CmuxConfigAgentKind` (`Sources/CmuxConfig.swift:357-409`): the built-in
+/// agent an action can launch. Decodes the aliases `claude`/`claudeCode`/
+/// `claude-code` → [`ClaudeCode`](Self::ClaudeCode) and encodes canonically
+/// (`codex` / `claude`), matching Swift's custom `Codable`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub enum CmuxConfigAgentKind {
+    Codex,
+    ClaudeCode,
+}
+
+impl CmuxConfigAgentKind {
+    /// The default terminal command name for this agent
+    /// (`Sources/CmuxConfig.swift:361-368`).
+    fn command_name(self) -> &'static str {
+        match self {
+            CmuxConfigAgentKind::Codex => "codex",
+            CmuxConfigAgentKind::ClaudeCode => "claude",
+        }
+    }
+}
+
+impl Serialize for CmuxConfigAgentKind {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // Swift encodes `.codex` as "codex" and `.claudeCode` as "claude".
+        serializer.serialize_str(match self {
+            CmuxConfigAgentKind::Codex => "codex",
+            CmuxConfigAgentKind::ClaudeCode => "claude",
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for CmuxConfigAgentKind {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        // Swift trims the token before matching; the alias set is closed.
+        match raw.trim() {
+            "codex" => Ok(CmuxConfigAgentKind::Codex),
+            "claude" | "claudeCode" | "claude-code" => Ok(CmuxConfigAgentKind::ClaudeCode),
+            other => Err(D::Error::custom(format!("Unknown agent '{other}'"))),
+        }
+    }
+}
+
+/// `CmuxButtonIcon` (`Sources/CmuxConfig.swift:411-469`): a polymorphic icon
+/// discriminated on a `type` key. Accepts the `type` aliases
+/// `symbol`/`sfSymbol`/`systemImage` and `image`/`file`; the emoji `scale`
+/// defaults to `1` and is omitted on encode when equal to `1`.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub enum CmuxButtonIcon {
+    /// SF Symbol name (`{ "type": "symbol", "name": … }`).
+    Symbol(String),
+    /// Emoji glyph with an optional positive scale
+    /// (`{ "type": "emoji", "value": …, "scale"?: … }`).
+    Emoji {
+        value: String,
+        #[cfg_attr(feature = "ts", ts(type = "number"))]
+        scale: f64,
+    },
+    /// Local image path (`{ "type": "image", "path": … }`).
+    ImagePath(String),
+}
+
+impl Serialize for CmuxButtonIcon {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(None)?;
+        match self {
+            CmuxButtonIcon::Symbol(name) => {
+                map.serialize_entry("type", "symbol")?;
+                map.serialize_entry("name", name)?;
+            }
+            CmuxButtonIcon::Emoji { value, scale } => {
+                map.serialize_entry("type", "emoji")?;
+                map.serialize_entry("value", value)?;
+                // Swift only writes `scale` when it differs from 1.
+                if *scale != 1.0 {
+                    map.serialize_entry("scale", scale)?;
+                }
+            }
+            CmuxButtonIcon::ImagePath(path) => {
+                map.serialize_entry("type", "image")?;
+                map.serialize_entry("path", path)?;
+            }
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for CmuxButtonIcon {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Raw {
+            r#type: Option<String>,
+            name: Option<String>,
+            value: Option<String>,
+            path: Option<String>,
+            scale: Option<f64>,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        match raw.r#type.as_deref().map(str::trim) {
+            Some("symbol") | Some("sfSymbol") | Some("systemImage") => Ok(CmuxButtonIcon::Symbol(
+                raw.name.map(|s| s.trim().to_owned()).unwrap_or_default(),
+            )),
+            Some("emoji") => Ok(CmuxButtonIcon::Emoji {
+                value: raw.value.map(|s| s.trim().to_owned()).unwrap_or_default(),
+                // DIVERGENCE: Swift rejects non-finite / non-positive scale; we
+                // keep the value verbatim (crate leniency) and only default a
+                // missing scale to 1.
+                scale: raw.scale.unwrap_or(1.0),
+            }),
+            Some("image") | Some("file") => Ok(CmuxButtonIcon::ImagePath(
+                raw.path.map(|s| s.trim().to_owned()).unwrap_or_default(),
+            )),
+            Some(other) => Err(D::Error::custom(format!("Unknown icon type '{other}'"))),
+            None => Err(D::Error::custom("icon requires a 'type'")),
+        }
+    }
+}
+
+/// `CmuxSurfaceTabBarButtonAction` (`Sources/CmuxConfig.swift:1079-1144`): the
+/// polymorphic action carried by an `actions` entry or a `surfaceTabBarButtons`
+/// entry. Not `Codable` on its own in Swift — it is inlined into its parent's
+/// discriminator keys — so (de)serialization is handled by
+/// [`CmuxConfigActionDefinition`] and [`CmuxSurfaceTabBarButton`], which encode
+/// it differently (hence no `Serialize`/`Deserialize` derive here).
+///
+/// DIVERGENCE: Swift validates the built-in id against the
+/// `CmuxSurfaceTabBarBuiltInAction` registry; that registry is UI-layer state
+/// outside this crate, so [`BuiltIn`](Self::BuiltIn) holds a lenient `String`
+/// (unknown ids are preserved rather than rejected), mirroring how `vault`'s
+/// `sessionIdSource` type was kept a lenient `String`.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub enum CmuxSurfaceTabBarButtonAction {
+    /// A built-in action referenced by its config id.
+    BuiltIn(String),
+    /// A raw terminal command string.
+    Command(String),
+    /// Launch a built-in agent with optional argument string.
+    Agent {
+        agent: CmuxConfigAgentKind,
+        args: Option<String>,
+    },
+    /// Run a named workspace command.
+    WorkspaceCommand(String),
+    /// A reference to another action / built-in by identifier.
+    ActionReference(String),
+}
+
+impl CmuxSurfaceTabBarButtonAction {
+    /// The identifier Swift falls back to when a button omits `id`
+    /// (`CmuxSurfaceTabBarButtonAction.defaultId`,
+    /// `Sources/CmuxConfig.swift:1086-1099`).
+    fn default_id(&self) -> String {
+        match self {
+            CmuxSurfaceTabBarButtonAction::BuiltIn(id)
+            | CmuxSurfaceTabBarButtonAction::ActionReference(id) => id.clone(),
+            CmuxSurfaceTabBarButtonAction::Command(command) => {
+                format!("command.{}", generated_command_id(command))
+            }
+            CmuxSurfaceTabBarButtonAction::Agent { agent, .. } => agent.command_name().to_owned(),
+            CmuxSurfaceTabBarButtonAction::WorkspaceCommand(name) => {
+                format!("workspaceCommand.{}", generated_command_id(name))
+            }
+        }
+    }
+}
+
+/// Percent-encode a command string for use in a generated id
+/// (`CmuxSurfaceTabBarButtonAction.generatedCommandId`,
+/// `Sources/CmuxConfig.swift:1139-1143`).
+///
+/// DIVERGENCE: Swift's allowed set is the full-Unicode `CharacterSet`
+/// `alphanumerics` ∪ `._-`; reproducing Unicode-wide alphanumeric membership in
+/// Rust without a table is impractical, so this keeps only ASCII alphanumerics
+/// (plus `._-`) and percent-encodes every other byte. This only affects
+/// auto-generated ids for buttons that omit `id` and use non-ASCII commands.
+fn generated_command_id(command: &str) -> String {
+    let mut out = String::new();
+    for byte in command.bytes() {
+        let ch = byte as char;
+        if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+            out.push(ch);
+        } else {
+            out.push('%');
+            out.push_str(&format!("{byte:02X}"));
+        }
+    }
+    if out.is_empty() {
+        "command".to_owned()
+    } else {
+        out
+    }
+}
+
+// ---------------------------------------------------------------------------
+// actions
+// ---------------------------------------------------------------------------
+
+/// A single `actions` map value (`CmuxConfigActionDefinition`,
+/// `Sources/CmuxConfig.swift:832-989`).
+///
+/// The action is inferred from the sibling discriminator keys (`type`, `agent`,
+/// `builtin`, `command`, `commandName`/`name`) exactly as Swift does; `action`
+/// is `None` when none of those keys are present. `subtitle` decodes from
+/// either `subtitle` or `description` (and re-encodes as `subtitle`). The
+/// `shortcut` field keeps the raw string-or-array wire form via
+/// [`ShortcutBinding`].
+///
+/// DIVERGENCE: Swift parses `shortcut` into a structured `StoredShortcut` via
+/// the keyboard-shortcut layer's `parseConfig` (modifier/key-token parsing) and
+/// re-encodes the normalized form; that parser lives outside this crate, so we
+/// preserve the raw `string | [string]` wire shape (reusing [`ShortcutBinding`])
+/// which round-trips losslessly.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct CmuxConfigActionDefinition {
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub action: Option<CmuxSurfaceTabBarButtonAction>,
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub title: Option<String>,
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub subtitle: Option<String>,
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub keywords: Option<Vec<String>>,
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub palette: Option<bool>,
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub shortcut: Option<ShortcutBinding>,
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub icon: Option<CmuxButtonIcon>,
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub tooltip: Option<String>,
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub confirm: Option<bool>,
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub terminal_command_target: Option<CmuxConfigTerminalCommandTarget>,
+}
+
+impl Serialize for CmuxConfigActionDefinition {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // Mirrors `CmuxConfigActionDefinition.encode` (Swift:959-989).
+        let mut map = serializer.serialize_map(None)?;
+        if let Some(value) = &self.title {
+            map.serialize_entry("title", value)?;
+        }
+        if let Some(value) = &self.subtitle {
+            map.serialize_entry("subtitle", value)?;
+        }
+        if let Some(value) = &self.keywords {
+            map.serialize_entry("keywords", value)?;
+        }
+        if let Some(value) = &self.palette {
+            map.serialize_entry("palette", value)?;
+        }
+        if let Some(value) = &self.shortcut {
+            map.serialize_entry("shortcut", value)?;
+        }
+        if let Some(value) = &self.icon {
+            map.serialize_entry("icon", value)?;
+        }
+        if let Some(value) = &self.tooltip {
+            map.serialize_entry("tooltip", value)?;
+        }
+        if let Some(value) = &self.confirm {
+            map.serialize_entry("confirm", value)?;
+        }
+        if let Some(value) = &self.terminal_command_target {
+            map.serialize_entry("target", value)?;
+        }
+        match &self.action {
+            Some(CmuxSurfaceTabBarButtonAction::BuiltIn(id)) => {
+                map.serialize_entry("type", "builtin")?;
+                map.serialize_entry("builtin", id)?;
+            }
+            Some(CmuxSurfaceTabBarButtonAction::Command(command)) => {
+                map.serialize_entry("type", "command")?;
+                map.serialize_entry("command", command)?;
+            }
+            Some(CmuxSurfaceTabBarButtonAction::Agent { agent, args }) => {
+                map.serialize_entry("type", "agent")?;
+                map.serialize_entry("agent", agent)?;
+                if let Some(args) = args {
+                    map.serialize_entry("args", args)?;
+                }
+            }
+            Some(CmuxSurfaceTabBarButtonAction::WorkspaceCommand(command_name)) => {
+                map.serialize_entry("type", "workspaceCommand")?;
+                map.serialize_entry("commandName", command_name)?;
+            }
+            // Swift re-encodes an actionReference as a builtin id.
+            Some(CmuxSurfaceTabBarButtonAction::ActionReference(identifier)) => {
+                map.serialize_entry("type", "builtin")?;
+                map.serialize_entry("builtin", identifier)?;
+            }
+            None => {}
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for CmuxConfigActionDefinition {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Raw {
+            r#type: Option<String>,
+            builtin: Option<String>,
+            command: Option<String>,
+            #[serde(rename = "commandName")]
+            command_name: Option<String>,
+            name: Option<String>,
+            agent: Option<CmuxConfigAgentKind>,
+            args: Option<String>,
+            title: Option<String>,
+            subtitle: Option<String>,
+            description: Option<String>,
+            keywords: Option<Vec<String>>,
+            palette: Option<bool>,
+            shortcut: Option<ShortcutBinding>,
+            icon: Option<CmuxButtonIcon>,
+            tooltip: Option<String>,
+            confirm: Option<bool>,
+            #[serde(rename = "target")]
+            terminal_command_target: Option<CmuxConfigTerminalCommandTarget>,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+
+        // Inference order mirrors Swift:920-915 exactly (type, then agent, then
+        // builtin, then command).
+        let type_tag = raw
+            .r#type
+            .as_ref()
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty());
+        let inferred = type_tag
+            .or_else(|| raw.agent.as_ref().map(|_| "agent".to_owned()))
+            .or_else(|| raw.builtin.as_ref().map(|_| "builtin".to_owned()))
+            .or_else(|| raw.command.as_ref().map(|_| "command".to_owned()));
+
+        let action = match inferred.as_deref() {
+            Some("builtin") => Some(CmuxSurfaceTabBarButtonAction::BuiltIn(
+                raw.builtin.clone().unwrap_or_default(),
+            )),
+            Some("command") => Some(CmuxSurfaceTabBarButtonAction::Command(
+                raw.command.clone().unwrap_or_default(),
+            )),
+            Some("agent") => {
+                let agent = raw
+                    .agent
+                    .ok_or_else(|| D::Error::custom("agent actions require 'agent'"))?;
+                Some(CmuxSurfaceTabBarButtonAction::Agent {
+                    agent,
+                    args: raw.args.clone(),
+                })
+            }
+            Some("workspaceCommand") => {
+                let command_name = raw
+                    .command_name
+                    .clone()
+                    .or_else(|| raw.name.clone())
+                    .or_else(|| raw.command.clone())
+                    .ok_or_else(|| D::Error::custom("workspaceCommand actions require commandName"))?;
+                Some(CmuxSurfaceTabBarButtonAction::WorkspaceCommand(command_name))
+            }
+            None => None,
+            Some(other) => {
+                return Err(D::Error::custom(format!("Unknown action type '{other}'")));
+            }
+        };
+
+        Ok(CmuxConfigActionDefinition {
+            action,
+            title: raw.title,
+            // Swift: `subtitle ?? description`.
+            subtitle: raw.subtitle.or(raw.description),
+            keywords: raw.keywords,
+            palette: raw.palette,
+            shortcut: raw.shortcut,
+            icon: raw.icon,
+            tooltip: raw.tooltip,
+            confirm: raw.confirm,
+            terminal_command_target: raw.terminal_command_target,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// surfaceTabBarButtons
+// ---------------------------------------------------------------------------
+
+/// A single `surfaceTabBarButtons` entry (`CmuxSurfaceTabBarButton`,
+/// `Sources/CmuxConfig.swift:1146-1453`). Decodes either a bare legacy string
+/// (→ [`ActionReference`](CmuxSurfaceTabBarButtonAction::ActionReference)) or an
+/// object whose action is inferred from the discriminator keys.
+///
+/// The runtime-only Swift fields `actionSourcePath` / `iconSourcePath` are NOT
+/// part of the JSON wire format (Swift sets them to `nil` on decode and never
+/// encodes them), so they are intentionally omitted from this model.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct CmuxSurfaceTabBarButton {
+    pub id: String,
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub title: Option<String>,
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub icon: Option<CmuxButtonIcon>,
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub tooltip: Option<String>,
+    pub action: CmuxSurfaceTabBarButtonAction,
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub confirm: Option<bool>,
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub terminal_command_target: Option<CmuxConfigTerminalCommandTarget>,
+}
+
+impl Serialize for CmuxSurfaceTabBarButton {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // Mirrors `CmuxSurfaceTabBarButton.encode` (Swift:1430-1453).
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("id", &self.id)?;
+        if let Some(value) = &self.title {
+            map.serialize_entry("title", value)?;
+        }
+        if let Some(value) = &self.icon {
+            map.serialize_entry("icon", value)?;
+        }
+        if let Some(value) = &self.tooltip {
+            map.serialize_entry("tooltip", value)?;
+        }
+        if let Some(value) = &self.confirm {
+            map.serialize_entry("confirm", value)?;
+        }
+        if let Some(value) = &self.terminal_command_target {
+            map.serialize_entry("target", value)?;
+        }
+        match &self.action {
+            CmuxSurfaceTabBarButtonAction::BuiltIn(id) => {
+                map.serialize_entry("builtin", id)?;
+            }
+            CmuxSurfaceTabBarButtonAction::Command(command) => {
+                map.serialize_entry("command", command)?;
+            }
+            CmuxSurfaceTabBarButtonAction::Agent { agent, args } => {
+                map.serialize_entry("agent", agent)?;
+                if let Some(args) = args {
+                    map.serialize_entry("args", args)?;
+                }
+            }
+            CmuxSurfaceTabBarButtonAction::WorkspaceCommand(command_name) => {
+                map.serialize_entry("type", "workspaceCommand")?;
+                map.serialize_entry("commandName", command_name)?;
+            }
+            CmuxSurfaceTabBarButtonAction::ActionReference(identifier) => {
+                map.serialize_entry("action", identifier)?;
+            }
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for CmuxSurfaceTabBarButton {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            // Legacy bare-string form (Swift:1284-1299).
+            Legacy(String),
+            // Boxed to keep the enum variants balanced (clippy::large_enum_variant).
+            Object(Box<ObjectRaw>),
+        }
+        #[derive(Deserialize)]
+        struct ObjectRaw {
+            id: Option<String>,
+            title: Option<String>,
+            icon: Option<CmuxButtonIcon>,
+            tooltip: Option<String>,
+            action: Option<String>,
+            builtin: Option<String>,
+            command: Option<String>,
+            agent: Option<CmuxConfigAgentKind>,
+            args: Option<String>,
+            r#type: Option<String>,
+            #[serde(rename = "commandName")]
+            command_name: Option<String>,
+            name: Option<String>,
+            confirm: Option<bool>,
+            #[serde(rename = "target")]
+            terminal_command_target: Option<CmuxConfigTerminalCommandTarget>,
+        }
+
+        match Raw::deserialize(deserializer)? {
+            Raw::Legacy(raw) => {
+                let trimmed = raw.trim();
+                if trimmed.is_empty() {
+                    return Err(D::Error::custom(
+                        "surface tab bar button action must not be blank",
+                    ));
+                }
+                Ok(CmuxSurfaceTabBarButton {
+                    id: trimmed.to_owned(),
+                    title: None,
+                    icon: None,
+                    tooltip: None,
+                    action: CmuxSurfaceTabBarButtonAction::ActionReference(trimmed.to_owned()),
+                    confirm: None,
+                    terminal_command_target: None,
+                })
+            }
+            Raw::Object(object) => {
+                let object = *object;
+                // Swift:1319-1333 — at most one action form may be defined.
+                let defined = [
+                    object.action.is_some(),
+                    object.builtin.is_some(),
+                    object.command.is_some(),
+                    object.agent.is_some(),
+                    object.r#type.is_some(),
+                ]
+                .into_iter()
+                .filter(|&present| present)
+                .count();
+                if defined > 1 {
+                    return Err(D::Error::custom(
+                        "surfaceTabBarButtons entries must define only one of 'action', 'builtin', 'command', 'agent', or 'type'",
+                    ));
+                }
+
+                let type_tag = object
+                    .r#type
+                    .as_ref()
+                    .map(|s| s.trim().to_owned())
+                    .filter(|s| !s.is_empty());
+
+                let action = if let Some(type_tag) = type_tag {
+                    match type_tag.as_str() {
+                        "workspaceCommand" => {
+                            let command_name = object
+                                .command_name
+                                .clone()
+                                .or_else(|| object.name.clone())
+                                .ok_or_else(|| {
+                                    D::Error::custom(
+                                        "workspaceCommand surface tab bar buttons require commandName",
+                                    )
+                                })?;
+                            CmuxSurfaceTabBarButtonAction::WorkspaceCommand(command_name)
+                        }
+                        other => {
+                            return Err(D::Error::custom(format!(
+                                "Unknown surface tab bar button type '{other}'"
+                            )));
+                        }
+                    }
+                } else if let Some(command) = object.command.clone() {
+                    CmuxSurfaceTabBarButtonAction::Command(command)
+                } else if let Some(agent) = object.agent {
+                    CmuxSurfaceTabBarButtonAction::Agent {
+                        agent,
+                        args: object.args.clone(),
+                    }
+                } else if let Some(builtin) = object.builtin.clone() {
+                    CmuxSurfaceTabBarButtonAction::BuiltIn(builtin)
+                } else if let Some(action) = object.action.clone() {
+                    CmuxSurfaceTabBarButtonAction::ActionReference(action)
+                } else if let Some(id) = object.id.clone() {
+                    // DIVERGENCE: Swift only treats a bare `id` as a built-in when
+                    // it matches the CmuxSurfaceTabBarBuiltInAction registry (and
+                    // otherwise errors). Lacking that registry, any bare id becomes
+                    // a lenient BuiltIn (it re-encodes as `{ id, builtin: id }`,
+                    // matching Swift's output for a real built-in).
+                    CmuxSurfaceTabBarButtonAction::BuiltIn(id)
+                } else {
+                    return Err(D::Error::custom(
+                        "surfaceTabBarButtons entries must define 'action', 'builtin', 'command', 'agent', or 'type'",
+                    ));
+                };
+
+                let id = object.id.clone().unwrap_or_else(|| action.default_id());
+                Ok(CmuxSurfaceTabBarButton {
+                    id,
+                    title: object.title,
+                    icon: object.icon,
+                    tooltip: object.tooltip,
+                    action,
+                    confirm: object.confirm,
+                    terminal_command_target: object.terminal_command_target,
+                })
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ui
+// ---------------------------------------------------------------------------
+
+/// `ui` (`CmuxConfigUIDefinition`, `Sources/CmuxConfigUI.swift:5-8`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[serde(default)]
+pub struct CmuxConfigUIDefinition {
+    #[serde(rename = "newWorkspace", skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub new_workspace: Option<CmuxConfigButtonPlacement>,
+    #[serde(rename = "surfaceTabBar", skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub surface_tab_bar: Option<CmuxSurfaceTabBarUIDefinition>,
+}
+
+/// `ui.surfaceTabBar` (`CmuxSurfaceTabBarUIDefinition`,
+/// `Sources/CmuxConfigUI.swift:10-12`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[serde(default)]
+pub struct CmuxSurfaceTabBarUIDefinition {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub buttons: Option<Vec<CmuxSurfaceTabBarButton>>,
+}
+
+/// `ui.newWorkspace` (`CmuxConfigButtonPlacement`,
+/// `Sources/CmuxConfigUI.swift:14-75`). `contextMenu` also accepts the legacy
+/// alias `rightClick` on decode and always encodes as `contextMenu`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[serde(default)]
+pub struct CmuxConfigButtonPlacement {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub action: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub icon: Option<CmuxButtonIcon>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub tooltip: Option<String>,
+    #[serde(
+        rename = "contextMenu",
+        alias = "rightClick",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub context_menu: Option<Vec<CmuxContextMenuItem>>,
+}
+
+/// A `contextMenu` action entry
+/// (`CmuxConfigContextMenuActionItem`, `Sources/CmuxConfigUI.swift:77-139`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct CmuxContextMenuActionItem {
+    pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub icon: Option<CmuxButtonIcon>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub tooltip: Option<String>,
+}
+
+/// A `contextMenu` item: a separator or an action
+/// (`CmuxConfigContextMenuItem`, `Sources/CmuxConfigUI.swift:141-205`). Decodes
+/// from a bare string (`"-"` / `"separator"` → separator, else an action id) or
+/// an object (`{ "type": "separator" }` → separator, else an action item).
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub enum CmuxContextMenuItem {
+    Separator,
+    Action(CmuxContextMenuActionItem),
+}
+
+impl Serialize for CmuxContextMenuItem {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            CmuxContextMenuItem::Separator => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry("type", "separator")?;
+                map.end()
+            }
+            CmuxContextMenuItem::Action(item) => item.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for CmuxContextMenuItem {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Text(String),
+            Object(Box<ObjectRaw>),
+        }
+        #[derive(Deserialize)]
+        struct ObjectRaw {
+            r#type: Option<String>,
+            action: Option<String>,
+            title: Option<String>,
+            icon: Option<CmuxButtonIcon>,
+            tooltip: Option<String>,
+        }
+        match Raw::deserialize(deserializer)? {
+            Raw::Text(raw) => {
+                let trimmed = raw.trim();
+                if trimmed == "-" || trimmed == "separator" {
+                    return Ok(CmuxContextMenuItem::Separator);
+                }
+                if trimmed.is_empty() {
+                    return Err(D::Error::custom("contextMenu action must not be blank"));
+                }
+                Ok(CmuxContextMenuItem::Action(CmuxContextMenuActionItem {
+                    action: trimmed.to_owned(),
+                    title: None,
+                    icon: None,
+                    tooltip: None,
+                }))
+            }
+            Raw::Object(object) => {
+                if object.r#type.as_deref().map(str::trim) == Some("separator") {
+                    return Ok(CmuxContextMenuItem::Separator);
+                }
+                let action = object
+                    .action
+                    .ok_or_else(|| D::Error::custom("action is required"))?;
+                Ok(CmuxContextMenuItem::Action(CmuxContextMenuActionItem {
+                    action,
+                    title: object.title,
+                    icon: object.icon,
+                    tooltip: object.tooltip,
+                }))
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// commands (+ recursive workspace layout)
+// ---------------------------------------------------------------------------
+
+/// `commands[].restart` (`CmuxRestartBehavior`,
+/// `Sources/CmuxConfigUI.swift:230-235`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, rename_all = "lowercase"))]
+#[serde(rename_all = "lowercase")]
+pub enum CmuxRestartBehavior {
+    New,
+    Recreate,
+    Ignore,
+    Confirm,
+}
+
+/// A recursive workspace layout node (`CmuxLayoutNode`,
+/// `Sources/CmuxConfig.swift:1690-1740`): either a leaf `pane` or a `split`.
+/// Discriminated by the presence of a `pane` key (leaf) vs a `direction` key
+/// (split); the `split` arm is heap-boxed to break the type recursion.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub enum CmuxLayoutNode {
+    Pane(CmuxPaneDefinition),
+    Split(Box<CmuxSplitDefinition>),
+}
+
+impl Serialize for CmuxLayoutNode {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            CmuxLayoutNode::Pane(pane) => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry("pane", pane)?;
+                map.end()
+            }
+            // Swift flattens the split fields at the node level (Swift:1731-1739).
+            CmuxLayoutNode::Split(split) => split.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for CmuxLayoutNode {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Raw {
+            pane: Option<CmuxPaneDefinition>,
+            direction: Option<CmuxSplitDirection>,
+            split: Option<f64>,
+            children: Option<Vec<CmuxLayoutNode>>,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        match (raw.pane, raw.direction) {
+            (Some(_), Some(_)) => Err(D::Error::custom(
+                "CmuxLayoutNode must not contain both 'pane' and 'direction' keys",
+            )),
+            (Some(pane), None) => Ok(CmuxLayoutNode::Pane(pane)),
+            (None, Some(direction)) => {
+                // Swift decodes `children` non-optionally for a split node.
+                let children = raw
+                    .children
+                    .ok_or_else(|| D::Error::custom("Split node requires 'children'"))?;
+                // DIVERGENCE: Swift additionally requires exactly 2 children; we
+                // relax that count check (crate leniency) and preserve the array
+                // verbatim.
+                Ok(CmuxLayoutNode::Split(Box::new(CmuxSplitDefinition {
+                    direction,
+                    split: raw.split,
+                    children,
+                })))
+            }
+            (None, None) => Err(D::Error::custom(
+                "CmuxLayoutNode must contain either a 'pane' key or a 'direction' key",
+            )),
+        }
+    }
+}
+
+/// A split layout node body (`CmuxSplitDefinition`,
+/// `Sources/CmuxConfig.swift:1742-1779`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct CmuxSplitDefinition {
+    pub direction: CmuxSplitDirection,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional, type = "number"))]
+    pub split: Option<f64>,
+    pub children: Vec<CmuxLayoutNode>,
+}
+
+/// `split.direction` (`CmuxSplitDirection`, `Sources/CmuxConfig.swift:1781-1784`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, rename_all = "lowercase"))]
+#[serde(rename_all = "lowercase")]
+pub enum CmuxSplitDirection {
+    Horizontal,
+    Vertical,
+}
+
+/// A leaf pane layout node (`CmuxPaneDefinition`,
+/// `Sources/CmuxConfig.swift:1786-1805`).
+///
+/// DIVERGENCE: Swift requires at least one surface; we relax that (crate
+/// leniency) and preserve the array verbatim.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct CmuxPaneDefinition {
+    pub surfaces: Vec<CmuxSurfaceDefinition>,
+}
+
+/// A single surface within a pane (`CmuxSurfaceDefinition`,
+/// `Sources/CmuxConfig.swift:1807-1815`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct CmuxSurfaceDefinition {
+    #[serde(rename = "type")]
+    pub surface_type: CmuxSurfaceType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub env: Option<BTreeMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub focus: Option<bool>,
+}
+
+/// `surface.type` (`CmuxSurfaceType`, `Sources/CmuxConfig.swift:1817-1821`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, rename_all = "lowercase"))]
+#[serde(rename_all = "lowercase")]
+pub enum CmuxSurfaceType {
+    Terminal,
+    Browser,
+    Project,
+}
+
+/// A `commands[].workspace` definition (`CmuxWorkspaceDefinition`,
+/// `Sources/CmuxWorkspaceDefinition.swift:3-47`).
+///
+/// DIVERGENCE: Swift normalizes `color` through `WorkspaceTabColorSettings`
+/// (hex / named-color resolution against app `UserDefaults`) and errors on an
+/// invalid value. That resolver is app-runtime state outside this crate, so
+/// `color` is kept as a raw `String` (no normalization / validation).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[serde(default)]
+pub struct CmuxWorkspaceDefinition {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub cwd: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub color: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub env: Option<BTreeMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub layout: Option<CmuxLayoutNode>,
+}
+
+/// A single `commands` entry (`CmuxCommandDefinition`,
+/// `Sources/CmuxConfig.swift:1612-1688`). `name` must be non-blank and exactly
+/// one of `workspace` / `command` must be present.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct CmuxCommandDefinition {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub keywords: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub restart: Option<CmuxRestartBehavior>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub workspace: Option<CmuxWorkspaceDefinition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub confirm: Option<bool>,
+}
+
+impl<'de> Deserialize<'de> for CmuxCommandDefinition {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Raw {
+            name: String,
+            description: Option<String>,
+            keywords: Option<Vec<String>>,
+            restart: Option<CmuxRestartBehavior>,
+            workspace: Option<CmuxWorkspaceDefinition>,
+            command: Option<String>,
+            confirm: Option<bool>,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        if raw.name.trim().is_empty() {
+            return Err(D::Error::custom("Command name must not be blank"));
+        }
+        // DIVERGENCE: Swift also errors on a blank (present) `command`; we relax
+        // that (crate leniency). The workspace/command mutual-exclusivity is
+        // enforced because the task and Swift both require it.
+        match (raw.workspace.is_some(), raw.command.is_some()) {
+            (true, true) => {
+                return Err(D::Error::custom(format!(
+                    "Command '{}' must not define both 'workspace' and 'command'",
+                    raw.name
+                )));
+            }
+            (false, false) => {
+                return Err(D::Error::custom(format!(
+                    "Command '{}' must define either 'workspace' or 'command'",
+                    raw.name
+                )));
+            }
+            _ => {}
+        }
+        Ok(CmuxCommandDefinition {
+            name: raw.name,
+            description: raw.description,
+            keywords: raw.keywords,
+            restart: raw.restart,
+            workspace: raw.workspace,
+            command: raw.command,
+            confirm: raw.confirm,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Top-level config
 // ---------------------------------------------------------------------------
 
 /// The top-level `cmux.json` document.
 ///
 /// Modeled sections are strongly typed and optional (absent sections stay
-/// absent on re-serialize). Every other top-level key — including sections this
-/// crate deliberately does not model (`actions`, `ui`, `commands`,
-/// `surfaceTabBarButtons`) — is captured verbatim in [`Config::extra`] so a
-/// round-trip is non-lossy.
+/// absent on re-serialize). Every other top-level key not modeled here is
+/// captured verbatim in [`Config::extra`] so a round-trip is non-lossy.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct Config {
@@ -1171,6 +2185,18 @@ pub struct Config {
     #[serde(rename = "newWorkspaceCommand", default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub new_workspace_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub actions: Option<BTreeMap<String, CmuxConfigActionDefinition>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub ui: Option<CmuxConfigUIDefinition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub commands: Option<Vec<CmuxCommandDefinition>>,
+    #[serde(rename = "surfaceTabBarButtons", default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub surface_tab_bar_buttons: Option<Vec<CmuxSurfaceTabBarButton>>,
     /// Any top-level key not modeled above, preserved verbatim for lossless
     /// round-trips. Excluded from the TS bindings (opaque JSON).
     #[serde(flatten)]
@@ -1432,19 +2458,17 @@ mod tests {
     fn unknown_sections_preserved_in_extra() {
         let json = r#"{
             "app": { "minimalMode": true },
-            "actions": { "custom": { "title": "Do thing" } },
-            "commands": [ { "name": "build" } ],
+            "someFutureSection": { "foo": 1 },
             "newWorkspaceCommand": "build",
             "totallyUnknownKey": 42
         }"#;
 
         let config = decode_config(json).expect("decode");
         assert!(config.app.as_ref().unwrap().minimal_mode);
-        // Unmodeled sections land in `extra`, not dropped.
-        assert!(config.extra.contains_key("actions"));
-        assert!(config.extra.contains_key("commands"));
+        // Still-unmodeled sections land in `extra`, not dropped.
+        assert!(config.extra.contains_key("someFutureSection"));
         assert!(config.extra.contains_key("totallyUnknownKey"));
-        // `newWorkspaceCommand` is now a typed top-level field, no longer extra.
+        // `newWorkspaceCommand` is a typed top-level field, no longer extra.
         assert!(!config.extra.contains_key("newWorkspaceCommand"));
         assert_eq!(config.new_workspace_command.as_deref(), Some("build"));
 
@@ -1453,6 +2477,346 @@ mod tests {
         let redecoded = decode_config(&encoded).expect("re-decode");
         assert_eq!(config, redecoded);
         assert_eq!(redecoded.extra.get("totallyUnknownKey").unwrap(), 42);
+    }
+
+    #[test]
+    fn newly_typed_sections_leave_extra() {
+        // The four sections that used to fall into `extra` are now typed.
+        let json = r##"{
+            "actions": { "greet": { "title": "Greet", "type": "command", "command": "echo hi" } },
+            "ui": { "surfaceTabBar": { "buttons": [ "newTerminal" ] } },
+            "commands": [ { "name": "build", "command": "make" } ],
+            "surfaceTabBarButtons": [ { "command": "ls" } ]
+        }"##;
+        let config = decode_config(json).expect("decode");
+        assert!(config.actions.is_some());
+        assert!(config.ui.is_some());
+        assert!(config.commands.is_some());
+        assert!(config.surface_tab_bar_buttons.is_some());
+        // None of them remain in `extra`.
+        assert!(!config.extra.contains_key("actions"));
+        assert!(!config.extra.contains_key("ui"));
+        assert!(!config.extra.contains_key("commands"));
+        assert!(!config.extra.contains_key("surfaceTabBarButtons"));
+    }
+
+    #[test]
+    fn button_icon_variants_round_trip() {
+        let symbol: CmuxButtonIcon =
+            serde_json::from_str(r#"{ "type": "sfSymbol", "name": "terminal" }"#).expect("symbol");
+        assert_eq!(symbol, CmuxButtonIcon::Symbol("terminal".to_owned()));
+        // sfSymbol alias re-encodes canonically as "symbol".
+        assert_eq!(
+            serde_json::to_value(&symbol).unwrap(),
+            serde_json::json!({ "type": "symbol", "name": "terminal" })
+        );
+
+        // Emoji without scale defaults to 1 and omits `scale` on encode.
+        let emoji: CmuxButtonIcon =
+            serde_json::from_str(r#"{ "type": "emoji", "value": "🚀" }"#).expect("emoji");
+        assert_eq!(
+            emoji,
+            CmuxButtonIcon::Emoji {
+                value: "🚀".to_owned(),
+                scale: 1.0
+            }
+        );
+        assert_eq!(
+            serde_json::to_value(&emoji).unwrap(),
+            serde_json::json!({ "type": "emoji", "value": "🚀" })
+        );
+
+        // Emoji with a non-default scale keeps it.
+        let scaled: CmuxButtonIcon =
+            serde_json::from_str(r#"{ "type": "emoji", "value": "🐛", "scale": 1.5 }"#)
+                .expect("scaled");
+        assert_eq!(
+            serde_json::to_value(&scaled).unwrap(),
+            serde_json::json!({ "type": "emoji", "value": "🐛", "scale": 1.5 })
+        );
+
+        // image/file aliases both map to ImagePath and re-encode as "image".
+        let image: CmuxButtonIcon =
+            serde_json::from_str(r#"{ "type": "file", "path": "~/x.png" }"#).expect("image");
+        assert_eq!(image, CmuxButtonIcon::ImagePath("~/x.png".to_owned()));
+        assert_eq!(
+            serde_json::to_value(&image).unwrap(),
+            serde_json::json!({ "type": "image", "path": "~/x.png" })
+        );
+
+        // Unknown icon type is a hard error, matching Swift.
+        assert!(serde_json::from_str::<CmuxButtonIcon>(r#"{ "type": "bogus" }"#).is_err());
+    }
+
+    #[test]
+    fn actions_action_type_tags_round_trip() {
+        let json = r##"{
+            "runBuild": {
+                "type": "command",
+                "command": "make",
+                "title": "Build",
+                "description": "Compile the project",
+                "keywords": ["compile"],
+                "palette": true,
+                "shortcut": "cmd+b",
+                "icon": { "type": "symbol", "name": "hammer" },
+                "confirm": true,
+                "target": "currentTerminal"
+            },
+            "startCodex": { "type": "agent", "agent": "claude-code", "args": "--yolo" },
+            "openThing": { "type": "builtin", "builtin": "newTerminal" },
+            "wsCmd": { "type": "workspaceCommand", "commandName": "layout1" },
+            "noAction": { "title": "Just a label" }
+        }"##;
+        let map: BTreeMap<String, CmuxConfigActionDefinition> =
+            serde_json::from_str(json).expect("decode actions");
+
+        let build = &map["runBuild"];
+        assert_eq!(
+            build.action,
+            Some(CmuxSurfaceTabBarButtonAction::Command("make".to_owned()))
+        );
+        // subtitle falls back to `description`.
+        assert_eq!(build.subtitle.as_deref(), Some("Compile the project"));
+        assert_eq!(
+            build.shortcut,
+            Some(ShortcutBinding::Single("cmd+b".to_owned()))
+        );
+        assert_eq!(
+            build.terminal_command_target,
+            Some(CmuxConfigTerminalCommandTarget::CurrentTerminal)
+        );
+
+        // claude-code alias normalizes to ClaudeCode and re-encodes as "claude".
+        assert_eq!(
+            map["startCodex"].action,
+            Some(CmuxSurfaceTabBarButtonAction::Agent {
+                agent: CmuxConfigAgentKind::ClaudeCode,
+                args: Some("--yolo".to_owned())
+            })
+        );
+        assert_eq!(
+            map["openThing"].action,
+            Some(CmuxSurfaceTabBarButtonAction::BuiltIn("newTerminal".to_owned()))
+        );
+        assert_eq!(
+            map["wsCmd"].action,
+            Some(CmuxSurfaceTabBarButtonAction::WorkspaceCommand("layout1".to_owned()))
+        );
+        // No discriminator keys → action is None.
+        assert_eq!(map["noAction"].action, None);
+
+        // Encode → decode is a fixed point once the aliases are canonicalized.
+        let encoded = serde_json::to_string(&map).expect("encode");
+        let redecoded: BTreeMap<String, CmuxConfigActionDefinition> =
+            serde_json::from_str(&encoded).expect("re-decode");
+        // agent re-encodes as "claude"; verify the canonical form re-decodes equal.
+        assert_eq!(map, redecoded);
+    }
+
+    #[test]
+    fn surface_tab_bar_buttons_string_and_object_forms() {
+        let json = r##"[
+            "newTerminal",
+            { "command": "ls -la" },
+            { "id": "myAgent", "agent": "codex", "args": "-q", "title": "Codex" },
+            { "type": "workspaceCommand", "commandName": "grid" },
+            { "action": "somethingCustom", "icon": { "type": "emoji", "value": "✨" } }
+        ]"##;
+        let buttons: Vec<CmuxSurfaceTabBarButton> =
+            serde_json::from_str(json).expect("decode buttons");
+        assert_eq!(buttons.len(), 5);
+
+        // Bare string → actionReference; id equals the string.
+        assert_eq!(buttons[0].id, "newTerminal");
+        assert_eq!(
+            buttons[0].action,
+            CmuxSurfaceTabBarButtonAction::ActionReference("newTerminal".to_owned())
+        );
+
+        // command form; id defaults from the command via generatedCommandId.
+        assert_eq!(
+            buttons[1].action,
+            CmuxSurfaceTabBarButtonAction::Command("ls -la".to_owned())
+        );
+        assert_eq!(buttons[1].id, "command.ls%20-la");
+
+        // explicit id preserved; agent + args.
+        assert_eq!(buttons[2].id, "myAgent");
+        assert_eq!(
+            buttons[2].action,
+            CmuxSurfaceTabBarButtonAction::Agent {
+                agent: CmuxConfigAgentKind::Codex,
+                args: Some("-q".to_owned())
+            }
+        );
+        assert_eq!(
+            buttons[3].action,
+            CmuxSurfaceTabBarButtonAction::WorkspaceCommand("grid".to_owned())
+        );
+        assert_eq!(
+            buttons[4].action,
+            CmuxSurfaceTabBarButtonAction::ActionReference("somethingCustom".to_owned())
+        );
+
+        // Defining two action forms in one object is rejected.
+        assert!(serde_json::from_str::<CmuxSurfaceTabBarButton>(
+            r#"{ "command": "ls", "agent": "codex" }"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn ui_right_click_alias_and_context_menu_items() {
+        // `rightClick` decodes as `contextMenu` and re-encodes as `contextMenu`.
+        let json = r##"{
+            "newWorkspace": {
+                "action": "newWorkspace",
+                "icon": { "type": "symbol", "name": "plus" },
+                "rightClick": [
+                    "-",
+                    "newTerminal",
+                    { "type": "separator" },
+                    { "action": "cloudVM", "title": "Cloud", "icon": { "type": "symbol", "name": "cloud" } }
+                ]
+            },
+            "surfaceTabBar": { "buttons": [ "splitRight" ] }
+        }"##;
+        let ui: CmuxConfigUIDefinition = serde_json::from_str(json).expect("decode ui");
+        let placement = ui.new_workspace.as_ref().expect("newWorkspace");
+        let menu = placement.context_menu.as_ref().expect("contextMenu");
+        assert_eq!(menu.len(), 4);
+        assert_eq!(menu[0], CmuxContextMenuItem::Separator);
+        assert_eq!(
+            menu[1],
+            CmuxContextMenuItem::Action(CmuxContextMenuActionItem {
+                action: "newTerminal".to_owned(),
+                title: None,
+                icon: None,
+                tooltip: None,
+            })
+        );
+        assert_eq!(menu[2], CmuxContextMenuItem::Separator);
+        assert!(matches!(&menu[3], CmuxContextMenuItem::Action(item) if item.action == "cloudVM"));
+
+        // Re-encode uses `contextMenu`, not `rightClick`.
+        let value = serde_json::to_value(&ui).expect("encode ui");
+        assert!(value["newWorkspace"].get("contextMenu").is_some());
+        assert!(value["newWorkspace"].get("rightClick").is_none());
+
+        assert_eq!(
+            ui.surface_tab_bar
+                .as_ref()
+                .and_then(|s| s.buttons.as_ref())
+                .map(Vec::len),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn commands_recursive_workspace_layout() {
+        let json = r##"[
+            {
+                "name": "split-dev",
+                "description": "Editor beside a shell",
+                "keywords": ["dev"],
+                "restart": "recreate",
+                "workspace": {
+                    "name": "Dev",
+                    "cwd": "~/proj",
+                    "layout": {
+                        "direction": "horizontal",
+                        "split": 0.4,
+                        "children": [
+                            { "pane": { "surfaces": [ { "type": "terminal", "command": "vim" } ] } },
+                            {
+                                "direction": "vertical",
+                                "children": [
+                                    { "pane": { "surfaces": [ { "type": "terminal" } ] } },
+                                    { "pane": { "surfaces": [ { "type": "browser", "url": "http://localhost:3000" } ] } }
+                                ]
+                            }
+                        ]
+                    }
+                }
+            },
+            { "name": "run-tests", "command": "cargo test" }
+        ]"##;
+        let commands: Vec<CmuxCommandDefinition> =
+            serde_json::from_str(json).expect("decode commands");
+        assert_eq!(commands.len(), 2);
+
+        let split = &commands[0];
+        assert_eq!(split.restart, Some(CmuxRestartBehavior::Recreate));
+        let layout = split
+            .workspace
+            .as_ref()
+            .and_then(|w| w.layout.as_ref())
+            .expect("layout");
+        let CmuxLayoutNode::Split(root) = layout else {
+            panic!("expected split root");
+        };
+        assert_eq!(root.direction, CmuxSplitDirection::Horizontal);
+        assert_eq!(root.split, Some(0.4));
+        assert_eq!(root.children.len(), 2);
+        // First child is a leaf pane; second is a nested vertical split.
+        assert!(matches!(root.children[0], CmuxLayoutNode::Pane(_)));
+        let CmuxLayoutNode::Split(nested) = &root.children[1] else {
+            panic!("expected nested split");
+        };
+        assert_eq!(nested.direction, CmuxSplitDirection::Vertical);
+        assert_eq!(nested.children.len(), 2);
+
+        assert_eq!(commands[1].command.as_deref(), Some("cargo test"));
+
+        // Recursive layout survives a round-trip.
+        let encoded = serde_json::to_string(&commands).expect("encode");
+        let redecoded: Vec<CmuxCommandDefinition> =
+            serde_json::from_str(&encoded).expect("re-decode");
+        assert_eq!(commands, redecoded);
+    }
+
+    #[test]
+    fn commands_and_layout_structural_errors() {
+        // Neither workspace nor command → error.
+        assert!(serde_json::from_str::<CmuxCommandDefinition>(r#"{ "name": "x" }"#).is_err());
+        // Both workspace and command → error.
+        assert!(serde_json::from_str::<CmuxCommandDefinition>(
+            r#"{ "name": "x", "command": "a", "workspace": {} }"#
+        )
+        .is_err());
+        // Blank name → error.
+        assert!(serde_json::from_str::<CmuxCommandDefinition>(
+            r#"{ "name": "  ", "command": "a" }"#
+        )
+        .is_err());
+        // Layout node with both pane and direction → error.
+        assert!(serde_json::from_str::<CmuxLayoutNode>(
+            r#"{ "pane": { "surfaces": [] }, "direction": "horizontal", "children": [] }"#
+        )
+        .is_err());
+        // Layout node with neither → error.
+        assert!(serde_json::from_str::<CmuxLayoutNode>(r#"{ "split": 0.5 }"#).is_err());
+    }
+
+    #[test]
+    fn full_config_with_new_sections_round_trips() {
+        let json = r##"{
+            "actions": { "a1": { "type": "command", "command": "echo hi" } },
+            "surfaceTabBarButtons": [ "newTerminal", { "id": "b2", "command": "ls" } ],
+            "ui": {
+                "newWorkspace": { "action": "newWorkspace", "contextMenu": [ "newTerminal" ] }
+            },
+            "commands": [ { "name": "build", "command": "make" } ],
+            "app": { "minimalMode": true },
+            "futureThing": { "x": 1 }
+        }"##;
+        let config = decode_config(json).expect("decode");
+        let encoded = encode_config(&config).expect("encode");
+        let redecoded = decode_config(&encoded).expect("re-decode");
+        assert_eq!(config, redecoded);
+        // Unknown key still preserved.
+        assert!(redecoded.extra.contains_key("futureThing"));
     }
 
     #[test]
