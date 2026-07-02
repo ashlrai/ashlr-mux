@@ -8,9 +8,9 @@
 //!
 //! Deliberately NOT strict: the top-level [`Config`] does not use
 //! `deny_unknown_fields`. Unmodeled top-level sections (`actions`, `ui`,
-//! `commands`, `vault`, `workspaceGroups`, `surfaceTabBarButtons`,
-//! `newWorkspaceCommand`) are captured verbatim in [`Config::extra`] so a
-//! decode → encode round-trip does not silently drop them.
+//! `commands`, `surfaceTabBarButtons`) are captured verbatim in
+//! [`Config::extra`] so a decode → encode round-trip does not silently drop
+//! them.
 //!
 //! The `ts` feature gates `ts_rs::TS` derives, exactly mirroring `cmux-core`.
 //! It is inert in the default build (ts-rs is an optional dependency).
@@ -885,6 +885,222 @@ impl Default for ShortcutsConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Vault session-restore agents (`vault`)
+// ---------------------------------------------------------------------------
+
+/// A schema `oneOf(string, array-of-string)` value: either a single string or a
+/// list of strings. Mirrors the schema's `argvContains` shape and Vault's
+/// one-or-many decoding (`CmuxVaultAgentDetectRule.decodeOneOrManyStrings`,
+/// `Sources/VaultAgentRegistry.swift:229-242`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[serde(untagged)]
+pub enum StringOrStringList {
+    /// A single value (`"pi"`).
+    One(String),
+    /// A list of values (`["pi", "pi-agent"]`).
+    Many(Vec<String>),
+}
+
+/// `vault.agents[].cwd`: whether Vault `cd`s to the saved working directory
+/// before running `resumeCommand`. Schema enum `["preserve", "ignore"]`,
+/// default `preserve` (`web/data/cmux.schema.json:150-155`;
+/// `CmuxVaultAgentCWDPolicy`, `Sources/VaultAgentRegistry.swift:37,102`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, rename_all = "lowercase"))]
+#[serde(rename_all = "lowercase")]
+pub enum VaultAgentCwd {
+    #[default]
+    Preserve,
+    Ignore,
+}
+
+/// `vault.agents[].detect`: rules for detecting a running agent process inside
+/// a cmux terminal.
+///
+/// The published schema (`web/data/cmux.schema.json:69-89`) is
+/// `additionalProperties:false` and declares only `processName` + `argvContains`.
+/// DIVERGENCE: `processNames` is modeled here to match the canonical Swift
+/// `CmuxVaultAgentDetectRule` (`Sources/VaultAgentRegistry.swift:190-193`), which
+/// accepts `processNames` (and `alternateArgvContains`) beyond the schema.
+/// Kept strict (no `#[serde(flatten)]`) per the schema's closed object, but not
+/// `deny_unknown_fields` so unknown keys are dropped rather than hard-erroring
+/// (crate leniency).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[serde(default)]
+pub struct VaultAgentDetect {
+    #[serde(rename = "processName", default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub process_name: Option<String>,
+    #[serde(rename = "processNames", default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub process_names: Option<StringOrStringList>,
+    #[serde(rename = "argvContains", default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub argv_contains: Option<StringOrStringList>,
+}
+
+/// The object arm of `vault.agents[].sessionIdSource`
+/// (`{ "type": ..., "argvOption"?: ... }`, `web/data/cmux.schema.json:96-130`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct VaultAgentSessionIdSourceObject {
+    /// Schema restricts this to the enum `["argvOption", "piSessionFile"]`.
+    /// DIVERGENCE: kept as a lenient `String` (not a closed enum) because the
+    /// canonical Swift `CmuxVaultAgentSessionIDSource` has itself diverged from
+    /// the schema, adding variants and aliases (`grokSessionDirectory`,
+    /// `argv-option`, `pi-session-file`; `Sources/VaultAgentRegistry.swift:245-317`).
+    /// A `String` preserves unknown `type` values losslessly instead of
+    /// hard-erroring, matching this crate's leniency; we stay faithful to the
+    /// SCHEMA's two-arm `oneOf` wire shape (string | object).
+    pub r#type: String,
+    #[serde(rename = "argvOption", default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub argv_option: Option<String>,
+}
+
+/// `vault.agents[].sessionIdSource`: where cmux reads the native session id.
+///
+/// Schema `oneOf` (`web/data/cmux.schema.json:90-133`): a bare string
+/// (`"piSessionFile"`, or an argv option like `"--session"`) OR an object
+/// `{ type, argvOption? }`. Modeled as a `#[serde(untagged)]` two-arm enum with
+/// the string arm first so bare strings decode to [`Named`](Self::Named).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[serde(untagged)]
+pub enum VaultAgentSessionIdSource {
+    /// Bare-string form (`"piSessionFile"`, `"--session"`).
+    Named(String),
+    /// Structured form (`{ "type": "argvOption", "argvOption": "--session" }`).
+    Structured(VaultAgentSessionIdSourceObject),
+}
+
+impl Default for VaultAgentSessionIdSource {
+    fn default() -> Self {
+        // Lenient placeholder so a `vault.agents[]` entry missing the
+        // (schema-required) `sessionIdSource` falls back to a default instead of
+        // hard-erroring, consistent with the rest of this crate.
+        Self::Named(String::new())
+    }
+}
+
+/// A single `vault.agents[]` entry: a custom coding agent that Vault can detect,
+/// list, and resume (`web/data/cmux.schema.json:48-163`;
+/// `CmuxVaultAgentRegistration`, `Sources/VaultAgentRegistry.swift:12-49`).
+///
+/// Schema items are `additionalProperties:true` (`web/data/cmux.schema.json:53`),
+/// so unknown per-agent keys are captured verbatim in [`VaultAgent::extra`] for
+/// lossless round-trips. The schema-required keys (`id`, `name`,
+/// `sessionIdSource`, `resumeCommand`) are modeled non-optional, but the struct
+/// is `#[serde(default)]` so a partial/absent entry falls back to defaults
+/// rather than hard-erroring (crate leniency; mirrors [`ResumeCommandApproval`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[serde(default)]
+pub struct VaultAgent {
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "iconAssetName", default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub icon_asset_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub detect: Option<VaultAgentDetect>,
+    #[serde(rename = "sessionIdSource")]
+    pub session_id_source: VaultAgentSessionIdSource,
+    #[serde(rename = "resumeCommand")]
+    pub resume_command: String,
+    #[serde(rename = "forkCommand", default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub fork_command: Option<String>,
+    pub cwd: VaultAgentCwd,
+    #[serde(rename = "sessionDirectory", default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub session_directory: Option<String>,
+    /// Unknown per-agent keys (schema `additionalProperties:true`), preserved
+    /// verbatim for lossless round-trips. Excluded from the TS bindings.
+    #[serde(flatten)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+impl Default for VaultAgent {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            icon_asset_name: None,
+            detect: None,
+            session_id_source: VaultAgentSessionIdSource::default(),
+            resume_command: String::new(),
+            fork_command: None,
+            cwd: VaultAgentCwd::Preserve,
+            session_directory: None,
+            extra: serde_json::Map::new(),
+        }
+    }
+}
+
+/// `vault`: Vault session-restore agent registrations
+/// (`web/data/cmux.schema.json:42-165`). `additionalProperties:false`; the sole
+/// property is `agents` (default `[]`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[serde(default)]
+pub struct VaultConfig {
+    pub agents: Vec<VaultAgent>,
+}
+
+// ---------------------------------------------------------------------------
+// Workspace groups (`workspaceGroups`)
+// ---------------------------------------------------------------------------
+
+/// A `workspaceGroups.byCwd` entry: per-cwd customization for a sidebar
+/// workspace group (`web/data/cmux.schema.json:186-215`;
+/// `CmuxConfigWorkspaceGroupEntry`, `Sources/CmuxConfig.swift:166-178`). Schema
+/// is `additionalProperties:false`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[serde(default)]
+pub struct WorkspaceGroupEntry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub icon: Option<String>,
+    /// Right-click menu items on the group's `+` button. Schema items are
+    /// `oneOf(string, object)` (`web/data/cmux.schema.json:201-206`); kept opaque
+    /// as raw JSON values (matching the untyped action objects) rather than
+    /// modeling each action shape.
+    #[serde(rename = "contextMenu", default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional, type = "Array<unknown>"))]
+    pub context_menu: Option<Vec<serde_json::Value>>,
+    /// Per-cwd override for new-workspace placement; falls back to the group's
+    /// global default when omitted. Reuses the existing [`NewWorkspacePlacement`]
+    /// enum.
+    #[serde(rename = "newWorkspacePlacement", default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub new_workspace_placement: Option<NewWorkspacePlacement>,
+}
+
+/// `workspaceGroups`: per-cwd customization for sidebar workspace groups
+/// (`web/data/cmux.schema.json:170-218`). `additionalProperties:false`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[serde(default)]
+pub struct WorkspaceGroupsConfig {
+    /// Global default for where new workspaces land within a group. Reuses the
+    /// existing [`NewWorkspacePlacement`] enum; schema default `afterCurrent`.
+    #[serde(rename = "newWorkspacePlacement")]
+    pub new_workspace_placement: NewWorkspacePlacement,
+    /// Map of cwd pattern → group customization. Empty when omitted.
+    #[serde(rename = "byCwd")]
+    pub by_cwd: BTreeMap<String, WorkspaceGroupEntry>,
+}
+
+// ---------------------------------------------------------------------------
 // Top-level config
 // ---------------------------------------------------------------------------
 
@@ -892,9 +1108,9 @@ impl Default for ShortcutsConfig {
 ///
 /// Modeled sections are strongly typed and optional (absent sections stay
 /// absent on re-serialize). Every other top-level key — including sections this
-/// crate deliberately does not model (`actions`, `ui`, `commands`, `vault`,
-/// `workspaceGroups`, `surfaceTabBarButtons`, `newWorkspaceCommand`) — is
-/// captured verbatim in [`Config::extra`] so a round-trip is non-lossy.
+/// crate deliberately does not model (`actions`, `ui`, `commands`,
+/// `surfaceTabBarButtons`) — is captured verbatim in [`Config::extra`] so a
+/// round-trip is non-lossy.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct Config {
@@ -946,6 +1162,15 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub shortcuts: Option<ShortcutsConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub vault: Option<VaultConfig>,
+    #[serde(rename = "workspaceGroups", default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub workspace_groups: Option<WorkspaceGroupsConfig>,
+    #[serde(rename = "newWorkspaceCommand", default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub new_workspace_command: Option<String>,
     /// Any top-level key not modeled above, preserved verbatim for lossless
     /// round-trips. Excluded from the TS bindings (opaque JSON).
     #[serde(flatten)]
@@ -1218,8 +1443,10 @@ mod tests {
         // Unmodeled sections land in `extra`, not dropped.
         assert!(config.extra.contains_key("actions"));
         assert!(config.extra.contains_key("commands"));
-        assert!(config.extra.contains_key("newWorkspaceCommand"));
         assert!(config.extra.contains_key("totallyUnknownKey"));
+        // `newWorkspaceCommand` is now a typed top-level field, no longer extra.
+        assert!(!config.extra.contains_key("newWorkspaceCommand"));
+        assert_eq!(config.new_workspace_command.as_deref(), Some("build"));
 
         // And they survive a round-trip.
         let encoded = encode_config(&config).expect("encode");
@@ -1234,6 +1461,119 @@ mod tests {
         assert_eq!(config, Config::default());
         // And an empty Config serializes back to "{}".
         assert_eq!(encode_config(&config).unwrap(), "{}");
+    }
+
+    #[test]
+    fn vault_and_workspace_group_defaults() {
+        assert!(VaultConfig::default().agents.is_empty());
+        assert_eq!(VaultAgentCwd::default(), VaultAgentCwd::Preserve);
+        assert_eq!(VaultAgent::default().cwd, VaultAgentCwd::Preserve);
+
+        let groups = WorkspaceGroupsConfig::default();
+        assert_eq!(
+            groups.new_workspace_placement,
+            NewWorkspacePlacement::AfterCurrent
+        );
+        assert!(groups.by_cwd.is_empty());
+    }
+
+    #[test]
+    fn vault_workspace_groups_and_new_workspace_command_round_trip() {
+        // `r##"..."##` because the JSON contains a `"#7A4FD8"` hex color, whose
+        // `"#` would otherwise terminate a plain `r#"..."#` raw string.
+        let json = r##"{
+            "vault": {
+                "agents": [
+                    {
+                        "id": "pi",
+                        "name": "Pi",
+                        "iconAssetName": "AgentIcons/Pi",
+                        "detect": { "processName": "pi", "argvContains": ["pi"] },
+                        "sessionIdSource": "piSessionFile",
+                        "resumeCommand": "{{executable}} --session {{sessionId}}",
+                        "forkCommand": "{{executable}} --session {{sessionId}} --fork",
+                        "cwd": "preserve",
+                        "sessionDirectory": "~/.pi/agent/sessions",
+                        "customExtra": { "note": "kept" }
+                    },
+                    {
+                        "id": "antigravity",
+                        "name": "Antigravity",
+                        "detect": { "processNames": ["agy", "antigravity"] },
+                        "sessionIdSource": { "type": "argvOption", "argvOption": "--session" },
+                        "resumeCommand": "{{executable}} --conversation {{sessionId}}",
+                        "cwd": "ignore"
+                    }
+                ]
+            },
+            "workspaceGroups": {
+                "newWorkspacePlacement": "top",
+                "byCwd": {
+                    "~/work/*": {
+                        "color": "#7A4FD8",
+                        "icon": "ladybug.fill",
+                        "contextMenu": [ "sep", { "action": "newTerminal" } ],
+                        "newWorkspacePlacement": "end"
+                    }
+                }
+            },
+            "newWorkspaceCommand": "build"
+        }"##;
+
+        let config = decode_config(json).expect("decode");
+
+        let vault = config.vault.as_ref().expect("vault");
+        assert_eq!(vault.agents.len(), 2);
+
+        // Bare-string sessionIdSource arm.
+        let pi = &vault.agents[0];
+        assert_eq!(pi.id, "pi");
+        assert_eq!(pi.cwd, VaultAgentCwd::Preserve);
+        assert_eq!(
+            pi.session_id_source,
+            VaultAgentSessionIdSource::Named("piSessionFile".to_owned())
+        );
+        // `additionalProperties:true` → unknown agent keys preserved in `extra`.
+        assert!(pi.extra.contains_key("customExtra"));
+
+        // Structured object sessionIdSource arm.
+        let agy = &vault.agents[1];
+        assert_eq!(agy.cwd, VaultAgentCwd::Ignore);
+        assert_eq!(
+            agy.session_id_source,
+            VaultAgentSessionIdSource::Structured(VaultAgentSessionIdSourceObject {
+                r#type: "argvOption".to_owned(),
+                argv_option: Some("--session".to_owned()),
+            })
+        );
+        assert_eq!(
+            agy.detect.as_ref().and_then(|d| d.process_names.clone()),
+            Some(StringOrStringList::Many(vec![
+                "agy".to_owned(),
+                "antigravity".to_owned()
+            ]))
+        );
+
+        let groups = config.workspace_groups.as_ref().expect("workspaceGroups");
+        assert_eq!(groups.new_workspace_placement, NewWorkspacePlacement::Top);
+        let entry = groups.by_cwd.get("~/work/*").expect("byCwd entry");
+        assert_eq!(entry.color.as_deref(), Some("#7A4FD8"));
+        assert_eq!(entry.icon.as_deref(), Some("ladybug.fill"));
+        assert_eq!(
+            entry.new_workspace_placement,
+            Some(NewWorkspacePlacement::End)
+        );
+        // contextMenu stays opaque JSON (string | object items).
+        assert_eq!(entry.context_menu.as_ref().map(Vec::len), Some(2));
+
+        assert_eq!(config.new_workspace_command.as_deref(), Some("build"));
+        // newWorkspaceCommand is now typed, not captured in `extra`.
+        assert!(!config.extra.contains_key("newWorkspaceCommand"));
+
+        // Encode → decode must be a fixed point.
+        let encoded = encode_config(&config).expect("encode");
+        let redecoded = decode_config(&encoded).expect("re-decode");
+        assert_eq!(config, redecoded);
     }
 
     #[test]
