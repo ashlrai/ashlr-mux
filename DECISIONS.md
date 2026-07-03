@@ -433,3 +433,44 @@ of `CmuxDiffViewerURLSchemeHandler` (`BrowserPanel.swift:1904`). 14 tests.
   (typography wants cmux-markdown's lib.rs/Cargo.toml) was SEQUENCED after the
   core, not parallelized. Verify agents correctly flagged the other lanes' files
   as "scope contamination" in the shared tree — expected; committed per-lane.
+
+## 2026-07-03 — headless frontier NOT exhausted; parallel-lane pre-seed pattern
+
+- **The "headless frontier is exhausted" claim (ULTRACODE-RESUME:201, dated
+  2026-07-02) was STALE.** A read-only scout workflow (6 Explore agents) found 4
+  more disjoint headless lanes: the keyboard-shortcut MODEL (config codec /
+  display / 109-entry default table / conflict + recorder logic — pure, was never
+  ported), the SurfaceResume APPROVAL subsystem (`cmux-resume` — shell lexer +
+  HMAC signing + trust decisions, all behind injected seams), the pure
+  command-palette model + orchestrator (`cmux-command-palette`, reusing the
+  cmux-mentions engine), and the Phase-4 Tauri mount layer's headless-compilable
+  portion. LESSON: re-scout the frontier each loop; don't trust a prior "exhausted"
+  note across days of drift.
+- Correctly EXCLUDED as already-complete (verify-by-reading): the Go daemon
+  refused-errno/lifecycle lane (isRefusedErrno split + tests already landed) and
+  the cmux-config schema-sections lane (all 23 top-level sections modeled;
+  schema root is additionalProperties:false).
+
+## Parallel-lane pre-seed (root Cargo.toml) — 2026-07-03
+
+- When ≥2 new-crate lanes each need to add a workspace member, they collide ONLY
+  on root Cargo.toml. Instead of sequencing them (WAVE 1 owns the edit → WAVE 2
+  rebases), **pre-seed** root Cargo.toml + write COMPLETE skeleton Cargo.toml +
+  minimal `lib.rs` for every new crate in one committed step (`5caab83d1`), verify
+  the workspace parses (`cargo check -p <newcrates>`), THEN launch all lanes fully
+  parallel with the instruction "Cargo.toml is already set up; only write src/*.rs."
+  Result: every lane's file set is provably disjoint, max concurrency, zero
+  root-manifest races. CRUX: adding a member for a crate dir that has no Cargo.toml
+  yet breaks EVERY concurrent `cargo` invocation (workspace won't parse) — so the
+  skeletons must exist and compile before the members are added/committed.
+
+## Phase-4 diff-viewer file serving must reject query/fragment — 2026-07-03
+
+- `schemes.rs::resolve_diff_request` (the byte-serving path) must reject any URI
+  carrying `?query` or `#fragment`; Swift `registeredFile(for:)`
+  (BrowserPanel.swift:2013-2019) hard-requires `url.query == nil && url.fragment
+  == nil` and serves nothing otherwise. The IMPLEMENT agent silently reused the
+  lenient token-gate parser (which strips the router-rewritten fragment for the
+  auth check) for file serving too — a real security-boundary divergence caught by
+  adversarial verify. The token GATE stays lenient (fragment is router noise); only
+  the file-SERVING path is strict. Two distinct behaviors, do not unify them.

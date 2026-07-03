@@ -351,3 +351,45 @@ NEXT: the mount-DEPENDENT Tauri layer (needs `tauri dev`) OR more headless ports
   Next: the Tauri mount layer (diff/markdown/schemes commands + URI-scheme
   handlers) — mount-DEPENDENT, needs `tauri dev` + user UI verification. Loop
   stop condition reached.
+
+## 2026-07-03 — 4 concurrent headless lanes (shortcut-model + cmux-resume + command-palette + phase4-tauri)
+
+`/loop ultracode` (milestone-loop). Read-only scout workflow (6 Explore agents +
+partitioner, `w2nc6u9ny`) DISPROVED the stale "headless frontier exhausted" note:
+found 4 disjoint headless lanes (Go-daemon + cmux-config lanes correctly excluded
+as already-complete). Pre-seeded root Cargo.toml + both new-crate skeletons in one
+commit so all 4 lanes ran fully parallel on provably-disjoint file sets, then a
+4-lane implement→adversarial-verify workflow (`wrfs1rp17`, 8 high-effort agents) +
+a parity-guarded simplify workflow (`wgvo8sinq`, 4 agents, zero changes — code
+already clean). Five commits:
+
+- `5caab83d1` scaffold: seed cmux-resume + cmux-command-palette crates (root
+  Cargo.toml members + skeleton Cargo.toml/lib.rs) so lanes never touch a shared file.
+- `f4283883d` **cmux-core shortcut model** — config-string codec + display
+  formatting + Action metadata (all 109 default_shortcut entries incl. g-g chord +
+  .unbound) + conflict detection + recorder normalization, reconciling the two
+  drifted Swift enums. 101 tests. Verify: SOLID (0 divergences).
+- `d0105356f` **cmux-resume** (NEW crate) — SurfaceResume approval subsystem:
+  shell-token lexer + HMAC-SHA256 signing + longest-prefix matching + 4-branch
+  trust decisions. Golden signing-payload byte-parity pinned. 59 lib tests.
+  Verify: SOLID (byte-for-byte payload layout verified vs Swift).
+- `fc7692036` **cmux-command-palette** (NEW crate) — pure palette model + search
+  orchestrator, reuses cmux-mentions palette engine; oracle differential test.
+  22 lib + 17 oracle tests. Verify: SOLID.
+- `92b69f1de` **desktop Phase-4 mount layer** — diff_comments_rpc + cmux_lib_rpc +
+  4 custom URI-scheme handlers over the headless cmux-diff/cmux-markdown cores.
+  56 lib tests, cargo check + clippy clean. Verify: FIXED one real security-boundary
+  bug (resolve_diff_request now rejects ?query/#fragment, matching Swift
+  registeredFile(for:) BrowserPanel.swift:2013-2019).
+
+Cross-cutting gate GREEN: cargo check --workspace clean, clippy --workspace
+--all-targets clean, no ts-rs drift (new shortcut types not TS-exported). KEY SWARM
+WIN: adversarial verify caught the phase4 query/fragment SSRF-adjacent divergence
+that the implement agent had silently introduced by reusing the lenient token-gate
+parser for file serving. ⇒ UI-TEST CHECKPOINT reached for Phase-4 (see
+docs/windows-port/UI-TEST-QUEUE.md): the mount layer compiles + is unit-tested but
+live WebView2 behavior (iframe token via webview.url(), eval delivery, custom
+hyphenated schemes serving bytes, bundle.resources at runtime resource_dir) needs
+the running app. Loop CONTINUES on remaining headless work; UI items queued for the
+morning. NEXT: re-scout for the next disjoint headless batch (Phase-5 chrome logic,
+more pure Swift subsystems) or confirm frontier exhausted.
