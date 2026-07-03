@@ -296,6 +296,10 @@ impl AgentExecutableResolver {
                 directories.push(PathBuf::from(program_data).join("chocolatey").join("bin"));
             }
             if let Some(app_data) = self.environment.get("APPDATA") {
+                // `npm i -g` drops its shims (opencode.cmd, claude.cmd, …)
+                // under %APPDATA%\npm; a GUI-inherited PATH does not always
+                // carry that directory, so a PATH-only search misses them.
+                directories.push(PathBuf::from(app_data).join("npm"));
                 directories.push(PathBuf::from(app_data).join("nvm"));
             }
             if let Some(nvm_symlink) = self.environment.get("NVM_SYMLINK") {
@@ -627,6 +631,30 @@ mod tests {
 
         let plan = resolver.resolve(AgentSessionProviderId::Codex).expect("plan");
         assert_eq!(plan.executable_path, normalize_path(codex));
+    }
+
+    #[test]
+    fn resolves_opencode_from_npm_global_bin_off_path() {
+        // `npm i -g opencode-ai` drops opencode.cmd under %APPDATA%\npm; a
+        // GUI-inherited PATH does not always carry that directory.
+        let root = temp_dir();
+        let app_data = root.join("Roaming");
+        let opencode = app_data.join("npm").join("opencode.cmd");
+        write_executable(&opencode, "opencode");
+
+        let resolver = AgentExecutableResolver {
+            environment: BTreeMap::from([
+                // PATH deliberately excludes the npm global bin dir.
+                ("PATH".into(), root.join("empty").to_string_lossy().to_string()),
+                ("APPDATA".into(), app_data.to_string_lossy().to_string()),
+                ("USERPROFILE".into(), root.to_string_lossy().to_string()),
+            ]),
+            include_standard_search_directories: true,
+            ..Default::default()
+        };
+
+        let plan = resolver.resolve(AgentSessionProviderId::OpenCode).expect("plan");
+        assert_eq!(plan.executable_path, normalize_path(opencode));
     }
 
     #[test]
