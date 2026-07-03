@@ -428,3 +428,40 @@ partial-4 trivially resumable as drafts. NET for the two batches: 7 new crates +
 remaining mainline is now genuinely host-wiring / UI-checkpoint work (Phase-4 mount
 live-verify, renderer, window chrome, live agents, packaging). NEXT clean break =
 the Phase-4 UI test (docs/windows-port/UI-TEST-QUEUE.md).
+
+## 2026-07-03 (batch 3) — cmux-canvas + ts-rs codegen + 5 headless-verifiable web lanes
+
+`/loop ultracode` continued after a course-correction: the loop had stopped early by
+mislabeling the Phase-4 mount layer as a "UI checkpoint" when its frontend was never
+wired — nothing built so far actually needed the UI (all test-verified backend). So
+the scout scope was WIDENED to include web/frontend slices that are headless-verifiable
+via `bun test src` + `bun run typecheck` (SSR render tests + pure reducers), with the
+genuine live-WebView2 tail explicitly BATCHED for one future UI session (see
+UI-TEST-QUEUE.md) rather than stopping the loop. Ran a scout (`w1kubd0f7`) + a
+concurrent read-only red-team (`wcc48ubdb`, 8 agents) + a 7-lane implement→verify wave
+(`wp3pfjp01`, 14 agents) to keep capacity saturated. 10 commits (scaffold + 8 lanes + docs):
+
+- `c4546902a` **cmux-canvas** (NEW) — pure free-canvas geometry/layout/snap/placer/
+  aligner/spatial-nav/viewport (~1400 LOC, 66 oracle @Test cases 1:1). 67 tests. SOLID.
+- `70010b1f6` **timestamp fail-open fix** — the red-team's ONE finding (7/8 targets
+  clean): parse_iso8601 didn't bound the year, so a corrupt 6+ digit year overflowed
+  base_seconds*1000 (panic/wrap, breaking fail-open). Year bound 0..=9999 + checked_*
+  arithmetic + regression test.
+- `0c10f243f` **core-types ts-rs** — added cmux-diff to the generation loop (typed
+  DiffComment; ts(type=number) so start/end_line emit number not bigint), which also
+  resynced ~30 previously-drifted cmux-config binding types. check-drift + tsc clean.
+- `b1798d23c` **web split-geometry** — pure equalize/keyboard-resize planners; FIXED a
+  real bug (equalizeDivider weighted by countLeaves, should be orientation-aware
+  spanCount; corrected the test that asserted the wrong 2/3->1/2) + activeLayout extract.
+- `9308d7659` **web settings**, `4e12f8b02` **web sidebar**, `c199a03d2` **web
+  command-palette** (verify FIXED a wrap->clamp cursor bug + its mis-asserting tests),
+  `1cf20b9d0` **web diff/markdown surface routing scaffold** — Phase-5 chrome + Phase-4
+  surface wiring, all greenfield/disjoint, driven by the already-ported Rust models.
+
+Gate GREEN: cargo check --workspace + clippy clean; cmux-canvas 67 / cmux-agent-chat
+263 / cmux-diff 55; core-types check-drift clean; web `bun test src` 185 pass / 0 fail
++ tsc --noEmit clean. Two workflows found+fixed 3 REAL bugs (timestamp overflow,
+palette wrap, equalize spanCount) — the adversarial passes keep earning their keep.
+PUSHED to fork/windows-port. Backend pure-oracle frontier is now THINNING (remaining
+candidates are Bonsplit-blocked / Ghostty-coupled / Windows-updater-caveated); the bulk
+of what's left is the batched live-WebView2 UI session + genuinely UI-coupled wiring.
