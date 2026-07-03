@@ -5,6 +5,7 @@ members = [
   "crates/cmux-agent-chat",
   "crates/cmux-appearance",
   "crates/cmux-browser-history",
+  "crates/cmux-canvas",
   "crates/cmux-cli",
   "crates/cmux-command-palette",
   "crates/cmux-config",
