@@ -217,6 +217,20 @@ predicate onto the x/sys errno (same Windows latent bug as dialSocket).
 Also open: live-verify Codex converse (token streaming, approvals); the
 `dialSocket` Windows fail-over fix (see `DECISIONS.md` findings).
 
+### Live-verify state (2026-07-02 session end — RETEST PENDING)
+
+- OpenCode Start failed live with "missing executable opencode": the resolver
+  had no `%APPDATA%\npm` fallback (where `npm i -g` drops `opencode.cmd`) and
+  the app instance's inherited PATH lacked that dir. FIXED `e3acf88e6`
+  (cmux-agent standard search dirs + pin test). User had NOT yet re-verified
+  OpenCode/Codex/styling on the fixed binary when the session ended — collect
+  those verdicts first on resume.
+- Recurring dev-env failure: the bun `dev`/`desktop:web:dev` script
+  intermittently exits 255 → Vite (1420) dies while the breakaway app window
+  survives as a stale orphan running old code. Diagnose:
+  `Get-NetTCPConnection -LocalPort 1420` + `Get-Process cmux-desktop`
+  (StartTime); kill the stale window; relaunch `npx @tauri-apps/cli dev`.
+
 Superseded single-webview two-layer plan (kept for reference):
 It was a TWO-LAYER divergence forced by the single-webview MVP (canonical macOS is
 one WKWebView + one store PER PANE):
