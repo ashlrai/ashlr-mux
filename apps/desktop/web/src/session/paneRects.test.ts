@@ -1,10 +1,15 @@
 import { describe, expect, test } from "bun:test";
 
-import { dividerHandles, paneRects, type Rect } from "./paneRects";
+import { dividerHandles, paneRects, surfaceKinds, type Rect } from "./paneRects";
 import type { Layout } from "./splitLayout";
 
 function pane(...panelIds: string[]): Layout {
   return { type: "pane", pane: { panel_ids: panelIds } };
+}
+
+/** A pane with an explicit `surface_kind` (raw, pre-normalization). */
+function paneKind(surfaceKind: string | undefined, ...panelIds: string[]): Layout {
+  return { type: "pane", pane: { panel_ids: panelIds, surface_kind: surfaceKind } };
 }
 
 function split(
@@ -101,5 +106,53 @@ describe("dividerHandles", () => {
     expect(nested.ratio).toBeCloseTo(0.6, 6);
     // The nested split lives in the right half.
     approx(nested.parent, { x: 50, y: 0, w: 50, h: 100 });
+  });
+});
+
+describe("surfaceKinds", () => {
+  test("maps each recognized surface_kind through normalizeSurfaceKind", () => {
+    const kinds = surfaceKinds(paneKind("agent", "a"));
+    expect(kinds.get("a")).toBe("agent");
+    expect(surfaceKinds(paneKind("markdown", "m")).get("m")).toBe("markdown");
+    expect(surfaceKinds(paneKind("diff", "d")).get("d")).toBe("diff");
+  });
+
+  test("an explicit terminal / absent / unknown kind resolves to terminal", () => {
+    expect(surfaceKinds(paneKind("terminal", "t")).get("t")).toBe("terminal");
+    // Absent surface_kind (a plain pane) → terminal.
+    expect(surfaceKinds(pane("bare")).get("bare")).toBe("terminal");
+    // Unknown/future tag → terminal (not passed through).
+    expect(surfaceKinds(paneKind("browser", "u")).get("u")).toBe("terminal");
+  });
+
+  test("keys by the selected panel id, like paneRects", () => {
+    const layout: Layout = {
+      type: "pane",
+      pane: { panel_ids: ["surface-1", "surface-9"], selected_panel_id: "surface-9", surface_kind: "markdown" },
+    };
+    const kinds = surfaceKinds(layout);
+    expect([...kinds.keys()]).toEqual(["surface-9"]);
+    expect(kinds.get("surface-9")).toBe("markdown");
+  });
+
+  test("walks a nested tree and routes each leaf's kind independently", () => {
+    const layout = split(
+      "horizontal",
+      0.5,
+      paneKind("agent", "left"),
+      split("vertical", 0.5, paneKind("diff", "tr"), pane("br")),
+    );
+    const kinds = surfaceKinds(layout);
+    expect(kinds.get("left")).toBe("agent");
+    expect(kinds.get("tr")).toBe("diff");
+    expect(kinds.get("br")).toBe("terminal");
+    expect(kinds.size).toBe(3);
+  });
+
+  test("skips a pane with no panel ids (nothing to key)", () => {
+    const empty: Layout = { type: "pane", pane: { panel_ids: [] } };
+    const layout = split("horizontal", 0.5, empty, paneKind("markdown", "only"));
+    const kinds = surfaceKinds(layout);
+    expect([...kinds.keys()]).toEqual(["only"]);
   });
 });

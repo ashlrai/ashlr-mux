@@ -10,7 +10,10 @@ import {
 } from "../session/paneRects";
 import { resizeDivider, setDividerAtPath, type Layout } from "../session/splitLayout";
 import { stickyAgentPanes } from "../session/agentMount";
+import type { SurfaceKind } from "../session/surfaceUrl";
 import { AgentSessionSurface } from "./AgentSessionSurface";
+import { DiffSurface } from "./DiffSurface";
+import { MarkdownSurface } from "./MarkdownSurface";
 import { TerminalSurface } from "./TerminalSurface";
 
 /** Thickness of the draggable divider handle, in px (matches `SplitTree`). */
@@ -130,28 +133,44 @@ export function Workspace(): React.JSX.Element {
   return (
     <div ref={containerRef} className="cmux-workspace-portal" style={{ position: "relative", width: "100%", height: "100%", overflow: "hidden" }}>
       {[...rects.entries()].map(([panelId, rect]) => {
-        const isAgent = kinds.get(panelId) === "agent";
+        const kind: SurfaceKind = kinds.get(panelId) ?? "terminal";
         return (
           <div key={panelId} style={{ ...paneStyle(rect), overflow: "hidden", zIndex: 0 }}>
             {/* Flat portal: the terminal is rendered once per stable panel_id and
                 never unmounted (its ConPTY shell lives on); each owning pane's
-                agent surface is overlaid the same way. Toggling agent⇄terminal
-                flips which one is VISIBLE — neither is torn down, so an
-                in-flight agent run survives an accidental switch. */}
-            <div style={{ position: "absolute", inset: 0, display: isAgent ? "none" : "flex", overflow: "hidden" }}>
+                agent surface is overlaid the same way. Toggling terminal⇄agent
+                flips which one is VISIBLE — neither is torn down, so an in-flight
+                agent run survives an accidental switch.
+
+                The markdown/diff surfaces are DIFFERENT: they hold no
+                irrecoverable in-flight state (a scheme-served document, not a
+                live session), so they mount ON DEMAND — rendered only while the
+                pane hosts that kind, and torn down on switch. */}
+            <div style={{ position: "absolute", inset: 0, display: kind === "terminal" ? "flex" : "none", overflow: "hidden" }}>
               <TerminalSurface />
             </div>
             {mountedAgentPanes.has(panelId) ? (
-              <div style={{ position: "absolute", inset: 0, display: isAgent ? "flex" : "none", overflow: "hidden" }}>
+              <div style={{ position: "absolute", inset: 0, display: kind === "agent" ? "flex" : "none", overflow: "hidden" }}>
                 <AgentSessionSurface />
+              </div>
+            ) : null}
+            {kind === "markdown" ? (
+              <div style={{ position: "absolute", inset: 0, display: "flex", overflow: "hidden" }}>
+                <MarkdownSurface />
+              </div>
+            ) : null}
+            {kind === "diff" ? (
+              <div style={{ position: "absolute", inset: 0, display: "flex", overflow: "hidden" }}>
+                {/* No live token source yet (minting needs WebView2) → placeholder. */}
+                <DiffSurface token={null} />
               </div>
             ) : null}
             <PaneControls
               onSplitHorizontal={() => split(panelId, "horizontal")}
               onSplitVertical={() => split(panelId, "vertical")}
               onClose={() => close(panelId)}
-              onToggleAgent={() => setSurfaceKind(panelId, isAgent ? null : "agent")}
-              isAgent={isAgent}
+              surfaceKind={kind}
+              onSetSurfaceKind={(next) => setSurfaceKind(panelId, next)}
               closable={rects.size > 1}
             />
           </div>
@@ -224,33 +243,57 @@ interface PaneControlsProps {
   onSplitHorizontal: () => void;
   onSplitVertical: () => void;
   onClose: () => void;
-  onToggleAgent: () => void;
-  isAgent: boolean;
+  /** The pane's current surface. Drives which toggle reads as "active". */
+  surfaceKind: SurfaceKind;
+  /**
+   * Set the pane's surface: a surface tag to switch to it, or `null` to revert
+   * to the terminal. Each toggle button flips its kind on⇄terminal.
+   */
+  onSetSurfaceKind: (kind: string | null) => void;
   closable: boolean;
 }
 
 /**
- * Tiny hover-in-corner controls: toggle agent session, split side-by-side,
- * split stacked, close.
+ * Tiny hover-in-corner controls: toggle each non-terminal surface (agent /
+ * markdown / diff), split side-by-side, split stacked, close. Each surface
+ * toggle switches the pane to that kind, or back to the terminal when it is
+ * already the active surface.
  */
 function PaneControls({
   onSplitHorizontal,
   onSplitVertical,
   onClose,
-  onToggleAgent,
-  isAgent,
+  surfaceKind,
+  onSetSurfaceKind,
   closable,
 }: PaneControlsProps): React.JSX.Element {
+  const toggle = (kind: SurfaceKind): void =>
+    onSetSurfaceKind(surfaceKind === kind ? null : kind);
   return (
     <div
       className="cmux-pane-controls"
       style={{ position: "absolute", top: 4, right: 4, zIndex: 20, display: "flex", gap: 2 }}
     >
       <ControlButton
-        label={isAgent ? "Switch to terminal" : "Start agent session"}
-        onClick={onToggleAgent}
+        label={surfaceKind === "agent" ? "Switch to terminal" : "Start agent session"}
+        active={surfaceKind === "agent"}
+        onClick={() => toggle("agent")}
       >
-        {isAgent ? "⌨" : "✦"}
+        {surfaceKind === "agent" ? "⌨" : "✦"}
+      </ControlButton>
+      <ControlButton
+        label={surfaceKind === "markdown" ? "Switch to terminal" : "Markdown preview"}
+        active={surfaceKind === "markdown"}
+        onClick={() => toggle("markdown")}
+      >
+        ✎
+      </ControlButton>
+      <ControlButton
+        label={surfaceKind === "diff" ? "Switch to terminal" : "Diff viewer"}
+        active={surfaceKind === "diff"}
+        onClick={() => toggle("diff")}
+      >
+        ±
       </ControlButton>
       <ControlButton label="Split side by side" onClick={onSplitHorizontal}>
         ▐
@@ -270,10 +313,13 @@ function PaneControls({
 function ControlButton({
   label,
   onClick,
+  active = false,
   children,
 }: {
   label: string;
   onClick: () => void;
+  /** Whether this button's surface is the pane's active surface. */
+  active?: boolean;
   children: React.ReactNode;
 }): React.JSX.Element {
   return (
@@ -281,10 +327,15 @@ function ControlButton({
       type="button"
       title={label}
       aria-label={label}
+      aria-pressed={active}
       // Pointer-down on a control must not start a terminal focus / divider drag.
       onPointerDown={(event) => event.stopPropagation()}
       onClick={onClick}
-      className="flex h-5 w-5 items-center justify-center rounded bg-neutral-800/80 text-[10px] text-neutral-300 hover:bg-neutral-700 hover:text-neutral-100"
+      className={
+        active
+          ? "flex h-5 w-5 items-center justify-center rounded bg-neutral-600 text-[10px] text-neutral-100"
+          : "flex h-5 w-5 items-center justify-center rounded bg-neutral-800/80 text-[10px] text-neutral-300 hover:bg-neutral-700 hover:text-neutral-100"
+      }
     >
       {children}
     </button>

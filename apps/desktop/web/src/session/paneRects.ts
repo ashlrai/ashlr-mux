@@ -1,5 +1,6 @@
 import type { Layout, Pane, SplitPath } from "./splitLayout";
 import { clampDivider, isPane } from "./splitLayout";
+import { normalizeSurfaceKind, type SurfaceKind } from "./surfaceUrl";
 
 /**
  * Flat-layer geometry for the snapshot-driven workspace.
@@ -90,12 +91,15 @@ export function paneRects(layout: Layout, rect: Rect = FULL): Map<string, Rect> 
 }
 
 /**
- * Map each leaf pane's representative `panel_id` to its `surface_kind`
- * (`"agent"` for an agent session, `undefined` for a terminal). Keyed exactly
- * like {@link paneRects}, so the flat portal can branch each pane's surface.
+ * Map each leaf pane's representative `panel_id` to its normalized
+ * {@link SurfaceKind} — the pane's raw `surface_kind` (an arbitrary
+ * `Option<String>` in the Rust model) run through {@link normalizeSurfaceKind},
+ * so an absent/unknown value resolves to `"terminal"`. Keyed exactly like
+ * {@link paneRects}, so the flat portal can branch each pane's surface over a
+ * closed set of kinds.
  */
-export function surfaceKinds(layout: Layout): Map<string, string | undefined> {
-  const out = new Map<string, string | undefined>();
+export function surfaceKinds(layout: Layout): Map<string, SurfaceKind> {
+  const out = new Map<string, SurfaceKind>();
   walk(layout);
   return out;
 
@@ -103,7 +107,7 @@ export function surfaceKinds(layout: Layout): Map<string, string | undefined> {
     if (isPane(node)) {
       const id = representativeId(node.pane);
       if (id !== undefined) {
-        out.set(id, node.pane.surface_kind);
+        out.set(id, normalizeSurfaceKind(node.pane.surface_kind));
       }
       return;
     }
