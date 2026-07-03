@@ -34,6 +34,27 @@ export function listScope(query: string): CommandPaletteListScope {
 }
 
 /**
+ * Trims exactly the code points in Swift's `CharacterSet.whitespacesAndNewlines`
+ * from both ends of `s`.
+ *
+ * That set is `.whitespaces` (Unicode General Category Zs plus U+0009 TAB)
+ * unioned with `.newlines` (U+000A LF, U+000B VT, U+000C FF, U+000D CR,
+ * U+0085 NEL, U+2028 LS, U+2029 PS).
+ *
+ * This is deliberately NOT `String.prototype.trim()`, whose whitespace set
+ * diverges from Swift's: JS `.trim()` strips U+FEFF (ZWNBSP/BOM) — which is
+ * Unicode category Cf, not Zs, so Swift keeps it — and does NOT strip U+0085
+ * (NEL), which Swift trims. Using `.trim()` here would drift from the host.
+ */
+export function trimWhitespaceAndNewlines(s: string): string {
+  // Swift's whitespacesAndNewlines set. Note U+FEFF is intentionally absent.
+  const cls =
+    "\\u0009\\u000A\\u000B\\u000C\\u000D\\u0020\\u0085\\u00A0\\u1680" +
+    "\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000";
+  return s.replace(new RegExp(`^[${cls}]+|[${cls}]+$`, "gu"), "");
+}
+
+/**
  * The query the matcher should search, after removing scope framing.
  *
  * Swift `commandPaletteQueryForMatching(query:scope:)`: strip the leading
@@ -44,7 +65,7 @@ export function queryForMatching(query: string): string {
   const scope = listScope(query);
   const body =
     scope === "commands" ? query.slice(COMMAND_PALETTE_COMMANDS_PREFIX.length) : query;
-  return body.trim();
+  return trimWhitespaceAndNewlines(body);
 }
 
 /**

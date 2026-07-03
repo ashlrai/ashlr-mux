@@ -85,11 +85,16 @@ pub fn dispatch_comment_rpc(
             }
         }
         "comments.delete" => {
-            // Swift requires a well-formed UUID string.
+            // Swift gates on `UUID(uuidString:)`, which accepts ONLY the
+            // canonical 36-char hyphenated form and matches the store by UUID
+            // value. `uuid::parse_str` is looser (it also accepts the 32-char
+            // hyphenless, `{braced}`, and `urn:uuid:` forms), so we validate the
+            // canonical form explicitly and reject anything else with the exact
+            // `invalidRequest` error Swift throws.
             let Some(id) = params
                 .get("id")
                 .and_then(Value::as_str)
-                .filter(|s| Uuid::parse_str(s).is_ok())
+                .filter(|s| is_canonical_uuid(s))
             else {
                 return error_reply(CODE_INVALID_REQUEST, "Missing comment id");
             };
@@ -117,6 +122,25 @@ fn error_reply(code: &str, user_message: &str) -> Value {
 /// "error": [:]])`). Used here for a store IO failure.
 fn internal_error_reply() -> Value {
     json!({ "ok": false, "error": {} })
+}
+
+/// True only for the canonical 36-char hyphenated UUID string that Swift's
+/// `UUID(uuidString:)` accepts: `8-4-4-4-12` hex with hyphens at byte offsets
+/// 8/13/18/23 (e.g. `550e8400-e29b-41d4-a716-446655440000`). Hex is accepted in
+/// either case, matching `UUID(uuidString:)`.
+///
+/// Deliberately stricter than `uuid::parse_str`, which ALSO accepts the 32-char
+/// hyphenless (`simple`), `{braced}`, and `urn:uuid:` forms. Swift rejects those
+/// (`comments.delete` → `invalidRequest`; `comments.save` → mints a fresh UUID),
+/// so trusting `parse_str` would silently diverge on those inputs.
+fn is_canonical_uuid(s: &str) -> bool {
+    if s.len() != 36 {
+        return false;
+    }
+    s.bytes().enumerate().all(|(i, b)| match i {
+        8 | 13 | 18 | 23 => b == b'-',
+        _ => b.is_ascii_hexdigit(),
+    })
 }
 
 /// `DiffComment` -> the JS wire object. Faithful port of Swift `commentJSON`
@@ -153,11 +177,11 @@ fn comment_json(comment: &DiffComment) -> Value {
 /// on update). `consumedAt` is always cleared.
 ///
 /// DIVERGENCE (documented): Swift canonicalizes the id via `UUID.uuidString`
-/// (uppercase). We validate the sender's id is a well-formed UUID and preserve
-/// its original (JS-native, lowercase) form — regenerating a fresh v4 only when
-/// it is missing/invalid — to avoid a surprising case flip on the web side. The
-/// delete path re-validates the same way, so store lookups stay internally
-/// consistent.
+/// (uppercase). We validate the sender's id is a *canonical* UUID (via
+/// `is_canonical_uuid`, mirroring Swift's `UUID(uuidString:)`) and preserve its
+/// original (JS-native, lowercase) form — minting a fresh v4 only when it is
+/// missing or non-canonical, exactly as Swift does (`?? UUID()`). The delete
+/// path validates the same way, so store lookups stay internally consistent.
 fn comment_from_json(json: &Map<String, Value>, now: &str) -> Option<DiffComment> {
     let file_path = json.get("filePath").and_then(Value::as_str)?;
     if file_path.is_empty() {
@@ -169,7 +193,7 @@ fn comment_from_json(json: &Map<String, Value>, now: &str) -> Option<DiffComment
     let message = json.get("message").and_then(Value::as_str)?;
 
     let id = match json.get("id").and_then(Value::as_str) {
-        Some(s) if Uuid::parse_str(s).is_ok() => s.to_string(),
+        Some(s) if is_canonical_uuid(s) => s.to_string(),
         _ => Uuid::new_v4().to_string(),
     };
     let side = if side_raw == "deletions" {
@@ -418,5 +442,81 @@ mod tests {
             NOW,
         );
         assert_eq!(bad_id["error"]["userMessage"], json!("Missing comment id"));
+    }
+
+    // The three non-canonical spellings that `uuid::parse_str` accepts but
+    // Swift's `UUID(uuidString:)` rejects. Each encodes the same UUID value as
+    // `valid_comment()`'s id (`550e8400-...440000`).
+    const NONCANONICAL_IDS: [&str; 3] = [
+        "550e8400e29b41d4a716446655440000",              // 32-char hyphenless
+        "{550e8400-e29b-41d4-a716-446655440000}",        // braced
+        "urn:uuid:550e8400-e29b-41d4-a716-446655440000", // urn:uuid:
+    ];
+
+    #[test]
+    fn delete_rejects_noncanonical_uuid_forms() {
+        // Swift gates delete on `UUID(uuidString:)`, so a non-canonical spelling
+        // throws `invalidRequest("Missing comment id")` before any store lookup
+        // — even though it names an existing comment by value. The old
+        // `uuid::parse_str` gate let these through and returned `deleted: false`.
+        let ts = TempStore::new();
+        dispatch_comment_rpc(&ts.store, true, &save_request(valid_comment()), NOW);
+
+        let del = |id: &str| {
+            dispatch_comment_rpc(
+                &ts.store,
+                true,
+                &json!({ "method": "comments.delete", "params": { "repoRoot": REPO, "id": id } }),
+                NOW,
+            )
+        };
+        for bad in NONCANONICAL_IDS {
+            let reply = del(bad);
+            assert_eq!(reply["ok"], json!(false), "must reject {bad:?}");
+            assert_eq!(reply["error"]["code"], json!("invalid_request"), "{bad:?}");
+            assert_eq!(
+                reply["error"]["userMessage"],
+                json!("Missing comment id"),
+                "{bad:?}"
+            );
+        }
+
+        // The canonical form of the same value still deletes it.
+        assert_eq!(
+            del("550e8400-e29b-41d4-a716-446655440000")["value"]["deleted"],
+            json!(true)
+        );
+    }
+
+    #[test]
+    fn save_mints_fresh_uuid_for_noncanonical_forms() {
+        // Swift: `(json["id"] as? String).flatMap(UUID.init(uuidString:)) ?? UUID()`.
+        // A non-canonical id is NOT canonical, so Swift mints a fresh UUID. The
+        // old `uuid::parse_str` gate preserved these forms verbatim instead.
+        let ts = TempStore::new();
+        for bad in NONCANONICAL_IDS {
+            let mut comment = valid_comment();
+            comment["id"] = json!(bad);
+            let reply = dispatch_comment_rpc(&ts.store, true, &save_request(comment), NOW);
+            let id = reply["value"]["comment"]["id"].as_str().unwrap();
+            assert_ne!(id, bad, "non-canonical id must be replaced, not preserved");
+            assert!(is_canonical_uuid(id), "minted id must be canonical, got {id:?}");
+        }
+    }
+
+    #[test]
+    fn is_canonical_uuid_matches_swift_uuidstring() {
+        // Accepted: canonical 36-char hyphenated, either hex case.
+        assert!(is_canonical_uuid("550e8400-e29b-41d4-a716-446655440000"));
+        assert!(is_canonical_uuid("550E8400-E29B-41D4-A716-446655440000"));
+        // Rejected: the looser forms `uuid::parse_str` accepts, plus junk.
+        for bad in NONCANONICAL_IDS {
+            assert!(!is_canonical_uuid(bad), "must reject {bad:?}");
+        }
+        assert!(!is_canonical_uuid("")); // empty
+        assert!(!is_canonical_uuid("550e8400-e29b-41d4-a716-44665544000")); // 35 chars
+        assert!(!is_canonical_uuid("550e8400-e29b-41d4-a716-4466554400000")); // 37 chars
+        assert!(!is_canonical_uuid("550e8400xe29b-41d4-a716-446655440000")); // hyphen slot wrong
+        assert!(!is_canonical_uuid("550e8400-e29b-41d4-a716-44665544000g")); // non-hex
     }
 }

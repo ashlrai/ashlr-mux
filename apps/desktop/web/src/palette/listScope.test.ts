@@ -5,6 +5,7 @@ import {
   queryForMatching,
   shouldPromoteOverlay,
   shouldResetVisibleResults,
+  trimWhitespaceAndNewlines,
 } from "./listScope";
 
 describe("listScope", () => {
@@ -31,6 +32,43 @@ describe("queryForMatching", () => {
   test("switcher scope trims but keeps the whole query", () => {
     expect(queryForMatching("  project  ")).toBe("project");
     expect(queryForMatching("main")).toBe("main");
+  });
+
+  // Parity with Swift `CharacterSet.whitespacesAndNewlines`, which diverges
+  // from JS `String.prototype.trim()` on exactly two code points.
+  test("trims U+0085 (NEL) like Swift, unlike JS .trim()", () => {
+    // Swift's `.newlines` includes U+0085; JS `.trim()` does not. A lone NEL
+    // query must trim to empty so the `isEmpty`-gated switcher behavior
+    // (`commandPaletteSwitcherIncludesSurfaceEntries`) matches the host.
+    expect(queryForMatching("")).toBe("");
+    expect(queryForMatching(">")).toBe("");
+    // NEL surrounding real content is stripped from both ends.
+    expect(queryForMatching("main")).toBe("main");
+  });
+
+  test("preserves leading U+FEFF (BOM) like Swift, unlike JS .trim()", () => {
+    // U+FEFF is Unicode category Cf (not Zs), so Swift keeps it; JS `.trim()`
+    // strips it, which would wrongly yield "project" / "rename".
+    expect(queryForMatching("﻿project")).toBe("﻿project");
+    expect(queryForMatching(">﻿rename")).toBe("﻿rename");
+  });
+});
+
+describe("trimWhitespaceAndNewlines", () => {
+  test("trims ASCII whitespace and newlines from both ends", () => {
+    expect(trimWhitespaceAndNewlines("  hi  ")).toBe("hi");
+    expect(trimWhitespaceAndNewlines("\t\n\r\fhi\f\r\n\t")).toBe("hi");
+    expect(trimWhitespaceAndNewlines("a b")).toBe("a b");
+  });
+
+  test("matches Swift's set, not JS .trim(): trims U+0085, keeps U+FEFF", () => {
+    expect(trimWhitespaceAndNewlines("hi")).toBe("hi");
+    expect(trimWhitespaceAndNewlines("﻿hi﻿")).toBe("﻿hi﻿");
+  });
+
+  test("trims the Unicode Zs separators Swift's `.whitespaces` covers", () => {
+    // U+00A0 NBSP, U+2003 EM SPACE, U+3000 IDEOGRAPHIC SPACE, U+2028 LS.
+    expect(trimWhitespaceAndNewlines("  　 hi 　")).toBe("hi");
   });
 });
 

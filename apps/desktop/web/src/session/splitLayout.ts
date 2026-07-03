@@ -98,7 +98,11 @@ export function resizeDivider(current: number, deltaPixels: number, axisPixels: 
 export function equalizeDivider(split: Split): number {
   const first = spanCount(split.first, split.orientation);
   const total = first + spanCount(split.second, split.orientation);
-  return total === 0 ? 0.5 : clampDivider(first / total);
+  // Equalize does NOT clamp (parity with macOS `appendEqualizeAdjustments`,
+  // which emits `CGFloat(firstSpanCount) / CGFloat(totalSpanCount)` raw, and
+  // the sibling web `equalizeDividerPlan`): the span ratio of a valid tree is
+  // always in (0, 1). The total===0 guard only defends against an empty tree.
+  return total === 0 ? 0.5 : first / total;
 }
 
 /**

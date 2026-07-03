@@ -106,15 +106,21 @@ describe("equalizeDivider", () => {
     expect(equalizeDivider(s)).toBeCloseTo(2 / 3, 10);
   });
 
-  test("an extreme leaf ratio is clamped", () => {
-    // 9 leaves vs 1 => 0.9 exactly (edge of range)
+  test("an extreme span ratio is NOT clamped (parity with macOS equalize)", () => {
+    // 10 same-orientation spans vs 1 => 10/11 (~0.909), ABOVE MAX_DIVIDER.
+    // macOS `appendEqualizeAdjustments` emits the raw span ratio with no clamp,
+    // so equalize must return 10/11, not MAX_DIVIDER. The old 9-vs-1 case landed
+    // exactly on 0.9 == MAX_DIVIDER and so passed with or without a clamp.
     let left: Layout = pane("l0");
-    for (let i = 1; i < 9; i += 1) {
+    for (let i = 1; i < 10; i += 1) {
       left = split("horizontal", 0.5, left, pane(`l${i}`));
     }
     const s = { orientation: "horizontal", divider_position: 0.5, first: left, second: pane("r") } as Split;
-    expect(countLeaves(left)).toBe(9);
-    expect(equalizeDivider(s)).toBe(MAX_DIVIDER);
+    expect(countLeaves(left)).toBe(10);
+    expect(equalizeDivider(s)).toBeCloseTo(10 / 11, 10);
+    // Sanity: 10/11 is strictly greater than the clamp ceiling, so a stray
+    // clampDivider would visibly break this assertion.
+    expect(equalizeDivider(s)).toBeGreaterThan(MAX_DIVIDER);
   });
 });
 
