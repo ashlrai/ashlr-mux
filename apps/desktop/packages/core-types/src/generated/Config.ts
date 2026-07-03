@@ -4,6 +4,10 @@ import type { AppConfig } from "./AppConfig";
 import type { AutomationConfig } from "./AutomationConfig";
 import type { BrowserConfig } from "./BrowserConfig";
 import type { CanvasConfig } from "./CanvasConfig";
+import type { CmuxCommandDefinition } from "./CmuxCommandDefinition";
+import type { CmuxConfigActionDefinition } from "./CmuxConfigActionDefinition";
+import type { CmuxConfigUIDefinition } from "./CmuxConfigUIDefinition";
+import type { CmuxSurfaceTabBarButton } from "./CmuxSurfaceTabBarButton";
 import type { DiffViewerConfig } from "./DiffViewerConfig";
 import type { FileEditorConfig } from "./FileEditorConfig";
 import type { FileExplorerConfig } from "./FileExplorerConfig";
@@ -13,15 +17,21 @@ import type { ShortcutsConfig } from "./ShortcutsConfig";
 import type { SidebarAppearanceConfig } from "./SidebarAppearanceConfig";
 import type { SidebarConfig } from "./SidebarConfig";
 import type { TerminalConfig } from "./TerminalConfig";
+import type { VaultConfig } from "./VaultConfig";
 import type { WorkspaceColorsConfig } from "./WorkspaceColorsConfig";
+import type { WorkspaceGroupsConfig } from "./WorkspaceGroupsConfig";
 
 /**
  * The top-level `cmux.json` document.
  *
  * Modeled sections are strongly typed and optional (absent sections stay
- * absent on re-serialize). Every other top-level key — including sections this
- * crate deliberately does not model (`actions`, `ui`, `commands`, `vault`,
- * `workspaceGroups`, `surfaceTabBarButtons`, `newWorkspaceCommand`) — is
+ * absent on re-serialize). Every other top-level key not modeled here is
  * captured verbatim in [`Config::extra`] so a round-trip is non-lossy.
+ *
+ * Deserialization goes through the private `ConfigShadow` so the
+ * document-level validation Swift performs inside `CmuxConfigFile.init(from:)`
+ * (`Sources/CmuxConfig.swift:46-152`) — blank / duplicate / alias-colliding
+ * `actions` keys and duplicate surface-tab-bar button ids — fails the decode
+ * exactly as it does on macOS.
  */
-export type Config = { schema?: string, schema_version?: number, app?: AppConfig, terminal?: TerminalConfig, notifications?: NotificationsConfig, sidebar?: SidebarConfig, workspace_colors?: WorkspaceColorsConfig, sidebar_appearance?: SidebarAppearanceConfig, automation?: AutomationConfig, browser?: BrowserConfig, markdown?: MarkdownConfig, canvas?: CanvasConfig, file_editor?: FileEditorConfig, file_explorer?: FileExplorerConfig, diff_viewer?: DiffViewerConfig, shortcuts?: ShortcutsConfig, };
+export type Config = { schema?: string, schema_version?: number, app?: AppConfig, terminal?: TerminalConfig, notifications?: NotificationsConfig, sidebar?: SidebarConfig, workspace_colors?: WorkspaceColorsConfig, sidebar_appearance?: SidebarAppearanceConfig, automation?: AutomationConfig, browser?: BrowserConfig, markdown?: MarkdownConfig, canvas?: CanvasConfig, file_editor?: FileEditorConfig, file_explorer?: FileExplorerConfig, diff_viewer?: DiffViewerConfig, shortcuts?: ShortcutsConfig, vault?: VaultConfig, workspace_groups?: WorkspaceGroupsConfig, new_workspace_command?: string, actions?: { [key in string]?: CmuxConfigActionDefinition }, ui?: CmuxConfigUIDefinition, commands?: Array<CmuxCommandDefinition>, surface_tab_bar_buttons?: Array<CmuxSurfaceTabBarButton>, };

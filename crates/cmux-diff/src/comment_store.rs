@@ -44,6 +44,7 @@ pub struct DiffComment {
     pub consumed_at: Option<String>,
     /// ISO8601 string; preserved across updates.
     pub created_at: String,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub end_line: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
@@ -56,6 +57,7 @@ pub struct DiffComment {
     pub message: String,
     /// `"additions"` or `"deletions"`.
     pub side: String,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub start_line: i64,
     /// Formatted text block appended to a submission when the workspace's
     /// pending pool is consumed.
