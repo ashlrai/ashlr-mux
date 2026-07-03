@@ -15,8 +15,13 @@ pub use notifications::policy::{
 };
 pub use notifications::sound::NotificationSound;
 pub use notifications::{
-    AddNotificationRequest, ApplyOutcome, NotificationClickAction, NotificationRequest,
-    NotificationState, NotificationStore, TerminalNotification,
+    build_sidebar_unread_summaries, cached_delivery_authorization_decision, fallback_effects,
+    make_menu_snapshot, plain_title, state_hint_kind, AddNotificationRequest, ApplyOutcome,
+    DismissedTombstoneRing, NotificationAuthorizationState, NotificationClickAction,
+    NotificationGates, NotificationMenuSnapshot, NotificationRequest, NotificationState,
+    NotificationStore, SidebarApplyChanges, SidebarSurfaceUnreadKey, SidebarUnreadModel,
+    SidebarWorkspaceUnreadSummary, StateHintKind, SupersededPhoneDismissBuffer, TerminalNotification,
+    DEFAULT_INLINE_NOTIFICATION_LIMIT,
 };
 
 pub const CMUX_PLATFORM: &str = "windows-m1-core";

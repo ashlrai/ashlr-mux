@@ -1,18 +1,38 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
+pub mod authorization;
 pub mod badge;
 pub mod coalescer;
+pub mod menu_snapshot;
 pub mod policy;
+pub mod reconcile;
+pub mod settings;
+pub mod sidebar_unread;
 pub mod sound;
+pub mod superseded_buffer;
 
+pub use authorization::{
+    cached_delivery_authorization_decision, fallback_effects, NotificationAuthorizationState,
+};
 pub use badge::dock_badge_label;
 pub use coalescer::NotificationBurstCoalescer;
+pub use menu_snapshot::{
+    badge_text, make as make_menu_snapshot, plain_title, state_hint_kind, NotificationMenuSnapshot,
+    StateHintKind, DEFAULT_INLINE_NOTIFICATION_LIMIT,
+};
 pub use policy::{
     delivery_decision, has_any_notification_effect, should_suppress_external_delivery,
     DeliveryDecision, TerminalNotificationPolicyEffects,
 };
+pub use reconcile::DismissedTombstoneRing;
+pub use settings::NotificationGates;
+pub use sidebar_unread::{
+    build_sidebar_unread_summaries, SidebarApplyChanges, SidebarSurfaceUnreadKey,
+    SidebarUnreadModel, SidebarWorkspaceUnreadSummary,
+};
 pub use sound::NotificationSound;
+pub use superseded_buffer::SupersededPhoneDismissBuffer;
 
 fn default_pane_flash() -> bool {
     true
