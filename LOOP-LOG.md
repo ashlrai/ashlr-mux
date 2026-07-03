@@ -393,3 +393,38 @@ hyphenated schemes serving bytes, bundle.resources at runtime resource_dir) need
 the running app. Loop CONTINUES on remaining headless work; UI items queued for the
 morning. NEXT: re-scout for the next disjoint headless batch (Phase-5 chrome logic,
 more pure Swift subsystems) or confirm frontier exhausted.
+
+## 2026-07-03 (batch 2) — 7 more headless crates (transcript + workspaces + notifications + appearance + sidebar-args + git + browser-history)
+
+`/loop ultracode` continued. Scout-2 (5 Explore agents + partitioner, `wgrjddlr0`)
+DISPROVED the "frontier exhausted" note a second time — found 7 disjoint oracle-backed
+headless lanes. Pre-seeded 5 new-crate members in root Cargo.toml (`b8eea0883`), then
+a 7-lane implement→adversarial-verify workflow. The session usage limit (resets 6am ET)
+cut the first run off mid-flight: 3 lanes finished green and were salvaged/committed
+(`1d218327b`: sidebar-args 10 / git 13 / browser-history 7 tests); the other 4 had
+partial writes. After the limit reset, a scoped re-run (`w04t8yz9x`, treating the
+partial files as drafts) finished all 4 SOLID:
+
+- `55f55c143` **cmux-agent-chat transcript/** — on-disk Claude/Codex session-JSONL
+  history parser (model + json_value + text_budget + timestamp + diff_builder +
+  tool_completion + parse_state + batch_assembler + claude/codex parsers), DISTINCT
+  from the live provider transports. 262 tests incl. fixture replay.
+- `bdb080999` **cmux-workspaces** (NEW) — pure workspace/tab/group ordering +
+  group-invariants + batch-reorder + sidebar render projection + selection-sync +
+  placement + closed-item history (session-restore edge cases). 59 tests.
+- `df3d35740` **cmux-core notification sub-models** — the six pure models behind the
+  delivery seam (superseded buffer, dismiss-tombstone ring, authorization, menu
+  snapshot, sidebar-unread, UserDefaults gates). cmux-core now 142 tests.
+- `690450971` **cmux-appearance** (NEW) — appearance-mode + color-scheme + theme-name
+  selection codec resolution layer. 29 tests.
+
+Gate GREEN: cargo check --workspace + clippy --workspace --all-targets clean, no
+ts-rs drift (no new TS-exported types). All 4 verify verdicts SOLID (zero bugs).
+KEY OPERATIONAL LESSON: the session-usage limit is a hard mid-workflow failure mode —
+committing each lane the moment it is green (not batching the commit to end-of-wave)
+is what saved the 3 completed lanes; the pre-seed's disjoint file sets made the
+partial-4 trivially resumable as drafts. NET for the two batches: 7 new crates +
+2 major cmux-core model ports (~450 new tests), all faithful Swift ports. The
+remaining mainline is now genuinely host-wiring / UI-checkpoint work (Phase-4 mount
+live-verify, renderer, window chrome, live agents, packaging). NEXT clean break =
+the Phase-4 UI test (docs/windows-port/UI-TEST-QUEUE.md).
