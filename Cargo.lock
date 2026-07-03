@@ -379,6 +379,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmux-appearance"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "cmux-browser-history"
+version = "0.1.0"
+dependencies = [
+ "url",
+]
+
+[[package]]
 name = "cmux-cli"
 version = "0.1.0"
 dependencies = [
@@ -453,6 +467,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmux-git"
+version = "0.1.0"
+dependencies = [
+ "url",
+]
+
+[[package]]
 name = "cmux-golden"
 version = "0.1.0"
 dependencies = [
@@ -524,6 +545,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmux-sidebar-args"
+version = "0.1.0"
+dependencies = [
+ "uuid",
+]
+
+[[package]]
 name = "cmux-ssh"
 version = "0.1.0"
 
@@ -551,6 +579,17 @@ dependencies = [
 [[package]]
 name = "cmux-windowing"
 version = "0.1.0"
+
+[[package]]
+name = "cmux-workspaces"
+version = "0.1.0"
+dependencies = [
+ "cmux-config",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "uuid",
+]
 
 [[package]]
 name = "combine"

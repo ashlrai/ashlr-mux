@@ -3,11 +3,14 @@ members = [
   "apps/desktop/src-tauri",
   "crates/cmux-agent",
   "crates/cmux-agent-chat",
+  "crates/cmux-appearance",
+  "crates/cmux-browser-history",
   "crates/cmux-cli",
   "crates/cmux-command-palette",
   "crates/cmux-config",
   "crates/cmux-core",
   "crates/cmux-diff",
+  "crates/cmux-git",
   "crates/cmux-golden",
   "crates/cmux-ipc",
   "crates/cmux-markdown",
@@ -15,10 +18,12 @@ members = [
   "crates/cmux-process",
   "crates/cmux-resume",
   "crates/cmux-scrub",
+  "crates/cmux-sidebar-args",
   "crates/cmux-ssh",
   "crates/cmux-terminal",
   "crates/cmux-tmux",
   "crates/cmux-windowing",
+  "crates/cmux-workspaces",
 ]
 resolver = "2"
 
