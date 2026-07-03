@@ -4,6 +4,21 @@
 first, then execute the plan below. Rewritten 2026-07-01 (end of the slice-3 +
 crates + Phase-3-accumulators session).
 
+> **LATEST — 2026-07-03 (HEAD `b1fac5203`, pushed to `fork/windows-port`, tree clean).**
+> 7 new headless crates landed + green (~309 oracle tests, clippy -D warnings clean):
+> `cmux-agent-launch-sanitizer` (60), `cmux-agent-resume-argv` (40), `cmux-agent-hook-config`
+> (48), `cmux-sync-protocol` (59), `cmux-jsonc` (36), `cmux-pane-guardrail` (21),
+> `cmux-settings-search` (45) — commit `92828014e`. Plus red-team parity fixes (commit
+> `b1fac5203`): cmux-diff UUID canonical-form, web equalize-clamp drop, web listScope Swift
+> whitespace trim; + jsonc CRLF-split parity fix. See the newest `LOOP-LOG.md` entry for the
+> full story. **DO FIRST next session:** (1) finish the sync-protocol `apply()`-return parity
+> nit (the parity-nits workflow was stopped mid-pause); (2) run `/simplify` on the 7 new
+> crates + re-test (skipped this batch); (3) verify the sanitizer grapheme doc-note landed.
+> Then re-scout — the frontier is **NOT** exhausted (~8 more single-crate-lib + web-slice lanes
+> listed in `LOOP-LOG.md`). **NOTE:** `/ashlr:loop` is the WRONG trigger — it runs the ashlr
+> *fleet conductor* (a separate product that dumps proposals into `ashlr inbox`), not this
+> workflow-driven coding loop. Resume the coding loop by launching a scout workflow.
+
 ## Where things stand (all COMMITTED + PUSHED to `fork/windows-port`)
 
 5 commits landed this session (`f883097` Rust crates+session, `2ad6504` web

@@ -465,3 +465,47 @@ palette wrap, equalize spanCount) — the adversarial passes keep earning their 
 PUSHED to fork/windows-port. Backend pure-oracle frontier is now THINNING (remaining
 candidates are Bonsplit-blocked / Ghostty-coupled / Windows-updater-caveated); the bulk
 of what's left is the batched live-WebView2 UI session + genuinely UI-coupled wiring.
+
+## 2026-07-03 — 7-crate headless batch (agent-launch/sync/jsonc/guardrail/settings) + red-team fixes
+
+Resumed after the /ashlr:loop detour (that slash-command runs the ashlr FLEET CONDUCTOR, not
+this coding loop — its inbox is 1229 junk test-fixtures; the real coding loop is workflow-driven).
+
+Scout (wbhju2idd, 4 agents) DISPROVED the "frontier exhausted" note AGAIN: 7 disjoint NEW-crate
+lanes, all Foundation-only. Pre-seeded 7 skeletons + root Cargo.toml, `cargo check` green, then an
+implement->verify->fix wave. Session-limit killed the first wave mid-run; resumed with credits and
+gated the on-disk state: 6 crates had been written but several were ORPHANED (module files present,
+but lib.rs left a 1-line placeholder with NO `mod` decls, so 0 tests compiled/ran), and sanitizer
+was still a bare placeholder. Finish workflow (w8tju0dvt, 10 agents) implemented sanitizer + wired
+hook-config/sync-protocol/jsonc + adversarially verified all six. LANDED (cargo test + clippy -D
+warnings green), commit 92828014e:
+  cmux-agent-launch-sanitizer 60, cmux-agent-resume-argv 40, cmux-agent-hook-config 48,
+  cmux-sync-protocol 59, cmux-jsonc 36, cmux-pane-guardrail 21, cmux-settings-search 45  (~309 tests).
+
+Red-team (wbx2dzmny, 10 agents) over batch-3 code -> 5 CONFIRMED LOW findings; fixes in commit
+b1fac5203: cmux-diff UUID canonical-form (delete+save gate on 36-char hyphenated form like Swift
+UUID(uuidString:)), web equalizeDivider clamp drop (Swift emits unclamped span ratio), web listScope
+Swift whitespacesAndNewlines trim (U+0085 yes, U+FEFF no). One finding correctly ruled FALSE-POSITIVE
+under the parity mandate (claude emitted_any_assistant_text is NEVER reset in the canonical Swift
+accumulator either -> the Rust is faithful; a "fix" would DIVERGE). jsonc CRLF-split parity fix also
+landed (grapheme-aware value split so a \r\n is not split on its interior LF; +2 tests).
+
+Pushed 8cd2c9f7b..b1fac5203 -> fork/windows-port. HEAD b1fac5203. Working tree clean.
+
+OPEN (next session, do first):
+ (1) sync-protocol apply()-return-value parity nit — the parity-nits workflow (wnce7kg9m) was STOPPED
+     mid-run for a session pause (I finished only its bool->double deref). Re-read Swift
+     SyncFrameApplier.applyDeltaFrame and make apply() return Swift-faithful for stale/duplicate-rev
+     deltas (Swift may return true unconditionally once it reaches store.applyDelta), or confirm the
+     current false is faithful and delete the misleading doc-comment. LOW.
+ (2) /simplify was SKIPPED this batch (wrap-up under a session pause) — run it on the 7 new crates +
+     re-test before the next scout.
+ (3) sanitizer grapheme-vs-scalar codex-session-id doc-note (LOW, unreachable ASCII domain) may not
+     have landed (that lane was in the stopped wnce7kg9m) — verify/add.
+
+FRONTIER STILL NOT EXHAUSTED — partitioner flagged ~8 more headless lanes for the next scout. These
+are single-crate-lib lanes (run at most ONE per crate concurrently to stay write-disjoint):
+cmux-agent capture_trust / spawn_identity / feed_event / hook_payload; cmux-ssh
+reconnect_input_filter; cmux-terminal top_label; cmux-workspaces tab_colors. Lower-confidence:
+cmux-remote-shell-commands (couples to FileManager + unported SSH deps). Web-slice ports:
+shortcutFormat / placement / reorder / switcherIndex (share `bun test src`; sequence them).
