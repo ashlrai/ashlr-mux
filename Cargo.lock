@@ -476,6 +476,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmux-mentions"
+version = "0.1.0"
+
+[[package]]
 name = "cmux-process"
 version = "0.1.0"
 dependencies = [

@@ -10,6 +10,7 @@ members = [
   "crates/cmux-golden",
   "crates/cmux-ipc",
   "crates/cmux-markdown",
+  "crates/cmux-mentions",
   "crates/cmux-process",
   "crates/cmux-scrub",
   "crates/cmux-ssh",
