@@ -82,7 +82,11 @@ fn parse_iso8601(raw: &str) -> Option<i64> {
     let year: i64 = date_iter.next()?.parse().ok()?;
     let month: i64 = date_iter.next()?.parse().ok()?;
     let day: i64 = date_iter.next()?.parse().ok()?;
-    if date_iter.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+    if date_iter.next().is_some()
+        || !(0..=9999).contains(&year)
+        || !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+    {
         return None;
     }
 
@@ -108,9 +112,18 @@ fn parse_iso8601(raw: &str) -> Option<i64> {
 
     let frac_ms = fractional_millis(frac)?;
 
+    // Checked arithmetic so a corrupt out-of-range date fails open (`None`)
+    // rather than panicking under overflow-checks or wrapping in release,
+    // preserving the documented fail-open contract. The 4-digit year bound
+    // above already keeps realistic transcripts far from these limits.
     let days = days_from_civil(year, month, day);
-    let base_seconds = days * 86_400 + hour * 3_600 + minute * 60 + second;
-    let millis = base_seconds * 1_000 + frac_ms - offset_seconds * 1_000;
+    let base_seconds = days
+        .checked_mul(86_400)?
+        .checked_add(hour * 3_600 + minute * 60 + second)?;
+    let millis = base_seconds
+        .checked_mul(1_000)?
+        .checked_add(frac_ms)?
+        .checked_sub(offset_seconds.checked_mul(1_000)?)?;
     Some(millis)
 }
 
@@ -206,6 +219,16 @@ mod tests {
         assert_eq!(parser.date(None), None);
         assert_eq!(parser.date(Some("not a date")), None);
         assert_eq!(parser.date(Some("2026-13-40T99:99:99Z")), None);
+    }
+
+    #[test]
+    fn oversized_year_fails_open() {
+        // A corrupt 6+ digit year would overflow `base_seconds * 1_000`; the
+        // parser must fail open (`None`) rather than panic/wrap, matching the
+        // Swift Foundation parser which rejects non-4-digit years.
+        let parser = TranscriptTimestampParser::new();
+        assert_eq!(parser.date(Some("9999999999-01-01T00:00:00Z")), None);
+        assert_eq!(parse_iso8601("100000-01-01T00:00:00Z"), None);
     }
 
     #[test]
