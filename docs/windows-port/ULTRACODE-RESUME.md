@@ -185,6 +185,20 @@ mount layer, which needs the running app):**
 4. ✅ `crates/cmux-markdown` (NEW crate) — file_link + local_image_jail + theme +
    assets + typography. 52 tests. Commit `92cffcf56`.
 5. ✅ `dialSocket` Windows refused-connect fix (unblocked M4 backlog). `c507355ee`.
+6. ✅ (2026-07-01/02, disjoint-lane swarms) Five more pure-logic ports —
+   `cmux-scrub` (SentryScrubber), `cmux-tmux` (control-mode parsers + resume
+   gate), `cmux-ssh` (session detection), markdown `remote_image_loader`
+   (chunked decode + redirect), `cmux-config` final four sections. Commits
+   `af95cac45`/`e7a7214ba`/`6383ce905`.
+7. ✅ (2026-07-02) Fidelity fix-pass across those crates (all queued
+   adversarial-verify findings resolved or DIVERGENCE-pinned; verifiers fixed
+   6 real bugs incl. Swift split(maxSplits:) 5th-field, decode/encodeIfPresent
+   null parity, swift_split size-token, NBSP transfer-encoding trim) + NEW
+   `cmux-mentions` crate — pure `TextBoxMention*` family incl. verbatim
+   CmuxCommandPalette fuzzy/engine subset (earmarked for a future
+   command-palette crate). 354 tests across the five crates. Commits
+   `46b8057d9`/`04c3c1329`. **Headless frontier is now exhausted — everything
+   remaining on the mainline needs the running app.**
 
 **NEXT — the Tauri mount layer (mount-DEPENDENT; needs `tauri dev`):**
 1. `apps/desktop/src-tauri/src/{diff,markdown,schemes}.rs` — commands over the
