@@ -9,6 +9,7 @@ import {
   type Rect,
 } from "../session/paneRects";
 import { resizeDivider, setDividerAtPath, type Layout } from "../session/splitLayout";
+import { stickyAgentPanes } from "../session/agentMount";
 import { AgentSessionSurface } from "./AgentSessionSurface";
 import { TerminalSurface } from "./TerminalSurface";
 
@@ -39,6 +40,10 @@ export function Workspace(): React.JSX.Element {
   // the pointer.
   const [override, setOverride] = useState<Layout | null>(null);
   const draggingRef = useRef(false);
+  // The single pane that currently owns the one mounted agent surface. Sticky on
+  // purpose — see the agent-mount note below the early return for why there is
+  // exactly one and why it must survive a toggle back to the terminal.
+  const agentPanesRef = useRef<ReadonlySet<string>>(new Set());
   useEffect(() => {
     if (!draggingRef.current) {
       setOverride(null);
@@ -105,15 +110,42 @@ export function Workspace(): React.JSX.Element {
   const handles = dividerHandles(layout);
   const kinds = surfaceKinds(layout);
 
+  // Which panes own a mounted agent surface. Each agent pane mounts its own
+  // surface (events are routed per session id, so concurrent agents are safe),
+  // and a surface must survive a toggle back to the terminal — the agent app
+  // has no transcript replay, so unmounting an in-flight run is irrecoverable.
+  // `stickyAgentPanes` encodes those rules. Keeping the owners in a ref makes
+  // them sticky across renders; assigning during render is safe (it is not
+  // React state and never triggers a re-render).
+  const liveAgentPanes = new Set(
+    [...kinds].filter(([, kind]) => kind === "agent").map(([panelId]) => panelId),
+  );
+  agentPanesRef.current = stickyAgentPanes(
+    agentPanesRef.current,
+    liveAgentPanes,
+    new Set(rects.keys()),
+  );
+  const mountedAgentPanes = agentPanesRef.current;
+
   return (
     <div ref={containerRef} className="cmux-workspace-portal" style={{ position: "relative", width: "100%", height: "100%", overflow: "hidden" }}>
       {[...rects.entries()].map(([panelId, rect]) => {
         const isAgent = kinds.get(panelId) === "agent";
         return (
-          <div key={panelId} style={{ ...paneStyle(rect), display: "flex", overflow: "hidden", zIndex: 0 }}>
-            {/* Flat portal: one surface per stable panel_id. A shell OR a
-                canonical agent session, per the pane's surface_kind. */}
-            {isAgent ? <AgentSessionSurface /> : <TerminalSurface />}
+          <div key={panelId} style={{ ...paneStyle(rect), overflow: "hidden", zIndex: 0 }}>
+            {/* Flat portal: the terminal is rendered once per stable panel_id and
+                never unmounted (its ConPTY shell lives on); each owning pane's
+                agent surface is overlaid the same way. Toggling agent⇄terminal
+                flips which one is VISIBLE — neither is torn down, so an
+                in-flight agent run survives an accidental switch. */}
+            <div style={{ position: "absolute", inset: 0, display: isAgent ? "none" : "flex", overflow: "hidden" }}>
+              <TerminalSurface />
+            </div>
+            {mountedAgentPanes.has(panelId) ? (
+              <div style={{ position: "absolute", inset: 0, display: isAgent ? "flex" : "none", overflow: "hidden" }}>
+                <AgentSessionSurface />
+              </div>
+            ) : null}
             <PaneControls
               onSplitHorizontal={() => split(panelId, "horizontal")}
               onSplitVertical={() => split(panelId, "vertical")}
