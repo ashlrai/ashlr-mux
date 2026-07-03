@@ -54,6 +54,25 @@ export function countLeaves(layout: Layout): number {
 }
 
 /**
+ * Orientation-aware span count: how many same-orientation panes a subtree
+ * contributes along `orientation`. A leaf is 1 span; a split whose orientation
+ * matches sums its children's spans; a CROSS-orientation nested split counts as
+ * a single span (not its leaf total). Mirrors macOS `spanCount(along:)` in
+ * `ExternalTreeNode+SplitGeometry.swift`, the source of truth for equalize.
+ */
+export function spanCount(layout: Layout, orientation: "horizontal" | "vertical"): number {
+  if (isPane(layout)) {
+    return 1;
+  }
+  if (layout.split.orientation !== orientation) {
+    return 1;
+  }
+  return (
+    spanCount(layout.split.first, orientation) + spanCount(layout.split.second, orientation)
+  );
+}
+
+/**
  * The divider ratio after a drag of `deltaPixels` along a `axisPixels`-long
  * axis, clamped. Mirrors macOS `resizeDividerAdjustment`
  * (`delta = amountPixels / axisPixels`, applied to `dividerPosition`).
@@ -66,13 +85,19 @@ export function resizeDivider(current: number, deltaPixels: number, axisPixels: 
 }
 
 /**
- * The equalized divider ratio = the first subtree's share of leaf panes.
- * Mirrors macOS `equalizeDividerPlan` (`firstSpanCount / totalSpanCount`), so
- * an equalize weights by pane count, not raw depth.
+ * The equalized divider ratio = the first subtree's share of same-orientation
+ * spans. Mirrors macOS `equalizeDividerPlan` (`firstSpanCount / totalSpanCount`
+ * with an ORIENTATION-AWARE `spanCount(along:)`), so a cross-orientation nested
+ * subtree counts as a single span, not its leaf total.
+ *
+ * DELIBERATE CORRECTION: this previously weighted by `countLeaves` (every leaf,
+ * ignoring orientation), which diverged from macOS — a `horizontal` split over
+ * a `vertical` [a,b] subtree and a `c` leaf equalized to 2/3 instead of the
+ * canonical 1/2. Now weighted by `spanCount` along the split's own orientation.
  */
 export function equalizeDivider(split: Split): number {
-  const first = countLeaves(split.first);
-  const total = first + countLeaves(split.second);
+  const first = spanCount(split.first, split.orientation);
+  const total = first + spanCount(split.second, split.orientation);
   return total === 0 ? 0.5 : clampDivider(first / total);
 }
 

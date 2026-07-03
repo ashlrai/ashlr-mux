@@ -7,6 +7,7 @@ import type {
 } from "@cmux/core-types";
 
 import { host } from "../host/host";
+import { activeLayoutOf } from "../session/activeLayout";
 import type { SplitPath } from "../session/splitLayout";
 
 /**
@@ -38,20 +39,6 @@ export interface UseSession {
    * canonical agent session, or `null` to revert it to a terminal.
    */
   setSurfaceKind: (panelId: string, kind: string | null) => void;
-}
-
-/** The layout of the selected workspace of the first window, or `null`. */
-export function activeLayoutOf(
-  snapshot: AppSessionSnapshot | null,
-): SessionWorkspaceLayoutSnapshot | null {
-  const firstWindow = snapshot?.windows[0];
-  if (!firstWindow) {
-    return null;
-  }
-  const tabs = firstWindow.tab_manager;
-  const index = tabs.selected_workspace_index ?? 0;
-  const workspace = tabs.workspaces[index] ?? tabs.workspaces[0];
-  return workspace?.layout ?? null;
 }
 
 export function useSession(): UseSession {

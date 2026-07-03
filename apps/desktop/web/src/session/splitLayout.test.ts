@@ -83,11 +83,24 @@ describe("equalizeDivider", () => {
     expect(equalizeDivider(s)).toBe(0.5);
   });
 
-  test("weights by leaf count, not depth (2 vs 1 => 2/3)", () => {
+  // DELIBERATE CORRECTION: previously asserted 2/3 (leaf-weighted), which was
+  // WRONG vs macOS. A cross-orientation nested subtree counts as ONE span, so a
+  // horizontal split over a vertical [a,b] and a leaf c equalizes to 1/2.
+  test("weights by orientation-aware span; a cross-orientation subtree is 1 span (=> 1/2)", () => {
     const s = {
       orientation: "horizontal",
       divider_position: 0.5,
       first: split("vertical", 0.5, pane("a"), pane("b")),
+      second: pane("c"),
+    } as Split;
+    expect(equalizeDivider(s)).toBeCloseTo(1 / 2, 10);
+  });
+
+  test("weights same-orientation spans by their span count (2 vs 1 => 2/3)", () => {
+    const s = {
+      orientation: "horizontal",
+      divider_position: 0.5,
+      first: split("horizontal", 0.5, pane("a"), pane("b")),
       second: pane("c"),
     } as Split;
     expect(equalizeDivider(s)).toBeCloseTo(2 / 3, 10);
