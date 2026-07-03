@@ -132,3 +132,22 @@ body,
 .cmux-agent-session-surface .codex-left-rail {
   overflow: visible !important;
 }
+
+/*
+ * Opaque popup surfaces. The reused agent sheet's elevated-surface token is
+ * deliberately translucent — `--agent-surface-elevated: rgba(28, 31, 27, 0.48)`
+ * (agent-session/shared/styles.css:140) — because on macOS the native window
+ * vibrancy blurs whatever is behind the webview into a frosted panel. Our
+ * WebView2 shell has no vibrancy, so a 48%-alpha menu over pane content is just
+ * see-through and the text is hard to read. Divergence from macOS (user,
+ * 2026-07-03): force the popup menus opaque at the token's own base color;
+ * backdrop-blur is dropped since there is nothing meaningful to blur.
+ */
+.cmux-agent-session-surface .add-context-dropdown,
+.cmux-agent-session-surface .provider-dropdown,
+.cmux-agent-session-surface .permissions-dropdown,
+.cmux-agent-session-surface .rate-limit-popover,
+.cmux-agent-session-surface [role="menu"] {
+  background-color: rgb(28, 31, 27) !important;
+  backdrop-filter: none !important;
+}
