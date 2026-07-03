@@ -81,7 +81,6 @@ pub fn sidebar_top_level_workspace_ids(
     ids
 }
 
-#[allow(clippy::too_many_arguments)]
 fn append_top_level_id(
     id: Uuid,
     tabs_by_id: &HashMap<Uuid, &WorkspaceRow>,

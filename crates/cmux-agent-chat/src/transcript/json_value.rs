@@ -116,7 +116,7 @@ fn write_compact(value: &Value, out: &mut String) {
                 if index > 0 {
                     out.push(',');
                 }
-                write_scalar(&Value::String((*key).clone()), out);
+                out.push_str(&serde_json::to_string(*key).expect("scalar JSON serialization"));
                 out.push(':');
                 write_compact(&map[*key], out);
             }

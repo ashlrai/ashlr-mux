@@ -465,8 +465,8 @@ fn completion_from(value: Option<TranscriptJson<'_>>) -> TranscriptToolCompletio
             .and_then(|v| v.string())
             .map(str::to_string);
     }
-    if let Some(raw) = text.clone() {
-        if let Some(nested_value) = parse_json_line(&raw) {
+    if let Some(raw) = text.as_deref() {
+        if let Some(nested_value) = parse_json_line(raw) {
             let nested = TranscriptJson::new(&nested_value);
             if let Some(inner) = nested.get("output").and_then(|v| v.string()) {
                 text = Some(inner.to_string());

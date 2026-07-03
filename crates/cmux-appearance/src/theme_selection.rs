@@ -193,27 +193,19 @@ pub fn encode_theme_value(light: Option<&str>, dark: Option<&str>) -> Option<Str
 pub fn resolve_theme_name(raw: &str, preferred_color_scheme: ColorSchemePreference) -> String {
     let (fallback, light, dark) = scan_theme_buckets(raw);
 
-    match preferred_color_scheme {
-        ColorSchemePreference::Light => {
-            if let Some(light) = light.clone() {
-                return light;
-            }
-        }
-        ColorSchemePreference::Dark => {
-            if let Some(dark) = dark.clone() {
-                return dark;
-            }
-        }
-    }
+    let (preferred, other) = match preferred_color_scheme {
+        ColorSchemePreference::Light => (light, dark),
+        ColorSchemePreference::Dark => (dark, light),
+    };
 
+    if let Some(preferred) = preferred {
+        return preferred;
+    }
     if let Some(fallback) = fallback {
         return fallback;
     }
-    if let Some(dark) = dark {
-        return dark;
-    }
-    if let Some(light) = light {
-        return light;
+    if let Some(other) = other {
+        return other;
     }
     raw.trim().to_string()
 }

@@ -36,7 +36,6 @@ pub struct WorkspaceGroup {
 
 impl WorkspaceGroup {
     /// Creates a group (memberwise; mirrors the Swift value shape).
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: Uuid,
         name: String,
