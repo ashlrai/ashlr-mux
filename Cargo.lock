@@ -380,6 +380,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmux-agent-hook-config"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "regex",
+]
+
+[[package]]
+name = "cmux-agent-launch-sanitizer"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
+name = "cmux-agent-resume-argv"
+version = "0.1.0"
+
+[[package]]
 name = "cmux-appearance"
 version = "0.1.0"
 dependencies = [
@@ -507,6 +526,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmux-jsonc"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "cmux-markdown"
 version = "0.1.0"
 dependencies = [
@@ -520,6 +547,13 @@ dependencies = [
 [[package]]
 name = "cmux-mentions"
 version = "0.1.0"
+
+[[package]]
+name = "cmux-pane-guardrail"
+version = "0.1.0"
+dependencies = [
+ "uuid",
+]
 
 [[package]]
 name = "cmux-process"
@@ -554,6 +588,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmux-settings-search"
+version = "0.1.0"
+
+[[package]]
 name = "cmux-sidebar-args"
 version = "0.1.0"
 dependencies = [
@@ -563,6 +601,14 @@ dependencies = [
 [[package]]
 name = "cmux-ssh"
 version = "0.1.0"
+
+[[package]]
+name = "cmux-sync-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "thiserror 1.0.69",
+]
 
 [[package]]
 name = "cmux-terminal"

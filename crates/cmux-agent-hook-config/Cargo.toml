@@ -1,0 +1,12 @@
+[package]
+name = "cmux-agent-hook-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+base64 = "0.22"
+regex = { workspace = true }
