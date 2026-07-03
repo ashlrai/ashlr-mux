@@ -310,7 +310,7 @@ impl RunningSession {
                 }
                 OpenCodeProcessOutputDisposition::Suppress => return Vec::new(),
                 OpenCodeProcessOutputDisposition::Emit => {
-                    return vec![self.output_event(stream, text.to_string())];
+                    return vec![self.output_event(stream, strip_ansi_escape_sequences(text))];
                 }
             }
         }
@@ -329,7 +329,7 @@ impl RunningSession {
             }
         }
 
-        vec![self.output_event(stream, text.to_string())]
+        vec![self.output_event(stream, strip_ansi_escape_sequences(text))]
     }
 
     /// Consume one Codex `stdout` line and run the read→write reactive machine.
@@ -409,6 +409,9 @@ impl RunningSession {
             text,
         }
     }
+
+    // (verbatim-passthrough lines are ANSI-stripped first; see
+    // `strip_ansi_escape_sequences`)
 
     // ---- Codex write side (reactive + user submit) ----
 
@@ -575,5 +578,90 @@ impl RunningSession {
             ),
             _ => Vec::new(),
         }
+    }
+}
+
+// DIVERGENCE: macOS emits verbatim-passthrough process lines (any provider's
+// stderr, plus Codex/Claude non-protocol stdout) untouched, ANSI escapes and
+// all — and codex's tracing logger colorizes its stderr even when piped, so
+// the macOS transcript shows the same raw `ESC[2m…ESC[0m` bytes. Sanctioned
+// Windows deviation (user, 2026-07-03): strip ANSI escape sequences (CSI and
+// OSC) from those passthrough lines before they become `provider.output`, for
+// readability. Protocol-derived events (Claude deltas, Codex/OpenCode
+// accumulator output) are untouched.
+fn strip_ansi_escape_sequences(text: &str) -> String {
+    let mut cleaned = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\u{1b}' {
+            cleaned.push(ch);
+            continue;
+        }
+        match chars.peek() {
+            // CSI: ESC '[' parameter bytes (0x30-0x3F) and intermediate bytes
+            // (0x20-0x2F), terminated by one final byte (0x40-0x7E).
+            Some('[') => {
+                chars.next();
+                for follow in chars.by_ref() {
+                    if !matches!(follow, '\u{20}'..='\u{3f}') {
+                        break;
+                    }
+                }
+            }
+            // OSC: ESC ']' … terminated by BEL or ST (ESC '\').
+            Some(']') => {
+                chars.next();
+                while let Some(follow) = chars.next() {
+                    if follow == '\u{07}' {
+                        break;
+                    }
+                    if follow == '\u{1b}' && chars.peek() == Some(&'\\') {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            // Two-character escape (ESC + one final byte), or a trailing bare
+            // ESC at end of line — drop it either way.
+            Some(_) => {
+                chars.next();
+            }
+            None => {}
+        }
+    }
+    cleaned
+}
+
+#[cfg(test)]
+mod ansi_strip_tests {
+    use super::strip_ansi_escape_sequences;
+
+    #[test]
+    fn strips_codex_tracing_sgr_line() {
+        // Exact shape of a live codex_core stderr line on Windows.
+        let raw = "\u{1b}[2m2026-07-03T05:25:20.851021Z\u{1b}[0m \u{1b}[31mERROR\u{1b}[0m \u{1b}[2mcodex_core::tools::router\u{1b}[0m\u{1b}[2m:\u{1b}[0m \u{1b}[3merror\u{1b}[0m\u{1b}[2m=\u{1b}[0m`cmd` rejected: blocked by policy";
+        assert_eq!(
+            strip_ansi_escape_sequences(raw),
+            "2026-07-03T05:25:20.851021Z ERROR codex_core::tools::router: error=`cmd` rejected: blocked by policy"
+        );
+    }
+
+    #[test]
+    fn plain_text_is_untouched() {
+        assert_eq!(strip_ansi_escape_sequences("no escapes here"), "no escapes here");
+    }
+
+    #[test]
+    fn strips_osc_with_bel_and_st_terminators() {
+        assert_eq!(
+            strip_ansi_escape_sequences("a\u{1b}]0;title\u{07}b\u{1b}]8;;url\u{1b}\\c"),
+            "abc"
+        );
+    }
+
+    #[test]
+    fn truncated_escape_at_end_of_line_is_dropped() {
+        assert_eq!(strip_ansi_escape_sequences("tail\u{1b}"), "tail");
+        assert_eq!(strip_ansi_escape_sequences("tail\u{1b}[31"), "tail");
     }
 }
