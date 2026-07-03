@@ -35,7 +35,11 @@
       "../../../Assets.xcassets/AppIcon.appiconset/512.png"
     ],
     "resources": [
-      "../../../Resources/markdown-viewer/webviews-app/**/*"
+      "../../../Resources/markdown-viewer/webviews-app/**/*",
+      "../../../Resources/markdown-viewer/shell.html",
+      "../../../Resources/markdown-viewer/*.js",
+      "../../../Resources/markdown-viewer/*.css",
+      "../../../Resources/markdown-viewer/diff-viewer/**/*"
     ],
     "windows": {
       "webviewInstallMode": {

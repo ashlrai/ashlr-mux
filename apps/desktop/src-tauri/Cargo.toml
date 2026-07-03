@@ -17,7 +17,9 @@ tauri-build = { version = "2", features = [] }
 cmux-agent = { path = "../../../crates/cmux-agent" }
 cmux-agent-chat = { path = "../../../crates/cmux-agent-chat" }
 cmux-core = { path = "../../../crates/cmux-core" }
+cmux-diff = { path = "../../../crates/cmux-diff" }
 cmux-ipc = { path = "../../../crates/cmux-ipc" }
+cmux-markdown = { path = "../../../crates/cmux-markdown" }
 cmux-process = { path = "../../../crates/cmux-process" }
 cmux-terminal = { path = "../../../crates/cmux-terminal" }
 serde = { workspace = true }
@@ -32,3 +34,11 @@ tauri-plugin-dialog = "2"
 # Extension→MIME lookup (macOS parity: UTType.preferredMIMEType) + image data URLs.
 mime_guess = "2"
 base64 = "0.22"
+# ISO8601 timestamps for diff-comment createdAt/updatedAt (matches macOS
+# `ISO8601DateFormatter`: `YYYY-MM-DDTHH:MM:SSZ`). Default features only — we
+# format from `OffsetDateTime::now_utc()` components, no macro/parsing feature.
+time = "0.3"
+
+[dev-dependencies]
+# Temp fixtures for the diff-store / markdown-asset / scheme unit tests.
+tempfile = "3"

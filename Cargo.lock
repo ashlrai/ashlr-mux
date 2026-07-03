@@ -424,7 +424,9 @@ dependencies = [
  "cmux-agent",
  "cmux-agent-chat",
  "cmux-core",
+ "cmux-diff",
  "cmux-ipc",
+ "cmux-markdown",
  "cmux-process",
  "cmux-terminal",
  "mime_guess",
@@ -433,6 +435,8 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "tempfile",
+ "time",
  "ureq",
 ]
 
