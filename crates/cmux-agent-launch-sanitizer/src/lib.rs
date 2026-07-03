@@ -168,7 +168,7 @@ pub fn sanitized_launch_arguments(
 pub fn preserved_arguments(kind: &str, args: &[String]) -> Option<Vec<String>> {
     match kind {
         "claude" => preserve_options(args, &claude_policy()),
-        "codex" => preserve_options(args, &codex_policy()),
+        "codex" => preserve_options(args, codex_policy()),
         "grok" => preserve_options(args, &grok_policy()),
         "pi" | "omp" => preserve_options(args, &pi_policy()),
         "amp" => {
@@ -287,7 +287,7 @@ pub fn claude_teams_launch_has_option(option: &str, args: &[String]) -> bool {
             Some(true) => continue,
             Some(false) => {}
         }
-        if arg == option || arg.starts_with(&format!("{option}=")) {
+        if arg == option || arg.strip_prefix(option).is_some_and(|rest| rest.starts_with('=')) {
             return true;
         }
         let width = option_width(args, index, &policy);
@@ -299,11 +299,12 @@ pub fn claude_teams_launch_has_option(option: &str, args: &[String]) -> bool {
 /// `AgentLaunchSanitizer.preservedCodexForkArguments(args:)`.
 #[must_use]
 pub fn preserved_codex_fork_arguments(args: &[String]) -> Option<Vec<String>> {
+    let policy = codex_policy();
     let mut tail: Vec<String> = args.to_vec();
-    if let Some(fork_command) = codex_fork_command(&tail) {
-        tail = drop_codex_fork_positionals(&tail, &fork_command);
+    if let Some(fork_command) = codex_fork_command(&tail, policy) {
+        tail = drop_codex_fork_positionals(&tail, &fork_command, policy);
     }
-    preserve_options(&tail, &codex_policy())
+    preserve_options(&tail, policy)
 }
 
 /// `AgentLaunchSanitizer.removingSavedWorkingDirectoryOptions(from:workingDirectory:)`.
@@ -358,7 +359,7 @@ pub fn removing_saved_working_directory_options(
 
 /// `AgentLaunchSanitizer.preservedCodexLaunchArguments(args:)` (private).
 fn preserved_codex_launch_arguments(args: &[String]) -> Option<Vec<String>> {
-    if codex_fork_command(args).is_some() {
+    if codex_fork_command(args, codex_policy()).is_some() {
         return preserved_codex_fork_arguments(args);
     }
     preserved_arguments("codex", args)
@@ -370,8 +371,7 @@ struct CodexForkCommand {
 }
 
 /// `codexForkCommand(in:)`.
-fn codex_fork_command(args: &[String]) -> Option<CodexForkCommand> {
-    let policy = codex_policy();
+fn codex_fork_command(args: &[String], policy: &Policy) -> Option<CodexForkCommand> {
     let mut index = 0usize;
     while index < args.len() {
         let arg = args[index].as_str();
@@ -382,20 +382,20 @@ fn codex_fork_command(args: &[String]) -> Option<CodexForkCommand> {
             if arg != "fork" {
                 return None;
             }
-            let session_index = codex_fork_command_session_index(args, index)?;
+            let session_index = codex_fork_command_session_index(args, index, policy)?;
             return Some(CodexForkCommand {
                 fork_index: index,
                 session_index,
             });
         }
-        let width = option_width(args, index, &policy);
+        let width = option_width(args, index, policy);
         if policy.variadic_options.contains(arg) {
             let end = args.len().min(index + width);
             if index + 2 < end {
                 for candidate_index in (index + 2)..end {
                     if args[candidate_index] == "fork" {
                         if let Some(session_index) =
-                            codex_fork_command_session_index(args, candidate_index)
+                            codex_fork_command_session_index(args, candidate_index, policy)
                         {
                             return Some(CodexForkCommand {
                                 fork_index: candidate_index,
@@ -412,8 +412,11 @@ fn codex_fork_command(args: &[String]) -> Option<CodexForkCommand> {
 }
 
 /// `codexForkCommandSessionIndex(_:forkIndex:)`.
-fn codex_fork_command_session_index(args: &[String], fork_index: usize) -> Option<usize> {
-    let policy = codex_policy();
+fn codex_fork_command_session_index(
+    args: &[String],
+    fork_index: usize,
+    policy: &Policy,
+) -> Option<usize> {
     let mut index = fork_index + 1;
     while index < args.len() {
         let argument = args[index].as_str();
@@ -427,7 +430,7 @@ fn codex_fork_command_session_index(args: &[String], fork_index: usize) -> Optio
                 None
             };
         }
-        let width = option_width(args, index, &policy);
+        let width = option_width(args, index, policy);
         if policy.variadic_options.contains(argument) {
             let end = args.len().min(index + width);
             if index + 2 < end {
@@ -463,8 +466,11 @@ fn looks_like_codex_session_identifier(value: &str) -> bool {
 }
 
 /// `dropCodexForkPositionals(_:forkCommand:)`.
-fn drop_codex_fork_positionals(args: &[String], fork_command: &CodexForkCommand) -> Vec<String> {
-    let policy = codex_policy();
+fn drop_codex_fork_positionals(
+    args: &[String],
+    fork_command: &CodexForkCommand,
+    policy: &Policy,
+) -> Vec<String> {
     let mut result: Vec<String> = Vec::new();
     let mut index = 0usize;
     while index < args.len() {
@@ -487,7 +493,7 @@ fn drop_codex_fork_positionals(args: &[String], fork_command: &CodexForkCommand)
             index += 1;
             continue;
         }
-        let width = option_width(args, index, &policy);
+        let width = option_width(args, index, policy);
         let end = args.len().min(index + width);
         if policy.variadic_options.contains(arg)
             && fork_command.fork_index > index

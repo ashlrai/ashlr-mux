@@ -184,27 +184,9 @@ fn matching_container_end(chars: &[char], start: usize) -> Option<usize> {
             index = string_end;
             continue;
         }
-        if character == '/' {
-            let next = index + 1;
-            if next < n && chars[next] == '/' {
-                index = next + 1;
-                while index < n && !is_line_terminator(chars[index]) {
-                    index += 1;
-                }
-                continue;
-            }
-            if next < n && chars[next] == '*' {
-                index = next + 1;
-                while index < n {
-                    let following = index + 1;
-                    if chars[index] == '*' && following < n && chars[following] == '/' {
-                        index = following + 1;
-                        break;
-                    }
-                    index = following;
-                }
-                continue;
-            }
+        if let Some(next) = skip_comment_at(chars, index) {
+            index = next;
+            continue;
         }
         if character == '{' {
             stack.push('}');
@@ -291,31 +273,46 @@ fn skip_whitespace_and_comments(chars: &[char], start: usize) -> usize {
             index += 1;
             continue;
         }
-        if character == '/' {
-            let next = index + 1;
-            if next < n && chars[next] == '/' {
-                index = next + 1;
-                while index < n && !is_line_terminator(chars[index]) {
-                    index += 1;
-                }
-                continue;
-            }
-            if next < n && chars[next] == '*' {
-                index = next + 1;
-                while index < n {
-                    let following = index + 1;
-                    if chars[index] == '*' && following < n && chars[following] == '/' {
-                        index = following + 1;
-                        break;
-                    }
-                    index = following;
-                }
-                continue;
-            }
+        if let Some(next) = skip_comment_at(chars, index) {
+            index = next;
+            continue;
         }
         return index;
     }
     index
+}
+
+/// Shared comment-skip used by [`matching_container_end`] and
+/// [`skip_whitespace_and_comments`] (both Swift originals repeat this scan
+/// verbatim). Returns the index just past a `//` line comment (stopping at the
+/// line terminator) or `/* */` block comment (running to end of input when
+/// unterminated) starting at `index`, or `None` when `chars[index]` does not
+/// start a comment.
+fn skip_comment_at(chars: &[char], index: usize) -> Option<usize> {
+    let n = chars.len();
+    if chars[index] != '/' {
+        return None;
+    }
+    let next = index + 1;
+    if next < n && chars[next] == '/' {
+        let mut index = next + 1;
+        while index < n && !is_line_terminator(chars[index]) {
+            index += 1;
+        }
+        return Some(index);
+    }
+    if next < n && chars[next] == '*' {
+        let mut index = next + 1;
+        while index < n {
+            let following = index + 1;
+            if chars[index] == '*' && following < n && chars[following] == '/' {
+                return Some(following + 1);
+            }
+            index = following;
+        }
+        return Some(index);
+    }
+    None
 }
 
 /// Port of `propertyIndent(for:in:)` (line 486).
@@ -475,37 +472,22 @@ fn inserting(property_text: &str, object: &ObjectRange, chars: &[char]) -> Strin
     let normalized_property_text = with_preferred_newline(property_text, newline);
     let insert_text = format!("{newline}{normalized_property_text}{newline}{closing_indent}");
 
-    let insert_comma = match object.properties.last() {
-        Some(last) => !has_trailing_comma(chars, Some(last), object.close_brace),
-        None => false,
-    };
-
     let mut result = String::new();
-    if insert_comma {
-        let value_end = object.properties.last().unwrap().value_end;
-        result.extend(chars[..value_end].iter());
-        result.push(',');
-        result.extend(chars[value_end..object.close_brace].iter());
-        result.push_str(&insert_text);
-        result.extend(chars[object.close_brace..].iter());
-    } else {
-        result.extend(chars[..object.close_brace].iter());
-        result.push_str(&insert_text);
-        result.extend(chars[object.close_brace..].iter());
+    match object.properties.last() {
+        Some(last) if !has_trailing_comma(chars, last, object.close_brace) => {
+            result.extend(chars[..last.value_end].iter());
+            result.push(',');
+            result.extend(chars[last.value_end..object.close_brace].iter());
+        }
+        _ => result.extend(chars[..object.close_brace].iter()),
     }
+    result.push_str(&insert_text);
+    result.extend(chars[object.close_brace..].iter());
     result
 }
 
 /// Port of `hasTrailingComma(after:before:in:)` (line 581).
-fn has_trailing_comma(
-    chars: &[char],
-    property: Option<&PropertyRange>,
-    close_brace: usize,
-) -> bool {
-    let property = match property {
-        Some(p) => p,
-        None => return false,
-    };
+fn has_trailing_comma(chars: &[char], property: &PropertyRange, close_brace: usize) -> bool {
     let index = skip_whitespace_and_comments(chars, property.value_end);
     index < close_brace && chars[index] == ','
 }

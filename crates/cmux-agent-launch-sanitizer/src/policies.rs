@@ -11,6 +11,7 @@
 //! mirror the Swift array exactly.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 
 /// Mirror of the Swift `AgentLaunchSanitizer.Policy` struct. Sets hold
 /// `&'static str` because every option token is a compile-time literal; this
@@ -136,8 +137,13 @@ pub(crate) fn claude_policy() -> Policy {
     }
 }
 
-pub(crate) fn codex_policy() -> Policy {
-    Policy {
+/// Returns a shared static instance: the codex policy is consulted repeatedly
+/// per sanitize call (fork detection, positional dropping, option
+/// preservation), so it is built once. The tables are immutable, mirroring the
+/// Swift `static let` policy.
+pub(crate) fn codex_policy() -> &'static Policy {
+    static POLICY: OnceLock<Policy> = OnceLock::new();
+    POLICY.get_or_init(|| Policy {
         value_options: hset(&[
             "--config",
             "-c",
@@ -193,7 +199,7 @@ pub(crate) fn codex_policy() -> Policy {
         dropped_option_prefixes: vec!["--remote=", "--remote-auth-token-env="],
         resume_subcommand: Some("resume"),
         ..Default::default()
-    }
+    })
 }
 
 pub(crate) fn grok_policy() -> Policy {

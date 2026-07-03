@@ -311,14 +311,18 @@ fn begin_marker_line(restore_line: Option<&str>) -> String {
 fn is_begin_marker_line(line: &str) -> bool {
     let trimmed = trim_ws(line);
     trimmed == BEGIN_MARKER
-        || trimmed.starts_with(&format!("{RESTORE_LINE_MARKER_PREFIX} "))
+        || trimmed
+            .strip_prefix(RESTORE_LINE_MARKER_PREFIX)
+            .is_some_and(|rest| rest.starts_with(' '))
 }
 
 /// Port of `restoreLine(fromBeginMarkerLine:)` (Swift line 220).
 fn restore_line_from_begin_marker(line: &str) -> Option<String> {
     let trimmed = trim_ws(line);
-    let prefix_with_space = format!("{RESTORE_LINE_MARKER_PREFIX} ");
-    if !trimmed.starts_with(&prefix_with_space) {
+    if !trimmed
+        .strip_prefix(RESTORE_LINE_MARKER_PREFIX)
+        .is_some_and(|rest| rest.starts_with(' '))
+    {
         return None;
     }
     // `dropFirst(restoreLineMarkerPrefix.count)` — the prefix WITHOUT the

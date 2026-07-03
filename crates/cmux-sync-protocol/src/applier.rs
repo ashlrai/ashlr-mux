@@ -597,7 +597,7 @@ impl SyncFrameApplier {
         rev: i64,
         records: Vec<SyncWireRecord>,
     ) -> Result<bool, SyncFrameParseError> {
-        if let Some(build) = self.builds.get(&collection) {
+        if let Some(build) = self.builds.get_mut(&collection) {
             // Mid-paging: queue, do not apply yet. Bound the queue on TWO
             // independent axes (total retained records AND total frames) so a
             // never-completing snapshot cannot grow memory without limit.
@@ -613,11 +613,7 @@ impl SyncFrameApplier {
                     self.max_queued_delta_frames, self.max_queued_delta_records
                 )));
             }
-            self.builds
-                .get_mut(&collection)
-                .expect("build present in this branch")
-                .queued_deltas
-                .push((rev, records));
+            build.queued_deltas.push((rev, records));
             return Ok(false);
         }
         let now = (self.now)();

@@ -133,17 +133,11 @@ impl SyncFrameCodec {
 
         match type_str {
             "sync.snapshot" => {
-                let (collection, snapshot_rev) = match (
-                    obj.get("collection").and_then(Value::as_str),
-                    int_value(obj.get("snapshotRev")),
-                ) {
-                    (Some(collection), Some(snapshot_rev)) => (collection.to_string(), snapshot_rev),
-                    _ => {
-                        return Err(SyncFrameParseError::Malformed(
-                            "sync.snapshot missing collection/snapshotRev".to_string(),
-                        ))
-                    }
-                };
+                let (collection, snapshot_rev) = require_collection_and_rev(
+                    &obj,
+                    "snapshotRev",
+                    "sync.snapshot missing collection/snapshotRev",
+                )?;
                 let complete = matches!(obj.get("complete"), Some(Value::Bool(true)));
                 let epoch = int_value(obj.get("epoch")).unwrap_or(0);
                 let records = require_records(obj.get("records"), "sync.snapshot", snapshot_rev)?;
@@ -156,17 +150,8 @@ impl SyncFrameCodec {
                 })
             }
             "sync.delta" => {
-                let (collection, rev) = match (
-                    obj.get("collection").and_then(Value::as_str),
-                    int_value(obj.get("rev")),
-                ) {
-                    (Some(collection), Some(rev)) => (collection.to_string(), rev),
-                    _ => {
-                        return Err(SyncFrameParseError::Malformed(
-                            "sync.delta missing collection/rev".to_string(),
-                        ))
-                    }
-                };
+                let (collection, rev) =
+                    require_collection_and_rev(&obj, "rev", "sync.delta missing collection/rev")?;
                 let records = require_records(obj.get("records"), "sync.delta", rev)?;
                 Ok(SyncServerFrame::Delta {
                     collection,
@@ -175,17 +160,8 @@ impl SyncFrameCodec {
                 })
             }
             "sync.tick" => {
-                let (collection, rev) = match (
-                    obj.get("collection").and_then(Value::as_str),
-                    int_value(obj.get("rev")),
-                ) {
-                    (Some(collection), Some(rev)) => (collection.to_string(), rev),
-                    _ => {
-                        return Err(SyncFrameParseError::Malformed(
-                            "sync.tick missing collection/rev".to_string(),
-                        ))
-                    }
-                };
+                let (collection, rev) =
+                    require_collection_and_rev(&obj, "rev", "sync.tick missing collection/rev")?;
                 Ok(SyncServerFrame::Tick { collection, rev })
             }
             // A presence frame (snapshot/online/offline/seen/routes) or a future
@@ -233,6 +209,24 @@ impl SyncFrameCodec {
 /// `max_rev` is the frame head (`rev` for a delta, `snapshotRev` for a snapshot).
 /// A record with `record.rev > max_rev` is a malformed/forged frame and is
 /// rejected to avoid durable local-cache poisoning by a poison-high rev.
+/// Extract the required `collection` string plus the frame's required int head
+/// field (`snapshotRev` / `rev`), or fail with that frame's verbatim Swift
+/// malformed diagnostic. Shared by the three sync frame arms of
+/// [`SyncFrameCodec::parse`], which repeat this guard verbatim in Swift.
+fn require_collection_and_rev(
+    obj: &Map<String, Value>,
+    int_key: &str,
+    error: &str,
+) -> Result<(String, i64), SyncFrameParseError> {
+    match (
+        obj.get("collection").and_then(Value::as_str),
+        int_value(obj.get(int_key)),
+    ) {
+        (Some(collection), Some(rev)) => Ok((collection.to_string(), rev)),
+        _ => Err(SyncFrameParseError::Malformed(error.to_string())),
+    }
+}
+
 fn require_records(
     value: Option<&Value>,
     frame: &str,
