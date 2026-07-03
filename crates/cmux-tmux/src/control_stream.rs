@@ -354,6 +354,15 @@ fn parse_notification(line: &str) -> RemoteTmuxControlMessage {
 
 // MARK: - Helpers
 
+// DIVERGENCE: Swift compares strings by canonical equivalence over grapheme
+// clusters (`hasPrefix`, `==`, `split(separator:)`), while the notification
+// parsing above and the helpers below compare bytes/scalars. They disagree
+// only when a combining mark immediately follows a prefix or separator
+// boundary — e.g. Swift does NOT treat "%begin \u{301}5 1" as having prefix
+// "%begin " (the grapheme " ́" ≠ " ") and files it as an ignored notification,
+// while this port matches the prefix bytewise. tmux protocol framing is pure
+// ASCII, so no real control line reaches the difference.
+
 /// Returns the whitespace-separated field at `index` (0-based).
 ///
 // DIVERGENCE: Swift `split(separator: " ", omittingEmptySubsequences: false)`
@@ -752,6 +761,52 @@ mod tests {
         let msgs = feed_str(&mut p, "0123456789\n");
         assert_eq!(msgs.len(), 1);
         assert!(matches!(msgs[0], RemoteTmuxControlMessage::StreamError(_)));
+    }
+
+    // The two tests below are ported VERBATIM from Swift
+    // `RemoteTmuxControlStreamParserBudgetTests.swift` — same constructor
+    // budgets, same inputs, same expected messages, and (crucially) the same
+    // expectation that the parser RECOVERS after a budget stream error: the
+    // very next feed parses normally because `stream_error` resets the line
+    // buffer and block state.
+
+    #[test]
+    fn pending_line_overflow_emits_stream_error_and_resets_parser() {
+        // Swift: RemoteTmuxControlStreamParser(maxBufferedLineBytes: 8,
+        //        maxCommandBlockBytes: 1024)
+        let mut parser = RemoteTmuxControlStreamParser::new(8, 1024);
+
+        let overflow = parser.feed(b"abcdefghi");
+        assert_eq!(
+            overflow,
+            vec![RemoteTmuxControlMessage::StreamError(
+                "line exceeded 8 bytes".to_string()
+            )]
+        );
+        assert_eq!(
+            parser.feed(b"%exit\r\n"),
+            vec![RemoteTmuxControlMessage::Exit { reason: None }]
+        );
+    }
+
+    #[test]
+    fn command_block_overflow_emits_stream_error_and_resets_parser() {
+        // Swift: RemoteTmuxControlStreamParser(maxBufferedLineBytes: 128,
+        //        maxCommandBlockBytes: 10)
+        let mut parser = RemoteTmuxControlStreamParser::new(128, 10);
+
+        assert!(parser.feed(b"%begin 1700000000 7 1\r\n").is_empty());
+        let overflow = parser.feed(b"123456\r\nabcdef\r\n");
+        assert_eq!(
+            overflow,
+            vec![RemoteTmuxControlMessage::StreamError(
+                "command block exceeded 10 bytes".to_string()
+            )]
+        );
+        assert_eq!(
+            parser.feed(b"%window-add @5\r\n"),
+            vec![RemoteTmuxControlMessage::WindowAdd { window_id: 5 }]
+        );
     }
 
     #[test]

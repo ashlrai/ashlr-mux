@@ -18,7 +18,7 @@
 //! The `ts` feature gates `ts_rs::TS` derives, exactly mirroring `cmux-core`.
 //! It is inert in the default build (ts-rs is an optional dependency).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::de::Error as _;
@@ -1259,11 +1259,13 @@ impl<'de> Deserialize<'de> for CmuxButtonIcon {
 /// [`CmuxConfigActionDefinition`] and [`CmuxSurfaceTabBarButton`], which encode
 /// it differently (hence no `Serialize`/`Deserialize` derive here).
 ///
-/// DIVERGENCE: Swift validates the built-in id against the
-/// `CmuxSurfaceTabBarBuiltInAction` registry; that registry is UI-layer state
-/// outside this crate, so [`BuiltIn`](Self::BuiltIn) holds a lenient `String`
-/// (unknown ids are preserved rather than rejected), mirroring how `vault`'s
-/// `sessionIdSource` type was kept a lenient `String`.
+/// DIVERGENCE (leniency only): Swift validates the built-in id against the
+/// `CmuxSurfaceTabBarBuiltInAction` registry and hard-errors on unknown ids.
+/// The registry's closed alias table IS ported ([`builtin_action_canonical_id`])
+/// so known aliases canonicalize exactly as on macOS, but
+/// [`BuiltIn`](Self::BuiltIn) still holds a lenient `String`: unknown ids are
+/// preserved rather than rejected, mirroring how `vault`'s `sessionIdSource`
+/// type was kept a lenient `String`.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub enum CmuxSurfaceTabBarButtonAction {
@@ -1325,6 +1327,25 @@ fn generated_command_id(command: &str) -> String {
         "command".to_owned()
     } else {
         out
+    }
+}
+
+/// Port of `CmuxSurfaceTabBarBuiltInAction.init?(configID:)` plus its
+/// `configID` raw value (`Sources/CmuxSurfaceTabBarBuiltInAction.swift:4-31`):
+/// maps every accepted alias of a built-in surface-tab-bar action to the
+/// canonical config id (the Swift enum's raw value). Returns `None` for
+/// unknown ids. The alias table is closed and byte-identical to Swift's.
+fn builtin_action_canonical_id(config_id: &str) -> Option<&'static str> {
+    match config_id {
+        "cmux.newWorkspace" | "newWorkspace" => Some("cmux.newWorkspace"),
+        "cmux.cloudvm" | "cmux.cloudVM" | "cloudVM" | "cloudvm" | "cmux.newCloudVM"
+        | "cmux.newCloudVm" | "newCloudVM" | "newCloudVm" | "cmux.startCloudVM"
+        | "cmux.startCloudVm" | "startCloudVM" | "startCloudVm" => Some("cmux.cloudvm"),
+        "cmux.newTerminal" | "newTerminal" => Some("cmux.newTerminal"),
+        "cmux.newBrowser" | "newBrowser" => Some("cmux.newBrowser"),
+        "cmux.splitRight" | "splitRight" => Some("cmux.splitRight"),
+        "cmux.splitDown" | "splitDown" => Some("cmux.splitDown"),
+        _ => None,
     }
 }
 
@@ -1444,7 +1465,16 @@ impl<'de> Deserialize<'de> for CmuxConfigActionDefinition {
             #[serde(rename = "commandName")]
             command_name: Option<String>,
             name: Option<String>,
-            agent: Option<CmuxConfigAgentKind>,
+            // Buffered raw and parsed ONLY inside the "agent" arm: Swift
+            // decodes `agent` solely in `case "agent"` (Swift:931-932) and
+            // otherwise only checks key presence, so an invalid agent value
+            // next to an explicit non-agent `type` never errors on macOS.
+            // DIVERGENCE: the other lazily-decoded Swift keys (`builtin`,
+            // `command`, `commandName`, `name`, `args`) are typed
+            // `Option<String>` here, so NON-STRING junk under them fails this
+            // decode even when an explicit `type` routes elsewhere, while
+            // Swift ignores keys the winning arm never reads.
+            agent: Option<serde_json::Value>,
             args: Option<String>,
             title: Option<String>,
             subtitle: Option<String>,
@@ -1460,29 +1490,54 @@ impl<'de> Deserialize<'de> for CmuxConfigActionDefinition {
         }
         let raw = Raw::deserialize(deserializer)?;
 
-        // Inference order mirrors Swift:920-915 exactly (type, then agent, then
+        // Inference order mirrors Swift:904-915 exactly (type, then agent, then
         // builtin, then command).
+        // DIVERGENCE: an explicit JSON `null` under a discriminator key
+        // (`agent`, `builtin`, `command`, `type`, …) decodes as `None` here,
+        // i.e. exactly like an absent key. Swift's `container.contains(key)` is
+        // TRUE for a null value, so `{ "agent": null }` infers type "agent" on
+        // macOS and then hard-errors decoding null; here it infers nothing and
+        // yields `action: None`. Pinned by
+        // `explicit_null_discriminators_are_treated_as_absent`.
         let type_tag = raw
             .r#type
             .as_ref()
             .map(|s| s.trim().to_owned())
             .filter(|s| !s.is_empty());
         let inferred = type_tag
-            .or_else(|| raw.agent.as_ref().map(|_| "agent".to_owned()))
+            .or_else(|| {
+                raw.agent
+                    .as_ref()
+                    // Explicit null == absent (see the DIVERGENCE note above).
+                    .filter(|value| !value.is_null())
+                    .map(|_| "agent".to_owned())
+            })
             .or_else(|| raw.builtin.as_ref().map(|_| "builtin".to_owned()))
             .or_else(|| raw.command.as_ref().map(|_| "command".to_owned()));
 
         let action = match inferred.as_deref() {
-            Some("builtin") => Some(CmuxSurfaceTabBarButtonAction::BuiltIn(
-                raw.builtin.clone().unwrap_or_default(),
-            )),
+            // Swift:918-927 rejects unknown built-in ids and stores the
+            // canonical enum (so aliases re-encode canonically). Known aliases
+            // are canonicalized here too; unknown ids stay verbatim (crate
+            // leniency — see the DIVERGENCE note on
+            // `CmuxSurfaceTabBarButtonAction`).
+            Some("builtin") => {
+                let raw_builtin = raw.builtin.clone().unwrap_or_default();
+                let builtin = builtin_action_canonical_id(raw_builtin.trim())
+                    .map(str::to_owned)
+                    .unwrap_or(raw_builtin);
+                Some(CmuxSurfaceTabBarButtonAction::BuiltIn(builtin))
+            }
             Some("command") => Some(CmuxSurfaceTabBarButtonAction::Command(
                 raw.command.clone().unwrap_or_default(),
             )),
             Some("agent") => {
-                let agent = raw
+                let agent_value = raw
                     .agent
+                    .filter(|value| !value.is_null())
                     .ok_or_else(|| D::Error::custom("agent actions require 'agent'"))?;
+                let agent: CmuxConfigAgentKind =
+                    serde_json::from_value(agent_value).map_err(D::Error::custom)?;
                 Some(CmuxSurfaceTabBarButtonAction::Agent {
                     agent,
                     args: raw.args.clone(),
@@ -1631,18 +1686,31 @@ impl<'de> Deserialize<'de> for CmuxSurfaceTabBarButton {
                         "surface tab bar button action must not be blank",
                     ));
                 }
+                // Swift:1294-1297 canonicalizes a legacy bare string through the
+                // built-in registry: both the id and the action reference become
+                // the canonical config id ("newTerminal" → "cmux.newTerminal");
+                // unknown strings pass through verbatim.
+                let id = builtin_action_canonical_id(trimmed).unwrap_or(trimmed);
                 Ok(CmuxSurfaceTabBarButton {
-                    id: trimmed.to_owned(),
+                    id: id.to_owned(),
                     title: None,
                     icon: None,
                     tooltip: None,
-                    action: CmuxSurfaceTabBarButtonAction::ActionReference(trimmed.to_owned()),
+                    action: CmuxSurfaceTabBarButtonAction::ActionReference(id.to_owned()),
                     confirm: None,
                     terminal_command_target: None,
                 })
             }
             Raw::Object(object) => {
                 let object = *object;
+                // DIVERGENCE: an explicit JSON `null` under any key read here
+                // decodes as `None`, i.e. exactly like an absent key. Swift
+                // reads these fields behind `container.contains(key)` guards,
+                // which are TRUE for null, so e.g. `{ "id": "x", "command": null }`
+                // hard-errors on macOS (decoding null as String throws) while
+                // here the null key is ignored. Pinned by
+                // `explicit_null_discriminators_are_treated_as_absent`.
+                //
                 // Swift:1319-1333 — at most one action form may be defined.
                 let defined = [
                     object.action.is_some(),
@@ -1694,16 +1762,28 @@ impl<'de> Deserialize<'de> for CmuxSurfaceTabBarButton {
                         args: object.args.clone(),
                     }
                 } else if let Some(builtin) = object.builtin.clone() {
+                    // Swift:1358-1366 rejects unknown `builtin` ids and stores
+                    // the canonical enum. Known aliases are canonicalized here
+                    // too; unknown ids stay verbatim (crate leniency).
+                    let builtin = builtin_action_canonical_id(builtin.trim())
+                        .map(str::to_owned)
+                        .unwrap_or(builtin);
                     CmuxSurfaceTabBarButtonAction::BuiltIn(builtin)
                 } else if let Some(action) = object.action.clone() {
                     CmuxSurfaceTabBarButtonAction::ActionReference(action)
                 } else if let Some(id) = object.id.clone() {
-                    // DIVERGENCE: Swift only treats a bare `id` as a built-in when
-                    // it matches the CmuxSurfaceTabBarBuiltInAction registry (and
-                    // otherwise errors). Lacking that registry, any bare id becomes
-                    // a lenient BuiltIn (it re-encodes as `{ id, builtin: id }`,
-                    // matching Swift's output for a real built-in).
-                    CmuxSurfaceTabBarButtonAction::BuiltIn(id)
+                    // Swift:1369-1371 treats a bare `id` as a built-in only when
+                    // it matches the CmuxSurfaceTabBarBuiltInAction registry
+                    // (storing the canonical enum), and otherwise falls through
+                    // to the missing-action error below.
+                    // DIVERGENCE: an unknown bare id becomes a lenient BuiltIn
+                    // here instead of that hard error (it re-encodes as
+                    // `{ id, builtin: id }`, matching Swift's output for a real
+                    // built-in).
+                    let builtin = builtin_action_canonical_id(id.trim())
+                        .map(str::to_owned)
+                        .unwrap_or(id);
+                    CmuxSurfaceTabBarButtonAction::BuiltIn(builtin)
                 } else {
                     return Err(D::Error::custom(
                         "surfaceTabBarButtons entries must define 'action', 'builtin', 'command', 'agent', or 'type'",
@@ -1756,9 +1836,8 @@ pub struct CmuxSurfaceTabBarUIDefinition {
 /// `ui.newWorkspace` (`CmuxConfigButtonPlacement`,
 /// `Sources/CmuxConfigUI.swift:14-75`). `contextMenu` also accepts the legacy
 /// alias `rightClick` on decode and always encodes as `contextMenu`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
-#[serde(default)]
 pub struct CmuxConfigButtonPlacement {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
@@ -1769,13 +1848,50 @@ pub struct CmuxConfigButtonPlacement {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub tooltip: Option<String>,
-    #[serde(
-        rename = "contextMenu",
-        alias = "rightClick",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "contextMenu", skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub context_menu: Option<Vec<CmuxContextMenuItem>>,
+}
+
+impl<'de> Deserialize<'de> for CmuxConfigButtonPlacement {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Raw {
+            action: Option<String>,
+            icon: Option<CmuxButtonIcon>,
+            tooltip: Option<String>,
+            #[serde(rename = "contextMenu")]
+            context_menu: Option<Vec<CmuxContextMenuItem>>,
+            // Buffered raw so it is only *parsed* when `contextMenu` is unusable,
+            // mirroring Swift's short-circuiting `??` (CmuxConfigUI.swift:45-46):
+            // a malformed `rightClick` alongside a valid `contextMenu` is never
+            // decoded on macOS and therefore never errors.
+            #[serde(rename = "rightClick")]
+            right_click: Option<serde_json::Value>,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        // Swift decodes `contextMenu ?? rightClick` (CmuxConfigUI.swift:45-46):
+        // when BOTH keys are present, `contextMenu` wins and `rightClick` is
+        // silently ignored — this is NOT a duplicate-key error. An explicit
+        // JSON `null` under `contextMenu` behaves exactly like an absent key
+        // (`decodeIfPresent` returns nil for null) and falls back to the legacy
+        // `rightClick` alias; a null `rightClick` likewise yields no menu.
+        // Pinned by `context_menu_and_right_click_both_present_prefers_context_menu`.
+        let context_menu = match (raw.context_menu, raw.right_click) {
+            (Some(menu), _) => Some(menu),
+            (None, Some(value)) if !value.is_null() => Some(
+                serde_json::from_value::<Vec<CmuxContextMenuItem>>(value)
+                    .map_err(D::Error::custom)?,
+            ),
+            _ => None,
+        };
+        Ok(CmuxConfigButtonPlacement {
+            action: raw.action,
+            icon: raw.icon,
+            tooltip: raw.tooltip,
+            context_menu,
+        })
+    }
 }
 
 /// A `contextMenu` action entry
@@ -1920,6 +2036,12 @@ impl<'de> Deserialize<'de> for CmuxLayoutNode {
             children: Option<Vec<CmuxLayoutNode>>,
         }
         let raw = Raw::deserialize(deserializer)?;
+        // DIVERGENCE: Swift discriminates via `container.contains` (Swift:
+        // 1703-1704), which is TRUE for an explicit JSON null — so
+        // `{ "pane": null, "direction": … }` is a both-keys error on macOS and
+        // `{ "pane": null }` errors decoding null; serde maps null → None, so
+        // a null key counts as absent here (consistent with the pinned
+        // null-discriminator divergence on the other decoders).
         match (raw.pane, raw.direction) {
             (Some(_), Some(_)) => Err(D::Error::custom(
                 "CmuxLayoutNode must not contain both 'pane' and 'direction' keys",
@@ -2125,7 +2247,13 @@ impl<'de> Deserialize<'de> for CmuxCommandDefinition {
 /// Modeled sections are strongly typed and optional (absent sections stay
 /// absent on re-serialize). Every other top-level key not modeled here is
 /// captured verbatim in [`Config::extra`] so a round-trip is non-lossy.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+///
+/// Deserialization goes through the private `ConfigShadow` so the
+/// document-level validation Swift performs inside `CmuxConfigFile.init(from:)`
+/// (`Sources/CmuxConfig.swift:46-152`) — blank / duplicate / alias-colliding
+/// `actions` keys and duplicate surface-tab-bar button ids — fails the decode
+/// exactly as it does on macOS.
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct Config {
     #[serde(rename = "$schema", default, skip_serializing_if = "Option::is_none")]
@@ -2202,6 +2330,202 @@ pub struct Config {
     #[serde(flatten)]
     #[cfg_attr(feature = "ts", ts(skip))]
     pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Deserialization shadow of [`Config`]: identical wire shape, zero
+/// validation. [`Config`]'s `Deserialize` decodes this first and then applies
+/// the document-level validation Swift runs during `CmuxConfigFile.init(from:)`
+/// (`Sources/CmuxConfig.swift:46-152`); see `TryFrom<ConfigShadow> for Config`.
+#[derive(Deserialize, Default)]
+struct ConfigShadow {
+    #[serde(rename = "$schema", default)]
+    schema: Option<String>,
+    #[serde(rename = "schemaVersion", default)]
+    schema_version: Option<i64>,
+    #[serde(default)]
+    app: Option<AppConfig>,
+    #[serde(default)]
+    terminal: Option<TerminalConfig>,
+    #[serde(default)]
+    notifications: Option<NotificationsConfig>,
+    #[serde(default)]
+    sidebar: Option<SidebarConfig>,
+    #[serde(rename = "workspaceColors", default)]
+    workspace_colors: Option<WorkspaceColorsConfig>,
+    #[serde(rename = "sidebarAppearance", default)]
+    sidebar_appearance: Option<SidebarAppearanceConfig>,
+    #[serde(default)]
+    automation: Option<AutomationConfig>,
+    #[serde(default)]
+    browser: Option<BrowserConfig>,
+    #[serde(default)]
+    markdown: Option<MarkdownConfig>,
+    #[serde(default)]
+    canvas: Option<CanvasConfig>,
+    #[serde(rename = "fileEditor", default)]
+    file_editor: Option<FileEditorConfig>,
+    #[serde(rename = "fileExplorer", default)]
+    file_explorer: Option<FileExplorerConfig>,
+    #[serde(rename = "diffViewer", default)]
+    diff_viewer: Option<DiffViewerConfig>,
+    #[serde(default)]
+    shortcuts: Option<ShortcutsConfig>,
+    #[serde(default)]
+    vault: Option<VaultConfig>,
+    #[serde(rename = "workspaceGroups", default)]
+    workspace_groups: Option<WorkspaceGroupsConfig>,
+    #[serde(rename = "newWorkspaceCommand", default)]
+    new_workspace_command: Option<String>,
+    #[serde(default)]
+    actions: Option<BTreeMap<String, CmuxConfigActionDefinition>>,
+    #[serde(default)]
+    ui: Option<CmuxConfigUIDefinition>,
+    #[serde(default)]
+    commands: Option<Vec<CmuxCommandDefinition>>,
+    #[serde(rename = "surfaceTabBarButtons", default)]
+    surface_tab_bar_buttons: Option<Vec<CmuxSurfaceTabBarButton>>,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, serde_json::Value>,
+}
+
+impl<'de> Deserialize<'de> for Config {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let shadow = ConfigShadow::deserialize(deserializer)?;
+        Config::try_from(shadow).map_err(D::Error::custom)
+    }
+}
+
+impl TryFrom<ConfigShadow> for Config {
+    type Error = String;
+
+    /// The document-level validation `CmuxConfigFile.init(from:)` performs
+    /// during decode (`Sources/CmuxConfig.swift:46-95`). Field values are moved
+    /// across untouched — Swift's *rejection* rules are reproduced exactly,
+    /// while its trimming normalizations stay unreproduced per the crate
+    /// leniency policy above.
+    fn try_from(shadow: ConfigShadow) -> Result<Self, Self::Error> {
+        if let Some(actions) = &shadow.actions {
+            validate_action_keys(actions)?;
+        }
+        // Swift:59-72 — a present-but-blank `newWorkspaceCommand` fails the
+        // decode with this exact message (checked after `actions`, matching
+        // Swift's statement order).
+        // DIVERGENCE (representation only): Swift stores the TRIMMED command
+        // back into the model; this crate preserves the value verbatim
+        // (lossless round-trip policy) while reproducing the rejection.
+        if let Some(command) = &shadow.new_workspace_command {
+            if command.trim().is_empty() {
+                return Err("newWorkspaceCommand must not be blank".to_owned());
+            }
+        }
+        // Swift:74-88 — `ui.surfaceTabBar.buttons` takes precedence over the
+        // root `surfaceTabBarButtons` key and ONLY the winning (configured)
+        // list is validated: duplicate ids in the root list are accepted
+        // whenever the ui-level list is present. Mirrored exactly; pinned by
+        // `surface_tab_bar_button_duplicate_ids_rejected`.
+        // DIVERGENCE (representation only): Swift *stores* the winning list
+        // back into its `surfaceTabBarButtons` property (Swift:80), so a
+        // re-encode on macOS writes the ui-level list under the root key too;
+        // this crate keeps both fields verbatim where they appeared (lossless
+        // round-trip policy) and consumers apply the ui-over-root precedence
+        // themselves.
+        let configured_buttons = shadow
+            .ui
+            .as_ref()
+            .and_then(|ui| ui.surface_tab_bar.as_ref())
+            .and_then(|bar| bar.buttons.as_deref())
+            .or(shadow.surface_tab_bar_buttons.as_deref());
+        if let Some(buttons) = configured_buttons {
+            validate_surface_tab_bar_buttons(buttons)?;
+        }
+        Ok(Config {
+            schema: shadow.schema,
+            schema_version: shadow.schema_version,
+            app: shadow.app,
+            terminal: shadow.terminal,
+            notifications: shadow.notifications,
+            sidebar: shadow.sidebar,
+            workspace_colors: shadow.workspace_colors,
+            sidebar_appearance: shadow.sidebar_appearance,
+            automation: shadow.automation,
+            browser: shadow.browser,
+            markdown: shadow.markdown,
+            canvas: shadow.canvas,
+            file_editor: shadow.file_editor,
+            file_explorer: shadow.file_explorer,
+            diff_viewer: shadow.diff_viewer,
+            shortcuts: shadow.shortcuts,
+            vault: shadow.vault,
+            workspace_groups: shadow.workspace_groups,
+            new_workspace_command: shadow.new_workspace_command,
+            actions: shadow.actions,
+            ui: shadow.ui,
+            commands: shadow.commands,
+            surface_tab_bar_buttons: shadow.surface_tab_bar_buttons,
+            extra: shadow.extra,
+        })
+    }
+}
+
+/// Port of `CmuxConfigFile.normalizedActions`
+/// (`Sources/CmuxConfig.swift:97-134`): rejects blank (empty-after-trim)
+/// `actions` keys, keys that collide after trimming, and two keys that are
+/// aliases of the same built-in action (via [`builtin_action_canonical_id`]),
+/// with Swift's exact error messages.
+///
+/// DIVERGENCE (representation only): Swift *stores* the trimmed key back into
+/// the dictionary; this crate preserves keys verbatim (lossless round-trip
+/// policy above) while applying the identical accept/reject rules, so a config
+/// decodes or fails exactly as on macOS. Two notes: (1) exact-duplicate raw
+/// keys in the JSON text are collapsed last-wins by serde_json before this
+/// runs and cannot be detected here; (2) Swift iterates its dictionary in
+/// nondeterministic order, so *which* violation a multi-violation config
+/// reports is arbitrary there — here iteration is over sorted keys
+/// (deterministic). The decode outcome (Ok vs Err) is identical either way.
+fn validate_action_keys(
+    actions: &BTreeMap<String, CmuxConfigActionDefinition>,
+) -> Result<(), String> {
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    let mut canonical_ids: BTreeMap<&str, &str> = BTreeMap::new();
+    for raw_id in actions.keys() {
+        let id = raw_id.trim();
+        if id.is_empty() {
+            return Err("actions keys must not be blank".to_owned());
+        }
+        if !seen.insert(id) {
+            return Err("actions must not contain duplicate ids".to_owned());
+        }
+        let canonical = builtin_action_canonical_id(id).unwrap_or(id);
+        if let Some(existing) = canonical_ids.get(canonical) {
+            return Err(format!(
+                "actions must not contain duplicate aliases for '{canonical}' (found '{existing}' and '{id}')"
+            ));
+        }
+        canonical_ids.insert(canonical, id);
+    }
+    Ok(())
+}
+
+/// Port of `CmuxConfigFile.validatedSurfaceTabBarButtons`
+/// (`Sources/CmuxConfig.swift:136-152`): rejects duplicate button ids with
+/// Swift's exact error message.
+///
+/// Ids are compared *trimmed*: Swift trims every explicit id (and
+/// canonicalizes legacy bare strings) during button decode before its
+/// `Set.insert`, while this crate stores explicit ids verbatim — trimming at
+/// comparison time reproduces Swift's accept/reject outcome. Residual edge
+/// (covered by the crate leniency DIVERGENCE above): an auto-generated id from
+/// an untrimmed command (`"ls "` → `command.ls%20`) differs from Swift's
+/// (`command.ls`), so a pathological pair like `"ls"` / `"ls "` collides on
+/// macOS but not here.
+fn validate_surface_tab_bar_buttons(buttons: &[CmuxSurfaceTabBarButton]) -> Result<(), String> {
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    for button in buttons {
+        if !seen.insert(button.id.trim()) {
+            return Err("surface tab bar buttons must not contain duplicate ids".to_owned());
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -2595,9 +2919,12 @@ mod tests {
                 args: Some("--yolo".to_owned())
             })
         );
+        // Known builtin aliases canonicalize exactly as Swift's enum does.
         assert_eq!(
             map["openThing"].action,
-            Some(CmuxSurfaceTabBarButtonAction::BuiltIn("newTerminal".to_owned()))
+            Some(CmuxSurfaceTabBarButtonAction::BuiltIn(
+                "cmux.newTerminal".to_owned()
+            ))
         );
         assert_eq!(
             map["wsCmd"].action,
@@ -2627,11 +2954,12 @@ mod tests {
             serde_json::from_str(json).expect("decode buttons");
         assert_eq!(buttons.len(), 5);
 
-        // Bare string → actionReference; id equals the string.
-        assert_eq!(buttons[0].id, "newTerminal");
+        // Bare string → actionReference; a built-in alias canonicalizes to its
+        // registry id (Swift:1294-1297).
+        assert_eq!(buttons[0].id, "cmux.newTerminal");
         assert_eq!(
             buttons[0].action,
-            CmuxSurfaceTabBarButtonAction::ActionReference("newTerminal".to_owned())
+            CmuxSurfaceTabBarButtonAction::ActionReference("cmux.newTerminal".to_owned())
         );
 
         // command form; id defaults from the command via generatedCommandId.
@@ -2711,6 +3039,214 @@ mod tests {
                 .map(Vec::len),
             Some(1)
         );
+    }
+
+    #[test]
+    fn actions_keys_blank_and_duplicate_rules() {
+        // Oracle: CmuxConfigFile.normalizedActions (Sources/CmuxConfig.swift:97-134).
+        // Blank (whitespace-only) key → decode error.
+        let blank = r#"{ "actions": { "   ": { "command": "ls" } } }"#;
+        let err = decode_config(blank).unwrap_err().to_string();
+        assert!(err.contains("actions keys must not be blank"), "{err}");
+
+        // Two keys that collide after trimming → decode error.
+        let dup = r#"{ "actions": { "deploy": { "command": "a" }, "deploy ": { "command": "b" } } }"#;
+        let err = decode_config(dup).unwrap_err().to_string();
+        assert!(err.contains("actions must not contain duplicate ids"), "{err}");
+
+        // Two aliases of the same built-in action → decode error naming the
+        // canonical id and both offending keys.
+        let alias = r#"{ "actions": { "newTerminal": {}, "cmux.newTerminal": {} } }"#;
+        let err = decode_config(alias).unwrap_err().to_string();
+        assert!(
+            err.contains(
+                "actions must not contain duplicate aliases for 'cmux.newTerminal' (found 'cmux.newTerminal' and 'newTerminal')"
+            ),
+            "{err}"
+        );
+
+        // Distinct, non-aliased keys decode; the verbatim (untrimmed) key is
+        // preserved (see the DIVERGENCE note on validate_action_keys — Swift
+        // would store the trimmed key).
+        let ok = r#"{ "actions": { " deploy ": { "command": "a" }, "test": { "command": "b" } } }"#;
+        let config = decode_config(ok).expect("decode");
+        assert!(config.actions.as_ref().unwrap().contains_key(" deploy "));
+    }
+
+    #[test]
+    fn surface_tab_bar_button_duplicate_ids_rejected() {
+        // Oracle: CmuxConfigFile.validatedSurfaceTabBarButtons
+        // (Sources/CmuxConfig.swift:136-152).
+        // Root-level duplicates, including via alias canonicalization of legacy
+        // bare strings ("newTerminal" and "cmux.newTerminal" share one id).
+        let dup = r#"{ "surfaceTabBarButtons": ["newTerminal", "cmux.newTerminal"] }"#;
+        let err = decode_config(dup).unwrap_err().to_string();
+        assert!(
+            err.contains("surface tab bar buttons must not contain duplicate ids"),
+            "{err}"
+        );
+
+        // ui-level duplicates are rejected the same way.
+        let ui_dup = r#"{ "ui": { "surfaceTabBar": { "buttons": ["splitRight", "splitRight"] } } }"#;
+        assert!(decode_config(ui_dup).is_err());
+
+        // Swift validates ONLY the configured (winning) list: ui buttons take
+        // precedence, so root duplicates are accepted when
+        // ui.surfaceTabBar.buttons is present (Sources/CmuxConfig.swift:74-88).
+        let root_dup_ui_present = r#"{
+            "surfaceTabBarButtons": ["newTerminal", "newTerminal"],
+            "ui": { "surfaceTabBar": { "buttons": ["splitRight"] } }
+        }"#;
+        decode_config(root_dup_ui_present)
+            .expect("root duplicates ignored when ui buttons configured");
+
+        // Explicit ids are compared trimmed, exactly like Swift's decode-time
+        // trimming.
+        let trimmed_dup = r#"{ "surfaceTabBarButtons": [
+            { "id": "b1", "command": "ls" },
+            { "id": " b1 ", "command": "pwd" }
+        ] }"#;
+        assert!(decode_config(trimmed_dup).is_err());
+
+        // Unique ids pass.
+        let ok = r#"{ "surfaceTabBarButtons": ["newTerminal", "newBrowser"] }"#;
+        decode_config(ok).expect("unique ids decode");
+    }
+
+    #[test]
+    fn legacy_string_buttons_canonicalize_builtin_aliases() {
+        // Swift maps a legacy bare-string button through the built-in registry
+        // (Sources/CmuxConfig.swift:1294-1297): id and reference become the
+        // canonical id; unknown strings pass through verbatim.
+        let buttons: Vec<CmuxSurfaceTabBarButton> =
+            serde_json::from_str(r#"["splitDown", "custom.thing"]"#).expect("decode");
+        assert_eq!(buttons[0].id, "cmux.splitDown");
+        assert_eq!(
+            buttons[0].action,
+            CmuxSurfaceTabBarButtonAction::ActionReference("cmux.splitDown".to_owned())
+        );
+        assert_eq!(buttons[1].id, "custom.thing");
+        assert_eq!(
+            buttons[1].action,
+            CmuxSurfaceTabBarButtonAction::ActionReference("custom.thing".to_owned())
+        );
+    }
+
+    #[test]
+    fn context_menu_and_right_click_both_present_prefers_context_menu() {
+        // Swift decodes `contextMenu ?? rightClick` (CmuxConfigUI.swift:45-46):
+        // both keys present is NOT an error — contextMenu wins, rightClick is
+        // ignored.
+        let both = r#"{
+            "contextMenu": ["newTerminal"],
+            "rightClick": ["newBrowser"]
+        }"#;
+        let placement: CmuxConfigButtonPlacement = serde_json::from_str(both).expect("decode");
+        let menu = placement.context_menu.expect("contextMenu wins");
+        assert_eq!(menu.len(), 1);
+        assert!(
+            matches!(&menu[0], CmuxContextMenuItem::Action(item) if item.action == "newTerminal")
+        );
+
+        // Because Swift's `??` short-circuits, a malformed rightClick next to a
+        // valid contextMenu is never parsed (and never errors). Mirrored via
+        // lazy parsing of the buffered rightClick value.
+        let lazy = r#"{ "contextMenu": ["newTerminal"], "rightClick": 42 }"#;
+        assert!(serde_json::from_str::<CmuxConfigButtonPlacement>(lazy).is_ok());
+
+        // Explicit JSON null under contextMenu behaves like an absent key
+        // (Swift decodeIfPresent) and falls back to rightClick.
+        let null_fallback = r#"{ "contextMenu": null, "rightClick": ["newBrowser"] }"#;
+        let placement: CmuxConfigButtonPlacement =
+            serde_json::from_str(null_fallback).expect("decode");
+        let menu = placement.context_menu.expect("falls back to rightClick");
+        assert!(
+            matches!(&menu[0], CmuxContextMenuItem::Action(item) if item.action == "newBrowser")
+        );
+
+        // A null rightClick alone yields no menu.
+        let null_rc = r#"{ "rightClick": null }"#;
+        let placement: CmuxConfigButtonPlacement = serde_json::from_str(null_rc).expect("decode");
+        assert!(placement.context_menu.is_none());
+
+        // A malformed rightClick WITHOUT a usable contextMenu is a decode
+        // error, exactly as decodeIfPresent throws on macOS.
+        let bad = r#"{ "rightClick": 42 }"#;
+        assert!(serde_json::from_str::<CmuxConfigButtonPlacement>(bad).is_err());
+    }
+
+    #[test]
+    fn explicit_null_discriminators_are_treated_as_absent() {
+        // DIVERGENCE pin (see the decoder comments): Swift's
+        // `container.contains(key)` is TRUE for an explicit JSON null, so
+        // `{ "id": "x", "command": null }` hard-errors on macOS (decoding null
+        // as String throws). serde maps null → None, so this crate treats the
+        // key as absent instead: the bare-id fallback applies here.
+        let button: CmuxSurfaceTabBarButton =
+            serde_json::from_str(r#"{ "id": "cmux.newTerminal", "command": null }"#)
+                .expect("decode");
+        assert_eq!(
+            button.action,
+            CmuxSurfaceTabBarButtonAction::BuiltIn("cmux.newTerminal".to_owned())
+        );
+
+        // Same for an action definition: `{ "agent": null }` infers type
+        // "agent" on macOS (key present) and errors decoding null; here no
+        // action is inferred at all.
+        let action: CmuxConfigActionDefinition =
+            serde_json::from_str(r#"{ "agent": null }"#).expect("decode");
+        assert_eq!(action.action, None);
+    }
+
+    #[test]
+    fn blank_new_workspace_command_rejected() {
+        // Oracle: CmuxConfigFile.init(from:) (Sources/CmuxConfig.swift:59-72).
+        let err = decode_config(r#"{ "newWorkspaceCommand": "   " }"#)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("newWorkspaceCommand must not be blank"), "{err}");
+        assert!(decode_config(r#"{ "newWorkspaceCommand": "" }"#).is_err());
+
+        // Non-blank decodes; the value is preserved VERBATIM (Swift stores it
+        // trimmed — see the DIVERGENCE note in TryFrom;
+        // cmuxTests/CmuxConfigTests.swift:139-147 shows Swift's trimming).
+        let config = decode_config(r#"{ "newWorkspaceCommand": "  build  " }"#).expect("decode");
+        assert_eq!(config.new_workspace_command.as_deref(), Some("  build  "));
+
+        // Explicit null behaves like an absent key (decodeIfPresent).
+        let config = decode_config(r#"{ "newWorkspaceCommand": null }"#).expect("decode");
+        assert!(config.new_workspace_command.is_none());
+    }
+
+    #[test]
+    fn action_agent_key_is_lazily_decoded() {
+        // Swift decodes `agent` ONLY inside the "agent" arm
+        // (Sources/CmuxConfig.swift:931-932); elsewhere it merely checks key
+        // presence (Swift:907), so an invalid agent value next to an explicit
+        // non-agent `type` never errors on macOS.
+        let action: CmuxConfigActionDefinition =
+            serde_json::from_str(r#"{ "type": "command", "command": "ls", "agent": "bogus" }"#)
+                .expect("agent ignored when an explicit type routes elsewhere");
+        assert_eq!(
+            action.action,
+            Some(CmuxSurfaceTabBarButtonAction::Command("ls".to_owned()))
+        );
+
+        // When the agent arm IS taken, the invalid agent still errors, as on
+        // macOS (Unknown agent).
+        assert!(
+            serde_json::from_str::<CmuxConfigActionDefinition>(r#"{ "agent": "bogus" }"#).is_err()
+        );
+        assert!(serde_json::from_str::<CmuxConfigActionDefinition>(
+            r#"{ "type": "agent", "agent": "bogus" }"#
+        )
+        .is_err());
+        // Missing agent under an explicit agent type errors, as on macOS
+        // (keyNotFound there; null == absent per the pinned divergence).
+        assert!(serde_json::from_str::<CmuxConfigActionDefinition>(
+            r#"{ "type": "agent", "agent": null }"#
+        )
+        .is_err());
     }
 
     #[test]

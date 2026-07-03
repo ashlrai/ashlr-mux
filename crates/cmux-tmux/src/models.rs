@@ -134,9 +134,34 @@ impl<'de> Deserialize<'de> for RemoteTmuxLayoutNode {
                         "height" => height = Some(map.next_value()?),
                         "x" => x = Some(map.next_value()?),
                         "y" => y = Some(map.next_value()?),
-                        "pane" => pane = Some(map.next_value()?),
-                        "horizontal" => horizontal = Some(map.next_value()?),
-                        "vertical" => vertical = Some(map.next_value()?),
+                        // The three content keys decode as `Option<_>` so an
+                        // EXPLICIT JSON null is treated exactly like an absent
+                        // key: Swift reads them with `decodeIfPresent`, which
+                        // returns nil for null and falls through to the next
+                        // content key (e.g. `{"pane": null, "horizontal": […]}`
+                        // decodes as a horizontal split). Decoding `i64`/`Vec`
+                        // directly here would instead fail on null.
+                        //
+                        // DIVERGENCE: Swift's decodeIfPresent chain is LAZY —
+                        // it type-checks `horizontal` only when `pane` is
+                        // null/absent (and `vertical` only when both are), so
+                        // `{"pane":7,"horizontal":"garbage",…}` decodes as
+                        // Pane(7). This visitor eagerly decodes every known
+                        // key as it streams past the map, so the same input
+                        // errors. Reproducing the laziness would require
+                        // buffering arbitrary JSON values (a serde_json
+                        // runtime dependency). The divergence is
+                        // error-vs-success only when a LOWER-priority content
+                        // key is malformed while a higher-priority one is
+                        // valid; cmux only decodes layouts it previously
+                        // encoded, which are never shaped that way.
+                        "pane" => pane = map.next_value::<Option<i64>>()?,
+                        "horizontal" => {
+                            horizontal = map.next_value::<Option<Vec<RemoteTmuxLayoutNode>>>()?
+                        }
+                        "vertical" => {
+                            vertical = map.next_value::<Option<Vec<RemoteTmuxLayoutNode>>>()?
+                        }
                         // Unknown keys are ignored (Swift's keyed container also
                         // tolerates extra keys).
                         _ => {
@@ -199,7 +224,10 @@ pub struct RemoteTmuxSession {
     pub attached: bool,
 
     /// Session creation time as a Unix timestamp, when reported by tmux.
-    #[serde(rename = "createdUnix")]
+    ///
+    /// Swift's synthesized `Codable` encodes a nil optional by OMITTING the key
+    /// (`encodeIfPresent`), so mirror that rather than emitting an explicit null.
+    #[serde(rename = "createdUnix", skip_serializing_if = "Option::is_none")]
     pub created_unix: Option<i64>,
 }
 
@@ -366,10 +394,51 @@ mod tests {
     }
 
     #[test]
+    fn layout_node_explicit_null_content_key_treated_as_absent() {
+        // Pins the Swift `decodeIfPresent` edge: an explicit JSON null for a
+        // content key is indistinguishable from the key being absent, so the
+        // decoder falls through to the next content key in pane → horizontal →
+        // vertical priority order.
+        let json = r#"{"width":80,"height":24,"x":0,"y":0,"pane":null,
+                       "horizontal":[{"width":80,"height":24,"x":0,"y":0,"pane":3}]}"#;
+        let node: RemoteTmuxLayoutNode = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            node.content,
+            RemoteTmuxLayoutContent::Horizontal(vec![RemoteTmuxLayoutNode::new(
+                80,
+                24,
+                0,
+                0,
+                RemoteTmuxLayoutContent::Pane(3)
+            )])
+        );
+    }
+
+    #[test]
+    fn layout_node_all_null_content_keys_fails_like_missing() {
+        // With every content key explicitly null, Swift's decodeIfPresent chain
+        // exhausts and throws dataCorrupted — mirror that as a decode error.
+        let json = r#"{"width":80,"height":24,"x":0,"y":0,
+                       "pane":null,"horizontal":null,"vertical":null}"#;
+        let result: Result<RemoteTmuxLayoutNode, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn layout_node_missing_content_key_fails() {
         let json = r#"{"width":10,"height":5,"x":1,"y":2}"#;
         let result: Result<RemoteTmuxLayoutNode, _> = serde_json::from_str(json);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn session_none_created_unix_is_omitted_from_json() {
+        // Swift's synthesized Codable omits a nil createdUnix (encodeIfPresent).
+        let session = RemoteTmuxSession::new("$1".into(), "s".into(), 1, false, None);
+        let json = serde_json::to_value(&session).unwrap();
+        assert!(json.get("createdUnix").is_none());
+        let back: RemoteTmuxSession = serde_json::from_value(json).unwrap();
+        assert_eq!(back, session);
     }
 
     #[test]

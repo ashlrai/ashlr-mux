@@ -180,17 +180,15 @@ fn crlf_index(bytes: &[u8], offset: usize) -> Option<usize> {
 /// The chunk-size token: everything before the first `;` chunk-extension marker.
 ///
 /// Faithful to Swift's `sizeLine.split(separator: ";", maxSplits: 1).first ?? ""`
-/// (`omittingEmptySubsequences` defaults to `true`): a leading empty subsequence
-/// is omitted, so a line that *starts* with `;` yields the remainder rather than
-/// the empty string.
+/// (`omittingEmptySubsequences` defaults to `true`): empty subsequences are
+/// omitted and do not count toward `maxSplits`, so a line starting with one or
+/// more `;` yields the first non-empty `;`-delimited token (`";4;ext"` → `"4"`,
+/// `";;abc"` → `"abc"`), not the raw remainder.
 fn first_chunk_size_token(size_line: &str) -> &str {
-    let mut parts = size_line.splitn(2, ';');
-    let first = parts.next().unwrap_or("");
-    if first.is_empty() {
-        parts.next().unwrap_or("")
-    } else {
-        first
-    }
+    swift_split(size_line, ';', 1, true)
+        .first()
+        .copied()
+        .unwrap_or("")
 }
 
 // --- 2. header parser / status classifier ------------------------------------
@@ -261,9 +259,14 @@ pub fn parse_headers(header_data: &[u8], request_url: &Url, maximum_bytes: usize
     let mut chunked = false;
     if let Some(transfer_encoding) = headers.get("transfer-encoding") {
         let lowered = transfer_encoding.to_ascii_lowercase();
+        // Swift trims `.whitespaces` (Unicode Zs + tab); the value is Latin-1
+        // decoded, and the only Zs characters in U+0000..=U+00FF are space and
+        // U+00A0, so this trim set is exactly faithful.
         if swift_split(&lowered, ',', usize::MAX, true)
             .iter()
-            .any(|token| token.trim_matches(|c: char| c == ' ' || c == '\t') == "chunked")
+            .any(|token| {
+                token.trim_matches(|c: char| c == ' ' || c == '\t' || c == '\u{A0}') == "chunked"
+            })
         {
             chunked = true;
         }
@@ -618,6 +621,78 @@ mod tests {
         );
     }
 
+    /// Verbatim port of Swift
+    /// `testMarkdownRemoteImageChunkedDecoderRejectsOversizedChunks`
+    /// (`cmuxTests/MarkdownPanelTests.swift` 1354-1374): same byte inputs, same
+    /// `maximumBytes`, same expected outcomes.
+    #[test]
+    fn chunked_decode_swift_oracle_rejects_oversized_chunks() {
+        // decode("3\r\nabc\r\n0\r\n\r\n", maximumBytes: 8) == Data("abc")
+        assert_eq!(
+            decode_chunked_body(b"3\r\nabc\r\n0\r\n\r\n", 8).as_deref(),
+            Some(&b"abc"[..])
+        );
+        // decode("9\r\nabcdefghi\r\n0\r\n\r\n", maximumBytes: 8) == nil
+        assert_eq!(decode_chunked_body(b"9\r\nabcdefghi\r\n0\r\n\r\n", 8), None);
+        // decode("7fffffffffffffff\r\n", maximumBytes: 8) == nil.
+        // Swift `Int(_, radix: 16)` on 64-bit parses Int64.max successfully and
+        // the `size <= maximumBytes` guard rejects it; Rust
+        // `i64::from_str_radix` parses it identically.
+        assert_eq!(decode_chunked_body(b"7fffffffffffffff\r\n", 8), None);
+    }
+
+    #[test]
+    fn chunked_decode_i64_boundary_size_lines() {
+        // i64::MAX parses in both Swift and Rust; rejected by `size <= max`.
+        assert_eq!(
+            decode_chunked_body(b"7fffffffffffffff\r\nx\r\n0\r\n\r\n", 8),
+            None
+        );
+        // i64::MAX + 1 overflows: Swift `Int(_, radix:16)` returns nil, Rust
+        // `from_str_radix` returns Err — both yield no decode.
+        assert_eq!(
+            decode_chunked_body(b"8000000000000000\r\nx\r\n0\r\n\r\n", 8),
+            None
+        );
+        // Far past 64 bits also fails the parse (never panics/traps).
+        assert_eq!(
+            decode_chunked_body(b"ffffffffffffffffff\r\nx\r\n0\r\n\r\n", 8),
+            None
+        );
+        // i64::MIN parses in both (Swift Int.min, Rust i64::MIN); the `size >= 0`
+        // guard rejects it BEFORE `max - size` is evaluated — the short-circuit
+        // order mirrors Swift's guard-comma order, so `8 - i64::MIN` (which would
+        // overflow) is never computed.
+        assert_eq!(
+            decode_chunked_body(b"-8000000000000000\r\nx\r\n0\r\n\r\n", 8),
+            None
+        );
+    }
+
+    #[test]
+    fn chunked_decode_cap_boundary_arithmetic() {
+        // A single chunk of exactly `max` bytes is allowed
+        // (`decoded.count (0) <= max - size (0)`).
+        assert_eq!(
+            decode_chunked_body(b"8\r\nabcdefgh\r\n0\r\n\r\n", 8).as_deref(),
+            Some(&b"abcdefgh"[..])
+        );
+        // Two chunks summing to exactly `max` are allowed (4 <= 8 - 4).
+        assert_eq!(
+            decode_chunked_body(b"4\r\nabcd\r\n4\r\nefgh\r\n0\r\n\r\n", 8).as_deref(),
+            Some(&b"abcdefgh"[..])
+        );
+        // One byte past the cap after a full-cap chunk is rejected (8 > 8 - 1).
+        assert_eq!(
+            decode_chunked_body(b"8\r\nabcdefgh\r\n1\r\ni\r\n0\r\n\r\n", 8),
+            None
+        );
+        // maximum_bytes == 0: any non-empty chunk is rejected (1 > 0), but the
+        // bare terminal chunk still decodes to an empty body.
+        assert_eq!(decode_chunked_body(b"1\r\na\r\n0\r\n\r\n", 0), None);
+        assert_eq!(decode_chunked_body(b"0\r\n\r\n", 0).as_deref(), Some(&b""[..]));
+    }
+
     #[test]
     fn crlf_index_basic() {
         assert_eq!(crlf_index(b"ab\r\ncd", 0), Some(2));
@@ -631,8 +706,22 @@ mod tests {
         assert_eq!(first_chunk_size_token("4"), "4");
         assert_eq!(first_chunk_size_token("4;ext"), "4");
         assert_eq!(first_chunk_size_token(""), "");
-        // Leading empty subsequence is omitted (matches Swift).
+        // Leading empty subsequences are omitted and do not count toward
+        // maxSplits (matches Swift `split(separator:maxSplits:)`).
         assert_eq!(first_chunk_size_token(";0"), "0");
+        assert_eq!(first_chunk_size_token(";4;ext"), "4");
+        assert_eq!(first_chunk_size_token(";;abc"), "abc");
+    }
+
+    #[test]
+    fn chunked_decode_leading_semicolon_size_line_matches_swift_split() {
+        // Swift `split(";", maxSplits: 1, omittingEmptySubsequences: true)` on
+        // ";4;ext" yields ["4", "ext"], so the size token is "4" and the chunk
+        // decodes — a naive "everything before the first ';'" would fail here.
+        assert_eq!(
+            decode_chunked_body(b";4;ext\r\nWiki\r\n0\r\n\r\n", 1024).as_deref(),
+            Some(&b"Wiki"[..])
+        );
     }
 
     // --- 2. header parse -----------------------------------------------------
@@ -671,6 +760,23 @@ mod tests {
     fn header_parse_200_chunked() {
         let headers =
             b"HTTP/1.1 200 OK\r\nContent-Type: image/gif\r\nTransfer-Encoding: gzip, chunked\r\n";
+        assert_eq!(
+            parse_headers(headers, &req(), 1024),
+            HeaderOutcome::Image {
+                mime: "image/gif".to_string(),
+                chunked: true,
+                content_length: None,
+            }
+        );
+    }
+
+    #[test]
+    fn header_parse_chunked_token_trims_latin1_nbsp() {
+        // Swift trims `.whitespaces` (Zs + tab) around each transfer-encoding
+        // token; a Latin-1 0xA0 (U+00A0 NO-BREAK SPACE, in Zs) before "chunked"
+        // must therefore still be detected.
+        let headers =
+            b"HTTP/1.1 200 OK\r\nContent-Type: image/gif\r\nTransfer-Encoding: gzip,\xa0chunked\r\n";
         assert_eq!(
             parse_headers(headers, &req(), 1024),
             HeaderOutcome::Image {

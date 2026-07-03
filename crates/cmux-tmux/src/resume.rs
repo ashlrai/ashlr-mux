@@ -33,20 +33,75 @@ use std::collections::HashMap;
 // in the session-persistence crate.
 // NOTE: no `Eq` — `updated_at` is `f64` (Swift `TimeInterval`), which is only
 // `PartialEq`. Mirrors Swift's `Equatable` conformance over `Double`.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+//
+// Serialization mirrors Swift's synthesized `Codable`: nil optionals are
+// OMITTED from the JSON (`encodeIfPresent`), never emitted as explicit nulls.
+// Deserialization is manual (below) to mirror Swift `init(from decoder:)`,
+// which routes through the designated initializer.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct SurfaceResumeBindingSnapshot {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
     pub command: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
-    #[serde(rename = "checkpointId")]
+    #[serde(rename = "checkpointId", skip_serializing_if = "Option::is_none")]
     pub checkpoint_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub environment: Option<HashMap<String, String>>,
-    #[serde(rename = "autoResume")]
+    #[serde(rename = "autoResume", skip_serializing_if = "Option::is_none")]
     pub auto_resume: Option<bool>,
     #[serde(rename = "updatedAt")]
     pub updated_at: f64,
+}
+
+// Swift's `init(from decoder:)` decodes the raw fields and then calls the
+// designated initializer, RE-APPLYING its normalization (trim/nil-empty
+// fields, environment filtering) and defaulting a missing `updatedAt` to
+// `Date().timeIntervalSince1970`. Deserialize through a raw wire struct +
+// [`SurfaceResumeBindingSnapshot::new`] to mirror that exactly.
+impl<'de> serde::Deserialize<'de> for SurfaceResumeBindingSnapshot {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(serde::Deserialize)]
+        struct Wire {
+            name: Option<String>,
+            kind: Option<String>,
+            command: String,
+            cwd: Option<String>,
+            #[serde(rename = "checkpointId")]
+            checkpoint_id: Option<String>,
+            source: Option<String>,
+            environment: Option<HashMap<String, String>>,
+            #[serde(rename = "autoResume")]
+            auto_resume: Option<bool>,
+            #[serde(rename = "updatedAt")]
+            updated_at: Option<f64>,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        Ok(SurfaceResumeBindingSnapshot::new(
+            wire.name.as_deref(),
+            wire.kind.as_deref(),
+            &wire.command,
+            wire.cwd.as_deref(),
+            wire.checkpoint_id.as_deref(),
+            wire.source.as_deref(),
+            wire.environment,
+            wire.auto_resume,
+            wire.updated_at.unwrap_or_else(now_unix),
+        ))
+    }
+}
+
+/// Swift decode default for a missing `updatedAt`: `Date().timeIntervalSince1970`.
+fn now_unix() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
 }
 
 impl SurfaceResumeBindingSnapshot {
@@ -449,6 +504,16 @@ fn short_flag_cluster(argument: &str, short: char) -> bool {
 
 /// tmux top-level short options that take a value. Mirrors Swift
 /// `valueOptionCharacters`.
+///
+// DIVERGENCE: the flag-cluster scanners (`short_flag_cluster`, `cluster_value`)
+// and the `-<x>`/`--<long>` prefix checks in this file iterate Unicode SCALARS
+// (`char`) and match prefixes BYTEWISE, while Swift iterates `Character`
+// (extended grapheme clusters) and compares strings by canonical equivalence.
+// The two disagree only when a combining mark rides an option letter or a
+// prefix boundary — e.g. Swift sees "-e\u{301}A" as ["é", "A"] ("é" is not the
+// value-option Character "e") and finds `-A`, while this port sees the scalar
+// 'e', a value-taking option, and stops. tmux argv/flags observed from `ps`
+// are ASCII, so no realistic input reaches the difference.
 const VALUE_OPTION_CHARACTERS: [char; 9] = ['c', 'e', 'F', 'f', 'n', 's', 't', 'x', 'y'];
 
 enum ClusterValueMatch {
@@ -593,11 +658,41 @@ fn is_sensitive_environment_key(key: &str) -> bool {
 /// Foundation `(str as NSString).lastPathComponent`-like basename for the
 /// resume heuristics.
 ///
-// DIVERGENCE: Swift uses `NSString.pathComponents.last` / `.lastPathComponent`,
-// which are POSIX-oriented (`/` separators). These heuristics inspect a
-// remote-tmux client's argv/paths, which are POSIX on the SSH host regardless of
-// the machine cmux runs on, so we split on `/` exactly like Foundation rather
-// than on the Windows `\` separator.
+// DIVERGENCE: Swift uses TWO Foundation APIs where Rust uses this one helper:
+// the `argumentLooksLikeTmux*` heuristics use `NSString.pathComponents.last ??
+// normalized`, and `executableBasenames` uses `NSString.lastPathComponent`.
+// Both are POSIX-oriented (`/` separators); these heuristics inspect a
+// remote-tmux client's argv/paths, which are POSIX on the SSH host regardless
+// of the machine cmux runs on, so we split on `/` exactly like Foundation
+// rather than on the Windows `\` separator.
+//
+// This helper strips AT MOST ONE trailing `/` and then takes everything after
+// the last remaining `/`. That differs from both Foundation APIs on degenerate
+// inputs:
+//
+//   input        Rust here   NSString.lastPathComponent   pathComponents.last
+//   "a/b"        "b"         "b"                          "b"
+//   "a/b/"       "b"         "b"                          "/"   (trailing-slash
+//                                                                component)
+//   "a/b///"     ""          "b"   (strips ALL slashes)   "/"
+//   "/"          ""          "/"   (root stays "/")       "/"
+//   "//"         ""          "/"                          "/"
+//   ""           ""          ""                           nil → falls back to
+//                                                         the whole string ""
+//
+// i.e. NSString.lastPathComponent strips every trailing slash and preserves
+// the root as "/", while pathComponents keeps a trailing "/" as a final
+// component; this helper returns "" for the slash-only/multi-slash shapes and
+// sides with lastPathComponent (not pathComponents.last) for a single
+// trailing slash ("a/b/" → "b"). Concretely: for a slash-terminated path like
+// "/usr/bin/tmux/", the Swift heuristics (pathComponents.last → "/") say NOT
+// tmux while this helper says tmux; for "tmux///" or "/" Foundation yields
+// "tmux"/"/" where this helper yields "". Every divergent shape requires a
+// trailing slash or a bare-root path in a process name, executable path, or
+// argv[0] — values a real tmux client process never reports — so the resume
+// routing decision is unchanged for any input the ps-derived heuristics
+// actually see; the `== "tmux"` / `"tmux:*"` prefix checks agree on all
+// realistic inputs.
 fn last_path_component(s: &str) -> &str {
     let trimmed = s.strip_suffix('/').unwrap_or(s);
     match trimmed.rfind('/') {
@@ -920,6 +1015,37 @@ mod tests {
     fn shell_single_quoted_escapes_apostrophes() {
         assert_eq!(shell_single_quoted("it's"), "'it'\\''s'");
         assert_eq!(shell_single_quoted("plain"), "'plain'");
+    }
+
+    #[test]
+    fn snapshot_serializes_none_fields_as_absent_keys() {
+        // Swift's synthesized Codable omits nil optionals (encodeIfPresent);
+        // an explicit `"name": null` would be a wire-shape divergence.
+        let snap = SurfaceResumeBindingSnapshot::new(
+            None, None, "cmd", None, None, None, None, None, 1.0,
+        );
+        let json = serde_json::to_value(&snap).unwrap();
+        assert!(json.get("name").is_none());
+        assert!(json.get("kind").is_none());
+        assert!(json.get("cwd").is_none());
+        assert!(json.get("checkpointId").is_none());
+        assert!(json.get("source").is_none());
+        assert!(json.get("environment").is_none());
+        assert!(json.get("autoResume").is_none());
+        assert_eq!(json.get("command").and_then(|v| v.as_str()), Some("cmd"));
+        assert!(json.get("updatedAt").is_some());
+    }
+
+    #[test]
+    fn snapshot_decode_renormalizes_and_defaults_updated_at() {
+        // Swift init(from:) routes through the designated initializer: fields
+        // are re-trimmed/nil'd and a missing updatedAt defaults to "now".
+        let json = r#"{"command":"  attach  ","kind":" tmux ","name":"   "}"#;
+        let snap: SurfaceResumeBindingSnapshot = serde_json::from_str(json).unwrap();
+        assert_eq!(snap.command, "attach");
+        assert_eq!(snap.kind.as_deref(), Some("tmux"));
+        assert_eq!(snap.name, None);
+        assert!(snap.updated_at > 0.0);
     }
 
     #[test]

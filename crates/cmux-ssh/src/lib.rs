@@ -256,7 +256,20 @@ fn is_foreground_remote_shell_process(process: &ProcessSnapshot, tty_name: &str)
 /// whitespace-delimited fields (the fifth preserves internal spaces).
 pub fn parse_process_snapshot(line: &str) -> Option<ProcessSnapshot> {
     // Swift: line.split(maxSplits: 4, whereSeparator: \.isWhitespace) with
-    // omittingEmptySubsequences == true.
+    // omittingEmptySubsequences == true. Swift's split loop breaks out at the
+    // single separator Character that terminates the fourth field, and the
+    // fifth subsequence is everything AFTER that one separator, WITHOUT
+    // left-trimming. A remainder that is entirely whitespace (e.g. two
+    // trailing spaces after the fourth field) is therefore still a non-empty
+    // fifth part, and the row parses with an empty (trimmed) executable name;
+    // exactly one trailing separator leaves an empty remainder -> four parts
+    // -> nil. Matched exactly below.
+    //
+    // DIVERGENCE: Swift's separator predicate sees Characters (grapheme
+    // clusters), so a space followed by a combining mark is ONE whitespace
+    // Character there, while this port splits after the space scalar and
+    // leaves the combining mark in the next field. See the grapheme note at
+    // `drop_first_chars`. ASCII `ps` output is unaffected.
     let mut parts: Vec<&str> = Vec::with_capacity(5);
     let mut rest = line;
     for _ in 0..4 {
@@ -275,9 +288,14 @@ pub fn parse_process_snapshot(line: &str) -> Option<ProcessSnapshot> {
             }
         }
     }
-    rest = rest.trim_start_matches(|c: char| c.is_whitespace());
-    if !rest.is_empty() {
-        parts.push(rest);
+    // Drop exactly one leading separator (Swift consumed it as the fourth
+    // split); keep any further whitespace as part of the fifth field.
+    let mut remainder_chars = rest.chars();
+    if remainder_chars.next().is_some() {
+        let remainder = remainder_chars.as_str();
+        if !remainder.is_empty() {
+            parts.push(remainder);
+        }
     }
 
     if parts.len() != 5 {
@@ -419,6 +437,23 @@ fn normalized_executable_name(executable_name: &str) -> String {
     }
 }
 
+// DIVERGENCE: Swift operates on Characters (extended grapheme clusters):
+// `String.count`, `dropFirst(n)`, and `Set<Character>.contains` all see one
+// element per grapheme. This port operates on Unicode scalar values (`char`),
+// so an argument containing a combining mark can take a different branch:
+// e.g. `-i\u{301}` is 2 Characters in Swift (the flag Character "i\u{301}"
+// matches no flag set, so parsing fails) but 3 chars here (clustered `-i`
+// value branch, identity file "\u{301}"). Affected sites: `drop_first_chars`,
+// the `char_count` / `second_char` / `flags` logic in `parse_ssh_command_line`,
+// `short_options` in `parse_eternal_terminal_command_line`, and the whitespace
+// split in `parse_process_snapshot`. The same class also covers every
+// prefix/separator match: Swift `hasPrefix("-")` / `hasPrefix("--ssh-option=")`
+// and `Character == "=" / "@" / ":"` comparisons are grapheme-aware (a
+// combining mark right after the prefix defeats the match — `-\u{301}x` is a
+// DESTINATION in Swift), while this port's `starts_with` / `strip_prefix` /
+// scalar `split` match the raw scalar and keep the combining mark in the
+// following slice. ASCII argv — the entirety of real ssh/et usage — is
+// unaffected. Pinned by `ssh_combining_mark_flag_divergence`.
 /// Skip the first `n` Unicode scalar values of `s` (Swift `String.dropFirst(n)`).
 fn drop_first_chars(s: &str, n: usize) -> &str {
     match s.char_indices().nth(n) {
@@ -736,6 +771,8 @@ fn parse_ssh_command_line(arguments: &[String]) -> Option<DetectedSSHSession> {
             break;
         }
 
+        // DIVERGENCE: scalar count / scalar flags, not Swift grapheme
+        // Characters — see the note at `drop_first_chars`.
         let char_count = argument.chars().count();
         let second_char = argument.chars().nth(1);
 
@@ -1034,6 +1071,8 @@ fn parse_eternal_terminal_command_line(arguments: &[String]) -> Option<DetectedS
             return None;
         }
 
+        // DIVERGENCE: scalar flags, not Swift grapheme Characters — see the
+        // note at `drop_first_chars`.
         let short_options: Vec<char> = argument.chars().skip(1).collect();
         let &option = short_options.first()?;
         if option == 'f' {
@@ -1203,6 +1242,29 @@ mod tests {
         );
         assert_eq!(parse_process_snapshot("only three fields here"), None);
         assert_eq!(parse_process_snapshot("x 1 1 tty ssh"), None);
+    }
+
+    #[test]
+    fn parse_process_snapshot_whitespace_only_fifth_field() {
+        // Swift split(maxSplits: 4) consumes ONE separator after the fourth
+        // field and does NOT left-trim the remainder: two trailing spaces
+        // leave a whitespace-only fifth subsequence, which trims to an empty
+        // executable name.
+        assert_eq!(
+            parse_process_snapshot("2145 1967 1967 ttys004  "),
+            Some(snap(2145, 1967, 1967, "ttys004", ""))
+        );
+        // Tab+space remainder after the consumed separator is likewise a
+        // (whitespace-only) fifth field.
+        assert_eq!(
+            parse_process_snapshot("1 2 3 tty \t "),
+            Some(snap(1, 2, 3, "tty", ""))
+        );
+        // Exactly one trailing separator: the remainder after it is empty ->
+        // only four parts -> rejected.
+        assert_eq!(parse_process_snapshot("2145 1967 1967 ttys004 "), None);
+        // No trailing separator at all -> four parts -> rejected.
+        assert_eq!(parse_process_snapshot("2145 1967 1967 ttys004"), None);
     }
 
     // --- ssh option key/value ------------------------------------------------
@@ -1660,6 +1722,18 @@ mod tests {
         let session = ssh(&["ssh", "-46", "example.com"]).unwrap();
         assert!(session.use_ipv6);
         assert!(!session.use_ipv4);
+    }
+
+    #[test]
+    fn ssh_combining_mark_flag_divergence() {
+        // DIVERGENCE pin (see note at drop_first_chars): Swift counts grapheme
+        // clusters — "-i\u{301}".count == 2 and the Character "i\u{301}" is in
+        // no flag set, so Swift returns nil. Rust counts Unicode scalars (3),
+        // takes the clustered `-i` value branch, and accepts "\u{301}" as the
+        // identity file.
+        let session = ssh(&["ssh", "-i\u{301}", "example.com"]).expect("session");
+        assert_eq!(session.identity_file.as_deref(), Some("\u{301}"));
+        assert_eq!(session.destination, "example.com");
     }
 
     #[test]
