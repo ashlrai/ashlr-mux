@@ -3,8 +3,58 @@
 //! Headless port of the pure ordering, group-invariant, batch-reorder, sidebar
 //! render-projection, selection-sync, new-workspace-placement, and closed-item
 //! history logic from the canonical macOS `Packages/macOS/CmuxWorkspaces` package
-//! (+ a few app-side helpers). Operates over `WorkspaceRow` value snapshots — no
-//! GUI/GPU/agent/Tauri dependency; Swift's in-place `Tab.groupId` mutation becomes
-//! new ordered `Vec` returns here.
+//! (+ a few app-side helpers under `Sources/`). Operates over `WorkspaceRow`
+//! value snapshots — no GUI/GPU/agent/Tauri dependency.
 //!
-//! Scaffold — modules are filled in by the port lane.
+//! DIVERGENCE: Swift mutates the reference-type `Tab.groupId` (and reassigns
+//! `WorkspacesModel.tabs` / `.workspaceGroups`) in place inside the model. The
+//! Rust port has no reference-type workspaces, so every "mutating" invariant
+//! helper is a pure function returning a NEW ordered `Vec<WorkspaceRow>` (and,
+//! where the Swift also reorders groups, a new `Vec<WorkspaceGroup>`). The
+//! behavior is pinned against the Swift test vectors.
+
+mod closed_history;
+mod group;
+mod group_invariants;
+mod ordering;
+mod placement;
+mod render_items;
+mod reorder;
+mod row;
+mod selection_sync;
+
+// Reuse the config crate's placement enum rather than redefining it.
+pub use cmux_config::NewWorkspacePlacement;
+
+pub use closed_history::{
+    has_usable_restored_content, records_by_remapping_panel_anchor_ids,
+    records_by_remapping_panel_workspace_ids, records_by_remapping_workspace_window_ids,
+    records_by_removing_panel_records, ClosedItemHistory, ClosedItemHistoryEntry,
+    ClosedItemHistoryRecord, ClosedPanelHistoryEntry, ClosedPanelSplitPlacement,
+    ClosedWindowHistoryEntry, ClosedWorkspaceHistoryEntry, MenuSnapshot, PanelSnapshot,
+    SplitOrientation, WindowSnapshot, WorkspaceSnapshot,
+};
+pub use group::WorkspaceGroup;
+pub use group_invariants::{
+    assign_group, dissolve_groups_anchored_by, expand_workspace_group_for_selection_if_needed,
+    move_workspace_group_members_after_anchors, normalize_workspace_group_contiguity,
+    normalize_workspace_group_runs_preserving_order, sync_workspace_groups_order_to_anchor_order,
+};
+pub use ordering::{
+    anchor_first, clamped_grouped_member_reorder_index, clamped_reorder_index,
+    clamped_top_level_reorder_index, is_global_pinned_row, is_workspace_group_anchor,
+    leading_global_pinned_row_count, sidebar_top_level_pinned_workspace_ids,
+    sidebar_top_level_workspace_ids, top_level_workspace_ids,
+    top_level_workspace_ids_preserving_order,
+};
+pub use placement::insertion_index;
+pub use render_items::{render_items, SidebarWorkspaceRenderItem, SidebarWorkspaceRenderItemId};
+pub use reorder::{
+    WorkspaceBatchReorderError, WorkspaceOrderSnapshot, WorkspaceReorderPlanItem,
+    WorkspaceReorderPlanner,
+};
+pub use row::WorkspaceRow;
+pub use selection_sync::{
+    anchor_index, anchor_index_after_workspace_click, anchor_index_after_workspace_reorder,
+    anchor_workspace_id, reconciled_selection, shift_click_anchor_index,
+};
