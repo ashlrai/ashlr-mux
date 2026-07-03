@@ -335,3 +335,19 @@ clippy clean, cargo check --workspace clean (incl cmux-desktop), go build+vet+te
 clean. NOTE crates/cmux-config/bindings/ is gitignored ts-rs output (not committed).
 NEXT: the mount-DEPENDENT Tauri layer (needs `tauri dev`) OR more headless ports
 (remote-image chunked-body decoder + redirect decision; more cmux-config sections).
+- Fidelity fix-pass + mentions port (ultracode, 10-agent workflow: 5 implement +
+  5 adversarial verify) — applied all queued verify findings across cmux-config
+  (duplicate-id/blank-key/trim-collision decode errors, contextMenu-over-
+  rightClick lazy ??, blank newWorkspaceCommand, lazy agent key),
+  cmux-ssh (Swift split(maxSplits:) whitespace-only 5th field FIXED, grapheme
+  DIVERGENCE anchor), cmux-tmux (verbatim budget-oracle recovery tests,
+  explicit-null decodeIfPresent parity, encodeIfPresent None omission, snapshot
+  decode re-normalization), cmux-markdown (verbatim chunked oracle incl.
+  Int64.max size line, swift_split size-token fix, NBSP transfer-encoding trim);
+  NEW crate cmux-mentions — pure TextBoxMention* family (detector on UTF-16
+  NSRange semantics, candidate index + verbatim CmuxCommandPalette fuzzy/engine
+  subset, index-store pure half, all Swift oracle tests). 354 tests across the
+  five crates, clippy -D warnings clean. Commits: `46b8057d9` + `04c3c1329`.
+  Next: the Tauri mount layer (diff/markdown/schemes commands + URI-scheme
+  handlers) — mount-DEPENDENT, needs `tauri dev` + user UI verification. Loop
+  stop condition reached.
