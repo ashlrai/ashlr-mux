@@ -151,3 +151,23 @@ body,
   background-color: rgb(28, 31, 27) !important;
   backdrop-filter: none !important;
 }
+
+/*
+ * Compact stderr notices. Canonically every stderr line is its own roomy pill
+ * (10px×12px padding + the thread's 12px entry gap), so one failing command's
+ * multi-line PowerShell spew fills the viewport and pushes the actual answer
+ * below the fold. Divergence from macOS (user, 2026-07-03): render notices as
+ * tight monospace log lines and collapse the thread gap between consecutive
+ * notices so a burst reads as one compact log block.
+ */
+.cmux-agent-session-surface .codex-notice-turn .codex-notice-content {
+  padding: 2px 8px;
+  font-family: var(--font-mono, ui-monospace, Consolas, monospace);
+  font-size: 11px;
+  line-height: 1.45;
+  border-radius: 6px;
+}
+.cmux-agent-session-surface .codex-notice-turn + .codex-notice-turn {
+  /* the thread gap is 12px; pull consecutive notices to ~3px apart */
+  margin-top: -9px;
+}
