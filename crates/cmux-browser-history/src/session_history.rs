@@ -329,6 +329,14 @@ impl RestoredSessionHistory {
         true
     }
 
+    /// Serializes a sequence of URLs via the sanitizer, dropping any that the
+    /// sanitizer rejects. The caller controls ordering (e.g. `.iter()` vs
+    /// `.iter().rev()`) so this preserves each call site's behavior exactly.
+    fn serialize<'a>(&self, urls: impl Iterator<Item = &'a Url>) -> Vec<String> {
+        urls.filter_map(|url| self.sanitizer.serializable_session_history_url_string(Some(url)))
+            .collect()
+    }
+
     /// Captures the current back/forward URLs for persistence, given the native
     /// WebKit back/forward lists and the live alignment.
     ///
@@ -339,29 +347,14 @@ impl RestoredSessionHistory {
         native_forward_urls: &[Url],
         is_live_aligned: bool,
     ) -> SessionNavigationHistorySnapshot {
-        let native_back: Vec<String> = native_back_urls
-            .iter()
-            .filter_map(|url| self.sanitizer.serializable_session_history_url_string(Some(url)))
-            .collect();
-        let native_forward: Vec<String> = native_forward_urls
-            .iter()
-            .filter_map(|url| self.sanitizer.serializable_session_history_url_string(Some(url)))
-            .collect();
+        let native_back: Vec<String> = self.serialize(native_back_urls.iter());
+        let native_forward: Vec<String> = self.serialize(native_forward_urls.iter());
 
         if self.uses_restored_session_history {
-            let back_strings: Vec<String> = self
-                .back
-                .iter()
-                .filter_map(|url| self.sanitizer.serializable_session_history_url_string(Some(url)))
-                .collect();
+            let back_strings: Vec<String> = self.serialize(self.back.iter());
             // `forward` is stored nearest-forward-last; reverse to serialize
             // nearest-forward-first, matching Swift `forward.reversed()`.
-            let restored_forward: Vec<String> = self
-                .forward
-                .iter()
-                .rev()
-                .filter_map(|url| self.sanitizer.serializable_session_history_url_string(Some(url)))
-                .collect();
+            let restored_forward: Vec<String> = self.serialize(self.forward.iter().rev());
 
             if is_live_aligned {
                 return SessionNavigationHistorySnapshot::new(
@@ -408,17 +401,8 @@ impl RestoredSessionHistory {
             return RealignOutcome::NoChange;
         }
 
-        let restored_back: Vec<String> = self
-            .back
-            .iter()
-            .filter_map(|url| self.sanitizer.serializable_session_history_url_string(Some(url)))
-            .collect();
-        let restored_forward: Vec<String> = self
-            .forward
-            .iter()
-            .rev()
-            .filter_map(|url| self.sanitizer.serializable_session_history_url_string(Some(url)))
-            .collect();
+        let restored_back: Vec<String> = self.serialize(self.back.iter());
+        let restored_forward: Vec<String> = self.serialize(self.forward.iter().rev());
         let restored_current = self
             .sanitizer
             .serializable_session_history_url_string(self.current.as_ref());
