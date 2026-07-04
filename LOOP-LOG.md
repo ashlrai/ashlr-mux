@@ -612,3 +612,22 @@ shortcutFormat / placement / reorder / switcherIndex (share `bun test src`; sequ
   surface mount, live agent-transport verification, window chrome/HWND/focus/IME,
   wgpu renderer, packaging/signing. The autonomous headless loop has reached its
   natural boundary. See DECISIONS.md "Headless frontier exhaustion".
+
+- Re-invocation re-audit (2026-07-04) - loop re-fired after the exhaustion call;
+  did NOT reflexively re-stop. Re-derived state from disk (tree clean, HEAD
+  197d62281 == pushed) and took the fresh look the mount frontier deserved:
+  read apps/desktop/src-tauri/src/lib.rs (generate_handler! + 4 uri schemes) and
+  the web bridge apps/desktop/web/src/tauri-bridge.ts. FINDING: the web->native
+  command surface is small, closed, and FULLY wired (ping, desktop_core_status,
+  terminal_*, session_*, agent_session_rpc, diff_comments_rpc, markdown_* +
+  cmux-diff-viewer/cmux-md/cmux-local-image/cmux-remote-image schemes). The
+  apparent run_agent / connect gaps are test-only fixtures in
+  tauri-bridge.test.ts, not real call sites. The shipped-but-unwired headless
+  cores (cmux-notifications, copy_mode, panes/sidebar_drop, appearance/color_math,
+  canvas/minimap, browser-history) have NO web caller yet - their UI isn't built -
+  so wiring them now would be speculative, contract-less, parity-unsafe guesswork.
+  VERDICT unchanged and reinforced: no parity-safe headless work remains; the
+  mount-command layer is fully wired for what the web invokes today. Remaining
+  work is UI-build + host-I/O seams (remote_image DNS-pinned TLS fetch) + live
+  transports + window chrome/wgpu + packaging - all need the running app. Loop
+  stops here; resume via the running app (npx @tauri-apps/cli dev).
