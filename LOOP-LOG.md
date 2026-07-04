@@ -573,3 +573,23 @@ shortcutFormat / placement / reorder / switcherIndex (share `bun test src`; sequ
   calendar validation (4-digit year, no leap-second, leap-year days_in_month).
   sha2 added to cmux-config. /simplify in flight. NEXT: land the wave-2 simplify,
   then re-scout the frontier (wave-3) or pivot to the MVP GUI-mount work.
+
+- Frontier wave-3 (10 of 11 lanes, 9 crate-tracks) - scout reported frontier
+  THINNING (1 candidate already-ported collision; 0/5 areas self-exhausted but
+  tail is medium/low value). implement->red-team->fix (Opus, high effort), landed
+  + committed per-track (pushed fe7ebd1b8..a77d2d354): cmux-appearance color_math
+  (WCAG/sRGB, 52), cmux-workspaces mount_plan + avatar djb2 slots (181),
+  cmux-canvas minimap (78), cmux-command-palette window_store (40), cmux-terminal
+  sanitize (134), cmux-browser-history session_history (33), cmux-panes
+  sidebar_drop (61), cmux-ssh ssh_batch (126), NEW crate cmux-notifications
+  delivery (21). 1 CONFIRMED red-team fix: cmux-terminal sanitizer returned a
+  BORROWED text[index..] slice that PANICS when index lands mid-scalar (SS3 /
+  single-char-escape consuming a UTF-8 lead byte) -> from_utf8_lossy (Swift
+  String(decoding:) parity) + 3 panic-repro pins. mention-candidate lane was a
+  NO-OP (already ported in index_store.rs 04c3c1329 - a thinning signal;
+  implementer correctly refused to duplicate). /simplify in flight. FRONTIER NOW
+  GENUINELY THIN per scout - next survey (wave-4) should be tightly scoped and
+  expect mostly-empty; remaining port work is the GUI/GPU-mount frontier that
+  needs the running app (HARD BOUNDARY, not headless-verifiable). NEXT: land
+  wave-3 simplify, run a final tight wave-4 confirmation scout, then likely
+  declare the headless harvest complete for this milestone.
