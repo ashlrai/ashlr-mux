@@ -3,9 +3,13 @@
 //! Headless port of the pure subset of `GitMetadataService` from the canonical
 //! macOS `Packages/macOS/CmuxGit` package: GitHub repo-slug detection from git
 //! remote URLs, `git remote -v` slug extraction with upstream>origin>rest
-//! ordering + dedup, and git-config string parsing (inline-comment stripping,
-//! `*`/`**` glob match). The filesystem includeIf/gitdir/resolve paths are
-//! excluded as host wiring.
+//! ordering + dedup, git-config string parsing (inline-comment stripping,
+//! `*`/`**` glob match), and repository-resolution path logic (see
+//! [`repo_resolution`]: the pure `gitdir:`/`commondir` pointer parsers, the
+//! `standardizedFileURL` lexical normalizer, and the `includeIf "gitdir:"`
+//! matcher). The filesystem *shell* of resolve/includeIf — the upward fs-walk,
+//! `fileExists` probing, and every `String(contentsOf:)` read — stays excluded
+//! as host wiring.
 //!
 //! Ports:
 //! - `GitMetadataService+Slugs.swift`: `githubRepositorySlug(fromRemoteURL:)`,
@@ -22,11 +26,23 @@
 //!   excluded.
 
 pub mod git_index;
+pub mod pr_selection;
+pub mod repo_resolution;
 
 pub use git_index::{
     git_index_comparable_mode, git_index_content_signature, git_index_snapshot,
     is_valid_index_entry_path, read_big_endian_u16, read_big_endian_u32,
     read_git_index_v4_path_strip_length, GitIndexEntryStat, GitIndexSnapshot,
+};
+pub use pr_selection::{
+    github_timestamp_date, is_badge_candidate, is_stale_merged, normalized_branch_name,
+    preferred_pull_request, pull_request_map_by_normalized_branch, GitHubPullRequestProbeItem,
+    PullRequestStatus, MERGED_BADGE_STALE_AFTER,
+};
+pub use repo_resolution::{
+    expanded_pattern, git_common_directory, git_config_include_if_condition,
+    git_directory_from_dot_git_file, gitdir_pattern_matches, include_if_condition_matches,
+    should_stop_repository_search, standardize_posix_path, ResolvedGitRepository,
 };
 
 use std::collections::{HashMap, HashSet};
