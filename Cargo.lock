@@ -610,6 +610,10 @@ dependencies = [
 [[package]]
 name = "cmux-ssh"
 version = "0.1.0"
+dependencies = [
+ "thiserror 1.0.69",
+ "url",
+]
 
 [[package]]
 name = "cmux-sync-protocol"

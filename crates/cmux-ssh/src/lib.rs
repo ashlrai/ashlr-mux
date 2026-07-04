@@ -15,8 +15,15 @@
 //! The [`reconnect_input_filter`] module ports the pure byte-stream core of
 //! `CLI/SSHPTYAttachReconnectInputFilter.swift` (probe-reply suppression
 //! during `ssh-pty-attach` reconnect).
+//!
+//! The [`ssh_url`] module ports the pure core of `Sources/CmuxSSHURLRequest.swift`
+//! (the `…://ssh?…` deep-link and standard `ssh://` URL parser —
+//! [`CmuxSSHURLRequest`] / [`CmuxSSHURLParseError`]).
 
 pub mod reconnect_input_filter;
+pub mod ssh_url;
+
+pub use ssh_url::{CmuxSSHURLParseError, CmuxSSHURLRequest};
 
 pub use reconnect_input_filter::{
     ReconnectInputFilter, SequenceMatch, MAX_PENDING_PROBE_BYTES,

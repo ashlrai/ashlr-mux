@@ -8,3 +8,9 @@ license.workspace = true
 path = "src/lib.rs"
 
 [dependencies]
+thiserror.workspace = true
+
+[dev-dependencies]
+# Used only by the URLComponents-conformance test in `ssh_url` that documents
+# why the production splitter is hand-rolled instead of delegating to `url`.
+url = "2"
