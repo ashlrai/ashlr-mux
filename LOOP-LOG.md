@@ -509,3 +509,21 @@ cmux-agent capture_trust / spawn_identity / feed_event / hook_payload; cmux-ssh
 reconnect_input_filter; cmux-terminal top_label; cmux-workspaces tab_colors. Lower-confidence:
 cmux-remote-shell-commands (couples to FileManager + unported SSH deps). Web-slice ports:
 shortcutFormat / placement / reorder / switcherIndex (share `bun test src`; sequence them).
+
+- Frontier batch-4 (5 headless lanes) — ported into existing crates + web via a
+  scout→implement→red-team→fix ultracode workflow (Fable), the 2 red-team lanes
+  that hit the Fable limit re-run on Opus 4.8. Landed: cmux-agent `capture_trust`
+  + `spawn_identity` (47 tests); cmux-ssh `reconnect_input_filter` (66); cmux-
+  terminal `top_label` (113, +1 red-team fix: tab_sync/tmux_rename both-or-neither
+  gate); cmux-workspaces `tab_colors` (88); web `shortcutFormat`/`placement`/
+  `reorder`/`switcherIndex` (308, +2 red-team fixes: switcherIndex ICU `\s` class
+  dropped stray VT+NEL so interior whitespace matches Swift; reorder
+  `batchReorderFinalIds` now traps on duplicate current ids per Swift
+  `Dictionary(uniqueKeysWithValues:)`). All clippy -D clean. Commit `c3c1ef212`.
+  Owed /simplify from the PRIOR 7-crate batch also cleared first: 11 verified
+  cleanups, commit `0262b398c` (pushed). SKIPPED (need serde/serde_json the crate
+  lacks — flagged, not silently dep-added): cmux-agent `feed_event` +
+  `hook_payload` (Workstream event/payload pure core). Next: run the frontier-4
+  /simplify (in flight), then either land the Workstream lanes by adding
+  serde.workspace deps to cmux-agent (or a new cmux-agent-workstream crate), OR
+  re-scout the remaining headless frontier.

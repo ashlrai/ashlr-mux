@@ -287,7 +287,7 @@ fn legacy_palette_map(snapshot: &PaletteStoreSnapshot) -> Option<Vec<(String, St
 
     if let Some(raw_overrides) = &snapshot.legacy_overrides {
         for (name, hex) in raw_overrides {
-            let is_built_in = DEFAULT_PALETTE.iter().any(|(built_in, _)| built_in == name);
+            let is_built_in = is_built_in_name(name);
             let Some(normalized) = normalize_hex(hex) else {
                 continue;
             };
@@ -300,6 +300,7 @@ fn legacy_palette_map(snapshot: &PaletteStoreSnapshot) -> Option<Vec<(String, St
     if let Some(raw_custom_colors) = &snapshot.legacy_custom_colors {
         let mut index: u64 = 1;
         let mut seen_custom_hexes: Vec<String> = Vec::new();
+        let mut existing: Vec<String> = palette.iter().map(|(name, _)| name.clone()).collect();
         for raw_hex in raw_custom_colors {
             let Some(normalized) = normalize_hex(raw_hex) else {
                 continue;
@@ -308,8 +309,8 @@ fn legacy_palette_map(snapshot: &PaletteStoreSnapshot) -> Option<Vec<(String, St
                 continue;
             }
             seen_custom_hexes.push(normalized.clone());
-            let existing: Vec<String> = palette.iter().map(|(name, _)| name.clone()).collect();
             let name = next_custom_color_name(&existing, index);
+            existing.push(name.clone());
             palette.push((name, normalized));
             index += 1;
         }
@@ -352,7 +353,7 @@ pub fn palette(snapshot: &PaletteStoreSnapshot) -> Vec<TabColorEntry> {
         .collect();
     let mut custom: Vec<&(String, String)> = palette_map
         .iter()
-        .filter(|(name, _)| !DEFAULT_PALETTE.iter().any(|(built_in, _)| built_in == name))
+        .filter(|(name, _)| !is_built_in_name(name))
         .collect();
     custom.sort_by(|(a, _), (b, _)| finder_like_cmp(a, b));
     entries.extend(custom.into_iter().map(|(name, hex)| TabColorEntry {
@@ -366,12 +367,13 @@ pub fn palette(snapshot: &PaletteStoreSnapshot) -> Vec<TabColorEntry> {
 pub fn custom_palette_entries(snapshot: &PaletteStoreSnapshot) -> Vec<TabColorEntry> {
     palette(snapshot)
         .into_iter()
-        .filter(|entry| {
-            !DEFAULT_PALETTE
-                .iter()
-                .any(|(built_in, _)| *built_in == entry.name)
-        })
+        .filter(|entry| !is_built_in_name(&entry.name))
         .collect()
+}
+
+/// Whether `name` is one of the built-in palette names (exact, case-sensitive).
+fn is_built_in_name(name: &str) -> bool {
+    DEFAULT_PALETTE.iter().any(|(built_in, _)| *built_in == name)
 }
 
 /// `defaultColorHex(named:)` (lines 64-66): exact-match (case-sensitive)
@@ -671,9 +673,11 @@ fn chunked_cmp(a: &str, b: &str) -> Ordering {
 
 /// Compares only the FIRST char of each side, case-folded.
 fn cmp_chars_folded(a: &str, b: &str) -> Ordering {
-    let a_folded: Vec<char> = a.chars().next().into_iter().flat_map(char::to_lowercase).collect();
-    let b_folded: Vec<char> = b.chars().next().into_iter().flat_map(char::to_lowercase).collect();
-    a_folded.cmp(&b_folded)
+    a.chars()
+        .next()
+        .into_iter()
+        .flat_map(char::to_lowercase)
+        .cmp(b.chars().next().into_iter().flat_map(char::to_lowercase))
 }
 
 fn split_digit_run(s: &str) -> (&str, &str) {
