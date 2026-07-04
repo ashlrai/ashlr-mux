@@ -28,6 +28,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 #[cfg(feature = "ts")]
 use ts_rs::TS;
 
+pub mod right_sidebar_width;
+pub use right_sidebar_width::RightSidebarWidthSettings;
+
 // ---------------------------------------------------------------------------
 // Small shared enums
 // ---------------------------------------------------------------------------

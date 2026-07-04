@@ -20,10 +20,13 @@
 //! ```
 
 mod denylists;
+mod noise_filter;
 mod pattern;
 
 #[cfg(test)]
 mod tests;
+
+pub use noise_filter::SentryNoiseFilter;
 
 use std::sync::OnceLock;
 

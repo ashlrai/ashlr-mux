@@ -21,6 +21,7 @@ members = [
   "crates/cmux-markdown",
   "crates/cmux-mentions",
   "crates/cmux-pane-guardrail",
+  "crates/cmux-panes",
   "crates/cmux-process",
   "crates/cmux-resume",
   "crates/cmux-scrub",
@@ -30,6 +31,7 @@ members = [
   "crates/cmux-sync-protocol",
   "crates/cmux-terminal",
   "crates/cmux-tmux",
+  "crates/cmux-window-title",
   "crates/cmux-windowing",
   "crates/cmux-workspaces",
 ]

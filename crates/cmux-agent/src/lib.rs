@@ -20,6 +20,7 @@ use std::{
 
 use uuid::Uuid;
 
+mod auto_naming_agent_catalog;
 mod capture_trust;
 mod env_policy;
 mod feed_event;
@@ -31,6 +32,10 @@ mod workstream_context;
 mod workstream_json;
 mod workstream_source;
 
+pub use auto_naming_agent_catalog::{
+    display_name_for_slug, option_for_slug, other_agents, resolve_summarizer, summarizer_supported,
+    supported_agents, AutoNamingAgentOption, SummarizerDecision, AGENTS, AUTO_SLUG, SUPPORTED_SLUGS,
+};
 pub use capture_trust::{
     argv_looks_like_shell_wrapper, launcher_describes_kind, native_process_describes_kind,
     native_process_describes_known_agent,

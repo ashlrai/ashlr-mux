@@ -558,6 +558,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmux-panes"
+version = "0.1.0"
+dependencies = [
+ "uuid",
+]
+
+[[package]]
 name = "cmux-process"
 version = "0.1.0"
 dependencies = [
@@ -631,6 +638,14 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "cmux-window-title"
+version = "0.1.0"
+dependencies = [
+ "unicode-segmentation",
+ "uuid",
 ]
 
 [[package]]

@@ -15,6 +15,19 @@
 //!   `gitConfigRemoteName` / `gitConfigUnquotedValue` helpers it needs),
 //!   `gitConfigLineRemovingInlineComment`, `gitConfigGlobMatches` (+ the
 //!   `gitConfigGlobRegexPattern` / `gitConfigGlobCharacterClass` helpers).
+//! - `GitMetadataService+Index.swift` (see [`git_index`]): the pure `index`
+//!   parser `gitIndexSnapshot` + `gitIndexContentSignature` (FNV-1a), v4
+//!   strip-length varint, big-endian readers, path validation, and
+//!   comparable-mode mapping. The lstat/submodule/file-read I/O shell is
+//!   excluded.
+
+pub mod git_index;
+
+pub use git_index::{
+    git_index_comparable_mode, git_index_content_signature, git_index_snapshot,
+    is_valid_index_entry_path, read_big_endian_u16, read_big_endian_u32,
+    read_git_index_v4_path_strip_length, GitIndexEntryStat, GitIndexSnapshot,
+};
 
 use std::collections::{HashMap, HashSet};
 

@@ -14,6 +14,7 @@
 //! behavior is pinned against the Swift test vectors.
 
 mod closed_history;
+mod focus_history;
 mod group;
 mod group_invariants;
 mod ordering;
@@ -34,6 +35,11 @@ pub use closed_history::{
     ClosedItemHistoryRecord, ClosedPanelHistoryEntry, ClosedPanelSplitPlacement,
     ClosedWindowHistoryEntry, ClosedWorkspaceHistoryEntry, MenuSnapshot, PanelSnapshot,
     SplitOrientation, WindowSnapshot, WorkspaceSnapshot,
+};
+pub use focus_history::{
+    FocusHistoryEntry, FocusHistoryHost, FocusHistoryMenuDirection, FocusHistoryMenuItem,
+    FocusHistoryMenuPosition, FocusHistoryMenuSnapshot, FocusHistoryModel, FocusHistoryRecord,
+    FocusedAt,
 };
 pub use group::WorkspaceGroup;
 pub use group_invariants::{

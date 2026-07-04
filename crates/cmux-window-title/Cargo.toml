@@ -1,0 +1,12 @@
+[package]
+name = "cmux-window-title"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+unicode-segmentation = "1"
+uuid.workspace = true
