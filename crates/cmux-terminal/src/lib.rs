@@ -15,10 +15,13 @@ pub mod conpty;
 pub mod engine;
 pub mod geometry;
 pub mod links;
+pub mod sanitize;
 pub mod surface;
 pub mod theme;
 pub mod top_label;
 pub mod transcript;
+
+pub use sanitize::sanitize_external_committed_text;
 
 use serde::{Deserialize, Serialize};
 
