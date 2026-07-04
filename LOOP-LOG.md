@@ -527,3 +527,19 @@ shortcutFormat / placement / reorder / switcherIndex (share `bun test src`; sequ
   /simplify (in flight), then either land the Workstream lanes by adding
   serde.workspace deps to cmux-agent (or a new cmux-agent-workstream crate), OR
   re-scout the remaining headless frontier.
+
+- Workstream port (cmux-agent feed_event + hook_payload) — the deferred serde
+  lanes. Added serde/serde_json to cmux-agent only (root already declares them).
+  5 new modules: workstream_json (AnyJSON over serde_json::Value), _source,
+  _context, feed_event (WorkstreamEvent + HookEventName), hook_payload
+  (Payload/Status/Decision/Item + pure event->item mapping). scout→implement→
+  red-team→fix workflow; red-team hardened decode to throw typeMismatch on
+  present wrong-typed optionals (Swift decodeIfPresent). Adjudicated the one
+  execution-unverifiable finding: WorkstreamDecision is synthesized Codable so
+  nil exitPlan feedback emits explicit "feedback":null (synthesized enum coders
+  skip struct encodeIfPresent; corroborated by the sibling WorkstreamPayload
+  hand-writing encodeIfPresent) — dropped skip_serializing_if, pinned a test.
+  87 tests, clippy clean. Commit `632a8d649`. /simplify: 3 cleanups (dead
+  telemetry branch, 2 allocs) commit `9fd558c3b`. Both pushed. Store
+  I/O/actor/persistence/redaction remain out of scope (need the app). NEXT:
+  re-scout the headless frontier for the next batch.
