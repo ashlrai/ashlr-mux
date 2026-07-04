@@ -19,6 +19,7 @@
 //! | [`orchestrator`]     | `Orchestration/CommandPaletteSearchOrchestrator.swift` |
 //! | [`command`]          | `Values/CommandPaletteCommand.swift`            |
 //! | [`context`]          | `Context/CommandPaletteContextSnapshot.swift` + `Context/CommandPaletteContextKeys.swift` |
+//! | [`window_store`]     | `State/CommandPaletteWindowStore.swift` + `Snapshot/CommandPaletteDebugSnapshot.swift` + `Snapshot/CommandPaletteDebugResultRow.swift` |
 //!
 //! # The nucleo accelerator path is intentionally absent
 //!
@@ -49,6 +50,7 @@ pub mod request_kind;
 pub mod resolved_match;
 pub mod switcher_indexer;
 pub mod usage;
+pub mod window_store;
 
 pub use command::CommandPaletteCommand;
 pub use context::{CommandPaletteContextKeys, CommandPaletteContextSnapshot};
@@ -61,3 +63,7 @@ pub use switcher_indexer::{
     CommandPaletteSwitcherSearchIndexer, CommandPaletteSwitcherSearchMetadata, MetadataDetail,
 };
 pub use usage::CommandPaletteUsageEntry;
+pub use window_store::{
+    CommandPaletteDebugResultRow, CommandPaletteDebugSnapshot, CommandPaletteWindowStore,
+    PrunedPendingOpen, VisibilityUpdate,
+};
