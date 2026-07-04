@@ -26,6 +26,7 @@ mod env_policy;
 mod feed_event;
 mod hook_payload;
 mod opencode;
+mod prompt_extraction;
 mod spawn_identity;
 mod version;
 mod workstream_context;
@@ -59,6 +60,7 @@ pub use hook_payload::{
     WorkstreamKind, WorkstreamPayload, WorkstreamPermissionMode, WorkstreamQuestionOption,
     WorkstreamQuestionPrompt, WorkstreamStatus, WorkstreamTaskTodo, WorkstreamTaskTodoState,
 };
+pub use prompt_extraction::conversation_message_preview;
 pub use workstream_context::{
     WorkstreamAllowedPrompt, WorkstreamContext, WorkstreamExitPlanPreview,
 };
