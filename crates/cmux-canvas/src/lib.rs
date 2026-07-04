@@ -6,7 +6,9 @@
 //! `CanvasLayout`, and the four deterministic algorithms — snap engine, placer,
 //! aligner, spatial navigator — plus viewport math. `f64` throughout with
 //! Swift-parity arithmetic order; `serde` round-trip on `CanvasLayout`. The
-//! SwiftUI/AppKit `CmuxCanvasUI` (minimap, focus) is excluded.
+//! SwiftUI/AppKit drawing and mouse handling of `CmuxCanvasUI` (focus, NSView
+//! rendering) is excluded; its pure geometry core (the minimap snapshot) is
+//! ported here.
 //!
 //! Module → Swift source map:
 //! - [`geometry`] ← `CanvasPoint.swift`, `CanvasSize.swift`, `CanvasRect.swift`,
@@ -19,10 +21,13 @@
 //! - [`aligner`] ← `CanvasAligner.swift`
 //! - [`spatial_nav`] ← `CanvasSpatialNavigator.swift`
 //! - [`viewport`] ← `CanvasViewportMath.swift`
+//! - [`minimap`] ← `CanvasMinimapSnapshot.swift`, `CanvasMinimapPaneSnapshot.swift`,
+//!   `CanvasMinimapProjection.swift`
 
 pub mod aligner;
 pub mod geometry;
 pub mod layout;
+pub mod minimap;
 pub mod pane;
 pub mod placer;
 pub mod snap;
@@ -35,6 +40,7 @@ pub use geometry::{
     CanvasPoint, CanvasRect, CanvasResizeEdges, CanvasSize, CanvasSnapResult,
 };
 pub use layout::CanvasLayout;
+pub use minimap::{CanvasMinimapPaneSnapshot, CanvasMinimapProjection, CanvasMinimapSnapshot};
 pub use pane::{CanvasPane, CanvasPaneID, CanvasPanelID, Uuid};
 pub use placer::CanvasPlacer;
 pub use snap::CanvasSnapEngine;

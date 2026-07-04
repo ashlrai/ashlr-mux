@@ -193,6 +193,33 @@ impl CanvasRect {
         )
     }
 
+    /// Returns this rect inset on every edge by the given amounts.
+    ///
+    /// Port of `CGRect.insetBy(dx:dy:)`: the origin moves inward by `(dx, dy)`
+    /// and the size shrinks by `2·dx` / `2·dy`. Negative insets grow the rect
+    /// outward (e.g. `inset_by(-24, -24)` expands by 24 on every edge).
+    pub fn inset_by(&self, dx: f64, dy: f64) -> CanvasRect {
+        CanvasRect::new(
+            self.x + dx,
+            self.y + dy,
+            self.width - dx * 2.0,
+            self.height - dy * 2.0,
+        )
+    }
+
+    /// Whether `other` lies entirely within this rect (closed on every edge).
+    ///
+    /// Port of `CGRectContainsRect`. DIVERGENCE: CoreGraphics' empty/null
+    /// special-casing is not modeled; callers here pass positive-area rects
+    /// (the minimap only tests containment when the viewport has area), so the
+    /// distinction is unobservable.
+    pub fn contains_rect(&self, other: &CanvasRect) -> bool {
+        other.min_x() >= self.min_x()
+            && other.max_x() <= self.max_x()
+            && other.min_y() >= self.min_y()
+            && other.max_y() <= self.max_y()
+    }
+
     /// The horizontal extent as a closed range.
     pub fn horizontal_range(&self) -> RangeInclusive<f64> {
         self.min_x()..=self.min_x().max(self.max_x())
