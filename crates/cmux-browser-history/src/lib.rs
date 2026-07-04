@@ -17,6 +17,13 @@ use std::collections::HashSet;
 
 use url::Url;
 
+pub mod session_history;
+
+pub use session_history::{
+    NavigationAvailability, RealignOutcome, RestoredSessionHistory, SessionHistoryTraversalDecision,
+    SessionHistoryURLSanitizer, SessionNavigationHistorySnapshot,
+};
+
 /// One persisted browser-history record: a visited URL with its display title
 /// and the visit/typed statistics that feed omnibar frecency scoring.
 ///
