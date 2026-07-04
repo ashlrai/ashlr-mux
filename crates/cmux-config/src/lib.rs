@@ -28,6 +28,13 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 #[cfg(feature = "ts")]
 use ts_rs::TS;
 
+pub mod json_path;
+pub use json_path::{JsonPath, JsonPathError};
+pub mod notification_hooks;
+pub use notification_hooks::{
+    ActionTrustDescriptor, DEFAULT_TIMEOUT_SECONDS, ResolvedNotificationHook, project_root,
+    resolve_notification_hooks, resolved_hooks_for,
+};
 pub mod right_sidebar_width;
 pub use right_sidebar_width::RightSidebarWidthSettings;
 
