@@ -13,10 +13,12 @@
 //! where the Swift also reorders groups, a new `Vec<WorkspaceGroup>`). The
 //! behavior is pinned against the Swift test vectors.
 
+mod avatar;
 mod closed_history;
 mod focus_history;
 mod group;
 mod group_invariants;
+mod mount_plan;
 mod ordering;
 mod placement;
 mod render_items;
@@ -30,6 +32,10 @@ mod tab_colors;
 // Reuse the config crate's placement enum rather than redefining it.
 pub use cmux_config::NewWorkspacePlacement;
 
+pub use avatar::{
+    parse_hex_color, resolve_gradient_source, wrapped_palette_slot, AvatarColor,
+    MachineAvatarGradient, MachineAvatarPalette,
+};
 pub use closed_history::{
     has_usable_restored_content, records_by_remapping_panel_anchor_ids,
     records_by_remapping_panel_workspace_ids, records_by_remapping_workspace_window_ids,
@@ -49,6 +55,7 @@ pub use group_invariants::{
     move_workspace_group_members_after_anchors, normalize_workspace_group_contiguity,
     normalize_workspace_group_runs_preserving_order, sync_workspace_groups_order_to_anchor_order,
 };
+pub use mount_plan::WorkspaceMountPlan;
 pub use ordering::{
     anchor_first, clamped_grouped_member_reorder_index, clamped_reorder_index,
     clamped_top_level_reorder_index, is_global_pinned_row, is_workspace_group_anchor,
