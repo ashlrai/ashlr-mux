@@ -19,9 +19,23 @@
 //! The [`ssh_url`] module ports the pure core of `Sources/CmuxSSHURLRequest.swift`
 //! (the `…://ssh?…` deep-link and standard `ssh://` URL parser —
 //! [`CmuxSSHURLRequest`] / [`CmuxSSHURLParseError`]).
+//!
+//! The [`ssh_batch`] module ports the pure batch (non-interactive) SSH argv
+//! composition + option-normalization core of
+//! `Remote/WorkspaceRemoteConfiguration+SSHBatchCommands.swift` and
+//! `Remote/WorkspaceRemoteConfiguration+SSHOptionNormalization.swift`
+//! ([`SshBatchConfiguration`] daemon-transport / socket-forward /
+//! reverse-relay argv, plus [`durable_ssh_options`] / [`trimmed_ssh_options`] /
+//! [`normalized_optional_value`]).
 
 pub mod reconnect_input_filter;
+pub mod ssh_batch;
 pub mod ssh_url;
+
+pub use ssh_batch::{
+    durable_ssh_options, forked_workspace_ssh_options, normalized_optional_value,
+    trimmed_ssh_options, SshBatchConfiguration,
+};
 
 pub use ssh_url::{CmuxSSHURLParseError, CmuxSSHURLRequest};
 
