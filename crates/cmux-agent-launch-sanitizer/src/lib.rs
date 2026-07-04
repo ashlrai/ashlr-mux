@@ -56,8 +56,17 @@
 //! `\` → `/` normalization before the `$bunfs` worker-js check — is transcribed
 //! verbatim from Swift, backslashes included).
 
+mod hermes_codex_config;
 mod policies;
 mod prompt_boundary;
+
+pub use hermes_codex_config::{
+    applying_default_codex_base_url, codex_base_url_from_chatgpt_base_url,
+    codex_base_url_from_codex_config_content, codex_model_from_codex_config_content,
+    custom_base_url_from_chatgpt_base_url, custom_base_url_from_codex_config_content,
+    custom_base_url_from_openai_base_url, CODEX_BASE_URL_ENVIRONMENT_KEY,
+    CODEX_RESPONSES_API_MODE, CUSTOM_BASE_URL_ENVIRONMENT_KEY, DEFAULT_PROVIDER,
+};
 
 use policies::{
     amp_policy, antigravity_policy, claude_policy, claude_teams_policy, code_buddy_policy,
