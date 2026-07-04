@@ -23,6 +23,8 @@ mod render_items;
 mod reorder;
 mod row;
 mod selection_sync;
+mod session_restore_policy;
+mod surface_list;
 mod tab_colors;
 
 // Reuse the config crate's placement enum rather than redefining it.
@@ -65,6 +67,13 @@ pub use selection_sync::{
     anchor_index, anchor_index_after_workspace_click, anchor_index_after_workspace_reorder,
     anchor_workspace_id, reconciled_selection, shift_click_anchor_index,
 };
+pub use session_restore_policy::{
+    WorkspaceHermesCodexEnvironment, WorkspaceSessionRemoteRestorePanelSnapshot,
+    WorkspaceSessionRemoteRestoreSnapshot, WorkspaceSessionRemoteRestoreTerminalSnapshot,
+    WorkspaceSessionRestorePolicyService, WorkspaceSurfaceResumeBinding,
+    WorkspaceSurfaceResumeStartupLaunch,
+};
+pub use surface_list::{Pane, SurfaceTree};
 pub use tab_colors::{
     add_custom_color, backup_palette_map, brightened_for_dark_appearance_rgb,
     custom_palette_entries, current_color_hex, default_color_hex, default_palette,
