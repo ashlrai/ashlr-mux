@@ -116,6 +116,12 @@ pub const MAX_TITLE_LENGTH: usize = 160;
 /// Swift: `static let supportedSchemes` (the stable/nightly/dev product schemes).
 pub const SUPPORTED_SCHEMES: [&str; 3] = ["cmux", "cmux-nightly", "cmux-dev"];
 
+/// Allowed character set for an unbracketed IPv6-style host body, shared by
+/// [`is_allowed_standard_ssh_host`] and the bracketed-inner branch of
+/// [`is_allowed_ssh_host`]. The two must stay in sync — a silent divergence
+/// would be a parity bug.
+const IPV6_HOST_CHARS: &str = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz:.%";
+
 impl CmuxSSHURLRequest {
     /// Swift: `var cliArguments` (36-52).
     pub fn cli_arguments(&self) -> Vec<String> {
@@ -217,21 +223,7 @@ impl CmuxSSHURLRequest {
             "host-key-policy",
             "no-focus",
         ];
-        let mut seen_query_names: Vec<String> = Vec::new();
-        for item in query_items {
-            let name = item.name.to_lowercase();
-            if !ALLOWED_QUERY_NAMES.contains(&name.as_str()) {
-                return Err(CmuxSSHURLParseError::UnsupportedParameter(
-                    display_parameter_name(&item.name),
-                ));
-            }
-            if seen_query_names.contains(&name) {
-                return Err(CmuxSSHURLParseError::DuplicateParameter(
-                    display_parameter_name(&item.name),
-                ));
-            }
-            seen_query_names.push(name);
-        }
+        validate_query_names(query_items, &ALLOWED_QUERY_NAMES)?;
         if contains_path_destination(&components) {
             return Err(CmuxSSHURLParseError::ConflictingDestinationParameters);
         }
@@ -275,22 +267,7 @@ impl CmuxSSHURLRequest {
             None => None,
         };
 
-        let title_value = normalized_query_value(&["title"], query_items);
-        let name_value = normalized_query_value(&["name"], query_items);
-        if title_value.is_some() && name_value.is_some() {
-            return Err(CmuxSSHURLParseError::ConflictingTitleParameters);
-        }
-        let title = title_value.or(name_value);
-        if let Some(title) = &title {
-            if char_count(title) > MAX_TITLE_LENGTH {
-                return Err(CmuxSSHURLParseError::TitleTooLong {
-                    max_length: MAX_TITLE_LENGTH,
-                });
-            }
-            if contains_unsafe_hidden_character(title) {
-                return Err(CmuxSSHURLParseError::TitleContainsUnsafeCharacters);
-            }
-        }
+        let title = resolve_title(query_items)?;
 
         let ssh_options = structured_ssh_options(query_items)?;
         let no_focus = normalized_boolean_value("no-focus", query_items)?;
@@ -312,7 +289,7 @@ impl CmuxSSHURLRequest {
 
 /// Swift: `isStandardSSHURLScheme(_:)` (203-205).
 fn is_standard_ssh_url_scheme(scheme: Option<&str>) -> bool {
-    scheme.map(|s| s.to_lowercase()) == Some("ssh".to_string())
+    scheme.map(str::to_lowercase).as_deref() == Some("ssh")
 }
 
 /// Swift: `parseStandardSSHURL(_:)` (207-304).
@@ -331,21 +308,7 @@ fn parse_standard_ssh_url(
 
     let query_items = &components.query_items;
     const ALLOWED_QUERY_NAMES: [&str; 3] = ["title", "name", "no-focus"];
-    let mut seen_query_names: Vec<String> = Vec::new();
-    for item in query_items {
-        let name = item.name.to_lowercase();
-        if !ALLOWED_QUERY_NAMES.contains(&name.as_str()) {
-            return Err(CmuxSSHURLParseError::UnsupportedParameter(
-                display_parameter_name(&item.name),
-            ));
-        }
-        if seen_query_names.contains(&name) {
-            return Err(CmuxSSHURLParseError::DuplicateParameter(
-                display_parameter_name(&item.name),
-            ));
-        }
-        seen_query_names.push(name);
-    }
+    validate_query_names(query_items, &ALLOWED_QUERY_NAMES)?;
 
     let host_value = match &components.host {
         Some(host) if !host.is_empty() => host.clone(),
@@ -385,22 +348,7 @@ fn parse_standard_ssh_url(
 
     let parsed_port = standard_ssh_url_port(components)?;
 
-    let title_value = normalized_query_value(&["title"], query_items);
-    let name_value = normalized_query_value(&["name"], query_items);
-    if title_value.is_some() && name_value.is_some() {
-        return Err(CmuxSSHURLParseError::ConflictingTitleParameters);
-    }
-    let title = title_value.or(name_value);
-    if let Some(title) = &title {
-        if char_count(title) > MAX_TITLE_LENGTH {
-            return Err(CmuxSSHURLParseError::TitleTooLong {
-                max_length: MAX_TITLE_LENGTH,
-            });
-        }
-        if contains_unsafe_hidden_character(title) {
-            return Err(CmuxSSHURLParseError::TitleContainsUnsafeCharacters);
-        }
-    }
+    let title = resolve_title(query_items)?;
 
     let no_focus = normalized_boolean_value("no-focus", query_items)?;
 
@@ -471,8 +419,7 @@ fn is_allowed_standard_ssh_host(value: &str) -> bool {
     {
         return false;
     }
-    const ALLOWED: &str = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz:.%";
-    value.chars().all(|c| ALLOWED.contains(c))
+    value.chars().all(|c| IPV6_HOST_CHARS.contains(c))
 }
 
 // ---------------------------------------------------------------------------
@@ -514,17 +461,69 @@ fn contains_path_destination(components: &ParsedUrl) -> bool {
         }
     }
     let path = components.decoded_path();
-    let path_components: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    path_components
-        .first()
+    let mut segments = path.split('/').filter(|s| !s.is_empty());
+    segments
+        .next()
         .map(|s| s.to_lowercase() == "ssh")
         .unwrap_or(false)
-        && path_components.len() > 1
+        && segments.next().is_some()
 }
 
 // ---------------------------------------------------------------------------
 // query value accessors (Swift: normalizedQueryValue / structuredSSHOptions / …)
 // ---------------------------------------------------------------------------
+
+/// Shared query-name allow-list + duplicate check used by both
+/// [`CmuxSSHURLRequest::parse`] and [`parse_standard_ssh_url`]. Iterates the
+/// query items in order, lowercasing each name, rejecting the first name not in
+/// `allowed` with `UnsupportedParameter` and the first repeat with
+/// `DuplicateParameter` (both carry `display_parameter_name(item.name)`).
+fn validate_query_names(
+    query_items: &[QueryItem],
+    allowed: &[&str],
+) -> Result<(), CmuxSSHURLParseError> {
+    let mut seen_query_names: Vec<String> = Vec::new();
+    for item in query_items {
+        let name = item.name.to_lowercase();
+        if !allowed.contains(&name.as_str()) {
+            return Err(CmuxSSHURLParseError::UnsupportedParameter(
+                display_parameter_name(&item.name),
+            ));
+        }
+        if seen_query_names.contains(&name) {
+            return Err(CmuxSSHURLParseError::DuplicateParameter(
+                display_parameter_name(&item.name),
+            ));
+        }
+        seen_query_names.push(name);
+    }
+    Ok(())
+}
+
+/// Shared `title`/`name` resolution + validation used by both
+/// [`CmuxSSHURLRequest::parse`] and [`parse_standard_ssh_url`]. Rejects both
+/// present with `ConflictingTitleParameters`, prefers `title` over `name`, then
+/// enforces the length (`TitleTooLong`) and hidden-character
+/// (`TitleContainsUnsafeCharacters`) guards.
+fn resolve_title(query_items: &[QueryItem]) -> Result<Option<String>, CmuxSSHURLParseError> {
+    let title_value = normalized_query_value(&["title"], query_items);
+    let name_value = normalized_query_value(&["name"], query_items);
+    if title_value.is_some() && name_value.is_some() {
+        return Err(CmuxSSHURLParseError::ConflictingTitleParameters);
+    }
+    let title = title_value.or(name_value);
+    if let Some(title) = &title {
+        if char_count(title) > MAX_TITLE_LENGTH {
+            return Err(CmuxSSHURLParseError::TitleTooLong {
+                max_length: MAX_TITLE_LENGTH,
+            });
+        }
+        if contains_unsafe_hidden_character(title) {
+            return Err(CmuxSSHURLParseError::TitleContainsUnsafeCharacters);
+        }
+    }
+    Ok(title)
+}
 
 /// Swift: `normalizedQueryValue(namedAnyOf:in:)` (391-397).
 fn normalized_query_value(names: &[&str], query_items: &[QueryItem]) -> Option<String> {
@@ -643,8 +642,7 @@ fn is_allowed_ssh_host(value: &str) -> bool {
         if inner.is_empty() {
             return false;
         }
-        const ALLOWED: &str = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz:.%";
-        return inner.chars().all(|c| ALLOWED.contains(c));
+        return inner.chars().all(|c| IPV6_HOST_CHARS.contains(c));
     }
     const ALLOWED: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._%-";
     value.chars().all(|c| ALLOWED.contains(c))
@@ -693,11 +691,10 @@ fn display_parameter_name(name: &str) -> String {
     // Swift: `name.prefix(64)`. DIVERGENCE: scalar prefix, not grapheme prefix
     // (matches this crate's established scalar convention); only differs for
     // names > 64 scalars containing grapheme clusters.
-    let mut chars = name.chars();
-    let prefix: String = chars.by_ref().take(64).collect();
     if char_count(name) <= 64 {
         name.to_string()
     } else {
+        let prefix: String = name.chars().take(64).collect();
         format!("{prefix}...")
     }
 }
