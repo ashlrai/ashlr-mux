@@ -20,6 +20,7 @@ members = [
   "crates/cmux-jsonc",
   "crates/cmux-markdown",
   "crates/cmux-mentions",
+  "crates/cmux-notifications",
   "crates/cmux-pane-guardrail",
   "crates/cmux-panes",
   "crates/cmux-process",

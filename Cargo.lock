@@ -437,6 +437,7 @@ version = "0.1.0"
 dependencies = [
  "cmux-mentions",
  "serde",
+ "uuid",
 ]
 
 [[package]]
@@ -550,6 +551,13 @@ dependencies = [
 [[package]]
 name = "cmux-mentions"
 version = "0.1.0"
+
+[[package]]
+name = "cmux-notifications"
+version = "0.1.0"
+dependencies = [
+ "uuid",
+]
 
 [[package]]
 name = "cmux-pane-guardrail"
