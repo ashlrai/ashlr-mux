@@ -17,6 +17,7 @@ pub mod geometry;
 pub mod links;
 pub mod surface;
 pub mod theme;
+pub mod top_label;
 pub mod transcript;
 
 use serde::{Deserialize, Serialize};

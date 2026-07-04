@@ -11,6 +11,17 @@
 //! `TerminalSSHSessionDetector.detectForTesting(ttyName:processes:argumentsByPID:)`),
 //! which selects the foreground remote-shell process for a tty and turns its
 //! argv into a normalized [`DetectedSSHSession`].
+//!
+//! The [`reconnect_input_filter`] module ports the pure byte-stream core of
+//! `CLI/SSHPTYAttachReconnectInputFilter.swift` (probe-reply suppression
+//! during `ssh-pty-attach` reconnect).
+
+pub mod reconnect_input_filter;
+
+pub use reconnect_input_filter::{
+    ReconnectInputFilter, SequenceMatch, MAX_PENDING_PROBE_BYTES,
+    PENDING_PROBE_CONTINUATION_TIMEOUT_MS,
+};
 
 use std::collections::HashMap;
 

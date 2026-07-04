@@ -20,11 +20,18 @@ use std::{
 
 use uuid::Uuid;
 
+mod capture_trust;
 mod env_policy;
 mod opencode;
+mod spawn_identity;
 mod version;
 
+pub use capture_trust::{
+    argv_looks_like_shell_wrapper, launcher_describes_kind, native_process_describes_kind,
+    native_process_describes_known_agent,
+};
 pub use opencode::OpenCodeServerAuth;
+pub use spawn_identity::{resolve_spawn_identity, SpawnIdentity};
 
 pub use env_policy::{
     claude_config_preferred_path, launch_environment, sanitized_node_options, sanitized_value,

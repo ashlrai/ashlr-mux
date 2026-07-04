@@ -22,6 +22,7 @@ mod render_items;
 mod reorder;
 mod row;
 mod selection_sync;
+mod tab_colors;
 
 // Reuse the config crate's placement enum rather than redefining it.
 pub use cmux_config::NewWorkspacePlacement;
@@ -57,4 +58,14 @@ pub use row::WorkspaceRow;
 pub use selection_sync::{
     anchor_index, anchor_index_after_workspace_click, anchor_index_after_workspace_reorder,
     anchor_workspace_id, reconciled_selection, shift_click_anchor_index,
+};
+pub use tab_colors::{
+    add_custom_color, backup_palette_map, brightened_for_dark_appearance_rgb,
+    custom_palette_entries, current_color_hex, default_color_hex, default_palette,
+    display_color_hex, effective_palette_map, finder_like_cmp, invalid_color_message, luminance,
+    normalize_hex, normalized_color_name, normalized_custom_color, palette,
+    palette_cache_fingerprint, persist_palette_map, remove_color, resolve_set_color_input,
+    resolved_color_hex, set_color, PaletteStoreSnapshot, PalettePersistOutcome, SetColorError,
+    TabColorEntry, DEFAULT_PALETTE, INVALID_COLOR_MESSAGE, LEGACY_CUSTOM_COLORS_KEY,
+    LEGACY_DEFAULT_OVERRIDES_KEY, MISSING_COLOR_MESSAGE, PALETTE_KEY,
 };
