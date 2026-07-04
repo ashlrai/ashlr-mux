@@ -363,6 +363,8 @@ name = "cmux-agent"
 version = "0.1.0"
 dependencies = [
  "cmux-process",
+ "serde",
+ "serde_json",
  "thiserror 1.0.69",
  "uuid",
 ]

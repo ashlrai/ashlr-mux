@@ -22,9 +22,14 @@ use uuid::Uuid;
 
 mod capture_trust;
 mod env_policy;
+mod feed_event;
+mod hook_payload;
 mod opencode;
 mod spawn_identity;
 mod version;
+mod workstream_context;
+mod workstream_json;
+mod workstream_source;
 
 pub use capture_trust::{
     argv_looks_like_shell_wrapper, launcher_describes_kind, native_process_describes_kind,
@@ -41,6 +46,19 @@ pub use env_policy::{
 pub use version::{
     opencode_version_supports_fork, SemanticVersion, MINIMUM_OPENCODE_FORK_VERSION,
 };
+
+pub use feed_event::{HookEventName, WorkstreamEvent};
+pub use hook_payload::{
+    carried_context, context_for, decode_event, default_title, make_item, next_context,
+    parse_questions, TitleProvider, WorkstreamDecision, WorkstreamExitPlanMode, WorkstreamItem,
+    WorkstreamKind, WorkstreamPayload, WorkstreamPermissionMode, WorkstreamQuestionOption,
+    WorkstreamQuestionPrompt, WorkstreamStatus, WorkstreamTaskTodo, WorkstreamTaskTodoState,
+};
+pub use workstream_context::{
+    WorkstreamAllowedPrompt, WorkstreamContext, WorkstreamExitPlanPreview,
+};
+pub use workstream_json::{json_from_string, json_to_string};
+pub use workstream_source::WorkstreamSource;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AgentSessionProviderId {

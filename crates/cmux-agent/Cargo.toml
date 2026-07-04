@@ -9,5 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 cmux-process = { path = "../cmux-process" }
+serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror.workspace = true
 uuid.workspace = true
