@@ -198,8 +198,9 @@ pub fn git_directory_from_dot_git_file(contents: &str, work_tree_root: &str) -> 
         return None;
     }
     // Drop the 7-char ASCII prefix (case preserved on the path) and re-trim.
-    let raw_path: String = trimmed.chars().skip(prefix.chars().count()).collect();
-    let raw_path = raw_path.trim();
+    // `prefix.len()` == 7 ASCII bytes, a guaranteed char boundary, so slicing
+    // yields the same &str the char-skip produced with zero allocation.
+    let raw_path = trimmed[prefix.len()..].trim();
     if raw_path.is_empty() {
         return None;
     }

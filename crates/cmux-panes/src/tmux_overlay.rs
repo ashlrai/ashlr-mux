@@ -204,21 +204,17 @@ impl TmuxPaneOverlayGeometry {
             .frame;
 
         // `CGRect.offsetBy(dx:dy:)` moves the origin, keeping the size.
-        let rect = if include_container_offset {
-            PixelRect::new(
-                pane_frame.x,
-                pane_frame.y - snapshot.container_frame.y,
-                pane_frame.width,
-                pane_frame.height,
-            )
+        let origin_x = if include_container_offset {
+            pane_frame.x
         } else {
-            PixelRect::new(
-                pane_frame.x - snapshot.container_frame.x,
-                pane_frame.y - snapshot.container_frame.y,
-                pane_frame.width,
-                pane_frame.height,
-            )
+            pane_frame.x - snapshot.container_frame.x
         };
+        let rect = PixelRect::new(
+            origin_x,
+            pane_frame.y - snapshot.container_frame.y,
+            pane_frame.width,
+            pane_frame.height,
+        );
         Some(self.content_rect(rect))
     }
 

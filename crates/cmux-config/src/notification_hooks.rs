@@ -366,10 +366,10 @@ pub fn resolve_notification_hooks<C: Fn(&str) -> String>(
     canonicalize: C,
 ) -> Vec<ResolvedNotificationHook> {
     let mut hooks: Vec<ResolvedNotificationHook> = Vec::new();
+    let canonical_global = canonicalize(global_path);
 
     if let Some(global_config) = global {
         let cwd = project_root(global_path);
-        let canonical_source = canonicalize(global_path);
         // The global source path is trivially global
         // (`canonical(global) == canonical(global)`).
         hooks.extend(resolved_hooks_for(
@@ -377,12 +377,11 @@ pub fn resolve_notification_hooks<C: Fn(&str) -> String>(
             global_path,
             true,
             &cwd,
-            &canonical_source,
+            &canonical_global,
             &canonicalize,
         ));
     }
 
-    let canonical_global = canonicalize(global_path);
     for (path, config) in locals {
         if config.hooks_mode == HooksMode::Replace {
             hooks.clear();
