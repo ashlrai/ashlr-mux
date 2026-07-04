@@ -12,6 +12,7 @@
 //! `Packages/Shared/CmuxAgentChat/Sources/CmuxAgentChat/Parsing/OSC133CommandParser.swift`
 
 pub mod conpty;
+pub mod copy_mode;
 pub mod engine;
 pub mod geometry;
 pub mod links;
@@ -21,6 +22,10 @@ pub mod theme;
 pub mod top_label;
 pub mod transcript;
 
+pub use copy_mode::{
+    CopyModeAction, CopyModeCursor, CopyModeInputState, CopyModeModifiers, CopyModeResolution,
+    CopyModeSelectionMove, CopyModeVisualLineSelection,
+};
 pub use sanitize::sanitize_external_committed_text;
 
 use serde::{Deserialize, Serialize};
