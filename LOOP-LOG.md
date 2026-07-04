@@ -558,3 +558,18 @@ shortcutFormat / placement / reorder / switcherIndex (share `bun test src`; sequ
   cmux-ssh-url (L) FAILED (agent derailed, produced nothing) — re-running solo.
   Frontier NOT exhausted: full 2nd wave queued (per-crate, sequenced). NEXT: land
   ssh-url, then start the 2nd wave.
+
+- Frontier wave-2 (8 lanes, 4 write-disjoint crate-tracks, sibling lanes
+  sequenced) — scout (9 slugs -> concrete specs; chat-ansi-sanitizer dropped:
+  already ported + no Swift oracle) then implement->red-team->fix (Opus, high
+  effort). Landed + committed per-track (pushed): cmux-config
+  `5da106ee4` notification_hooks (resolveNotificationHooks + ActionTrust SHA-256
+  fingerprint) + json_path (80 tests); cmux-git `c776ba6a3` pr_selection +
+  repo_resolution (55); cmux-panes `0cfcdc6d2` tmux_overlay + surface_map (28);
+  cmux-workspaces `418ec597b` surface_list + session_restore_policy (150). 2
+  confirmed red-team fixes: (1) notification fingerprint now escapes '/' as '\/'
+  to match Foundation JSONEncoder(.sortedKeys) — was breaking the trusted-actions
+  auth contract byte-identity; (2) git RFC3339 parse now does Foundation ISO8601
+  calendar validation (4-digit year, no leap-second, leap-year days_in_month).
+  sha2 added to cmux-config. /simplify in flight. NEXT: land the wave-2 simplify,
+  then re-scout the frontier (wave-3) or pivot to the MVP GUI-mount work.
