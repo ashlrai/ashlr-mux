@@ -17,7 +17,7 @@ use serde_json::Value;
 
 /// Foundation `trimmingCharacters(in: .whitespacesAndNewlines)` then map empty to
 /// nil — Swift `WorkstreamContext.cleaned(_:)` (`WorkstreamContext.swift:82-86`).
-fn cleaned(value: Option<String>) -> Option<String> {
+fn cleaned(value: Option<&str>) -> Option<String> {
     let value = value?;
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -126,15 +126,15 @@ impl WorkstreamContext {
         permission_mode: Option<String>,
     ) -> Self {
         Self {
-            last_user_message: cleaned(last_user_message),
-            assistant_preamble: cleaned(assistant_preamble),
-            plan_summary: cleaned(plan_summary),
+            last_user_message: cleaned(last_user_message.as_deref()),
+            assistant_preamble: cleaned(assistant_preamble.as_deref()),
+            plan_summary: cleaned(plan_summary.as_deref()),
             allowed_prompts: allowed_prompts
                 .into_iter()
                 .filter(|p| !p.prompt.is_empty())
                 .collect(),
-            tool_summary: cleaned(tool_summary),
-            permission_mode: cleaned(permission_mode),
+            tool_summary: cleaned(tool_summary.as_deref()),
+            permission_mode: cleaned(permission_mode.as_deref()),
         }
     }
 
@@ -214,14 +214,12 @@ impl WorkstreamExitPlanPreview {
             return (raw_plan.to_string(), Vec::new(), None);
         };
 
-        let plan_text =
-            cleaned(dict.get("plan").and_then(Value::as_str).map(str::to_string))
-                .unwrap_or_else(|| raw_plan.to_string());
+        let plan_text = cleaned(dict.get("plan").and_then(Value::as_str))
+            .unwrap_or_else(|| raw_plan.to_string());
         let plan_file_path = cleaned(
             dict.get("planFilePath")
                 .and_then(Value::as_str)
-                .or_else(|| dict.get("plan_file_path").and_then(Value::as_str))
-                .map(str::to_string),
+                .or_else(|| dict.get("plan_file_path").and_then(Value::as_str)),
         );
         (
             plan_text,
@@ -242,21 +240,15 @@ impl WorkstreamExitPlanPreview {
         };
         rows.iter()
             .filter_map(|row| {
-                if let Some(text) = cleaned(row.as_str().map(str::to_string)) {
+                if let Some(text) = cleaned(row.as_str()) {
                     return Some(WorkstreamAllowedPrompt::new("", text));
                 }
                 let obj = row.as_object()?;
-                let prompt = cleaned(obj.get("prompt").and_then(Value::as_str).map(str::to_string))
-                    .or_else(|| {
-                        cleaned(obj.get("description").and_then(Value::as_str).map(str::to_string))
-                    })
-                    .or_else(|| {
-                        cleaned(obj.get("text").and_then(Value::as_str).map(str::to_string))
-                    })?;
-                let tool = cleaned(obj.get("tool").and_then(Value::as_str).map(str::to_string))
-                    .or_else(|| {
-                        cleaned(obj.get("toolName").and_then(Value::as_str).map(str::to_string))
-                    })
+                let prompt = cleaned(obj.get("prompt").and_then(Value::as_str))
+                    .or_else(|| cleaned(obj.get("description").and_then(Value::as_str)))
+                    .or_else(|| cleaned(obj.get("text").and_then(Value::as_str)))?;
+                let tool = cleaned(obj.get("tool").and_then(Value::as_str))
+                    .or_else(|| cleaned(obj.get("toolName").and_then(Value::as_str)))
                     .unwrap_or_default();
                 Some(WorkstreamAllowedPrompt::new(tool, prompt))
             })
@@ -273,11 +265,10 @@ impl WorkstreamExitPlanPreview {
             if line.is_empty() {
                 continue;
             }
-            if let Some(rest) = line.strip_prefix('#') {
+            if line.starts_with('#') {
                 // Trim leading/trailing '#' and ' ' — Swift trims the
                 // CharacterSet "# ".
-                let heading = format!("#{rest}");
-                let heading = heading.trim_matches(|c| c == '#' || c == ' ');
+                let heading = line.trim_matches(|c| c == '#' || c == ' ');
                 if first_heading.is_none() && !heading.is_empty() {
                     first_heading = Some(heading.to_string());
                 }

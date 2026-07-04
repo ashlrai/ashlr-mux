@@ -476,15 +476,8 @@ impl WorkstreamItem {
     ) -> Self {
         let created_at = created_at.unwrap_or(0.0);
         let updated_at = updated_at.unwrap_or(created_at);
-        let resolved_status = status.unwrap_or_else(|| {
-            if kind.is_actionable() {
-                WorkstreamStatus::Pending {}
-            } else {
-                WorkstreamStatus::Telemetry {}
-            }
-        });
         let status = if kind.is_actionable() {
-            resolved_status
+            status.unwrap_or(WorkstreamStatus::Pending {})
         } else {
             WorkstreamStatus::Telemetry {}
         };
