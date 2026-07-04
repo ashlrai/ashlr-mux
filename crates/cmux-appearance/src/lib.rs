@@ -22,10 +22,14 @@
 //! host wiring (window/sidebar tinting, live-apply, the defaults observer) is
 //! intentionally NOT ported here.
 
+mod color_math;
 mod color_scheme;
 mod mode;
 mod theme_selection;
 
+pub use color_math::{
+    composited_color, contrast_ratio, readable_color_scheme, separator_color, Srgba,
+};
 pub use color_scheme::{ColorSchemePreference, SystemAppearance};
 pub use mode::{
     color_scheme, color_scheme_override, normalize, resolved_mode, AppearanceMode, ColorScheme,
