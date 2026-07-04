@@ -593,3 +593,22 @@ shortcutFormat / placement / reorder / switcherIndex (share `bun test src`; sequ
   needs the running app (HARD BOUNDARY, not headless-verifiable). NEXT: land
   wave-3 simplify, run a final tight wave-4 confirmation scout, then likely
   declare the headless harvest complete for this milestone.
+
+- Frontier wave-4 (final 3 lanes) - the wave-4 CONFIRMATION scout returned
+  "nearly exhausted": only 3 genuine oracle-backed lanes survived, all
+  write-disjoint. implement->red-team->fix (Opus, high effort), 0 confirmed
+  red-team findings this round, landed + committed (pushed a61d2f1ad..768beb077):
+  cmux-terminal `9ec41be59` copy_mode (vim-style scrollback key-resolution state
+  machine, 10 CopyMode/*.swift files, full oracle incl. Hangul fallback +
+  caps-lock invariance, 166 tests); cmux-agent-launch-sanitizer `cea27411d`
+  hermes_codex_config (TOML/URL derivation filling the app-target closure seam,
+  70); cmux-agent `768beb077` prompt_extraction (WorkstreamEvent prompt/assistant
+  accessors + grapheme-truncated preview, 112). /simplify in flight.
+  === HEADLESS FRONTIER EXHAUSTED === After 5 port waves (batch-4, workstream,
+  batch-5, wave-2, wave-3, wave-4) the pure-logic surface is harvested. Remaining
+  Windows-port work is the GUI/GPU/transport-MOUNT frontier (HARD BOUNDARY, needs
+  the running app, NOT headless-verifiable): Tauri command wiring over the
+  headless cores (diff/markdown/schemes/notifications/copy-mode/etc), WebView2
+  surface mount, live agent-transport verification, window chrome/HWND/focus/IME,
+  wgpu renderer, packaging/signing. The autonomous headless loop has reached its
+  natural boundary. See DECISIONS.md "Headless frontier exhaustion".

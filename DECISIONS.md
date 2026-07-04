@@ -474,3 +474,30 @@ of `CmuxDiffViewerURLSchemeHandler` (`BrowserPanel.swift:1904`). 14 tests.
   auth check) for file serving too — a real security-boundary divergence caught by
   adversarial verify. The token GATE stays lenient (fragment is router noise); only
   the file-SERVING path is strict. Two distinct behaviors, do not unify them.
+
+## Headless frontier exhaustion (2026-07-04)
+
+After 6 parallel port waves this session (frontier batch-4, Workstream port,
+frontier batch-5 + ssh-url, wave-2, wave-3, wave-4), a tight confirmation scout
+(3 area sweeps biased hard toward "nothing") found the headless pure-logic
+surface **effectively harvested**: candidates now dissolve into already-ported
+logic, non-pure fs/socket/actor shells, or GUI-adjacent overlap. The last wave
+took the 3 genuine survivors (copy-mode resolver, hermes codex config, workstream
+prompt extraction).
+
+**Decision:** stop the autonomous headless port loop. Everything remaining on the
+Windows-port critical path is **mount-dependent** and needs the running app to
+build or verify — it cannot be advanced correctly in a headless, unattended loop:
+
+- Tauri command layer + `generate_handler!` wiring over the headless cores
+  (cmux-diff, cmux-markdown, schemes, cmux-notifications, copy_mode, etc.).
+- `register_asynchronous_uri_scheme_protocol` handlers + WebView2 surface mount
+  (iframe-over-custom-scheme per the DECISIONS "Phase 4 - surface MOUNT model").
+- Live agent-transport verification (Claude/Codex/OpenCode converse, approvals).
+- Window chrome / HWND / focus / IME, the wgpu renderer, packaging/signing.
+
+**Why not keep scouting:** repeated scouts now return mostly-empty or
+already-ported hits (wave-3 already had one collision; wave-4 confirmed the
+thinning). Spinning further empty scouts burns budget for no output. The durable
+record of what shipped is the per-lane commits + LOOP-LOG.md; resume the port by
+picking up the mount frontier in the running app, not by re-scouting headless.

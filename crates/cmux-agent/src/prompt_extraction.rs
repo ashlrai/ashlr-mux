@@ -175,16 +175,11 @@ fn normalized_prompt_text(value: &str) -> Option<String> {
 /// with `is_extended = true`) for byte-for-byte parity on multi-scalar
 /// clusters — the same grapheme-accurate convention used in `cmux-window-title`.
 pub fn conversation_message_preview(message: Option<&str>, max_length: usize) -> Option<String> {
-    let message = message?;
-    let collapsed = message.split_whitespace().collect::<Vec<_>>().join(" ");
-    if collapsed.is_empty() {
-        return None;
-    }
-    let clusters: Vec<&str> = collapsed.graphemes(true).collect();
-    if clusters.len() <= max_length {
+    let collapsed = normalized_prompt_text(message?)?;
+    if collapsed.graphemes(true).count() <= max_length {
         Some(collapsed)
     } else {
-        let prefix: String = clusters[..max_length].concat();
+        let prefix: String = collapsed.graphemes(true).take(max_length).collect();
         Some(format!("{prefix}..."))
     }
 }
