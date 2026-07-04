@@ -543,3 +543,18 @@ shortcutFormat / placement / reorder / switcherIndex (share `bun test src`; sequ
   telemetry branch, 2 allocs) commit `9fd558c3b`. Both pushed. Store
   I/O/actor/persistence/redaction remain out of scope (need the app). NEXT:
   re-scout the headless frontier for the next batch.
+
+- Frontier batch-5 (7 of 8 headless lanes) — scout (5 area surveyors -> ranked
+  8-wide write-disjoint backlog) then implement->red-team->fix (Opus, high
+  effort). Landed + committed `f76d33a01` (pushed): cmux-git `git_index` (DIRC
+  v2/v3/v4 + FNV-1a, 27), cmux-scrub `noise_filter` (errno classifier; Unicode \s
+  to match ICU [:space:] + NBSP pin, 56), NEW crate cmux-window-title
+  (WindowTitleTemplate; red-team fix grapheme-cluster iteration, 10), cmux-config
+  `right_sidebar_width` (clamp/round, 36), cmux-agent `auto_naming_agent_catalog`
+  (summarizer decision matrix, 98), NEW crate cmux-panes (ExternalTreeNode +
+  spatial order, 7), cmux-workspaces `focus_history` (back/forward stack, 103).
+  3 red-team findings (1 fixed grapheme, 1 hardened NBSP, 1 ruled non-divergent).
+  /simplify (commit pending): 2 cleanups (window-title trim, scrub doc). 8th lane
+  cmux-ssh-url (L) FAILED (agent derailed, produced nothing) — re-running solo.
+  Frontier NOT exhausted: full 2nd wave queued (per-crate, sequenced). NEXT: land
+  ssh-url, then start the 2nd wave.

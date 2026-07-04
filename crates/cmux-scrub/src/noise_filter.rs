@@ -251,8 +251,9 @@ mod tests {
         ));
     }
 
-    /// A write-classified message with an unexpected reason is kept, even inside
-    /// the transport context. Swift: `SentryNoiseFilter.swift:26-38`.
+    /// The errno regex's trailing `(?![0-9])` guard rejects a digit
+    /// supersequence: `errno 329` must not satisfy the errno-32 check while a
+    /// bare `errno 32` does. Swift: `SentryNoiseFilter.swift:61-65`.
     #[test]
     fn errno_lookbehind_rejects_digit_supersequence() {
         // "errno 329" must not satisfy the errno-32 check; the trailing

@@ -85,7 +85,7 @@ impl WindowTitleTemplate {
     /// (space, tab, U+000A–U+000D, U+0085, U+2028, U+2029, and the `Zs`
     /// category). The `UserDefaults` read is the caller's responsibility.
     pub fn configured_from_raw(raw_value: &str) -> Option<Self> {
-        if raw_value.trim_matches(|c: char| c.is_whitespace()).is_empty() {
+        if raw_value.trim().is_empty() {
             None
         } else {
             Some(Self::new(raw_value))
