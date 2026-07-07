@@ -93,7 +93,7 @@ caller. Canvas ENTIRELY absent from web but `cmux-canvas` + data model exist.
 - [ ] C13 — CanvasConfig settings (paneGap, snappingEnabled). `[S, deps: C8, headless]`
 
 ## Area D — Command palette + fuzzy switcher  *(all logic ported, zero live)*
-- [ ] D1 — Port `window_store` visibility/selection/escape state machine to TS reducer. `[M, deps: none, headless]`
+- [x] D1 — Port `window_store` visibility/selection/escape state machine to TS. `[M, deps: none, headless]` — done 2026-07-06; `palette/windowStore.ts` class + 18 tests (faithful port). NOTE for D4: `paletteSelection` reducer (clamps `[0,count-1]`) is the selection source of truth, not the store's looser `>=0` clamp.
 - [ ] D2 — Tauri search bridge (`orchestrator.*_search_matches`; add cmux-command-palette+cmux-mentions deps). `[M, deps: none, headless]`
 - [ ] D3 — Query input + scope hook (`listScope` + `paletteSelection`). `[S, deps: none, headless]`
 - [ ] D4 — Live overlay host: mount, open-shortcut, focus, Escape, arrow/click/Enter. `[M, deps: D3,D2, gui-verify]`
