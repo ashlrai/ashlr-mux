@@ -642,3 +642,4 @@ shortcutFormat / placement / reorder / switcherIndex (share `bun test src`; sequ
   (cmux-core session_ops 22, cmux-desktop 21, web 308, clippy clean, tsc clean)
   → simplify → retested green. Next: hide ✕ on sole workspace, then next parity
   slice (workspace rename / tab strip / command-palette host).
+  NOTE: git push blocked this session. origin (manaflow-ai/cmux) denies MasonStation (403); auto-mode classifier blocks the fork remote (ashlrai/ashlr-mux) as it was not named at session start. Local commits are the durable checkpoint; user can push via `! git push fork windows-port`.
