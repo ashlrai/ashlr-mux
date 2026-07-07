@@ -87,14 +87,21 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def test_desktop_lib_exposes_the_two_tauri_commands_the_bridge_calls() -> None:
+def test_desktop_lib_registers_its_lib_local_tauri_commands() -> None:
     lib = _read(DESKTOP_TAURI_LIB)
-    # Both commands are registered in the invoke handler.
-    assert "tauri::generate_handler![ping, desktop_core_status]" in lib
-    # Each is a #[tauri::command].
+    # ping + desktop_core_status are the two commands defined in lib.rs itself
+    # (the terminal/session/agent/command-palette/diff/markdown commands live in
+    # their own modules and are registered by module path).
     assert lib.count("#[tauri::command]") == 2
     assert "fn ping()" in lib
     assert "fn desktop_core_status()" in lib
+    # Both are registered in the invoke handler. Check per-command containment
+    # inside the handler block rather than an exact 2-command string, so adding a
+    # module command does not bitrot this contract test.
+    handler_start = lib.index("tauri::generate_handler![")
+    handler = lib[handler_start : lib.index("]", handler_start)]
+    for command in ("ping", "desktop_core_status"):
+        assert command in handler, f"invoke handler missing {command!r}"
 
 
 def test_desktop_core_status_struct_keys_match_the_documented_contract() -> None:
