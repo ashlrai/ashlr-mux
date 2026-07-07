@@ -46,8 +46,8 @@ Live today: flat single-select list + new/close (shipped 2026-07-06). Rich port
 (`cmux-workspaces`, `sidebar/*`, `WorkspaceList.tsx`) exists but unwired; data model
 lacks `group_id`/`is_pinned`.
 
-- [ ] A1 — Extend `SessionWorkspaceSnapshot` with `group_id: Option<String>` +
-  `is_pinned: bool`; regen core-types; golden stays byte-stable. `[S, deps: none, headless]`
+- [x] A1 — Extend `SessionWorkspaceSnapshot` with `group_id: Option<String>` +
+  `is_pinned: bool`; regen core-types; golden stays byte-stable. `[S, deps: none, headless]` — done 2026-07-07 (`23b8cfc29`); modeled `is_pinned` as `Option<bool>` omit-when-none (not bare `bool`) to keep Swift-authored golden fixtures byte-identical (verified SOLID vs `SessionPersistence.swift:1833-1834`). If strict `bool` typing is later required: `pub is_pinned: bool` + `skip_serializing_if="std::ops::Not::not"`.
 - [x] A2 — Hide the ✕ on the sole workspace row (canonical disables close on last tab). `[XS, deps: none, headless]` — done 2026-07-06; split `Sidebar` into `SidebarView`(pure)+container, added `Sidebar.test.tsx`.
 - [ ] A3 — Add `cmux-workspaces` dep to src-tauri + a `render_items` projection helper. `[S, deps: A1, headless]`
 - [ ] A4 — Wire `WorkspaceList.tsx` into the live sidebar via `renderItems`. `[M, deps: A3, headless]`
@@ -97,8 +97,8 @@ caller. Canvas ENTIRELY absent from web but `cmux-canvas` + data model exist.
 - [x] D2 — Tauri search bridge (`orchestrator.*_search_matches`; add cmux-command-palette+cmux-mentions deps). `[M, deps: none, headless]` — done 2026-07-06; `src-tauri/src/command_palette.rs` `command_palette_search` command over `preview_search_matches` (scoring stays in the orchestrator); 6 Rust tests. Web-side `host.invoke("command_palette_search", …)` wrapper lands with D4.
 - [~] D3 — Query input + scope hook (`listScope` + `paletteSelection`). `[S, deps: none, headless]` — pure model `palette/paletteQuery.ts` done 2026-07-06 (scope/matching derivation, query-change re-anchor, results clamp, scope-flip reset; +6 tests). The thin React hook lands with D4 wiring.
 - [ ] D4 — Live overlay host: mount, open-shortcut, focus, Escape, arrow/click/Enter. `[M, deps: D3,D2, gui-verify]` — NOTE: track "results currently shown" independently of `paletteQuery` `selection.count` (which drops to 0 between an async query change and `applyResults`), else a scope-flip reset can be missed mid-query.
-- [ ] D5 — Command catalog + activation dispatch (ONE shared action path). `[M, deps: none, headless]`
-- [ ] D6 — Live switcher-entry producer (`switcherIndex` from workspace state). `[M, deps: none, headless]`
+- [x] D5 — Command catalog + activation dispatch (ONE shared action path). `[M, deps: none, headless]` — done 2026-07-07 (`2bf07ee48`); `palette/commandCatalog.ts` ports all 117 canonical contributions (ContentView.swift:6321-7464) in declared order + a single id→intent registry/`dispatchCommand`. Config override structurally gated to the 4 canonical configurable ids. Runtime sub-lists (extension sidebar, canvas, settings toggles, color palette, terminal targets, cmux.json actions) are injectable at exact Swift `contentsOf:` positions — D4 supplies them from live host state for absolute-rank parity.
+- [x] D6 — Live switcher-entry producer (`switcherIndex` from workspace state). `[M, deps: none, headless]` — done 2026-07-07 (`2bf07ee48`); `palette/switcherEntries.ts` (single-window path, ContentView.swift:5249-5358). Uses only existing snapshot fields; branch/ports/description keywords await Lane-A future fields (git/PR badge data, A13).
 - [ ] D7 — Render-sequencing guard (monotonic seq + resultsVersion). `[S, deps: D2, headless]`
 - [ ] D8 — Scroll-follow + hover selection. `[S, deps: D4, headless]`
 - [ ] D9 — Sync-seed + preserve-empty-while-pending gating. `[S, deps: D2, headless]`
