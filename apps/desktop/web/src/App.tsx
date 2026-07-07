@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import { Icon } from "@cmux/webviews/src/icons";
 
+import { CommandPaletteOverlay } from "./components/CommandPaletteOverlay";
 import { Sidebar } from "./components/Sidebar";
 import { Workspace } from "./components/Workspace";
 
@@ -41,6 +42,7 @@ export function App(): React.JSX.Element {
           <Workspace />
         </main>
       </div>
+      <CommandPaletteOverlay />
     </div>
   );
 }

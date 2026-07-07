@@ -324,3 +324,113 @@ body,
   /* the thread gap is 12px; pull consecutive notices to ~3px apart */
   margin-top: -9px;
 }
+
+/* ---------------------------------------------------------------------------
+ * Command palette (D4) — centered modal overlay + result list.
+ * ------------------------------------------------------------------------- */
+.cmux-palette-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 12vh;
+  background-color: rgba(0, 0, 0, 0.45);
+}
+
+.cmux-palette-panel {
+  width: min(640px, calc(100vw - 32px));
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background-color: #161922;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+}
+
+.cmux-palette-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 14px 16px;
+  border: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: transparent;
+  color: #e6e8ee;
+  font-size: 15px;
+  outline: none;
+}
+.cmux-palette-input::placeholder {
+  color: #6b7180;
+}
+
+.cmux-palette {
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.cmux-palette-empty {
+  padding: 18px 16px;
+  color: #6b7180;
+  font-size: 13px;
+  text-align: center;
+}
+
+.cmux-palette-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: default;
+}
+.cmux-palette-row[data-active="true"] {
+  background-color: rgba(56, 110, 230, 0.22);
+}
+
+.cmux-palette-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.cmux-palette-row-title {
+  color: #e6e8ee;
+  font-size: 13.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cmux-palette-title-match {
+  background: transparent;
+  color: #7aa2f7;
+  font-weight: 600;
+}
+
+.cmux-palette-row-subtitle {
+  color: #8b90a0;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cmux-palette-row-kind {
+  flex: 0 0 auto;
+  color: #8b90a0;
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background-color: rgba(255, 255, 255, 0.06);
+}
+
+.cmux-palette-row-shortcut {
+  flex: 0 0 auto;
+  color: #6b7180;
+  font-size: 11px;
+  font-family: var(--font-mono, ui-monospace, Consolas, monospace);
+}
