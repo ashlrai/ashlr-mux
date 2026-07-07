@@ -4,6 +4,7 @@ import type {
   AppSessionSnapshot,
   SessionSplitOrientation,
   SessionWorkspaceLayoutSnapshot,
+  SessionWorkspaceSnapshot,
 } from "@cmux/core-types";
 
 import { host } from "../host/host";
@@ -28,6 +29,16 @@ export interface UseSession {
   snapshot: AppSessionSnapshot | null;
   /** The layout tree of the selected workspace of the first window. */
   activeLayout: SessionWorkspaceLayoutSnapshot | null;
+  /** The first window's workspaces (the sidebar / tab list), in order. */
+  workspaces: readonly SessionWorkspaceSnapshot[];
+  /** Index of the selected workspace in `workspaces` (clamped, defaults to 0). */
+  selectedWorkspaceIndex: number;
+  /** Create a fresh terminal workspace and select it. */
+  newWorkspace: () => void;
+  /** Select the workspace at `index`. */
+  selectWorkspace: (index: number) => void;
+  /** Close the workspace at `index` (always leaves at least one alive). */
+  closeWorkspace: (index: number) => void;
   /** Split the pane holding `panelId` in `orientation`. */
   split: (panelId: string, orientation: SessionSplitOrientation) => void;
   /** Close the pane/panel `panelId`. */
@@ -108,12 +119,44 @@ export function useSession(): UseSession {
       .catch((error) => console.error("session_set_surface_kind failed", error));
   }, []);
 
+  const newWorkspace = useCallback(() => {
+    void host
+      .invoke<AppSessionSnapshot>("session_new_workspace")
+      .then(setSnapshot)
+      .catch((error) => console.error("session_new_workspace failed", error));
+  }, []);
+
+  const selectWorkspace = useCallback((index: number) => {
+    void host
+      .invoke<AppSessionSnapshot>("session_select_workspace", { index })
+      .then(setSnapshot)
+      .catch((error) => console.error("session_select_workspace failed", error));
+  }, []);
+
+  const closeWorkspace = useCallback((index: number) => {
+    void host
+      .invoke<AppSessionSnapshot>("session_close_workspace", { index })
+      .then(setSnapshot)
+      .catch((error) => console.error("session_close_workspace failed", error));
+  }, []);
+
+  const tabs = snapshot?.windows[0]?.tab_manager;
+  const workspaces = tabs?.workspaces ?? [];
+  const rawIndex = tabs?.selected_workspace_index ?? 0;
+  const selectedWorkspaceIndex =
+    rawIndex >= 0 && rawIndex < workspaces.length ? rawIndex : 0;
+
   return {
     snapshot,
     activeLayout: activeLayoutOf(snapshot),
+    workspaces,
+    selectedWorkspaceIndex,
     split,
     close,
     setDivider,
     setSurfaceKind,
+    newWorkspace,
+    selectWorkspace,
+    closeWorkspace,
   };
 }

@@ -501,3 +501,41 @@ already-ported hits (wave-3 already had one collision; wave-4 confirmed the
 thinning). Spinning further empty scouts burns budget for no output. The durable
 record of what shipped is the per-lane commits + LOOP-LOG.md; resume the port by
 picking up the mount frontier in the running app, not by re-scouting headless.
+
+## UI buildout begins — desktop-web frontier (2026-07-06)
+
+The "headless frontier exhausted" call (2026-07-04) was correct for the Rust
+*logic* crates. The live frontier is now the **desktop-web UI** built toward
+canonical cmux parity (Tauri `apps/desktop`). First slice shipped: the live
+**workspace sidebar** (`Sidebar.tsx` + `session_*_workspace` commands).
+
+Decisions taken this slice (record, revisit later — all reversible):
+
+- **Workspace lifecycle lives in `cmux_core::session_ops`, not the desktop
+  crate.** Added `new_workspace` / `select_workspace` / `close_workspace` /
+  `fresh_terminal_workspace` on `SessionTabManagerSnapshot`, same altitude as the
+  pane ops (`split_pane`/`close_panel`); desktop `apply_*` are one-line
+  delegations. Pure, headless-tested (6 tests in session_ops).
+- **Close-last-workspace is a no-op (canonical parity).** Mirrors
+  `TabManager.closeWorkspace` `guard tabs.count > 1 else { return }`. Dropped the
+  earlier "replace the last with a fresh Terminal" invention (that behavior
+  belongs only to detach / window-close-on-last-exit, not the ✕ button).
+- **Sidebar ✕ shown on every row for now.** Canonical hides/disables it on the
+  sole workspace; the no-op backstop keeps it safe. TODO: hide ✕ when
+  `workspaces.length <= 1` for exact parity.
+- **`Sidebar.tsx` (live, thin) vs `WorkspaceList.tsx` (rich groups/pins, unwired)
+  are a known fork.** `WorkspaceList` + `sidebar/renderItems` model groups/pins
+  from a projected `SidebarWorkspaceRenderItem[]`; the live snapshot carries no
+  group model yet. Converge later (project the snapshot through `renderItems` and
+  extend `WorkspaceList`, or retire it) — not a same-slice rewrite.
+- **`useSession()` is per-instance (own listener + snapshot copy).** Sidebar +
+  Workspace each subscribe; they reconcile via the `cmux://session-changed`
+  broadcast. Fine at MVP scale (small snapshot, click-driven). Promote to a React
+  context/store if consumers grow.
+- **Dark-only literal hex in `styles.css`.** Consistent with the file's existing
+  unconditional-dark styling; no CSS-token system exists yet. When the appearance
+  layer (`cmux-appearance` / `settings/appearanceMode.ts`) is wired to the web
+  shell, lift these (and the pre-existing hex) into custom properties.
+- **`windows[0]`-only** in the hook and the three `apply_*` fns — the pre-existing
+  single-window MVP scope. Replace with a real target-window id when multi-window
+  lands.

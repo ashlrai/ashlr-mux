@@ -16,7 +16,7 @@ use std::sync::Mutex;
 
 use cmux_core::session::{
     AppSessionSnapshot, SessionSplitOrientation, SessionTabManagerSnapshot, SessionWindowSnapshot,
-    SessionWorkspaceLayoutSnapshot, SessionWorkspaceSnapshot, SESSION_SNAPSHOT_SCHEMA_VERSION,
+    SessionWorkspaceLayoutSnapshot, SESSION_SNAPSHOT_SCHEMA_VERSION,
 };
 use cmux_core::session_ops::{self, CloseOutcome, SplitChild};
 use tauri::{AppHandle, Emitter, State};
@@ -46,11 +46,6 @@ impl Default for SessionState {
 
 /// A single window / single workspace / single pane starting layout.
 fn initial_snapshot(first_panel_id: &str) -> AppSessionSnapshot {
-    let workspace = SessionWorkspaceSnapshot {
-        process_title: "Terminal".to_string(),
-        layout: Some(session_ops::single_pane(first_panel_id)),
-        ..Default::default()
-    };
     AppSessionSnapshot {
         version: SESSION_SNAPSHOT_SCHEMA_VERSION,
         created_at: 0,
@@ -58,7 +53,7 @@ fn initial_snapshot(first_panel_id: &str) -> AppSessionSnapshot {
             window_id: Some("window-1".to_string()),
             tab_manager: SessionTabManagerSnapshot {
                 selected_workspace_index: Some(0),
-                workspaces: vec![workspace],
+                workspaces: vec![session_ops::fresh_terminal_workspace(first_panel_id)],
                 workspace_groups: None,
             },
         }],
@@ -135,6 +130,33 @@ fn apply_set_surface_kind(
         return false;
     };
     session_ops::set_surface_kind(root, panel_id, kind)
+}
+
+/// Append a fresh single-pane workspace to the first window and select it.
+/// Delegates the tab-manager mutation to [`session_ops::new_workspace`].
+fn apply_new_workspace(snapshot: &mut AppSessionSnapshot, new_panel_id: &str) {
+    if let Some(window) = snapshot.windows.first_mut() {
+        session_ops::new_workspace(&mut window.tab_manager, new_panel_id);
+    }
+}
+
+/// Select the workspace at `index` in the first window (out-of-range is a
+/// no-op). Delegates to [`session_ops::select_workspace`].
+fn apply_select_workspace(snapshot: &mut AppSessionSnapshot, index: i64) -> bool {
+    match snapshot.windows.first_mut() {
+        Some(window) => session_ops::select_workspace(&mut window.tab_manager, index),
+        None => false,
+    }
+}
+
+/// Close the workspace at `index` in the first window. Mirrors canonical
+/// `TabManager.closeWorkspace`: closing the only workspace is a no-op.
+/// Delegates to [`session_ops::close_workspace`].
+fn apply_close_workspace(snapshot: &mut AppSessionSnapshot, index: i64) -> bool {
+    match snapshot.windows.first_mut() {
+        Some(window) => session_ops::close_workspace(&mut window.tab_manager, index),
+        None => false,
+    }
 }
 
 fn emit_session_changed(app: &AppHandle, snapshot: &AppSessionSnapshot) {
@@ -234,6 +256,58 @@ pub fn session_set_surface_kind(
     snapshot
 }
 
+/// Create a new workspace (fresh single-pane terminal) and select it. Emits
+/// `cmux://session-changed` and returns the snapshot.
+#[tauri::command]
+pub fn session_new_workspace(
+    app: AppHandle,
+    state: State<'_, SessionState>,
+) -> AppSessionSnapshot {
+    let new_panel_id = format!("surface-{}", state.next_panel.fetch_add(1, Ordering::Relaxed));
+    let snapshot = {
+        let mut guard = state.snapshot.lock().expect("session snapshot mutex poisoned");
+        apply_new_workspace(&mut guard, &new_panel_id);
+        guard.clone()
+    };
+    emit_session_changed(&app, &snapshot);
+    snapshot
+}
+
+/// Select the workspace at `index`. Emits `cmux://session-changed` and returns
+/// the snapshot. A no-op (still returns the snapshot) if the index is invalid.
+#[tauri::command]
+pub fn session_select_workspace(
+    app: AppHandle,
+    state: State<'_, SessionState>,
+    index: i64,
+) -> AppSessionSnapshot {
+    let snapshot = {
+        let mut guard = state.snapshot.lock().expect("session snapshot mutex poisoned");
+        apply_select_workspace(&mut guard, index);
+        guard.clone()
+    };
+    emit_session_changed(&app, &snapshot);
+    snapshot
+}
+
+/// Close the workspace at `index`. Closing the sole remaining workspace is a
+/// no-op (canonical parity). Emits `cmux://session-changed` and returns the
+/// snapshot.
+#[tauri::command]
+pub fn session_close_workspace(
+    app: AppHandle,
+    state: State<'_, SessionState>,
+    index: i64,
+) -> AppSessionSnapshot {
+    let snapshot = {
+        let mut guard = state.snapshot.lock().expect("session snapshot mutex poisoned");
+        apply_close_workspace(&mut guard, index);
+        guard.clone()
+    };
+    emit_session_changed(&app, &snapshot);
+    snapshot
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,6 +394,47 @@ mod tests {
         } else {
             panic!("expected a split");
         }
+    }
+
+    fn tab_manager(snapshot: &AppSessionSnapshot) -> &SessionTabManagerSnapshot {
+        &snapshot.windows[0].tab_manager
+    }
+
+    // The tab-manager workspace logic is unit-tested in `cmux_core::session_ops`;
+    // these verify the desktop `apply_*` fns delegate to it against the first
+    // window of a real `AppSessionSnapshot`.
+
+    #[test]
+    fn apply_new_workspace_appends_and_selects_it() {
+        let mut snapshot = initial_snapshot("surface-1");
+        apply_new_workspace(&mut snapshot, "surface-2");
+        let tabs = tab_manager(&snapshot);
+        assert_eq!(tabs.workspaces.len(), 2);
+        assert_eq!(tabs.selected_workspace_index, Some(1));
+        assert_eq!(count_leaves(active_layout(&snapshot)), 1);
+    }
+
+    #[test]
+    fn apply_close_workspace_removes_and_reclamps_selection() {
+        let mut snapshot = initial_snapshot("surface-1");
+        apply_new_workspace(&mut snapshot, "surface-2");
+        apply_new_workspace(&mut snapshot, "surface-3"); // 3 workspaces, sel=2
+        // Close the first: selection (2) shifts left to 1.
+        assert!(apply_close_workspace(&mut snapshot, 0));
+        let tabs = tab_manager(&snapshot);
+        assert_eq!(tabs.workspaces.len(), 2);
+        assert_eq!(tabs.selected_workspace_index, Some(1));
+    }
+
+    #[test]
+    fn apply_close_only_workspace_is_a_noop() {
+        // Canonical `guard tabs.count > 1`: closing the sole workspace does
+        // nothing (no replace-with-fresh).
+        let mut snapshot = initial_snapshot("surface-1");
+        assert!(!apply_close_workspace(&mut snapshot, 0));
+        let tabs = tab_manager(&snapshot);
+        assert_eq!(tabs.workspaces.len(), 1);
+        assert_eq!(tabs.selected_workspace_index, Some(0));
     }
 
     #[test]

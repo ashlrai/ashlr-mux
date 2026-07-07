@@ -12,7 +12,7 @@
 
 use crate::session::{
     SessionPaneLayoutSnapshot, SessionSplitLayoutSnapshot, SessionSplitOrientation,
-    SessionWorkspaceLayoutSnapshot,
+    SessionTabManagerSnapshot, SessionWorkspaceLayoutSnapshot, SessionWorkspaceSnapshot,
 };
 
 use serde::{Deserialize, Serialize};
@@ -269,6 +269,68 @@ fn remove_from_node(node: &mut Layout, panel_id: &str) -> NodeEdit {
     NodeEdit::RemovedFromPane
 }
 
+// --- Tab-manager (workspace) operations -------------------------------------
+//
+// The layer above the split tree: a window's `SessionTabManagerSnapshot` holds
+// an ordered list of workspaces and a selected index. These are the Rust port
+// of the macOS `TabManager` workspace lifecycle (add / select / close), kept
+// pure and headless-testable exactly like the pane ops above.
+
+/// A fresh single-pane workspace titled `"Terminal"`, holding `panel_id`. The
+/// canonical default new workspace (macOS `TabManager.addWorkspace`).
+pub fn fresh_terminal_workspace(panel_id: &str) -> SessionWorkspaceSnapshot {
+    SessionWorkspaceSnapshot {
+        process_title: "Terminal".to_string(),
+        layout: Some(single_pane(panel_id)),
+        ..Default::default()
+    }
+}
+
+/// Append a fresh single-pane workspace to `tabs` and select it. Mirrors
+/// `TabManager.addWorkspace` (append, then select the new one).
+pub fn new_workspace(tabs: &mut SessionTabManagerSnapshot, panel_id: &str) {
+    tabs.workspaces.push(fresh_terminal_workspace(panel_id));
+    tabs.selected_workspace_index = Some((tabs.workspaces.len() - 1) as i64);
+}
+
+/// Select the workspace at `index`, ignoring an out-of-range index. Mirrors
+/// `TabManager.selectWorkspace`. Returns whether `index` resolved to a workspace.
+pub fn select_workspace(tabs: &mut SessionTabManagerSnapshot, index: i64) -> bool {
+    let count = tabs.workspaces.len();
+    if count == 0 || index < 0 || (index as usize) >= count {
+        return false;
+    }
+    tabs.selected_workspace_index = Some(index);
+    true
+}
+
+/// Close the workspace at `index`. Mirrors canonical `TabManager.closeWorkspace`
+/// (`guard tabs.count > 1`): closing the only workspace is a **no-op**. When the
+/// removed workspace was at or before the selection, the selection is re-clamped
+/// to keep pointing at the same surviving workspace (else the new last one).
+/// Returns whether a close happened.
+pub fn close_workspace(tabs: &mut SessionTabManagerSnapshot, index: i64) -> bool {
+    let count = tabs.workspaces.len();
+    if count <= 1 || index < 0 || (index as usize) >= count {
+        return false;
+    }
+    let removed = index as usize;
+    tabs.workspaces.remove(removed);
+
+    // Selection here is index-based (canonical is id-based). To keep the same
+    // surviving workspace focused: removing a tab before the selected one shifts
+    // it left; removing at/after clamps to the (new) last tab — canonical's
+    // `min(index, count - 1)`.
+    let selected = tabs.selected_workspace_index.unwrap_or(0).max(0) as usize;
+    let next = if selected > removed {
+        selected - 1
+    } else {
+        selected.min(tabs.workspaces.len() - 1)
+    };
+    tabs.selected_workspace_index = Some(next as i64);
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -519,5 +581,72 @@ mod tests {
         assert_eq!(serde_json::to_string(&SplitChild::Second).unwrap(), "\"second\"");
         let path: Vec<SplitChild> = serde_json::from_str("[\"first\",\"second\"]").unwrap();
         assert_eq!(path, vec![SplitChild::First, SplitChild::Second]);
+    }
+
+    // --- Tab-manager (workspace) ops ---
+
+    fn one_workspace_tabs(panel_id: &str) -> SessionTabManagerSnapshot {
+        SessionTabManagerSnapshot {
+            selected_workspace_index: Some(0),
+            workspaces: vec![fresh_terminal_workspace(panel_id)],
+            workspace_groups: None,
+        }
+    }
+
+    #[test]
+    fn new_workspace_appends_and_selects_it() {
+        let mut tabs = one_workspace_tabs("surface-1");
+        new_workspace(&mut tabs, "surface-2");
+        assert_eq!(tabs.workspaces.len(), 2);
+        assert_eq!(tabs.selected_workspace_index, Some(1));
+        assert!(matches!(tabs.workspaces[1].layout, Some(Layout::Pane(_))));
+        assert_eq!(tabs.workspaces[1].process_title, "Terminal");
+    }
+
+    #[test]
+    fn select_workspace_ignores_out_of_range() {
+        let mut tabs = one_workspace_tabs("surface-1");
+        new_workspace(&mut tabs, "surface-2"); // 2 workspaces, selected = 1
+        assert!(select_workspace(&mut tabs, 0));
+        assert_eq!(tabs.selected_workspace_index, Some(0));
+        assert!(!select_workspace(&mut tabs, 9));
+        assert!(!select_workspace(&mut tabs, -1));
+        assert_eq!(tabs.selected_workspace_index, Some(0));
+    }
+
+    #[test]
+    fn close_workspace_before_selection_shifts_it_left() {
+        let mut tabs = one_workspace_tabs("surface-1");
+        new_workspace(&mut tabs, "surface-2");
+        new_workspace(&mut tabs, "surface-3"); // 3 workspaces, selected = 2
+        assert!(close_workspace(&mut tabs, 0));
+        assert_eq!(tabs.workspaces.len(), 2);
+        assert_eq!(tabs.selected_workspace_index, Some(1));
+    }
+
+    #[test]
+    fn close_selected_last_workspace_clamps_selection() {
+        let mut tabs = one_workspace_tabs("surface-1");
+        new_workspace(&mut tabs, "surface-2"); // 2 workspaces, selected = 1 (the last)
+        assert!(close_workspace(&mut tabs, 1));
+        assert_eq!(tabs.workspaces.len(), 1);
+        assert_eq!(tabs.selected_workspace_index, Some(0));
+    }
+
+    #[test]
+    fn close_only_workspace_is_a_noop() {
+        // Canonical `guard tabs.count > 1`: the sole workspace cannot be closed.
+        let mut tabs = one_workspace_tabs("surface-1");
+        assert!(!close_workspace(&mut tabs, 0));
+        assert_eq!(tabs.workspaces.len(), 1);
+        assert_eq!(tabs.selected_workspace_index, Some(0));
+    }
+
+    #[test]
+    fn close_workspace_out_of_range_is_rejected() {
+        let mut tabs = one_workspace_tabs("surface-1");
+        new_workspace(&mut tabs, "surface-2");
+        assert!(!close_workspace(&mut tabs, 5));
+        assert_eq!(tabs.workspaces.len(), 2);
     }
 }

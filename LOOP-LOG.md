@@ -631,3 +631,14 @@ shortcutFormat / placement / reorder / switcherIndex (share `bun test src`; sequ
   work is UI-build + host-I/O seams (remote_image DNS-pinned TLS fetch) + live
   transports + window chrome/wgpu + packaging - all need the running app. Loop
   stops here; resume via the running app (npx @tauri-apps/cli dev).
+- UI buildout #1 — live **workspace sidebar** for desktop-web (canonical cmux
+  chrome parity). New `Sidebar.tsx` + shell layout (`App.tsx`) + `useSession`
+  workspace wiring + `session_new/select/close_workspace` Tauri commands.
+  /simplify pass (4 agents): moved the workspace lifecycle into
+  `cmux_core::session_ops` (append/select/close on `SessionTabManagerSnapshot`,
+  canonical `guard count>1` no-op — dropped the "replace-last-with-fresh"
+  divergence); reused `fresh_terminal_workspace` (3 sites) + `.cmux-icon svg`
+  (dropped 2 duplicated stroke blocks); collapsed `workspaceTitle`. Tested
+  (cmux-core session_ops 22, cmux-desktop 21, web 308, clippy clean, tsc clean)
+  → simplify → retested green. Next: hide ✕ on sole workspace, then next parity
+  slice (workspace rename / tab strip / command-palette host).
