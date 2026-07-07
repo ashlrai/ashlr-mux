@@ -50,6 +50,7 @@ export type Action =
   | { type: "context"; context: AppContext }
   | { type: "providers"; providers: ProviderInfo[] }
   | { type: "selectProvider"; providerId: ProviderId }
+  | { type: "setWorkingDirectory"; workingDirectory: string }
   | { type: "setInput"; input: string }
   | { type: "autoStartAttempted"; providerId: ProviderId }
   | { type: "starting" }
@@ -108,6 +109,17 @@ export function reduceSession(state: SessionState, action: Action): SessionState
       return {
         ...state,
         selectedProviderId: action.providerId,
+      };
+    case "setWorkingDirectory":
+      if (!state.context) {
+        return state;
+      }
+      return {
+        ...state,
+        context: {
+          ...state.context,
+          workingDirectory: action.workingDirectory,
+        },
       };
     case "setInput":
       return { ...state, input: action.input };
@@ -262,6 +274,37 @@ export function selectProvider(providerId: ProviderId, state: SessionState, disp
   }
   dispatch({ type: "selectProvider", providerId });
   void callNative("provider.select", { providerId }).catch(() => {});
+}
+
+/**
+ * Open the native folder picker and adopt the chosen directory as the agent's
+ * working directory. The value flows into the next `provider.start` via
+ * `startProviderSnapshotFromState` (which reads `state.context.workingDirectory`),
+ * so the agent is rooted in the picked folder instead of the app's own directory.
+ *
+ * Gated to when no session is running (mirrors provider selection): the working
+ * directory is fixed for the life of a session, so the user picks before Start.
+ * A cancelled dialog (`path` null/empty) is a no-op.
+ */
+export async function pickWorkingDirectory(
+  state: SessionState,
+  dispatch: (action: Action) => void,
+): Promise<void> {
+  if (!state.context || !canSelectProvider(state)) {
+    return;
+  }
+  let reply: { path?: string | null };
+  try {
+    reply = await callNative<{ path?: string | null }>("app.pickFolder");
+  } catch (error) {
+    dispatch({ type: "failed", message: messageForError(error, state) });
+    return;
+  }
+  const path = reply?.path?.trim();
+  if (!path) {
+    return;
+  }
+  dispatch({ type: "setWorkingDirectory", workingDirectory: path });
 }
 
 export async function sendInput(

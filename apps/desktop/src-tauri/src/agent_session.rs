@@ -158,9 +158,7 @@ fn run_actor(rx: Receiver<ActorMsg>, transport: ClaudeAgentTransport, app: AppHa
 
     // The fallback working directory for provider.start / app.context.
     let ctx = DispatchContext {
-        working_directory: std::env::current_dir()
-            .ok()
-            .map(|p| p.to_string_lossy().to_string()),
+        working_directory: default_working_directory(),
     };
 
     while let Ok(msg) = rx.recv() {
@@ -464,6 +462,9 @@ fn dispatch_message(
         // the AppHandle for the native dialog + must not block the actor). This arm
         // is only a defensive fallback if it ever reaches the actor: no selection.
         "app.pickFiles" => ok_envelope(json!({ "files": [] })),
+        // `app.pickFolder` is likewise intercepted in `agent_session_rpc` (native
+        // dialog + AppHandle). Defensive fallback if it reaches the actor: no pick.
+        "app.pickFolder" => ok_envelope(json!({ "path": null })),
         _ => match BridgeRequest::from_value(message) {
             Ok(request) => match handle(&request, store, ctx) {
                 Ok(value) => ok_envelope(value),
@@ -519,6 +520,16 @@ pub async fn agent_session_rpc(
         return Ok(ok_envelope(reply));
     }
 
+    // `app.pickFolder` opens a native folder dialog to choose the agent's working
+    // directory. Same blocking-thread constraint as `app.pickFiles`.
+    if message.get("method").and_then(Value::as_str) == Some("app.pickFolder") {
+        let app = app.clone();
+        let reply = tauri::async_runtime::spawn_blocking(move || pick_folder_reply(&app))
+            .await
+            .unwrap_or_else(|_| json!({ "path": null }));
+        return Ok(ok_envelope(reply));
+    }
+
     let sender = state.ensure(&app);
     let (reply_tx, reply_rx) = channel::<Value>();
     if sender
@@ -563,6 +574,29 @@ fn pick_local_files_reply(app: &AppHandle) -> Value {
             crate::pick_files::picked_files_value(paths)
         }
         None => json!({ "files": [] }),
+    }
+}
+
+/// Open the native folder picker and return `{ path }` (or `{ path: null }` when
+/// the dialog is cancelled). The chosen directory becomes the agent's working
+/// directory once the renderer forwards it into `provider.start`.
+///
+/// Blocking: the caller runs this on the blocking thread pool (never the UI
+/// thread) — see [`agent_session_rpc`].
+fn pick_folder_reply(app: &AppHandle) -> Value {
+    use tauri_plugin_dialog::DialogExt;
+
+    match app
+        .dialog()
+        .file()
+        .set_title("Choose working folder")
+        .blocking_pick_folder()
+    {
+        Some(folder) => match folder.into_path() {
+            Ok(path) => json!({ "path": path.to_string_lossy().into_owned() }),
+            Err(_) => json!({ "path": null }),
+        },
+        None => json!({ "path": null }),
     }
 }
 
@@ -976,6 +1010,30 @@ fn system32_path(env: &std::collections::BTreeMap<String, String>, tail: &str) -
 // app.context assembly (theme + localized copy)
 // ---------------------------------------------------------------------------
 
+/// The default working directory for agent sessions when the user has not picked
+/// one. Mirrors the macOS fallback to the user's home directory (Swift
+/// `homeDirectoryForCurrentUser`) rather than `std::env::current_dir()`, which is
+/// the desktop app's own launch directory — rooting the agent inside the app
+/// bundle instead of a project. Home is used as a sane default; the user changes
+/// it with the folder picker (`app.pickFolder`).
+fn default_working_directory() -> Option<String> {
+    home_directory().or_else(|| {
+        std::env::current_dir()
+            .ok()
+            .map(|p| p.to_string_lossy().into_owned())
+    })
+}
+
+/// The current user's home directory, if resolvable. `USERPROFILE` is the Windows
+/// home variable; `HOME` is the POSIX fallback so the helper stays correct on the
+/// canonical macOS/Linux hosts too.
+fn home_directory() -> Option<String> {
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(|value| value.to_string_lossy().into_owned())
+        .filter(|value| !value.is_empty())
+}
+
 /// The `app.context` reply the reused app requests on boot: renderer kind,
 /// initial provider, working directory, the localized `copy` dictionary, and the
 /// theme. `provider.list` is a separate call (serviced by the dispatcher).
@@ -1247,6 +1305,30 @@ mod tests {
         let reply = dispatch_message(&mut store, json!({ "method": "app.pickFiles" }), &ctx);
         assert_eq!(reply["ok"], json!(true));
         assert_eq!(reply["value"]["files"], json!([]));
+    }
+
+    #[test]
+    fn pick_folder_stub_returns_no_selection() {
+        let (tx, _rx) = channel::<ActorMsg>();
+        let transport = ClaudeAgentTransport::new(
+            Arc::new(JobObjectSupervisor::new()),
+            tx,
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(HashMap::new())),
+        );
+        let mut store = ProcessStore::new(transport, |_event: AgentEvent| {}, "9.9.9");
+        let ctx = DispatchContext::default();
+        let reply = dispatch_message(&mut store, json!({ "method": "app.pickFolder" }), &ctx);
+        assert_eq!(reply["ok"], json!(true));
+        assert_eq!(reply["value"]["path"], json!(null));
+    }
+
+    #[test]
+    fn default_working_directory_is_home_not_app_dir() {
+        // The seed must resolve to the user's home directory, never the app's own
+        // launch directory — that was the bug rooting the agent inside the bundle.
+        let home = home_directory().expect("a home directory on the test host");
+        assert_eq!(default_working_directory(), Some(home));
     }
 
     #[test]
