@@ -48,7 +48,7 @@ lacks `group_id`/`is_pinned`.
 
 - [ ] A1 — Extend `SessionWorkspaceSnapshot` with `group_id: Option<String>` +
   `is_pinned: bool`; regen core-types; golden stays byte-stable. `[S, deps: none, headless]`
-- [ ] A2 — Hide the ✕ on the sole workspace row (canonical disables close on last tab). `[XS, deps: none, headless]`
+- [x] A2 — Hide the ✕ on the sole workspace row (canonical disables close on last tab). `[XS, deps: none, headless]` — done 2026-07-06; split `Sidebar` into `SidebarView`(pure)+container, added `Sidebar.test.tsx`.
 - [ ] A3 — Add `cmux-workspaces` dep to src-tauri + a `render_items` projection helper. `[S, deps: A1, headless]`
 - [ ] A4 — Wire `WorkspaceList.tsx` into the live sidebar via `renderItems`. `[M, deps: A3, headless]`
 - [ ] A5 — Group collapse/expand (`session_set_group_collapsed`). `[M, deps: A4, headless]`
