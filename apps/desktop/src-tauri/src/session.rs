@@ -116,6 +116,19 @@ fn apply_set_divider(snapshot: &mut AppSessionSnapshot, path: &[SplitChild], pos
     session_ops::set_divider_at_path(root, path, position)
 }
 
+/// Equalize every split divider in the active workspace layout to its
+/// orientation-aware span ratio. Returns whether any split was found (`false`
+/// for absent/empty/single-pane layouts). Pure — mirrors `apply_set_divider`.
+fn apply_equalize_dividers(snapshot: &mut AppSessionSnapshot) -> bool {
+    let Some(slot) = active_layout_slot(snapshot) else {
+        return false;
+    };
+    let Some(root) = slot.as_mut() else {
+        return false;
+    };
+    session_ops::equalize_dividers(root)
+}
+
 /// Set the surface kind of the pane holding `panel_id` (`None` = terminal).
 /// Returns whether a matching pane was found. Pure.
 fn apply_set_surface_kind(
@@ -230,6 +243,23 @@ pub fn session_set_divider(
     let snapshot = {
         let mut guard = state.snapshot.lock().expect("session snapshot mutex poisoned");
         apply_set_divider(&mut guard, &path, position);
+        guard.clone()
+    };
+    emit_session_changed(&app, &snapshot);
+    snapshot
+}
+
+/// Equalize every split divider in the active workspace layout so panes share
+/// space evenly by span. Emits `cmux://session-changed` and returns the
+/// snapshot. A no-op (still returns the snapshot) on absent/single-pane layouts.
+#[tauri::command]
+pub fn session_equalize_dividers(
+    app: AppHandle,
+    state: State<'_, SessionState>,
+) -> AppSessionSnapshot {
+    let snapshot = {
+        let mut guard = state.snapshot.lock().expect("session snapshot mutex poisoned");
+        apply_equalize_dividers(&mut guard);
         guard.clone()
     };
     emit_session_changed(&app, &snapshot);
@@ -394,6 +424,45 @@ mod tests {
         } else {
             panic!("expected a split");
         }
+    }
+
+    #[test]
+    fn apply_equalize_dividers_evens_out_the_active_layout() {
+        let mut snapshot = initial_snapshot("surface-1");
+        apply_split(
+            &mut snapshot,
+            "surface-1",
+            SessionSplitOrientation::Horizontal,
+            "surface-2",
+            false,
+        );
+        // Skew the divider, then equalize a 2-pane same-axis split back to 0.5.
+        apply_set_divider(&mut snapshot, &[], 0.85);
+        assert!(apply_equalize_dividers(&mut snapshot));
+        if let SessionWorkspaceLayoutSnapshot::Split(s) = active_layout(&snapshot) {
+            assert_eq!(s.divider_position, 0.5);
+        } else {
+            panic!("expected a split");
+        }
+        // Equalize preserves the leaf count (never adds/removes panes).
+        assert_eq!(count_leaves(active_layout(&snapshot)), 2);
+    }
+
+    #[test]
+    fn apply_equalize_dividers_on_a_single_pane_is_a_noop() {
+        // Fresh single-pane layout → no split found → false, snapshot unchanged.
+        let mut snapshot = initial_snapshot("surface-1");
+        let before = snapshot.clone();
+        assert!(!apply_equalize_dividers(&mut snapshot));
+        assert_eq!(snapshot, before);
+    }
+
+    #[test]
+    fn apply_equalize_dividers_on_absent_layout_is_a_noop() {
+        // Emptied layout slot (None) → no-op.
+        let mut snapshot = initial_snapshot("surface-1");
+        assert_eq!(apply_close(&mut snapshot, "surface-1"), CloseOutcome::Emptied);
+        assert!(!apply_equalize_dividers(&mut snapshot));
     }
 
     fn tab_manager(snapshot: &AppSessionSnapshot) -> &SessionTabManagerSnapshot {

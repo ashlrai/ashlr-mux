@@ -124,6 +124,55 @@ pub fn equalize_divider(split: &SessionSplitLayoutSnapshot) -> f64 {
     }
 }
 
+/// Orientation-aware span count, mirroring macOS
+/// `ExternalTreeNode.spanCount(along:)`
+/// (`Packages/macOS/CmuxPanes/Sources/CmuxPanes/Geometry/ExternalTreeNode+SplitGeometry.swift:69-81`).
+///
+/// A pane spans `1`. A nested split contributes its *recursive* span only when
+/// its orientation matches `axis`; a differently-oriented subtree counts as a
+/// single unit (span `1`). This is what makes equalize weight by same-axis panes
+/// rather than by all leaves — e.g. in `H( V(a,b), c )` the `V(a,b)` subtree
+/// counts as span `1` along the horizontal axis, so the root divides 0.5/0.5.
+fn span_count(node: &Layout, axis: &SessionSplitOrientation) -> usize {
+    match node {
+        Layout::Pane(_) => 1,
+        Layout::Split(s) => {
+            if &s.orientation == axis {
+                span_count(&s.first, axis) + span_count(&s.second, axis)
+            } else {
+                1
+            }
+        }
+    }
+}
+
+/// Equalize **every** split divider in the subtree to its orientation-aware span
+/// ratio (`firstSpanCount / totalSpanCount`), the Rust port of macOS
+/// `equalizeDividerPlan`
+/// (`ExternalTreeNode+SplitGeometry.swift:14-81`). Returns whether the subtree
+/// contained at least one split — mirroring canonical `foundSplit` (a lone pane
+/// yields `false`, i.e. a no-op).
+///
+/// Unlike per-split [`equalize_divider`] (which weights by *all* leaves via
+/// [`count_leaves`]), this uses [`span_count`], so differently-oriented subtrees
+/// count as one span. The two diverge on mixed-orientation trees; this matches
+/// canonical macOS.
+///
+/// Canonical walks post-order only because its controller applies side effects
+/// per node; here the mutation just sets each `divider_position`, which never
+/// changes span counts, so recursion order is irrelevant.
+pub fn equalize_dividers(node: &mut Layout) -> bool {
+    let Layout::Split(s) = node else {
+        return false;
+    };
+    let first_span = span_count(&s.first, &s.orientation);
+    let total_span = first_span + span_count(&s.second, &s.orientation);
+    s.divider_position = clamp_divider(first_span as f64 / total_span as f64);
+    equalize_dividers(&mut s.first);
+    equalize_dividers(&mut s.second);
+    true
+}
+
 /// Set the `divider_position` of the split reached by `path` (empty path = the
 /// root split). Returns `false` (a no-op) if the path runs off a leaf.
 pub fn set_divider_at_path(node: &mut Layout, path: &[SplitChild], position: f64) -> bool {
@@ -459,6 +508,65 @@ mod tests {
             second: Box::new(pane("c")),
         };
         assert!((equalize_divider(&two_vs_one) - 2.0 / 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn equalize_dividers_resets_a_mixed_orientation_tree_to_span_ratios() {
+        // H( V(a,b), c ) with skewed dividers; equalize uses orientation-aware
+        // span counts, so the horizontal root sees span 1 (the vertical subtree)
+        // vs 1 (pane c) → 0.5, and the inner vertical split → 0.5. This diverges
+        // from leaf-count weighting (which would give the root 2/3).
+        let mut tree = split(
+            SessionSplitOrientation::Horizontal,
+            0.8,
+            split(SessionSplitOrientation::Vertical, 0.2, pane("a"), pane("b")),
+            pane("c"),
+        );
+        assert!(equalize_dividers(&mut tree));
+        if let Layout::Split(root) = &tree {
+            assert_eq!(root.divider_position, 0.5); // span-weighted, NOT 2/3
+            if let Layout::Split(inner) = root.first.as_ref() {
+                assert_eq!(inner.divider_position, 0.5);
+            } else {
+                panic!("expected nested vertical split");
+            }
+        } else {
+            panic!("expected a split");
+        }
+    }
+
+    #[test]
+    fn equalize_dividers_on_a_single_pane_is_a_noop() {
+        // Canonical `foundSplit == false` for a lone pane: returns false and
+        // leaves the pane byte-identical.
+        let mut tree = pane("a");
+        assert!(!equalize_dividers(&mut tree));
+        assert_eq!(tree, pane("a"));
+    }
+
+    #[test]
+    fn equalize_dividers_preserves_leaf_count() {
+        // Equalize never adds or removes panes; only divider positions change.
+        let mut tree = split(
+            SessionSplitOrientation::Horizontal,
+            0.75,
+            pane("a"),
+            split(SessionSplitOrientation::Horizontal, 0.15, pane("b"), pane("c")),
+        );
+        let before = count_leaves(&tree);
+        assert!(equalize_dividers(&mut tree));
+        assert_eq!(count_leaves(&tree), before);
+        // Same-axis nesting: root sees span 1 (a) vs 2 (b,c) → 1/3; inner → 0.5.
+        if let Layout::Split(root) = &tree {
+            assert!((root.divider_position - 1.0 / 3.0).abs() < 1e-9);
+            if let Layout::Split(inner) = root.second.as_ref() {
+                assert_eq!(inner.divider_position, 0.5);
+            } else {
+                panic!("expected nested split");
+            }
+        } else {
+            panic!("expected a split");
+        }
     }
 
     #[test]
