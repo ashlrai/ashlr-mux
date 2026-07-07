@@ -456,6 +456,7 @@ dependencies = [
 name = "cmux-core"
 version = "0.1.0"
 dependencies = [
+ "cmux-workspaces",
  "regex",
  "serde",
  "serde_json",

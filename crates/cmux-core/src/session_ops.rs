@@ -14,6 +14,7 @@ use crate::session::{
     SessionPaneLayoutSnapshot, SessionSplitLayoutSnapshot, SessionSplitOrientation,
     SessionTabManagerSnapshot, SessionWorkspaceLayoutSnapshot, SessionWorkspaceSnapshot,
 };
+use cmux_workspaces::{insertion_index, NewWorkspacePlacement};
 
 use serde::{Deserialize, Serialize};
 
@@ -286,11 +287,80 @@ pub fn fresh_terminal_workspace(panel_id: &str) -> SessionWorkspaceSnapshot {
     }
 }
 
-/// Append a fresh single-pane workspace to `tabs` and select it. Mirrors
-/// `TabManager.addWorkspace` (append, then select the new one).
+/// Insert a fresh single-pane workspace into `tabs` under the default
+/// `AfterCurrent` placement and select it. Thin wrapper over
+/// [`new_workspace_with_placement`] preserving the two-arg call site; the host
+/// resolves `effectivePlacement` (settings reads stay host-side, mirroring the
+/// `placement.rs` doc note) and calls the placement-aware variant directly.
+///
+/// For the common single-selected-tab, no-pins case `AfterCurrent` still yields
+/// an append, so this matches the historical behaviour.
 pub fn new_workspace(tabs: &mut SessionTabManagerSnapshot, panel_id: &str) {
-    tabs.workspaces.push(fresh_terminal_workspace(panel_id));
-    tabs.selected_workspace_index = Some((tabs.workspaces.len() - 1) as i64);
+    new_workspace_with_placement(tabs, panel_id, NewWorkspacePlacement::default());
+}
+
+/// Insert a fresh single-pane workspace into `tabs` at the position dictated by
+/// `placement`, then select it. This is the Rust port of the macOS
+/// `TabManager.addWorkspace` → `newTabInsertIndex(snapshot:placementOverride:)`
+/// path (`Sources/TabManager.swift:1088`, `:1126-1132`, `:1156`).
+///
+/// The whole `newTabInsertIndex` switch (Top / End / AfterCurrent) is folded by
+/// the already-ported [`insertion_index`] arithmetic
+/// (`cmux-workspaces/src/placement.rs`), fed snapshot-derived inputs. Selection
+/// is index-based here (canonical is id-based), so the current selection is read
+/// directly from `selected_workspace_index` with no id lookup.
+///
+/// PARITY NUANCES (grounded in the A9 spec):
+/// - `pinned_count` is a plain count of pinned workspaces; it equals the pinned
+///   *boundary* only because pins form a contiguous prefix, which the canonical
+///   sidebar guarantees and `insertion_index` (Top → `clampedPinnedCount`)
+///   assumes.
+/// - `selected_is_pinned` mirrors Swift `selectedTabWasPinned`
+///   (`TabManager.swift:1340`, `selectedTabSnapshot?.isPinned ?? false`).
+/// - AfterCurrent-with-no-selection: Swift `newTabInsertIndex` would return
+///   `selectedTabWasPinned ? pinnedCount : count`, whereas `insertion_index`
+///   returns End unconditionally. In the index-based session model a valid
+///   selection always resolves, so this only differs for a `None`/stale
+///   selection — then the port yields End.
+/// - GROUP CONTIGUITY GAP: canonical inserts by flat index THEN runs
+///   `normalizeWorkspaceGroupContiguity` (`TabManager.swift:1136-1138`). The
+///   Rust port of that pass consumes `WorkspaceRow`/`WorkspaceGroup`, not the
+///   session snapshot types, so it is out of reach (and out of Lane scope) here.
+///   A9 therefore places by flat index only; the new workspace inherits no
+///   `group_id` and a contiguity fix-up is a documented future bridge.
+pub fn new_workspace_with_placement(
+    tabs: &mut SessionTabManagerSnapshot,
+    panel_id: &str,
+    placement: NewWorkspacePlacement,
+) {
+    // Pre-insert shape, mirroring Swift's `liveTabs` reads.
+    let total_count = tabs.workspaces.len() as i64;
+    let pinned_count = tabs
+        .workspaces
+        .iter()
+        .filter(|w| w.is_pinned == Some(true))
+        .count() as i64;
+    let selected_index = tabs.selected_workspace_index;
+    let selected_is_pinned = selected_index
+        .and_then(|i| usize::try_from(i).ok())
+        .and_then(|i| tabs.workspaces.get(i))
+        .map(|w| w.is_pinned == Some(true))
+        .unwrap_or(false);
+
+    let idx = insertion_index(
+        placement,
+        selected_index,
+        selected_is_pinned,
+        pinned_count,
+        total_count,
+    );
+    // `insertion_index` already clamps into `[0, total_count]`, but clamp again
+    // defensively before the unsigned cast (Swift's `insert` also falls back to
+    // an append when the index is out of range, `TabManager.swift:1126-1132`).
+    let at = idx.clamp(0, total_count) as usize;
+    tabs.workspaces.insert(at, fresh_terminal_workspace(panel_id));
+    // Canonical selects the newly created workspace (`TabManager.swift:1156`).
+    tabs.selected_workspace_index = Some(at as i64);
 }
 
 /// Select the workspace at `index`, ignoring an out-of-range index. Mirrors
@@ -593,6 +663,24 @@ mod tests {
         }
     }
 
+    /// `n` workspaces (`surface-0`..`surface-{n-1}`), the first `pinned` of them
+    /// pinned (contiguous prefix, as the sidebar guarantees), selected at
+    /// `selected`.
+    fn tabs_with(n: usize, pinned: usize, selected: i64) -> SessionTabManagerSnapshot {
+        let workspaces = (0..n)
+            .map(|i| SessionWorkspaceSnapshot {
+                is_pinned: (i < pinned).then_some(true),
+                ..fresh_terminal_workspace(&format!("surface-{i}"))
+            })
+            .collect();
+        SessionTabManagerSnapshot {
+            selected_workspace_index: Some(selected),
+            workspaces,
+            workspace_groups: None,
+        }
+    }
+
+    // Case A: append-when-no-groups / no-pins (AfterCurrent, single tab).
     #[test]
     fn new_workspace_appends_and_selects_it() {
         let mut tabs = one_workspace_tabs("surface-1");
@@ -601,6 +689,86 @@ mod tests {
         assert_eq!(tabs.selected_workspace_index, Some(1));
         assert!(matches!(tabs.workspaces[1].layout, Some(Layout::Pane(_))));
         assert_eq!(tabs.workspaces[1].process_title, "Terminal");
+    }
+
+    // Case B: insert-after-selected (AfterCurrent, middle selection).
+    #[test]
+    fn new_workspace_after_current_inserts_after_selected() {
+        let mut tabs = tabs_with(4, 0, 1);
+        new_workspace_with_placement(&mut tabs, "new", NewWorkspacePlacement::AfterCurrent);
+        assert_eq!(tabs.workspaces.len(), 5);
+        // Lands between old index-1 and old index-2.
+        assert_eq!(panel_ids(tabs.workspaces[2].layout.as_ref().unwrap()), ["new"]);
+        assert_eq!(tabs.selected_workspace_index, Some(2));
+    }
+
+    // Case C: End placement appends.
+    #[test]
+    fn new_workspace_end_appends() {
+        let mut tabs = tabs_with(4, 0, 1);
+        new_workspace_with_placement(&mut tabs, "new", NewWorkspacePlacement::End);
+        assert_eq!(tabs.workspaces.len(), 5);
+        assert_eq!(panel_ids(tabs.workspaces[4].layout.as_ref().unwrap()), ["new"]);
+        assert_eq!(tabs.selected_workspace_index, Some(4));
+    }
+
+    // Case D: Top placement lands just after the pinned prefix.
+    #[test]
+    fn new_workspace_top_inserts_after_pinned_prefix() {
+        // 5 ws, first 2 pinned, selected = 3 (unpinned).
+        let mut tabs = tabs_with(5, 2, 3);
+        new_workspace_with_placement(&mut tabs, "new", NewWorkspacePlacement::Top);
+        assert_eq!(tabs.workspaces.len(), 6);
+        // At index 2: just after the pinned prefix, ahead of the unpinned tabs.
+        assert_eq!(panel_ids(tabs.workspaces[2].layout.as_ref().unwrap()), ["new"]);
+        assert_eq!(tabs.selected_workspace_index, Some(2));
+        // Not at the end, and not inside the pinned prefix.
+        assert!(tabs.workspaces[0].is_pinned == Some(true));
+        assert!(tabs.workspaces[1].is_pinned == Some(true));
+    }
+
+    // Case E: pinned selection under AfterCurrent inserts at the pinned boundary,
+    // not after itself (mirrors placement.rs pinned-selection test).
+    #[test]
+    fn new_workspace_after_current_pinned_selection_inserts_at_boundary() {
+        // 5 ws, first 2 pinned, selected = 0 (pinned).
+        let mut tabs = tabs_with(5, 2, 0);
+        new_workspace_with_placement(&mut tabs, "new", NewWorkspacePlacement::AfterCurrent);
+        assert_eq!(tabs.workspaces.len(), 6);
+        // Inserts at the pinned boundary (2), not after itself (index 1).
+        assert_eq!(panel_ids(tabs.workspaces[2].layout.as_ref().unwrap()), ["new"]);
+        assert_eq!(tabs.selected_workspace_index, Some(2));
+    }
+
+    // Case F: into-selected-group — flat placement index lands the new ws adjacent
+    // to the selected group member. Documents the contiguity gap: the new ws
+    // inherits no group_id and no snapshot-level contiguity pass runs here.
+    #[test]
+    fn new_workspace_into_selected_group_places_by_flat_index_only() {
+        let mut tabs = tabs_with(4, 0, 1);
+        // Mark the selected ws (index 1) and its neighbour (index 2) as a group.
+        tabs.workspaces[1].group_id = Some("g".to_string());
+        tabs.workspaces[2].group_id = Some("g".to_string());
+        tabs.workspace_groups = Some(vec![crate::session::SessionWorkspaceGroupSnapshot {
+            id: "g".to_string(),
+            name: "G".to_string(),
+            ..Default::default()
+        }]);
+        new_workspace_with_placement(&mut tabs, "new", NewWorkspacePlacement::AfterCurrent);
+        // Flat index parity: lands at index 2, adjacent to the selected member.
+        assert_eq!(panel_ids(tabs.workspaces[2].layout.as_ref().unwrap()), ["new"]);
+        assert_eq!(tabs.selected_workspace_index, Some(2));
+        // Documented gap: the new ws stays ungrouped (no contiguity fix-up here).
+        assert_eq!(tabs.workspaces[2].group_id, None);
+    }
+
+    // The default two-arg wrapper resolves to AfterCurrent.
+    #[test]
+    fn new_workspace_defaults_to_after_current() {
+        let mut tabs = tabs_with(4, 0, 1);
+        new_workspace(&mut tabs, "new");
+        assert_eq!(panel_ids(tabs.workspaces[2].layout.as_ref().unwrap()), ["new"]);
+        assert_eq!(tabs.selected_workspace_index, Some(2));
     }
 
     #[test]
