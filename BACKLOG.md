@@ -55,7 +55,7 @@ lacks `group_id`/`is_pinned`.
 - [ ] A6 — Inline rename (`session_rename_workspace`; empty clears custom_title). `[M, deps: A4, headless]`
 - [ ] A7 — Pin/unpin + pinned-ahead reorder (`session_set_workspace_pinned`). `[M, deps: A1,A4, headless]`
 - [ ] A8 — Multi-select + shift-click ranges (port `selection.ts` anchor policy). `[M, deps: A4, headless]`
-- [ ] A9 — New-workspace placement (feed `placement.ts` into `session_new_workspace`). `[S, deps: A1, headless]`
+- [x] A9 — New-workspace placement (feed `placement.ts` into `session_new_workspace`). `[S, deps: A1, headless]` — done 2026-07-07 (`b3217bade`); `session_ops::new_workspace_with_placement` over `cmux_workspaces::insertion_index` (TabManager.swift:1483-1506); 2-arg `new_workspace` wrapper delegates with `NewWorkspacePlacement::default()` so the src-tauri caller is untouched (host passes the effective placement). Verify SOLID. GAP (future cross-crate slice): group-contiguity normalization (Swift `normalizeWorkspaceGroupContiguity` post-insert) not applied — A9 places by flat index, new workspace inherits no `group_id`; the normalizer port consumes WorkspaceRow/WorkspaceGroup not snapshot types.
 - [ ] A10 — Drag-reorder rows + drop-on-group (`session_reorder_workspaces`). `[L, deps: A7, headless]`
 - [ ] A11 — Per-row + per-group context menus (shared action dispatch). `[L, deps: A6,A7,A8, headless]`
 - [ ] A12 — Tab/group color tinting (bridge `cmux-workspaces` tab_colors). `[M, deps: A11, headless]`
@@ -112,7 +112,7 @@ caller. Canvas ENTIRELY absent from web but `cmux-canvas` + data model exist.
 - [ ] E5 — Live cmux.json reload (notify watcher → config-changed event). `[M, deps: E1, gui-verify]`
 - [ ] E6 — SettingsPane shortcuts list uses `shortcutFormat.ts`. `[S, deps: none, headless]`
 - [ ] E7 — Editable shortcut capture (key recorder → `setShortcutBinding`). `[L, deps: E3, headless]`
-- [ ] E8 — Settings search box wired to `cmux-settings-search`. `[M, deps: none, headless]`
+- [x] E8 — Settings search box wired to `cmux-settings-search`. `[M, deps: none, headless]` — done 2026-07-07 (`b3217bade`); pure `settings/settingsSearch.ts` producer (`settingsEntriesMatching`) — byte-faithful TS re-port of the Rust crate scorer/tokenizer/aliases + a 132-entry corpus transcribed from `SettingsNavigation.swift:304-590`. Verify SOLID. The SettingsPane search-box UI wiring (consuming this producer) is a later slice.
 - [ ] E9 — Apply appearance (`appearanceMode.ts` → document theme + persist). `[S, deps: none, headless]`
 - [ ] E10 — Raw settings.json editor pane. `[L, deps: E2, gui-verify]`
 - [ ] E11 — Remaining canonical panes (terminal/browser/automation/…). `[L, deps: E3,E4, headless]`
