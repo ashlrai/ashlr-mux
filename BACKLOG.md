@@ -78,8 +78,8 @@ ported but unwired.
 Splits live + well-tested; several pure ops (equalize, resize, directional) have NO
 caller. Canvas ENTIRELY absent from web but `cmux-canvas` + data model exist.
 
-- [ ] C1 — Directional split insertion (thread `SPLIT_DIRECTION.insertFirst` → `session_split`). `[S, deps: none, headless]`
-- [ ] C2 — Equalize dividers action (apply `equalizeDividerPlan`). `[S, deps: none, headless]`
+- [x] C1 — Directional split insertion (thread `SPLIT_DIRECTION.insertFirst` → `session_split`). `[S, deps: none, headless]` — done 2026-07-07 (`48a685739`); was ALREADY complete at the command/ops layer (`insert_first` threaded split_pane→apply_split→session_split, default false=append-second). Remaining = the JS caller's `direction→(orientation, insertFirst camelCase)` map (left/up=first, right/down=second) = deferred GUI wiring.
+- [x] C2 — Equalize dividers action (apply `equalizeDividerPlan`). `[S, deps: none, headless]` — done 2026-07-07 (`48a685739`); `session_equalize_dividers` command over new `session_ops::equalize_dividers` whole-tree walker with orientation-aware `span_count` (parity-exact vs CmuxPanes `ExternalTreeNode.spanCount(along:)` — NOT leaf-count weighting; they diverge on mixed-orientation trees). Verify SOLID. UI trigger (keyboard/menu/palette) = deferred GUI wiring.
 - [ ] C3 — Keyboard divider resize (`resizeDividerAdjustment` + key handler). `[S, deps: none, headless]`
 - [ ] C4 — Directional pane focus (needs a web focused-pane concept). `[M, deps: none, headless]`
 - [ ] C5 — `layout_mode` plumbing + `session_set_layout_mode` (seed canvas from splits). `[M, deps: none, headless]`
