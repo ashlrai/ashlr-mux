@@ -6,6 +6,7 @@ mod opencode_http;
 mod pick_files;
 mod schemes;
 mod session;
+mod sidebar_render;
 mod terminal;
 
 use tauri::Manager;

@@ -478,6 +478,7 @@ dependencies = [
  "cmux-mentions",
  "cmux-process",
  "cmux-terminal",
+ "cmux-workspaces",
  "mime_guess",
  "serde",
  "serde_json",
@@ -487,6 +488,7 @@ dependencies = [
  "tempfile",
  "time",
  "ureq",
+ "uuid",
 ]
 
 [[package]]

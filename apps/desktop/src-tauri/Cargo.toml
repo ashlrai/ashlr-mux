@@ -24,7 +24,9 @@ cmux-ipc = { path = "../../../crates/cmux-ipc" }
 cmux-markdown = { path = "../../../crates/cmux-markdown" }
 cmux-process = { path = "../../../crates/cmux-process" }
 cmux-terminal = { path = "../../../crates/cmux-terminal" }
+cmux-workspaces = { path = "../../../crates/cmux-workspaces" }
 serde = { workspace = true }
+uuid = { workspace = true }
 serde_json = { workspace = true }
 tauri = { version = "2", features = [] }
 # OpenCode's loopback control API is plain HTTP (no TLS). `ureq` is a pure
