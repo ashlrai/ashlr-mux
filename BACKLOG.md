@@ -113,7 +113,7 @@ caller. Canvas ENTIRELY absent from web but `cmux-canvas` + data model exist.
 - [ ] E6 — SettingsPane shortcuts list uses `shortcutFormat.ts`. `[S, deps: none, headless]`
 - [ ] E7 — Editable shortcut capture (key recorder → `setShortcutBinding`). `[L, deps: E3, headless]`
 - [x] E8 — Settings search box wired to `cmux-settings-search`. `[M, deps: none, headless]` — done 2026-07-07 (`b3217bade`); pure `settings/settingsSearch.ts` producer (`settingsEntriesMatching`) — byte-faithful TS re-port of the Rust crate scorer/tokenizer/aliases + a 132-entry corpus transcribed from `SettingsNavigation.swift:304-590`. Verify SOLID. The SettingsPane search-box UI wiring (consuming this producer) is a later slice.
-- [ ] E9 — Apply appearance (`appearanceMode.ts` → document theme + persist). `[S, deps: none, headless]`
+- [x] E9 — Apply appearance (`appearanceMode.ts` → document theme + persist). `[S, deps: none, headless]` — done 2026-07-07 (`adf9171f9`); pure `settings/appearanceResolve.ts` `resolveAppliedAppearance(stored, systemColorScheme)` composing the ported `appearanceMode.ts` fns (port of `AppearanceSettings.applicationAppearance`, :198-213). Returns mode/colorScheme/followsSystem/documentColorScheme/persistedRawValue/needsRewrite. The `document.documentElement` mutation + defaults write-back are the deferred thin caller. Verify SOLID.
 - [ ] E10 — Raw settings.json editor pane. `[L, deps: E2, gui-verify]`
 - [ ] E11 — Remaining canonical panes (terminal/browser/automation/…). `[L, deps: E3,E4, headless]`
 
@@ -128,7 +128,7 @@ Claude end-to-end live; Codex/OpenCode route through the store. Missing host emi
 - [ ] F7 — JA localization of the 67-key copy dict. `[M, deps: none, headless]`
 
 ## Area G — Diff / Markdown / Browser
-- [ ] G1 — Markdown doc feed: `markdown_set_document` sets `PanelCtx.file_path` THEN pushes render. `[M, deps: none, headless]`
+- [x] G1 — Markdown doc feed: `markdown_set_document` sets `PanelCtx.file_path` THEN pushes render. `[M, deps: none, headless]` — done 2026-07-07 (`adf9171f9`); the missing WRITER for `PanelCtx.file_path` (the `cmux-local-image://` jail already read it → every image 403'd). Ports Swift `Coordinator.bind` filePath assign; set-before-render doc-contract; `webview.eval` render push is the deferred GUI tail. Verify SOLID (real-bug fix). cmux-desktop 83.
 - [ ] G2 — Remote-image host layer (DNS-pin SSRF gate + TLS fetch). `[M, deps: none, headless]`
 - [ ] G3 — Markdown typography controls. `[M, deps: none, headless]`
 - [ ] G4 — Markdown link-open (`openMarkdownFile` → new surface in owning pane). `[M, deps: G1, gui-verify]`
