@@ -22,9 +22,20 @@ function decodeBase64(data: string): Uint8Array {
  * through the host bridge. Behavior parity with the Phase 0 vanilla-TS shell —
  * open a session, stream base64 output in, forward keystrokes + explicit
  * resizes out (no SIGWINCH on Windows).
+ *
+ * The `panelId` binds this surface to its workspace: an OSC title change from
+ * the shell (xterm `onTitleChange`) is fed to `session_set_process_title`, which
+ * sets the owning workspace's `process_title` — the terminal top-label feed that
+ * replaces the "Terminal" fallback in the sidebar/switcher with the running
+ * program / directory.
  */
-export function TerminalSurface(): React.JSX.Element {
+export function TerminalSurface({ panelId }: { panelId: string }): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  // Keep the latest panelId reachable from the title handler without making the
+  // terminal-lifecycle effect depend on it (a panelId change must never remount
+  // the surface — that would kill the ConPTY shell).
+  const panelIdRef = useRef(panelId);
+  panelIdRef.current = panelId;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -48,6 +59,22 @@ export function TerminalSurface(): React.JSX.Element {
     // fast unmount (or StrictMode double-invoke) never leaks listeners.
     let disposed = false;
     const cleanups: Array<() => void> = [() => term.dispose()];
+
+    // Feed the shell's OSC title into the owning workspace's process_title. The
+    // subscription is independent of the async session boot, so register it now;
+    // dedupe so a repeated title never emits a redundant session-changed.
+    let lastSentTitle = "";
+    const titleSub = term.onTitleChange((title) => {
+      const next = title.trim();
+      if (next === "" || next === lastSentTitle) {
+        return;
+      }
+      lastSentTitle = next;
+      void host
+        .invoke("session_set_process_title", { panelId: panelIdRef.current, title: next })
+        .catch(() => {});
+    });
+    cleanups.push(() => titleSub.dispose());
 
     async function boot(mount: HTMLDivElement): Promise<void> {
       const { cols, rows } = term;

@@ -42,7 +42,7 @@ export function SplitDemo(): React.JSX.Element {
   const renderPane = (pane: Pane, path: SplitPath): React.ReactNode => {
     const id = pane.panel_ids[0];
     if (id === "terminal") {
-      return <TerminalSurface />;
+      return <TerminalSurface panelId={id} />;
     }
     return (
       <div

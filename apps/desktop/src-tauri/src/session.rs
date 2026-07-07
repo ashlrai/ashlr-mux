@@ -172,6 +172,16 @@ fn apply_close_workspace(snapshot: &mut AppSessionSnapshot, index: i64) -> bool 
     }
 }
 
+/// Set the OSC/process title of the workspace owning `panel_id` (any workspace in
+/// the first window, not only the active one). Pure — delegates to
+/// [`session_ops::set_process_title`]. Returns whether a title actually changed.
+fn apply_set_process_title(snapshot: &mut AppSessionSnapshot, panel_id: &str, title: &str) -> bool {
+    match snapshot.windows.first_mut() {
+        Some(window) => session_ops::set_process_title(&mut window.tab_manager, panel_id, title),
+        None => false,
+    }
+}
+
 fn emit_session_changed(app: &AppHandle, snapshot: &AppSessionSnapshot) {
     let _ = app.emit(SESSION_CHANGED_EVENT, snapshot);
 }
@@ -184,6 +194,29 @@ pub fn session_snapshot(state: State<'_, SessionState>) -> AppSessionSnapshot {
         .lock()
         .expect("session snapshot mutex poisoned")
         .clone()
+}
+
+/// Set the OSC/process title of the workspace owning `panel_id`, fed by a
+/// terminal surface's title changes (xterm `onTitleChange`). Emits
+/// `cmux://session-changed` and returns the snapshot ONLY when the title
+/// actually changed, so the high-frequency title stream never floods the event
+/// bus with no-op churn. `panelId` (camelCase) maps to the `panel_id` param.
+#[tauri::command]
+pub fn session_set_process_title(
+    app: AppHandle,
+    state: State<'_, SessionState>,
+    panel_id: String,
+    title: String,
+) -> AppSessionSnapshot {
+    let (changed, snapshot) = {
+        let mut guard = state.snapshot.lock().expect("session snapshot mutex poisoned");
+        let changed = apply_set_process_title(&mut guard, &panel_id, &title);
+        (changed, guard.clone())
+    };
+    if changed {
+        emit_session_changed(&app, &snapshot);
+    }
+    snapshot
 }
 
 /// Split the pane holding `panel_id` in `orientation`, allocating a fresh panel

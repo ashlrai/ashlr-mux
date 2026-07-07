@@ -72,6 +72,7 @@ pub fn run() {
             terminal::terminal_resize,
             terminal::terminal_close,
             session::session_snapshot,
+            session::session_set_process_title,
             session::session_split,
             session::session_close,
             session::session_set_divider,

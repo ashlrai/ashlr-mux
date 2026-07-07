@@ -147,7 +147,7 @@ export function Workspace(): React.JSX.Element {
                 live session), so they mount ON DEMAND — rendered only while the
                 pane hosts that kind, and torn down on switch. */}
             <div style={{ position: "absolute", inset: 0, display: kind === "terminal" ? "flex" : "none", overflow: "hidden" }}>
-              <TerminalSurface />
+              <TerminalSurface panelId={panelId} />
             </div>
             {mountedAgentPanes.has(panelId) ? (
               <div style={{ position: "absolute", inset: 0, display: kind === "agent" ? "flex" : "none", overflow: "hidden" }}>

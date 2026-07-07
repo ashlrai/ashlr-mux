@@ -112,6 +112,46 @@ pub fn contains_panel(layout: &Layout, panel_id: &str) -> bool {
     }
 }
 
+/// Set the OSC/process title of the workspace whose layout owns `panel_id`.
+///
+/// This is the workspace-title feed for a terminal pane's top label
+/// (`cmux-terminal::top_label` `panelTitles`, seeded `"Terminal"` at panel
+/// creation): the incoming OSC title is trimmed and an empty title is dropped
+/// (a blank title never clobbers a real one), last-write-wins. `process_title`
+/// is what `workspaceDisplayName` shows once a workspace has no `custom_title`,
+/// so this is what replaces the "Terminal" fallback with the running program /
+/// directory the shell reports.
+///
+/// Returns `true` iff a workspace's `process_title` actually changed.
+///
+/// NOTE (minor divergence): Swift trims with `.whitespacesAndNewlines`; this
+/// uses Rust `str::trim` (Unicode `White_Space`). The two differ only on exotic
+/// separators an OSC title never carries in practice.
+pub fn set_process_title(
+    tabs: &mut SessionTabManagerSnapshot,
+    panel_id: &str,
+    title: &str,
+) -> bool {
+    let trimmed = title.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    for workspace in &mut tabs.workspaces {
+        let owns = workspace
+            .layout
+            .as_ref()
+            .is_some_and(|layout| contains_panel(layout, panel_id));
+        if owns {
+            if workspace.process_title == trimmed {
+                return false;
+            }
+            workspace.process_title = trimmed.to_string();
+            return true;
+        }
+    }
+    false
+}
+
 /// The equalized divider ratio for a split = the first subtree's share of leaf
 /// panes (macOS `equalizeDividerPlan`: `firstSpanCount / totalSpanCount`).
 pub fn equalize_divider(split: &SessionSplitLayoutSnapshot) -> f64 {
@@ -786,6 +826,49 @@ mod tests {
             workspaces,
             workspace_groups: None,
         }
+    }
+
+    #[test]
+    fn set_process_title_updates_the_owning_workspace() {
+        let mut tabs = one_workspace_tabs("surface-1");
+        assert!(set_process_title(&mut tabs, "surface-1", "pwsh — ~/proj"));
+        assert_eq!(tabs.workspaces[0].process_title, "pwsh — ~/proj");
+    }
+
+    #[test]
+    fn set_process_title_trims_and_drops_an_empty_title() {
+        let mut tabs = one_workspace_tabs("surface-1");
+        // Whitespace-only never clobbers the existing title.
+        assert!(!set_process_title(&mut tabs, "surface-1", "   \t "));
+        assert_eq!(tabs.workspaces[0].process_title, "Terminal");
+        // A padded real title is trimmed on both ends.
+        assert!(set_process_title(&mut tabs, "surface-1", "  vim  "));
+        assert_eq!(tabs.workspaces[0].process_title, "vim");
+    }
+
+    #[test]
+    fn set_process_title_is_a_no_op_for_an_unknown_panel() {
+        let mut tabs = one_workspace_tabs("surface-1");
+        assert!(!set_process_title(&mut tabs, "surface-999", "nope"));
+        assert_eq!(tabs.workspaces[0].process_title, "Terminal");
+    }
+
+    #[test]
+    fn set_process_title_reports_no_change_when_identical() {
+        let mut tabs = one_workspace_tabs("surface-1");
+        assert!(set_process_title(&mut tabs, "surface-1", "npm run dev"));
+        // Same title again → false (nothing changed).
+        assert!(!set_process_title(&mut tabs, "surface-1", "npm run dev"));
+    }
+
+    #[test]
+    fn set_process_title_targets_only_the_workspace_owning_the_panel() {
+        // surface-0..surface-2 each in their own workspace.
+        let mut tabs = tabs_with(3, 0, 0);
+        assert!(set_process_title(&mut tabs, "surface-2", "cargo test"));
+        assert_eq!(tabs.workspaces[0].process_title, "Terminal");
+        assert_eq!(tabs.workspaces[1].process_title, "Terminal");
+        assert_eq!(tabs.workspaces[2].process_title, "cargo test");
     }
 
     // Case A: append-when-no-groups / no-pins (AfterCurrent, single tab).
