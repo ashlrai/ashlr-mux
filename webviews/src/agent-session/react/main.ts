@@ -44,6 +44,7 @@ import {
   canStopProvider,
   loadInitialData,
   messageForError,
+  pickWorkingDirectory,
   reduceSession,
   sendInput,
   selectProvider,
@@ -690,10 +691,40 @@ function SessionSurface({
         })
       : null,
   );
+  const workingDirectory = state.context?.workingDirectory;
+  const workingDirectoryLabel = workingDirectory
+    ? (workingDirectory.split(/[\\/]/).filter(Boolean).pop() ?? workingDirectory)
+    : "Choose folder";
+  const workingDirectoryChip = h(
+    "button",
+    {
+      className:
+        `working-directory-picker ${CODEX_BUTTON_BASE} ${CODEX_BUTTON_GHOST} ${CODEX_BUTTON_COMPOSER} min-w-0 rounded-full`,
+      type: "button",
+      disabled: !canSelect || !state.context,
+      title: workingDirectory ?? "Choose the folder the agent works in",
+      "aria-label": workingDirectory
+        ? `Working folder: ${workingDirectory}`
+        : "Choose working folder",
+      onClick: () => {
+        if (!canSelect || !state.context) {
+          return;
+        }
+        void pickWorkingDirectory(state, dispatch);
+      },
+    },
+    folderIcon("icon-2xs"),
+    h(
+      "span",
+      { className: "working-directory-label truncate whitespace-nowrap text-token-foreground" },
+      workingDirectoryLabel,
+    ),
+  );
   const secondaryControls = h(
     "div",
     { className: "codex-secondary-controls flex min-w-0 items-center gap-1", ref: footerCollapse.setContainerRef },
     modelPicker,
+    workingDirectoryChip,
     shouldShowIdeContextIndicator && !ideContextCollapse.hideControl
       ? h(
           "span",

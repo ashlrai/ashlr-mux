@@ -128,6 +128,23 @@ const providers: ProviderInfo[] = [
   },
 ];
 
+test("setWorkingDirectory updates the context working directory", () => {
+  const initial = reduceSession(initialState("react"), { type: "context", context });
+  const state = reduceSession(initial, {
+    type: "setWorkingDirectory",
+    workingDirectory: "C:/Users/dev/project",
+  });
+  expect(state.context?.workingDirectory).toBe("C:/Users/dev/project");
+});
+
+test("setWorkingDirectory is a no-op before context loads", () => {
+  const state = reduceSession(initialState("react"), {
+    type: "setWorkingDirectory",
+    workingDirectory: "C:/Users/dev/project",
+  });
+  expect(state.context).toBeUndefined();
+});
+
 test("provider started event records running session", () => {
   const starting = reduceSession(
     reduceSession(initialState("react"), { type: "context", context }),
