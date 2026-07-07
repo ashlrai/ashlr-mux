@@ -3,4 +3,4 @@
 import type { SessionCanvasPaneSnapshot } from "./SessionCanvasPaneSnapshot";
 import type { SessionWorkspaceLayoutSnapshot } from "./SessionWorkspaceLayoutSnapshot";
 
-export type SessionWorkspaceSnapshot = { workspace_id?: string, process_title: string, custom_title?: string, custom_title_source?: string, current_directory?: string, layout: SessionWorkspaceLayoutSnapshot | null, layout_mode?: string, canvas_panes?: Array<SessionCanvasPaneSnapshot>, };
+export type SessionWorkspaceSnapshot = { workspace_id?: string, process_title: string, custom_title?: string, custom_title_source?: string, current_directory?: string, layout: SessionWorkspaceLayoutSnapshot | null, layout_mode?: string, canvas_panes?: Array<SessionCanvasPaneSnapshot>, group_id?: string, is_pinned?: boolean, };

@@ -94,6 +94,9 @@ fn full_modern_snapshot() {
             panel_ids: Some(vec!["panel-a".into()]),
             selected_panel_id: Some("panel-a".into()),
         }]),
+        // group_id/is_pinned (A1) default to None so this Swift-authored fixture
+        // stays byte-identical (both are omit-when-none).
+        ..Default::default()
     };
 
     let group = SessionWorkspaceGroupSnapshot {
@@ -144,6 +147,9 @@ fn legacy_pre_canvas_pre_tab_snapshot() {
         )),
         layout_mode: None,
         canvas_panes: None,
+        // A1 fields absent on this legacy shape too — omit-when-none keeps the
+        // legacy on-disk file round-tripping without the new keys.
+        ..Default::default()
     };
 
     let snapshot = AppSessionSnapshot {

@@ -209,6 +209,21 @@ pub struct SessionWorkspaceSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub canvas_panes: Option<Vec<SessionCanvasPaneSnapshot>>,
+    // `group_id` mirrors macOS `SessionWorkspaceSnapshot.groupId: UUID? = nil`
+    // (SessionPersistence.swift:1834): optional UUID rendered as a string, omitted
+    // when nil (Swift's synthesized `encodeIfPresent`). Same wire shape as
+    // `workspace_id`/`anchor_workspace_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub group_id: Option<String>,
+    // `is_pinned` mirrors macOS `SessionWorkspaceSnapshot.isPinned: Bool`
+    // (SessionPersistence.swift:1833). The live model emits it unconditionally, but
+    // to keep every existing fixture byte-identical (none pin a workspace) we model
+    // it as an omit-when-absent `Option<bool>`, matching the group snapshot's
+    // `is_pinned` (session.rs) and the `surface_kind` precedent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub is_pinned: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -389,5 +404,55 @@ mod tests {
         let decoded: SessionWorkspaceLayoutSnapshot =
             serde_json::from_value(json).expect("deserialize");
         assert_eq!(decoded, snapshot);
+    }
+
+    #[test]
+    fn workspace_snapshot_defaults_group_and_pinned_to_none() {
+        let snapshot = SessionWorkspaceSnapshot::default();
+        assert_eq!(snapshot.group_id, None);
+        assert_eq!(snapshot.is_pinned, None);
+    }
+
+    #[test]
+    fn workspace_snapshot_omits_group_and_pinned_when_none() {
+        // Parity oracle: mirrors Swift's `encodeIfPresent` for `groupId` and keeps
+        // existing (unpinned, ungrouped) fixtures byte-identical — neither key may
+        // appear in the JSON when absent.
+        let snapshot = SessionWorkspaceSnapshot {
+            process_title: "zsh".into(),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&snapshot).expect("serialize");
+        let object = json.as_object().expect("object");
+        assert!(!object.contains_key("group_id"), "group_id must be omitted when None");
+        assert!(!object.contains_key("is_pinned"), "is_pinned must be omitted when None");
+    }
+
+    #[test]
+    fn workspace_snapshot_round_trips_group_and_pinned() {
+        let snapshot = SessionWorkspaceSnapshot {
+            process_title: "zsh".into(),
+            group_id: Some("11111111-2222-3333-4444-555555555555".into()),
+            is_pinned: Some(true),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&snapshot).expect("serialize");
+        assert_eq!(json["group_id"], "11111111-2222-3333-4444-555555555555");
+        assert_eq!(json["is_pinned"], true);
+
+        let decoded: SessionWorkspaceSnapshot =
+            serde_json::from_value(json).expect("deserialize");
+        assert_eq!(decoded, snapshot);
+    }
+
+    #[test]
+    fn workspace_snapshot_decodes_absent_group_and_pinned_as_none() {
+        // Raw JSON lacking both keys (i.e. every existing fixture) must decode to
+        // `None`/`None`, proving wire back-compatibility.
+        let raw = serde_json::json!({ "process_title": "zsh", "layout": null });
+        let decoded: SessionWorkspaceSnapshot =
+            serde_json::from_value(raw).expect("deserialize");
+        assert_eq!(decoded.group_id, None);
+        assert_eq!(decoded.is_pinned, None);
     }
 }
