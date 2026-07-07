@@ -95,8 +95,8 @@ caller. Canvas ENTIRELY absent from web but `cmux-canvas` + data model exist.
 ## Area D — Command palette + fuzzy switcher  *(all logic ported, zero live)*
 - [x] D1 — Port `window_store` visibility/selection/escape state machine to TS. `[M, deps: none, headless]` — done 2026-07-06; `palette/windowStore.ts` class + 18 tests (faithful port). NOTE for D4: `paletteSelection` reducer (clamps `[0,count-1]`) is the selection source of truth, not the store's looser `>=0` clamp.
 - [ ] D2 — Tauri search bridge (`orchestrator.*_search_matches`; add cmux-command-palette+cmux-mentions deps). `[M, deps: none, headless]`
-- [ ] D3 — Query input + scope hook (`listScope` + `paletteSelection`). `[S, deps: none, headless]`
-- [ ] D4 — Live overlay host: mount, open-shortcut, focus, Escape, arrow/click/Enter. `[M, deps: D3,D2, gui-verify]`
+- [~] D3 — Query input + scope hook (`listScope` + `paletteSelection`). `[S, deps: none, headless]` — pure model `palette/paletteQuery.ts` done 2026-07-06 (scope/matching derivation, query-change re-anchor, results clamp, scope-flip reset; +6 tests). The thin React hook lands with D4 wiring.
+- [ ] D4 — Live overlay host: mount, open-shortcut, focus, Escape, arrow/click/Enter. `[M, deps: D3,D2, gui-verify]` — NOTE: track "results currently shown" independently of `paletteQuery` `selection.count` (which drops to 0 between an async query change and `applyResults`), else a scope-flip reset can be missed mid-query.
 - [ ] D5 — Command catalog + activation dispatch (ONE shared action path). `[M, deps: none, headless]`
 - [ ] D6 — Live switcher-entry producer (`switcherIndex` from workspace state). `[M, deps: none, headless]`
 - [ ] D7 — Render-sequencing guard (monotonic seq + resultsVersion). `[S, deps: D2, headless]`
