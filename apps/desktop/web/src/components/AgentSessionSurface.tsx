@@ -1,7 +1,8 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 import { AgentSessionApp } from "@cmux/webviews/src/agent-session/react/main";
 import { applyCodexDocumentMetadata } from "@cmux/webviews/src/agent-session/shared/theme";
+import { type ComposerHost, focusComposer } from "../session/composerFocus";
 // The reused chat UI's Tailwind stylesheet (CODEX_* classes + `--agent-*` token
 // mapping). This is a WHOLE-DOCUMENT sheet — it sets `html, body, #root {
 // background: transparent }`, which would black out our shared desktop shell (a
@@ -30,12 +31,68 @@ import "@cmux/webviews/src/agent-session/shared/styles.css";
  * `app.context` and `app.theme` events.
  */
 export function AgentSessionSurface(): React.JSX.Element {
+  const surfaceRef = useRef<HTMLDivElement | null>(null);
+
   useEffect(() => {
     applyCodexDocumentMetadata();
   }, []);
 
+  // Auto-focus the composer whenever this surface becomes visible, so Enter
+  // sends without the user first clicking the box. The surface is never
+  // unmounted — a pane toggles terminal⇄agent by flipping `display` (see the
+  // flat portal in `Workspace.tsx`), and `.focus()` on a `display:none` node is
+  // a no-op — so we key off the visibility transition (IntersectionObserver)
+  // rather than mount. The ProseMirror editor mounts asynchronously (the agent
+  // app fetches context before rendering), so we retry across a few frames until
+  // it appears; `focusComposer` leaves focus alone if it already sits inside the
+  // surface (e.g. an open provider/permissions menu).
+  useEffect(() => {
+    const surface = surfaceRef.current;
+    if (!surface || typeof IntersectionObserver === "undefined") {
+      return;
+    }
+    const MAX_ATTEMPTS = 60; // ~1s at 60fps — covers the async composer mount
+    const host: ComposerHost = {
+      querySelector: (selector) => surface.querySelector<HTMLElement>(selector),
+      contains: (node) => surface.contains((node as Node | null) ?? null),
+    };
+    let rafId: number | null = null;
+    let attempts = 0;
+    const cancelPending = () => {
+      if (rafId != null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+    };
+    const tryFocus = () => {
+      rafId = null;
+      if (focusComposer(host, document) === "no-composer" && attempts < MAX_ATTEMPTS) {
+        attempts += 1;
+        rafId = requestAnimationFrame(tryFocus);
+      }
+    };
+    const observer = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        cancelPending();
+        if (entry.isIntersecting) {
+          attempts = 0;
+          rafId = requestAnimationFrame(tryFocus);
+        }
+      }
+    });
+    observer.observe(surface);
+    return () => {
+      cancelPending();
+      observer.disconnect();
+    };
+  }, []);
+
   return (
-    <div className="cmux-agent-session-surface" style={{ width: "100%", height: "100%", overflow: "auto" }}>
+    <div
+      ref={surfaceRef}
+      className="cmux-agent-session-surface"
+      style={{ width: "100%", height: "100%", overflow: "auto" }}
+    >
       <AgentSessionApp />
     </div>
   );
