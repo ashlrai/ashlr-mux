@@ -16,7 +16,9 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 cmux-agent = { path = "../../../crates/cmux-agent" }
 cmux-agent-chat = { path = "../../../crates/cmux-agent-chat" }
+cmux-command-palette = { path = "../../../crates/cmux-command-palette" }
 cmux-core = { path = "../../../crates/cmux-core" }
+cmux-mentions = { path = "../../../crates/cmux-mentions" }
 cmux-diff = { path = "../../../crates/cmux-diff" }
 cmux-ipc = { path = "../../../crates/cmux-ipc" }
 cmux-markdown = { path = "../../../crates/cmux-markdown" }

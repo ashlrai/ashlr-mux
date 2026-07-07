@@ -1,4 +1,5 @@
 mod agent_session;
+mod command_palette;
 mod diff;
 mod markdown;
 mod opencode_http;
@@ -78,6 +79,7 @@ pub fn run() {
             session::session_select_workspace,
             session::session_close_workspace,
             agent_session::agent_session_rpc,
+            command_palette::command_palette_search,
             diff::diff_comments_rpc,
             markdown::cmux_lib_rpc,
             markdown::markdown_render,
