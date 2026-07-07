@@ -83,6 +83,7 @@ pub fn run() {
             command_palette::command_palette_search,
             diff::diff_comments_rpc,
             markdown::cmux_lib_rpc,
+            markdown::markdown_set_document,
             markdown::markdown_render,
             markdown::markdown_apply_theme
         ])

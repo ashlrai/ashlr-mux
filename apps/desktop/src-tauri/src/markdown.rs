@@ -67,6 +67,23 @@ impl MarkdownState {
             .map(|ctx| ctx.file_path.clone())
             .unwrap_or_default()
     }
+
+    /// Bind the markdown document path for a webview label (the write half of
+    /// [`markdown_file_for`]). Port of `Coordinator.bind(panelId:workspaceId:
+    /// filePath:)` (`MarkdownWebRenderer.swift:190`), which assigns
+    /// `self.filePath = filePath`. Mirrors the `cmux_lib_rpc` keying
+    /// (`panels.entry(label).or_default()`, `:96`/`:110`) so a `set_document` on a
+    /// never-seen label creates the ctx, and mutates **only** `file_path` — the
+    /// per-webview `requested_libs` dedup set is left untouched. Pure state
+    /// mutation, unit-testable without a `Webview`.
+    pub fn set_document(&self, label: &str, path: String) {
+        self.panels
+            .lock()
+            .expect("markdown panels lock poisoned")
+            .entry(label.to_string())
+            .or_default()
+            .file_path = path;
+    }
 }
 
 /// The single `cmuxLib` request seam. Routes the three message shapes:
@@ -271,6 +288,36 @@ pub fn apply_theme_js(theme: &MarkdownWebTheme) -> String {
 // to `webview.eval` so the crate stays fully connected (no dead public helpers).
 // ---------------------------------------------------------------------------
 
+/// Bind a panel webview's markdown document path **before** its markdown is
+/// rendered. Port of `Coordinator.bind(...)` (`MarkdownWebRenderer.swift:190`),
+/// invoked at `updateNSView:99` — strictly before the render dispatch
+/// `update(markdown:theme:)` at `:106`, in the same view pass. This ordering is
+/// load-bearing: the per-webview `file_path` is what the local-image jail
+/// (`:562`) and the file-link resolver (`:625`) read **synchronously** at request
+/// time, so an empty path makes every `cmux-local-image://` fail (403). The
+/// caller enforces the sequence by `await`ing this command, then calling
+/// [`markdown_render`].
+///
+/// DEFERRED (host WebView2 side-effect, runtime-only): this command performs only
+/// the pure state write; it does not itself `eval` a render (that is the separate
+/// `markdown_render` seam). Fusing set→eval into one command — set `file_path`
+/// first, then `webview.eval(render_markdown_js(..))` — would make the ordering
+/// un-invertible (closer to Swift's single `updateNSView` pass) and is the
+/// natural next step once the frontend render trigger is wired.
+#[tauri::command]
+pub async fn markdown_set_document(
+    webview: tauri::Webview,
+    state: State<'_, MarkdownState>,
+    path: String,
+) -> Result<Value, ()> {
+    // Store the raw path; the ported jail (`resolve_local_image`) does all
+    // Windows-path standardization at request time — no pre-canonicalization here
+    // (parity with Swift storing the raw `filePath` and normalizing only in the
+    // jail, `:567–580`).
+    state.set_document(webview.label(), path);
+    Ok(json!({ "ok": true }))
+}
+
 /// Push a markdown document into a panel webview (`__cmuxRenderMarkdown`).
 #[tauri::command]
 pub async fn markdown_render(webview: tauri::Webview, markdown: String) -> Result<(), ()> {
@@ -382,6 +429,108 @@ mod tests {
         assert!(js.contains("[0]);"));
         // The raw double-quote is JSON-escaped, not left bare.
         assert!(js.contains("\\\"quoted\\\""), "{js}");
+    }
+
+    // ---- G1: markdown_set_document — per-webview document-path writer -------
+    // Testable half = the state mutation + set-before-request ordering. The
+    // `markdown_set_document` command's only runtime-only line is the ack; the
+    // `set_document` helper is exercised directly here (no `Webview` needed).
+
+    /// Build a `file:` URL for a path (mirror of the jail's test helper) so the
+    /// ordering oracle can construct a real `cmux-local-image://` request.
+    fn file_url(p: &Path) -> String {
+        let s = p.to_string_lossy().replace('\\', "/");
+        if s.starts_with('/') {
+            format!("file://{s}")
+        } else {
+            // Windows drive path -> file:///C:/...
+            format!("file:///{s}")
+        }
+    }
+
+    #[test]
+    fn set_document_then_markdown_file_for_roundtrips() {
+        let state = MarkdownState::default();
+        state.set_document("panel-1", "/docs/a.md".to_string());
+        assert_eq!(state.markdown_file_for("panel-1"), "/docs/a.md");
+    }
+
+    #[test]
+    fn markdown_file_for_empty_before_set() {
+        // The "empty until set" precondition the jail depends on.
+        let state = MarkdownState::default();
+        assert_eq!(state.markdown_file_for("panel-x"), "");
+    }
+
+    #[test]
+    fn set_document_is_per_label_isolated() {
+        let state = MarkdownState::default();
+        state.set_document("panel-1", "/a/x.md".to_string());
+        state.set_document("panel-2", "/b/y.md".to_string());
+        // No cross-panel leak: each label observes only its own document.
+        assert_eq!(state.markdown_file_for("panel-1"), "/a/x.md");
+        assert_eq!(state.markdown_file_for("panel-2"), "/b/y.md");
+    }
+
+    #[test]
+    fn set_document_overwrites() {
+        let state = MarkdownState::default();
+        state.set_document("panel-1", "/a/first.md".to_string());
+        state.set_document("panel-1", "/a/second.md".to_string());
+        // A panel re-pointed at a new doc: latest write wins.
+        assert_eq!(state.markdown_file_for("panel-1"), "/a/second.md");
+    }
+
+    #[test]
+    fn set_document_preserves_requested_libs() {
+        // Seed the lib dedup set for a label via the same keyed ctx the command
+        // path uses, then set_document, and assert the mutation is field-scoped to
+        // `file_path` (the `requested_libs` set is untouched).
+        let (_dir, assets) = fixture_assets();
+        let state = MarkdownState::default();
+        {
+            let mut panels = state.panels.lock().unwrap();
+            let ctx = panels.entry("panel-1".to_string()).or_default();
+            assert!(build_lib_injection(&assets, "mermaid", &mut ctx.requested_libs).is_some());
+        }
+        state.set_document("panel-1", "/docs/a.md".to_string());
+        let panels = state.panels.lock().unwrap();
+        let ctx = panels.get("panel-1").expect("ctx exists");
+        assert_eq!(ctx.file_path, "/docs/a.md");
+        assert!(
+            ctx.requested_libs.contains("mermaid"),
+            "set_document must not disturb the lib dedup set"
+        );
+    }
+
+    #[test]
+    fn set_document_before_request_lets_the_jail_resolve_the_sibling_image() {
+        // Ordering oracle: with the document path SET, a sibling image now
+        // resolves through the jail; with the pre-set empty path it does not.
+        // This is the concrete "set before render/request" proof.
+        let dir = tempfile::tempdir().unwrap();
+        let md = dir.path().join("index.md");
+        std::fs::write(&md, "x").unwrap();
+        let img = dir.path().join("img.png");
+        std::fs::write(&img, b"\x89PNG").unwrap();
+        let request = format!("cmux-local-image://image?url={}", file_url(&img));
+
+        // Before set: empty path ⇒ the jail has no directory to resolve against.
+        assert!(
+            crate::schemes::resolve_local_image_request(&request, "").is_none(),
+            "empty document path must not resolve any local image"
+        );
+
+        // After set: the jailed sibling image resolves.
+        let state = MarkdownState::default();
+        state.set_document("p", md.to_string_lossy().into_owned());
+        let resolved =
+            crate::schemes::resolve_local_image_request(&request, &state.markdown_file_for("p"));
+        assert!(
+            resolved.is_some(),
+            "a sibling image must resolve once the document path is set"
+        );
+        assert!(resolved.unwrap().0.ends_with("img.png"));
     }
 
     #[test]
