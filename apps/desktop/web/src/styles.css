@@ -212,6 +212,50 @@ body,
   color: #e5e9f0;
 }
 
+/* Workspace-group header rows (projected by `snapshotRenderItems`). */
+.cmux-sidebar-group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #9aa3b4;
+  cursor: pointer;
+  text-transform: none;
+}
+.cmux-sidebar-group-header:hover {
+  background: #161b26;
+}
+.cmux-sidebar-group-header.is-selected {
+  background: #1f2937;
+  color: #e9edf5;
+}
+.cmux-sidebar-group-chevron {
+  display: inline-flex;
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  color: #6b7484;
+}
+.cmux-sidebar-group-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cmux-sidebar-group-count {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 500;
+  color: #6b7484;
+  background: #161b26;
+  border-radius: 8px;
+  padding: 1px 6px;
+}
+
 /* A leaf pane fills its split cell and lays its single child out to fill. */
 .cmux-pane {
   display: flex;

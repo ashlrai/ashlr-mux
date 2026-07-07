@@ -104,17 +104,16 @@ describe("WorkspaceList", () => {
       <WorkspaceList items={items} selectedWorkspaceIds={new Set([solo])} />,
     );
 
-    // The pinned member row carries is-pinned and renders a pin glyph.
+    // The pinned member row carries is-pinned.
     expect(markup).toMatch(
       new RegExp(
-        `<li class="cmux-sidebar-workspace-row is-pinned"[^>]*data-workspace-id="${member}"`,
+        `<li class="cmux-sidebar-row cmux-sidebar-workspace-row is-pinned"[^>]*data-workspace-id="${member}"`,
       ),
     );
-    expect(markup).toContain("cmux-sidebar-workspace-pin");
     // The selected solo row carries is-selected and aria-selected.
     expect(markup).toMatch(
       new RegExp(
-        `<li class="cmux-sidebar-workspace-row is-selected"[^>]*data-workspace-id="${solo}"[^>]*aria-selected="true"`,
+        `<li class="cmux-sidebar-row cmux-sidebar-workspace-row is-selected"[^>]*data-workspace-id="${solo}"[^>]*aria-selected="true"`,
       ),
     );
     // The member row is not selected.

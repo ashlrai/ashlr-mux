@@ -328,8 +328,14 @@ fn remove_from_node(node: &mut Layout, panel_id: &str) -> NodeEdit {
 
 /// A fresh single-pane workspace titled `"Terminal"`, holding `panel_id`. The
 /// canonical default new workspace (macOS `TabManager.addWorkspace`).
+///
+/// Mints a fresh `workspace_id`, mirroring the canonical Swift `Workspace`
+/// initializer (`id = UUID()` at creation). Restored snapshots keep their
+/// persisted ids; only genuinely new workspaces mint. Without an id the
+/// sidebar projection (`cmux_workspaces::render_items`) skips the row.
 pub fn fresh_terminal_workspace(panel_id: &str) -> SessionWorkspaceSnapshot {
     SessionWorkspaceSnapshot {
+        workspace_id: Some(uuid::Uuid::new_v4().to_string()),
         process_title: "Terminal".to_string(),
         layout: Some(single_pane(panel_id)),
         ..Default::default()
@@ -797,6 +803,18 @@ mod tests {
         assert_eq!(tabs.selected_workspace_index, Some(1));
         assert!(matches!(tabs.workspaces[1].layout, Some(Layout::Pane(_))));
         assert_eq!(tabs.workspaces[1].process_title, "Terminal");
+    }
+
+    // Canonical `Workspace.init` mints `id = UUID()`; without an id the sidebar
+    // projection (`cmux_workspaces::render_items`) would skip the row entirely.
+    #[test]
+    fn fresh_terminal_workspace_mints_a_unique_workspace_id() {
+        let a = fresh_terminal_workspace("surface-1");
+        let b = fresh_terminal_workspace("surface-2");
+        let id_a = a.workspace_id.as_deref().expect("fresh workspace must carry an id");
+        let id_b = b.workspace_id.as_deref().expect("fresh workspace must carry an id");
+        assert!(uuid::Uuid::parse_str(id_a).is_ok(), "id must be a UUID: {id_a}");
+        assert_ne!(id_a, id_b, "each fresh workspace mints its own id");
     }
 
     // Case B: insert-after-selected (AfterCurrent, middle selection).
