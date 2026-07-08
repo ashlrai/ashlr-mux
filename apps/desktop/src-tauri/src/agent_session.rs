@@ -40,6 +40,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
+use crate::app_settings::{SettingsStore, SELECTED_PROVIDER_KEY};
 use crate::opencode_http::{self, OpenCodeContext, OpenCodeContexts, StreamEnd};
 use cmux_agent::{
     AgentExecutableResolver, AgentSessionProviderId, ClaudeConfigContext, OpenCodeServerAuth,
@@ -54,7 +55,7 @@ use cmux_process::{
     AgentStream, JobObjectSupervisor, ProcessSupervisor, SessionId, TerminateMode,
 };
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 /// The push-seam event name the `host.ts` shim forwards to
 /// `window.cmuxAgentBridge.receive`.
@@ -130,10 +131,17 @@ impl AgentSessionState {
             opencode,
             feedback: tx.clone(),
         };
+        // The persisted-settings file (provider selection). None if the app data
+        // directory cannot be resolved — selection then lives in-memory only.
+        let settings = app
+            .path()
+            .app_data_dir()
+            .ok()
+            .map(|dir| SettingsStore::new(dir.join("cmux").join("settings.json")));
         let app = app.clone();
         std::thread::Builder::new()
             .name("cmux-agent-session-actor".to_string())
-            .spawn(move || run_actor(rx, transport, app, host))
+            .spawn(move || run_actor(rx, transport, app, host, settings))
             .expect("spawn agent session actor thread");
         *guard = Some(tx.clone());
         tx
@@ -146,7 +154,13 @@ impl AgentSessionState {
 /// them against the shared `sessions` / `supervisor` handles: raw Codex stdin
 /// frames ([`TransportAction::WriteStdin`]) and startup-failure teardown
 /// ([`TransportAction::Terminate`]). OpenCode HTTP actions are wired in slice 2.
-fn run_actor(rx: Receiver<ActorMsg>, transport: ClaudeAgentTransport, app: AppHandle, host: ActorHost) {
+fn run_actor(
+    rx: Receiver<ActorMsg>,
+    transport: ClaudeAgentTransport,
+    app: AppHandle,
+    host: ActorHost,
+    settings: Option<SettingsStore>,
+) {
     // The event sink: serialize each AgentEvent to its tagged wire object and
     // push it to the renderer over cmux://agent-event. Emitted from this one
     // thread, preserving order.
@@ -163,10 +177,30 @@ fn run_actor(rx: Receiver<ActorMsg>, transport: ClaudeAgentTransport, app: AppHa
             .map(|p| p.to_string_lossy().to_string()),
     };
 
+    // The provider `app.context` seeds the composer dropdown with: the persisted
+    // last selection when valid, else the port default. Mutable because canonical
+    // serves the LIVE initialProviderID (coordinator :350) — a later app.context
+    // re-request must reflect the latest select/start.
+    let mut initial_provider = load_initial_provider(settings.as_ref());
+
     while let Ok(msg) = rx.recv() {
         match msg {
             ActorMsg::Rpc { message, reply } => {
-                let envelope = dispatch_message(&mut store, message, &ctx);
+                let method = message
+                    .get("method")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let envelope = dispatch_message(&mut store, message, &ctx, initial_provider);
+                // Canonical sets initialProviderID on BOTH provider.select and
+                // provider.start (coordinator :569/:585); an err envelope (e.g.
+                // select-while-running) persists nothing.
+                if let Some(provider) = provider_update(&method, &envelope) {
+                    initial_provider = provider;
+                    if let Some(settings) = &settings {
+                        settings.set_string(SELECTED_PROVIDER_KEY, provider.as_str());
+                    }
+                }
                 let _ = reply.send(envelope);
             }
             ActorMsg::Feed {
@@ -442,6 +476,38 @@ fn spawn_event_stream(host: &ActorHost, session_id: String, base_url: String) {
     });
 }
 
+/// Load the persisted provider selection, falling back to the port default.
+///
+/// The raw string is validated through [`ProviderId::from_raw`] — an unknown or
+/// renamed id must NOT reach the webview, whose `ProviderId` is a closed union.
+/// A missing/corrupt settings file (or an unresolvable settings path) falls back
+/// to `claude`, the port's wired default (see [`app_context_value`]).
+fn load_initial_provider(settings: Option<&SettingsStore>) -> ProviderId {
+    settings
+        .and_then(|store| store.get_string(SELECTED_PROVIDER_KEY))
+        .and_then(|raw| ProviderId::from_raw(&raw))
+        .unwrap_or(ProviderId::Claude)
+}
+
+/// The provider a just-dispatched RPC committed, if any: the `providerId` from
+/// the ok-envelope of exactly `provider.select` / `provider.start` (canonical
+/// sets `initialProviderID` on both, coordinator :569/:585). An err envelope
+/// (e.g. select-while-running `SessionAlreadyRunning`) or any other method
+/// yields `None`.
+fn provider_update(method: &str, reply: &Value) -> Option<ProviderId> {
+    if !matches!(method, "provider.select" | "provider.start") {
+        return None;
+    }
+    if reply.get("ok") != Some(&Value::Bool(true)) {
+        return None;
+    }
+    reply
+        .get("value")?
+        .get("providerId")?
+        .as_str()
+        .and_then(ProviderId::from_raw)
+}
+
 /// Dispatch one renderer message to a reply envelope.
 ///
 /// `app.context` / `app.pickFiles` are host concerns (the store returns
@@ -451,6 +517,7 @@ fn dispatch_message(
     store: &mut ProcessStore<ClaudeAgentTransport, impl FnMut(AgentEvent)>,
     message: Value,
     ctx: &DispatchContext,
+    initial_provider: ProviderId,
 ) -> Value {
     let method = message
         .get("method")
@@ -459,7 +526,7 @@ fn dispatch_message(
         .to_string();
 
     match method.as_str() {
-        "app.context" => ok_envelope(app_context_value(ctx)),
+        "app.context" => ok_envelope(app_context_value(ctx, initial_provider)),
         // `app.pickFiles` is normally intercepted in `agent_session_rpc` (it needs
         // the AppHandle for the native dialog + must not block the actor). This arm
         // is only a defensive fallback if it ever reaches the actor: no selection.
@@ -979,14 +1046,17 @@ fn system32_path(env: &std::collections::BTreeMap<String, String>, tail: &str) -
 /// The `app.context` reply the reused app requests on boot: renderer kind,
 /// initial provider, working directory, the localized `copy` dictionary, and the
 /// theme. `provider.list` is a separate call (serviced by the dispatcher).
-fn app_context_value(ctx: &DispatchContext) -> Value {
+fn app_context_value(ctx: &DispatchContext, initial_provider: ProviderId) -> Value {
     json!({
         "panelId": "agent-session",
         "workspaceId": "workspace-1",
         "renderer": "react",
-        // Claude is auto-start=false, so the user clicks Start; selecting it here
-        // just seeds the composer's provider dropdown.
-        "initialProviderId": "claude",
+        // The persisted last selection (default: claude — auto-start=false, so
+        // the user clicks Start; a deliberate divergence from canonical .codex
+        // since Claude is the wired transport). Seeds the composer's provider
+        // dropdown; if the selection has autoStart=true (codex) the renderer's
+        // auto-start effect re-arms, exactly as canonical.
+        "initialProviderId": initial_provider.as_str(),
         "workingDirectory": ctx.working_directory,
         "copy": copy_value(),
         "theme": theme_value(),
@@ -1200,7 +1270,7 @@ mod tests {
         let ctx = DispatchContext {
             working_directory: Some("C:/work".to_string()),
         };
-        let value = app_context_value(&ctx);
+        let value = app_context_value(&ctx, ProviderId::Claude);
         assert_eq!(value["renderer"], json!("react"));
         assert_eq!(value["initialProviderId"], json!("claude"));
         assert_eq!(value["workingDirectory"], json!("C:/work"));
@@ -1228,7 +1298,12 @@ mod tests {
         );
         let mut store = ProcessStore::new(transport, |_event: AgentEvent| {}, "9.9.9");
         let ctx = DispatchContext::default();
-        let reply = dispatch_message(&mut store, json!({ "method": "app.context" }), &ctx);
+        let reply = dispatch_message(
+            &mut store,
+            json!({ "method": "app.context" }),
+            &ctx,
+            ProviderId::Claude,
+        );
         assert_eq!(reply["ok"], json!(true));
         assert_eq!(reply["value"]["renderer"], json!("react"));
     }
@@ -1244,7 +1319,12 @@ mod tests {
         );
         let mut store = ProcessStore::new(transport, |_event: AgentEvent| {}, "9.9.9");
         let ctx = DispatchContext::default();
-        let reply = dispatch_message(&mut store, json!({ "method": "app.pickFiles" }), &ctx);
+        let reply = dispatch_message(
+            &mut store,
+            json!({ "method": "app.pickFiles" }),
+            &ctx,
+            ProviderId::Claude,
+        );
         assert_eq!(reply["ok"], json!(true));
         assert_eq!(reply["value"]["files"], json!([]));
     }
@@ -1264,6 +1344,7 @@ mod tests {
             &mut store,
             json!({ "id": "1", "method": "provider.list", "params": {} }),
             &ctx,
+            ProviderId::Claude,
         );
         assert_eq!(reply["ok"], json!(true));
         let list = reply["value"].as_array().expect("provider list array");
@@ -1287,8 +1368,100 @@ mod tests {
             &mut store,
             json!({ "id": "1", "method": "provider.bogus", "params": {} }),
             &ctx,
+            ProviderId::Claude,
         );
         assert_eq!(reply["ok"], json!(false));
         assert_eq!(reply["error"]["code"], json!("unsupportedMethod"));
+    }
+
+    /// A throwaway store wired to a dummy channel (the ClaudeAgentTransport test
+    /// pattern; nothing is spawned).
+    fn make_store() -> ProcessStore<ClaudeAgentTransport, impl FnMut(AgentEvent)> {
+        let (tx, _rx) = channel::<ActorMsg>();
+        let transport = ClaudeAgentTransport::new(
+            Arc::new(JobObjectSupervisor::new()),
+            tx,
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(HashMap::new())),
+        );
+        ProcessStore::new(transport, |_event: AgentEvent| {}, "9.9.9")
+    }
+
+    #[test]
+    fn provider_update_extracts_provider_from_select_and_start_ok_envelopes() {
+        let ok = ok_envelope(json!({ "providerId": "opencode" }));
+        assert_eq!(
+            provider_update("provider.select", &ok),
+            Some(ProviderId::Opencode)
+        );
+        assert_eq!(
+            provider_update("provider.start", &ok),
+            Some(ProviderId::Opencode)
+        );
+    }
+
+    #[test]
+    fn provider_update_ignores_err_envelopes_and_other_methods() {
+        // Err envelope (e.g. select-while-running): nothing persists.
+        let err = err_envelope("sessionAlreadyRunning", "A session is already running.");
+        assert_eq!(provider_update("provider.select", &err), None);
+        // Other methods never update, even with a providerId-shaped value.
+        let ok = ok_envelope(json!({ "providerId": "codex" }));
+        assert_eq!(provider_update("provider.list", &ok), None);
+        assert_eq!(provider_update("app.context", &ok), None);
+        // A malformed/unknown providerId never reaches the webview.
+        let bogus = ok_envelope(json!({ "providerId": "gemini" }));
+        assert_eq!(provider_update("provider.select", &bogus), None);
+    }
+
+    #[test]
+    fn app_context_reflects_non_default_provider() {
+        let ctx = DispatchContext::default();
+        let value = app_context_value(&ctx, ProviderId::Opencode);
+        assert_eq!(value["initialProviderId"], json!("opencode"));
+    }
+
+    #[test]
+    fn selected_provider_survives_a_simulated_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cmux").join("settings.json");
+
+        // Session 1: renderer selects opencode; the Rpc arm persists it.
+        let mut store = make_store();
+        let ctx = DispatchContext::default();
+        let envelope = dispatch_message(
+            &mut store,
+            json!({ "id": "1", "method": "provider.select", "params": { "providerId": "opencode" } }),
+            &ctx,
+            ProviderId::Claude,
+        );
+        let selected = provider_update("provider.select", &envelope).expect("selection committed");
+        SettingsStore::new(path.clone()).set_string(SELECTED_PROVIDER_KEY, selected.as_str());
+
+        // Session 2 (restart): a fresh store over the same path restores it.
+        let restored = load_initial_provider(Some(&SettingsStore::new(path)));
+        assert_eq!(restored, ProviderId::Opencode);
+        let value = app_context_value(&ctx, restored);
+        assert_eq!(value["initialProviderId"], json!("opencode"));
+    }
+
+    #[test]
+    fn initial_provider_falls_back_to_claude_when_settings_absent_or_corrupt() {
+        // No settings store at all (unresolvable app data dir).
+        assert_eq!(load_initial_provider(None), ProviderId::Claude);
+        // Absent file.
+        let dir = tempfile::tempdir().unwrap();
+        let store = SettingsStore::new(dir.path().join("settings.json"));
+        assert_eq!(load_initial_provider(Some(&store)), ProviderId::Claude);
+        // Corrupt file.
+        std::fs::write(dir.path().join("settings.json"), b"{corrupt").unwrap();
+        assert_eq!(load_initial_provider(Some(&store)), ProviderId::Claude);
+        // Valid JSON but an unknown provider id (renamed/foreign): still claude.
+        std::fs::write(
+            dir.path().join("settings.json"),
+            br#"{"agentSession.selectedProviderId": "gemini"}"#,
+        )
+        .unwrap();
+        assert_eq!(load_initial_provider(Some(&store)), ProviderId::Claude);
     }
 }
