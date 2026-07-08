@@ -2,6 +2,7 @@ import { useCallback, useRef } from "react";
 
 import {
   clampDivider,
+  keyboardDividerResize,
   resizeDivider,
   type Layout,
   type Pane,
@@ -76,6 +77,37 @@ function SplitNode({ layout, path, renderPane, onDividerChange }: SplitNodeProps
     [layout, onDividerChange, path],
   );
 
+  const onDividerKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (layout.type !== "split" || !onDividerChange) {
+        return;
+      }
+      // Plain arrows only: modified arrows belong to app/browser chords.
+      if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) {
+        return;
+      }
+      const container = containerRef.current;
+      if (!container) {
+        return;
+      }
+      const rect = container.getBoundingClientRect();
+      const axisPixels = layout.split.orientation === "horizontal" ? rect.width : rect.height;
+      const position = keyboardDividerResize(
+        layout.split.orientation,
+        layout.split.divider_position,
+        event.key,
+        axisPixels,
+      );
+      if (position === null) {
+        // Unhandled keys (incl. cross-axis arrows) pass through untouched.
+        return;
+      }
+      event.preventDefault();
+      onDividerChange(path, position);
+    },
+    [layout, onDividerChange, path],
+  );
+
   if (layout.type === "pane") {
     return <div className="cmux-pane">{renderPane(layout.pane, path)}</div>;
   }
@@ -115,7 +147,12 @@ function SplitNode({ layout, path, renderPane, onDividerChange }: SplitNodeProps
         className="cmux-split-divider"
         role="separator"
         aria-orientation={horizontal ? "vertical" : "horizontal"}
+        tabIndex={0}
+        aria-valuenow={Math.round(ratio * 100)}
+        aria-valuemin={10}
+        aria-valuemax={90}
         onPointerDown={onDividerPointerDown}
+        onKeyDown={onDividerKeyDown}
         style={{
           position: "relative",
           zIndex: 1,

@@ -1,12 +1,14 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  KEYBOARD_RESIZE_STEP_PX,
   MAX_DIVIDER,
   MIN_DIVIDER,
   clampDivider,
   firstActivePanelId,
   countLeaves,
   equalizeDivider,
+  keyboardDividerResize,
   resizeDivider,
   setDividerAtPath,
   type Layout,
@@ -75,6 +77,47 @@ describe("resizeDivider", () => {
   test("a non-positive axis is a no-op (returns the clamped current)", () => {
     expect(resizeDivider(0.5, 100, 0)).toBe(0.5);
     expect(resizeDivider(0.05, 100, -10)).toBe(MIN_DIVIDER);
+  });
+});
+
+describe("keyboardDividerResize", () => {
+  test("one step is Ghostty's default resize_split amount (10px)", () => {
+    expect(KEYBOARD_RESIZE_STEP_PX).toBe(10);
+  });
+
+  test("horizontal split: ArrowRight/ArrowLeft step the ratio by step/axis", () => {
+    // 0.5 + 10/400 = 0.525; 0.5 - 10/400 = 0.475.
+    expect(keyboardDividerResize("horizontal", 0.5, "ArrowRight", 400)).toBeCloseTo(0.525, 10);
+    expect(keyboardDividerResize("horizontal", 0.5, "ArrowLeft", 400)).toBeCloseTo(0.475, 10);
+  });
+
+  test("vertical split: ArrowDown/ArrowUp step the ratio by step/axis", () => {
+    expect(keyboardDividerResize("vertical", 0.5, "ArrowDown", 400)).toBeCloseTo(0.525, 10);
+    expect(keyboardDividerResize("vertical", 0.5, "ArrowUp", 400)).toBeCloseTo(0.475, 10);
+  });
+
+  test("cross-axis arrows are null (parity with macOS orientation-mismatch nil)", () => {
+    expect(keyboardDividerResize("horizontal", 0.5, "ArrowUp", 400)).toBeNull();
+    expect(keyboardDividerResize("horizontal", 0.5, "ArrowDown", 400)).toBeNull();
+    expect(keyboardDividerResize("vertical", 0.5, "ArrowLeft", 400)).toBeNull();
+    expect(keyboardDividerResize("vertical", 0.5, "ArrowRight", 400)).toBeNull();
+  });
+
+  test("non-arrow keys are null (no Home/End equivalent in the oracle)", () => {
+    expect(keyboardDividerResize("horizontal", 0.5, "Home", 400)).toBeNull();
+    expect(keyboardDividerResize("horizontal", 0.5, "End", 400)).toBeNull();
+    expect(keyboardDividerResize("vertical", 0.5, "a", 400)).toBeNull();
+  });
+
+  test("clamps the stepped ratio into [0.1, 0.9]", () => {
+    // Step = 10/100 = 0.1; 0.89 + 0.1 would be 0.99 -> MAX; 0.11 - 0.1 -> MIN.
+    expect(keyboardDividerResize("horizontal", 0.89, "ArrowRight", 100)).toBe(MAX_DIVIDER);
+    expect(keyboardDividerResize("horizontal", 0.11, "ArrowLeft", 100)).toBe(MIN_DIVIDER);
+  });
+
+  test("a degenerate axis returns the clamped current ratio", () => {
+    expect(keyboardDividerResize("horizontal", 0.5, "ArrowRight", 0)).toBe(0.5);
+    expect(keyboardDividerResize("vertical", 0.95, "ArrowUp", 0)).toBe(MAX_DIVIDER);
   });
 });
 

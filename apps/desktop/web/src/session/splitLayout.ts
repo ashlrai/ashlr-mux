@@ -101,6 +101,49 @@ export function resizeDivider(current: number, deltaPixels: number, axisPixels: 
 }
 
 /**
+ * Pixels one arrow-key press moves a divider. Mirrors Ghostty's default
+ * `resize_split` keybind amount (super+ctrl+arrow = resize_split:<dir>,10),
+ * the step the canonical macOS keyboard resize path receives
+ * (GhosttyTerminalView resize_split -> TabManager.resizeSplit amountPixels).
+ */
+export const KEYBOARD_RESIZE_STEP_PX = 10;
+
+/**
+ * The divider ratio after one arrow-key step on a focused divider, or null
+ * when `key` does not resize a divider of this orientation. Only the two
+ * arrows along the split axis apply (horizontal split -> ArrowLeft/ArrowRight,
+ * vertical -> ArrowUp/ArrowDown); Left/Up move the divider toward the first
+ * child (canonical dividerDeltaSign -1), Right/Down toward the second (+1).
+ * Cross-axis arrows return null, mirroring macOS resizeDividerAdjustment
+ * returning nil on orientation mismatch.
+ */
+export function keyboardDividerResize(
+  orientation: "horizontal" | "vertical",
+  current: number,
+  key: string,
+  axisPixels: number,
+): number | null {
+  const sign =
+    orientation === "horizontal"
+      ? key === "ArrowLeft"
+        ? -1
+        : key === "ArrowRight"
+          ? 1
+          : null
+      : key === "ArrowUp"
+        ? -1
+        : key === "ArrowDown"
+          ? 1
+          : null;
+  if (sign === null) {
+    return null;
+  }
+  // Raw `current`, not pre-clamped: parity with macOS resizeDividerAdjustment,
+  // which reads the unclamped dividerPosition and clamps only the result.
+  return resizeDivider(current, sign * KEYBOARD_RESIZE_STEP_PX, axisPixels);
+}
+
+/**
  * The equalized divider ratio = the first subtree's share of same-orientation
  * spans. Mirrors macOS `equalizeDividerPlan` (`firstSpanCount / totalSpanCount`
  * with an ORIENTATION-AWARE `spanCount(along:)`), so a cross-orientation nested

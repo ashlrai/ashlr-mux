@@ -31,6 +31,26 @@ describe("SplitTree", () => {
     expect(markup).toContain('aria-orientation="vertical"'); // horizontal split → vertical divider
   });
 
+  test("the divider is keyboard-focusable and exposes its ratio to AT", () => {
+    const layout: Layout = {
+      type: "split",
+      split: { orientation: "horizontal", divider_position: 0.6, first: pane("left"), second: pane("right") },
+    };
+    const markup = renderToStaticMarkup(<SplitTree layout={layout} renderPane={renderPane} />);
+    expect(markup).toContain('tabindex="0"');
+    expect(markup).toContain('aria-valuenow="60"');
+    expect(markup).toContain('aria-valuemin="10"');
+    expect(markup).toContain('aria-valuemax="90"');
+  });
+
+  test("a single pane exposes no divider focus/value attributes", () => {
+    const markup = renderToStaticMarkup(<SplitTree layout={pane("solo")} renderPane={renderPane} />);
+    expect(markup).not.toContain('tabindex="0"');
+    expect(markup).not.toContain("aria-valuenow");
+    expect(markup).not.toContain("aria-valuemin");
+    expect(markup).not.toContain("aria-valuemax");
+  });
+
   test("walks a nested tree and passes each pane its path depth", () => {
     const layout: Layout = {
       type: "split",
