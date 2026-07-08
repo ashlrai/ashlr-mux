@@ -42,6 +42,8 @@ export interface UseSession {
   selectWorkspace: (index: number) => void;
   /** Close the workspace at `index` (always leaves at least one alive). */
   closeWorkspace: (index: number) => void;
+  /** Set the collapsed state of workspace group `groupId`. */
+  setGroupCollapsed: (groupId: string, collapsed: boolean) => void;
   /**
    * Split the pane holding `panelId` in `orientation`. `insertFirst` puts the
    * new pane in the first (left/top) slot — the canonical left/up direction;
@@ -163,6 +165,13 @@ export function useSession(): UseSession {
       .catch((error) => console.error("session_close_workspace failed", error));
   }, []);
 
+  const setGroupCollapsed = useCallback((groupId: string, collapsed: boolean) => {
+    void host
+      .invoke<AppSessionSnapshot>("session_set_group_collapsed", { groupId, collapsed })
+      .then(setSnapshot)
+      .catch((error) => console.error("session_set_group_collapsed failed", error));
+  }, []);
+
   const tabs = snapshot?.windows[0]?.tab_manager;
   const workspaces = tabs?.workspaces ?? [];
   const rawIndex = tabs?.selected_workspace_index ?? 0;
@@ -183,5 +192,6 @@ export function useSession(): UseSession {
     newWorkspace,
     selectWorkspace,
     closeWorkspace,
+    setGroupCollapsed,
   };
 }

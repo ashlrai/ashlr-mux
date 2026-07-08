@@ -35,6 +35,7 @@ function render(
       onNewWorkspace={noop}
       onSelectWorkspace={noop}
       onCloseWorkspace={noop}
+      onToggleGroupCollapsed={noop}
     />,
   );
 }
@@ -107,6 +108,8 @@ describe("SidebarView", () => {
     expect(markup).toContain(`data-workspace-id="${member.workspace_id}"`);
     // The selected anchor (index 0) marks the header selected.
     expect(markup).toContain("cmux-sidebar-group-header is-selected");
+    // The expanded header's chevron exposes the collapse action.
+    expect(markup).toContain('aria-label="Collapse group"');
   });
 
   test("skips rows without a workspace_id (projection parity)", () => {

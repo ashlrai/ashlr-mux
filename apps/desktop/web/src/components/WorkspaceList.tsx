@@ -5,8 +5,9 @@
 // so a collapsed group simply arrives here without its member rows.
 //
 // A group header IS its anchor workspace's row (renderItems suppresses the
-// anchor as a plain row), so clicking a header selects the anchor. Toggling
-// collapse from the chevron is a later slice (A5, `session_set_group_collapsed`).
+// anchor as a plain row), so clicking a header selects the anchor. The chevron
+// is a separate tap target that toggles collapse (stopPropagation, so it never
+// selects the anchor) — canonical SidebarWorkspaceGroupHeaderView parity.
 //
 // Reuses the shared `@cmux/webviews` Icon for glyphs. The icon set has no
 // dedicated folder/right-chevron, so a collapsed group shows the right-pointing
@@ -31,6 +32,8 @@ export interface WorkspaceListProps {
   /// Row activation — a group header activates its anchor workspace.
   onSelectWorkspace?: (workspaceId: string) => void;
   onCloseWorkspace?: (workspaceId: string) => void;
+  /// Chevron activation — toggles the group's collapsed state.
+  onToggleGroupCollapsed?: (groupId: string, nextCollapsed: boolean) => void;
 }
 
 function classNames(...parts: (string | false | undefined)[]): string {
@@ -41,10 +44,12 @@ function GroupHeaderRow({
   item,
   isSelected,
   onSelect,
+  onToggleCollapsed,
 }: {
   item: Extract<SidebarWorkspaceRenderItem, { kind: "groupHeader" }>;
   isSelected: boolean;
   onSelect?: (workspaceId: string) => void;
+  onToggleCollapsed?: (groupId: string, nextCollapsed: boolean) => void;
 }) {
   const { group, memberWorkspaceIds } = item;
   return (
@@ -61,9 +66,19 @@ function GroupHeaderRow({
       aria-selected={isSelected ? "true" : "false"}
       onClick={() => onSelect?.(group.anchorWorkspaceId)}
     >
-      <span className="cmux-sidebar-group-chevron" aria-hidden="true">
+      <button
+        type="button"
+        className="cmux-sidebar-group-chevron"
+        aria-label={group.isCollapsed ? "Expand group" : "Collapse group"}
+        onClick={(event) => {
+          // Chevron toggles collapse without selecting the anchor (canonical:
+          // separate tap targets in SidebarWorkspaceGroupHeaderView).
+          event.stopPropagation();
+          onToggleCollapsed?.(group.id, !group.isCollapsed);
+        }}
+      >
         <Icon name={group.isCollapsed ? "arrow" : "expand"} />
-      </span>
+      </button>
       <span className="cmux-sidebar-group-name">{group.name}</span>
       <span className="cmux-sidebar-group-count">
         {memberWorkspaceIds.length}
@@ -136,6 +151,7 @@ export function WorkspaceList({
   canCloseWorkspaces,
   onSelectWorkspace,
   onCloseWorkspace,
+  onToggleGroupCollapsed,
 }: WorkspaceListProps) {
   const selected = selectedWorkspaceIds ?? new Set<string>();
   return (
@@ -148,6 +164,7 @@ export function WorkspaceList({
               item={item}
               isSelected={selected.has(item.group.anchorWorkspaceId)}
               onSelect={onSelectWorkspace}
+              onToggleCollapsed={onToggleGroupCollapsed}
             />
           );
         }

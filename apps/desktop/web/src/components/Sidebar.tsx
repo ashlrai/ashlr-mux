@@ -44,6 +44,12 @@ export interface SidebarViewProps {
   onNewWorkspace: () => void;
   onSelectWorkspace: (index: number) => void;
   onCloseWorkspace: (index: number) => void;
+  /**
+   * Chevron activation — sets the group's collapsed state. Groups are
+   * addressed by stable id (no id → index translation; that map is for
+   * workspace ids only).
+   */
+  onToggleGroupCollapsed: (groupId: string, nextCollapsed: boolean) => void;
 }
 
 /** Pure, prop-driven sidebar — no data source, so it renders headlessly. */
@@ -55,6 +61,7 @@ export function SidebarView({
   onNewWorkspace,
   onSelectWorkspace,
   onCloseWorkspace,
+  onToggleGroupCollapsed,
 }: SidebarViewProps): React.JSX.Element {
   if (collapsed) {
     return <div className="cmux-sidebar cmux-sidebar--collapsed" aria-hidden="true" />;
@@ -115,6 +122,7 @@ export function SidebarView({
         canCloseWorkspaces={canClose}
         onSelectWorkspace={withIndexOf(onSelectWorkspace)}
         onCloseWorkspace={withIndexOf(onCloseWorkspace)}
+        onToggleGroupCollapsed={onToggleGroupCollapsed}
       />
     </nav>
   );
@@ -134,6 +142,7 @@ export function Sidebar({ collapsed }: SidebarProps): React.JSX.Element {
     newWorkspace,
     selectWorkspace,
     closeWorkspace,
+    setGroupCollapsed,
   } = useSession();
 
   return (
@@ -145,6 +154,7 @@ export function Sidebar({ collapsed }: SidebarProps): React.JSX.Element {
       onNewWorkspace={newWorkspace}
       onSelectWorkspace={selectWorkspace}
       onCloseWorkspace={closeWorkspace}
+      onToggleGroupCollapsed={setGroupCollapsed}
     />
   );
 }

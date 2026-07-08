@@ -490,6 +490,31 @@ pub fn close_workspace(tabs: &mut SessionTabManagerSnapshot, index: i64) -> bool
     true
 }
 
+/// Set the collapsed flag of workspace group `group_id`. Mirrors canonical
+/// `WorkspaceGroupCoordinator.setWorkspaceGroupCollapsed`
+/// (`WorkspaceGroupCoordinator.swift:408-412`): the **pure data** variant —
+/// unknown group id and already-at-value are both no-ops, and selection is
+/// never touched (the anchor-selecting behavior belongs to the UI-only
+/// `toggleWorkspaceGroupCollapsed`, not ported here). Returns whether the
+/// flag actually changed.
+pub fn set_group_collapsed(
+    tabs: &mut SessionTabManagerSnapshot,
+    group_id: &str,
+    collapsed: bool,
+) -> bool {
+    let Some(groups) = tabs.workspace_groups.as_mut() else {
+        return false;
+    };
+    let Some(group) = groups.iter_mut().find(|g| g.id == group_id) else {
+        return false;
+    };
+    if group.is_collapsed == collapsed {
+        return false;
+    }
+    group.is_collapsed = collapsed;
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1007,5 +1032,90 @@ mod tests {
         new_workspace(&mut tabs, "surface-2");
         assert!(!close_workspace(&mut tabs, 5));
         assert_eq!(tabs.workspaces.len(), 2);
+    }
+
+    // --- Workspace-group collapse ---
+
+    fn group(id: &str, is_collapsed: bool) -> crate::session::SessionWorkspaceGroupSnapshot {
+        crate::session::SessionWorkspaceGroupSnapshot {
+            id: id.to_string(),
+            name: id.to_uppercase(),
+            is_collapsed,
+            ..Default::default()
+        }
+    }
+
+    fn tabs_with_group(is_collapsed: bool) -> SessionTabManagerSnapshot {
+        let mut tabs = one_workspace_tabs("surface-1");
+        tabs.workspace_groups = Some(vec![group("g", is_collapsed)]);
+        tabs
+    }
+
+    #[test]
+    fn set_group_collapsed_collapses_a_group() {
+        let mut tabs = tabs_with_group(false);
+        assert!(set_group_collapsed(&mut tabs, "g", true));
+        assert!(tabs.workspace_groups.as_ref().unwrap()[0].is_collapsed);
+        assert_eq!(tabs.selected_workspace_index, Some(0));
+    }
+
+    #[test]
+    fn set_group_collapsed_expands_a_group() {
+        let mut tabs = tabs_with_group(true);
+        assert!(set_group_collapsed(&mut tabs, "g", false));
+        assert!(!tabs.workspace_groups.as_ref().unwrap()[0].is_collapsed);
+    }
+
+    #[test]
+    fn set_group_collapsed_same_value_is_a_no_op() {
+        let mut tabs = tabs_with_group(false);
+        let before = tabs.clone();
+        assert!(!set_group_collapsed(&mut tabs, "g", false));
+        assert_eq!(tabs, before);
+    }
+
+    #[test]
+    fn set_group_collapsed_unknown_group_is_a_no_op() {
+        let mut tabs = tabs_with_group(false);
+        let before = tabs.clone();
+        assert!(!set_group_collapsed(&mut tabs, "nope", true));
+        assert_eq!(tabs, before);
+    }
+
+    #[test]
+    fn set_group_collapsed_with_no_groups_is_a_no_op() {
+        // `None` groups must stay `None` — never materialize `Some(vec![])`.
+        let mut tabs = one_workspace_tabs("surface-1");
+        assert!(!set_group_collapsed(&mut tabs, "g", true));
+        assert_eq!(tabs.workspace_groups, None);
+    }
+
+    #[test]
+    fn set_group_collapsed_targets_only_the_named_group() {
+        let mut tabs = one_workspace_tabs("surface-1");
+        tabs.workspace_groups = Some(vec![group("g1", false), group("g2", false)]);
+        assert!(set_group_collapsed(&mut tabs, "g2", true));
+        let groups = tabs.workspace_groups.as_ref().unwrap();
+        assert!(!groups[0].is_collapsed);
+        assert!(groups[1].is_collapsed);
+    }
+
+    // Pins the canonical pure-data contract (WorkspaceGroupCoordinator.swift:405-407)
+    // against drift toward the UI toggle's anchor-select semantics: collapsing a
+    // group whose selected member is a NON-anchor must not move selection.
+    #[test]
+    fn set_group_collapsed_never_moves_selection() {
+        let mut tabs = tabs_with(2, 0, 1);
+        tabs.workspaces[0].workspace_id = Some("ws-anchor".to_string());
+        tabs.workspaces[0].group_id = Some("g".to_string());
+        tabs.workspaces[1].workspace_id = Some("ws-member".to_string());
+        tabs.workspaces[1].group_id = Some("g".to_string());
+        tabs.workspace_groups = Some(vec![crate::session::SessionWorkspaceGroupSnapshot {
+            anchor_workspace_id: Some("ws-anchor".to_string()),
+            ..group("g", false)
+        }]);
+        assert!(set_group_collapsed(&mut tabs, "g", true));
+        // Selection stays on the (now hidden-in-UI) non-anchor member.
+        assert_eq!(tabs.selected_workspace_index, Some(1));
     }
 }

@@ -204,6 +204,22 @@ fn apply_set_process_title(snapshot: &mut AppSessionSnapshot, panel_id: &str, ti
     }
 }
 
+/// Set the collapsed flag of workspace group `group_id` in the first window.
+/// Pure — delegates to [`session_ops::set_group_collapsed`]. Returns whether
+/// the flag actually changed.
+fn apply_set_group_collapsed(
+    snapshot: &mut AppSessionSnapshot,
+    group_id: &str,
+    collapsed: bool,
+) -> bool {
+    match snapshot.windows.first_mut() {
+        Some(window) => {
+            session_ops::set_group_collapsed(&mut window.tab_manager, group_id, collapsed)
+        }
+        None => false,
+    }
+}
+
 fn emit_session_changed(app: &AppHandle, snapshot: &AppSessionSnapshot) {
     let _ = app.emit(SESSION_CHANGED_EVENT, snapshot);
 }
@@ -390,6 +406,29 @@ pub fn session_close_workspace(
         guard.clone()
     };
     emit_session_changed(&app, &snapshot);
+    snapshot
+}
+
+/// Set (collapse/expand) a workspace group's collapsed flag. Canonical parity:
+/// the pure-data `setWorkspaceGroupCollapsed` used by socket/CLI paths —
+/// never moves selection. Emits `cmux://session-changed` only when the flag
+/// actually changed (unknown id / already-at-value are no-ops) and returns
+/// the snapshot. `groupId` (camelCase) maps to the `group_id` param.
+#[tauri::command]
+pub fn session_set_group_collapsed(
+    app: AppHandle,
+    state: State<'_, SessionState>,
+    group_id: String,
+    collapsed: bool,
+) -> AppSessionSnapshot {
+    let (changed, snapshot) = {
+        let mut guard = state.snapshot.lock().expect("session snapshot mutex poisoned");
+        let changed = apply_set_group_collapsed(&mut guard, &group_id, collapsed);
+        (changed, guard.clone())
+    };
+    if changed {
+        emit_session_changed(&app, &snapshot);
+    }
     snapshot
 }
 
@@ -590,6 +629,30 @@ mod tests {
         let tabs = tab_manager(&snapshot);
         assert_eq!(tabs.workspaces.len(), 1);
         assert_eq!(tabs.selected_workspace_index, Some(0));
+    }
+
+    #[test]
+    fn apply_set_group_collapsed_flips_the_flag() {
+        let mut snapshot = initial_snapshot("surface-1");
+        snapshot.windows[0].tab_manager.workspace_groups =
+            Some(vec![cmux_core::session::SessionWorkspaceGroupSnapshot {
+                id: "g".to_string(),
+                name: "G".to_string(),
+                ..Default::default()
+            }]);
+        assert!(apply_set_group_collapsed(&mut snapshot, "g", true));
+        let groups = tab_manager(&snapshot).workspace_groups.as_ref().unwrap();
+        assert!(groups[0].is_collapsed);
+        // Already at the requested value → false (drives the emit gate).
+        assert!(!apply_set_group_collapsed(&mut snapshot, "g", true));
+    }
+
+    #[test]
+    fn apply_set_group_collapsed_unknown_group_is_a_noop() {
+        let mut snapshot = initial_snapshot("surface-1");
+        let before = snapshot.clone();
+        assert!(!apply_set_group_collapsed(&mut snapshot, "g", true));
+        assert_eq!(snapshot, before);
     }
 
     #[test]

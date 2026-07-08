@@ -67,8 +67,12 @@ describe("WorkspaceList", () => {
     // The non-anchor member and the ungrouped solo ARE rows.
     expect(markup).toContain(`data-workspace-id="${member}"`);
     expect(markup).toContain(`data-workspace-id="${solo}"`);
-    // Header uses the expanded (down) chevron glyph, rows do not carry it.
-    expect(markup).toContain("cmux-sidebar-group-chevron");
+    // The chevron is an interactive collapse-toggle button (canonical: a
+    // separate tap target from the header body), not a decorative span.
+    expect(markup).toContain(
+      '<button type="button" class="cmux-sidebar-group-chevron" aria-label="Collapse group"',
+    );
+    expect(markup).not.toContain('cmux-sidebar-group-chevron" aria-hidden');
     // Structural: an <svg> is emitted from the reused Icon.
     expect(markup).toContain("<svg");
   });
@@ -83,6 +87,8 @@ describe("WorkspaceList", () => {
     expect(markup).toContain("is-collapsed");
     expect(markup).toContain('data-collapsed="true"');
     expect(markup).toContain('aria-expanded="false"');
+    // Collapsed chevron offers the expand action.
+    expect(markup).toContain('aria-label="Expand group"');
     // Member count still reflects both members even while collapsed.
     expect(markup).toContain(
       '<span class="cmux-sidebar-group-count">2</span>',
