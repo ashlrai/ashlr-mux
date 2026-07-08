@@ -22,6 +22,24 @@
 //   focused-pane tracking lands); no target → no-op plan.
 // - equalizeSplits equalizes the whole active-workspace tree
 //   (`session_equalize_dividers`, span-count semantics).
+// - copyWorkspaceID / copySurfaceID copy the canonical single-line formats
+//   (`WorkspaceSurfaceIdentifierClipboardText.swift:85-92` `workspace_id=<id>`,
+//   `:36-43` `surface_id=<id>`; one line, no trailing newline). Ids are copied
+//   VERBATIM from the port's own session state (lowercase Rust uuids /
+//   `surface-<n>` panel ids) — no uppercase transform, so copied values
+//   round-trip against the port. The port's panel id IS the canonical surface
+//   id (`surfaceId = panelContext.panelId`,
+//   `ContentViewIdentifierCopyCommands.swift:123`). Missing workspace/panel →
+//   `none` (canonical beeps, :101-104).
+// - Deliberately UNHANDLED copy/window kinds (fall through to `unhandled`):
+//   copyWorkspaceIDAndRef (the ref line is the point,
+//   `ContentViewIdentifierCopyCommands.swift:100-106`; the port has no v2 ref
+//   registry), copyPaneID (the bonsplit pane NODE uuid, :127-133; the port's
+//   layout snapshot carries no pane identity), copyIdentifiers (hardcodes
+//   includeRefs:true, :170-183 — a ref-less/pane-less block would be an
+//   invented format), toggleFullScreen (webview lacks
+//   `core:window:allow-set-fullscreen` capability; needs a src-tauri lane),
+//   newWindow (port is single-window).
 
 import type { SessionSplitOrientation } from "@cmux/core-types";
 
@@ -40,6 +58,7 @@ export type IntentPlan =
     }
   | { type: "equalizeDividers" }
   | { type: "toggleSidebar" }
+  | { type: "copyText"; text: string }
   | { type: "none" }
   | { type: "unhandled" };
 
@@ -48,8 +67,16 @@ export interface IntentPlanContext {
   selectedWorkspaceIndex: number;
   /** Number of workspaces in the first window. */
   workspaceCount: number;
-  /** The pane splits target, or undefined when no splittable pane exists. */
+  /**
+   * The pane splits target (also the canonical surface id), or undefined when
+   * no splittable pane exists.
+   */
   activePanelId?: string;
+  /**
+   * workspace_id of the selected workspace, verbatim from the snapshot;
+   * undefined when absent.
+   */
+  selectedWorkspaceId?: string;
 }
 
 /** Decide what `kind` does given the current session shape. */
@@ -57,7 +84,8 @@ export function planIntent(
   kind: CommandIntentKind,
   ctx: IntentPlanContext,
 ): IntentPlan {
-  const { selectedWorkspaceIndex, workspaceCount, activePanelId } = ctx;
+  const { selectedWorkspaceIndex, workspaceCount, activePanelId, selectedWorkspaceId } =
+    ctx;
   const hasWorkspaces =
     workspaceCount > 0 &&
     selectedWorkspaceIndex >= 0 &&
@@ -102,6 +130,14 @@ export function planIntent(
             orientation: "vertical",
             insertFirst: false,
           }
+        : { type: "none" };
+    case "copyWorkspaceID":
+      return hasWorkspaces && selectedWorkspaceId !== undefined
+        ? { type: "copyText", text: `workspace_id=${selectedWorkspaceId}` }
+        : { type: "none" };
+    case "copySurfaceID":
+      return activePanelId !== undefined
+        ? { type: "copyText", text: `surface_id=${activePanelId}` }
         : { type: "none" };
     case "equalizeSplits":
       return { type: "equalizeDividers" };

@@ -137,6 +137,12 @@ export function useCommandPalette(
   const scope = listScope(query);
   const matchingQuery = queryForMatching(query);
 
+  // Focused-panel id (≡ the canonical surface id) — feeds BOTH the catalog
+  // context (`hasFocusedPanel` row gating) and the intent planner. It must be
+  // identical in both, or `dispatchCommand` inside `activateAt` rebuilds the
+  // catalog without a row the list displayed and activation silently nulls.
+  const activePanelId = activeLayout ? firstActivePanelId(activeLayout) : undefined;
+
   // Build the scope's commands, the search corpus, the switcher candidate ids,
   // and (switcher) the id→workspace map for activation. The pure modules do all
   // the parity work; this only marshals their output.
@@ -146,6 +152,7 @@ export function useCommandPalette(
       const ctx: CommandContext = {
         hasWorkspace: workspaces.length > 0,
         workspaceName: selected?.custom_title ?? selected?.process_title ?? null,
+        hasFocusedPanel: activePanelId !== undefined,
       };
       const built: CommandPaletteCommand[] = buildCommandCatalog(ctx).map((d) => ({
         id: d.id,
@@ -188,7 +195,7 @@ export function useCommandPalette(
       candidateCommandIds: switcherCandidateCommandIds(entries),
       switcherById: byId,
     };
-  }, [scope, snapshot, workspaces]);
+  }, [scope, snapshot, workspaces, activePanelId]);
 
   // Run the search whenever the query, scope, corpus, or visibility changes.
   useEffect(() => {
@@ -286,12 +293,14 @@ export function useCommandPalette(
         // kinds still log so the wiring never silently no-ops.
         const dispatch = dispatchCommand(match.command_id, {
           hasWorkspace: workspaces.length > 0,
+          hasFocusedPanel: activePanelId !== undefined,
         });
         if (dispatch) {
           const plan = planIntent(dispatch.intent.kind, {
             selectedWorkspaceIndex,
             workspaceCount: workspaces.length,
-            activePanelId: activeLayout ? firstActivePanelId(activeLayout) : undefined,
+            activePanelId,
+            selectedWorkspaceId: workspaces[selectedWorkspaceIndex]?.workspace_id,
           });
           switch (plan.type) {
             case "newWorkspace":
@@ -311,6 +320,9 @@ export function useCommandPalette(
               break;
             case "toggleSidebar":
               hostActions?.toggleSidebar?.();
+              break;
+            case "copyText":
+              void copyTextToClipboard(plan.text);
               break;
             case "none":
               break;
@@ -333,7 +345,7 @@ export function useCommandPalette(
       switcherById,
       workspaces,
       selectedWorkspaceIndex,
-      activeLayout,
+      activePanelId,
       selectWorkspace,
       newWorkspace,
       closeWorkspace,
@@ -380,6 +392,43 @@ export function useCommandPalette(
     move,
     activateAt,
   };
+}
+
+/**
+ * Copy `text` to the clipboard without ever throwing out of the palette's
+ * activation path (canonical NSPasteboard cannot fail; here WebView2 /
+ * non-secure contexts can reject the async API or omit `navigator.clipboard`
+ * entirely, so fall back to the `execCommand` textarea trick and swallow).
+ */
+async function copyTextToClipboard(text: string): Promise<void> {
+  if (navigator.clipboard !== undefined) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Fall through to the execCommand fallback.
+    }
+  }
+  execCommandCopy(text);
+}
+
+/** Legacy-path copy via an off-screen readonly textarea selection. */
+function execCommandCopy(text: string): void {
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.readOnly = true;
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+  try {
+    textarea.select();
+    document.execCommand("copy");
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error("[command-palette] clipboard copy failed", error);
+  } finally {
+    textarea.remove();
+  }
 }
 
 /** Map display commands to the search corpus shape the Rust bridge expects. */
