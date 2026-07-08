@@ -473,6 +473,7 @@ dependencies = [
  "cmux-agent",
  "cmux-agent-chat",
  "cmux-command-palette",
+ "cmux-config",
  "cmux-core",
  "cmux-diff",
  "cmux-ipc",

@@ -1,5 +1,6 @@
 mod agent_session;
 mod command_palette;
+mod config;
 mod diff;
 mod markdown;
 mod opencode_http;
@@ -85,6 +86,9 @@ pub fn run() {
             session::session_equalize_dividers,
             agent_session::agent_session_rpc,
             command_palette::command_palette_search,
+            config::config_load,
+            config::config_set,
+            config::config_remove,
             diff::diff_comments_rpc,
             markdown::cmux_lib_rpc,
             markdown::markdown_set_document,
