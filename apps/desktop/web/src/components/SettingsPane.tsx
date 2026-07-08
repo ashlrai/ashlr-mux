@@ -7,13 +7,14 @@
 // controlled like everything else (`searchQuery` / `onSearchQueryChange`);
 // navigation (scroll-to-section) is the parent's side effect via `onNavigate`.
 
-import type { Appearance, Config, ShortcutBinding } from "@cmux/core-types";
+import type { Appearance, Config } from "@cmux/core-types";
 
 import {
   configReducer,
   type NotificationsBoolKey,
   type SidebarBoolKey,
 } from "../settings/configReducer";
+import { shortcutBindingDisplayString } from "../settings/shortcutBinding";
 import {
   settingsSearchResults,
   type SettingsPaneSection,
@@ -68,14 +69,6 @@ const APPEARANCE_OPTIONS: ReadonlyArray<{ value: Appearance; label: string }> = 
   { value: "light", label: "Light" },
   { value: "dark", label: "Dark" },
 ];
-
-/** Render a `ShortcutBinding` (single stroke, chord array, or unbound). */
-function formatBinding(binding: ShortcutBinding | null | undefined): string {
-  if (binding == null) {
-    return "Unbound";
-  }
-  return Array.isArray(binding) ? binding.join(" ") : binding;
-}
 
 export function SettingsPane({
   config,
@@ -218,7 +211,7 @@ export function SettingsPane({
               <li key={actionId} className="cmux-settings-row" data-action={actionId}>
                 <span className="cmux-settings-shortcut-action">{actionId}</span>
                 <span className="cmux-settings-shortcut-binding">
-                  {formatBinding(shortcuts.bindings[actionId])}
+                  {shortcutBindingDisplayString(actionId, shortcuts.bindings[actionId])}
                 </span>
               </li>
             ))}

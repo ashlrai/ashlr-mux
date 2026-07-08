@@ -40,9 +40,17 @@ export interface StoredShortcut {
  * The explicit "no shortcut" marker. Mirrors `StoredShortcut.unbound`
  * (StoredShortcut.swift:18-20): an empty first key and no second stroke.
  */
-export const UNBOUND_SHORTCUT: StoredShortcut = {
-  first: { key: "", command: false, shift: false, option: false, control: false },
-};
+// Frozen: parse fns return this shared instance by reference, so a caller
+// mutating its result would silently corrupt every later "unbound" parse.
+export const UNBOUND_SHORTCUT: StoredShortcut = Object.freeze({
+  first: Object.freeze({
+    key: "",
+    command: false,
+    shift: false,
+    option: false,
+    control: false,
+  }),
+});
 
 /**
  * True when this binding is the explicit "no shortcut" marker. Mirrors

@@ -267,24 +267,36 @@ describe("SettingsPane search", () => {
 // ---- Shortcuts list ---------------------------------------------------------
 
 describe("SettingsPane shortcuts list", () => {
-  test("lists each binding's action id and formatted keys", () => {
+  /** The rendered binding span for the given action id. */
+  function bindingSpan(markup: string, actionId: string): string | undefined {
+    return markup.match(
+      new RegExp(
+        `<li[^>]*data-action="${actionId}"[^>]*>.*?` +
+          `<span class="cmux-settings-shortcut-binding">(.*?)</span>`,
+      ),
+    )?.[1];
+  }
+
+  test("lists each binding's action id and canonical display string", () => {
     const config: Config = {
       shortcuts: makeShortcuts({
         bindings: {
           "workspace.new": "cmd+t",
           "workspace.close": ["cmd", "w"],
           "workspace.rename": null,
+          selectSurfaceByNumber: "ctrl+1",
         },
       }),
     };
     const markup = renderToStaticMarkup(<SettingsPane config={config} onChange={noop} />);
 
-    expect(markup).toContain('data-action="workspace.new"');
-    expect(markup).toContain("cmd+t");
-    expect(markup).toContain('data-action="workspace.close"');
-    expect(markup).toContain("cmd w"); // chord joined with a space
-    // An explicit null binding renders as "Unbound".
-    expect(markup).toContain('data-action="workspace.rename"');
-    expect(markup).toContain("Unbound");
+    expect(bindingSpan(markup, "workspace.new")).toBe("⌘T");
+    // ["cmd", "w"] is canonically INVALID (each array element is one whole
+    // stroke; "cmd" alone is not a key) → raw fallback joined with a space.
+    expect(bindingSpan(markup, "workspace.close")).toBe("cmd w");
+    // An explicit null binding is the canonical unbound marker.
+    expect(bindingSpan(markup, "workspace.rename")).toBe("None");
+    // Numbered actions render the digit as the 1…9 range.
+    expect(bindingSpan(markup, "selectSurfaceByNumber")).toBe("⌃1…9");
   });
 });
