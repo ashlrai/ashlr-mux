@@ -207,6 +207,25 @@ fn apply_rename_workspace(snapshot: &mut AppSessionSnapshot, index: i64, title: 
     }
 }
 
+/// Pin/unpin the workspace at `index` in the first window — canonical
+/// `WorkspaceReorderCoordinator.setPinned` + `reorderTabForPinnedState`
+/// (already-at-value no-op; ungrouped tabs move to the pinned boundary;
+/// grouped tabs flip the flag only). Pure — delegates to
+/// [`session_ops::set_workspace_pinned`]. Returns whether the pin state
+/// actually changed.
+fn apply_set_workspace_pinned(
+    snapshot: &mut AppSessionSnapshot,
+    index: i64,
+    pinned: bool,
+) -> bool {
+    match snapshot.windows.first_mut() {
+        Some(window) => {
+            session_ops::set_workspace_pinned(&mut window.tab_manager, index, pinned)
+        }
+        None => false,
+    }
+}
+
 /// Set the OSC/process title of the workspace owning `panel_id` (any workspace in
 /// the first window, not only the active one). Pure — delegates to
 /// [`session_ops::set_process_title`]. Returns whether a title actually changed.
@@ -470,6 +489,34 @@ pub fn session_rename_workspace(
     snapshot
 }
 
+/// Pin/unpin the workspace at `index`. Canonical
+/// `WorkspaceReorderCoordinator.setPinned` semantics
+/// (`WorkspaceReorderCoordinator.swift:467-472` + the pinned-ahead
+/// normalization `reorderTabForPinnedState`, `:529-539`): pin floats the tab
+/// to the end of the pinned prefix, unpin drops it to the front of the
+/// unpinned segment; grouped tabs flip the flag only. Pin persists as
+/// `Some(true)`, unpin as `None` (never `Some(false)`) — the port's golden
+/// byte-stability decision (see `cmux-core/src/session.rs`). Emits
+/// `cmux://session-changed` only when the pin state actually changed
+/// (already-at-value / unknown index are no-ops) and returns the snapshot.
+#[tauri::command]
+pub fn session_set_workspace_pinned(
+    app: AppHandle,
+    state: State<'_, SessionState>,
+    index: i64,
+    pinned: bool,
+) -> AppSessionSnapshot {
+    let (changed, snapshot) = {
+        let mut guard = state.snapshot.lock().expect("session snapshot mutex poisoned");
+        let changed = apply_set_workspace_pinned(&mut guard, index, pinned);
+        (changed, guard.clone())
+    };
+    if changed {
+        emit_session_changed(&app, &snapshot);
+    }
+    snapshot
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -695,6 +742,29 @@ mod tests {
         let mut snapshot = initial_snapshot("surface-1");
         let before = snapshot.clone();
         assert!(!apply_rename_workspace(&mut snapshot, 5, "nope"));
+        assert_eq!(snapshot, before);
+    }
+
+    #[test]
+    fn apply_set_workspace_pinned_reorders_and_selection_follows() {
+        let mut snapshot = initial_snapshot("surface-1");
+        apply_new_workspace(&mut snapshot, "surface-2"); // 2 workspaces, sel=1
+        assert!(apply_set_workspace_pinned(&mut snapshot, 1, true));
+        let tabs = tab_manager(&snapshot);
+        // The pinned workspace floats to the top; selection follows it.
+        assert_eq!(tabs.workspaces[0].is_pinned, Some(true));
+        assert_eq!(tabs.workspaces[1].is_pinned, None);
+        assert_eq!(tabs.selected_workspace_index, Some(0));
+        assert_eq!(count_leaves(active_layout(&snapshot)), 1);
+    }
+
+    #[test]
+    fn apply_set_workspace_pinned_already_at_value_is_a_noop() {
+        let mut snapshot = initial_snapshot("surface-1");
+        assert!(apply_set_workspace_pinned(&mut snapshot, 0, true));
+        let before = snapshot.clone();
+        // Already pinned → false (drives the emit gate), snapshot unchanged.
+        assert!(!apply_set_workspace_pinned(&mut snapshot, 0, true));
         assert_eq!(snapshot, before);
     }
 

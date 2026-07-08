@@ -222,6 +222,52 @@ describe("WorkspaceList", () => {
     expect(renameActionForKey("Tab")).toBe(null);
   });
 
+  test("pin toggle labels: Unpin on pinned rows, Pin on unpinned rows", () => {
+    const { solo, member } = UUID;
+    const items = renderItems(
+      [row(solo, undefined, true), row(member, undefined, false)],
+      groupsMap([]),
+    );
+    const titles = new Map<string, string>([
+      [solo, "zsh"],
+      [member, "vim"],
+    ]);
+    const markup = renderToStaticMarkup(
+      <WorkspaceList
+        items={items}
+        titleForWorkspace={(id) => titles.get(id) ?? id}
+        onSetWorkspacePinned={() => {}}
+      />,
+    );
+    // Canonical label oracle: "Pin Workspace"/"Unpin Workspace"
+    // (WorkspaceActionDispatcher.swift:166-170).
+    expect(markup).toContain('aria-label="Unpin zsh"');
+    expect(markup).toContain('title="Unpin Workspace"');
+    expect(markup).toContain('aria-label="Pin vim"');
+    expect(markup).toContain('title="Pin Workspace"');
+  });
+
+  test("pin toggle is absent when onSetWorkspacePinned is not provided", () => {
+    const { solo } = UUID;
+    const items = renderItems([row(solo, undefined, true)], groupsMap([]));
+    const markup = renderToStaticMarkup(<WorkspaceList items={items} />);
+    expect(markup).not.toContain("cmux-sidebar-row-pin");
+  });
+
+  test("group header markup carries no pin toggle", () => {
+    // Collapsed group: only the header renders (member rows suppressed), so
+    // the whole markup must be pin-toggle-free even with the handler wired
+    // (group pin is setWorkspaceGroupPinned — a different op, out of scope).
+    const { gid, anchor, member } = UUID;
+    const tabs = [row(anchor, gid, false), row(member, gid, false)];
+    const items = renderItems(tabs, groupsMap([group(gid, anchor, true)]));
+    const markup = renderToStaticMarkup(
+      <WorkspaceList items={items} onSetWorkspacePinned={() => {}} />,
+    );
+    expect(markup).toContain("cmux-sidebar-group-header");
+    expect(markup).not.toContain("cmux-sidebar-row-pin");
+  });
+
   test("marks a group header selected when its anchor is selected, and honors group pin state", () => {
     const { gid, anchor, member } = UUID;
     const tabs = [row(anchor, gid, false), row(member, gid, false)];

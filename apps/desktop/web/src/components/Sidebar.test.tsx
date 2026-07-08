@@ -36,6 +36,7 @@ function render(
       onSelectWorkspace={noop}
       onCloseWorkspace={noop}
       onRenameWorkspace={noop}
+      onSetWorkspacePinned={noop}
       onToggleGroupCollapsed={noop}
     />,
   );
@@ -69,8 +70,8 @@ describe("SidebarView", () => {
     const markup = render([ws({ process_title: "a" }), ws({ process_title: "b" })], 1);
     // Exactly one selected row.
     expect(count(markup, "cmux-sidebar-row is-selected")).toBe(1);
-    // The reused webviews Icon emits an <svg> per row.
-    expect(count(markup, "<svg")).toBe(2);
+    // The reused webviews Icon emits an <svg> per row icon and per pin toggle.
+    expect(count(markup, "<svg")).toBe(4);
   });
 
   test("shows a per-row close button when more than one workspace exists", () => {
@@ -125,6 +126,24 @@ describe("SidebarView", () => {
     const markup = render([ws({ process_title: "a" }), ws({ process_title: "b" })]);
     expect(markup).toContain("cmux-sidebar-row-label");
     expect(markup).not.toContain("cmux-sidebar-row-rename");
+  });
+
+  test("renders a pin toggle per row with pin-state labels", () => {
+    // Persisted order is rendered as-is (the pinned-ahead reorder itself is
+    // Rust-tested); each id-bearing row gets the affordance, labelled by its
+    // own pin state. The id → index wiring goes through the same `withIndexOf`
+    // adapter the close/rename affordances already exercise.
+    const markup = render([
+      ws({ process_title: "a", is_pinned: true }),
+      ws({ process_title: "b" }),
+    ]);
+    expect(count(markup, "cmux-sidebar-row-pin")).toBe(2);
+    expect(markup).toContain('aria-label="Unpin a"');
+    expect(markup).toContain('aria-label="Pin b"');
+    // The pinned row precedes the unpinned one (persisted order preserved).
+    expect(markup.indexOf('aria-label="Unpin a"')).toBeLessThan(
+      markup.indexOf('aria-label="Pin b"'),
+    );
   });
 
   test("skips rows without a workspace_id (projection parity)", () => {

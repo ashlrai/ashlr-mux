@@ -51,6 +51,11 @@ export interface SidebarViewProps {
    */
   onRenameWorkspace: (index: number, title: string) => void;
   /**
+   * Pin/unpin the workspace at `index`. Pinned rows normalize to the top
+   * tier Rust-side (canonical `setPinned` pinned-ahead reorder).
+   */
+  onSetWorkspacePinned: (index: number, pinned: boolean) => void;
+  /**
    * Chevron activation — sets the group's collapsed state. Groups are
    * addressed by stable id (no id → index translation; that map is for
    * workspace ids only).
@@ -68,6 +73,7 @@ export function SidebarView({
   onSelectWorkspace,
   onCloseWorkspace,
   onRenameWorkspace,
+  onSetWorkspacePinned,
   onToggleGroupCollapsed,
 }: SidebarViewProps): React.JSX.Element {
   if (collapsed) {
@@ -134,6 +140,7 @@ export function SidebarView({
         onSelectWorkspace={withIndexOf(onSelectWorkspace)}
         onCloseWorkspace={withIndexOf(onCloseWorkspace)}
         onRenameWorkspace={withIndexOf(onRenameWorkspace)}
+        onSetWorkspacePinned={withIndexOf(onSetWorkspacePinned)}
         onToggleGroupCollapsed={onToggleGroupCollapsed}
       />
     </nav>
@@ -155,6 +162,7 @@ export function Sidebar({ collapsed }: SidebarProps): React.JSX.Element {
     selectWorkspace,
     closeWorkspace,
     renameWorkspace,
+    setWorkspacePinned,
     setGroupCollapsed,
   } = useSession();
 
@@ -168,6 +176,7 @@ export function Sidebar({ collapsed }: SidebarProps): React.JSX.Element {
       onSelectWorkspace={selectWorkspace}
       onCloseWorkspace={closeWorkspace}
       onRenameWorkspace={renameWorkspace}
+      onSetWorkspacePinned={setWorkspacePinned}
       onToggleGroupCollapsed={setGroupCollapsed}
     />
   );

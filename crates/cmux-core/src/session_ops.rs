@@ -538,6 +538,109 @@ pub fn rename_workspace(tabs: &mut SessionTabManagerSnapshot, index: i64, title:
     true
 }
 
+/// Pin/unpin the workspace at `index` — the port of canonical
+/// `WorkspaceReorderCoordinator.setPinned`
+/// (`WorkspaceReorderCoordinator.swift:467-472`) plus its pinned-ahead
+/// normalization `reorderTabForPinnedState` (`:529-539`), reached via
+/// `TabManager.setPinned` (`TabManager.swift:1754-1759`).
+///
+/// Semantics:
+/// - Already-at-value is a no-op (`guard tab.isPinned != pinned`,
+///   Coordinator:468). Out-of-range/negative `index` is a silent no-op
+///   (rename precedent).
+/// - GROUPED workspace (`group_id` present): flag-only — pinning never ejects
+///   a tab from its group and never moves it globally. Canonical additionally
+///   runs `normalizeWorkspaceGroupContiguity` (Coordinator:531-533); that
+///   contiguity pass consumes live model types, not the snapshot, so it is a
+///   documented gap here — same precedent as `new_workspace_with_placement`.
+/// - UNGROUPED: remove the tab, count the leading globally-pinned rows of the
+///   REMAINDER (`leadingGlobalPinnedRowCount` + `isGlobalPinnedRow`,
+///   `WorkspacesModel+Ordering.swift:190-207`: grouped rows count by their
+///   GROUP's pin, ungrouped by their own flag), and re-insert at that
+///   boundary (Coordinator:535-538). Because the flag is flipped before the
+///   move, the single rule yields both directions: pin → END of the pinned
+///   prefix, unpin → FRONT of the unpinned segment; all other rows keep
+///   their relative order.
+/// - SELECTION: canonical selection is id-based and untouched by `setPinned`;
+///   the port's `selected_workspace_index` is index-based, so it is remapped
+///   to keep following the same workspace across the move.
+///
+/// PERSISTENCE DECISION: canonical `SessionWorkspaceSnapshot.isPinned` is a
+/// non-optional `Bool` (`SessionPersistence.swift:1833`), but the port models
+/// it as omit-when-`None` `Option<bool>` for golden byte-stability (see
+/// `session.rs`). Pin writes `Some(true)`; unpin writes `None`, never
+/// `Some(false)`. A canonical-written `Some(false)` reads as unpinned, so
+/// unpinning it is caught by the already-at-value guard and leaves it as-is.
+///
+/// Returns `true` iff the pin state actually changed (drives the emit gate).
+pub fn set_workspace_pinned(
+    tabs: &mut SessionTabManagerSnapshot,
+    index: i64,
+    pinned: bool,
+) -> bool {
+    if index < 0 || index as usize >= tabs.workspaces.len() {
+        return false;
+    }
+    let from = index as usize;
+    let was = tabs.workspaces[from].is_pinned == Some(true);
+    if was == pinned {
+        return false;
+    }
+    // Some(true)/None per the persistence decision above. An unpin of a
+    // decoded `Some(false)` never reaches here (already-unpinned no-op).
+    tabs.workspaces[from].is_pinned = pinned.then_some(true);
+
+    if tabs.workspaces[from].group_id.is_some() {
+        // Flag-only for grouped tabs (documented contiguity gap, see above).
+        return true;
+    }
+
+    // The boundary move (Coordinator:535-538): remove first so the leading
+    // count runs over the remaining rows, then insert at the boundary.
+    let moved = tabs.workspaces.remove(from);
+    let to = {
+        let groups = tabs.workspace_groups.as_deref().unwrap_or(&[]);
+        let boundary = tabs
+            .workspaces
+            .iter()
+            .take_while(|w| match w.group_id.as_deref() {
+                // Grouped rows count by their GROUP's pin (isGlobalPinnedRow,
+                // Ordering.swift:201-207); a dangling group id falls back to
+                // the row's own flag, exactly like the oracle's nil-group arm.
+                Some(gid) => groups
+                    .iter()
+                    .find(|g| g.id == gid)
+                    .map_or(w.is_pinned == Some(true), |g| g.is_pinned == Some(true)),
+                None => w.is_pinned == Some(true),
+            })
+            .count();
+        boundary.min(tabs.workspaces.len())
+    };
+    tabs.workspaces.insert(to, moved);
+
+    // Index-based selection follows the same workspace (canonical id-based
+    // selection is inherently untouched). Invalid/None selection stays as-is.
+    if let Some(sel) = tabs.selected_workspace_index {
+        if sel >= 0 && (sel as usize) < tabs.workspaces.len() {
+            let sel = sel as usize;
+            let next = if sel == from {
+                to
+            } else {
+                // Simulate the remove (positions after `from` shift left) then
+                // the insert (positions at/after `to` shift right).
+                let s = if sel > from { sel - 1 } else { sel };
+                if s >= to {
+                    s + 1
+                } else {
+                    s
+                }
+            };
+            tabs.selected_workspace_index = Some(next as i64);
+        }
+    }
+    true
+}
+
 /// Set the collapsed flag of workspace group `group_id`. Mirrors canonical
 /// `WorkspaceGroupCoordinator.setWorkspaceGroupCollapsed`
 /// (`WorkspaceGroupCoordinator.swift:408-412`): the **pure data** variant —
@@ -1155,6 +1258,165 @@ mod tests {
         assert!(!rename_workspace(&mut tabs, 2, "nope"));
         assert!(!rename_workspace(&mut tabs, -1, "nope"));
         assert_eq!(tabs, before);
+    }
+
+    // --- Workspace pin/unpin ---
+
+    /// The `panel_ids` of each workspace's layout — a stable identity for order
+    /// assertions (all `tabs_with` workspaces share the "Terminal" title).
+    fn order_of(tabs: &SessionTabManagerSnapshot) -> Vec<String> {
+        tabs.workspaces
+            .iter()
+            .map(|w| panel_ids(w.layout.as_ref().unwrap())[0].clone())
+            .collect()
+    }
+
+    #[test]
+    fn pin_moves_workspace_to_end_of_pinned_prefix() {
+        let mut tabs = tabs_with(4, 2, 0);
+        assert!(set_workspace_pinned(&mut tabs, 3, true));
+        // The newly pinned tab lands at the END of the pinned prefix (index 2);
+        // the unpinned remainder keeps its relative order.
+        assert_eq!(
+            order_of(&tabs),
+            ["surface-0", "surface-1", "surface-3", "surface-2"]
+        );
+        assert_eq!(tabs.workspaces[2].is_pinned, Some(true));
+    }
+
+    #[test]
+    fn pin_first_of_all_unpinned_stays_at_index_0() {
+        let mut tabs = tabs_with(3, 0, 0);
+        assert!(set_workspace_pinned(&mut tabs, 0, true));
+        assert_eq!(order_of(&tabs), ["surface-0", "surface-1", "surface-2"]);
+        assert_eq!(tabs.workspaces[0].is_pinned, Some(true));
+    }
+
+    #[test]
+    fn pin_middle_moves_to_front() {
+        let mut tabs = tabs_with(3, 0, 0);
+        assert!(set_workspace_pinned(&mut tabs, 1, true));
+        assert_eq!(order_of(&tabs), ["surface-1", "surface-0", "surface-2"]);
+        assert_eq!(tabs.workspaces[0].is_pinned, Some(true));
+    }
+
+    #[test]
+    fn unpin_inserts_at_front_of_unpinned_segment() {
+        let mut tabs = tabs_with(3, 2, 0);
+        assert!(set_workspace_pinned(&mut tabs, 0, false));
+        // The unpinned tab lands at the FRONT of the unpinned segment.
+        assert_eq!(order_of(&tabs), ["surface-1", "surface-0", "surface-2"]);
+        // Unpin stores None (omit-key), never Some(false) — golden
+        // byte-stability: the serialized object must not carry the key at all.
+        assert_eq!(tabs.workspaces[1].is_pinned, None);
+        let object = serde_json::to_value(&tabs.workspaces[1]).unwrap();
+        assert!(!object.as_object().unwrap().contains_key("is_pinned"));
+    }
+
+    #[test]
+    fn pin_already_pinned_is_no_change() {
+        let mut tabs = tabs_with(3, 2, 0);
+        let before = tabs.clone();
+        assert!(!set_workspace_pinned(&mut tabs, 0, true));
+        assert_eq!(tabs, before);
+    }
+
+    #[test]
+    fn unpin_never_pinned_is_no_change() {
+        let mut tabs = tabs_with(3, 2, 0);
+        let before = tabs.clone();
+        assert!(!set_workspace_pinned(&mut tabs, 2, false));
+        assert_eq!(tabs, before);
+    }
+
+    #[test]
+    fn set_workspace_pinned_out_of_range_and_negative_index_are_no_ops() {
+        let mut tabs = tabs_with(2, 0, 0);
+        let before = tabs.clone();
+        assert!(!set_workspace_pinned(&mut tabs, 2, true));
+        assert!(!set_workspace_pinned(&mut tabs, -1, true));
+        assert_eq!(tabs, before);
+    }
+
+    #[test]
+    fn selection_follows_the_pinned_workspace() {
+        let mut tabs = tabs_with(3, 0, 2);
+        assert!(set_workspace_pinned(&mut tabs, 2, true));
+        // ws2 moved to index 0; the selection follows it there.
+        assert_eq!(order_of(&tabs), ["surface-2", "surface-0", "surface-1"]);
+        assert_eq!(tabs.selected_workspace_index, Some(0));
+    }
+
+    #[test]
+    fn selection_stays_on_unmoved_workspace() {
+        let mut tabs = tabs_with(3, 0, 1);
+        assert!(set_workspace_pinned(&mut tabs, 2, true));
+        // ws2 moved to index 0, shifting ws1 to index 2 — selection follows.
+        assert_eq!(order_of(&tabs), ["surface-2", "surface-0", "surface-1"]);
+        assert_eq!(tabs.selected_workspace_index, Some(2));
+    }
+
+    #[test]
+    fn unpin_selection_follows() {
+        // Selected tab is the one being unpinned: follows it to index 1.
+        let mut tabs = tabs_with(3, 2, 0);
+        assert!(set_workspace_pinned(&mut tabs, 0, false));
+        assert_eq!(tabs.selected_workspace_index, Some(1));
+
+        // Selected tab is the OTHER pinned tab (p1): unpinning index 0 moves
+        // p1 up to index 0 — selection follows.
+        let mut tabs = tabs_with(3, 2, 1);
+        assert!(set_workspace_pinned(&mut tabs, 0, false));
+        assert_eq!(tabs.selected_workspace_index, Some(0));
+    }
+
+    #[test]
+    fn grouped_workspace_pin_flips_flag_without_reorder() {
+        let mut tabs = tabs_with(3, 0, 0);
+        tabs.workspaces[1].group_id = Some("g".to_string());
+        tabs.workspace_groups = Some(vec![group("g", false)]);
+        assert!(set_workspace_pinned(&mut tabs, 1, true));
+        // Flag-only change (documented contiguity gap): no global move, group
+        // membership preserved.
+        assert_eq!(order_of(&tabs), ["surface-0", "surface-1", "surface-2"]);
+        assert_eq!(tabs.workspaces[1].is_pinned, Some(true));
+        assert_eq!(tabs.workspaces[1].group_id.as_deref(), Some("g"));
+        assert_eq!(tabs.selected_workspace_index, Some(0));
+    }
+
+    #[test]
+    fn boundary_counts_grouped_rows_by_group_pin() {
+        // Leading grouped members of a PINNED group (members' own is_pinned is
+        // None) followed by unpinned rows; pinning a trailing ungrouped ws must
+        // insert AFTER the grouped pinned run (isGlobalPinnedRow parity:
+        // grouped rows count by their group's pin, Ordering.swift:201-207).
+        let mut tabs = tabs_with(4, 0, 0);
+        tabs.workspaces[0].group_id = Some("g".to_string());
+        tabs.workspaces[1].group_id = Some("g".to_string());
+        tabs.workspace_groups = Some(vec![crate::session::SessionWorkspaceGroupSnapshot {
+            is_pinned: Some(true),
+            ..group("g", false)
+        }]);
+        assert!(set_workspace_pinned(&mut tabs, 3, true));
+        assert_eq!(
+            order_of(&tabs),
+            ["surface-0", "surface-1", "surface-3", "surface-2"]
+        );
+        assert_eq!(tabs.workspaces[2].is_pinned, Some(true));
+    }
+
+    #[test]
+    fn boundary_dangling_group_id_falls_back_to_own_pin() {
+        // A leading row whose group_id resolves to NO group still counts by
+        // its own is_pinned (the oracle's isGlobalPinnedRow nil-group arm,
+        // Ordering.swift:201-207) — it must not be treated as unpinned.
+        let mut tabs = tabs_with(3, 0, 0);
+        tabs.workspaces[0].is_pinned = Some(true);
+        tabs.workspaces[0].group_id = Some("gone".to_string());
+        tabs.workspace_groups = None;
+        assert!(set_workspace_pinned(&mut tabs, 2, true));
+        // surface-2 lands AFTER the dangling-group pinned row, not before it.
+        assert_eq!(order_of(&tabs), ["surface-0", "surface-2", "surface-1"]);
     }
 
     // --- Workspace-group collapse ---

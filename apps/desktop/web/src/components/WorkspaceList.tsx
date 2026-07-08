@@ -34,6 +34,10 @@ export interface WorkspaceListProps {
   /// Row activation — a group header activates its anchor workspace.
   onSelectWorkspace?: (workspaceId: string) => void;
   onCloseWorkspace?: (workspaceId: string) => void;
+  /// Row-level pin toggle. Rows expose the affordance only when provided
+  /// (matches the rename gating). Group HEADER rows never get it: group pin is
+  /// `setWorkspaceGroupPinned` (TabManager.swift:1846) — a different op.
+  onSetWorkspacePinned?: (workspaceId: string, pinned: boolean) => void;
   /// Chevron activation — toggles the group's collapsed state.
   onToggleGroupCollapsed?: (groupId: string, nextCollapsed: boolean) => void;
   /// Inline-rename commit (double-click a row label to begin editing). The RAW
@@ -118,6 +122,7 @@ function WorkspaceRowItem({
   isEditing,
   onSelect,
   onClose,
+  onSetPinned,
   onBeginRename,
   onCommitRename,
   onCancelRename,
@@ -129,6 +134,7 @@ function WorkspaceRowItem({
   isEditing: boolean;
   onSelect?: (workspaceId: string) => void;
   onClose?: (workspaceId: string) => void;
+  onSetPinned?: (workspaceId: string, pinned: boolean) => void;
   onBeginRename?: (workspaceId: string) => void;
   onCommitRename?: (workspaceId: string, title: string) => void;
   onCancelRename?: () => void;
@@ -195,6 +201,23 @@ function WorkspaceRowItem({
           {title}
         </span>
       )}
+      {onSetPinned ? (
+        <button
+          type="button"
+          className="cmux-sidebar-row-pin"
+          // Canonical action labels: "Pin Workspace"/"Unpin Workspace"
+          // (WorkspaceActionDispatcher.swift:166-170).
+          title={workspace.isPinned ? "Unpin Workspace" : "Pin Workspace"}
+          aria-label={workspace.isPinned ? `Unpin ${title}` : `Pin ${title}`}
+          onClick={(event) => {
+            // Don't let the row's select handler fire on the pin toggle.
+            event.stopPropagation();
+            onSetPinned(workspace.id, !workspace.isPinned);
+          }}
+        >
+          <Icon name="files" />
+        </button>
+      ) : null}
       {canClose ? (
         <button
           type="button"
@@ -221,6 +244,7 @@ export function WorkspaceList({
   canCloseWorkspaces,
   onSelectWorkspace,
   onCloseWorkspace,
+  onSetWorkspacePinned,
   onToggleGroupCollapsed,
   onRenameWorkspace,
   defaultEditingWorkspaceId,
@@ -256,6 +280,7 @@ export function WorkspaceList({
             isEditing={editingWorkspaceId === item.workspace.id}
             onSelect={onSelectWorkspace}
             onClose={onCloseWorkspace}
+            onSetPinned={onSetWorkspacePinned}
             onBeginRename={onRenameWorkspace ? setEditingWorkspaceId : undefined}
             onCommitRename={(workspaceId, title) => {
               onRenameWorkspace?.(workspaceId, title);

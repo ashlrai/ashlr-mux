@@ -47,6 +47,11 @@ export interface UseSession {
    * title, restoring the process-title fallback (canonical `setCustomTitle`).
    */
   renameWorkspace: (index: number, title: string) => void;
+  /**
+   * Pin/unpin the workspace at `index`; pinned rows float to the top tier
+   * (canonical setPinned).
+   */
+  setWorkspacePinned: (index: number, pinned: boolean) => void;
   /** Set the collapsed state of workspace group `groupId`. */
   setGroupCollapsed: (groupId: string, collapsed: boolean) => void;
   /**
@@ -177,6 +182,14 @@ export function useSession(): UseSession {
       .catch((error) => console.error("session_rename_workspace failed", error));
   }, []);
 
+  // Both arg keys are single words — no camelCase → snake_case mapping hazard.
+  const setWorkspacePinned = useCallback((index: number, pinned: boolean) => {
+    void host
+      .invoke<AppSessionSnapshot>("session_set_workspace_pinned", { index, pinned })
+      .then(setSnapshot)
+      .catch((error) => console.error("session_set_workspace_pinned failed", error));
+  }, []);
+
   const setGroupCollapsed = useCallback((groupId: string, collapsed: boolean) => {
     void host
       .invoke<AppSessionSnapshot>("session_set_group_collapsed", { groupId, collapsed })
@@ -205,6 +218,7 @@ export function useSession(): UseSession {
     selectWorkspace,
     closeWorkspace,
     renameWorkspace,
+    setWorkspacePinned,
     setGroupCollapsed,
   };
 }
