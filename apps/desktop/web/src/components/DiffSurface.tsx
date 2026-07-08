@@ -1,3 +1,6 @@
+import { useEffect } from "react";
+
+import { installDiffCommentsRelay } from "../host/diffCommentsRelay";
 import { diffSurfaceUrl } from "../session/surfaceUrl";
 
 export interface DiffSurfaceProps {
@@ -23,6 +26,19 @@ export interface DiffSurfaceProps {
  * demand — the workspace tears it down when the pane switches away.
  */
 export function DiffSurface({ token }: DiffSurfaceProps): React.JSX.Element {
+  // The iframe branch needs the parent-side diff-comments relay listening on
+  // this (main) window; the placeholder installs nothing. The relay is a
+  // window-level singleton (a reinstall tears down the prior listener), so
+  // unmounting surface A while surface B is mounted would drop B's relay —
+  // acceptable today under the one-diff-pane-at-a-time interim (same invariant
+  // as the agent surface); ref-counting is deliberate non-scope.
+  useEffect(() => {
+    if (!token) {
+      return;
+    }
+    return installDiffCommentsRelay();
+  }, [token]);
+
   if (!token) {
     return (
       <div

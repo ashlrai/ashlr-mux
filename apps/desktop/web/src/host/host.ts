@@ -84,11 +84,13 @@ export interface MacHostShimOptions {
   eventName?: string;
 }
 
-function isEnvelope(value: unknown): value is NativeReply {
+/** Whether a raw invoke result already carries the `NativeReply` envelope. */
+export function isEnvelope(value: unknown): value is NativeReply {
   return typeof value === "object" && value !== null && "ok" in value;
 }
 
-function errorReply(error: unknown): NativeReply {
+/** Map a transport rejection to the `{ ok: false, error }` reply shape. */
+export function errorReply(error: unknown): NativeReply {
   const message = error instanceof Error ? error.message : String(error);
   const code = (error as { code?: string } | null)?.code;
   return { ok: false, error: { code, userMessage: message } };
