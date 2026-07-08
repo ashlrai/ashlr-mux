@@ -669,3 +669,35 @@ shortcutFormat / placement / reorder / switcherIndex (share `bun test src`; sequ
   - **C2** (`48a685739`) — `session_equalize_dividers` command + new `session_ops::equalize_dividers` whole-tree walker using orientation-aware `span_count` (parity-exact port of CmuxPanes `ExternalTreeNode.spanCount(along:)` — pane=1, nested split recurses only when orientation==axis else 1). NOT the pre-existing leaf-count `equalize_divider` (diverges on mixed-orientation trees: H(V(a,b),c)→root 0.5 span vs 2/3 leaf; canonical=span). foundSplit-style bool (single pane→no-op). Command mirrors session_set_divider (lock→apply→clone→emit cmux://session-changed). Verify SOLID (span semantics + clamp-folds-plan+apply equivalence + no default-regression + golden byte-stable). Simplify removed one unreachable `total_span==0` guard (span_count always ≥1; canonical has no guard → parity-improving). cmux-core 161, cmux-desktop 86, golden 9 byte-stable, clippy clean.
   Pushed `68bc6dbf7..48a685739` → fork/windows-port.
   === LOOP CHECKPOINT (2026-07-07, after iter #10) === 5 iterations this session (#6-#10): A1/A3/A9, D5/D6/D7/D9, E8/E9, G1, C1(confirmed)/C2 = 11 slices, all pushed green, 4 real defects caught by adversarial verify (config-override scope, phantom-group anchor, G1 live 403 bug, +). The HEADLESS command/ops/pure-model frontier for the touched areas is now largely harvested. What REMAINS is dominantly the DEFERRED GUI-WIRING TAIL — each headless slice above left a thin caller (JS invoke / DOM mutation / keyboard-menu trigger / webview.eval render push) that needs the running app to build+verify. Consolidated GUI-verify queue for the user's next `npx @tauri-apps/cli dev` session (highest value first): (1) D4 live command-palette overlay — compose windowStore+paletteQuery+commandCatalog+switcherEntries+renderSequencing+resultsGating+command_palette_search + open-shortcut/focus/Escape/arrow/click/Enter; (2) A4 mount rich WorkspaceList via render_items (groups/pins/collapse) + wire selection; (3) directional-split + equalize UI triggers (C1 insertFirst arg from split buttons/keys; C2 equalize keyboard/menu/palette action) — commands are LIVE, just need callers; (4) markdown doc-feed caller (await markdown_set_document before markdown_render) + appearance apply (resolveAppliedAppearance→document color-scheme + persist) + settings-search box (settingsEntriesMatching→SettingsPane); (5) window chrome B1-B7; (6) live agents F1-F6 (Codex/OpenCode installed). Remaining PURE-headless candidates are thinner: C3 (resizeDividerAdjustment key handler — mostly GUI), C4 (directional pane focus — needs a web focused-pane concept), E6 (shortcut-format wiring — GUI), A5-A8/A10-A14 (sidebar richness — mostly GUI-mount). Recommend: pause autonomous headless churn; do a GUI session next. LOOP CONTINUES only if more genuinely-headless slices are worth it — else await user for the live-verify phase.
+
+- UI buildout #11-#12 (2026-07-07, /loop resumed) — #11 was D4 (live
+  command-palette overlay, `d348176ee`) + terminal top-label feed
+  (`77b3d72d7`), landed before this log entry. #12 this iteration:
+  (a) recovered + finished the uncommitted in-flight agent-session slice
+  (`acc0071ee`, rebased over fork PR #2): queued provider switch while a
+  session runs (pendingProviderId + advanceProviderSwitch stop→wait→apply→
+  re-arm auto-start; picker shows the queued provider immediately), composer
+  single-line/multiline oscillation fix (trust width only when measured in
+  single-line layout), overflow-wrap:anywhere on the composer. webviews 173
+  tests green.
+  (b) **A4** (`5309ca07c`) — rich WorkspaceList mounted in the live sidebar.
+  `ensure_workspace_ids` in session.rs mints workspace UUIDs (stateful layer
+  owns id synthesis; closes the A3-deferred divergence — fresh_terminal_workspace
+  stays pure/id-less). Web `sidebar/snapshotProjection.ts` = tested twin of
+  sidebar_render.rs (uuid validate+lowercase, member-less drop, dup keep-first,
+  3-tier anchor fallback) composed with ported renderItems; WorkspaceList now
+  interactive (titles, selection, close w/ sole-workspace no-op parity, header
+  click activates anchor — the header IS the anchor's row); SidebarView renders
+  through it (groups/pins/collapse LIVE); id→index translation for the
+  index-addressed session commands. Gate: web 480 + tsc clean, cmux-desktop 88
+  + clippy clean. sidebar_render.rs note corrected (projection lives web-side;
+  Rust twin stays as oracle + future native consumer).
+  USER DIRECTIVE UPDATE: user re-invoked /loop asking for the FULL UI parity
+  buildout ("nothing is in the ui yet... keep working until completely
+  finished; I will look once everything is implemented") — this supersedes the
+  earlier "don't blind-build GUI" pause. GUI-wiring tail is now IN SCOPE for
+  the autonomous loop; verify headlessly (tests/tsc/clippy) and flag anything
+  only a live run can prove. NEXT queue: A5 (group collapse command + chevron)
+  / A6 (inline rename) / A7 (pin) — session-zone, run solo; C1 insertFirst +
+  C2 equalize UI triggers (commands live, need callers); markdown doc-feed
+  caller + appearance apply + settings-search box wiring; D-overlay polish.
