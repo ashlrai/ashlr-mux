@@ -6,7 +6,11 @@ import {
   type WorkspaceGroup,
   type WorkspaceRow,
 } from "../sidebar/renderItems";
-import { renameActionForKey, WorkspaceList } from "./WorkspaceList";
+import {
+  clickModifiers,
+  renameActionForKey,
+  WorkspaceList,
+} from "./WorkspaceList";
 
 // Fixed UUIDs for deterministic markup assertions.
 const UUID = {
@@ -266,6 +270,92 @@ describe("WorkspaceList", () => {
     );
     expect(markup).toContain("cmux-sidebar-group-header");
     expect(markup).not.toContain("cmux-sidebar-row-pin");
+  });
+
+  test("clickModifiers: shift, ctrl, meta, none", () => {
+    const ev = (
+      shiftKey: boolean,
+      ctrlKey: boolean,
+      metaKey: boolean,
+    ) => ({ shiftKey, ctrlKey, metaKey });
+    expect(clickModifiers(ev(true, false, false))).toEqual({
+      shift: true,
+      toggle: false,
+    });
+    // Ctrl is the Windows chord for canonical Cmd.
+    expect(clickModifiers(ev(false, true, false))).toEqual({
+      shift: false,
+      toggle: true,
+    });
+    // metaKey kept for parity on hosts that surface it.
+    expect(clickModifiers(ev(false, false, true))).toEqual({
+      shift: false,
+      toggle: true,
+    });
+    expect(clickModifiers(ev(false, false, false))).toEqual({
+      shift: false,
+      toggle: false,
+    });
+  });
+
+  test("multi-selected rows draw is-multi-selected, active row keeps is-selected only", () => {
+    const { solo, member, anchor } = UUID;
+    const items = renderItems(
+      [
+        row(anchor, undefined, false),
+        row(member, undefined, false),
+        row(solo, undefined, false),
+      ],
+      groupsMap([]),
+    );
+    const markup = renderToStaticMarkup(
+      <WorkspaceList
+        items={items}
+        selectedWorkspaceIds={new Set([anchor])}
+        // The active row is ALSO in the multi-selection — canonical isActive
+        // precedence (SidebarAppearanceSupport.swift:312-336) means it draws
+        // is-selected only, never both classes.
+        multiSelectedWorkspaceIds={new Set([anchor, member])}
+      />,
+    );
+    // The non-active multi-selected row.
+    expect(markup).toMatch(
+      new RegExp(
+        `<li class="cmux-sidebar-row is-multi-selected"[^>]*data-workspace-id="${member}"[^>]*aria-selected="true"`,
+      ),
+    );
+    // The active row: is-selected only, no double class.
+    expect(markup).toMatch(
+      new RegExp(
+        `<li class="cmux-sidebar-row is-selected"[^>]*data-workspace-id="${anchor}"`,
+      ),
+    );
+    // The unselected row carries neither.
+    expect(markup).toMatch(
+      new RegExp(
+        `<li class="cmux-sidebar-row"[^>]*data-workspace-id="${solo}"[^>]*aria-selected="false"`,
+      ),
+    );
+  });
+
+  test("group header draws is-multi-selected when its anchor is multi-selected", () => {
+    const { gid, anchor, member, solo } = UUID;
+    const tabs = [
+      row(anchor, gid, false),
+      row(member, gid, false),
+      row(solo, undefined, false),
+    ];
+    const items = renderItems(tabs, groupsMap([group(gid, anchor, false)]));
+    const markup = renderToStaticMarkup(
+      <WorkspaceList
+        items={items}
+        selectedWorkspaceIds={new Set([solo])}
+        multiSelectedWorkspaceIds={new Set([anchor])}
+      />,
+    );
+    expect(markup).toMatch(
+      /<li class="cmux-sidebar-group-header is-multi-selected"[^>]*aria-selected="true"/,
+    );
   });
 
   test("marks a group header selected when its anchor is selected, and honors group pin state", () => {

@@ -134,6 +134,110 @@ export function anchorIndexAfterWorkspaceClick(
   return clickedIndex;
 }
 
+/// Modifier state of a sidebar workspace click. `toggle` is Ctrl (or Meta) —
+/// the Windows chord for canonical Cmd (`NSEvent.modifierFlags.contains(.command)`,
+/// ContentView.swift:14257).
+export interface WorkspaceClickModifiers {
+  shift: boolean;
+  toggle: boolean;
+}
+
+/// The multi-selection and anchor produced by a workspace click.
+export interface WorkspaceClickResult {
+  selectedWorkspaceIds: Set<string>;
+  anchorIndex: number;
+}
+
+/// Multi-selection update for a workspace row click — a branch-for-branch port
+/// of `updateSelection()` (ContentView.swift:14252-14319). Activation of the
+/// clicked workspace is NOT decided here: canonical `selectTab` runs
+/// unconditionally after the selection update (ContentView.swift:14320), so
+/// the caller must activate regardless of modifiers.
+export function selectionAfterWorkspaceClick(args: {
+  /// Index of the clicked workspace in `liveWorkspaceIds`.
+  clickedIndex: number;
+  modifiers: WorkspaceClickModifiers;
+  existingAnchorIndex: number | undefined;
+  /// The current multi-selection.
+  selectedWorkspaceIds: ReadonlySet<string>;
+  /// The active workspace id (canonical `tabManager.selectedTabId`).
+  focusedWorkspaceId: string | undefined;
+  /// Live workspace ids in session order, index-aligned with click indices.
+  liveWorkspaceIds: readonly string[];
+  /// Collapsed-group members that are not their group's anchor — excluded
+  /// from shift ranges (ContentView.swift:14284-14299).
+  hiddenWorkspaceIds: ReadonlySet<string>;
+}): WorkspaceClickResult {
+  const {
+    clickedIndex,
+    modifiers,
+    existingAnchorIndex,
+    selectedWorkspaceIds,
+    focusedWorkspaceId,
+    liveWorkspaceIds,
+    hiddenWorkspaceIds,
+  } = args;
+  const clickedId = liveWorkspaceIds[clickedIndex];
+  // Anchor resolution precedes the branch (ContentView.swift:14267-14274);
+  // shift with no resolvable anchor falls through to the cmd/plain branches.
+  const resolvedShiftAnchorIndex = modifiers.shift
+    ? shiftClickAnchorIndex(
+        existingAnchorIndex,
+        selectedWorkspaceIds,
+        focusedWorkspaceId,
+        liveWorkspaceIds,
+      )
+    : undefined;
+  let next: Set<string>;
+  if (modifiers.shift && resolvedShiftAnchorIndex !== undefined) {
+    // Shift range = [min(anchor, clicked) ... max(anchor, clicked)] over the
+    // live list, minus hidden collapsed-group members
+    // (ContentView.swift:14276-14299).
+    const lower = Math.min(resolvedShiftAnchorIndex, clickedIndex);
+    const upper = Math.max(resolvedShiftAnchorIndex, clickedIndex);
+    const rangeIds = liveWorkspaceIds
+      .slice(lower, upper + 1)
+      .filter((id) => !hiddenWorkspaceIds.has(id));
+    if (modifiers.toggle) {
+      // Shift+Cmd unions the range into the existing selection
+      // (ContentView.swift:14301, `formUnion`).
+      next = new Set(selectedWorkspaceIds);
+      for (const id of rangeIds) {
+        next.add(id);
+      }
+    } else {
+      // Plain shift replaces the selection with the range
+      // (ContentView.swift:14303).
+      next = new Set(rangeIds);
+    }
+  } else if (modifiers.toggle) {
+    // Cmd toggles the clicked id; removal may empty the set — canonical
+    // allows that (ContentView.swift:14306-14311).
+    next = new Set(selectedWorkspaceIds);
+    if (clickedId !== undefined) {
+      if (next.has(clickedId)) {
+        next.delete(clickedId);
+      } else {
+        next.add(clickedId);
+      }
+    }
+  } else {
+    // Plain click collapses to the clicked workspace
+    // (ContentView.swift:14313).
+    next = clickedId !== undefined ? new Set([clickedId]) : new Set();
+  }
+  return {
+    selectedWorkspaceIds: next,
+    // ContentView.swift:14315 — shift preserves the resolved anchor, plain
+    // and cmd clicks move it to the clicked row.
+    anchorIndex: anchorIndexAfterWorkspaceClick(
+      modifiers.shift,
+      resolvedShiftAnchorIndex,
+      clickedIndex,
+    ),
+  };
+}
+
 /// Anchor index to preserve after the workspace list is reordered.
 export function anchorIndexAfterWorkspaceReorder(
   preferredAnchorWorkspaceId: string | undefined,

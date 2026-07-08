@@ -18,6 +18,7 @@ import { useState } from "react";
 import { Icon } from "@cmux/webviews/src/icons";
 
 import type { SidebarWorkspaceRenderItem } from "../sidebar/renderItems";
+import type { WorkspaceClickModifiers } from "../sidebar/selection";
 
 export interface WorkspaceListProps {
   /// The drawable items, already projected by `renderItems`.
@@ -25,14 +26,24 @@ export interface WorkspaceListProps {
   /// Ids of currently-selected workspaces. A group header counts as selected
   /// when its anchor workspace is selected.
   selectedWorkspaceIds?: ReadonlySet<string>;
+  /// Ids in the sidebar multi-selection. A row draws `is-multi-selected` only
+  /// when it is NOT the active row: canonical `sidebarWorkspaceRowBackgroundStyle`
+  /// checks `isActive` before `isMultiSelected`
+  /// (SidebarAppearanceSupport.swift:291-336), so the classes are exclusive.
+  multiSelectedWorkspaceIds?: ReadonlySet<string>;
   /// Resolves a workspace id to its row label; defaults to the id itself.
   titleForWorkspace?: (workspaceId: string) => string;
   /// Whether workspace rows expose a close (✕) affordance. Canonical
   /// `TabManager.closeWorkspace` is a no-op with one workspace left, so the
   /// sole survivor hides it.
   canCloseWorkspaces?: boolean;
-  /// Row activation — a group header activates its anchor workspace.
-  onSelectWorkspace?: (workspaceId: string) => void;
+  /// Row activation — a group header activates its anchor workspace. Click
+  /// modifiers ride along so the caller can extend the multi-selection;
+  /// activation itself is unconditional (ContentView.swift:14320).
+  onSelectWorkspace?: (
+    workspaceId: string,
+    modifiers: WorkspaceClickModifiers,
+  ) => void;
   onCloseWorkspace?: (workspaceId: string) => void;
   /// Row-level pin toggle. Rows expose the affordance only when provided
   /// (matches the rename gating). Group HEADER rows never get it: group pin is
@@ -48,6 +59,18 @@ export interface WorkspaceListProps {
   /// Seeds the editing state so static-markup tests can render the rename
   /// input without dispatching DOM events (the established test constraint).
   defaultEditingWorkspaceId?: string;
+}
+
+/// Click-modifier extraction, kept pure so tests can assert it directly
+/// (renderToStaticMarkup cannot dispatch mouse events — the renameActionForKey
+/// precedent). `toggle` maps canonical Cmd to the Windows Ctrl chord; metaKey
+/// is kept for parity on hosts that surface it.
+export function clickModifiers(event: {
+  shiftKey: boolean;
+  ctrlKey: boolean;
+  metaKey: boolean;
+}): WorkspaceClickModifiers {
+  return { shift: event.shiftKey, toggle: event.ctrlKey || event.metaKey };
 }
 
 /// Keyboard policy for the inline-rename input, kept pure so tests can assert
@@ -70,12 +93,14 @@ function classNames(...parts: (string | false | undefined)[]): string {
 function GroupHeaderRow({
   item,
   isSelected,
+  isMultiSelected,
   onSelect,
   onToggleCollapsed,
 }: {
   item: Extract<SidebarWorkspaceRenderItem, { kind: "groupHeader" }>;
   isSelected: boolean;
-  onSelect?: (workspaceId: string) => void;
+  isMultiSelected: boolean;
+  onSelect?: (workspaceId: string, modifiers: WorkspaceClickModifiers) => void;
   onToggleCollapsed?: (groupId: string, nextCollapsed: boolean) => void;
 }) {
   const { group, memberWorkspaceIds } = item;
@@ -86,12 +111,17 @@ function GroupHeaderRow({
         group.isCollapsed && "is-collapsed",
         group.isPinned && "is-pinned",
         isSelected && "is-selected",
+        isMultiSelected && "is-multi-selected",
       )}
       data-group-id={group.id}
       data-collapsed={group.isCollapsed ? "true" : "false"}
       aria-expanded={group.isCollapsed ? "false" : "true"}
-      aria-selected={isSelected ? "true" : "false"}
-      onClick={() => onSelect?.(group.anchorWorkspaceId)}
+      aria-selected={isSelected || isMultiSelected ? "true" : "false"}
+      onClick={(event) =>
+        // The header IS the anchor's row, so a modified header click
+        // selects/extends via the anchor workspace.
+        onSelect?.(group.anchorWorkspaceId, clickModifiers(event))
+      }
     >
       <button
         type="button"
@@ -117,6 +147,7 @@ function GroupHeaderRow({
 function WorkspaceRowItem({
   item,
   isSelected,
+  isMultiSelected,
   title,
   canClose,
   isEditing,
@@ -129,10 +160,11 @@ function WorkspaceRowItem({
 }: {
   item: Extract<SidebarWorkspaceRenderItem, { kind: "workspace" }>;
   isSelected: boolean;
+  isMultiSelected: boolean;
   title: string;
   canClose: boolean;
   isEditing: boolean;
-  onSelect?: (workspaceId: string) => void;
+  onSelect?: (workspaceId: string, modifiers: WorkspaceClickModifiers) => void;
   onClose?: (workspaceId: string) => void;
   onSetPinned?: (workspaceId: string, pinned: boolean) => void;
   onBeginRename?: (workspaceId: string) => void;
@@ -146,10 +178,11 @@ function WorkspaceRowItem({
         "cmux-sidebar-row",
         workspace.isPinned && "is-pinned",
         isSelected && "is-selected",
+        isMultiSelected && "is-multi-selected",
       )}
       data-workspace-id={workspace.id}
-      aria-selected={isSelected ? "true" : "false"}
-      onClick={() => onSelect?.(workspace.id)}
+      aria-selected={isSelected || isMultiSelected ? "true" : "false"}
+      onClick={(event) => onSelect?.(workspace.id, clickModifiers(event))}
     >
       <span
         className={classNames(
@@ -240,6 +273,7 @@ function WorkspaceRowItem({
 export function WorkspaceList({
   items,
   selectedWorkspaceIds,
+  multiSelectedWorkspaceIds,
   titleForWorkspace,
   canCloseWorkspaces,
   onSelectWorkspace,
@@ -250,6 +284,13 @@ export function WorkspaceList({
   defaultEditingWorkspaceId,
 }: WorkspaceListProps) {
   const selected = selectedWorkspaceIds ?? new Set<string>();
+  const multiSelected = multiSelectedWorkspaceIds ?? new Set<string>();
+  // Active precedence: an active row never doubles as multi-selected
+  // (SidebarAppearanceSupport.swift:312-336 checks isActive first). Hidden
+  // collapsed members that are multi-selected simply don't render; a header
+  // reflects only its anchor.
+  const isMultiSelectedRow = (workspaceId: string) =>
+    multiSelected.has(workspaceId) && !selected.has(workspaceId);
   // At most one row edits at a time. Group ANCHOR rows are not renamable here:
   // the header suppresses the anchor's plain row, and canonical group headers
   // rename the GROUP (`renameWorkspaceGroup`) — a different op, out of scope.
@@ -265,6 +306,7 @@ export function WorkspaceList({
               key={`group:${item.group.id}`}
               item={item}
               isSelected={selected.has(item.group.anchorWorkspaceId)}
+              isMultiSelected={isMultiSelectedRow(item.group.anchorWorkspaceId)}
               onSelect={onSelectWorkspace}
               onToggleCollapsed={onToggleGroupCollapsed}
             />
@@ -275,6 +317,7 @@ export function WorkspaceList({
             key={`workspace:${item.workspace.id}`}
             item={item}
             isSelected={selected.has(item.workspace.id)}
+            isMultiSelected={isMultiSelectedRow(item.workspace.id)}
             title={titleForWorkspace?.(item.workspace.id) ?? item.workspace.id}
             canClose={canCloseWorkspaces ?? false}
             isEditing={editingWorkspaceId === item.workspace.id}

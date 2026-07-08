@@ -25,6 +25,7 @@ function render(
   selectedWorkspaceIndex = 0,
   collapsed = false,
   workspaceGroups?: SessionWorkspaceGroupSnapshot[],
+  multiSelectedWorkspaceIds?: ReadonlySet<string>,
 ): string {
   return renderToStaticMarkup(
     <SidebarView
@@ -38,6 +39,7 @@ function render(
       onRenameWorkspace={noop}
       onSetWorkspacePinned={noop}
       onToggleGroupCollapsed={noop}
+      multiSelectedWorkspaceIds={multiSelectedWorkspaceIds}
     />,
   );
 }
@@ -152,5 +154,60 @@ describe("SidebarView", () => {
     const markup = render([idless, real], 1);
     expect(markup).not.toContain(">ghost<");
     expect(markup).toContain(">real<");
+  });
+
+  test("multi-selected rows render alongside the single active row", () => {
+    const rows = [ws({ process_title: "a" }), ws({ process_title: "b" }), ws({ process_title: "c" })];
+    const markup = render(
+      rows,
+      0,
+      false,
+      undefined,
+      new Set([rows[1]!.workspace_id!]),
+    );
+    // One active row, one multi-selected row, one plain row.
+    expect(count(markup, "cmux-sidebar-row is-selected")).toBe(1);
+    expect(count(markup, "cmux-sidebar-row is-multi-selected")).toBe(1);
+    expect(count(markup, 'aria-selected="true"')).toBe(2);
+  });
+
+  test("a multi-selected id equal to the active id renders is-selected only", () => {
+    // Canonical isActive-first precedence (SidebarAppearanceSupport.swift:
+    // 312-336): the active row never doubles as multi-selected.
+    const rows = [ws({ process_title: "a" }), ws({ process_title: "b" })];
+    const markup = render(
+      rows,
+      0,
+      false,
+      undefined,
+      new Set([rows[0]!.workspace_id!]),
+    );
+    expect(count(markup, "cmux-sidebar-row is-selected")).toBe(1);
+    expect(markup).not.toContain("is-multi-selected");
+  });
+
+  test("a group header draws multi-selection via its anchor workspace", () => {
+    const anchor = ws({ process_title: "anchor" });
+    const member = ws({ process_title: "member" });
+    const solo = ws({ process_title: "solo" });
+    const gid = mintId();
+    anchor.group_id = gid;
+    member.group_id = gid;
+    const group: SessionWorkspaceGroupSnapshot = {
+      id: gid,
+      name: "Backend",
+      is_collapsed: false,
+      anchor_workspace_id: anchor.workspace_id,
+    };
+    // The solo row (index 2) is active; the group anchor is multi-selected.
+    const markup = render(
+      [anchor, member, solo],
+      2,
+      false,
+      [group],
+      new Set([anchor.workspace_id!]),
+    );
+    expect(markup).toContain("cmux-sidebar-group-header is-multi-selected");
+    expect(markup).toContain("cmux-sidebar-row is-selected");
   });
 });

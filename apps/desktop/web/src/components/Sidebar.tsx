@@ -19,6 +19,8 @@
 // `sidebar_render`); the live session layer mints ids for every workspace
 // (`ensure_workspace_ids`), so this only drops corrupted rows.
 
+import { useEffect, useRef, useState } from "react";
+
 import type {
   SessionWorkspaceGroupSnapshot,
   SessionWorkspaceSnapshot,
@@ -26,11 +28,32 @@ import type {
 
 import { useSession } from "../hooks/useSession";
 import {
+  anchorIndexAfterWorkspaceReorder,
+  anchorWorkspaceId,
+  reconciledSelection,
+  selectionAfterWorkspaceClick,
+  type WorkspaceClickModifiers,
+} from "../sidebar/selection";
+import {
   projectSidebarItems,
   workspaceIdKey,
   workspaceTitlesById,
 } from "../sidebar/snapshotProjection";
 import { WorkspaceList } from "./WorkspaceList";
+
+const EMPTY_SELECTION: ReadonlySet<string> = new Set();
+
+/// Session-ordered, index-aligned workspace id keys for the selection policy.
+/// Id-less rows get a placeholder that keeps indices aligned without colliding
+/// with real id keys (`workspaceIdKey` only emits lowercased UUIDs, never a
+/// leading space); such rows are unclickable/unselectable anyway.
+function liveWorkspaceIdKeys(
+  workspaces: readonly SessionWorkspaceSnapshot[],
+): string[] {
+  return workspaces.map(
+    (ws, i) => workspaceIdKey(ws.workspace_id) ?? ` missing:${i}`,
+  );
+}
 
 export interface SidebarViewProps {
   /** Whether the sidebar is collapsed to a rail (hidden list). */
@@ -61,6 +84,23 @@ export interface SidebarViewProps {
    * workspace ids only).
    */
   onToggleGroupCollapsed: (groupId: string, nextCollapsed: boolean) => void;
+  /**
+   * The sidebar multi-selection (view state, canonical `@State selectedTabIds`,
+   * ContentView.swift:984). Rows in it that are not the active row draw
+   * `is-multi-selected`.
+   */
+  multiSelectedWorkspaceIds?: ReadonlySet<string>;
+  /** Shift-click anchor (canonical `lastSidebarSelectionIndex`, ContentView:986). */
+  selectionAnchorIndex?: number;
+  /**
+   * New multi-selection + anchor after a row click (the pure
+   * `selectionAfterWorkspaceClick` result). Fired BEFORE `onSelectWorkspace`;
+   * activation always follows (ContentView.swift:14320).
+   */
+  onMultiSelectionChange?: (
+    selectedWorkspaceIds: Set<string>,
+    anchorIndex: number,
+  ) => void;
 }
 
 /** Pure, prop-driven sidebar — no data source, so it renders headlessly. */
@@ -75,6 +115,9 @@ export function SidebarView({
   onRenameWorkspace,
   onSetWorkspacePinned,
   onToggleGroupCollapsed,
+  multiSelectedWorkspaceIds,
+  selectionAnchorIndex,
+  onMultiSelectionChange,
 }: SidebarViewProps): React.JSX.Element {
   if (collapsed) {
     return <div className="cmux-sidebar cmux-sidebar--collapsed" aria-hidden="true" />;
@@ -114,6 +157,47 @@ export function SidebarView({
       }
     };
 
+  // Range indices run over the RAW session order — collapsed members are
+  // absent from `items` but still occupy live indices.
+  const liveWorkspaceIds = liveWorkspaceIdKeys(workspaces);
+  // Collapsed-group members other than their group's anchor are excluded from
+  // shift ranges (ContentView.swift:14284-14299). Derived from the projected
+  // items so the group's 3-tier anchor resolution is reused.
+  const hiddenWorkspaceIds = new Set<string>();
+  for (const item of items) {
+    if (item.kind === "groupHeader" && item.group.isCollapsed) {
+      for (const id of item.memberWorkspaceIds) {
+        if (id !== item.group.anchorWorkspaceId) {
+          hiddenWorkspaceIds.add(id);
+        }
+      }
+    }
+  }
+
+  const handleWorkspaceClick = (
+    workspaceId: string,
+    modifiers: WorkspaceClickModifiers,
+  ) => {
+    const index = indexByWorkspaceId.get(workspaceId);
+    if (index === undefined) {
+      return;
+    }
+    const result = selectionAfterWorkspaceClick({
+      clickedIndex: index,
+      modifiers,
+      existingAnchorIndex: selectionAnchorIndex,
+      selectedWorkspaceIds: multiSelectedWorkspaceIds ?? EMPTY_SELECTION,
+      focusedWorkspaceId: selectedId,
+      liveWorkspaceIds,
+      hiddenWorkspaceIds,
+    });
+    onMultiSelectionChange?.(result.selectedWorkspaceIds, result.anchorIndex);
+    // Activation ALWAYS fires — canonical `selectTab` is unconditional after
+    // the selection update (ContentView.swift:14320), so shift/ctrl clicks
+    // activate the clicked workspace too.
+    onSelectWorkspace(index);
+  };
+
   // Canonical `TabManager.closeWorkspace` is a no-op when `tabs.count <= 1`, so
   // the sole remaining workspace has no close affordance (its ✕ is hidden).
   const canClose = workspaces.length > 1;
@@ -135,9 +219,10 @@ export function SidebarView({
       <WorkspaceList
         items={items}
         selectedWorkspaceIds={selectedWorkspaceIds}
+        multiSelectedWorkspaceIds={multiSelectedWorkspaceIds}
         titleForWorkspace={(id) => titles.get(id) ?? "Terminal"}
         canCloseWorkspaces={canClose}
-        onSelectWorkspace={withIndexOf(onSelectWorkspace)}
+        onSelectWorkspace={handleWorkspaceClick}
         onCloseWorkspace={withIndexOf(onCloseWorkspace)}
         onRenameWorkspace={withIndexOf(onRenameWorkspace)}
         onSetWorkspacePinned={withIndexOf(onSetWorkspacePinned)}
@@ -166,6 +251,74 @@ export function Sidebar({ collapsed }: SidebarProps): React.JSX.Element {
     setGroupCollapsed,
   } = useSession();
 
+  // Multi-selection is VIEW state, not session state — the canonical @State
+  // pair `selectedTabIds` + `lastSidebarSelectionIndex` (ContentView:984/986).
+  const [multiSelection, setMultiSelection] = useState<ReadonlySet<string>>(
+    EMPTY_SELECTION,
+  );
+  const [anchorIndex, setAnchorIndex] = useState<number | undefined>(undefined);
+
+  const liveIds = liveWorkspaceIdKeys(workspaces);
+  const selectedId = workspaceIdKey(
+    workspaces[selectedWorkspaceIndex]?.workspace_id,
+  );
+
+  // Previous live ids, so a reorder can carry the anchor by id — canonical
+  // captures the anchor's workspace id pre-reorder (ContentView:15722).
+  const prevLiveIdsRef = useRef<readonly string[]>(liveIds);
+  // True while a selected-workspace change was originated by a sidebar click
+  // (whose reducer already produced the intended selection).
+  const selectionChangeFromSidebarClick = useRef(false);
+  const prevSelectedIdRef = useRef<string | undefined>(selectedId);
+
+  // List-change maintenance (close/detach/restore/reorder — TabManager:2038,
+  // 2077, 6049; ContentView:15912-15918). No fallback id is supplied to
+  // `reconciledSelection`: closing every multi-selected row must EMPTY the
+  // set (the fallback arm is the canonical restore/reorder path only).
+  const liveKey = liveIds.join("\n");
+  useEffect(() => {
+    const prevLiveIds = prevLiveIdsRef.current;
+    prevLiveIdsRef.current = liveIds;
+    if (multiSelection.size === 0 && anchorIndex === undefined) {
+      return; // Nothing to maintain.
+    }
+    const next = reconciledSelection(multiSelection, liveIds, undefined);
+    const prevAnchorId = anchorWorkspaceId(anchorIndex, prevLiveIds);
+    setMultiSelection(next);
+    setAnchorIndex(
+      anchorIndexAfterWorkspaceReorder(prevAnchorId, next, selectedId, liveIds),
+    );
+    // Runs only when the workspace-list identity changes; the closure reads
+    // the state of that same render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveKey]);
+
+  // Collapse on external navigation — parity with
+  // `clearSidebarMultiSelection(except:)` for keyboard workspace nav
+  // (TabManager.swift:3468/3484/3493-3498), which reaches
+  // `useSession.selectWorkspace` outside this component.
+  // DOCUMENTED DIVERGENCE: canonical collapses only on those two
+  // keyboard-nav paths; the port collapses on ANY selected-workspace change
+  // not originated by a sidebar click — a safe superset, because a canonical
+  // plain click also collapses, and shift/ctrl clicks set the ref flag so
+  // their own activation does not destroy the selection they just built.
+  useEffect(() => {
+    const prevSelectedId = prevSelectedIdRef.current;
+    prevSelectedIdRef.current = selectedId;
+    if (
+      prevSelectedId !== selectedId &&
+      !selectionChangeFromSidebarClick.current
+    ) {
+      setMultiSelection(
+        selectedId !== undefined ? new Set([selectedId]) : EMPTY_SELECTION,
+      );
+      setAnchorIndex(selectedWorkspaceIndex);
+    }
+    // Always clear the flag once the activation it marked has landed.
+    selectionChangeFromSidebarClick.current = false;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId]);
+
   return (
     <SidebarView
       collapsed={collapsed}
@@ -173,11 +326,27 @@ export function Sidebar({ collapsed }: SidebarProps): React.JSX.Element {
       workspaceGroups={workspaceGroups}
       selectedWorkspaceIndex={selectedWorkspaceIndex}
       onNewWorkspace={newWorkspace}
-      onSelectWorkspace={selectWorkspace}
+      onSelectWorkspace={(index) => {
+        // Mark the upcoming activation as sidebar-originated so the collapse
+        // effect leaves the click's own selection intact. Skipped when the
+        // clicked workspace is already active (no selected-id change would
+        // ever clear the flag, and a stale flag would suppress a later
+        // legitimate external-nav collapse).
+        if (index !== selectedWorkspaceIndex) {
+          selectionChangeFromSidebarClick.current = true;
+        }
+        selectWorkspace(index);
+      }}
       onCloseWorkspace={closeWorkspace}
       onRenameWorkspace={renameWorkspace}
       onSetWorkspacePinned={setWorkspacePinned}
       onToggleGroupCollapsed={setGroupCollapsed}
+      multiSelectedWorkspaceIds={multiSelection}
+      selectionAnchorIndex={anchorIndex}
+      onMultiSelectionChange={(ids, anchor) => {
+        setMultiSelection(ids);
+        setAnchorIndex(anchor);
+      }}
     />
   );
 }
