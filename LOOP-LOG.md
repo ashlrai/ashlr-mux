@@ -769,3 +769,32 @@ shortcutFormat / placement / reorder / switcherIndex (share `bun test src`; sequ
   web 544 (+32), tsc clean. NEXT wave-16: A7 pin e2e, C4 focused-pane
   tracking (fixes split-target + copySurfaceID interims), E6 shortcut-format
   in SettingsPane, G5 diff-comments shim.
+
+- UI buildout #16 (ultracode wave, workflow w976jxrf5: 12 agents, 4 lanes,
+  ALL SOLID, 8 minor — orchestrator applied 3 [A7 dangling-group-id boundary
+  fallback to own flag per Ordering.swift:201-207 + regression test; Pin/Unpin
+  Workspace label casing; Object.freeze(UNBOUND_SHORTCUT)]; noted-not-applied:
+  C4 capture-order close transient (self-corrects via fallback), C4
+  selected-panel nuance (multi-tab panes don't render yet), G5 reply-listener
+  origin gate (hardening pass), Workspace.test.tsx mock.module process-global
+  leak (watch for cross-file flakes)):
+  - **A7** (`daf9718c6`) — pin/unpin e2e. Oracle: WorkspaceReorderCoordinator
+    :467-472 + reorderTabForPinnedState :529-539 — ungrouped remove-then-insert
+    at leading global-pinned boundary (pin→end of pinned prefix, unpin→front
+    of unpinned segment, stable partitions); grouped = flag-only (contiguity
+    normalization documented gap). is_pinned Some(true)/None keeps goldens
+    byte-stable. Index selection follows the moved workspace.
+  - **C4** (`e353793ef`) — focused-pane store + resolveActivePanelId with
+    layout validation + first-leaf fallback; palette splits/copy now target
+    the REAL focused pane (retires the interim two verifiers flagged).
+  - **E6** (`ae0974d00`) — Settings keyboard-shortcut rows via ported
+    shortcutBinding/shortcutFormat (Windows chords), display-only.
+  - **G5** (`ee519486a`) — diffCommentsRelay: viewer-bundle comment RPCs ↔
+    diff_comments_rpc with relayId reply routing; GUI tail = viewer visuals.
+  Gate: cmux-core 194 (+13 incl regression), cmux-desktop 95 (+2), goldens
+  stable, clippy 0; web 660 (+116), tsc clean. Sidebar richness A4-A7 now
+  COMPLETE headlessly. NEXT: A8 multi-select/shift-ranges, A10 drag-reorder,
+  toggleWorkspacePin/renameWorkspace palette intents, A11 context menus, F5
+  provider persistence, window-chrome B-lanes (GUI-verify tails accumulating —
+  a live `npx @tauri-apps/cli dev` verification session is increasingly
+  valuable before more UI stacking).
