@@ -110,8 +110,8 @@ palette intents equalizeSplits/newWorkspace now RUN (others still log).
 ## Area E — Settings / config UI  *(4 of 17 panes; nothing live)*
 - [x] E1 — `config_load` Tauri cmd (add cmux-config dep; preserve unmodeled sections via `Config::extra`). `[M, deps: none, headless]` — done 2026-07-07 (frontend-parity): raw-tree load ({} when absent, malformed = explicit error).
 - [x] E2 — `config_save` via dotted-JSONPath set/remove onto raw tree (NOT typed re-serialize). `[M, deps: E1, headless]` — done 2026-07-07 (frontend-parity): config_set/config_remove over JsonPath assign/remove (parent-pruning), pretty write, cmux://config-changed broadcast.
-- [ ] E3 — Config-delta representation (ConfigAction → dotted path). `[M, deps: E2, headless]`
-- [ ] E4 — Wire `SettingsPane` into the app (load on mount, persist onChange). `[M, deps: E2,E3, gui-verify]`
+- [x] E3 — Config-delta representation (ConfigAction → dotted path). `[M, deps: E2, headless]` — done 2026-07-07 (frontend-parity): configDelta.ts, null exactly when the reducer no-ops.
+- [x] E4 — Wire `SettingsPane` into the app (load on mount, persist onChange). `[M, deps: E2,E3, gui-verify]` — done 2026-07-07 (frontend-parity): useConfig hook + SettingsOverlay + gear/palette-openSettings entrypoints; pane emits ConfigAction (contract change); defaults drift-pinned vs cmux.schema.json. GUI live-verify queued.
 - [ ] E5 — Live cmux.json reload (notify watcher → config-changed event). `[M, deps: E1, gui-verify]`
 - [ ] E6 — SettingsPane shortcuts list uses `shortcutFormat.ts`. `[S, deps: none, headless]`
 - [ ] E7 — Editable shortcut capture (key recorder → `setShortcutBinding`). `[L, deps: E3, headless]`
