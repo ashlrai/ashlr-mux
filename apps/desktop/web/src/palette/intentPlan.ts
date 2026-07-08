@@ -32,6 +32,19 @@
 //   id (`surfaceId = panelContext.panelId`,
 //   `ContentViewIdentifierCopyCommands.swift:123`). Missing workspace/panel →
 //   `none` (canonical beeps, :101-104).
+// - toggleWorkspacePin toggles the SELECTED workspace to `!isPinned`
+//   (`ContentView.swift:7785-7795` guards selectedWorkspace else beep, then
+//   `WorkspaceActionDispatcher.swift:72-99` — for a single live target the
+//   pin decision reduces to `pinned = !anchorWorkspace.isPinned`). The
+//   session command owns the canonical A7 pinned-boundary reorder +
+//   selection-follows-moved-workspace, so the plan is flag-only here.
+// - clearWorkspaceName IS rename-to-empty (`ContentView.swift:7771-7777` →
+//   `TabManager.swift:1700-1702`: clearCustomTitle ≡ setCustomTitle(nil);
+//   the port's `session_rename_workspace` with an empty title clears
+//   custom_title+source, A6 golden). No custom-name guard in the planner —
+//   the canonical handler has none either (row visibility is the catalog
+//   `when` gate's job), and clearing an already-clear title is a no-op on
+//   both sides.
 // - Deliberately UNHANDLED copy/window kinds (fall through to `unhandled`):
 //   copyWorkspaceIDAndRef (the ref line is the point,
 //   `ContentViewIdentifierCopyCommands.swift:100-106`; the port has no v2 ref
@@ -40,7 +53,21 @@
 //   includeRefs:true, :170-183 — a ref-less/pane-less block would be an
 //   invented format), toggleFullScreen (webview lacks
 //   `core:window:allow-set-fullscreen` capability; needs a src-tauri lane),
-//   newWindow (port is single-window).
+//   newWindow (port is single-window),
+//   renameWorkspace / editWorkspaceDescription (canonical handlers open modal
+//   edit flows — beginRenameWorkspaceFlow()/beginWorkspaceDescriptionFlow(),
+//   `ContentView.swift:7765-7770`; the port's inline sidebar rename has no
+//   palette-triggerable "begin edit" host action yet),
+//   closeOtherWorkspaces / closeWorkspacesBelow / closeWorkspacesAbove (NOT a
+//   pure index loop: `ContentView.swift:9200-9222` routes through
+//   `TabManager.closeWorkspacesWithConfirmation(ids, allowPinned: true)` —
+//   user confirmation, orderedClosableWorkspaces filtering, group-anchor
+//   cascade, close-all → performClose, mid-batch abort; a TS loop over
+//   closeWorkspace(index) would skip all of that and race index shifts.
+//   Needs a batch session_close_workspaces command),
+//   moveWorkspaceUp / moveWorkspaceDown / moveWorkspaceToTop (need
+//   tabManager.reorderWorkspace/moveTabsToTop, `ContentView.swift:9191-9198`,
+//   `:7824-7831`; no session reorder command yet).
 
 import type { SessionSplitOrientation } from "@cmux/core-types";
 
@@ -58,6 +85,8 @@ export type IntentPlan =
       insertFirst: boolean;
     }
   | { type: "equalizeDividers" }
+  | { type: "setWorkspacePinned"; index: number; pinned: boolean }
+  | { type: "renameWorkspace"; index: number; title: string }
   | { type: "toggleSidebar" }
   | { type: "copyText"; text: string }
   | { type: "none" }
@@ -78,6 +107,14 @@ export interface IntentPlanContext {
    * undefined when absent.
    */
   selectedWorkspaceId?: string;
+  /**
+   * The selected workspace's pin flag, threaded by the caller as
+   * `workspaces[selectedWorkspaceIndex]?.is_pinned === true`. The snapshot
+   * encodes `is_pinned` as `Some(true)|None` (A7 golden-stability; see the
+   * `?? false` idiom at snapshotProjection.ts:80), so absent/undefined MUST
+   * read as unpinned.
+   */
+  selectedWorkspaceIsPinned?: boolean;
 }
 
 /** Decide what `kind` does given the current session shape. */
@@ -85,8 +122,13 @@ export function planIntent(
   kind: CommandIntentKind,
   ctx: IntentPlanContext,
 ): IntentPlan {
-  const { selectedWorkspaceIndex, workspaceCount, activePanelId, selectedWorkspaceId } =
-    ctx;
+  const {
+    selectedWorkspaceIndex,
+    workspaceCount,
+    activePanelId,
+    selectedWorkspaceId,
+    selectedWorkspaceIsPinned,
+  } = ctx;
   const hasWorkspaces =
     workspaceCount > 0 &&
     selectedWorkspaceIndex >= 0 &&
@@ -142,6 +184,18 @@ export function planIntent(
         : { type: "none" };
     case "equalizeSplits":
       return { type: "equalizeDividers" };
+    case "toggleWorkspacePin":
+      return hasWorkspaces
+        ? {
+            type: "setWorkspacePinned",
+            index: selectedWorkspaceIndex,
+            pinned: !(selectedWorkspaceIsPinned === true),
+          }
+        : { type: "none" };
+    case "clearWorkspaceName":
+      return hasWorkspaces
+        ? { type: "renameWorkspace", index: selectedWorkspaceIndex, title: "" }
+        : { type: "none" };
     case "toggleSidebar":
       return { type: "toggleSidebar" };
     default:

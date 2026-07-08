@@ -112,6 +112,50 @@ describe("planIntent", () => {
     });
   });
 
+  test("toggleWorkspacePin plans the selected workspace's inverted flag", () => {
+    // WorkspaceActionDispatcher.swift:75 parity: pinned = !anchorWorkspace.isPinned.
+    expect(
+      planIntent("toggleWorkspacePin", { ...BASE, selectedWorkspaceIsPinned: false }),
+    ).toEqual({ type: "setWorkspacePinned", index: 0, pinned: true });
+    expect(
+      planIntent("toggleWorkspacePin", {
+        ...BASE,
+        selectedWorkspaceIndex: 2,
+        selectedWorkspaceIsPinned: true,
+      }),
+    ).toEqual({ type: "setWorkspacePinned", index: 2, pinned: false });
+  });
+
+  test("toggleWorkspacePin treats an absent pin flag as unpinned", () => {
+    // Snapshot is_pinned is Some(true)|None (A7 golden-stability): undefined
+    // MUST plan pinned: true, not false.
+    expect(planIntent("toggleWorkspacePin", BASE)).toEqual({
+      type: "setWorkspacePinned",
+      index: 0,
+      pinned: true,
+    });
+  });
+
+  test("toggleWorkspacePin is a no-op without workspaces or a valid selection", () => {
+    expect(
+      planIntent("toggleWorkspacePin", { selectedWorkspaceIndex: 0, workspaceCount: 0 }),
+    ).toEqual({ type: "none" });
+    expect(
+      planIntent("toggleWorkspacePin", { selectedWorkspaceIndex: 5, workspaceCount: 3 }),
+    ).toEqual({ type: "none" });
+  });
+
+  test("clearWorkspaceName plans rename-to-empty (TabManager.swift:1700-1702)", () => {
+    expect(planIntent("clearWorkspaceName", { ...BASE, selectedWorkspaceIndex: 1 })).toEqual({
+      type: "renameWorkspace",
+      index: 1,
+      title: "",
+    });
+    expect(
+      planIntent("clearWorkspaceName", { selectedWorkspaceIndex: 0, workspaceCount: 0 }),
+    ).toEqual({ type: "none" });
+  });
+
   test("ref/pane/window copy kinds stay unhandled (no port-side source)", () => {
     expect(planIntent("copyWorkspaceIDAndRef", BASE)).toEqual({ type: "unhandled" });
     expect(planIntent("copyPaneID", BASE)).toEqual({ type: "unhandled" });

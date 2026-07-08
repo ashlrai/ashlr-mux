@@ -124,6 +124,8 @@ export function useCommandPalette(
     closeWorkspace,
     split,
     equalizeDividers,
+    renameWorkspace,
+    setWorkspacePinned,
   } = useSession();
 
   const [visible, setVisible] = useState(false);
@@ -145,18 +147,35 @@ export function useCommandPalette(
   // the catalog without a row the list displayed and activation silently nulls.
   const activePanelId = useFocusedPanelId(activeLayout);
 
+  // The ONE catalog context, shared by the catalog build below and the
+  // `dispatchCommand` call inside `activateAt`. The two MUST be identical
+  // field-for-field: `dispatchCommand` rebuilds the catalog, so any ctx drift
+  // makes a displayed row's `when` gate drop it at activation time and the
+  // click silently no-ops. Keys mirror the canonical host's computation off
+  // tabManager.selectedWorkspace (ContentView.swift:6154-6161):
+  // - workspaceHasCustomName ≡ customTitle != nil (:6159) — both sides hold
+  //   the trimmed-nonempty-or-absent invariant via A6, so presence == has
+  //   custom name.
+  // - workspaceShouldPin ≡ !workspace.isPinned for the live selected
+  //   workspace (:6161); snapshot is_pinned is Some(true)|None, so undefined
+  //   reads as unpinned.
+  const commandContext = useMemo<CommandContext>(() => {
+    const selected = workspaces[selectedWorkspaceIndex];
+    return {
+      hasWorkspace: workspaces.length > 0,
+      workspaceName: selected?.custom_title ?? selected?.process_title ?? null,
+      hasFocusedPanel: activePanelId !== undefined,
+      workspaceHasCustomName: selected?.custom_title !== undefined,
+      workspaceShouldPin: !(selected?.is_pinned === true),
+    };
+  }, [workspaces, selectedWorkspaceIndex, activePanelId]);
+
   // Build the scope's commands, the search corpus, the switcher candidate ids,
   // and (switcher) the id→workspace map for activation. The pure modules do all
   // the parity work; this only marshals their output.
   const { commands, corpus, candidateCommandIds, switcherById } = useMemo(() => {
     if (scope === "commands") {
-      const selected = workspaces[0];
-      const ctx: CommandContext = {
-        hasWorkspace: workspaces.length > 0,
-        workspaceName: selected?.custom_title ?? selected?.process_title ?? null,
-        hasFocusedPanel: activePanelId !== undefined,
-      };
-      const built: CommandPaletteCommand[] = buildCommandCatalog(ctx).map((d) => ({
+      const built: CommandPaletteCommand[] = buildCommandCatalog(commandContext).map((d) => ({
         id: d.id,
         rank: d.rank,
         title: d.title,
@@ -197,7 +216,7 @@ export function useCommandPalette(
       candidateCommandIds: switcherCandidateCommandIds(entries),
       switcherById: byId,
     };
-  }, [scope, snapshot, workspaces, activePanelId]);
+  }, [scope, snapshot, commandContext]);
 
   // Run the search whenever the query, scope, corpus, or visibility changes.
   useEffect(() => {
@@ -290,19 +309,19 @@ export function useCommandPalette(
           }
         }
       } else {
-        // Commands scope: resolve the intent through the shared dispatch path,
+        // Commands scope: resolve the intent through the shared dispatch path
+        // (with the SAME ctx the catalog was built from — see commandContext),
         // decide what it does with the pure planner, and execute. Unmapped
         // kinds still log so the wiring never silently no-ops.
-        const dispatch = dispatchCommand(match.command_id, {
-          hasWorkspace: workspaces.length > 0,
-          hasFocusedPanel: activePanelId !== undefined,
-        });
+        const dispatch = dispatchCommand(match.command_id, commandContext);
         if (dispatch) {
           const plan = planIntent(dispatch.intent.kind, {
             selectedWorkspaceIndex,
             workspaceCount: workspaces.length,
             activePanelId,
             selectedWorkspaceId: workspaces[selectedWorkspaceIndex]?.workspace_id,
+            selectedWorkspaceIsPinned:
+              workspaces[selectedWorkspaceIndex]?.is_pinned === true,
           });
           switch (plan.type) {
             case "newWorkspace":
@@ -319,6 +338,12 @@ export function useCommandPalette(
               break;
             case "equalizeDividers":
               equalizeDividers();
+              break;
+            case "setWorkspacePinned":
+              setWorkspacePinned(plan.index, plan.pinned);
+              break;
+            case "renameWorkspace":
+              renameWorkspace(plan.index, plan.title);
               break;
             case "toggleSidebar":
               hostActions?.toggleSidebar?.();
@@ -348,11 +373,14 @@ export function useCommandPalette(
       workspaces,
       selectedWorkspaceIndex,
       activePanelId,
+      commandContext,
       selectWorkspace,
       newWorkspace,
       closeWorkspace,
       split,
       equalizeDividers,
+      setWorkspacePinned,
+      renameWorkspace,
       hostActions,
       close,
     ],
