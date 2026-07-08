@@ -743,3 +743,29 @@ shortcutFormat / placement / reorder / switcherIndex (share `bun test src`; sequ
   clean. NEXT wave candidates: A6 inline rename (Rust session_rename_workspace
   ∥ TS sidebar editor), A7 pin/unpin + pinned-ahead reorder, E9 appearance
   apply tail, renameWorkspace/toggleWorkspacePin palette intents (dep A6/A7).
+
+- UI buildout #15 (ultracode wave, workflow wqhaxwqe7: 12 agents, 4 lanes
+  scout→implement→adversarial-verify, ALL SOLID, 0 blocking, 6 minor — 2
+  applied by orchestrator [rename prefill select-all per ContentView:14954;
+  Shift added to the divider-key modifier guard], rest = documented interims
+  [C4 first-leaf target, appearance shell colors, execCommand return]):
+  - **A6** (`f0220ddd5`) — inline rename e2e. Oracle Workspace.swift:4390-4407
+    setCustomTitle: trim, empty/whitespace clears custom_title+source, else
+    sets source "user" (golden-pinned). Unknown index no-op. Blur CANCELS
+    (canonical modal commits only on explicit affirmation). Double-click row
+    label edits; useSession.renameWorkspace(index, title).
+  - **E9 caller** (`4e2e728ca`) — useAppearance mounts in App: composes
+    resolveAppliedAppearance over stored value + matchMedia, stamps :root
+    color-scheme + data attr, needsRewrite persistence. INTERIM localStorage
+    store (divergence documented until settings persistence lands).
+  - **Palette intents r2** (`99fe55ec7`) — copyWorkspaceID/copyPaneID/
+    copySurfaceID/copyIdentifiers with oracle-cited formats; state the port
+    lacks stays unhandled (no invented formats). hasFocusedPanel feeds catalog
+    ctx so display and activation resolve identically.
+  - **C3** (`dd7d9518b`) — keyboard divider resize: focusable separator
+    dividers, canonical 10px resize_split step through drag's resizeDivider
+    math; cross-axis arrows null; modified arrows (incl Shift) excluded.
+  Gate: cmux-core 181 (+8), cmux-desktop 93 (+3), goldens stable, clippy 0;
+  web 544 (+32), tsc clean. NEXT wave-16: A7 pin e2e, C4 focused-pane
+  tracking (fixes split-target + copySurfaceID interims), E6 shortcut-format
+  in SettingsPane, G5 diff-comments shim.
