@@ -10,11 +10,20 @@
 //! pure (no ConPTY, no I/O) so they unit-test headlessly; the Tauri command
 //! layer binds them to real pseudo-consoles.
 
+use std::collections::{HashMap, HashSet};
+
 use crate::session::{
     SessionPaneLayoutSnapshot, SessionSplitLayoutSnapshot, SessionSplitOrientation,
     SessionTabManagerSnapshot, SessionWorkspaceLayoutSnapshot, SessionWorkspaceSnapshot,
 };
-use cmux_workspaces::{insertion_index, NewWorkspacePlacement};
+use cmux_workspaces::{
+    clamped_reorder_index, clamped_top_level_reorder_index, insertion_index,
+    is_workspace_group_anchor, normalize_workspace_group_contiguity,
+    normalize_workspace_group_runs_preserving_order, sidebar_top_level_workspace_ids,
+    sync_workspace_groups_order_to_anchor_order, NewWorkspacePlacement, WorkspaceGroup,
+    WorkspaceRow,
+};
+use uuid::Uuid;
 
 use serde::{Deserialize, Serialize};
 
@@ -663,6 +672,289 @@ pub fn set_group_collapsed(
         return false;
     }
     group.is_collapsed = collapsed;
+    true
+}
+
+/// Mirror a snapshot's workspaces/groups into the `cmux-workspaces` value types
+/// the ported clamp/normalize math consumes. Returns rows PARALLEL to
+/// `tabs.workspaces` positions plus the mapped groups in stored order.
+///
+/// DIVERGENCE from `sidebar_render`'s projection: rows are NEVER skipped — the
+/// reorder clamps are positional, so skipping a row would shift indices. A
+/// workspace with an absent/unparseable `workspace_id` gets a freshly MINTED v4
+/// id (collision with stored ids is negligible and the version bits differ; a
+/// duplicated stored id is de-duplicated the same way), purely to give the row
+/// a stable handle for the permutation write-back — the snapshot itself is
+/// never rewritten with minted ids. A row `group_id` that parses but references
+/// no known group is LEFT dangling: the crate fns already fall back correctly
+/// (`isGlobalPinnedRow`'s nil-group arm, `WorkspacesModel+Ordering.swift`
+/// :201-207) and the normalize pass clears it in the MIRROR only.
+///
+/// Groups map with the same rules as `sidebar_render.rs`: unparseable id and
+/// member-less groups are skipped, a duplicate group id keeps the first
+/// occurrence, and the anchor resolves via the oracle's 3-tier fallback
+/// (`TabManager.swift:6018-6027`: `anchor_member_index` into the members in
+/// row order → stored `anchor_workspace_id` when still a member → first
+/// member). `name`/`custom_color`/`icon_symbol` pass through (inert for
+/// ordering).
+fn workspace_mirror(tabs: &SessionTabManagerSnapshot) -> (Vec<WorkspaceRow>, Vec<WorkspaceGroup>) {
+    let mut used_ids: HashSet<Uuid> = HashSet::new();
+    let rows: Vec<WorkspaceRow> = tabs
+        .workspaces
+        .iter()
+        .map(|w| {
+            let id = w
+                .workspace_id
+                .as_deref()
+                .and_then(|s| Uuid::parse_str(s).ok())
+                .filter(|id| !used_ids.contains(id))
+                .unwrap_or_else(Uuid::new_v4);
+            used_ids.insert(id);
+            let group_id = w.group_id.as_deref().and_then(|s| Uuid::parse_str(s).ok());
+            WorkspaceRow::new(id, group_id, w.is_pinned == Some(true))
+        })
+        .collect();
+
+    // Members-by-group over the MIRROR rows, in row order — the oracle's
+    // `workspaceIdsByGroupId` (TabManager.swift:6000-6008).
+    let mut members_by_group_id: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
+    for row in &rows {
+        if let Some(gid) = row.group_id {
+            members_by_group_id.entry(gid).or_default().push(row.id);
+        }
+    }
+
+    let mut seen: HashSet<Uuid> = HashSet::new();
+    let mut groups: Vec<WorkspaceGroup> = Vec::new();
+    for group in tabs.workspace_groups.as_deref().unwrap_or(&[]) {
+        let Ok(id) = Uuid::parse_str(&group.id) else {
+            continue;
+        };
+        let Some(members) = members_by_group_id.get(&id) else {
+            continue;
+        };
+        if !seen.insert(id) {
+            continue;
+        }
+        let stored_anchor = group
+            .anchor_workspace_id
+            .as_deref()
+            .and_then(|s| Uuid::parse_str(s).ok());
+        let anchor_workspace_id = group
+            .anchor_member_index
+            .and_then(|i| usize::try_from(i).ok())
+            .and_then(|i| members.get(i).copied())
+            .or_else(|| stored_anchor.filter(|a| members.contains(a)))
+            .unwrap_or(members[0]);
+        groups.push(WorkspaceGroup::new(
+            id,
+            group.name.clone(),
+            group.is_collapsed,
+            group.is_pinned.unwrap_or(false),
+            anchor_workspace_id,
+            group.custom_color.clone(),
+            group.icon_symbol.clone(),
+        ));
+    }
+    (rows, groups)
+}
+
+/// Permute `tabs.workspaces` into `final_row_ids` order (every final id maps to
+/// exactly one original position via the parallel `original_row_ids`), permute
+/// `tabs.workspace_groups` by the final mirror group order (snapshot groups
+/// absent from the mirror — unparseable/member-less/duplicate ids — sort last,
+/// stable, mirroring the crate sync's missing-anchor-last rule), and remap the
+/// index-based `selected_workspace_index` through the old→new permutation so it
+/// keeps following the same workspace (canonical selection is id-based and
+/// untouched — the `set_workspace_pinned` precedent). `None`/out-of-range
+/// selection stays as-is. Serialized objects are MOVED, never rewritten: the
+/// mirror's dangling-`group_id` clears are NOT written back (snapshot strings
+/// stay, the `set_workspace_pinned` posture).
+fn write_back_reordered(
+    tabs: &mut SessionTabManagerSnapshot,
+    original_row_ids: &[Uuid],
+    final_row_ids: &[Uuid],
+    final_group_ids: &[Uuid],
+) {
+    let back_map: HashMap<Uuid, usize> = original_row_ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| (*id, i))
+        .collect();
+    // Every row has exactly one mirror id (minted ids are unique), so this is a
+    // full permutation of the original positions.
+    let perm: Vec<usize> = final_row_ids.iter().map(|id| back_map[id]).collect();
+    debug_assert_eq!(perm.len(), tabs.workspaces.len());
+    let mut slots: Vec<Option<SessionWorkspaceSnapshot>> = std::mem::take(&mut tabs.workspaces)
+        .into_iter()
+        .map(Some)
+        .collect();
+    tabs.workspaces = perm
+        .iter()
+        .map(|&i| slots[i].take().expect("row permutation is a bijection"))
+        .collect();
+
+    if let Some(groups) = tabs.workspace_groups.as_mut() {
+        let order: HashMap<Uuid, usize> = final_group_ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| (*id, i))
+            .collect();
+        groups.sort_by_key(|g| {
+            Uuid::parse_str(&g.id)
+                .ok()
+                .and_then(|id| order.get(&id).copied())
+                .unwrap_or(usize::MAX)
+        });
+    }
+
+    if let Some(sel) = tabs.selected_workspace_index {
+        if sel >= 0 && (sel as usize) < perm.len() {
+            if let Some(next) = perm.iter().position(|&old| old == sel as usize) {
+                tabs.selected_workspace_index = Some(next as i64);
+            }
+        }
+    }
+}
+
+/// Reorder the workspace at `index` toward `to_index` — the port of canonical
+/// `WorkspaceReorderCoordinator.reorderSidebarWorkspace`
+/// (`WorkspaceReorderCoordinator.swift:243-257`): a mover that anchors a group
+/// (or `usesTopLevelRows`) routes to `reorderTopLevelWorkspaceItem` (:260-296),
+/// everything else to plain `reorderWorkspace(tabId:toIndex:)` (:109-132). This
+/// routing is LOAD-BEARING: a group anchor moved through the plain path snaps
+/// back (normalize re-emits the group at its FIRST member's slot), so "move a
+/// group" only works via the top-level path. The plural name reflects that an
+/// anchor mover relocates its WHOLE group — every member row moves with it,
+/// contiguously and anchor-first.
+///
+/// INDEX-SPACE CONTRACT: `index` identifies the MOVER as a position in
+/// `tabs.workspaces` (the command-layer convention, matching select/close/
+/// rename/pin). `to_index` is interpreted in the row space canonical uses for
+/// that mover: a `tabs.workspaces` index for non-anchors, a TOP-LEVEL row index
+/// for group anchors (canonical UI feeds indices from the matching space via
+/// `sidebarReorderWorkspaceIds`, Coordinator:171-183; the web drag lane does
+/// the same).
+///
+/// PLAIN path (Coordinator:109-132 + `workspaceReorderPlan` :142-151):
+/// - Unknown id → plan nil → no-op (:143, :110); `tabs.count <= 1` → no
+///   mutation and NO group inference (:116-118 — the canonical comment: no-op
+///   reorders must not run inference, else socket `move_down` on the last
+///   ungrouped row absorbs it into the group above).
+/// - Clamp via `clampedReorderIndex` (`WorkspacesModel+Ordering.swift`
+///   :143-156): `[0, count-1]`, then the in-section clamp for grouped
+///   non-anchor members (`clampedGroupedMemberReorderIndex` :160-187 — section
+///   `[firstIndex+1 .. lastIndex]`, pinned members in the
+///   `[firstIndex+1 .. firstIndex+pinnedMemberCount]` sub-tier, unpinned in
+///   `[firstIndex+1+pinnedMemberCount .. lastIndex]`), else the global
+///   pin-tier clamp (pinned mover → `min(clamped, pinnedCount-1)`, unpinned →
+///   `max(clamped, pinnedCount)` with `pinnedCount =
+///   leadingGlobalPinnedRowCount` :190-197 counting rows by `isGlobalPinnedRow`
+///   :201-207: grouped rows count by their GROUP's pin, a dangling group id
+///   falls back to the row's own flag).
+/// - `from == clamped` → no mutation, and crucially no normalization
+///   (:116-118). Otherwise remove/insert (:120-121), then the non-drag tail
+///   (:124-129): when groups exist, `normalizeWorkspaceGroupContiguity`
+///   (`WorkspacesModel+GroupInvariants.swift:70-87`). The canonical
+///   pre-sync-if-anchor step never changes normalize's ROW output (top-level
+///   order derives from rows, never the groups array) and the crate's
+///   `normalize_workspace_group_contiguity` already ends with the group-order
+///   sync, so calling it alone is exact. The `isDragOperation=true`
+///   group-membership inference (`applyDragInferredGroupMembership` :346-397)
+///   is UI-drag semantics deferred to the sidebar drag lane; this is the
+///   `isDragOperation=false` path.
+///
+/// TOP-LEVEL path (Coordinator:260-296, `promotesGroupedWorkspace=false`):
+/// - `topLevelIds = sidebarTopLevelWorkspaceIds` (Ordering.swift:37-61, no
+///   promotion); the mover absent from it → no-op (:268).
+/// - Clamp via `clampedTopLevelReorderIndex` (Ordering.swift:109-125, pin tier
+///   over `sidebarTopLevelPinnedWorkspaceIds` :97-106 — pinned groups by GROUP
+///   pin, ungrouped rows by their own flag). `from == clamped` → no-op (:274 —
+///   canonical returns `false` here, unlike the plain path's no-op-true; both
+///   map to `changed = false` in the port).
+/// - remove/insert in the top-level ids, then
+///   `normalizeWorkspaceGroupRunsPreservingOrder(desired)` +
+///   `syncWorkspaceGroupsOrderToAnchorOrder` (:276-286). NO pinned/unpinned
+///   re-partition happens here — the clamp already enforced tiers, and :285
+///   uses the desired order directly (a deliberate canonical divergence from
+///   `normalizeWorkspaceGroupContiguity`'s desired computation).
+///
+/// DOCUMENTED DIVERGENCES (the port's changed-bool emit policy, same as
+/// rename/pin): canonical's plain path returns `true` for its `count <= 1` and
+/// `from == clamped` no-ops while the top-level path returns `false` for the
+/// same — the port returns `true` iff the snapshot actually changed, which
+/// drives the emit gate. Canonical also emits unconditionally post-mutation
+/// (:130); the port compares the final row order against the original and only
+/// writes back on a real change (normalization can revert the raw move, e.g. an
+/// ungrouped row nudged into the middle of a group's section snaps back out).
+///
+/// Batch multi-id reorder (`reorderWorkspaces(orderedWorkspaceIds:)`,
+/// Coordinator:414-444) is already ported golden-pinned as
+/// `cmux_workspaces::WorkspaceReorderPlanner` (`reorder.rs`) and will back the
+/// future `workspace.reorder_many` socket lane; canonical drag is single-row,
+/// so it is intentionally not part of this op.
+pub fn reorder_workspaces(
+    tabs: &mut SessionTabManagerSnapshot,
+    index: i64,
+    to_index: i64,
+) -> bool {
+    if index < 0 || index as usize >= tabs.workspaces.len() {
+        return false;
+    }
+    // Canonical's plain path treats count <= 1 as a successful no-op WITHOUT
+    // mutating or running group inference (Coordinator:116-118); the port's
+    // changed-gate maps that to `false`.
+    if tabs.workspaces.len() <= 1 {
+        return false;
+    }
+    let from = index as usize;
+    let (rows, groups) = workspace_mirror(tabs);
+    let original_row_ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
+    let mover_id = rows[from].id;
+
+    let (final_rows, final_groups) = if is_workspace_group_anchor(&groups, mover_id) {
+        // TOP-LEVEL (group-row) move, Coordinator:260-296.
+        let top = sidebar_top_level_workspace_ids(&rows, &groups, None);
+        let Some(top_from) = top.iter().position(|id| *id == mover_id) else {
+            // Coordinator:268 — mover absent from the top-level rows.
+            return false;
+        };
+        let clamped = clamped_top_level_reorder_index(&rows, &groups, mover_id, to_index, &top);
+        if clamped as usize == top_from {
+            // Coordinator:274 — canonical returns false for this no-op too.
+            return false;
+        }
+        let mut desired = top;
+        desired.remove(top_from);
+        desired.insert(clamped as usize, mover_id);
+        let new_rows = normalize_workspace_group_runs_preserving_order(&rows, &groups, &desired);
+        let new_groups = sync_workspace_groups_order_to_anchor_order(&new_rows, &groups);
+        (new_rows, new_groups)
+    } else {
+        // PLAIN single move, Coordinator:109-132.
+        let clamped = clamped_reorder_index(&rows, &groups, &rows[from], to_index);
+        if clamped as usize == from {
+            // Must NOT normalize on a no-op reorder (Coordinator:111-118).
+            return false;
+        }
+        let mut new_rows = rows;
+        let moved = new_rows.remove(from);
+        new_rows.insert(clamped as usize, moved);
+        if groups.is_empty() {
+            // Canonical guard (:124): the non-drag tail only runs with groups.
+            (new_rows, groups)
+        } else {
+            normalize_workspace_group_contiguity(&new_rows, &groups, None)
+        }
+    };
+
+    let final_row_ids: Vec<Uuid> = final_rows.iter().map(|r| r.id).collect();
+    if final_row_ids == original_row_ids {
+        // Normalization restored the original order — nothing changed.
+        return false;
+    }
+    let final_group_ids: Vec<Uuid> = final_groups.iter().map(|g| g.id).collect();
+    write_back_reordered(tabs, &original_row_ids, &final_row_ids, &final_group_ids);
     true
 }
 
@@ -1417,6 +1709,344 @@ mod tests {
         assert!(set_workspace_pinned(&mut tabs, 2, true));
         // surface-2 lands AFTER the dangling-group pinned row, not before it.
         assert_eq!(order_of(&tabs), ["surface-0", "surface-2", "surface-1"]);
+    }
+
+    // --- Workspace reorder ---
+
+    const R_W1: &str = "00000000-0000-0000-0000-000000000001";
+    const R_W2: &str = "00000000-0000-0000-0000-000000000002";
+    const R_W3: &str = "00000000-0000-0000-0000-000000000003";
+    const R_W4: &str = "00000000-0000-0000-0000-000000000004";
+    const R_G1: &str = "11111111-0000-0000-0000-000000000001";
+    const R_G2: &str = "11111111-0000-0000-0000-000000000002";
+    /// Parseable UUID that never appears in `workspace_groups` (dangling).
+    const R_G_DANGLING: &str = "dddddddd-0000-0000-0000-000000000001";
+
+    /// Workspaces with fixed UUID ids; panel id mirrors the position (for
+    /// `order_of`) and each spec is `(workspace_id, group_id, pinned)`.
+    fn reorder_tabs(
+        specs: &[(&str, Option<&str>, bool)],
+        selected: Option<i64>,
+    ) -> SessionTabManagerSnapshot {
+        let workspaces = specs
+            .iter()
+            .enumerate()
+            .map(|(i, (id, gid, pinned))| SessionWorkspaceSnapshot {
+                workspace_id: Some(id.to_string()),
+                group_id: gid.map(str::to_string),
+                is_pinned: pinned.then_some(true),
+                ..fresh_terminal_workspace(&format!("surface-{i}"))
+            })
+            .collect();
+        SessionTabManagerSnapshot {
+            selected_workspace_index: selected,
+            workspaces,
+            workspace_groups: None,
+        }
+    }
+
+    fn ws_id_order(tabs: &SessionTabManagerSnapshot) -> Vec<&str> {
+        tabs.workspaces
+            .iter()
+            .map(|w| w.workspace_id.as_deref().unwrap_or(""))
+            .collect()
+    }
+
+    fn reorder_group(
+        id: &str,
+        anchor: &str,
+        pinned: bool,
+    ) -> crate::session::SessionWorkspaceGroupSnapshot {
+        crate::session::SessionWorkspaceGroupSnapshot {
+            id: id.to_string(),
+            name: "G".to_string(),
+            anchor_workspace_id: Some(anchor.to_string()),
+            // Some(true)/None convention (byte-stability, matching workspaces).
+            is_pinned: pinned.then_some(true),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn reorder_unpinned_mover_clamps_below_pinned_prefix() {
+        // Cross-tier attempt clamps to pinnedCount, never crosses.
+        let mut tabs = reorder_tabs(
+            &[
+                (R_W1, None, true),
+                (R_W2, None, true),
+                (R_W3, None, false),
+                (R_W4, None, false),
+            ],
+            Some(0),
+        );
+        assert!(reorder_workspaces(&mut tabs, 3, 0));
+        assert_eq!(ws_id_order(&tabs), [R_W1, R_W2, R_W4, R_W3]);
+    }
+
+    #[test]
+    fn reorder_pinned_mover_clamps_into_pinned_tier() {
+        // Pinned mover dragged past the boundary clamps to pinnedCount-1.
+        let mut tabs = reorder_tabs(
+            &[
+                (R_W1, None, true),
+                (R_W2, None, true),
+                (R_W3, None, false),
+                (R_W4, None, false),
+            ],
+            Some(0),
+        );
+        assert!(reorder_workspaces(&mut tabs, 0, 3));
+        assert_eq!(ws_id_order(&tabs), [R_W2, R_W1, R_W3, R_W4]);
+    }
+
+    #[test]
+    fn reorder_boundary_counts_grouped_rows_by_group_pin() {
+        // Leading grouped members of a PINNED group (members' own is_pinned is
+        // None) count as pinned rows (isGlobalPinnedRow parity, regression
+        // sibling of `boundary_counts_grouped_rows_by_group_pin`).
+        let mut tabs = reorder_tabs(
+            &[
+                (R_W1, Some(R_G1), false),
+                (R_W2, Some(R_G1), false),
+                (R_W3, None, false),
+                (R_W4, None, false),
+            ],
+            Some(0),
+        );
+        tabs.workspace_groups = Some(vec![reorder_group(R_G1, R_W1, true)]);
+        assert!(reorder_workspaces(&mut tabs, 3, 0));
+        assert_eq!(ws_id_order(&tabs), [R_W1, R_W2, R_W4, R_W3]);
+    }
+
+    #[test]
+    fn reorder_boundary_dangling_group_id_falls_back_to_own_flag() {
+        // A leading row whose group_id resolves to NO group counts by its own
+        // pin flag (Ordering.swift:201-207 nil-group arm), and its dangling
+        // group_id string survives the reorder untouched.
+        let mut tabs = reorder_tabs(
+            &[
+                (R_W1, Some(R_G_DANGLING), true),
+                (R_W2, None, false),
+                (R_W3, None, false),
+            ],
+            Some(0),
+        );
+        assert!(reorder_workspaces(&mut tabs, 2, 0));
+        assert_eq!(ws_id_order(&tabs), [R_W1, R_W3, R_W2]);
+        assert_eq!(tabs.workspaces[0].group_id.as_deref(), Some(R_G_DANGLING));
+    }
+
+    #[test]
+    fn reorder_grouped_member_confined_to_section() {
+        // Unpinned member section clamp: [firstIndex+1 .. lastIndex].
+        let specs: &[(&str, Option<&str>, bool)] = &[
+            (R_W1, Some(R_G1), false),
+            (R_W2, Some(R_G1), false),
+            (R_W3, Some(R_G1), false),
+            (R_W4, None, false),
+        ];
+        // Toward 0: clamps to firstIndex+1 == from → no-op, byte-identical
+        // (must not normalize, Coordinator:111-118).
+        let mut tabs = reorder_tabs(specs, Some(0));
+        tabs.workspace_groups = Some(vec![reorder_group(R_G1, R_W1, false)]);
+        let before = serde_json::to_string(&tabs).unwrap();
+        assert!(!reorder_workspaces(&mut tabs, 1, 0));
+        assert_eq!(serde_json::to_string(&tabs).unwrap(), before);
+        // Toward 999: clamps to lastIndex (2), stays inside the section.
+        assert!(reorder_workspaces(&mut tabs, 1, 999));
+        assert_eq!(ws_id_order(&tabs), [R_W1, R_W3, R_W2, R_W4]);
+    }
+
+    #[test]
+    fn reorder_pinned_member_clamps_into_pinned_subtier() {
+        // Pinned member sub-tier: [firstIndex+1 .. firstIndex+pinnedMemberCount].
+        let mut tabs = reorder_tabs(
+            &[
+                (R_W1, Some(R_G1), false), // anchor
+                (R_W2, Some(R_G1), true),  // pinned member
+                (R_W3, Some(R_G1), true),  // pinned member
+                (R_W4, Some(R_G1), false), // unpinned member
+            ],
+            Some(0),
+        );
+        tabs.workspace_groups = Some(vec![reorder_group(R_G1, R_W1, false)]);
+        // Pinned member dragged to 999 clamps to firstIndex+pinnedMemberCount (2).
+        assert!(reorder_workspaces(&mut tabs, 1, 999));
+        assert_eq!(ws_id_order(&tabs), [R_W1, R_W3, R_W2, R_W4]);
+    }
+
+    #[test]
+    fn reorder_anchor_moves_whole_group_and_syncs_group_order() {
+        // Router: an anchor mover takes the TOP-LEVEL path (`to_index` is a
+        // top-level row index) and relocates ALL members contiguously,
+        // anchor-first, with relative member order preserved; the groups array
+        // syncs to the new anchor order.
+        let mut tabs = reorder_tabs(
+            &[
+                (R_W1, Some(R_G1), false), // anchor of g1
+                (R_W2, Some(R_G1), false),
+                (R_W3, Some(R_G2), false), // anchor of g2
+                (R_W4, Some(R_G2), false),
+            ],
+            Some(0),
+        );
+        tabs.workspace_groups = Some(vec![
+            reorder_group(R_G1, R_W1, false),
+            reorder_group(R_G2, R_W3, false),
+        ]);
+        // Mover = tabs index 2 (anchor R_W3); target = top-level index 0.
+        assert!(reorder_workspaces(&mut tabs, 2, 0));
+        assert_eq!(ws_id_order(&tabs), [R_W3, R_W4, R_W1, R_W2]);
+        let groups = tabs.workspace_groups.as_ref().unwrap();
+        assert_eq!(
+            groups.iter().map(|g| g.id.as_str()).collect::<Vec<_>>(),
+            [R_G2, R_G1]
+        );
+    }
+
+    #[test]
+    fn reorder_selection_follows_mover_and_displaced_rows() {
+        // Selection on the mover follows it to its landing index.
+        let mut tabs = reorder_tabs(
+            &[(R_W1, None, false), (R_W2, None, false), (R_W3, None, false)],
+            Some(2),
+        );
+        assert!(reorder_workspaces(&mut tabs, 2, 0));
+        assert_eq!(ws_id_order(&tabs), [R_W3, R_W1, R_W2]);
+        assert_eq!(tabs.selected_workspace_index, Some(0));
+
+        // Selection on a displaced neighbor keeps pointing at the same
+        // workspace after it shifts.
+        let mut tabs = reorder_tabs(
+            &[(R_W1, None, false), (R_W2, None, false), (R_W3, None, false)],
+            Some(0),
+        );
+        assert!(reorder_workspaces(&mut tabs, 2, 0));
+        assert_eq!(tabs.selected_workspace_index, Some(1));
+
+        // None / out-of-range selection stays untouched.
+        let mut tabs = reorder_tabs(&[(R_W1, None, false), (R_W2, None, false)], None);
+        assert!(reorder_workspaces(&mut tabs, 1, 0));
+        assert_eq!(tabs.selected_workspace_index, None);
+        let mut tabs = reorder_tabs(&[(R_W1, None, false), (R_W2, None, false)], Some(99));
+        assert!(reorder_workspaces(&mut tabs, 1, 0));
+        assert_eq!(tabs.selected_workspace_index, Some(99));
+    }
+
+    #[test]
+    fn reorder_no_op_cases_return_false_and_snapshot_is_byte_identical() {
+        let specs: &[(&str, Option<&str>, bool)] = &[
+            (R_W1, None, true),
+            (R_W2, None, false),
+            (R_W3, None, false),
+        ];
+        let mut tabs = reorder_tabs(specs, Some(1));
+        let before = serde_json::to_string(&tabs).unwrap();
+        // Same index (clamps to itself).
+        assert!(!reorder_workspaces(&mut tabs, 2, 2));
+        // Out-of-range / negative mover index.
+        assert!(!reorder_workspaces(&mut tabs, 3, 0));
+        assert!(!reorder_workspaces(&mut tabs, -1, 0));
+        // Unpinned mover at the boundary asked past it clamps back to `from`
+        // (pinnedCount = 1, mover already at index 1).
+        assert!(!reorder_workspaces(&mut tabs, 1, 0));
+        assert_eq!(serde_json::to_string(&tabs).unwrap(), before);
+
+        // Single workspace.
+        let mut solo = reorder_tabs(&[(R_W1, None, false)], Some(0));
+        let before = serde_json::to_string(&solo).unwrap();
+        assert!(!reorder_workspaces(&mut solo, 0, 0));
+        assert_eq!(serde_json::to_string(&solo).unwrap(), before);
+    }
+
+    #[test]
+    fn reorder_reverted_by_normalization_returns_false() {
+        // An ungrouped row nudged into the middle of a group's section snaps
+        // back out via normalization — the changed-gate reports false and the
+        // snapshot stays byte-identical.
+        let mut tabs = reorder_tabs(
+            &[
+                (R_W1, Some(R_G1), false), // anchor
+                (R_W2, Some(R_G1), false), // member
+                (R_W3, None, false),       // ungrouped
+            ],
+            Some(0),
+        );
+        tabs.workspace_groups = Some(vec![reorder_group(R_G1, R_W1, false)]);
+        let before = serde_json::to_string(&tabs).unwrap();
+        assert!(!reorder_workspaces(&mut tabs, 2, 1));
+        assert_eq!(serde_json::to_string(&tabs).unwrap(), before);
+    }
+
+    #[test]
+    fn reorder_id_less_rows_move_positionally() {
+        // workspace_id None rows get MINTED mirror ids (positional identity)
+        // and still reorder; their serialized objects stay untouched (no id is
+        // written back).
+        let mut tabs = SessionTabManagerSnapshot {
+            selected_workspace_index: Some(0),
+            workspaces: (0..3)
+                .map(|i| fresh_terminal_workspace(&format!("surface-{i}")))
+                .collect(),
+            workspace_groups: None,
+        };
+        let before: Vec<String> = tabs
+            .workspaces
+            .iter()
+            .map(|w| serde_json::to_string(w).unwrap())
+            .collect();
+        assert!(reorder_workspaces(&mut tabs, 2, 0));
+        assert_eq!(order_of(&tabs), ["surface-2", "surface-0", "surface-1"]);
+        let after: Vec<String> = tabs
+            .workspaces
+            .iter()
+            .map(|w| serde_json::to_string(w).unwrap())
+            .collect();
+        assert_eq!(after, [before[2].clone(), before[0].clone(), before[1].clone()]);
+        assert!(tabs.workspaces.iter().all(|w| w.workspace_id.is_none()));
+    }
+
+    #[test]
+    fn reorder_preserves_each_object_byte_for_byte() {
+        // Only ARRAY ORDER may change: every workspace/group object's own
+        // serialization must equal its pre-move serialization (is_pinned
+        // Some(true)/None convention and dangling group_id strings untouched).
+        let mut tabs = reorder_tabs(
+            &[
+                (R_W1, None, true),
+                (R_W2, Some(R_G1), false), // anchor
+                (R_W3, Some(R_G1), false), // member
+                (R_W4, Some(R_G_DANGLING), false),
+            ],
+            Some(0),
+        );
+        tabs.workspace_groups = Some(vec![reorder_group(R_G1, R_W2, false)]);
+        let ws_before: std::collections::HashMap<String, String> = tabs
+            .workspaces
+            .iter()
+            .map(|w| {
+                (
+                    w.workspace_id.clone().unwrap(),
+                    serde_json::to_string(w).unwrap(),
+                )
+            })
+            .collect();
+        let group_before =
+            serde_json::to_string(&tabs.workspace_groups.as_ref().unwrap()[0]).unwrap();
+        // Move the dangling-group row (index 3) up; clamps to the unpinned
+        // boundary (1).
+        assert!(reorder_workspaces(&mut tabs, 3, 1));
+        assert_eq!(ws_id_order(&tabs), [R_W1, R_W4, R_W2, R_W3]);
+        for w in &tabs.workspaces {
+            assert_eq!(
+                serde_json::to_string(w).unwrap(),
+                ws_before[w.workspace_id.as_deref().unwrap()]
+            );
+        }
+        assert_eq!(
+            serde_json::to_string(&tabs.workspace_groups.as_ref().unwrap()[0]).unwrap(),
+            group_before
+        );
     }
 
     // --- Workspace-group collapse ---

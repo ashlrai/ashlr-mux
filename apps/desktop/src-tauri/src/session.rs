@@ -226,6 +226,22 @@ fn apply_set_workspace_pinned(
     }
 }
 
+/// Reorder the workspace at `index` toward `to_index` in the first window —
+/// canonical `WorkspaceReorderCoordinator.reorderSidebarWorkspace`
+/// (`WorkspaceReorderCoordinator.swift:243-257`) routing: a group-anchor mover
+/// relocates its WHOLE group via the top-level path, every other mover takes
+/// the plain clamped single move. Pure — delegates to
+/// [`session_ops::reorder_workspaces`]. Returns whether the order actually
+/// changed.
+fn apply_reorder_workspaces(snapshot: &mut AppSessionSnapshot, index: i64, to_index: i64) -> bool {
+    match snapshot.windows.first_mut() {
+        Some(window) => {
+            session_ops::reorder_workspaces(&mut window.tab_manager, index, to_index)
+        }
+        None => false,
+    }
+}
+
 /// Set the OSC/process title of the workspace owning `panel_id` (any workspace in
 /// the first window, not only the active one). Pure — delegates to
 /// [`session_ops::set_process_title`]. Returns whether a title actually changed.
@@ -517,6 +533,41 @@ pub fn session_set_workspace_pinned(
     snapshot
 }
 
+/// Reorder the workspace at `index` toward `toIndex`. Canonical
+/// `WorkspaceReorderCoordinator.reorderSidebarWorkspace`
+/// (`WorkspaceReorderCoordinator.swift:243-257`) routing: a group-anchor mover
+/// relocates its WHOLE group (all member rows, contiguous, anchor-first) via
+/// the top-level path, any other mover takes the plain path with the
+/// grouped-member section clamp and the global pin-tier clamp.
+///
+/// INDEX-SPACE CONTRACT: `index` identifies the mover as a position in
+/// `tabs.workspaces` (matching select/close/rename/pin); `toIndex` is
+/// interpreted in the row space canonical uses for that mover — a
+/// `tabs.workspaces` index for non-anchors, a TOP-LEVEL row index for group
+/// anchors (canonical UI feeds indices from the matching space via
+/// `sidebarReorderWorkspaceIds`, Coordinator:171-183; the web drag lane does
+/// the same). Emits `cmux://session-changed` only when the order actually
+/// changed (out-of-range / clamped-back-to-place / normalization-reverted
+/// moves are no-ops) and returns the snapshot. `toIndex` (camelCase) maps to
+/// the `to_index` param.
+#[tauri::command]
+pub fn session_reorder_workspaces(
+    app: AppHandle,
+    state: State<'_, SessionState>,
+    index: i64,
+    to_index: i64,
+) -> AppSessionSnapshot {
+    let (changed, snapshot) = {
+        let mut guard = state.snapshot.lock().expect("session snapshot mutex poisoned");
+        let changed = apply_reorder_workspaces(&mut guard, index, to_index);
+        (changed, guard.clone())
+    };
+    if changed {
+        emit_session_changed(&app, &snapshot);
+    }
+    snapshot
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -765,6 +816,34 @@ mod tests {
         let before = snapshot.clone();
         // Already pinned → false (drives the emit gate), snapshot unchanged.
         assert!(!apply_set_workspace_pinned(&mut snapshot, 0, true));
+        assert_eq!(snapshot, before);
+    }
+
+    #[test]
+    fn apply_reorder_workspaces_moves_and_selection_follows() {
+        let mut snapshot = initial_snapshot("surface-1");
+        apply_new_workspace(&mut snapshot, "surface-2");
+        apply_new_workspace(&mut snapshot, "surface-3"); // 3 workspaces, sel=2
+        assert!(apply_reorder_workspaces(&mut snapshot, 2, 0));
+        let tabs = tab_manager(&snapshot);
+        // The mover lands at index 0 and the index-based selection follows it.
+        if let Some(SessionWorkspaceLayoutSnapshot::Pane(pane)) = &tabs.workspaces[0].layout {
+            assert_eq!(pane.panel_ids, ["surface-3"]);
+        } else {
+            panic!("expected a pane");
+        }
+        assert_eq!(tabs.selected_workspace_index, Some(0));
+    }
+
+    #[test]
+    fn apply_reorder_workspaces_no_op_is_gated() {
+        // Out-of-range mover / clamp-back-to-place both report false (drives
+        // the emit gate) and leave the snapshot untouched.
+        let mut snapshot = initial_snapshot("surface-1");
+        apply_new_workspace(&mut snapshot, "surface-2");
+        let before = snapshot.clone();
+        assert!(!apply_reorder_workspaces(&mut snapshot, 5, 0));
+        assert!(!apply_reorder_workspaces(&mut snapshot, 1, 999)); // clamps to 1
         assert_eq!(snapshot, before);
     }
 

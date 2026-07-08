@@ -1,4 +1,5 @@
 mod agent_session;
+mod app_settings;
 mod command_palette;
 mod diff;
 mod markdown;
@@ -83,6 +84,7 @@ pub fn run() {
             session::session_set_group_collapsed,
             session::session_rename_workspace,
             session::session_set_workspace_pinned,
+            session::session_reorder_workspaces,
             session::session_equalize_dividers,
             agent_session::agent_session_rpc,
             command_palette::command_palette_search,
