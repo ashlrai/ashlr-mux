@@ -18,8 +18,9 @@
 // - terminalSplitRight / terminalSplitDown split the target pane side-by-side
 //   ("horizontal") / stacked ("vertical") with the new pane second
 //   (insertFirst false), matching the canonical right/down direction map.
-//   The target is the host-provided `activePanelId` (first leaf until C4
-//   focused-pane tracking lands); no target → no-op plan.
+//   The target is the host-provided `activePanelId` (the C4 tracked focused
+//   pane — pointer-down/focus capture in Workspace — with a first-leaf
+//   fallback when none is focused); no target → no-op plan.
 // - equalizeSplits equalizes the whole active-workspace tree
 //   (`session_equalize_dividers`, span-count semantics).
 // - copyWorkspaceID / copySurfaceID copy the canonical single-line formats

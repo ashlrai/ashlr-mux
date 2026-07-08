@@ -1,6 +1,9 @@
-import { describe, expect, mock, test } from "bun:test";
+import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
+import * as jsxDevRuntime from "react/jsx-dev-runtime";
+import * as jsxRuntime from "react/jsx-runtime";
 
+import { focusedPaneStore } from "../session/focusedPane";
 import type { Layout } from "../session/splitLayout";
 
 // The workspace pulls in the live terminal (xterm), the reused agent app, and
@@ -24,6 +27,45 @@ mock.module("../hooks/useSession", () => ({
     setDivider: () => {},
     setSurfaceKind: () => {},
   }),
+}));
+
+// This harness is SSR-only (no DOM), so pointer/focus events cannot be
+// DISPATCHED. Instead, record each pane wrapper's props through a pass-through
+// jsx-runtime mock (rendering is unchanged) and invoke the captured
+// `onPointerDownCapture` / `onFocusCapture` closures directly — the exact
+// production handlers a real capture-phase event would run.
+const paneWrapperProps: Array<Record<string, unknown>> = [];
+function recordPaneWrapper(props: unknown): void {
+  if (typeof props === "object" && props !== null && "onPointerDownCapture" in props) {
+    paneWrapperProps.push(props as Record<string, unknown>);
+  }
+}
+// Capture the REAL runtime functions before mocking: bun's mock.module can
+// rebind live imports, so delegating through the namespace would recurse.
+const realJsx = jsxRuntime.jsx;
+const realJsxs = jsxRuntime.jsxs;
+const realFragment = jsxRuntime.Fragment;
+const realJsxDEV = jsxDevRuntime.jsxDEV;
+const wrapJsx: typeof realJsx = (type, props, key) => {
+  recordPaneWrapper(props);
+  return realJsx(type, props, key);
+};
+const wrapJsxs: typeof realJsxs = (type, props, key) => {
+  recordPaneWrapper(props);
+  return realJsxs(type, props, key);
+};
+const wrapJsxDEV: typeof realJsxDEV = (...args) => {
+  recordPaneWrapper(args[1]);
+  return realJsxDEV(...args);
+};
+mock.module("react/jsx-runtime", () => ({
+  Fragment: realFragment,
+  jsx: wrapJsx,
+  jsxs: wrapJsxs,
+}));
+mock.module("react/jsx-dev-runtime", () => ({
+  Fragment: realFragment,
+  jsxDEV: wrapJsxDEV,
 }));
 
 const { Workspace } = await import("./Workspace");
@@ -105,6 +147,28 @@ describe("Workspace surface pick", () => {
     expect(count(markup, /data-surface="agent-live"/g)).toBe(1);
     expect(count(markup, /cmux-markdown-surface/g)).toBe(1);
     expect(count(markup, /cmux-diff-surface-placeholder/g)).toBe(1);
+  });
+});
+
+describe("Workspace focused-pane tracking", () => {
+  // The store is a module singleton shared with the app — reset between cases.
+  beforeEach(() => {
+    focusedPaneStore.clear();
+    paneWrapperProps.length = 0;
+  });
+
+  test("pointer-down (capture) on a pane wrapper focuses that pane", () => {
+    render(split("horizontal", 0.5, pane(undefined, "a"), pane(undefined, "b")));
+    // One recorded wrapper per pane, in tree (render) order.
+    expect(paneWrapperProps.length).toBe(2);
+    (paneWrapperProps[1]?.onPointerDownCapture as () => void)();
+    expect(focusedPaneStore.get()).toBe("b");
+  });
+
+  test("focus (capture) on a pane wrapper focuses that pane", () => {
+    render(split("horizontal", 0.5, pane(undefined, "a"), pane(undefined, "b")));
+    (paneWrapperProps[0]?.onFocusCapture as () => void)();
+    expect(focusedPaneStore.get()).toBe("a");
   });
 });
 

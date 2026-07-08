@@ -23,7 +23,7 @@ import {
   switcherCandidateCommandIds,
   type SwitcherEntry,
 } from "./switcherEntries";
-import { firstActivePanelId } from "../session/splitLayout";
+import { useFocusedPanelId } from "../session/focusedPane";
 import { planIntent } from "./intentPlan";
 
 /**
@@ -137,11 +137,13 @@ export function useCommandPalette(
   const scope = listScope(query);
   const matchingQuery = queryForMatching(query);
 
-  // Focused-panel id (≡ the canonical surface id) — feeds BOTH the catalog
-  // context (`hasFocusedPanel` row gating) and the intent planner. It must be
-  // identical in both, or `dispatchCommand` inside `activateAt` rebuilds the
-  // catalog without a row the list displayed and activation silently nulls.
-  const activePanelId = activeLayout ? firstActivePanelId(activeLayout) : undefined;
+  // Focused-panel id (≡ the canonical surface id): the tracked focused pane
+  // (pointer-down/focus capture on Workspace's pane wrappers), revalidated
+  // against the active layout with a first-leaf fallback. It feeds BOTH the
+  // catalog context (`hasFocusedPanel` row gating) and the intent planner. It
+  // must be identical in both, or `dispatchCommand` inside `activateAt` rebuilds
+  // the catalog without a row the list displayed and activation silently nulls.
+  const activePanelId = useFocusedPanelId(activeLayout);
 
   // Build the scope's commands, the search corpus, the switcher candidate ids,
   // and (switcher) the id→workspace map for activation. The pure modules do all

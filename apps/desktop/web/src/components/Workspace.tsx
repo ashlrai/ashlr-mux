@@ -9,6 +9,7 @@ import {
   type Rect,
 } from "../session/paneRects";
 import { resizeDivider, setDividerAtPath, type Layout } from "../session/splitLayout";
+import { focusedPaneStore } from "../session/focusedPane";
 import { stickyAgentPanes } from "../session/agentMount";
 import type { SurfaceKind } from "../session/surfaceUrl";
 import { AgentSessionSurface } from "./AgentSessionSurface";
@@ -135,7 +136,18 @@ export function Workspace(): React.JSX.Element {
       {[...rects.entries()].map(([panelId, rect]) => {
         const kind: SurfaceKind = kinds.get(panelId) ?? "terminal";
         return (
-          <div key={panelId} style={{ ...paneStyle(rect), overflow: "hidden", zIndex: 0 }}>
+          <div
+            key={panelId}
+            // CAPTURE phase: PaneControls stops pointer-down propagation
+            // (bubble-only) and xterm's hidden textarea handles focus
+            // internally — neither can block capture, so ANY pointer-down or
+            // focus landing inside a pane marks it focused. This is the
+            // canonical pane tap gesture + AppKit first-responder sync
+            // (WorkspaceContentView.swift:215-217 / 231-238).
+            onPointerDownCapture={() => focusedPaneStore.focus(panelId)}
+            onFocusCapture={() => focusedPaneStore.focus(panelId)}
+            style={{ ...paneStyle(rect), overflow: "hidden", zIndex: 0 }}
+          >
             {/* Flat portal: the terminal is rendered once per stable panel_id and
                 never unmounted (its ConPTY shell lives on); each owning pane's
                 agent surface is overlaid the same way. Toggling terminal⇄agent
