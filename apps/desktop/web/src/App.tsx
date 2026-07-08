@@ -6,6 +6,8 @@ import { CommandPaletteOverlay } from "./components/CommandPaletteOverlay";
 import { SettingsOverlay } from "./components/SettingsOverlay";
 import { Sidebar } from "./components/Sidebar";
 import { Workspace } from "./components/Workspace";
+import { useAppearance } from "./hooks/useAppearance";
+import { useConfig } from "./hooks/useConfig";
 
 /** Window event that opens Settings (fired by the palette's openSettings). */
 export const OPEN_SETTINGS_EVENT = "cmux:open-settings";
@@ -22,6 +24,21 @@ export const OPEN_SETTINGS_EVENT = "cmux:open-settings";
 export function App(): React.JSX.Element {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // Live config feeds the applied appearance (E9): the stored app.appearance
+  // resolves against the ambient system scheme onto :root, and a legacy
+  // stored value ("auto") is normalized back through the same single
+  // mutation path the Settings pane uses.
+  const { config, dispatch } = useConfig();
+  useAppearance(config?.app?.appearance ?? null, (persistedRawValue) =>
+    dispatch({
+      type: "setAppearance",
+      // The resolver never emits "auto" (normalization collapses it to
+      // "system") but its type keeps the full mode union — narrow for the
+      // config's Appearance union.
+      appearance: persistedRawValue === "auto" ? "system" : persistedRawValue,
+    }),
+  );
 
   // The command palette (and any future entrypoint) opens Settings through
   // one window event, keeping a single open path without prop-drilling into

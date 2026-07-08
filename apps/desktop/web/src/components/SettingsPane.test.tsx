@@ -9,7 +9,8 @@ import type {
   SidebarConfig,
 } from "@cmux/core-types";
 
-import { SettingsPane } from "./SettingsPane";
+import { SettingsPane, SettingsSearchResults } from "./SettingsPane";
+import { settingsEntriesMatching } from "../settings/settingsSearch";
 
 // ---- Fixtures ---------------------------------------------------------------
 
@@ -206,3 +207,28 @@ describe("SettingsPane shortcuts list", () => {
     expect(markup).toContain("Unbound");
   });
 });
+
+describe("SettingsSearchResults", () => {
+  test("renders ranked canonical entries from the search corpus", () => {
+    const entries = settingsEntriesMatching("appearance");
+    expect(entries.length).toBeGreaterThan(0);
+    const markup = renderToStaticMarkup(
+      <SettingsSearchResults entries={entries} />,
+    );
+    expect(markup).toContain("cmux-settings-search-result");
+    expect(markup).toContain("data-target=");
+  });
+
+  test("shows the empty state when nothing matches", () => {
+    const markup = renderToStaticMarkup(<SettingsSearchResults entries={[]} />);
+    expect(markup).toContain("No matching settings");
+  });
+
+  test("the pane renders the search input", () => {
+    const markup = renderToStaticMarkup(
+      <SettingsPane config={{}} onAction={() => {}} />,
+    );
+    expect(markup).toContain("cmux-settings-search-input");
+  });
+});
+

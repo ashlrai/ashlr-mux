@@ -374,6 +374,59 @@ body,
   text-align: center;
   color: #6b7484;
 }
+.cmux-settings-search {
+  margin-bottom: 12px;
+}
+.cmux-settings-search-input {
+  width: 100%;
+  background: #0e1320;
+  border: 1px solid #2a3242;
+  border-radius: 6px;
+  color: #e5e9f0;
+  font-size: 13px;
+  padding: 6px 10px;
+  outline: none;
+}
+.cmux-settings-search-input:focus {
+  border-color: #7aa2f7;
+}
+.cmux-settings-search-results {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid #1c2230;
+  border-radius: 6px;
+}
+.cmux-settings-search-result {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: #c2c9d6;
+  font-size: 12px;
+  text-align: left;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+.cmux-settings-search-result:hover {
+  background: #161b26;
+}
+.cmux-settings-search-result-subtitle {
+  color: #6b7484;
+  font-size: 11px;
+}
+.cmux-settings-search-empty {
+  margin-top: 6px;
+  padding: 10px;
+  color: #6b7484;
+  font-size: 12px;
+  text-align: center;
+}
 
 /* A leaf pane fills its split cell and lays its single child out to fill. */
 .cmux-pane {
