@@ -5,6 +5,7 @@ import { Icon } from "@cmux/webviews/src/icons";
 import { CommandPaletteOverlay } from "./components/CommandPaletteOverlay";
 import { Sidebar } from "./components/Sidebar";
 import { Workspace } from "./components/Workspace";
+import { useAppearance } from "./hooks/useAppearance";
 
 /**
  * The app shell. A top bar (sidebar toggle + app identity) over a two-column
@@ -16,6 +17,9 @@ import { Workspace } from "./components/Workspace";
  * min/max/close is the next slice.
  */
 export function App(): React.JSX.Element {
+  // Appearance apply-on-launch + system-scheme tracking (result unused until
+  // the Settings appearance row is wired).
+  useAppearance();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   return (
