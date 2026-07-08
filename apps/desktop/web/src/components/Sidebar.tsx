@@ -39,6 +39,8 @@ export interface SidebarViewProps {
   onNewWorkspace: () => void;
   onSelectWorkspace: (index: number) => void;
   onCloseWorkspace: (index: number) => void;
+  onRenameWorkspace?: (index: number, title: string) => void;
+  onSetGroupCollapsed?: (groupId: string, collapsed: boolean) => void;
 }
 
 /** Pure, prop-driven sidebar — no data source, so it renders headlessly. */
@@ -48,6 +50,8 @@ export function SidebarView({
   onNewWorkspace,
   onSelectWorkspace,
   onCloseWorkspace,
+  onRenameWorkspace,
+  onSetGroupCollapsed,
 }: SidebarViewProps): React.JSX.Element {
   if (collapsed) {
     return <div className="cmux-sidebar cmux-sidebar--collapsed" aria-hidden="true" />;
@@ -109,6 +113,17 @@ export function SidebarView({
         canCloseWorkspaces={workspaces.length > 1}
         onSelectWorkspace={dispatchByIndex(onSelectWorkspace)}
         onCloseWorkspace={dispatchByIndex(onCloseWorkspace)}
+        onRenameWorkspace={
+          onRenameWorkspace
+            ? (workspaceId, title) => {
+                const index = indexById.get(workspaceId);
+                if (index !== undefined) {
+                  onRenameWorkspace(index, title);
+                }
+              }
+            : undefined
+        }
+        onSetGroupCollapsed={onSetGroupCollapsed}
       />
     </nav>
   );
@@ -121,8 +136,14 @@ export interface SidebarProps {
 
 /** Live container: binds {@link SidebarView} to the `useSession` snapshot. */
 export function Sidebar({ collapsed }: SidebarProps): React.JSX.Element {
-  const { snapshot, newWorkspace, selectWorkspace, closeWorkspace } =
-    useSession();
+  const {
+    snapshot,
+    newWorkspace,
+    selectWorkspace,
+    closeWorkspace,
+    renameWorkspace,
+    setGroupCollapsed,
+  } = useSession();
 
   return (
     <SidebarView
@@ -131,6 +152,8 @@ export function Sidebar({ collapsed }: SidebarProps): React.JSX.Element {
       onNewWorkspace={newWorkspace}
       onSelectWorkspace={selectWorkspace}
       onCloseWorkspace={closeWorkspace}
+      onRenameWorkspace={renameWorkspace}
+      onSetGroupCollapsed={setGroupCollapsed}
     />
   );
 }

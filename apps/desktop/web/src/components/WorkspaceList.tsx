@@ -10,11 +10,18 @@
 //   suppressed as a plain row by the projection).
 // - The ✕ appears only when `canCloseWorkspaces` (canonical
 //   `TabManager.closeWorkspace` is a no-op on the last tab) and never on group
-//   headers in this first cut. Collapse-toggle wiring is A5's slice.
+//   headers in this first cut.
+// - The header chevron toggles the group's collapse state (A5) without firing
+//   the header's select.
+// - Double-clicking a row label opens an inline rename editor (A6): Enter or
+//   blur commits (an empty commit clears the custom title — canonical
+//   setCustomTitle), Escape cancels.
 //
 // Reuses the shared `@cmux/webviews` Icon for glyphs. The icon set has no
 // dedicated folder/right-chevron, so a collapsed group shows the right-pointing
 // `arrow` glyph and an expanded group the down-pointing `expand` glyph.
+
+import { useState } from "react";
 
 import { Icon } from "@cmux/webviews/src/icons";
 
@@ -35,6 +42,10 @@ export interface WorkspaceListProps {
   onSelectWorkspace?: (workspaceId: string) => void;
   /// Close the workspace with this id.
   onCloseWorkspace?: (workspaceId: string) => void;
+  /// Commit an inline rename (empty clears the custom title).
+  onRenameWorkspace?: (workspaceId: string, title: string) => void;
+  /// Toggle a group's collapse state to `collapsed`.
+  onSetGroupCollapsed?: (groupId: string, collapsed: boolean) => void;
 }
 
 function classNames(...parts: (string | false | undefined)[]): string {
@@ -45,10 +56,12 @@ function GroupHeaderRow({
   item,
   isSelected,
   onSelect,
+  onSetCollapsed,
 }: {
   item: Extract<SidebarWorkspaceRenderItem, { kind: "groupHeader" }>;
   isSelected: boolean;
   onSelect?: (workspaceId: string) => void;
+  onSetCollapsed?: (groupId: string, collapsed: boolean) => void;
 }) {
   const { group, memberWorkspaceIds } = item;
   return (
@@ -64,9 +77,19 @@ function GroupHeaderRow({
       aria-expanded={group.isCollapsed ? "false" : "true"}
       onClick={() => onSelect?.(group.anchorWorkspaceId)}
     >
-      <span className="cmux-icon cmux-sidebar-group-chevron" aria-hidden="true">
+      <button
+        type="button"
+        className="cmux-icon cmux-sidebar-group-chevron"
+        title={group.isCollapsed ? "Expand group" : "Collapse group"}
+        aria-label={`${group.isCollapsed ? "Expand" : "Collapse"} ${group.name}`}
+        onClick={(event) => {
+          // Toggling collapse must not also select the anchor.
+          event.stopPropagation();
+          onSetCollapsed?.(group.id, !group.isCollapsed);
+        }}
+      >
         <Icon name={group.isCollapsed ? "arrow" : "expand"} />
-      </span>
+      </button>
       <span className="cmux-sidebar-group-name">{group.name}</span>
       <span className="cmux-sidebar-group-count">
         {memberWorkspaceIds.length}
@@ -82,6 +105,7 @@ function WorkspaceRowItem({
   canClose,
   onSelect,
   onClose,
+  onRename,
 }: {
   item: Extract<SidebarWorkspaceRenderItem, { kind: "workspace" }>;
   title: string;
@@ -89,8 +113,17 @@ function WorkspaceRowItem({
   canClose: boolean;
   onSelect?: (workspaceId: string) => void;
   onClose?: (workspaceId: string) => void;
+  onRename?: (workspaceId: string, title: string) => void;
 }) {
   const { workspace } = item;
+  // Inline rename editor state: `null` when idle, else the draft text.
+  const [draft, setDraft] = useState<string | null>(null);
+  const commit = (): void => {
+    if (draft !== null) {
+      onRename?.(workspace.id, draft);
+      setDraft(null);
+    }
+  };
   return (
     <li
       className={classNames(
@@ -102,11 +135,35 @@ function WorkspaceRowItem({
       data-workspace-id={workspace.id}
       aria-selected={isSelected ? "true" : "false"}
       onClick={() => onSelect?.(workspace.id)}
+      onDoubleClick={() => {
+        if (onRename && draft === null) {
+          setDraft(title);
+        }
+      }}
     >
       <span className="cmux-icon cmux-sidebar-row-icon" aria-hidden="true">
         <Icon name={workspace.isPinned ? "files" : "classic"} />
       </span>
-      <span className="cmux-sidebar-row-label">{title}</span>
+      {draft !== null ? (
+        <input
+          className="cmux-sidebar-row-rename"
+          value={draft}
+          autoFocus
+          aria-label={`Rename ${title}`}
+          onChange={(event) => setDraft(event.target.value)}
+          onClick={(event) => event.stopPropagation()}
+          onBlur={commit}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              commit();
+            } else if (event.key === "Escape") {
+              setDraft(null);
+            }
+          }}
+        />
+      ) : (
+        <span className="cmux-sidebar-row-label">{title}</span>
+      )}
       {canClose && onClose ? (
         <button
           type="button"
@@ -133,6 +190,8 @@ export function WorkspaceList({
   canCloseWorkspaces = false,
   onSelectWorkspace,
   onCloseWorkspace,
+  onRenameWorkspace,
+  onSetGroupCollapsed,
 }: WorkspaceListProps) {
   const selected = selectedWorkspaceIds ?? new Set<string>();
   return (
@@ -145,6 +204,7 @@ export function WorkspaceList({
               item={item}
               isSelected={selected.has(item.group.anchorWorkspaceId)}
               onSelect={onSelectWorkspace}
+              onSetCollapsed={onSetGroupCollapsed}
             />
           );
         }
@@ -157,6 +217,7 @@ export function WorkspaceList({
             canClose={canCloseWorkspaces}
             onSelect={onSelectWorkspace}
             onClose={onCloseWorkspace}
+            onRename={onRenameWorkspace}
           />
         );
       })}

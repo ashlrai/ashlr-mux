@@ -456,9 +456,66 @@ pub fn close_workspace(tabs: &mut SessionTabManagerSnapshot, index: i64) -> bool
     true
 }
 
+/// Rename the workspace at `index` — the port of the canonical user rename,
+/// `Workspace.setCustomTitle(_:source:.user)` (`Sources/Workspace.swift:4391`):
+/// the title is trimmed (Swift `.whitespacesAndNewlines` ≈ Rust `str::trim`,
+/// both Unicode White_Space incl. NBSP/NEL, excl. U+FEFF); an EMPTY result
+/// clears both `custom_title` and `custom_title_source`, else both are set
+/// (source `"user"`). The `.auto` rejection branch is the auto-naming agent's
+/// concern, not this user-path port. Returns whether `index` was valid.
+pub fn rename_workspace(
+    tabs: &mut SessionTabManagerSnapshot,
+    index: i64,
+    title: &str,
+) -> bool {
+    if index < 0 {
+        return false;
+    }
+    let Some(workspace) = tabs.workspaces.get_mut(index as usize) else {
+        return false;
+    };
+    let trimmed = title.trim();
+    if trimmed.is_empty() {
+        workspace.custom_title = None;
+        workspace.custom_title_source = None;
+    } else {
+        workspace.custom_title = Some(trimmed.to_string());
+        workspace.custom_title_source = Some("user".to_string());
+    }
+    true
+}
+
+/// Set the collapse state of the workspace group `group_id` — the port of
+/// `TabManager.setWorkspaceGroupCollapsed(groupId:isCollapsed:)`
+/// (`Sources/TabManager.swift:1838`). Group ids are compared as UUID values
+/// (case-insensitive) like the canonical `UUID` keys; a non-UUID stored id
+/// falls back to exact string equality. Returns whether a group matched.
+pub fn set_group_collapsed(
+    tabs: &mut SessionTabManagerSnapshot,
+    group_id: &str,
+    collapsed: bool,
+) -> bool {
+    let target = uuid::Uuid::parse_str(group_id).ok();
+    let Some(groups) = tabs.workspace_groups.as_mut() else {
+        return false;
+    };
+    for group in groups {
+        let matches = match (target, uuid::Uuid::parse_str(&group.id).ok()) {
+            (Some(a), Some(b)) => a == b,
+            _ => group.id == group_id,
+        };
+        if matches {
+            group.is_collapsed = collapsed;
+            return true;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::SessionWorkspaceGroupSnapshot;
 
     fn pane(id: &str) -> Layout {
         single_pane(id)
@@ -803,6 +860,66 @@ mod tests {
         assert_eq!(tabs.selected_workspace_index, Some(1));
         assert!(matches!(tabs.workspaces[1].layout, Some(Layout::Pane(_))));
         assert_eq!(tabs.workspaces[1].process_title, "Terminal");
+    }
+
+    #[test]
+    fn rename_workspace_sets_trimmed_title_with_user_source() {
+        let mut tabs = one_workspace_tabs("surface-1");
+        assert!(rename_workspace(&mut tabs, 0, "  My Project \n"));
+        assert_eq!(tabs.workspaces[0].custom_title.as_deref(), Some("My Project"));
+        assert_eq!(tabs.workspaces[0].custom_title_source.as_deref(), Some("user"));
+    }
+
+    #[test]
+    fn rename_workspace_empty_clears_title_and_source() {
+        // Canonical setCustomTitle: an empty (post-trim) title clears BOTH the
+        // custom title and its provenance (Workspace.swift:4396-4399).
+        let mut tabs = one_workspace_tabs("surface-1");
+        assert!(rename_workspace(&mut tabs, 0, "Keep"));
+        assert!(rename_workspace(&mut tabs, 0, "   \n "));
+        assert_eq!(tabs.workspaces[0].custom_title, None);
+        assert_eq!(tabs.workspaces[0].custom_title_source, None);
+    }
+
+    #[test]
+    fn rename_workspace_out_of_range_is_rejected() {
+        let mut tabs = one_workspace_tabs("surface-1");
+        assert!(!rename_workspace(&mut tabs, -1, "x"));
+        assert!(!rename_workspace(&mut tabs, 1, "x"));
+        assert_eq!(tabs.workspaces[0].custom_title, None);
+    }
+
+    #[test]
+    fn set_group_collapsed_flips_the_matching_group_case_insensitively() {
+        let gid = "11111111-1111-1111-1111-111111111111";
+        let mut tabs = one_workspace_tabs("surface-1");
+        tabs.workspace_groups = Some(vec![SessionWorkspaceGroupSnapshot {
+            id: gid.to_string(),
+            name: "G".to_string(),
+            is_collapsed: false,
+            ..Default::default()
+        }]);
+        // UUID identity is case-insensitive, like the canonical UUID keys.
+        assert!(set_group_collapsed(&mut tabs, &gid.to_uppercase(), true));
+        assert!(tabs.workspace_groups.as_ref().unwrap()[0].is_collapsed);
+        assert!(set_group_collapsed(&mut tabs, gid, false));
+        assert!(!tabs.workspace_groups.as_ref().unwrap()[0].is_collapsed);
+    }
+
+    #[test]
+    fn set_group_collapsed_unknown_group_is_rejected() {
+        let mut tabs = one_workspace_tabs("surface-1");
+        assert!(!set_group_collapsed(
+            &mut tabs,
+            "11111111-1111-1111-1111-111111111111",
+            true
+        ));
+        tabs.workspace_groups = Some(vec![]);
+        assert!(!set_group_collapsed(
+            &mut tabs,
+            "11111111-1111-1111-1111-111111111111",
+            true
+        ));
     }
 
     // Canonical `Workspace.init` mints `id = UUID()`; without an id the sidebar

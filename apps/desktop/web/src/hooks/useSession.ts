@@ -40,6 +40,13 @@ export interface UseSession {
   /** Close the workspace at `index` (always leaves at least one alive). */
   closeWorkspace: (index: number) => void;
   /**
+   * Rename the workspace at `index` (canonical user rename: trimmed; an empty
+   * title clears the custom title back to the process title).
+   */
+  renameWorkspace: (index: number, title: string) => void;
+  /** Collapse/expand the sidebar workspace group `groupId`. */
+  setGroupCollapsed: (groupId: string, collapsed: boolean) => void;
+  /**
    * Split the pane holding `panelId` in `orientation`. `insertFirst` places
    * the NEW pane before the existing one (splitting left/up); omitted/false
    * appends it after (right/down) — see `session/splitDirection.ts`.
@@ -160,6 +167,20 @@ export function useSession(): UseSession {
       .catch((error) => console.error("session_close_workspace failed", error));
   }, []);
 
+  const renameWorkspace = useCallback((index: number, title: string) => {
+    void host
+      .invoke<AppSessionSnapshot>("session_rename_workspace", { index, title })
+      .then(setSnapshot)
+      .catch((error) => console.error("session_rename_workspace failed", error));
+  }, []);
+
+  const setGroupCollapsed = useCallback((groupId: string, collapsed: boolean) => {
+    void host
+      .invoke<AppSessionSnapshot>("session_set_group_collapsed", { groupId, collapsed })
+      .then(setSnapshot)
+      .catch((error) => console.error("session_set_group_collapsed failed", error));
+  }, []);
+
   const tabs = snapshot?.windows[0]?.tab_manager;
   const workspaces = tabs?.workspaces ?? [];
   const rawIndex = tabs?.selected_workspace_index ?? 0;
@@ -179,5 +200,7 @@ export function useSession(): UseSession {
     newWorkspace,
     selectWorkspace,
     closeWorkspace,
+    renameWorkspace,
+    setGroupCollapsed,
   };
 }

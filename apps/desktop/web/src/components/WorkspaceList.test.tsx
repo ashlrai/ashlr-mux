@@ -142,4 +142,36 @@ describe("WorkspaceList", () => {
       /<li class="cmux-sidebar-group-header is-pinned is-selected"/,
     );
   });
+
+  test("chevron renders as a labelled collapse-toggle button", () => {
+    const { gid, anchor, member } = UUID;
+    const tabs = [row(anchor, gid, false), row(member, gid, false)];
+    const expanded = renderToStaticMarkup(
+      <WorkspaceList
+        items={renderItems(tabs, groupsMap([group(gid, anchor, false)]))}
+        onSetGroupCollapsed={() => {}}
+      />,
+    );
+    expect(expanded).toContain('aria-label="Collapse G"');
+    const collapsed = renderToStaticMarkup(
+      <WorkspaceList
+        items={renderItems(tabs, groupsMap([group(gid, anchor, true)]))}
+        onSetGroupCollapsed={() => {}}
+      />,
+    );
+    expect(collapsed).toContain('aria-label="Expand G"');
+  });
+
+  test("rows render the provided title (rename editor stays closed at rest)", () => {
+    const { solo } = UUID;
+    const markup = renderToStaticMarkup(
+      <WorkspaceList
+        items={renderItems([row(solo, undefined, false)], groupsMap([]))}
+        titlesById={new Map([[solo, "My Shell"]])}
+        onRenameWorkspace={() => {}}
+      />,
+    );
+    expect(markup).toContain(">My Shell<");
+    expect(markup).not.toContain("cmux-sidebar-row-rename");
+  });
 });
