@@ -275,6 +275,11 @@ export function useCommandPalette(): UseCommandPalette {
           case "newWorkspace":
             newWorkspace();
             break;
+          case "openSettings":
+            // One shared open path: App listens for this event (see
+            // OPEN_SETTINGS_EVENT) — no prop-drilling into the intent switch.
+            window.dispatchEvent(new CustomEvent("cmux:open-settings"));
+            break;
           default:
             // eslint-disable-next-line no-console
             console.info(

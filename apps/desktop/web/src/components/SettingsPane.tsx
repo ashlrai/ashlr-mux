@@ -1,21 +1,22 @@
 // Presentational, CONTROLLED Settings form. Renders the Sidebar / Notifications
 // toggles, the Appearance radio group, and the Shortcuts list straight from a
-// `Config` prop, and emits the next `Config` through `onChange`. It owns NO
-// state and performs NO IPC — the parent holds the config and persists it. All
-// mutations go through the pure `configReducer`, mirroring how the macOS
-// Settings panes mutate the in-memory `CmuxConfigFile`.
+// `Config` prop, and emits each mutation as a `ConfigAction` through
+// `onAction`. It owns NO state and performs NO IPC — the parent (`useConfig`)
+// runs the SAME action through the pure `configReducer` (optimistic state) AND
+// `deltaForAction` (the persisted dotted-path write), so state and file can
+// never disagree about what changed.
 
 import type { Appearance, Config, ShortcutBinding } from "@cmux/core-types";
 
-import {
-  configReducer,
-  type NotificationsBoolKey,
-  type SidebarBoolKey,
+import type {
+  ConfigAction,
+  NotificationsBoolKey,
+  SidebarBoolKey,
 } from "../settings/configReducer";
 
 export interface SettingsPaneProps {
   config: Config;
-  onChange: (next: Config) => void;
+  onAction: (action: ConfigAction) => void;
 }
 
 interface FlagRow<K> {
@@ -68,7 +69,7 @@ function formatBinding(binding: ShortcutBinding | null | undefined): string {
   return Array.isArray(binding) ? binding.join(" ") : binding;
 }
 
-export function SettingsPane({ config, onChange }: SettingsPaneProps) {
+export function SettingsPane({ config, onAction }: SettingsPaneProps) {
   const { sidebar, notifications, app, shortcuts } = config;
 
   return (
@@ -82,9 +83,7 @@ export function SettingsPane({ config, onChange }: SettingsPaneProps) {
                 type="checkbox"
                 data-field={key}
                 checked={sidebar[key]}
-                onChange={() =>
-                  onChange(configReducer(config, { type: "toggleSidebarFlag", key }))
-                }
+                onChange={() => onAction({ type: "toggleSidebarFlag", key })}
               />
               <span>{label}</span>
             </label>
@@ -101,11 +100,7 @@ export function SettingsPane({ config, onChange }: SettingsPaneProps) {
                 type="checkbox"
                 data-field={key}
                 checked={notifications[key]}
-                onChange={() =>
-                  onChange(
-                    configReducer(config, { type: "toggleNotificationsFlag", key }),
-                  )
-                }
+                onChange={() => onAction({ type: "toggleNotificationsFlag", key })}
               />
               <span>{label}</span>
             </label>
@@ -123,9 +118,7 @@ export function SettingsPane({ config, onChange }: SettingsPaneProps) {
                 name="appearance"
                 data-appearance={value}
                 checked={app.appearance === value}
-                onChange={() =>
-                  onChange(configReducer(config, { type: "setAppearance", appearance: value }))
-                }
+                onChange={() => onAction({ type: "setAppearance", appearance: value })}
               />
               <span>{label}</span>
             </label>

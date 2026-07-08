@@ -1,10 +1,14 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { Icon } from "@cmux/webviews/src/icons";
 
 import { CommandPaletteOverlay } from "./components/CommandPaletteOverlay";
+import { SettingsOverlay } from "./components/SettingsOverlay";
 import { Sidebar } from "./components/Sidebar";
 import { Workspace } from "./components/Workspace";
+
+/** Window event that opens Settings (fired by the palette's openSettings). */
+export const OPEN_SETTINGS_EVENT = "cmux:open-settings";
 
 /**
  * The app shell. A top bar (sidebar toggle + app identity) over a two-column
@@ -17,6 +21,16 @@ import { Workspace } from "./components/Workspace";
  */
 export function App(): React.JSX.Element {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // The command palette (and any future entrypoint) opens Settings through
+  // one window event, keeping a single open path without prop-drilling into
+  // the palette's intent switch.
+  useEffect(() => {
+    const open = (): void => setSettingsOpen(true);
+    window.addEventListener(OPEN_SETTINGS_EVENT, open);
+    return () => window.removeEventListener(OPEN_SETTINGS_EVENT, open);
+  }, []);
 
   return (
     <div className="cmux-shell">
@@ -35,6 +49,18 @@ export function App(): React.JSX.Element {
           <Icon name="classic" />
         </span>
         <span className="font-medium">cmux for Windows</span>
+        <span className="flex-1" />
+        <button
+          type="button"
+          className="cmux-settings-toggle"
+          title="Settings"
+          aria-label="Settings"
+          onClick={() => setSettingsOpen(true)}
+        >
+          {/* The shared icon set has no gear glyph; the character keeps the
+              header dependency-free until one lands. */}
+          ⚙
+        </button>
       </header>
       <div className="cmux-body">
         <Sidebar collapsed={sidebarCollapsed} />
@@ -43,6 +69,7 @@ export function App(): React.JSX.Element {
         </main>
       </div>
       <CommandPaletteOverlay />
+      <SettingsOverlay open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
   );
 }
