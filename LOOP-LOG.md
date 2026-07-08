@@ -736,4 +736,26 @@ shortcutFormat / placement / reorder / switcherIndex (share `bun test src`; sequ
   CONTRACT CHANGE: SettingsPane onChange(next Config) → onAction(ConfigAction)
   so the container owns the single mutation path. Gate GREEN: web 486 (+10),
   tsc clean, cmux-desktop unaffected. Pushed → fork/frontend-parity (PR #4).
+- UI buildout #16 — E9 caller + E8 search box; LOOP PAUSED by user after this
+  iteration. hooks/useAppearance.ts stamps resolveAppliedAppearance onto :root
+  (style.colorScheme + data-color-scheme), tracks prefers-color-scheme, routes
+  the needsRewrite legacy normalization ("auto"→"system") through the SAME
+  setAppearance dispatch as the pane. SettingsPane gains the live search box
+  over the 132-entry canonical corpus (settingsEntriesMatching) with pure
+  SSR-tested SettingsSearchResults; result-pick scrolls to mounted sections
+  (app→Appearance; map grows with E11). Gate GREEN: web 489 (+3), tsc clean.
+  Pushed → fork/frontend-parity (PR #4).
+  === FRONTEND-PARITY SESSION CHECKPOINT (2026-07-07, iters #11-#16) ===
+  Branch frontend-parity (stacks on agent-cwd-picker/PR #3), PR #4 →
+  ashlrai/ashlr-mux. 12 slices shipped green: A4 (rich sidebar mount + the
+  workspace_id mint ENABLER bug), A5 collapse, A6 rename, A7 pin/unpin,
+  C1/C2 UI triggers (directional split ▌▐▀▄ + equalize; palette intents
+  equalizeSplits/newWorkspace/openSettings RUN now), E1/E2 config commands,
+  E3 delta, E4 SettingsOverlay mount, E8 search box, E9 appearance apply.
+  READY FOR LIVE TESTING (npx @tauri-apps/cli dev in apps/desktop/src-tauri):
+  sidebar groups/pins/rename/collapse, 4-way splits, equalize, palette
+  commands, Settings modal persisting to %APPDATA%\\cmux\\cmux.json,
+  appearance switching. REMAINING (next loop run): B1-B7 window chrome,
+  A8/A10-A14 sidebar extras, C3-C13 keyboard-resize + canvas, D8/D10, E5-E7/
+  E10/E11 settings tail, F1-F7 agent polish, G2-G11 diff/markdown/browser.
   === LOOP CHECKPOINT (2026-07-07, after iter #10) === 5 iterations this session (#6-#10): A1/A3/A9, D5/D6/D7/D9, E8/E9, G1, C1(confirmed)/C2 = 11 slices, all pushed green, 4 real defects caught by adversarial verify (config-override scope, phantom-group anchor, G1 live 403 bug, +). The HEADLESS command/ops/pure-model frontier for the touched areas is now largely harvested. What REMAINS is dominantly the DEFERRED GUI-WIRING TAIL — each headless slice above left a thin caller (JS invoke / DOM mutation / keyboard-menu trigger / webview.eval render push) that needs the running app to build+verify. Consolidated GUI-verify queue for the user's next `npx @tauri-apps/cli dev` session (highest value first): (1) D4 live command-palette overlay — compose windowStore+paletteQuery+commandCatalog+switcherEntries+renderSequencing+resultsGating+command_palette_search + open-shortcut/focus/Escape/arrow/click/Enter; (2) A4 mount rich WorkspaceList via render_items (groups/pins/collapse) + wire selection; (3) directional-split + equalize UI triggers (C1 insertFirst arg from split buttons/keys; C2 equalize keyboard/menu/palette action) — commands are LIVE, just need callers; (4) markdown doc-feed caller (await markdown_set_document before markdown_render) + appearance apply (resolveAppliedAppearance→document color-scheme + persist) + settings-search box (settingsEntriesMatching→SettingsPane); (5) window chrome B1-B7; (6) live agents F1-F6 (Codex/OpenCode installed). Remaining PURE-headless candidates are thinner: C3 (resizeDividerAdjustment key handler — mostly GUI), C4 (directional pane focus — needs a web focused-pane concept), E6 (shortcut-format wiring — GUI), A5-A8/A10-A14 (sidebar richness — mostly GUI-mount). Recommend: pause autonomous headless churn; do a GUI session next. LOOP CONTINUES only if more genuinely-headless slices are worth it — else await user for the live-verify phase.
