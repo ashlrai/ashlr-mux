@@ -1,32 +1,44 @@
-// The left sessions/workspace sidebar — the functional-parity first cut of
-// cmux's `CmuxSidebar` / sessions index. Renders the first window's live
-// workspace list (from the Rust session snapshot) as selectable rows, with a
-// "new workspace" (+) control and a per-row close (✕) on hover.
+// The left sessions/workspace sidebar — canonical cmux chrome parity. Renders
+// the first window's live workspace list (from the Rust session snapshot)
+// through the ported `renderItems` projection, so groups (headers, collapse,
+// member counts), pins, and selection all draw exactly as the canonical
+// sidebar orders them, with a "new workspace" (+) control and a per-row close
+// (✕) on hover.
 //
-// Split into a presentational {@link SidebarView} (pure, prop-driven) and a thin
-// {@link Sidebar} container that feeds it live data + mutations from
-// `useSession`. Unlike the richer `WorkspaceList` (a dumb renderer of
-// already-projected `SidebarWorkspaceRenderItem`s), `SidebarView` projects the
-// row title + close affordance inline over the raw snapshot; the two converge
-// once groups/pins reach the live model. Every `useSession` instance stays in
-// sync through the broadcast `cmux://session-changed` event, so this sidebar and
-// the main `Workspace` reconcile to the same snapshot after any change.
+// Split into a presentational {@link SidebarView} (pure, prop-driven: projects
+// the snapshot slice via `projectSidebarItems` and renders `WorkspaceList`) and
+// a thin {@link Sidebar} container that feeds it live data + mutations from
+// `useSession`. Every `useSession` instance stays in sync through the broadcast
+// `cmux://session-changed` event, so this sidebar and the main `Workspace`
+// reconcile to the same snapshot after any change.
+//
+// The session commands address workspaces by index, while render items carry
+// stable workspace ids — the id → index translation happens here, over the same
+// normalized id keys the projection uses. Rows whose snapshot lacks a
+// `workspace_id` are skipped by the projection (parity with the Rust
+// `sidebar_render`); the live session layer mints ids for every workspace
+// (`ensure_workspace_ids`), so this only drops corrupted rows.
 
-import { Icon } from "@cmux/webviews/src/icons";
+import type {
+  SessionWorkspaceGroupSnapshot,
+  SessionWorkspaceSnapshot,
+} from "@cmux/core-types";
 
 import { useSession } from "../hooks/useSession";
-import type { SessionWorkspaceSnapshot } from "@cmux/core-types";
-
-/** The label shown for a workspace row: its custom title, else process title. */
-function workspaceTitle(ws: SessionWorkspaceSnapshot): string {
-  return ws.custom_title?.trim() || ws.process_title?.trim() || "Terminal";
-}
+import {
+  projectSidebarItems,
+  workspaceIdKey,
+  workspaceTitlesById,
+} from "../sidebar/snapshotProjection";
+import { WorkspaceList } from "./WorkspaceList";
 
 export interface SidebarViewProps {
   /** Whether the sidebar is collapsed to a rail (hidden list). */
   collapsed: boolean;
-  /** The first window's workspaces, in order. */
+  /** The first window's workspaces, in persisted (already pin/group) order. */
   workspaces: readonly SessionWorkspaceSnapshot[];
+  /** The first window's workspace groups, if any. */
+  workspaceGroups?: readonly SessionWorkspaceGroupSnapshot[];
   /** Index of the selected workspace in `workspaces`. */
   selectedWorkspaceIndex: number;
   onNewWorkspace: () => void;
@@ -34,10 +46,11 @@ export interface SidebarViewProps {
   onCloseWorkspace: (index: number) => void;
 }
 
-/** Pure, prop-driven sidebar list — no data source, so it renders headlessly. */
+/** Pure, prop-driven sidebar — no data source, so it renders headlessly. */
 export function SidebarView({
   collapsed,
   workspaces,
+  workspaceGroups,
   selectedWorkspaceIndex,
   onNewWorkspace,
   onSelectWorkspace,
@@ -46,6 +59,36 @@ export function SidebarView({
   if (collapsed) {
     return <div className="cmux-sidebar cmux-sidebar--collapsed" aria-hidden="true" />;
   }
+
+  const items = projectSidebarItems({
+    workspaces,
+    workspace_groups: workspaceGroups,
+  });
+  const titles = workspaceTitlesById(workspaces);
+
+  // id → index over the same normalized keys the projection emits (keep-first
+  // on duplicates, matching the projection's duplicate policy).
+  const indexByWorkspaceId = new Map<string, number>();
+  workspaces.forEach((ws, index) => {
+    const id = workspaceIdKey(ws.workspace_id);
+    if (id !== undefined && !indexByWorkspaceId.has(id)) {
+      indexByWorkspaceId.set(id, index);
+    }
+  });
+
+  const selectedId = workspaceIdKey(
+    workspaces[selectedWorkspaceIndex]?.workspace_id,
+  );
+  const selectedWorkspaceIds = new Set<string>(
+    selectedId !== undefined ? [selectedId] : [],
+  );
+
+  const withIndexOf = (action: (index: number) => void) => (workspaceId: string) => {
+    const index = indexByWorkspaceId.get(workspaceId);
+    if (index !== undefined) {
+      action(index);
+    }
+  };
 
   // Canonical `TabManager.closeWorkspace` is a no-op when `tabs.count <= 1`, so
   // the sole remaining workspace has no close affordance (its ✕ is hidden).
@@ -65,40 +108,14 @@ export function SidebarView({
           +
         </button>
       </div>
-      <ul className="cmux-sidebar-list">
-        {workspaces.map((ws, index) => {
-          const selected = index === selectedWorkspaceIndex;
-          const title = workspaceTitle(ws);
-          return (
-            <li
-              key={ws.workspace_id ?? `ws-${index}`}
-              className={selected ? "cmux-sidebar-row is-selected" : "cmux-sidebar-row"}
-              aria-selected={selected}
-              onClick={() => onSelectWorkspace(index)}
-            >
-              <span className="cmux-icon cmux-sidebar-row-icon" aria-hidden="true">
-                <Icon name="classic" />
-              </span>
-              <span className="cmux-sidebar-row-label">{title}</span>
-              {canClose ? (
-                <button
-                  type="button"
-                  className="cmux-sidebar-row-close"
-                  title="Close workspace"
-                  aria-label={`Close ${title}`}
-                  onClick={(event) => {
-                    // Don't let the row's select handler fire on close.
-                    event.stopPropagation();
-                    onCloseWorkspace(index);
-                  }}
-                >
-                  ✕
-                </button>
-              ) : null}
-            </li>
-          );
-        })}
-      </ul>
+      <WorkspaceList
+        items={items}
+        selectedWorkspaceIds={selectedWorkspaceIds}
+        titleForWorkspace={(id) => titles.get(id) ?? "Terminal"}
+        canCloseWorkspaces={canClose}
+        onSelectWorkspace={withIndexOf(onSelectWorkspace)}
+        onCloseWorkspace={withIndexOf(onCloseWorkspace)}
+      />
     </nav>
   );
 }
@@ -112,6 +129,7 @@ export interface SidebarProps {
 export function Sidebar({ collapsed }: SidebarProps): React.JSX.Element {
   const {
     workspaces,
+    workspaceGroups,
     selectedWorkspaceIndex,
     newWorkspace,
     selectWorkspace,
@@ -122,6 +140,7 @@ export function Sidebar({ collapsed }: SidebarProps): React.JSX.Element {
     <SidebarView
       collapsed={collapsed}
       workspaces={workspaces}
+      workspaceGroups={workspaceGroups}
       selectedWorkspaceIndex={selectedWorkspaceIndex}
       onNewWorkspace={newWorkspace}
       onSelectWorkspace={selectWorkspace}

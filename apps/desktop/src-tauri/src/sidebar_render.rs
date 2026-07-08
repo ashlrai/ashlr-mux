@@ -46,8 +46,11 @@ use cmux_workspaces::{
 ///
 /// Consumes `snapshot.workspaces` in persisted order (no re-sort); see the
 /// module doc-comment for the mapping decisions and divergences.
-// Not yet consumed by non-test code: A4 wires this projection into the live
-// sidebar command. Keep it public and warning-clean until then.
+// Not consumed by non-test code: A4 landed the projection WEB-SIDE
+// (`web/src/sidebar/snapshotProjection.ts`, a tested twin of this mapping),
+// matching the canonical draw-time call site (`ContentView.swift:10395`). This
+// Rust projection stays as the golden-pinned oracle twin and for future
+// native consumers (e.g. a CLI `list-workspaces` renderer).
 #[allow(dead_code)]
 pub fn render_items(snapshot: &SessionTabManagerSnapshot) -> Vec<SidebarWorkspaceRenderItem> {
     let rows: Vec<WorkspaceRow> = snapshot

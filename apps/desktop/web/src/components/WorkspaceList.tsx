@@ -1,8 +1,12 @@
 // Renders the projected `SidebarWorkspaceRenderItem[]` (see
 // `../sidebar/renderItems`) into the sidebar: group headers (member count +
-// collapse chevron) and workspace rows (pin state + selection). Pure/structural
-// — collapse suppression already happened in `renderItems`, so a collapsed
-// group simply arrives here without its member rows.
+// collapse chevron) and workspace rows (pin state + selection + close).
+// Pure/presentational — collapse suppression already happened in `renderItems`,
+// so a collapsed group simply arrives here without its member rows.
+//
+// A group header IS its anchor workspace's row (renderItems suppresses the
+// anchor as a plain row), so clicking a header selects the anchor. Toggling
+// collapse from the chevron is a later slice (A5, `session_set_group_collapsed`).
 //
 // Reuses the shared `@cmux/webviews` Icon for glyphs. The icon set has no
 // dedicated folder/right-chevron, so a collapsed group shows the right-pointing
@@ -18,6 +22,15 @@ export interface WorkspaceListProps {
   /// Ids of currently-selected workspaces. A group header counts as selected
   /// when its anchor workspace is selected.
   selectedWorkspaceIds?: ReadonlySet<string>;
+  /// Resolves a workspace id to its row label; defaults to the id itself.
+  titleForWorkspace?: (workspaceId: string) => string;
+  /// Whether workspace rows expose a close (✕) affordance. Canonical
+  /// `TabManager.closeWorkspace` is a no-op with one workspace left, so the
+  /// sole survivor hides it.
+  canCloseWorkspaces?: boolean;
+  /// Row activation — a group header activates its anchor workspace.
+  onSelectWorkspace?: (workspaceId: string) => void;
+  onCloseWorkspace?: (workspaceId: string) => void;
 }
 
 function classNames(...parts: (string | false | undefined)[]): string {
@@ -27,9 +40,11 @@ function classNames(...parts: (string | false | undefined)[]): string {
 function GroupHeaderRow({
   item,
   isSelected,
+  onSelect,
 }: {
   item: Extract<SidebarWorkspaceRenderItem, { kind: "groupHeader" }>;
   isSelected: boolean;
+  onSelect?: (workspaceId: string) => void;
 }) {
   const { group, memberWorkspaceIds } = item;
   return (
@@ -43,6 +58,8 @@ function GroupHeaderRow({
       data-group-id={group.id}
       data-collapsed={group.isCollapsed ? "true" : "false"}
       aria-expanded={group.isCollapsed ? "false" : "true"}
+      aria-selected={isSelected ? "true" : "false"}
+      onClick={() => onSelect?.(group.anchorWorkspaceId)}
     >
       <span className="cmux-sidebar-group-chevron" aria-hidden="true">
         <Icon name={group.isCollapsed ? "arrow" : "expand"} />
@@ -58,27 +75,56 @@ function GroupHeaderRow({
 function WorkspaceRowItem({
   item,
   isSelected,
+  title,
+  canClose,
+  onSelect,
+  onClose,
 }: {
   item: Extract<SidebarWorkspaceRenderItem, { kind: "workspace" }>;
   isSelected: boolean;
+  title: string;
+  canClose: boolean;
+  onSelect?: (workspaceId: string) => void;
+  onClose?: (workspaceId: string) => void;
 }) {
   const { workspace } = item;
   return (
     <li
       className={classNames(
-        "cmux-sidebar-workspace-row",
+        "cmux-sidebar-row",
         workspace.isPinned && "is-pinned",
         isSelected && "is-selected",
       )}
       data-workspace-id={workspace.id}
       aria-selected={isSelected ? "true" : "false"}
+      onClick={() => onSelect?.(workspace.id)}
     >
-      {workspace.isPinned ? (
-        <span className="cmux-sidebar-workspace-pin" aria-hidden="true">
-          <Icon name="files" />
-        </span>
+      <span
+        className={classNames(
+          "cmux-icon",
+          "cmux-sidebar-row-icon",
+          workspace.isPinned && "cmux-sidebar-workspace-pin",
+        )}
+        aria-hidden="true"
+      >
+        <Icon name={workspace.isPinned ? "files" : "classic"} />
+      </span>
+      <span className="cmux-sidebar-row-label">{title}</span>
+      {canClose ? (
+        <button
+          type="button"
+          className="cmux-sidebar-row-close"
+          title="Close workspace"
+          aria-label={`Close ${title}`}
+          onClick={(event) => {
+            // Don't let the row's select handler fire on close.
+            event.stopPropagation();
+            onClose?.(workspace.id);
+          }}
+        >
+          ✕
+        </button>
       ) : null}
-      <span className="cmux-sidebar-workspace-id">{workspace.id}</span>
     </li>
   );
 }
@@ -86,10 +132,14 @@ function WorkspaceRowItem({
 export function WorkspaceList({
   items,
   selectedWorkspaceIds,
+  titleForWorkspace,
+  canCloseWorkspaces,
+  onSelectWorkspace,
+  onCloseWorkspace,
 }: WorkspaceListProps) {
   const selected = selectedWorkspaceIds ?? new Set<string>();
   return (
-    <ul className="cmux-sidebar-workspace-list">
+    <ul className="cmux-sidebar-list cmux-sidebar-workspace-list">
       {items.map((item) => {
         if (item.kind === "groupHeader") {
           return (
@@ -97,6 +147,7 @@ export function WorkspaceList({
               key={`group:${item.group.id}`}
               item={item}
               isSelected={selected.has(item.group.anchorWorkspaceId)}
+              onSelect={onSelectWorkspace}
             />
           );
         }
@@ -105,6 +156,10 @@ export function WorkspaceList({
             key={`workspace:${item.workspace.id}`}
             item={item}
             isSelected={selected.has(item.workspace.id)}
+            title={titleForWorkspace?.(item.workspace.id) ?? item.workspace.id}
+            canClose={canCloseWorkspaces ?? false}
+            onSelect={onSelectWorkspace}
+            onClose={onCloseWorkspace}
           />
         );
       })}

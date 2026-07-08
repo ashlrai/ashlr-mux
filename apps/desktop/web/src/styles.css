@@ -159,6 +159,48 @@ body,
   flex: 1 1 auto;
 }
 
+/* Workspace-group header row (projected by renderItems): chevron + name +
+   member count. Styled like a section label; clicking it activates the group's
+   anchor workspace, so it hovers/selects like a row. */
+.cmux-sidebar-group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px 3px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #6b7484;
+  cursor: pointer;
+}
+.cmux-sidebar-group-header:hover {
+  background: #161b26;
+}
+.cmux-sidebar-group-header.is-selected {
+  background: #1f2937;
+  color: #f3f6fb;
+}
+.cmux-sidebar-group-chevron {
+  display: inline-flex;
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+}
+.cmux-sidebar-group-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cmux-sidebar-group-count {
+  flex: 0 0 auto;
+  font-size: 10px;
+  color: #6b7484;
+}
+
 .cmux-sidebar-row {
   display: flex;
   align-items: center;

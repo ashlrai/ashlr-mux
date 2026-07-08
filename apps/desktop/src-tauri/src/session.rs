@@ -20,6 +20,7 @@ use cmux_core::session::{
 };
 use cmux_core::session_ops::{self, CloseOutcome, SplitChild};
 use tauri::{AppHandle, Emitter, State};
+use uuid::Uuid;
 
 /// Event carrying the full session snapshot after any structural change.
 const SESSION_CHANGED_EVENT: &str = "cmux://session-changed";
@@ -46,7 +47,7 @@ impl Default for SessionState {
 
 /// A single window / single workspace / single pane starting layout.
 fn initial_snapshot(first_panel_id: &str) -> AppSessionSnapshot {
-    AppSessionSnapshot {
+    let mut snapshot = AppSessionSnapshot {
         version: SESSION_SNAPSHOT_SCHEMA_VERSION,
         created_at: 0,
         windows: vec![SessionWindowSnapshot {
@@ -57,6 +58,24 @@ fn initial_snapshot(first_panel_id: &str) -> AppSessionSnapshot {
                 workspace_groups: None,
             },
         }],
+    };
+    ensure_workspace_ids(&mut snapshot);
+    snapshot
+}
+
+/// Mint a `workspace_id` for every workspace that lacks one. Canonical parity:
+/// the Swift restore mints a fresh UUID exactly once per workspace missing an id
+/// (`TabManager.swift:5960-5975`), and live `Workspace`s carry an identity from
+/// init. This stateful session layer is the sole owner of id synthesis — the
+/// pure `session_ops` builders stay deterministic and stateless projections
+/// (`sidebar_render`, the web sidebar) never re-mint, they skip id-less rows.
+fn ensure_workspace_ids(snapshot: &mut AppSessionSnapshot) {
+    for window in &mut snapshot.windows {
+        for workspace in &mut window.tab_manager.workspaces {
+            if workspace.workspace_id.is_none() {
+                workspace.workspace_id = Some(Uuid::new_v4().to_string());
+            }
+        }
     }
 }
 
@@ -151,6 +170,9 @@ fn apply_new_workspace(snapshot: &mut AppSessionSnapshot, new_panel_id: &str) {
     if let Some(window) = snapshot.windows.first_mut() {
         session_ops::new_workspace(&mut window.tab_manager, new_panel_id);
     }
+    // The fresh workspace comes out of the pure builder id-less; identity is
+    // minted here, in the stateful layer (see `ensure_workspace_ids`).
+    ensure_workspace_ids(snapshot);
 }
 
 /// Select the workspace at `index` in the first window (out-of-range is a
@@ -392,6 +414,37 @@ mod tests {
         assert_eq!(tabs.selected_workspace_index, Some(0));
         assert_eq!(tabs.workspaces.len(), 1);
         assert_eq!(count_leaves(active_layout(&snapshot)), 1);
+    }
+
+    #[test]
+    fn initial_snapshot_mints_a_workspace_id() {
+        let snapshot = initial_snapshot(FIRST_PANEL_ID);
+        let id = snapshot.windows[0].tab_manager.workspaces[0]
+            .workspace_id
+            .as_deref()
+            .expect("workspace_id minted");
+        assert!(Uuid::parse_str(id).is_ok(), "not a uuid: {id}");
+    }
+
+    #[test]
+    fn new_workspace_mints_an_id_and_keeps_existing_ids() {
+        let mut snapshot = initial_snapshot("surface-1");
+        let first_id = snapshot.windows[0].tab_manager.workspaces[0]
+            .workspace_id
+            .clone();
+        apply_new_workspace(&mut snapshot, "surface-2");
+        let tabs = &snapshot.windows[0].tab_manager;
+        assert_eq!(tabs.workspaces.len(), 2);
+        // Every workspace has a valid uuid id, the pre-existing one unchanged,
+        // and the two ids are distinct.
+        let ids: Vec<&str> = tabs
+            .workspaces
+            .iter()
+            .map(|ws| ws.workspace_id.as_deref().expect("id minted"))
+            .collect();
+        assert!(ids.iter().all(|id| Uuid::parse_str(id).is_ok()));
+        assert_eq!(tabs.workspaces[0].workspace_id, first_id);
+        assert_ne!(ids[0], ids[1]);
     }
 
     #[test]

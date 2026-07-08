@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import type {
   AppSessionSnapshot,
   SessionSplitOrientation,
+  SessionWorkspaceGroupSnapshot,
   SessionWorkspaceLayoutSnapshot,
   SessionWorkspaceSnapshot,
 } from "@cmux/core-types";
@@ -31,6 +32,8 @@ export interface UseSession {
   activeLayout: SessionWorkspaceLayoutSnapshot | null;
   /** The first window's workspaces (the sidebar / tab list), in order. */
   workspaces: readonly SessionWorkspaceSnapshot[];
+  /** The first window's workspace groups, if any. */
+  workspaceGroups?: readonly SessionWorkspaceGroupSnapshot[];
   /** Index of the selected workspace in `workspaces` (clamped, defaults to 0). */
   selectedWorkspaceIndex: number;
   /** Create a fresh terminal workspace and select it. */
@@ -150,6 +153,7 @@ export function useSession(): UseSession {
     snapshot,
     activeLayout: activeLayoutOf(snapshot),
     workspaces,
+    workspaceGroups: tabs?.workspace_groups,
     selectedWorkspaceIndex,
     split,
     close,

@@ -88,8 +88,46 @@ describe("WorkspaceList", () => {
       '<span class="cmux-sidebar-group-count">2</span>',
     );
     // No workspace rows are rendered for the collapsed members.
-    expect(markup).not.toContain("cmux-sidebar-workspace-row");
+    expect(markup).not.toContain('<li class="cmux-sidebar-row');
     expect(markup).not.toContain(`data-workspace-id="${member}"`);
+  });
+
+  test("labels rows via titleForWorkspace, falling back to the id", () => {
+    const { solo, member } = UUID;
+    const items = renderItems(
+      [row(solo, undefined, false), row(member, undefined, false)],
+      groupsMap([]),
+    );
+    const titles = new Map<string, string>([[solo, "zsh"]]);
+    const markup = renderToStaticMarkup(
+      <WorkspaceList
+        items={items}
+        titleForWorkspace={(id) => titles.get(id) ?? id}
+      />,
+    );
+    expect(markup).toContain(
+      '<span class="cmux-sidebar-row-label">zsh</span>',
+    );
+    // No title known for the member -> the id itself.
+    expect(markup).toContain(
+      `<span class="cmux-sidebar-row-label">${member}</span>`,
+    );
+  });
+
+  test("close affordance renders only when canCloseWorkspaces", () => {
+    const { solo } = UUID;
+    const items = renderItems([row(solo, undefined, false)], groupsMap([]));
+    const without = renderToStaticMarkup(<WorkspaceList items={items} />);
+    expect(without).not.toContain("cmux-sidebar-row-close");
+    const withClose = renderToStaticMarkup(
+      <WorkspaceList
+        items={items}
+        canCloseWorkspaces
+        titleForWorkspace={() => "zsh"}
+      />,
+    );
+    expect(withClose).toContain("cmux-sidebar-row-close");
+    expect(withClose).toContain('aria-label="Close zsh"');
   });
 
   test("applies selected and pinned classes to workspace rows", () => {
@@ -107,14 +145,14 @@ describe("WorkspaceList", () => {
     // The pinned member row carries is-pinned and renders a pin glyph.
     expect(markup).toMatch(
       new RegExp(
-        `<li class="cmux-sidebar-workspace-row is-pinned"[^>]*data-workspace-id="${member}"`,
+        `<li class="cmux-sidebar-row is-pinned"[^>]*data-workspace-id="${member}"`,
       ),
     );
     expect(markup).toContain("cmux-sidebar-workspace-pin");
     // The selected solo row carries is-selected and aria-selected.
     expect(markup).toMatch(
       new RegExp(
-        `<li class="cmux-sidebar-workspace-row is-selected"[^>]*data-workspace-id="${solo}"[^>]*aria-selected="true"`,
+        `<li class="cmux-sidebar-row is-selected"[^>]*data-workspace-id="${solo}"[^>]*aria-selected="true"`,
       ),
     );
     // The member row is not selected.
