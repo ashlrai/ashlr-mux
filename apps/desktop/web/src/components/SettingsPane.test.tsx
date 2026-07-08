@@ -182,6 +182,88 @@ describe("SettingsPane appearance radio", () => {
   });
 });
 
+// ---- Search -------------------------------------------------------------------
+
+describe("SettingsPane search", () => {
+  const fullConfig: Config = {
+    sidebar: makeSidebar(),
+    notifications: makeNotifications(),
+    app: makeApp(),
+    shortcuts: makeShortcuts(),
+  };
+  const allHeadings = [
+    "<h2>Sidebar</h2>",
+    "<h2>Notifications</h2>",
+    "<h2>Appearance</h2>",
+    "<h2>Shortcuts</h2>",
+  ];
+
+  test.each([undefined, "", "   "])(
+    "query %p renders the search input and the normal sections",
+    (searchQuery) => {
+      const markup = renderToStaticMarkup(
+        <SettingsPane config={fullConfig} onChange={noop} searchQuery={searchQuery} />,
+      );
+      expect(markup).toContain("data-settings-search");
+      for (const heading of allHeadings) {
+        expect(markup).toContain(heading);
+      }
+      expect(markup).not.toContain("cmux-settings-search-results");
+    },
+  );
+
+  test("a matching query replaces the sections with results", () => {
+    const markup = renderToStaticMarkup(
+      <SettingsPane config={fullConfig} onChange={noop} searchQuery="dock badge" />,
+    );
+    expect(markup).toContain("cmux-settings-search-results");
+    expect(markup).toContain('data-result-id="setting:app:dock-badge"');
+    for (const heading of allHeadings) {
+      expect(markup).not.toContain(heading);
+    }
+    // The hit renders its parent-section subtitle and a clickable button.
+    const row = markup.match(
+      /<li[^>]*data-result-id="setting:app:dock-badge"[^>]*>.*?<\/li>/,
+    )?.[0];
+    expect(row).toBeDefined();
+    expect(row).toContain(
+      '<span class="cmux-settings-search-result-section">App</span>',
+    );
+    expect(row).not.toContain("disabled");
+  });
+
+  test("results keep producer order; unmapped targets are disabled", () => {
+    const markup = renderToStaticMarkup(
+      <SettingsPane config={fullConfig} onChange={noop} searchQuery="copy on select" />,
+    );
+    const firstResultId = markup.match(/data-result-id="([^"]+)"/)?.[1];
+    expect(firstResultId).toBe("setting:terminal:copy-on-select");
+    const row = markup.match(
+      /<li[^>]*data-result-id="setting:terminal:copy-on-select"[^>]*>.*?<\/li>/,
+    )?.[0];
+    expect(row).toBeDefined();
+    expect(row).toContain("disabled");
+  });
+
+  test("stop-words-only query lists the 16 sections without subtitles", () => {
+    const markup = renderToStaticMarkup(
+      <SettingsPane config={fullConfig} onChange={noop} searchQuery="settings" />,
+    );
+    expect(markup.match(/<li /g)).toHaveLength(16);
+    expect(markup).toContain('data-result-id="section:account"');
+    expect(markup).toContain('data-result-id="section:reset"');
+    expect(markup).not.toContain("cmux-settings-search-result-section");
+  });
+
+  test("no matches renders the canonical No Results text", () => {
+    const markup = renderToStaticMarkup(
+      <SettingsPane config={fullConfig} onChange={noop} searchQuery="zzzzqqqq" />,
+    );
+    expect(markup).toContain("No Results");
+    expect(markup).not.toContain("<li ");
+  });
+});
+
 // ---- Shortcuts list ---------------------------------------------------------
 
 describe("SettingsPane shortcuts list", () => {

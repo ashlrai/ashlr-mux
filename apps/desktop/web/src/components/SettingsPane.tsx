@@ -3,7 +3,9 @@
 // `Config` prop, and emits the next `Config` through `onChange`. It owns NO
 // state and performs NO IPC — the parent holds the config and persists it. All
 // mutations go through the pure `configReducer`, mirroring how the macOS
-// Settings panes mutate the in-memory `CmuxConfigFile`.
+// Settings panes mutate the in-memory `CmuxConfigFile`. The search box is
+// controlled like everything else (`searchQuery` / `onSearchQueryChange`);
+// navigation (scroll-to-section) is the parent's side effect via `onNavigate`.
 
 import type { Appearance, Config, ShortcutBinding } from "@cmux/core-types";
 
@@ -12,10 +14,17 @@ import {
   type NotificationsBoolKey,
   type SidebarBoolKey,
 } from "../settings/configReducer";
+import {
+  settingsSearchResults,
+  type SettingsPaneSection,
+} from "../settings/settingsSearchResults";
 
 export interface SettingsPaneProps {
   config: Config;
   onChange: (next: Config) => void;
+  searchQuery?: string;
+  onSearchQueryChange?: (query: string) => void;
+  onNavigate?: (section: SettingsPaneSection) => void;
 }
 
 interface FlagRow<K> {
@@ -68,11 +77,79 @@ function formatBinding(binding: ShortcutBinding | null | undefined): string {
   return Array.isArray(binding) ? binding.join(" ") : binding;
 }
 
-export function SettingsPane({ config, onChange }: SettingsPaneProps) {
+export function SettingsPane({
+  config,
+  onChange,
+  searchQuery,
+  onSearchQueryChange,
+  onNavigate,
+}: SettingsPaneProps) {
   const { sidebar, notifications, app, shortcuts } = config;
+  // Trimmed-empty restores the plain section state (SettingsWindowScene.swift:143).
+  const isSearching = (searchQuery ?? "").trim() !== "";
+
+  const searchInput = (
+    <input
+      type="search"
+      className="cmux-settings-search"
+      data-settings-search
+      value={searchQuery ?? ""}
+      placeholder="Search"
+      aria-label="Search settings"
+      onChange={(e) => onSearchQueryChange?.(e.target.value)}
+    />
+  );
+
+  if (isSearching) {
+    // The flat pane is both results list and detail: while searching, only the
+    // hits render. Canonical lists ALL matches; rows whose target has no web
+    // pane section are disabled. Clicking clears the query (restoring the
+    // pane), then navigates to the hit's parent section — the web adaptation
+    // of `selectSidebarEntry` (SettingsWindowScene.swift:230-245).
+    const results = settingsSearchResults(searchQuery ?? "");
+    return (
+      <div className="cmux-settings-pane">
+        {searchInput}
+        {results.length === 0 ? (
+          <p className="cmux-settings-search-empty">No Results</p>
+        ) : (
+          <ul className="cmux-settings-search-results">
+            {results.map((result) => (
+              <li
+                key={result.id}
+                className="cmux-settings-row"
+                data-result-id={result.id}
+              >
+                <button
+                  type="button"
+                  disabled={result.paneSection == null}
+                  onClick={() => {
+                    onSearchQueryChange?.("");
+                    if (result.paneSection) {
+                      onNavigate?.(result.paneSection);
+                    }
+                  }}
+                >
+                  <span className="cmux-settings-search-result-title">
+                    {result.title}
+                  </span>
+                  {result.subtitle != null && (
+                    <span className="cmux-settings-search-result-section">
+                      {result.subtitle}
+                    </span>
+                  )}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="cmux-settings-pane">
+      {searchInput}
       {sidebar && (
         <section className="cmux-settings-section" data-section="sidebar">
           <h2>Sidebar</h2>
