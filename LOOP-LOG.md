@@ -668,4 +668,25 @@ shortcutFormat / placement / reorder / switcherIndex (share `bun test src`; sequ
   - **C1** — already complete: scout CONFIRMED `insert_first` is threaded end-to-end (split_pane→apply_split→session_split, default false=append-second). No code change. JS caller direction-map (left/up=first, right/down=second, camelCase insertFirst) = deferred GUI.
   - **C2** (`48a685739`) — `session_equalize_dividers` command + new `session_ops::equalize_dividers` whole-tree walker using orientation-aware `span_count` (parity-exact port of CmuxPanes `ExternalTreeNode.spanCount(along:)` — pane=1, nested split recurses only when orientation==axis else 1). NOT the pre-existing leaf-count `equalize_divider` (diverges on mixed-orientation trees: H(V(a,b),c)→root 0.5 span vs 2/3 leaf; canonical=span). foundSplit-style bool (single pane→no-op). Command mirrors session_set_divider (lock→apply→clone→emit cmux://session-changed). Verify SOLID (span semantics + clamp-folds-plan+apply equivalence + no default-regression + golden byte-stable). Simplify removed one unreachable `total_span==0` guard (span_count always ≥1; canonical has no guard → parity-improving). cmux-core 161, cmux-desktop 86, golden 9 byte-stable, clippy clean.
   Pushed `68bc6dbf7..48a685739` → fork/windows-port.
+- UI buildout #11 — NEW MANDATE (user /loop 2026-07-07): "build the ENTIRE
+  frontend to parity, ready for testing" — the previously-deferred GUI-wiring
+  tail is now the work, blind-build authorized; user live-verifies at the end.
+  Branch `frontend-parity` (off agent-cwd-picker, stacks on PR #3). Two slices:
+  - **A4** — rich sidebar mounted. ENABLER BUG FOUND: `fresh_terminal_workspace`
+    never minted `workspace_id` (Default→None) → the id-strict projection would
+    have rendered an EMPTY sidebar for every live workspace; now mints UUID
+    (canonical `Workspace.init id = UUID()`), +regression test. Web
+    `sidebar/liveRenderItems.ts` = TS mirror of `sidebar_render.rs` (Swift-
+    canonical hyphenated-UUID validation, lowercase normalization, 3-tier
+    anchor fallback, member-less drop, de-dup; tests mirror the Rust suite
+    1:1 + a case-insensitivity pin). WorkspaceList upgraded scaffold→live rows
+    (titles, selection, click-select incl. header→anchor, hover-✕ gated on
+    last-tab no-op). SidebarView consumes the tab-manager snapshot; id→index
+    translation at dispatch. Group-header CSS added. Collapse toggle = A5.
+  - **C1/C2 callers** — `session/splitDirection.ts` (left/up=insertFirst),
+    4-way PaneControls split buttons (▌▐▀▄), `useSession.equalizeDividers`,
+    palette activateAt now RUNS intents (equalizeSplits, newWorkspace; unwired
+    kinds still log).
+  Gate GREEN: cmux-core 162 (+1) / cmux-desktop 88 / goldens byte-stable /
+  clippy clean / web 474 (+18) / tsc clean.
   === LOOP CHECKPOINT (2026-07-07, after iter #10) === 5 iterations this session (#6-#10): A1/A3/A9, D5/D6/D7/D9, E8/E9, G1, C1(confirmed)/C2 = 11 slices, all pushed green, 4 real defects caught by adversarial verify (config-override scope, phantom-group anchor, G1 live 403 bug, +). The HEADLESS command/ops/pure-model frontier for the touched areas is now largely harvested. What REMAINS is dominantly the DEFERRED GUI-WIRING TAIL — each headless slice above left a thin caller (JS invoke / DOM mutation / keyboard-menu trigger / webview.eval render push) that needs the running app to build+verify. Consolidated GUI-verify queue for the user's next `npx @tauri-apps/cli dev` session (highest value first): (1) D4 live command-palette overlay — compose windowStore+paletteQuery+commandCatalog+switcherEntries+renderSequencing+resultsGating+command_palette_search + open-shortcut/focus/Escape/arrow/click/Enter; (2) A4 mount rich WorkspaceList via render_items (groups/pins/collapse) + wire selection; (3) directional-split + equalize UI triggers (C1 insertFirst arg from split buttons/keys; C2 equalize keyboard/menu/palette action) — commands are LIVE, just need callers; (4) markdown doc-feed caller (await markdown_set_document before markdown_render) + appearance apply (resolveAppliedAppearance→document color-scheme + persist) + settings-search box (settingsEntriesMatching→SettingsPane); (5) window chrome B1-B7; (6) live agents F1-F6 (Codex/OpenCode installed). Remaining PURE-headless candidates are thinner: C3 (resizeDividerAdjustment key handler — mostly GUI), C4 (directional pane focus — needs a web focused-pane concept), E6 (shortcut-format wiring — GUI), A5-A8/A10-A14 (sidebar richness — mostly GUI-mount). Recommend: pause autonomous headless churn; do a GUI session next. LOOP CONTINUES only if more genuinely-headless slices are worth it — else await user for the live-verify phase.

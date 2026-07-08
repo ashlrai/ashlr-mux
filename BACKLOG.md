@@ -50,7 +50,7 @@ lacks `group_id`/`is_pinned`.
   `is_pinned: bool`; regen core-types; golden stays byte-stable. `[S, deps: none, headless]` — done 2026-07-07 (`23b8cfc29`); modeled `is_pinned` as `Option<bool>` omit-when-none (not bare `bool`) to keep Swift-authored golden fixtures byte-identical (verified SOLID vs `SessionPersistence.swift:1833-1834`). If strict `bool` typing is later required: `pub is_pinned: bool` + `skip_serializing_if="std::ops::Not::not"`.
 - [x] A2 — Hide the ✕ on the sole workspace row (canonical disables close on last tab). `[XS, deps: none, headless]` — done 2026-07-06; split `Sidebar` into `SidebarView`(pure)+container, added `Sidebar.test.tsx`.
 - [x] A3 — Add `cmux-workspaces` dep to src-tauri + a `render_items` projection helper. `[S, deps: A1, headless]` — done 2026-07-07 (`4a34e56dd`); pure `src-tauri/src/sidebar_render.rs` `render_items(&SessionTabManagerSnapshot) -> Vec<SidebarWorkspaceRenderItem>` over golden-pinned `cmux_workspaces::render_items`. Group anchor uses the canonical 3-tier restore fallback (`TabManager.swift:6018-6027`). `#[allow(dead_code)]` until A4 wires it. Verify FIXED-1 (anchor fallback was anchor_workspace_id-only). NOTE: workspace_id None → row skipped (deferred divergence: canonical restore mints a fresh UUID once in the stateful restore layer — that belongs in A4, not this stateless projection).
-- [ ] A4 — Wire `WorkspaceList.tsx` into the live sidebar via `renderItems`. `[M, deps: A3, headless]`
+- [x] A4 — Wire `WorkspaceList.tsx` into the live sidebar via `renderItems`. `[M, deps: A3, headless]` — done 2026-07-07 (frontend-parity branch); web `sidebar/liveRenderItems.ts` mirrors `sidebar_render.rs` (tests 1:1), Sidebar renders WorkspaceList (titles/selection/close/groups). ENABLER: `fresh_terminal_workspace` now mints `workspace_id` (was None → projection skipped every live row → empty sidebar).
 - [ ] A5 — Group collapse/expand (`session_set_group_collapsed`). `[M, deps: A4, headless]`
 - [ ] A6 — Inline rename (`session_rename_workspace`; empty clears custom_title). `[M, deps: A4, headless]`
 - [ ] A7 — Pin/unpin + pinned-ahead reorder (`session_set_workspace_pinned`). `[M, deps: A1,A4, headless]`
@@ -77,6 +77,9 @@ ported but unwired.
 ## Area C — Splits, dividers, 2D canvas
 Splits live + well-tested; several pure ops (equalize, resize, directional) have NO
 caller. Canvas ENTIRELY absent from web but `cmux-canvas` + data model exist.
+C1/C2 JS callers landed 2026-07-07 (frontend-parity): `session/splitDirection.ts`
+direction map, 4-way PaneControls split buttons, `useSession.equalizeDividers`,
+palette intents equalizeSplits/newWorkspace now RUN (others still log).
 
 - [x] C1 — Directional split insertion (thread `SPLIT_DIRECTION.insertFirst` → `session_split`). `[S, deps: none, headless]` — done 2026-07-07 (`48a685739`); was ALREADY complete at the command/ops layer (`insert_first` threaded split_pane→apply_split→session_split, default false=append-second). Remaining = the JS caller's `direction→(orientation, insertFirst camelCase)` map (left/up=first, right/down=second) = deferred GUI wiring.
 - [x] C2 — Equalize dividers action (apply `equalizeDividerPlan`). `[S, deps: none, headless]` — done 2026-07-07 (`48a685739`); `session_equalize_dividers` command over new `session_ops::equalize_dividers` whole-tree walker with orientation-aware `span_count` (parity-exact vs CmuxPanes `ExternalTreeNode.spanCount(along:)` — NOT leaf-count weighting; they diverge on mixed-orientation trees). Verify SOLID. UI trigger (keyboard/menu/palette) = deferred GUI wiring.
