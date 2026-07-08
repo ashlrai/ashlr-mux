@@ -798,3 +798,28 @@ shortcutFormat / placement / reorder / switcherIndex (share `bun test src`; sequ
   provider persistence, window-chrome B-lanes (GUI-verify tails accumulating —
   a live `npx @tauri-apps/cli dev` verification session is increasingly
   valuable before more UI stacking).
+
+- UI buildout #17 (ultracode wave, workflow w2hbn2ajb: 12 agents, 4 lanes,
+  ALL SOLID, 7 minor — noted-not-applied: F5 per-panel-vs-global persistence
+  divergence (documented in commit), settings write on the actor thread
+  (perf, revisit if RPC latency shows), palette workspaceName vs
+  workspaceDisplayName subtitle nuance, A8 placeholder-key sweep in shift
+  ranges (corrupted-row edge), A10 normalize gate mirror-vs-model groups
+  emptiness nuance):
+  - **A10 backend** (`2cc228a79`) — reorder op + command. Scout's key find:
+    ALL planning primitives already golden-pinned in cmux-workspaces
+    (clamps/normalize/sync) — the op is a positional snapshot<->Uuid mirror
+    adapter + router (anchors → top-level path, members → in-section clamp,
+    ungrouped → pin-tier clamp). Drag-inference (isDragOperation=true) =
+    the future drag-UI lane.
+  - **A8** (`fc74baaa0`) — sidebar multi-select via ported selection.ts;
+    modifiers ride the row-click callbacks; is-multi-selected exclusive of
+    is-selected (canonical isActive-first).
+  - **Palette r3** (`2faf3b082`) — toggleWorkspacePin + clearWorkspaceName;
+    closeOthers stays unhandled (canonical confirm guards not portable yet).
+  - **F5** (`26b6bb1a2`) — provider.select persists via NEW app_settings.rs
+    (atomic JSON store in app-config dir; corrupt→defaults) = the settings-
+    persistence FOUNDATION (appearance localStorage interim can migrate).
+  Gate: cmux-core 206 (+12), cmux-desktop 108 (+13), goldens stable, clippy
+  0; web 678 (+18), tsc clean. NEXT wave-18: A11 context menus, A13 badges
+  contract, notification-config wiring, agent-session replay groundwork.
