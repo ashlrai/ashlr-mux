@@ -689,4 +689,17 @@ shortcutFormat / placement / reorder / switcherIndex (share `bun test src`; sequ
     kinds still log).
   Gate GREEN: cmux-core 162 (+1) / cmux-desktop 88 / goldens byte-stable /
   clippy clean / web 474 (+18) / tsc clean.
+- UI buildout #12 — A5 (group collapse/expand) + A6 (inline rename), the
+  sidebar interaction chain over #11's A4 mount. cmux-core `rename_workspace`
+  (canonical setCustomTitle user-path: trim ≈ whitespacesAndNewlines, empty
+  clears custom_title+custom_title_source, else sets both w/ "user";
+  Workspace.swift:4391) + `set_group_collapsed` (TabManager.swift:1838,
+  UUID-value case-insensitive match, string-equality fallback). src-tauri
+  commands `session_rename_workspace` / `session_set_group_collapsed` +
+  lib.rs registration. Web: useSession renameWorkspace/setGroupCollapsed;
+  WorkspaceList chevron → labelled toggle button (stopPropagation vs header
+  select), dbl-click inline rename editor (Enter/blur commit, Esc cancel);
+  Sidebar threads through (rename id→index). Gate GREEN: cmux-core 167 (+5) /
+  cmux-desktop 90 (+2) / goldens byte-stable / clippy clean / web 476 (+2) /
+  tsc clean. Pushed → fork/frontend-parity (PR #4).
   === LOOP CHECKPOINT (2026-07-07, after iter #10) === 5 iterations this session (#6-#10): A1/A3/A9, D5/D6/D7/D9, E8/E9, G1, C1(confirmed)/C2 = 11 slices, all pushed green, 4 real defects caught by adversarial verify (config-override scope, phantom-group anchor, G1 live 403 bug, +). The HEADLESS command/ops/pure-model frontier for the touched areas is now largely harvested. What REMAINS is dominantly the DEFERRED GUI-WIRING TAIL — each headless slice above left a thin caller (JS invoke / DOM mutation / keyboard-menu trigger / webview.eval render push) that needs the running app to build+verify. Consolidated GUI-verify queue for the user's next `npx @tauri-apps/cli dev` session (highest value first): (1) D4 live command-palette overlay — compose windowStore+paletteQuery+commandCatalog+switcherEntries+renderSequencing+resultsGating+command_palette_search + open-shortcut/focus/Escape/arrow/click/Enter; (2) A4 mount rich WorkspaceList via render_items (groups/pins/collapse) + wire selection; (3) directional-split + equalize UI triggers (C1 insertFirst arg from split buttons/keys; C2 equalize keyboard/menu/palette action) — commands are LIVE, just need callers; (4) markdown doc-feed caller (await markdown_set_document before markdown_render) + appearance apply (resolveAppliedAppearance→document color-scheme + persist) + settings-search box (settingsEntriesMatching→SettingsPane); (5) window chrome B1-B7; (6) live agents F1-F6 (Codex/OpenCode installed). Remaining PURE-headless candidates are thinner: C3 (resizeDividerAdjustment key handler — mostly GUI), C4 (directional pane focus — needs a web focused-pane concept), E6 (shortcut-format wiring — GUI), A5-A8/A10-A14 (sidebar richness — mostly GUI-mount). Recommend: pause autonomous headless churn; do a GUI session next. LOOP CONTINUES only if more genuinely-headless slices are worth it — else await user for the live-verify phase.
