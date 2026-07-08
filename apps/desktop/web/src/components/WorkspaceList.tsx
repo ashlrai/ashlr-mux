@@ -13,6 +13,8 @@
 // dedicated folder/right-chevron, so a collapsed group shows the right-pointing
 // `arrow` glyph and an expanded group the down-pointing `expand` glyph.
 
+import { useState } from "react";
+
 import { Icon } from "@cmux/webviews/src/icons";
 
 import type { SidebarWorkspaceRenderItem } from "../sidebar/renderItems";
@@ -34,6 +36,27 @@ export interface WorkspaceListProps {
   onCloseWorkspace?: (workspaceId: string) => void;
   /// Chevron activation — toggles the group's collapsed state.
   onToggleGroupCollapsed?: (groupId: string, nextCollapsed: boolean) => void;
+  /// Inline-rename commit (double-click a row label to begin editing). The RAW
+  /// input value is forwarded — trimming/clearing is the Rust op's job
+  /// (canonical `promptRename` passes the raw NSTextField value too; a single
+  /// mutation path). Rows expose the rename affordance only when provided.
+  onRenameWorkspace?: (workspaceId: string, title: string) => void;
+  /// Seeds the editing state so static-markup tests can render the rename
+  /// input without dispatching DOM events (the established test constraint).
+  defaultEditingWorkspaceId?: string;
+}
+
+/// Keyboard policy for the inline-rename input, kept pure so tests can assert
+/// it directly (renderToStaticMarkup cannot dispatch key events): Enter commits,
+/// Escape cancels, anything else is left to the input.
+export function renameActionForKey(key: string): "commit" | "cancel" | null {
+  if (key === "Enter") {
+    return "commit";
+  }
+  if (key === "Escape") {
+    return "cancel";
+  }
+  return null;
 }
 
 function classNames(...parts: (string | false | undefined)[]): string {
@@ -92,15 +115,23 @@ function WorkspaceRowItem({
   isSelected,
   title,
   canClose,
+  isEditing,
   onSelect,
   onClose,
+  onBeginRename,
+  onCommitRename,
+  onCancelRename,
 }: {
   item: Extract<SidebarWorkspaceRenderItem, { kind: "workspace" }>;
   isSelected: boolean;
   title: string;
   canClose: boolean;
+  isEditing: boolean;
   onSelect?: (workspaceId: string) => void;
   onClose?: (workspaceId: string) => void;
+  onBeginRename?: (workspaceId: string) => void;
+  onCommitRename?: (workspaceId: string, title: string) => void;
+  onCancelRename?: () => void;
 }) {
   const { workspace } = item;
   return (
@@ -124,7 +155,46 @@ function WorkspaceRowItem({
       >
         <Icon name={workspace.isPinned ? "files" : "classic"} />
       </span>
-      <span className="cmux-sidebar-row-label">{title}</span>
+      {isEditing ? (
+        <input
+          type="text"
+          className="cmux-sidebar-row-rename"
+          // Prefill = the resolved row title — parity with canonical
+          // `promptRename`'s `tab.customTitle ?? tab.title`
+          // (ContentView.swift:14944): titleForWorkspace already resolves
+          // custom_title || process_title || "Terminal".
+          defaultValue={title}
+          autoFocus
+          // Canonical promptRename select-alls the prefill (selectText,
+          // ContentView.swift:14954) so typing replaces the old title.
+          onFocus={(event) => event.currentTarget.select()}
+          aria-label={`Rename ${title}`}
+          // Never let a click inside the editor re-fire the row's select.
+          onClick={(event) => event.stopPropagation()}
+          onKeyDown={(event) => {
+            const action = renameActionForKey(event.key);
+            if (action === "commit") {
+              onCommitRename?.(workspace.id, event.currentTarget.value);
+            } else if (action === "cancel") {
+              onCancelRename?.();
+            }
+          }}
+          // Blur CANCELS: the canonical rename is a modal that commits only on
+          // the explicit Rename button (`guard response ==
+          // .alertFirstButtonReturn`, ContentView.swift:14957) — dismissal
+          // without affirmation discards, so losing focus maps to cancel.
+          onBlur={() => onCancelRename?.()}
+        />
+      ) : (
+        <span
+          className="cmux-sidebar-row-label"
+          onDoubleClick={
+            onBeginRename ? () => onBeginRename(workspace.id) : undefined
+          }
+        >
+          {title}
+        </span>
+      )}
       {canClose ? (
         <button
           type="button"
@@ -152,8 +222,16 @@ export function WorkspaceList({
   onSelectWorkspace,
   onCloseWorkspace,
   onToggleGroupCollapsed,
+  onRenameWorkspace,
+  defaultEditingWorkspaceId,
 }: WorkspaceListProps) {
   const selected = selectedWorkspaceIds ?? new Set<string>();
+  // At most one row edits at a time. Group ANCHOR rows are not renamable here:
+  // the header suppresses the anchor's plain row, and canonical group headers
+  // rename the GROUP (`renameWorkspaceGroup`) — a different op, out of scope.
+  const [editingWorkspaceId, setEditingWorkspaceId] = useState<string | null>(
+    defaultEditingWorkspaceId ?? null,
+  );
   return (
     <ul className="cmux-sidebar-list cmux-sidebar-workspace-list">
       {items.map((item) => {
@@ -175,8 +253,15 @@ export function WorkspaceList({
             isSelected={selected.has(item.workspace.id)}
             title={titleForWorkspace?.(item.workspace.id) ?? item.workspace.id}
             canClose={canCloseWorkspaces ?? false}
+            isEditing={editingWorkspaceId === item.workspace.id}
             onSelect={onSelectWorkspace}
             onClose={onCloseWorkspace}
+            onBeginRename={onRenameWorkspace ? setEditingWorkspaceId : undefined}
+            onCommitRename={(workspaceId, title) => {
+              onRenameWorkspace?.(workspaceId, title);
+              setEditingWorkspaceId(null);
+            }}
+            onCancelRename={() => setEditingWorkspaceId(null)}
           />
         );
       })}

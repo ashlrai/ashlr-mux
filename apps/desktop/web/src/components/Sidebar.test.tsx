@@ -35,6 +35,7 @@ function render(
       onNewWorkspace={noop}
       onSelectWorkspace={noop}
       onCloseWorkspace={noop}
+      onRenameWorkspace={noop}
       onToggleGroupCollapsed={noop}
     />,
   );
@@ -110,6 +111,20 @@ describe("SidebarView", () => {
     expect(markup).toContain("cmux-sidebar-group-header is-selected");
     // The expanded header's chevron exposes the collapse action.
     expect(markup).toContain('aria-label="Collapse group"');
+  });
+
+  test("a custom_title labels its row (the rename prefill source)", () => {
+    // Ties workspaceTitle (custom_title || process_title || "Terminal") to the
+    // rename affordance: the row label IS the inline editor's prefill.
+    const markup = render([ws({ custom_title: "Named", process_title: "zsh" })]);
+    expect(markup).toContain(">Named<");
+    expect(markup).not.toContain(">zsh<");
+  });
+
+  test("rows render the plain label span by default (no stray rename input)", () => {
+    const markup = render([ws({ process_title: "a" }), ws({ process_title: "b" })]);
+    expect(markup).toContain("cmux-sidebar-row-label");
+    expect(markup).not.toContain("cmux-sidebar-row-rename");
   });
 
   test("skips rows without a workspace_id (projection parity)", () => {

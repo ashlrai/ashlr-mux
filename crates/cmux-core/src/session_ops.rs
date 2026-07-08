@@ -490,6 +490,54 @@ pub fn close_workspace(tabs: &mut SessionTabManagerSnapshot, index: i64) -> bool
     true
 }
 
+/// Rename the workspace at `index` — the user-rename path of canonical
+/// `Workspace.setCustomTitle(_:source:)` (`Workspace.swift:4390-4407`) reached
+/// via `TabManager.setCustomTitle` (`TabManager.swift:1677-1698`). This op is
+/// **user-source-only**: a manual rename always stamps
+/// `custom_title_source = "user"` (Swift's default `source: .user`, raw value
+/// pinned by `session_golden.rs`); the `.auto` OSC guard branch
+/// (`Workspace.swift:4393-4396`) is a different feed and is not ported here.
+///
+/// The title is trimmed; an empty/whitespace-only result CLEARS both
+/// `custom_title` and `custom_title_source` (`Workspace.swift:4397-4400`).
+/// Canonical then restores `self.title = processTitle` — implicit here, since
+/// the snapshot has no separate `title` field and the display title is derived
+/// web-side (`custom_title || process_title`); `process_title` is never
+/// touched. Out-of-range/negative `index` is a silent no-op (canonical
+/// unknown-id guard, `TabManager.swift:1684`). Canonical side effects out of
+/// port scope: `updateWindowTitle` when selected (the web derives the display
+/// title from the snapshot) and remote-tmux `rename-session` propagation
+/// (`TabManager.swift:1689-1696`, N/A on Windows).
+///
+/// Returns `true` iff `(custom_title, custom_title_source)` actually changed —
+/// so re-stamping an `"auto"`-sourced title with the same text still reports a
+/// change (source flips to `"user"`). Canonical `setCustomTitle` returns
+/// "write landed" (always true for a resolved id); the changed-gate is this
+/// port's emit policy, matching the `set_group_collapsed`/`set_process_title`
+/// precedent — a deliberate documented divergence.
+///
+/// NOTE (minor divergence): Swift trims with `.whitespacesAndNewlines`; this
+/// uses Rust `str::trim` (Unicode `White_Space`). The two differ only on exotic
+/// separators a rename never carries in practice.
+pub fn rename_workspace(tabs: &mut SessionTabManagerSnapshot, index: i64, title: &str) -> bool {
+    if index < 0 || index as usize >= tabs.workspaces.len() {
+        return false;
+    }
+    let workspace = &mut tabs.workspaces[index as usize];
+    let trimmed = title.trim();
+    let (next_title, next_source) = if trimmed.is_empty() {
+        (None, None)
+    } else {
+        (Some(trimmed.to_string()), Some("user".to_string()))
+    };
+    if workspace.custom_title == next_title && workspace.custom_title_source == next_source {
+        return false;
+    }
+    workspace.custom_title = next_title;
+    workspace.custom_title_source = next_source;
+    true
+}
+
 /// Set the collapsed flag of workspace group `group_id`. Mirrors canonical
 /// `WorkspaceGroupCoordinator.setWorkspaceGroupCollapsed`
 /// (`WorkspaceGroupCoordinator.swift:408-412`): the **pure data** variant —
@@ -1032,6 +1080,81 @@ mod tests {
         new_workspace(&mut tabs, "surface-2");
         assert!(!close_workspace(&mut tabs, 5));
         assert_eq!(tabs.workspaces.len(), 2);
+    }
+
+    // --- Workspace rename (custom title) ---
+
+    #[test]
+    fn rename_workspace_sets_custom_title_and_user_source() {
+        let mut tabs = one_workspace_tabs("surface-1");
+        assert!(rename_workspace(&mut tabs, 0, "Fix auth"));
+        let ws = &tabs.workspaces[0];
+        assert_eq!(ws.custom_title.as_deref(), Some("Fix auth"));
+        assert_eq!(ws.custom_title_source.as_deref(), Some("user"));
+        // The process-title fallback is never touched by a rename.
+        assert_eq!(ws.process_title, "Terminal");
+    }
+
+    #[test]
+    fn rename_workspace_trims_padding() {
+        let mut tabs = one_workspace_tabs("surface-1");
+        assert!(rename_workspace(&mut tabs, 0, "  Fix auth  "));
+        assert_eq!(tabs.workspaces[0].custom_title.as_deref(), Some("Fix auth"));
+    }
+
+    #[test]
+    fn rename_workspace_empty_title_clears_both_fields() {
+        let mut tabs = one_workspace_tabs("surface-1");
+        tabs.workspaces[0].custom_title = Some("Named".to_string());
+        tabs.workspaces[0].custom_title_source = Some("user".to_string());
+        assert!(rename_workspace(&mut tabs, 0, ""));
+        assert_eq!(tabs.workspaces[0].custom_title, None);
+        assert_eq!(tabs.workspaces[0].custom_title_source, None);
+    }
+
+    #[test]
+    fn rename_workspace_whitespace_only_clears_when_previously_set() {
+        let mut tabs = one_workspace_tabs("surface-1");
+        tabs.workspaces[0].custom_title = Some("Named".to_string());
+        tabs.workspaces[0].custom_title_source = Some("user".to_string());
+        assert!(rename_workspace(&mut tabs, 0, "   \t "));
+        assert_eq!(tabs.workspaces[0].custom_title, None);
+        assert_eq!(tabs.workspaces[0].custom_title_source, None);
+    }
+
+    #[test]
+    fn rename_workspace_clearing_an_already_clear_title_is_no_change() {
+        let mut tabs = one_workspace_tabs("surface-1");
+        assert!(!rename_workspace(&mut tabs, 0, ""));
+        assert_eq!(tabs.workspaces[0].custom_title, None);
+    }
+
+    #[test]
+    fn rename_workspace_identical_title_is_no_change() {
+        let mut tabs = one_workspace_tabs("surface-1");
+        assert!(rename_workspace(&mut tabs, 0, "Fix auth"));
+        assert!(!rename_workspace(&mut tabs, 0, "Fix auth"));
+    }
+
+    #[test]
+    fn rename_workspace_same_title_flips_auto_source_to_user() {
+        // An OSC/auto-stamped title renamed to the very same text still counts
+        // as a change: the source flips "auto" → "user".
+        let mut tabs = one_workspace_tabs("surface-1");
+        tabs.workspaces[0].custom_title = Some("Fix auth".to_string());
+        tabs.workspaces[0].custom_title_source = Some("auto".to_string());
+        assert!(rename_workspace(&mut tabs, 0, "Fix auth"));
+        assert_eq!(tabs.workspaces[0].custom_title.as_deref(), Some("Fix auth"));
+        assert_eq!(tabs.workspaces[0].custom_title_source.as_deref(), Some("user"));
+    }
+
+    #[test]
+    fn rename_workspace_out_of_range_and_negative_index_are_no_ops() {
+        let mut tabs = tabs_with(2, 0, 0);
+        let before = tabs.clone();
+        assert!(!rename_workspace(&mut tabs, 2, "nope"));
+        assert!(!rename_workspace(&mut tabs, -1, "nope"));
+        assert_eq!(tabs, before);
     }
 
     // --- Workspace-group collapse ---

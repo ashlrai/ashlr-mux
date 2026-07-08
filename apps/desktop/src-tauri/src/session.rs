@@ -194,6 +194,19 @@ fn apply_close_workspace(snapshot: &mut AppSessionSnapshot, index: i64) -> bool 
     }
 }
 
+/// Rename the workspace at `index` in the first window — canonical
+/// `Workspace.setCustomTitle` trim/clear semantics (the title is trimmed;
+/// empty/whitespace-only clears `custom_title`, restoring the process-title
+/// fallback in the display chain). Pure — delegates to
+/// [`session_ops::rename_workspace`]. Returns whether the title actually
+/// changed.
+fn apply_rename_workspace(snapshot: &mut AppSessionSnapshot, index: i64, title: &str) -> bool {
+    match snapshot.windows.first_mut() {
+        Some(window) => session_ops::rename_workspace(&mut window.tab_manager, index, title),
+        None => false,
+    }
+}
+
 /// Set the OSC/process title of the workspace owning `panel_id` (any workspace in
 /// the first window, not only the active one). Pure — delegates to
 /// [`session_ops::set_process_title`]. Returns whether a title actually changed.
@@ -432,6 +445,31 @@ pub fn session_set_group_collapsed(
     snapshot
 }
 
+/// Rename the workspace at `index`. Canonical `Workspace.setCustomTitle`
+/// (user-source) semantics: the raw title is trimmed here — a single mutation
+/// path, the web sends the input verbatim — and an empty/whitespace-only title
+/// clears `custom_title` (restores the process-title fallback); non-empty
+/// stamps `custom_title_source = "user"`. Emits `cmux://session-changed` only
+/// when the title actually changed (unknown index / identical title are
+/// no-ops) and returns the snapshot.
+#[tauri::command]
+pub fn session_rename_workspace(
+    app: AppHandle,
+    state: State<'_, SessionState>,
+    index: i64,
+    title: String,
+) -> AppSessionSnapshot {
+    let (changed, snapshot) = {
+        let mut guard = state.snapshot.lock().expect("session snapshot mutex poisoned");
+        let changed = apply_rename_workspace(&mut guard, index, &title);
+        (changed, guard.clone())
+    };
+    if changed {
+        emit_session_changed(&app, &snapshot);
+    }
+    snapshot
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -629,6 +667,35 @@ mod tests {
         let tabs = tab_manager(&snapshot);
         assert_eq!(tabs.workspaces.len(), 1);
         assert_eq!(tabs.selected_workspace_index, Some(0));
+    }
+
+    #[test]
+    fn apply_rename_workspace_sets_custom_title_and_user_source() {
+        let mut snapshot = initial_snapshot("surface-1");
+        assert!(apply_rename_workspace(&mut snapshot, 0, "X"));
+        let ws = &tab_manager(&snapshot).workspaces[0];
+        assert_eq!(ws.custom_title.as_deref(), Some("X"));
+        assert_eq!(ws.custom_title_source.as_deref(), Some("user"));
+        // Identical title again → false (drives the emit gate).
+        assert!(!apply_rename_workspace(&mut snapshot, 0, "X"));
+    }
+
+    #[test]
+    fn apply_rename_workspace_empty_title_clears() {
+        let mut snapshot = initial_snapshot("surface-1");
+        assert!(apply_rename_workspace(&mut snapshot, 0, "X"));
+        assert!(apply_rename_workspace(&mut snapshot, 0, ""));
+        let ws = &tab_manager(&snapshot).workspaces[0];
+        assert_eq!(ws.custom_title, None);
+        assert_eq!(ws.custom_title_source, None);
+    }
+
+    #[test]
+    fn apply_rename_workspace_out_of_range_index_is_a_noop() {
+        let mut snapshot = initial_snapshot("surface-1");
+        let before = snapshot.clone();
+        assert!(!apply_rename_workspace(&mut snapshot, 5, "nope"));
+        assert_eq!(snapshot, before);
     }
 
     #[test]

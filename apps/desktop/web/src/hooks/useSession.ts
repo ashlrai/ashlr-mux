@@ -42,6 +42,11 @@ export interface UseSession {
   selectWorkspace: (index: number) => void;
   /** Close the workspace at `index` (always leaves at least one alive). */
   closeWorkspace: (index: number) => void;
+  /**
+   * Rename the workspace at `index`; empty/whitespace-only clears the custom
+   * title, restoring the process-title fallback (canonical `setCustomTitle`).
+   */
+  renameWorkspace: (index: number, title: string) => void;
   /** Set the collapsed state of workspace group `groupId`. */
   setGroupCollapsed: (groupId: string, collapsed: boolean) => void;
   /**
@@ -165,6 +170,13 @@ export function useSession(): UseSession {
       .catch((error) => console.error("session_close_workspace failed", error));
   }, []);
 
+  const renameWorkspace = useCallback((index: number, title: string) => {
+    void host
+      .invoke<AppSessionSnapshot>("session_rename_workspace", { index, title })
+      .then(setSnapshot)
+      .catch((error) => console.error("session_rename_workspace failed", error));
+  }, []);
+
   const setGroupCollapsed = useCallback((groupId: string, collapsed: boolean) => {
     void host
       .invoke<AppSessionSnapshot>("session_set_group_collapsed", { groupId, collapsed })
@@ -192,6 +204,7 @@ export function useSession(): UseSession {
     newWorkspace,
     selectWorkspace,
     closeWorkspace,
+    renameWorkspace,
     setGroupCollapsed,
   };
 }

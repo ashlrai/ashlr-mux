@@ -45,6 +45,12 @@ export interface SidebarViewProps {
   onSelectWorkspace: (index: number) => void;
   onCloseWorkspace: (index: number) => void;
   /**
+   * Inline-rename commit for the workspace at `index`. Empty/whitespace-only
+   * clears the custom title (canonical `setCustomTitle` parity — the display
+   * falls back to the process title).
+   */
+  onRenameWorkspace: (index: number, title: string) => void;
+  /**
    * Chevron activation — sets the group's collapsed state. Groups are
    * addressed by stable id (no id → index translation; that map is for
    * workspace ids only).
@@ -61,6 +67,7 @@ export function SidebarView({
   onNewWorkspace,
   onSelectWorkspace,
   onCloseWorkspace,
+  onRenameWorkspace,
   onToggleGroupCollapsed,
 }: SidebarViewProps): React.JSX.Element {
   if (collapsed) {
@@ -90,12 +97,16 @@ export function SidebarView({
     selectedId !== undefined ? [selectedId] : [],
   );
 
-  const withIndexOf = (action: (index: number) => void) => (workspaceId: string) => {
-    const index = indexByWorkspaceId.get(workspaceId);
-    if (index !== undefined) {
-      action(index);
-    }
-  };
+  // Translate an id-addressed row action into the index-addressed session
+  // command, forwarding any extra args. Stale/unknown id ⇒ silent no-op.
+  const withIndexOf =
+    <A extends unknown[]>(action: (index: number, ...rest: A) => void) =>
+    (workspaceId: string, ...rest: A) => {
+      const index = indexByWorkspaceId.get(workspaceId);
+      if (index !== undefined) {
+        action(index, ...rest);
+      }
+    };
 
   // Canonical `TabManager.closeWorkspace` is a no-op when `tabs.count <= 1`, so
   // the sole remaining workspace has no close affordance (its ✕ is hidden).
@@ -122,6 +133,7 @@ export function SidebarView({
         canCloseWorkspaces={canClose}
         onSelectWorkspace={withIndexOf(onSelectWorkspace)}
         onCloseWorkspace={withIndexOf(onCloseWorkspace)}
+        onRenameWorkspace={withIndexOf(onRenameWorkspace)}
         onToggleGroupCollapsed={onToggleGroupCollapsed}
       />
     </nav>
@@ -142,6 +154,7 @@ export function Sidebar({ collapsed }: SidebarProps): React.JSX.Element {
     newWorkspace,
     selectWorkspace,
     closeWorkspace,
+    renameWorkspace,
     setGroupCollapsed,
   } = useSession();
 
@@ -154,6 +167,7 @@ export function Sidebar({ collapsed }: SidebarProps): React.JSX.Element {
       onNewWorkspace={newWorkspace}
       onSelectWorkspace={selectWorkspace}
       onCloseWorkspace={closeWorkspace}
+      onRenameWorkspace={renameWorkspace}
       onToggleGroupCollapsed={setGroupCollapsed}
     />
   );

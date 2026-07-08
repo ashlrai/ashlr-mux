@@ -6,7 +6,7 @@ import {
   type WorkspaceGroup,
   type WorkspaceRow,
 } from "../sidebar/renderItems";
-import { WorkspaceList } from "./WorkspaceList";
+import { renameActionForKey, WorkspaceList } from "./WorkspaceList";
 
 // Fixed UUIDs for deterministic markup assertions.
 const UUID = {
@@ -167,6 +167,59 @@ describe("WorkspaceList", () => {
         `data-workspace-id="${member}"[^>]*aria-selected="false"`,
       ),
     );
+  });
+
+  test("default render shows the label span and no rename input", () => {
+    const { solo, member } = UUID;
+    const items = renderItems(
+      [row(solo, undefined, false), row(member, undefined, false)],
+      groupsMap([]),
+    );
+    const markup = renderToStaticMarkup(
+      <WorkspaceList
+        items={items}
+        titleForWorkspace={() => "zsh"}
+        onRenameWorkspace={() => {}}
+      />,
+    );
+    expect(markup).toContain("cmux-sidebar-row-label");
+    expect(markup).not.toContain("cmux-sidebar-row-rename");
+  });
+
+  test("defaultEditingWorkspaceId renders the rename input prefilled with the row title", () => {
+    const { solo, member } = UUID;
+    const items = renderItems(
+      [row(solo, undefined, false), row(member, undefined, false)],
+      groupsMap([]),
+    );
+    const titles = new Map<string, string>([[solo, "zsh"]]);
+    const markup = renderToStaticMarkup(
+      <WorkspaceList
+        items={items}
+        titleForWorkspace={(id) => titles.get(id) ?? id}
+        onRenameWorkspace={() => {}}
+        defaultEditingWorkspaceId={solo}
+      />,
+    );
+    // The editing row swaps its label span for a prefilled text input (static
+    // markup serializes defaultValue as the value attribute).
+    expect(markup).toContain('class="cmux-sidebar-row-rename"');
+    expect(markup).toContain('value="zsh"');
+    expect(markup).toContain('aria-label="Rename zsh"');
+    expect(markup).not.toContain(
+      '<span class="cmux-sidebar-row-label">zsh</span>',
+    );
+    // The other row keeps its plain label.
+    expect(markup).toContain(
+      `<span class="cmux-sidebar-row-label">${member}</span>`,
+    );
+  });
+
+  test("renameActionForKey: Enter commits, Escape cancels, others pass through", () => {
+    expect(renameActionForKey("Enter")).toBe("commit");
+    expect(renameActionForKey("Escape")).toBe("cancel");
+    expect(renameActionForKey("a")).toBe(null);
+    expect(renameActionForKey("Tab")).toBe(null);
   });
 
   test("marks a group header selected when its anchor is selected, and honors group pin state", () => {
