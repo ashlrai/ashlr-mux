@@ -44,12 +44,19 @@ export type SessionState = {
   autoStartAttemptedProviderIds: ProviderId[];
   seenSessionIds: string[];
   requestedStopSessionId?: string;
+  // A provider the user picked while a session was still active. The switch
+  // effect stops the running session and applies the change once it settles,
+  // so the picker never has to be disabled mid-session.
+  pendingProviderId?: ProviderId;
 };
 
 export type Action =
   | { type: "context"; context: AppContext }
   | { type: "providers"; providers: ProviderInfo[] }
   | { type: "selectProvider"; providerId: ProviderId }
+  | { type: "pendingProviderSwitch"; providerId: ProviderId }
+  | { type: "clearPendingProviderSwitch" }
+  | { type: "switchToProvider"; providerId: ProviderId }
   | { type: "setInput"; input: string }
   | { type: "autoStartAttempted"; providerId: ProviderId }
   | { type: "starting" }
@@ -108,6 +115,30 @@ export function reduceSession(state: SessionState, action: Action): SessionState
       return {
         ...state,
         selectedProviderId: action.providerId,
+        pendingProviderId: undefined,
+      };
+    case "pendingProviderSwitch":
+      return { ...state, pendingProviderId: action.providerId };
+    case "clearPendingProviderSwitch":
+      if (state.pendingProviderId === undefined) {
+        return state;
+      }
+      return { ...state, pendingProviderId: undefined };
+    case "switchToProvider":
+      // Applied by the switch effect once the previous session has stopped, so
+      // guard on the same idle condition as a direct selection.
+      if (!canSelectProvider(state)) {
+        return state;
+      }
+      return {
+        ...state,
+        selectedProviderId: action.providerId,
+        pendingProviderId: undefined,
+        // Re-arm auto-start for the chosen provider so switching to it actually
+        // brings it up, even if it had already run earlier this session.
+        autoStartAttemptedProviderIds: state.autoStartAttemptedProviderIds.filter(
+          (id) => id !== action.providerId,
+        ),
       };
     case "setInput":
       return { ...state, input: action.input };
@@ -257,11 +288,50 @@ export async function autoStartProvider(state: SessionState, dispatch: (action: 
 }
 
 export function selectProvider(providerId: ProviderId, state: SessionState, dispatch: (action: Action) => void): void {
-  if (!canSelectProvider(state)) {
+  if (canSelectProvider(state)) {
+    if (providerId === state.selectedProviderId) {
+      return;
+    }
+    dispatch({ type: "selectProvider", providerId });
+    void callNative("provider.select", { providerId }).catch(() => {});
     return;
   }
-  dispatch({ type: "selectProvider", providerId });
-  void callNative("provider.select", { providerId }).catch(() => {});
+  // A session is active or transitioning — record the request and let the
+  // switch effect stop the current session before applying the change. Picking
+  // the already-active provider cancels any queued switch.
+  dispatch({ type: "pendingProviderSwitch", providerId });
+}
+
+// Drives a queued provider switch through the state machine: stop the active
+// session, wait for it to exit, then apply the selection so the new provider
+// can auto-start. Safe to call on every state change — it is a no-op unless a
+// switch is pending, and each step only fires once per transition.
+export async function advanceProviderSwitch(
+  state: SessionState,
+  dispatch: (action: Action) => void,
+): Promise<void> {
+  const pending = state.pendingProviderId;
+  if (pending === undefined) {
+    return;
+  }
+  if (pending === state.selectedProviderId) {
+    // The target is already active (re-picked, or the switch has applied).
+    dispatch({ type: "clearPendingProviderSwitch" });
+    return;
+  }
+  if (state.runningSessionId) {
+    if (state.status !== "stopping") {
+      await stopProvider(state, dispatch);
+    }
+    return;
+  }
+  if (state.status === "starting") {
+    // A session is still spinning up and has no id to stop yet; wait until it is
+    // running (or exits) and re-run.
+    return;
+  }
+  dispatch({ type: "switchToProvider", providerId: pending });
+  void callNative("provider.select", { providerId: pending }).catch(() => {});
 }
 
 export async function sendInput(

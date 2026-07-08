@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { makeClientId } from "./ids";
 import {
+  advanceProviderSwitch,
   autoStartProvider,
   canSelectProvider,
   canStopProvider,
@@ -8,6 +9,7 @@ import {
   initialState,
   messageForError,
   reduceSession,
+  selectProvider,
   sendInput,
   shouldAutoStartProvider,
   statusLabel,
@@ -1083,6 +1085,194 @@ test("provider selection is allowed after a failed start without an active sessi
 
   expect(canSelectProvider(failedWithoutSession)).toBe(true);
   expect(state.selectedProviderId).toBe("claude");
+});
+
+type BridgeMessage = { method: string; params: Record<string, unknown> };
+
+function installBridge(reply: (message: BridgeMessage) => unknown): {
+  messages: BridgeMessage[];
+  restore: () => void;
+} {
+  const messages: BridgeMessage[] = [];
+  const globalWithWindow = globalThis as unknown as { window?: unknown };
+  const originalWindow = globalWithWindow.window;
+  globalWithWindow.window = {
+    webkit: {
+      messageHandlers: {
+        agentSession: {
+          async postMessage(message: unknown) {
+            const typed = message as BridgeMessage;
+            messages.push(typed);
+            return reply(typed);
+          },
+        },
+      },
+    },
+  };
+  return {
+    messages,
+    restore: () => {
+      if (originalWindow === undefined) {
+        delete globalWithWindow.window;
+      } else {
+        globalWithWindow.window = originalWindow;
+      }
+    },
+  };
+}
+
+const loadedIdle = () =>
+  reduceSession(
+    reduceSession(initialState("react"), { type: "context", context }),
+    { type: "providers", providers },
+  );
+
+const runningCodex = () => ({
+  ...loadedIdle(),
+  status: "running" as const,
+  runningSessionId: "session-1",
+  autoStartAttemptedProviderIds: ["codex" as const],
+});
+
+test("selecting a different provider from idle applies immediately", () => {
+  const bridge = installBridge(() => ({ ok: true, value: {} }));
+  const actions: Action[] = [];
+  try {
+    selectProvider("claude", loadedIdle(), (action) => actions.push(action));
+  } finally {
+    bridge.restore();
+  }
+
+  expect(actions).toEqual([{ type: "selectProvider", providerId: "claude" }]);
+  expect(bridge.messages[0]?.method).toBe("provider.select");
+  expect(bridge.messages[0]?.params.providerId).toBe("claude");
+});
+
+test("re-selecting the active provider from idle is a no-op", () => {
+  const bridge = installBridge(() => ({ ok: true, value: {} }));
+  const actions: Action[] = [];
+  try {
+    selectProvider("codex", loadedIdle(), (action) => actions.push(action));
+  } finally {
+    bridge.restore();
+  }
+
+  expect(actions).toEqual([]);
+  expect(bridge.messages).toHaveLength(0);
+});
+
+test("selecting a different provider while running queues a pending switch", () => {
+  const bridge = installBridge(() => ({ ok: true, value: {} }));
+  const actions: Action[] = [];
+  try {
+    selectProvider("claude", runningCodex(), (action) => actions.push(action));
+  } finally {
+    bridge.restore();
+  }
+
+  // The running provider is untouched and no native call fires yet — the switch
+  // effect drives the stop/select once it runs.
+  expect(actions).toEqual([{ type: "pendingProviderSwitch", providerId: "claude" }]);
+  expect(bridge.messages).toHaveLength(0);
+});
+
+test("pending switch keeps the running provider selected until it resolves", () => {
+  const queued = reduceSession(runningCodex(), { type: "pendingProviderSwitch", providerId: "claude" });
+
+  expect(queued.selectedProviderId).toBe("codex");
+  expect(queued.pendingProviderId).toBe("claude");
+  expect(canSelectProvider(queued)).toBe(false);
+});
+
+test("advancing a pending switch stops the running session first", async () => {
+  const bridge = installBridge(() => ({ ok: true, value: {} }));
+  const actions: Action[] = [];
+  const queued = reduceSession(runningCodex(), { type: "pendingProviderSwitch", providerId: "claude" });
+  try {
+    await advanceProviderSwitch(queued, (action) => actions.push(action));
+  } finally {
+    bridge.restore();
+  }
+
+  expect(actions).toEqual([{ type: "stopping", sessionId: "session-1" }]);
+  expect(bridge.messages[0]?.method).toBe("provider.stop");
+  expect(bridge.messages[0]?.params.sessionId).toBe("session-1");
+});
+
+test("advancing a pending switch while stopping waits for the exit", async () => {
+  const bridge = installBridge(() => ({ ok: true, value: {} }));
+  const actions: Action[] = [];
+  const stopping = {
+    ...runningCodex(),
+    status: "stopping" as const,
+    requestedStopSessionId: "session-1",
+    pendingProviderId: "claude" as const,
+  };
+  try {
+    await advanceProviderSwitch(stopping, (action) => actions.push(action));
+  } finally {
+    bridge.restore();
+  }
+
+  expect(actions).toEqual([]);
+  expect(bridge.messages).toHaveLength(0);
+});
+
+test("advancing a pending switch once idle applies the selection", async () => {
+  const bridge = installBridge(() => ({ ok: true, value: {} }));
+  const actions: Action[] = [];
+  const idleWithPending = {
+    ...loadedIdle(),
+    status: "idle" as const,
+    autoStartAttemptedProviderIds: ["codex" as const],
+    pendingProviderId: "claude" as const,
+  };
+  try {
+    await advanceProviderSwitch(idleWithPending, (action) => actions.push(action));
+  } finally {
+    bridge.restore();
+  }
+
+  expect(actions).toEqual([{ type: "switchToProvider", providerId: "claude" }]);
+  expect(bridge.messages[0]?.method).toBe("provider.select");
+  expect(bridge.messages[0]?.params.providerId).toBe("claude");
+});
+
+test("advancing a pending switch to the active provider cancels it", async () => {
+  const bridge = installBridge(() => ({ ok: true, value: {} }));
+  const actions: Action[] = [];
+  const idleWithSelfPending = { ...loadedIdle(), pendingProviderId: "codex" as const };
+  try {
+    await advanceProviderSwitch(idleWithSelfPending, (action) => actions.push(action));
+  } finally {
+    bridge.restore();
+  }
+
+  expect(actions).toEqual([{ type: "clearPendingProviderSwitch" }]);
+  expect(bridge.messages).toHaveLength(0);
+});
+
+test("switchToProvider applies the selection and re-arms auto start", () => {
+  const idleWithPending = {
+    ...loadedIdle(),
+    autoStartAttemptedProviderIds: ["codex" as const, "claude" as const],
+    pendingProviderId: "codex" as const,
+    selectedProviderId: "claude" as const,
+  };
+  const switched = reduceSession(idleWithPending, { type: "switchToProvider", providerId: "codex" });
+
+  expect(switched.selectedProviderId).toBe("codex");
+  expect(switched.pendingProviderId).toBeUndefined();
+  expect(switched.autoStartAttemptedProviderIds).toEqual(["claude"]);
+  // codex auto-starts again after the switch; claude stays remembered.
+  expect(shouldAutoStartProvider(switched)).toBe(true);
+});
+
+test("switchToProvider is ignored while a session is still active", () => {
+  const stillRunning = { ...runningCodex(), pendingProviderId: "claude" as const };
+  const state = reduceSession(stillRunning, { type: "switchToProvider", providerId: "claude" });
+
+  expect(state).toBe(stillRunning);
 });
 
 test("client ids do not require crypto.randomUUID", () => {

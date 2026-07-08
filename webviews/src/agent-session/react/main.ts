@@ -38,8 +38,8 @@ import {
 } from "../shared/rateLimits";
 import {
   initialState,
+  advanceProviderSwitch,
   autoStartProvider,
-  canSelectProvider,
   canStartProvider,
   canStopProvider,
   loadInitialData,
@@ -107,6 +107,9 @@ function useMeasuredComposerLayout(input: string, hasVisibleAttachments: boolean
   const [textWidth, setTextWidth] = useState(0);
   const [inputElement, setInputElement] = useState<HTMLDivElement | null>(null);
   const textMeasureRef = useRef<HTMLSpanElement | null>(null);
+  // Tracks whether the composer is currently laid out as a single line. Read by
+  // the width observer below to reject measurements taken in multiline mode.
+  const isSingleLineRef = useRef(true);
   const inputMeasureRef = useCallback((node: HTMLDivElement | null) => {
     setInputElement(node);
   }, []);
@@ -116,7 +119,19 @@ function useMeasuredComposerLayout(input: string, hasVisibleAttachments: boolean
     if (!element) {
       return;
     }
-    const updateWidth = () => setInputWidth(element.getBoundingClientRect().width);
+    // Only trust the width measured while the composer is actually laid out as a
+    // single line. The measured wrapper is narrow inline in single-line mode but
+    // stretches to full width in multiline mode, so feeding the multiline width
+    // back into the single-line decision makes the composer oscillate forever
+    // between the two layouts (it "expands upward and snaps back" every frame).
+    // Freezing the last single-line width while multiline breaks that feedback
+    // loop: we only return to single-line once the text fits it again for real.
+    const updateWidth = () => {
+      if (!isSingleLineRef.current) {
+        return;
+      }
+      setInputWidth(element.getBoundingClientRect().width);
+    };
     updateWidth();
     if (typeof ResizeObserver === "undefined") {
       return;
@@ -134,16 +149,19 @@ function useMeasuredComposerLayout(input: string, hasVisibleAttachments: boolean
     setTextWidth(measure.getBoundingClientRect().width);
   }, [input]);
 
+  const isSingleLine = shouldUseSingleLineComposer({
+    composerLayoutMode: "auto-single-line",
+    hasVisibleAttachments,
+    isEditorMultiline: input.includes("\n"),
+    isVoiceLayoutActive: false,
+    singleLineInputWidth: inputWidth,
+    singleLineTextWidth: textWidth,
+  });
+  isSingleLineRef.current = isSingleLine;
+
   return {
     inputMeasureRef,
-    isSingleLine: shouldUseSingleLineComposer({
-      composerLayoutMode: "auto-single-line",
-      hasVisibleAttachments,
-      isEditorMultiline: input.includes("\n"),
-      isVoiceLayoutActive: false,
-      singleLineInputWidth: inputWidth,
-      singleLineTextWidth: textWidth,
-    }),
+    isSingleLine,
     textMeasureRef,
   };
 }
@@ -288,11 +306,18 @@ function useAutoStart(state: SessionState, dispatch: React.Dispatch<Action>) {
   }, [state, dispatch]);
 }
 
+function useProviderSwitch(state: SessionState, dispatch: React.Dispatch<Action>) {
+  useEffect(() => {
+    void advanceProviderSwitch(state, dispatch);
+  }, [state, dispatch]);
+}
+
 export function AgentSessionApp() {
   const [state, dispatch] = useReducer(reduceSession, initialState("react"));
   useInitialData(dispatch);
   useNativeEvents(dispatch);
   useAutoStart(state, dispatch);
+  useProviderSwitch(state, dispatch);
   return h(SessionSurface, { state, dispatch, renderer: "React" });
 }
 
@@ -308,7 +333,12 @@ function SessionSurface({
   "use no memo";
 
   const provider = state.providers.find((item) => item.id === state.selectedProviderId);
-  const canSelect = canSelectProvider(state);
+  // The provider the picker should display: a queued switch shows immediately so
+  // the click reads as responsive while the previous session stops.
+  const displayedProviderId = state.pendingProviderId ?? state.selectedProviderId;
+  const displayedProvider =
+    state.providers.find((item) => item.id === displayedProviderId) ?? provider;
+  const canOpenProviderMenu = state.providers.length > 0;
   const canStart = canStartProvider(state);
   const canStop = canStopProvider(state);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
@@ -316,7 +346,7 @@ function SessionSurface({
   const autoStartAlreadyAttempted = provider ? state.autoStartAttemptedProviderIds.includes(provider.id) : false;
   const showStart = canStart && (provider?.autoStart !== true || autoStartAlreadyAttempted);
   const canConfigurePermissions = provider?.id === "codex";
-  const modelLabel = codexModelLabel(provider);
+  const modelLabel = codexModelLabel(displayedProvider);
   const reasoningEffortLabel =
     provider?.id === "codex" ? (state.context?.copy.reasoningEffortHigh ?? "High") : null;
   const [permissionMode, setPermissionMode] = useState<ComposerPermissionMode>("default");
@@ -530,14 +560,14 @@ function SessionSurface({
         className:
           `model-picker ${CODEX_BUTTON_BASE} ${CODEX_BUTTON_GHOST} ${CODEX_BUTTON_COMPOSER} min-w-0 rounded-full`,
         type: "button",
-        disabled: !canSelect,
+        disabled: !canOpenProviderMenu,
         "aria-haspopup": "menu",
         "aria-expanded": providerMenuOpen,
         "data-state": providerMenuOpen ? "open" : "closed",
         "data-codex-intelligence-trigger": true,
         "data-selected-reasoning-effort": "high",
         onClick: () => {
-          if (!canSelect) {
+          if (!canOpenProviderMenu) {
             return;
           }
           setAddContextMenuOpen(false);
@@ -547,7 +577,7 @@ function SessionSurface({
         onKeyDown: (event: React.KeyboardEvent<HTMLButtonElement>) => {
           if (event.key === "ArrowDown") {
             event.preventDefault();
-            setProviderMenuOpen(canSelect);
+            setProviderMenuOpen(canOpenProviderMenu);
           }
         },
       },
@@ -602,7 +632,7 @@ function SessionSurface({
                   "provider-dropdown-item no-drag group hover:bg-token-list-hover-background focus:bg-token-list-hover-background cursor-interaction text-token-foreground outline-hidden rounded-lg px-[var(--padding-row-x)] py-[var(--padding-row-y)] text-sm",
                 type: "button",
                 role: "menuitem",
-                "data-selected": item.id === state.selectedProviderId ? "true" : undefined,
+                "data-selected": item.id === displayedProviderId ? "true" : undefined,
                 onMouseDown: (event: React.MouseEvent<HTMLButtonElement>) => event.preventDefault(),
                 onClick: () => selectProviderMenuItem(item.id),
               },
@@ -610,7 +640,7 @@ function SessionSurface({
                 "span",
                 { className: "provider-dropdown-item-content flex w-full items-center gap-1.5" },
                 h("span", { className: "min-w-0 flex-1 truncate" }, item.displayName),
-                item.id === state.selectedProviderId
+                item.id === displayedProviderId
                   ? h("span", { className: "provider-dropdown-check icon-xs shrink-0", "aria-hidden": true }, checkIcon())
                   : null,
               ),

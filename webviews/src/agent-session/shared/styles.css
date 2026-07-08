@@ -876,7 +876,10 @@ select {
   outline: none;
   white-space: pre-wrap;
   white-space: break-spaces;
-  word-wrap: break-word;
+  /* `anywhere` (not `break-word`) so a long unbreakable string — URL, path,
+     token, hash — also collapses the box's min-content width and wraps to a new
+     line instead of expanding the composer sideways. Matches `.agent-log-text`. */
+  overflow-wrap: anywhere;
   word-break: normal;
 }
 
