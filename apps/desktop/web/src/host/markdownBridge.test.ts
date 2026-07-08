@@ -3,6 +3,8 @@ import { describe, expect, test } from "bun:test";
 import {
   applyMarkdownTheme,
   renderMarkdown,
+  renderMarkdownDocument,
+  setMarkdownDocument,
   type MarkdownInvoke,
 } from "./markdownBridge";
 
@@ -21,6 +23,59 @@ describe("renderMarkdown", () => {
     const { calls, invoke } = makeInvoke();
     await renderMarkdown("# hello", invoke);
     expect(calls).toEqual([{ channel: "markdown_render", payload: { markdown: "# hello" } }]);
+  });
+});
+
+describe("setMarkdownDocument", () => {
+  test("invokes markdown_set_document with the path under the `path` key", async () => {
+    const { calls, invoke } = makeInvoke();
+    await setMarkdownDocument("C:/docs/a.md", invoke);
+    expect(calls).toEqual([
+      { channel: "markdown_set_document", payload: { path: "C:/docs/a.md" } },
+    ]);
+  });
+});
+
+describe("renderMarkdownDocument", () => {
+  test("sets the document, then renders, in that order", async () => {
+    const { calls, invoke } = makeInvoke();
+    await renderMarkdownDocument({ path: "C:/docs/a.md", markdown: "# hi" }, invoke);
+    expect(calls).toEqual([
+      { channel: "markdown_set_document", payload: { path: "C:/docs/a.md" } },
+      { channel: "markdown_render", payload: { markdown: "# hi" } },
+    ]);
+  });
+
+  test("awaits the set-document reply before dispatching the render", async () => {
+    const calls: string[] = [];
+    let releaseSet!: () => void;
+    const setSettled = new Promise<void>((resolve) => {
+      releaseSet = resolve;
+    });
+    const invoke: MarkdownInvoke = async (channel) => {
+      calls.push(channel);
+      if (channel === "markdown_set_document") await setSettled;
+      return undefined;
+    };
+    const feed = renderMarkdownDocument({ path: "C:/docs/a.md", markdown: "# hi" }, invoke);
+    // Yield so the set invoke is in flight; the render must not have fired yet.
+    await Promise.resolve();
+    expect(calls).toEqual(["markdown_set_document"]);
+    releaseSet();
+    await feed;
+    expect(calls).toEqual(["markdown_set_document", "markdown_render"]);
+  });
+
+  test("a set-document rejection propagates and suppresses the render", async () => {
+    const calls: string[] = [];
+    const invoke: MarkdownInvoke = async (channel) => {
+      calls.push(channel);
+      throw new Error("bridge down");
+    };
+    await expect(
+      renderMarkdownDocument({ path: "C:/docs/a.md", markdown: "# hi" }, invoke),
+    ).rejects.toThrow("bridge down");
+    expect(calls).toEqual(["markdown_set_document"]);
   });
 });
 
