@@ -718,3 +718,28 @@ shortcutFormat / placement / reorder / switcherIndex (share `bun test src`; sequ
   NEXT: A5 group-collapse command (session zone, solo), markdown doc-feed
   caller + appearance apply + settings-search box, or renameWorkspace intent
   (needs inline-rename UI = A6).
+
+- UI buildout #14 (ultracode wave, workflow wsjcw9mug: 12 agents — 4 lanes x
+  scout→implement→adversarial-verify, ALL 4 verdicts SOLID, 0 blocking) — the
+  first wave under the user's new "ultracode + multiple sub agents" /loop
+  directive. Lanes file-disjoint (1 Rust ∥ 3 TS), Rust+TS halves of A5 built
+  in parallel against an agreed command contract:
+  - **A5** (`d2a77e669`) — group collapse end-to-end. KEY oracle finding
+    (scout): canonical has TWO variants — pure-data setWorkspaceGroupCollapsed
+    (WorkspaceGroupCoordinator.swift:405-412, no selection move; socket/CLI
+    paths) vs UI toggleWorkspaceGroupCollapsed (:367-403, selects anchor when
+    collapsing hides the selected member). Ported the PURE variant; the
+    toggle-variant selection semantics are a documented future op. Emit gated
+    on changed (parity with willSet suppression). Chevron = separate button
+    tap target (stopPropagation), header click still selects anchor.
+  - **G1 caller** (`397337d95`) — markdown_set_document await-before-render in
+    MarkdownSurface + markdownBridge; closes the live local-image 403 found in
+    buildout #9.
+  - **E8 tail** (`6cf84cce2`) — SettingsPane search box over
+    settingsEntriesMatching (score order preserved, section navigation, pure
+    settingsSearchResults.ts projection).
+  Gate (run by orchestrator over the merged tree): cmux-core 173 (+12),
+  cmux-desktop 90 (+2), goldens byte-stable, clippy clean; web 512 (+20), tsc
+  clean. NEXT wave candidates: A6 inline rename (Rust session_rename_workspace
+  ∥ TS sidebar editor), A7 pin/unpin + pinned-ahead reorder, E9 appearance
+  apply tail, renameWorkspace/toggleWorkspacePin palette intents (dep A6/A7).
