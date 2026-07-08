@@ -701,3 +701,20 @@ shortcutFormat / placement / reorder / switcherIndex (share `bun test src`; sequ
   / A6 (inline rename) / A7 (pin) — session-zone, run solo; C1 insertFirst +
   C2 equalize UI triggers (commands live, need callers); markdown doc-feed
   caller + appearance apply + settings-search box wiring; D-overlay polish.
+
+- UI buildout #13 (`7bc95d651`) — palette INTENT EXECUTION: D4's activateAt
+  went from console.info stub to a real dispatch path. Pure
+  `palette/intentPlan.ts` (CommandIntentKind + session shape → executable
+  plan) + thin executor in useCommandPalette. LIVE now: newWorkspace,
+  closeWorkspace, nextWorkspace/previousWorkspace (canonical WRAP,
+  TabManager.swift:3451-3485), terminalSplitRight/Down (targets first-leaf
+  active pane until C4 focus tracking; insertFirst threaded through
+  useSession.split = C1 plumbing), equalizeSplits (new
+  useSession.equalizeDividers = C2 caller), toggleSidebar (App-owned
+  hostActions bundle through CommandPaletteOverlay). Unmapped kinds still
+  log (never silently no-op). New splitLayout.firstActivePanelId.
+  Gate: web 492 + tsc clean. C1/C2 UI triggers = DONE via palette; keyboard
+  shortcuts for splits = separate slice (needs the shortcut system, E6-adjacent).
+  NEXT: A5 group-collapse command (session zone, solo), markdown doc-feed
+  caller + appearance apply + settings-search box, or renameWorkspace intent
+  (needs inline-rename UI = A6).
