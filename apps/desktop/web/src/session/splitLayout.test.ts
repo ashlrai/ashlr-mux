@@ -4,6 +4,7 @@ import {
   MAX_DIVIDER,
   MIN_DIVIDER,
   clampDivider,
+  firstActivePanelId,
   countLeaves,
   equalizeDivider,
   resizeDivider,
@@ -168,5 +169,31 @@ describe("setDividerAtPath", () => {
     const before = JSON.stringify(tree);
     setDividerAtPath(tree, ["second"], 0.1);
     expect(JSON.stringify(tree)).toBe(before);
+  });
+});
+
+describe("firstActivePanelId", () => {
+  test("a pane reports its selected panel, else its first", () => {
+    expect(firstActivePanelId(pane("a", "b"))).toBe("a");
+    const selected: Layout = {
+      type: "pane",
+      pane: { panel_ids: ["a", "b"], selected_panel_id: "b" },
+    };
+    expect(firstActivePanelId(selected)).toBe("b");
+  });
+
+  test("a split reports the first (top-left-most) leaf's panel", () => {
+    const layout = split(
+      "horizontal",
+      0.5,
+      split("vertical", 0.5, pane("tl"), pane("bl")),
+      pane("r"),
+    );
+    expect(firstActivePanelId(layout)).toBe("tl");
+  });
+
+  test("an empty malformed pane yields undefined and a sibling fallback", () => {
+    expect(firstActivePanelId(pane())).toBeUndefined();
+    expect(firstActivePanelId(split("horizontal", 0.5, pane(), pane("r")))).toBe("r");
   });
 });

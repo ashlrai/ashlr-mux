@@ -23,6 +23,8 @@ import {
   switcherCandidateCommandIds,
   type SwitcherEntry,
 } from "./switcherEntries";
+import { firstActivePanelId } from "../session/splitLayout";
+import { planIntent } from "./intentPlan";
 
 /**
  * D4 — the live command-palette host. Composes the ported pure modules
@@ -103,8 +105,26 @@ function fallbackSearch(
   return matches.slice(0, resultLimit);
 }
 
-export function useCommandPalette(): UseCommandPalette {
-  const { snapshot, workspaces, selectWorkspace } = useSession();
+/** Host actions the palette cannot reach through the session layer. */
+export interface CommandPaletteHostActions {
+  /** Collapse/expand the workspace sidebar (App-owned view state). */
+  toggleSidebar?: () => void;
+}
+
+export function useCommandPalette(
+  hostActions?: CommandPaletteHostActions,
+): UseCommandPalette {
+  const {
+    snapshot,
+    activeLayout,
+    workspaces,
+    selectedWorkspaceIndex,
+    selectWorkspace,
+    newWorkspace,
+    closeWorkspace,
+    split,
+    equalizeDividers,
+  } = useSession();
 
   const [visible, setVisible] = useState(false);
   const [query, setQueryState] = useState("");
@@ -261,18 +281,67 @@ export function useCommandPalette(): UseCommandPalette {
           }
         }
       } else {
-        // Commands scope: resolve the intent through the shared dispatch path.
-        // Per-intent side effects land incrementally; surface the resolved
-        // intent so the wiring is visible and never silently no-ops.
+        // Commands scope: resolve the intent through the shared dispatch path,
+        // decide what it does with the pure planner, and execute. Unmapped
+        // kinds still log so the wiring never silently no-ops.
         const dispatch = dispatchCommand(match.command_id, {
           hasWorkspace: workspaces.length > 0,
         });
-        // eslint-disable-next-line no-console
-        console.info("[command-palette] activate", match.command_id, dispatch?.intent.kind);
+        if (dispatch) {
+          const plan = planIntent(dispatch.intent.kind, {
+            selectedWorkspaceIndex,
+            workspaceCount: workspaces.length,
+            activePanelId: activeLayout ? firstActivePanelId(activeLayout) : undefined,
+          });
+          switch (plan.type) {
+            case "newWorkspace":
+              newWorkspace();
+              break;
+            case "closeWorkspace":
+              closeWorkspace(plan.index);
+              break;
+            case "selectWorkspace":
+              selectWorkspace(plan.index);
+              break;
+            case "split":
+              split(plan.panelId, plan.orientation, plan.insertFirst);
+              break;
+            case "equalizeDividers":
+              equalizeDividers();
+              break;
+            case "toggleSidebar":
+              hostActions?.toggleSidebar?.();
+              break;
+            case "none":
+              break;
+            case "unhandled":
+              // eslint-disable-next-line no-console
+              console.info(
+                "[command-palette] unhandled intent",
+                match.command_id,
+                dispatch.intent.kind,
+              );
+              break;
+          }
+        }
       }
       close();
     },
-    [matches, scope, switcherById, workspaces, selectWorkspace, close],
+    [
+      matches,
+      scope,
+      switcherById,
+      workspaces,
+      selectedWorkspaceIndex,
+      activeLayout,
+      selectWorkspace,
+      newWorkspace,
+      closeWorkspace,
+      split,
+      equalizeDividers,
+      hostActions,
+      close,
+    ],
   );
 
   // Global open shortcuts (only while hidden — the overlay owns key handling

@@ -1,6 +1,9 @@
 import { useEffect, useRef } from "react";
 
-import { useCommandPalette } from "../palette/useCommandPalette";
+import {
+  useCommandPalette,
+  type CommandPaletteHostActions,
+} from "../palette/useCommandPalette";
 import { CommandPalette } from "./CommandPalette";
 
 /**
@@ -13,8 +16,13 @@ import { CommandPalette } from "./CommandPalette";
  * Arrow keys move the cursor, Enter activates, Escape or a backdrop click
  * dismisses.
  */
-export function CommandPaletteOverlay(): React.JSX.Element | null {
-  const palette = useCommandPalette();
+export function CommandPaletteOverlay({
+  hostActions,
+}: {
+  /** App-owned actions (e.g. sidebar toggle) some commands execute. */
+  hostActions?: CommandPaletteHostActions;
+} = {}): React.JSX.Element | null {
+  const palette = useCommandPalette(hostActions);
   const { visible, query, scope, commands, matches, selectedIndex } = palette;
   const inputRef = useRef<HTMLInputElement>(null);
 

@@ -42,8 +42,18 @@ export interface UseSession {
   selectWorkspace: (index: number) => void;
   /** Close the workspace at `index` (always leaves at least one alive). */
   closeWorkspace: (index: number) => void;
-  /** Split the pane holding `panelId` in `orientation`. */
-  split: (panelId: string, orientation: SessionSplitOrientation) => void;
+  /**
+   * Split the pane holding `panelId` in `orientation`. `insertFirst` puts the
+   * new pane in the first (left/top) slot — the canonical left/up direction;
+   * omitted = second (right/down).
+   */
+  split: (
+    panelId: string,
+    orientation: SessionSplitOrientation,
+    insertFirst?: boolean,
+  ) => void;
+  /** Equalize every divider in the active workspace (span-count semantics). */
+  equalizeDividers: () => void;
   /** Close the pane/panel `panelId`. */
   close: (panelId: string) => void;
   /** Persist the divider ratio of the split reached by `path`. */
@@ -94,11 +104,21 @@ export function useSession(): UseSession {
   // NOTE: Tauri v2 maps JS camelCase argument keys onto Rust snake_case command
   // params, so the pane id must be sent as `panelId` (→ `panel_id`), NOT
   // `panel_id`. `path`/`position`/`orientation` are single words, unaffected.
-  const split = useCallback((panelId: string, orientation: SessionSplitOrientation) => {
+  const split = useCallback(
+    (panelId: string, orientation: SessionSplitOrientation, insertFirst?: boolean) => {
+      void host
+        .invoke<AppSessionSnapshot>("session_split", { panelId, orientation, insertFirst })
+        .then(setSnapshot)
+        .catch((error) => console.error("session_split failed", error));
+    },
+    [],
+  );
+
+  const equalizeDividers = useCallback(() => {
     void host
-      .invoke<AppSessionSnapshot>("session_split", { panelId, orientation })
+      .invoke<AppSessionSnapshot>("session_equalize_dividers")
       .then(setSnapshot)
-      .catch((error) => console.error("session_split failed", error));
+      .catch((error) => console.error("session_equalize_dividers failed", error));
   }, []);
 
   const close = useCallback((panelId: string) => {
@@ -156,6 +176,7 @@ export function useSession(): UseSession {
     workspaceGroups: tabs?.workspace_groups,
     selectedWorkspaceIndex,
     split,
+    equalizeDividers,
     close,
     setDivider,
     setSurfaceKind,

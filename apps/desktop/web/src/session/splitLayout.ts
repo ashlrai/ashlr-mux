@@ -46,6 +46,22 @@ export function clampDivider(position: number): number {
   return Math.min(MAX_DIVIDER, Math.max(MIN_DIVIDER, position));
 }
 
+/**
+ * The active panel id of the first (top-left-most) leaf pane: its selected
+ * panel, else its first panel. `undefined` only for a malformed empty pane.
+ * Interim split-target until focused-pane tracking (C4) lands — exact for the
+ * common single-pane workspace, where the first leaf IS the focused pane.
+ */
+export function firstActivePanelId(layout: Layout): string | undefined {
+  if (isPane(layout)) {
+    return layout.pane.selected_panel_id ?? layout.pane.panel_ids[0];
+  }
+  return (
+    firstActivePanelId(layout.split.first) ??
+    firstActivePanelId(layout.split.second)
+  );
+}
+
 /** Number of leaf panes in a subtree. */
 export function countLeaves(layout: Layout): number {
   return isPane(layout)

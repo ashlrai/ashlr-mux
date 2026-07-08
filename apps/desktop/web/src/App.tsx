@@ -42,7 +42,9 @@ export function App(): React.JSX.Element {
           <Workspace />
         </main>
       </div>
-      <CommandPaletteOverlay />
+      <CommandPaletteOverlay
+        hostActions={{ toggleSidebar: () => setSidebarCollapsed((v) => !v) }}
+      />
     </div>
   );
 }
