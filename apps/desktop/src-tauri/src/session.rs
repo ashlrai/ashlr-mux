@@ -172,6 +172,46 @@ fn apply_close_workspace(snapshot: &mut AppSessionSnapshot, index: i64) -> bool 
     }
 }
 
+/// Rename the workspace at `index` in the first window (canonical user rename:
+/// trim; empty clears the custom title). Delegates to
+/// [`session_ops::rename_workspace`].
+fn apply_rename_workspace(snapshot: &mut AppSessionSnapshot, index: i64, title: &str) -> bool {
+    match snapshot.windows.first_mut() {
+        Some(window) => session_ops::rename_workspace(&mut window.tab_manager, index, title),
+        None => false,
+    }
+}
+
+/// Pin/unpin the workspace at `index` in the first window (canonical
+/// pinned-ahead reorder). Delegates to [`session_ops::set_workspace_pinned`].
+fn apply_set_workspace_pinned(
+    snapshot: &mut AppSessionSnapshot,
+    index: i64,
+    pinned: bool,
+) -> bool {
+    match snapshot.windows.first_mut() {
+        Some(window) => {
+            session_ops::set_workspace_pinned(&mut window.tab_manager, index, pinned)
+        }
+        None => false,
+    }
+}
+
+/// Set the collapse state of group `group_id` in the first window. Delegates
+/// to [`session_ops::set_group_collapsed`].
+fn apply_set_group_collapsed(
+    snapshot: &mut AppSessionSnapshot,
+    group_id: &str,
+    collapsed: bool,
+) -> bool {
+    match snapshot.windows.first_mut() {
+        Some(window) => {
+            session_ops::set_group_collapsed(&mut window.tab_manager, group_id, collapsed)
+        }
+        None => false,
+    }
+}
+
 fn emit_session_changed(app: &AppHandle, snapshot: &AppSessionSnapshot) {
     let _ = app.emit(SESSION_CHANGED_EVENT, snapshot);
 }
@@ -338,6 +378,64 @@ pub fn session_close_workspace(
     snapshot
 }
 
+/// Rename the workspace at `index` (canonical user rename: trimmed; empty
+/// clears the custom title + provenance). Emits `cmux://session-changed` and
+/// returns the snapshot. A no-op (still returns the snapshot) on a bad index.
+#[tauri::command]
+pub fn session_rename_workspace(
+    app: AppHandle,
+    state: State<'_, SessionState>,
+    index: i64,
+    title: String,
+) -> AppSessionSnapshot {
+    let snapshot = {
+        let mut guard = state.snapshot.lock().expect("session snapshot mutex poisoned");
+        apply_rename_workspace(&mut guard, index, &title);
+        guard.clone()
+    };
+    emit_session_changed(&app, &snapshot);
+    snapshot
+}
+
+/// Pin/unpin the workspace at `index` (canonical pinned-ahead reorder; the
+/// selection follows its workspace). Emits `cmux://session-changed` and
+/// returns the snapshot. A no-op (still returns the snapshot) on a bad index
+/// or unchanged state.
+#[tauri::command]
+pub fn session_set_workspace_pinned(
+    app: AppHandle,
+    state: State<'_, SessionState>,
+    index: i64,
+    pinned: bool,
+) -> AppSessionSnapshot {
+    let snapshot = {
+        let mut guard = state.snapshot.lock().expect("session snapshot mutex poisoned");
+        apply_set_workspace_pinned(&mut guard, index, pinned);
+        guard.clone()
+    };
+    emit_session_changed(&app, &snapshot);
+    snapshot
+}
+
+/// Set the collapse state of the workspace group `group_id`. Emits
+/// `cmux://session-changed` and returns the snapshot. A no-op (still returns
+/// the snapshot) when no group matches.
+#[tauri::command]
+pub fn session_set_group_collapsed(
+    app: AppHandle,
+    state: State<'_, SessionState>,
+    group_id: String,
+    collapsed: bool,
+) -> AppSessionSnapshot {
+    let snapshot = {
+        let mut guard = state.snapshot.lock().expect("session snapshot mutex poisoned");
+        apply_set_group_collapsed(&mut guard, &group_id, collapsed);
+        guard.clone()
+    };
+    emit_session_changed(&app, &snapshot);
+    snapshot
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -472,6 +570,38 @@ mod tests {
     // The tab-manager workspace logic is unit-tested in `cmux_core::session_ops`;
     // these verify the desktop `apply_*` fns delegate to it against the first
     // window of a real `AppSessionSnapshot`.
+
+    #[test]
+    fn apply_rename_workspace_sets_and_clears_the_custom_title() {
+        let mut snapshot = initial_snapshot("surface-1");
+        assert!(apply_rename_workspace(&mut snapshot, 0, "  Renamed \n"));
+        let ws = &tab_manager(&snapshot).workspaces[0];
+        assert_eq!(ws.custom_title.as_deref(), Some("Renamed"));
+        assert_eq!(ws.custom_title_source.as_deref(), Some("user"));
+        // Empty (post-trim) clears both fields — canonical setCustomTitle.
+        assert!(apply_rename_workspace(&mut snapshot, 0, "   "));
+        let ws = &tab_manager(&snapshot).workspaces[0];
+        assert_eq!(ws.custom_title, None);
+        assert_eq!(ws.custom_title_source, None);
+    }
+
+    #[test]
+    fn apply_set_group_collapsed_flips_the_group() {
+        let gid = "11111111-1111-1111-1111-111111111111";
+        let mut snapshot = initial_snapshot("surface-1");
+        snapshot.windows[0].tab_manager.workspace_groups =
+            Some(vec![cmux_core::session::SessionWorkspaceGroupSnapshot {
+                id: gid.to_string(),
+                name: "G".to_string(),
+                is_collapsed: false,
+                ..Default::default()
+            }]);
+        assert!(apply_set_group_collapsed(&mut snapshot, gid, true));
+        assert!(
+            snapshot.windows[0].tab_manager.workspace_groups.as_ref().unwrap()[0].is_collapsed
+        );
+        assert!(!apply_set_group_collapsed(&mut snapshot, "not-a-group", true));
+    }
 
     #[test]
     fn apply_new_workspace_appends_and_selects_it() {

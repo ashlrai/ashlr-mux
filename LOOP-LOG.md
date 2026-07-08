@@ -668,4 +668,94 @@ shortcutFormat / placement / reorder / switcherIndex (share `bun test src`; sequ
   - **C1** — already complete: scout CONFIRMED `insert_first` is threaded end-to-end (split_pane→apply_split→session_split, default false=append-second). No code change. JS caller direction-map (left/up=first, right/down=second, camelCase insertFirst) = deferred GUI.
   - **C2** (`48a685739`) — `session_equalize_dividers` command + new `session_ops::equalize_dividers` whole-tree walker using orientation-aware `span_count` (parity-exact port of CmuxPanes `ExternalTreeNode.spanCount(along:)` — pane=1, nested split recurses only when orientation==axis else 1). NOT the pre-existing leaf-count `equalize_divider` (diverges on mixed-orientation trees: H(V(a,b),c)→root 0.5 span vs 2/3 leaf; canonical=span). foundSplit-style bool (single pane→no-op). Command mirrors session_set_divider (lock→apply→clone→emit cmux://session-changed). Verify SOLID (span semantics + clamp-folds-plan+apply equivalence + no default-regression + golden byte-stable). Simplify removed one unreachable `total_span==0` guard (span_count always ≥1; canonical has no guard → parity-improving). cmux-core 161, cmux-desktop 86, golden 9 byte-stable, clippy clean.
   Pushed `68bc6dbf7..48a685739` → fork/windows-port.
+- UI buildout #11 — NEW MANDATE (user /loop 2026-07-07): "build the ENTIRE
+  frontend to parity, ready for testing" — the previously-deferred GUI-wiring
+  tail is now the work, blind-build authorized; user live-verifies at the end.
+  Branch `frontend-parity` (off agent-cwd-picker, stacks on PR #3). Two slices:
+  - **A4** — rich sidebar mounted. ENABLER BUG FOUND: `fresh_terminal_workspace`
+    never minted `workspace_id` (Default→None) → the id-strict projection would
+    have rendered an EMPTY sidebar for every live workspace; now mints UUID
+    (canonical `Workspace.init id = UUID()`), +regression test. Web
+    `sidebar/liveRenderItems.ts` = TS mirror of `sidebar_render.rs` (Swift-
+    canonical hyphenated-UUID validation, lowercase normalization, 3-tier
+    anchor fallback, member-less drop, de-dup; tests mirror the Rust suite
+    1:1 + a case-insensitivity pin). WorkspaceList upgraded scaffold→live rows
+    (titles, selection, click-select incl. header→anchor, hover-✕ gated on
+    last-tab no-op). SidebarView consumes the tab-manager snapshot; id→index
+    translation at dispatch. Group-header CSS added. Collapse toggle = A5.
+  - **C1/C2 callers** — `session/splitDirection.ts` (left/up=insertFirst),
+    4-way PaneControls split buttons (▌▐▀▄), `useSession.equalizeDividers`,
+    palette activateAt now RUNS intents (equalizeSplits, newWorkspace; unwired
+    kinds still log).
+  Gate GREEN: cmux-core 162 (+1) / cmux-desktop 88 / goldens byte-stable /
+  clippy clean / web 474 (+18) / tsc clean.
+- UI buildout #12 — A5 (group collapse/expand) + A6 (inline rename), the
+  sidebar interaction chain over #11's A4 mount. cmux-core `rename_workspace`
+  (canonical setCustomTitle user-path: trim ≈ whitespacesAndNewlines, empty
+  clears custom_title+custom_title_source, else sets both w/ "user";
+  Workspace.swift:4391) + `set_group_collapsed` (TabManager.swift:1838,
+  UUID-value case-insensitive match, string-equality fallback). src-tauri
+  commands `session_rename_workspace` / `session_set_group_collapsed` +
+  lib.rs registration. Web: useSession renameWorkspace/setGroupCollapsed;
+  WorkspaceList chevron → labelled toggle button (stopPropagation vs header
+  select), dbl-click inline rename editor (Enter/blur commit, Esc cancel);
+  Sidebar threads through (rename id→index). Gate GREEN: cmux-core 167 (+5) /
+  cmux-desktop 90 (+2) / goldens byte-stable / clippy clean / web 476 (+2) /
+  tsc clean. Pushed → fork/frontend-parity (PR #4).
+- UI buildout #13 — A7 pin/unpin + pinned-ahead reorder. cmux-core
+  `set_workspace_pinned` = canonical setPinned + reorderTabForPinnedState port
+  (WorkspaceReorderCoordinator.swift:467,529): unchanged-state no-op; ungrouped
+  row removed + re-inserted at end of leading globally-pinned run; selection
+  follows its workspace by id across the move; is_pinned false encodes ABSENT
+  (A1 byte-stability). Grouped rows flip flag only (contiguity-normalize
+  deferred w/ the A9 gap — needs a snapshot↔crate-type adapter slice).
+  Snapshot-level mirrors of is_global_pinned_row/leading_global_pinned_row_count
+  doc-linked to ordering.rs:265,278. Command session_set_workspace_pinned +
+  useSession.setWorkspacePinned + hover pin-toggle row button. Gate GREEN:
+  cmux-core 172 (+5) / cmux-desktop 90 / goldens stable / clippy clean /
+  web 476 / tsc clean. Pushed → fork/frontend-parity (PR #4).
+- UI buildout #14 — E1/E2 cmux.json load + dotted-path save. New src-tauri
+  config.rs over cmux-config: config_load = RAW tree ({} absent, malformed =
+  explicit error on load AND save — no silent clobber); config_set/
+  config_remove = JsonPath assign/remove (canonical JSONPath port; remove
+  prunes emptied parents — test initially asserted wrong, crate was right),
+  pretty write + trailing newline, cmux://config-changed broadcast w/ new
+  tree. cmux-config dep + lib.rs registration. 7 tests. Gate GREEN:
+  cmux-desktop 97 (+7), clippy clean. Pushed → fork/frontend-parity (PR #4).
+  Unblocks E3 (delta repr) → E4 (SettingsPane mount) → E5 (watcher) →
+  E7/E10/E11.
+- UI buildout #15 — E3/E4 Settings pane LIVE. configDefaults.ts (canonical
+  section defaults transcribed from cmux.schema.json, DRIFT-PINNED by a test
+  re-parsing the schema; effective view = absent sections filled, partials
+  merged — defaults never serialize, file stays overrides-only) +
+  configDelta.ts (E3: ConfigAction → one dotted-path set/remove; null exactly
+  when reducer no-ops; dotted shortcut-id guard) + useConfig hook (load /
+  config-changed subscribe / optimistic reducer + persisted delta from the
+  SAME action) + SettingsOverlay modal (Escape-capture/✕/backdrop) + App gear
+  button + palette openSettings intent via cmux:open-settings window event.
+  CONTRACT CHANGE: SettingsPane onChange(next Config) → onAction(ConfigAction)
+  so the container owns the single mutation path. Gate GREEN: web 486 (+10),
+  tsc clean, cmux-desktop unaffected. Pushed → fork/frontend-parity (PR #4).
+- UI buildout #16 — E9 caller + E8 search box; LOOP PAUSED by user after this
+  iteration. hooks/useAppearance.ts stamps resolveAppliedAppearance onto :root
+  (style.colorScheme + data-color-scheme), tracks prefers-color-scheme, routes
+  the needsRewrite legacy normalization ("auto"→"system") through the SAME
+  setAppearance dispatch as the pane. SettingsPane gains the live search box
+  over the 132-entry canonical corpus (settingsEntriesMatching) with pure
+  SSR-tested SettingsSearchResults; result-pick scrolls to mounted sections
+  (app→Appearance; map grows with E11). Gate GREEN: web 489 (+3), tsc clean.
+  Pushed → fork/frontend-parity (PR #4).
+  === FRONTEND-PARITY SESSION CHECKPOINT (2026-07-07, iters #11-#16) ===
+  Branch frontend-parity (stacks on agent-cwd-picker/PR #3), PR #4 →
+  ashlrai/ashlr-mux. 12 slices shipped green: A4 (rich sidebar mount + the
+  workspace_id mint ENABLER bug), A5 collapse, A6 rename, A7 pin/unpin,
+  C1/C2 UI triggers (directional split ▌▐▀▄ + equalize; palette intents
+  equalizeSplits/newWorkspace/openSettings RUN now), E1/E2 config commands,
+  E3 delta, E4 SettingsOverlay mount, E8 search box, E9 appearance apply.
+  READY FOR LIVE TESTING (npx @tauri-apps/cli dev in apps/desktop/src-tauri):
+  sidebar groups/pins/rename/collapse, 4-way splits, equalize, palette
+  commands, Settings modal persisting to %APPDATA%\\cmux\\cmux.json,
+  appearance switching. REMAINING (next loop run): B1-B7 window chrome,
+  A8/A10-A14 sidebar extras, C3-C13 keyboard-resize + canvas, D8/D10, E5-E7/
+  E10/E11 settings tail, F1-F7 agent polish, G2-G11 diff/markdown/browser.
   === LOOP CHECKPOINT (2026-07-07, after iter #10) === 5 iterations this session (#6-#10): A1/A3/A9, D5/D6/D7/D9, E8/E9, G1, C1(confirmed)/C2 = 11 slices, all pushed green, 4 real defects caught by adversarial verify (config-override scope, phantom-group anchor, G1 live 403 bug, +). The HEADLESS command/ops/pure-model frontier for the touched areas is now largely harvested. What REMAINS is dominantly the DEFERRED GUI-WIRING TAIL — each headless slice above left a thin caller (JS invoke / DOM mutation / keyboard-menu trigger / webview.eval render push) that needs the running app to build+verify. Consolidated GUI-verify queue for the user's next `npx @tauri-apps/cli dev` session (highest value first): (1) D4 live command-palette overlay — compose windowStore+paletteQuery+commandCatalog+switcherEntries+renderSequencing+resultsGating+command_palette_search + open-shortcut/focus/Escape/arrow/click/Enter; (2) A4 mount rich WorkspaceList via render_items (groups/pins/collapse) + wire selection; (3) directional-split + equalize UI triggers (C1 insertFirst arg from split buttons/keys; C2 equalize keyboard/menu/palette action) — commands are LIVE, just need callers; (4) markdown doc-feed caller (await markdown_set_document before markdown_render) + appearance apply (resolveAppliedAppearance→document color-scheme + persist) + settings-search box (settingsEntriesMatching→SettingsPane); (5) window chrome B1-B7; (6) live agents F1-F6 (Codex/OpenCode installed). Remaining PURE-headless candidates are thinner: C3 (resizeDividerAdjustment key handler — mostly GUI), C4 (directional pane focus — needs a web focused-pane concept), E6 (shortcut-format wiring — GUI), A5-A8/A10-A14 (sidebar richness — mostly GUI-mount). Recommend: pause autonomous headless churn; do a GUI session next. LOOP CONTINUES only if more genuinely-headless slices are worth it — else await user for the live-verify phase.

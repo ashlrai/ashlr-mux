@@ -8,6 +8,7 @@ import {
   type DividerHandle,
   type Rect,
 } from "../session/paneRects";
+import { directionalSplitPlan, type SplitDirection } from "../session/splitDirection";
 import { resizeDivider, setDividerAtPath, type Layout } from "../session/splitLayout";
 import { stickyAgentPanes } from "../session/agentMount";
 import type { SurfaceKind } from "../session/surfaceUrl";
@@ -166,8 +167,10 @@ export function Workspace(): React.JSX.Element {
               </div>
             ) : null}
             <PaneControls
-              onSplitHorizontal={() => split(panelId, "horizontal")}
-              onSplitVertical={() => split(panelId, "vertical")}
+              onSplit={(direction) => {
+                const plan = directionalSplitPlan(direction);
+                split(panelId, plan.orientation, plan.insertFirst);
+              }}
               onClose={() => close(panelId)}
               surfaceKind={kind}
               onSetSurfaceKind={(next) => setSurfaceKind(panelId, next)}
@@ -240,8 +243,8 @@ function dividerStyle(handle: DividerHandle): React.CSSProperties {
 }
 
 interface PaneControlsProps {
-  onSplitHorizontal: () => void;
-  onSplitVertical: () => void;
+  /** Split this pane in `direction`; the new pane lands on that side. */
+  onSplit: (direction: SplitDirection) => void;
   onClose: () => void;
   /** The pane's current surface. Drives which toggle reads as "active". */
   surfaceKind: SurfaceKind;
@@ -260,8 +263,7 @@ interface PaneControlsProps {
  * already the active surface.
  */
 function PaneControls({
-  onSplitHorizontal,
-  onSplitVertical,
+  onSplit,
   onClose,
   surfaceKind,
   onSetSurfaceKind,
@@ -295,10 +297,16 @@ function PaneControls({
       >
         ±
       </ControlButton>
-      <ControlButton label="Split side by side" onClick={onSplitHorizontal}>
+      <ControlButton label="Split left" onClick={() => onSplit("left")}>
+        ▌
+      </ControlButton>
+      <ControlButton label="Split right" onClick={() => onSplit("right")}>
         ▐
       </ControlButton>
-      <ControlButton label="Split stacked" onClick={onSplitVertical}>
+      <ControlButton label="Split up" onClick={() => onSplit("up")}>
+        ▀
+      </ControlButton>
+      <ControlButton label="Split down" onClick={() => onSplit("down")}>
         ▄
       </ControlButton>
       {closable ? (

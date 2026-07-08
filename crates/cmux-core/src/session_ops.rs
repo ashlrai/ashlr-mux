@@ -328,8 +328,14 @@ fn remove_from_node(node: &mut Layout, panel_id: &str) -> NodeEdit {
 
 /// A fresh single-pane workspace titled `"Terminal"`, holding `panel_id`. The
 /// canonical default new workspace (macOS `TabManager.addWorkspace`).
+///
+/// Mints a fresh `workspace_id`, mirroring the canonical Swift `Workspace`
+/// initializer (`id = UUID()` at creation). Restored snapshots keep their
+/// persisted ids; only genuinely new workspaces mint. Without an id the
+/// sidebar projection (`cmux_workspaces::render_items`) skips the row.
 pub fn fresh_terminal_workspace(panel_id: &str) -> SessionWorkspaceSnapshot {
     SessionWorkspaceSnapshot {
+        workspace_id: Some(uuid::Uuid::new_v4().to_string()),
         process_title: "Terminal".to_string(),
         layout: Some(single_pane(panel_id)),
         ..Default::default()
@@ -450,9 +456,157 @@ pub fn close_workspace(tabs: &mut SessionTabManagerSnapshot, index: i64) -> bool
     true
 }
 
+/// Rename the workspace at `index` — the port of the canonical user rename,
+/// `Workspace.setCustomTitle(_:source:.user)` (`Sources/Workspace.swift:4391`):
+/// the title is trimmed (Swift `.whitespacesAndNewlines` ≈ Rust `str::trim`,
+/// both Unicode White_Space incl. NBSP/NEL, excl. U+FEFF); an EMPTY result
+/// clears both `custom_title` and `custom_title_source`, else both are set
+/// (source `"user"`). The `.auto` rejection branch is the auto-naming agent's
+/// concern, not this user-path port. Returns whether `index` was valid.
+pub fn rename_workspace(
+    tabs: &mut SessionTabManagerSnapshot,
+    index: i64,
+    title: &str,
+) -> bool {
+    if index < 0 {
+        return false;
+    }
+    let Some(workspace) = tabs.workspaces.get_mut(index as usize) else {
+        return false;
+    };
+    let trimmed = title.trim();
+    if trimmed.is_empty() {
+        workspace.custom_title = None;
+        workspace.custom_title_source = None;
+    } else {
+        workspace.custom_title = Some(trimmed.to_string());
+        workspace.custom_title_source = Some("user".to_string());
+    }
+    true
+}
+
+/// Whether the row at `index` renders as globally pinned: the GROUP pin for
+/// grouped members, the workspace pin otherwise — the snapshot-level mirror of
+/// `cmux_workspaces::is_global_pinned_row` (ordering.rs:278; the crate fn
+/// consumes UUID value types, this one the optional-string snapshot).
+fn is_global_pinned_snapshot_row(
+    tabs: &SessionTabManagerSnapshot,
+    workspace: &SessionWorkspaceSnapshot,
+) -> bool {
+    if let Some(gid) = workspace.group_id.as_deref() {
+        let target = uuid::Uuid::parse_str(gid).ok();
+        if let Some(group) = tabs.workspace_groups.as_ref().and_then(|groups| {
+            groups.iter().find(|g| match (target, uuid::Uuid::parse_str(&g.id).ok()) {
+                (Some(a), Some(b)) => a == b,
+                _ => g.id == gid,
+            })
+        }) {
+            return group.is_pinned.unwrap_or(false);
+        }
+    }
+    workspace.is_pinned.unwrap_or(false)
+}
+
+/// The length of the leading run of globally-pinned rows — the snapshot-level
+/// mirror of `cmux_workspaces::leading_global_pinned_row_count` (ordering.rs:265).
+fn leading_pinned_row_count(tabs: &SessionTabManagerSnapshot) -> usize {
+    tabs.workspaces
+        .iter()
+        .take_while(|ws| is_global_pinned_snapshot_row(tabs, ws))
+        .count()
+}
+
+/// Pin/unpin the workspace at `index` — the port of the canonical
+/// `WorkspaceReorderCoordinator.setPinned(_:pinned:)` + `reorderTabForPinnedState`
+/// (`Packages/macOS/CmuxWorkspaces/.../WorkspaceReorderCoordinator.swift:467,529`):
+/// a no-op when the state is unchanged; an UNGROUPED workspace is removed and
+/// re-inserted at the end of the leading pinned run (`min(pinnedCount, count)`)
+/// — pinning joins the pinned block, unpinning lands right after it. The
+/// selection follows the workspace it pointed at (canonical selection is
+/// id-based; this index model re-points explicitly).
+///
+/// `is_pinned` encodes `false` as ABSENT (`None`) so unpinned workspaces stay
+/// byte-identical to Swift-authored fixtures (the A1 omit-when-none contract).
+///
+/// GROUPED rows flip the flag only: the canonical follow-up
+/// `normalizeWorkspaceGroupContiguity` consumes the crate's UUID value types
+/// and is deferred to the same future snapshot-adapter slice as A9's
+/// placement-normalize gap.
+pub fn set_workspace_pinned(
+    tabs: &mut SessionTabManagerSnapshot,
+    index: i64,
+    pinned: bool,
+) -> bool {
+    if index < 0 {
+        return false;
+    }
+    let idx = index as usize;
+    let Some(workspace) = tabs.workspaces.get(idx) else {
+        return false;
+    };
+    if workspace.is_pinned.unwrap_or(false) == pinned {
+        return false;
+    }
+
+    // Selection follows its workspace across the reorder (tracked by id; live
+    // workspaces always carry one since `fresh_terminal_workspace` mints).
+    let selected_idx = tabs
+        .selected_workspace_index
+        .and_then(|i| usize::try_from(i).ok())
+        .filter(|i| *i < tabs.workspaces.len());
+    let selected_id =
+        selected_idx.and_then(|i| tabs.workspaces[i].workspace_id.clone());
+
+    tabs.workspaces[idx].is_pinned = if pinned { Some(true) } else { None };
+
+    if tabs.workspaces[idx].group_id.is_none() {
+        let moved = tabs.workspaces.remove(idx);
+        let insert = leading_pinned_row_count(tabs).min(tabs.workspaces.len());
+        tabs.workspaces.insert(insert, moved);
+
+        if let (Some(id), Some(old_idx)) = (selected_id, selected_idx) {
+            let new_idx = tabs
+                .workspaces
+                .iter()
+                .position(|ws| ws.workspace_id.as_deref() == Some(id.as_str()))
+                .unwrap_or(old_idx);
+            tabs.selected_workspace_index = Some(new_idx as i64);
+        }
+    }
+    true
+}
+
+/// Set the collapse state of the workspace group `group_id` — the port of
+/// `TabManager.setWorkspaceGroupCollapsed(groupId:isCollapsed:)`
+/// (`Sources/TabManager.swift:1838`). Group ids are compared as UUID values
+/// (case-insensitive) like the canonical `UUID` keys; a non-UUID stored id
+/// falls back to exact string equality. Returns whether a group matched.
+pub fn set_group_collapsed(
+    tabs: &mut SessionTabManagerSnapshot,
+    group_id: &str,
+    collapsed: bool,
+) -> bool {
+    let target = uuid::Uuid::parse_str(group_id).ok();
+    let Some(groups) = tabs.workspace_groups.as_mut() else {
+        return false;
+    };
+    for group in groups {
+        let matches = match (target, uuid::Uuid::parse_str(&group.id).ok()) {
+            (Some(a), Some(b)) => a == b,
+            _ => group.id == group_id,
+        };
+        if matches {
+            group.is_collapsed = collapsed;
+            return true;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::SessionWorkspaceGroupSnapshot;
 
     fn pane(id: &str) -> Layout {
         single_pane(id)
@@ -797,6 +951,159 @@ mod tests {
         assert_eq!(tabs.selected_workspace_index, Some(1));
         assert!(matches!(tabs.workspaces[1].layout, Some(Layout::Pane(_))));
         assert_eq!(tabs.workspaces[1].process_title, "Terminal");
+    }
+
+    #[test]
+    fn rename_workspace_sets_trimmed_title_with_user_source() {
+        let mut tabs = one_workspace_tabs("surface-1");
+        assert!(rename_workspace(&mut tabs, 0, "  My Project \n"));
+        assert_eq!(tabs.workspaces[0].custom_title.as_deref(), Some("My Project"));
+        assert_eq!(tabs.workspaces[0].custom_title_source.as_deref(), Some("user"));
+    }
+
+    #[test]
+    fn rename_workspace_empty_clears_title_and_source() {
+        // Canonical setCustomTitle: an empty (post-trim) title clears BOTH the
+        // custom title and its provenance (Workspace.swift:4396-4399).
+        let mut tabs = one_workspace_tabs("surface-1");
+        assert!(rename_workspace(&mut tabs, 0, "Keep"));
+        assert!(rename_workspace(&mut tabs, 0, "   \n "));
+        assert_eq!(tabs.workspaces[0].custom_title, None);
+        assert_eq!(tabs.workspaces[0].custom_title_source, None);
+    }
+
+    #[test]
+    fn rename_workspace_out_of_range_is_rejected() {
+        let mut tabs = one_workspace_tabs("surface-1");
+        assert!(!rename_workspace(&mut tabs, -1, "x"));
+        assert!(!rename_workspace(&mut tabs, 1, "x"));
+        assert_eq!(tabs.workspaces[0].custom_title, None);
+    }
+
+    // --- set_workspace_pinned (canonical setPinned + reorderTabForPinnedState) ---
+
+    fn tabs_with_ids(ids: &[&str]) -> SessionTabManagerSnapshot {
+        SessionTabManagerSnapshot {
+            selected_workspace_index: Some(0),
+            workspaces: ids
+                .iter()
+                .map(|id| SessionWorkspaceSnapshot {
+                    workspace_id: Some((*id).to_string()),
+                    ..Default::default()
+                })
+                .collect(),
+            workspace_groups: None,
+        }
+    }
+
+    fn id_order(tabs: &SessionTabManagerSnapshot) -> Vec<&str> {
+        tabs.workspaces
+            .iter()
+            .map(|ws| ws.workspace_id.as_deref().unwrap())
+            .collect()
+    }
+
+    const WA: &str = "aaaaaaaa-0000-0000-0000-00000000000a";
+    const WB: &str = "aaaaaaaa-0000-0000-0000-00000000000b";
+    const WC: &str = "aaaaaaaa-0000-0000-0000-00000000000c";
+
+    #[test]
+    fn pinning_moves_the_workspace_to_the_end_of_the_pinned_run() {
+        let mut tabs = tabs_with_ids(&[WA, WB, WC]);
+        // Pin C: no pinned rows yet → inserts at 0.
+        assert!(set_workspace_pinned(&mut tabs, 2, true));
+        assert_eq!(id_order(&tabs), vec![WC, WA, WB]);
+        assert_eq!(tabs.workspaces[0].is_pinned, Some(true));
+        // Pin B (now at index 2): joins AFTER the existing pinned run.
+        assert!(set_workspace_pinned(&mut tabs, 2, true));
+        assert_eq!(id_order(&tabs), vec![WC, WB, WA]);
+    }
+
+    #[test]
+    fn unpinning_lands_right_after_the_pinned_block_and_clears_the_flag() {
+        let mut tabs = tabs_with_ids(&[WA, WB, WC]);
+        assert!(set_workspace_pinned(&mut tabs, 2, true)); // [C*, A, B]
+        assert!(set_workspace_pinned(&mut tabs, 1, true)); // [C*, A*, B]
+        // Unpin C (index 0): re-inserts after the remaining pinned run (A).
+        assert!(set_workspace_pinned(&mut tabs, 0, false));
+        assert_eq!(id_order(&tabs), vec![WA, WC, WB]);
+        // Unpinned encodes as ABSENT (byte-stable with Swift fixtures).
+        assert_eq!(tabs.workspaces[1].is_pinned, None);
+    }
+
+    #[test]
+    fn set_workspace_pinned_is_a_noop_on_unchanged_state_or_bad_index() {
+        let mut tabs = tabs_with_ids(&[WA, WB]);
+        assert!(!set_workspace_pinned(&mut tabs, 0, false)); // already unpinned
+        assert!(!set_workspace_pinned(&mut tabs, -1, true));
+        assert!(!set_workspace_pinned(&mut tabs, 2, true));
+        assert_eq!(id_order(&tabs), vec![WA, WB]);
+    }
+
+    #[test]
+    fn selection_follows_its_workspace_across_the_pin_reorder() {
+        let mut tabs = tabs_with_ids(&[WA, WB, WC]);
+        tabs.selected_workspace_index = Some(1); // B selected
+        assert!(set_workspace_pinned(&mut tabs, 2, true)); // [C*, A, B]
+        assert_eq!(tabs.selected_workspace_index, Some(2));
+        assert_eq!(tabs.workspaces[2].workspace_id.as_deref(), Some(WB));
+    }
+
+    #[test]
+    fn grouped_workspace_pin_flips_the_flag_without_a_flat_move() {
+        let gid = "11111111-1111-1111-1111-111111111111";
+        let mut tabs = tabs_with_ids(&[WA, WB]);
+        tabs.workspaces[1].group_id = Some(gid.to_string());
+        assert!(set_workspace_pinned(&mut tabs, 1, true));
+        // Canonical runs normalizeWorkspaceGroupContiguity here (deferred with
+        // the A9 gap); the flat order must NOT change.
+        assert_eq!(id_order(&tabs), vec![WA, WB]);
+        assert_eq!(tabs.workspaces[1].is_pinned, Some(true));
+    }
+
+    #[test]
+    fn set_group_collapsed_flips_the_matching_group_case_insensitively() {
+        let gid = "11111111-1111-1111-1111-111111111111";
+        let mut tabs = one_workspace_tabs("surface-1");
+        tabs.workspace_groups = Some(vec![SessionWorkspaceGroupSnapshot {
+            id: gid.to_string(),
+            name: "G".to_string(),
+            is_collapsed: false,
+            ..Default::default()
+        }]);
+        // UUID identity is case-insensitive, like the canonical UUID keys.
+        assert!(set_group_collapsed(&mut tabs, &gid.to_uppercase(), true));
+        assert!(tabs.workspace_groups.as_ref().unwrap()[0].is_collapsed);
+        assert!(set_group_collapsed(&mut tabs, gid, false));
+        assert!(!tabs.workspace_groups.as_ref().unwrap()[0].is_collapsed);
+    }
+
+    #[test]
+    fn set_group_collapsed_unknown_group_is_rejected() {
+        let mut tabs = one_workspace_tabs("surface-1");
+        assert!(!set_group_collapsed(
+            &mut tabs,
+            "11111111-1111-1111-1111-111111111111",
+            true
+        ));
+        tabs.workspace_groups = Some(vec![]);
+        assert!(!set_group_collapsed(
+            &mut tabs,
+            "11111111-1111-1111-1111-111111111111",
+            true
+        ));
+    }
+
+    // Canonical `Workspace.init` mints `id = UUID()`; without an id the sidebar
+    // projection (`cmux_workspaces::render_items`) would skip the row entirely.
+    #[test]
+    fn fresh_terminal_workspace_mints_a_unique_workspace_id() {
+        let a = fresh_terminal_workspace("surface-1");
+        let b = fresh_terminal_workspace("surface-2");
+        let id_a = a.workspace_id.as_deref().expect("fresh workspace must carry an id");
+        let id_b = b.workspace_id.as_deref().expect("fresh workspace must carry an id");
+        assert!(uuid::Uuid::parse_str(id_a).is_ok(), "id must be a UUID: {id_a}");
+        assert_ne!(id_a, id_b, "each fresh workspace mints its own id");
     }
 
     // Case B: insert-after-selected (AfterCurrent, middle selection).

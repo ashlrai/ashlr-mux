@@ -9,7 +9,8 @@ import type {
   SidebarConfig,
 } from "@cmux/core-types";
 
-import { SettingsPane } from "./SettingsPane";
+import { SettingsPane, SettingsSearchResults } from "./SettingsPane";
+import { settingsEntriesMatching } from "../settings/settingsSearch";
 
 // ---- Fixtures ---------------------------------------------------------------
 
@@ -110,7 +111,7 @@ describe("SettingsPane section labels", () => {
       app: makeApp(),
       shortcuts: makeShortcuts(),
     };
-    const markup = renderToStaticMarkup(<SettingsPane config={config} onChange={noop} />);
+    const markup = renderToStaticMarkup(<SettingsPane config={config} onAction={noop} />);
     expect(markup).toContain("<h2>Sidebar</h2>");
     expect(markup).toContain("<h2>Notifications</h2>");
     expect(markup).toContain("<h2>Appearance</h2>");
@@ -119,7 +120,7 @@ describe("SettingsPane section labels", () => {
 
   test("omits a section whose config slice is absent", () => {
     const config: Config = { app: makeApp() };
-    const markup = renderToStaticMarkup(<SettingsPane config={config} onChange={noop} />);
+    const markup = renderToStaticMarkup(<SettingsPane config={config} onAction={noop} />);
     expect(markup).toContain("<h2>Appearance</h2>");
     expect(markup).not.toContain("<h2>Sidebar</h2>");
     expect(markup).not.toContain("<h2>Notifications</h2>");
@@ -134,7 +135,7 @@ describe("SettingsPane sidebar toggles", () => {
     const config: Config = {
       sidebar: makeSidebar({ showPorts: true, showLog: false, hideAllDetails: true }),
     };
-    const markup = renderToStaticMarkup(<SettingsPane config={config} onChange={noop} />);
+    const markup = renderToStaticMarkup(<SettingsPane config={config} onAction={noop} />);
 
     // A checked flag serializes with the `checked` attribute...
     expect(tagByAttr(markup, "data-field", "showPorts")).toContain("checked");
@@ -155,7 +156,7 @@ describe("SettingsPane notifications toggles", () => {
     const config: Config = {
       notifications: makeNotifications({ dockBadge: true, paneFlash: false }),
     };
-    const markup = renderToStaticMarkup(<SettingsPane config={config} onChange={noop} />);
+    const markup = renderToStaticMarkup(<SettingsPane config={config} onAction={noop} />);
     expect(tagByAttr(markup, "data-field", "dockBadge")).toContain("checked");
     expect(tagByAttr(markup, "data-field", "paneFlash")).not.toContain("checked");
     expect(markup).toContain("Unread pane ring");
@@ -167,7 +168,7 @@ describe("SettingsPane notifications toggles", () => {
 describe("SettingsPane appearance radio", () => {
   test("selects exactly the configured appearance", () => {
     const config: Config = { app: makeApp({ appearance: "dark" }) };
-    const markup = renderToStaticMarkup(<SettingsPane config={config} onChange={noop} />);
+    const markup = renderToStaticMarkup(<SettingsPane config={config} onAction={noop} />);
 
     expect(tagByAttr(markup, "data-appearance", "dark")).toContain("checked");
     expect(tagByAttr(markup, "data-appearance", "light")).not.toContain("checked");
@@ -176,7 +177,7 @@ describe("SettingsPane appearance radio", () => {
 
   test("selecting system checks only system", () => {
     const config: Config = { app: makeApp({ appearance: "system" }) };
-    const markup = renderToStaticMarkup(<SettingsPane config={config} onChange={noop} />);
+    const markup = renderToStaticMarkup(<SettingsPane config={config} onAction={noop} />);
     expect(tagByAttr(markup, "data-appearance", "system")).toContain("checked");
     expect(tagByAttr(markup, "data-appearance", "dark")).not.toContain("checked");
   });
@@ -195,7 +196,7 @@ describe("SettingsPane shortcuts list", () => {
         },
       }),
     };
-    const markup = renderToStaticMarkup(<SettingsPane config={config} onChange={noop} />);
+    const markup = renderToStaticMarkup(<SettingsPane config={config} onAction={noop} />);
 
     expect(markup).toContain('data-action="workspace.new"');
     expect(markup).toContain("cmd+t");
@@ -206,3 +207,28 @@ describe("SettingsPane shortcuts list", () => {
     expect(markup).toContain("Unbound");
   });
 });
+
+describe("SettingsSearchResults", () => {
+  test("renders ranked canonical entries from the search corpus", () => {
+    const entries = settingsEntriesMatching("appearance");
+    expect(entries.length).toBeGreaterThan(0);
+    const markup = renderToStaticMarkup(
+      <SettingsSearchResults entries={entries} />,
+    );
+    expect(markup).toContain("cmux-settings-search-result");
+    expect(markup).toContain("data-target=");
+  });
+
+  test("shows the empty state when nothing matches", () => {
+    const markup = renderToStaticMarkup(<SettingsSearchResults entries={[]} />);
+    expect(markup).toContain("No matching settings");
+  });
+
+  test("the pane renders the search input", () => {
+    const markup = renderToStaticMarkup(
+      <SettingsPane config={{}} onAction={() => {}} />,
+    );
+    expect(markup).toContain("cmux-settings-search-input");
+  });
+});
+

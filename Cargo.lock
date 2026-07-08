@@ -462,6 +462,7 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "ts-rs",
+ "uuid",
 ]
 
 [[package]]
@@ -472,6 +473,7 @@ dependencies = [
  "cmux-agent",
  "cmux-agent-chat",
  "cmux-command-palette",
+ "cmux-config",
  "cmux-core",
  "cmux-diff",
  "cmux-ipc",

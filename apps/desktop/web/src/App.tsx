@@ -1,10 +1,16 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { Icon } from "@cmux/webviews/src/icons";
 
 import { CommandPaletteOverlay } from "./components/CommandPaletteOverlay";
+import { SettingsOverlay } from "./components/SettingsOverlay";
 import { Sidebar } from "./components/Sidebar";
 import { Workspace } from "./components/Workspace";
+import { useAppearance } from "./hooks/useAppearance";
+import { useConfig } from "./hooks/useConfig";
+
+/** Window event that opens Settings (fired by the palette's openSettings). */
+export const OPEN_SETTINGS_EVENT = "cmux:open-settings";
 
 /**
  * The app shell. A top bar (sidebar toggle + app identity) over a two-column
@@ -17,6 +23,31 @@ import { Workspace } from "./components/Workspace";
  */
 export function App(): React.JSX.Element {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // Live config feeds the applied appearance (E9): the stored app.appearance
+  // resolves against the ambient system scheme onto :root, and a legacy
+  // stored value ("auto") is normalized back through the same single
+  // mutation path the Settings pane uses.
+  const { config, dispatch } = useConfig();
+  useAppearance(config?.app?.appearance ?? null, (persistedRawValue) =>
+    dispatch({
+      type: "setAppearance",
+      // The resolver never emits "auto" (normalization collapses it to
+      // "system") but its type keeps the full mode union — narrow for the
+      // config's Appearance union.
+      appearance: persistedRawValue === "auto" ? "system" : persistedRawValue,
+    }),
+  );
+
+  // The command palette (and any future entrypoint) opens Settings through
+  // one window event, keeping a single open path without prop-drilling into
+  // the palette's intent switch.
+  useEffect(() => {
+    const open = (): void => setSettingsOpen(true);
+    window.addEventListener(OPEN_SETTINGS_EVENT, open);
+    return () => window.removeEventListener(OPEN_SETTINGS_EVENT, open);
+  }, []);
 
   return (
     <div className="cmux-shell">
@@ -35,6 +66,18 @@ export function App(): React.JSX.Element {
           <Icon name="classic" />
         </span>
         <span className="font-medium">cmux for Windows</span>
+        <span className="flex-1" />
+        <button
+          type="button"
+          className="cmux-settings-toggle"
+          title="Settings"
+          aria-label="Settings"
+          onClick={() => setSettingsOpen(true)}
+        >
+          {/* The shared icon set has no gear glyph; the character keeps the
+              header dependency-free until one lands. */}
+          ⚙
+        </button>
       </header>
       <div className="cmux-body">
         <Sidebar collapsed={sidebarCollapsed} />
@@ -43,6 +86,7 @@ export function App(): React.JSX.Element {
         </main>
       </div>
       <CommandPaletteOverlay />
+      <SettingsOverlay open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
   );
 }

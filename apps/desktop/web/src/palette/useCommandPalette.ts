@@ -104,7 +104,8 @@ function fallbackSearch(
 }
 
 export function useCommandPalette(): UseCommandPalette {
-  const { snapshot, workspaces, selectWorkspace } = useSession();
+  const { snapshot, workspaces, selectWorkspace, newWorkspace, equalizeDividers } =
+    useSession();
 
   const [visible, setVisible] = useState(false);
   const [query, setQueryState] = useState("");
@@ -261,18 +262,45 @@ export function useCommandPalette(): UseCommandPalette {
           }
         }
       } else {
-        // Commands scope: resolve the intent through the shared dispatch path.
-        // Per-intent side effects land incrementally; surface the resolved
-        // intent so the wiring is visible and never silently no-ops.
+        // Commands scope: resolve the intent through the shared dispatch path,
+        // then run its side effect. Per-intent effects land incrementally;
+        // unwired kinds surface via the log so they never silently no-op.
         const dispatch = dispatchCommand(match.command_id, {
           hasWorkspace: workspaces.length > 0,
         });
-        // eslint-disable-next-line no-console
-        console.info("[command-palette] activate", match.command_id, dispatch?.intent.kind);
+        switch (dispatch?.intent.kind) {
+          case "equalizeSplits":
+            equalizeDividers();
+            break;
+          case "newWorkspace":
+            newWorkspace();
+            break;
+          case "openSettings":
+            // One shared open path: App listens for this event (see
+            // OPEN_SETTINGS_EVENT) — no prop-drilling into the intent switch.
+            window.dispatchEvent(new CustomEvent("cmux:open-settings"));
+            break;
+          default:
+            // eslint-disable-next-line no-console
+            console.info(
+              "[command-palette] activate (unwired)",
+              match.command_id,
+              dispatch?.intent.kind,
+            );
+        }
       }
       close();
     },
-    [matches, scope, switcherById, workspaces, selectWorkspace, close],
+    [
+      matches,
+      scope,
+      switcherById,
+      workspaces,
+      selectWorkspace,
+      newWorkspace,
+      equalizeDividers,
+      close,
+    ],
   );
 
   // Global open shortcuts (only while hidden — the overlay owns key handling
