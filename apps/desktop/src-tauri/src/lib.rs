@@ -80,6 +80,7 @@ pub fn run() {
             session::session_select_workspace,
             session::session_close_workspace,
             session::session_rename_workspace,
+            session::session_set_workspace_pinned,
             session::session_set_group_collapsed,
             session::session_equalize_dividers,
             agent_session::agent_session_rpc,

@@ -44,6 +44,8 @@ export interface WorkspaceListProps {
   onCloseWorkspace?: (workspaceId: string) => void;
   /// Commit an inline rename (empty clears the custom title).
   onRenameWorkspace?: (workspaceId: string, title: string) => void;
+  /// Pin/unpin the workspace (canonical pinned-ahead reorder).
+  onSetWorkspacePinned?: (workspaceId: string, pinned: boolean) => void;
   /// Toggle a group's collapse state to `collapsed`.
   onSetGroupCollapsed?: (groupId: string, collapsed: boolean) => void;
 }
@@ -106,6 +108,7 @@ function WorkspaceRowItem({
   onSelect,
   onClose,
   onRename,
+  onSetPinned,
 }: {
   item: Extract<SidebarWorkspaceRenderItem, { kind: "workspace" }>;
   title: string;
@@ -114,6 +117,7 @@ function WorkspaceRowItem({
   onSelect?: (workspaceId: string) => void;
   onClose?: (workspaceId: string) => void;
   onRename?: (workspaceId: string, title: string) => void;
+  onSetPinned?: (workspaceId: string, pinned: boolean) => void;
 }) {
   const { workspace } = item;
   // Inline rename editor state: `null` when idle, else the draft text.
@@ -164,6 +168,24 @@ function WorkspaceRowItem({
       ) : (
         <span className="cmux-sidebar-row-label">{title}</span>
       )}
+      {onSetPinned ? (
+        <button
+          type="button"
+          className={classNames(
+            "cmux-sidebar-row-pin",
+            workspace.isPinned && "is-pinned",
+          )}
+          title={workspace.isPinned ? "Unpin workspace" : "Pin workspace"}
+          aria-label={`${workspace.isPinned ? "Unpin" : "Pin"} ${title}`}
+          onClick={(event) => {
+            // Don't let the row's select handler fire on pin-toggle.
+            event.stopPropagation();
+            onSetPinned(workspace.id, !workspace.isPinned);
+          }}
+        >
+          ⌖
+        </button>
+      ) : null}
       {canClose && onClose ? (
         <button
           type="button"
@@ -191,6 +213,7 @@ export function WorkspaceList({
   onSelectWorkspace,
   onCloseWorkspace,
   onRenameWorkspace,
+  onSetWorkspacePinned,
   onSetGroupCollapsed,
 }: WorkspaceListProps) {
   const selected = selectedWorkspaceIds ?? new Set<string>();
@@ -218,6 +241,7 @@ export function WorkspaceList({
             onSelect={onSelectWorkspace}
             onClose={onCloseWorkspace}
             onRename={onRenameWorkspace}
+            onSetPinned={onSetWorkspacePinned}
           />
         );
       })}

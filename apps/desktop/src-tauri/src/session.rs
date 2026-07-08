@@ -182,6 +182,21 @@ fn apply_rename_workspace(snapshot: &mut AppSessionSnapshot, index: i64, title: 
     }
 }
 
+/// Pin/unpin the workspace at `index` in the first window (canonical
+/// pinned-ahead reorder). Delegates to [`session_ops::set_workspace_pinned`].
+fn apply_set_workspace_pinned(
+    snapshot: &mut AppSessionSnapshot,
+    index: i64,
+    pinned: bool,
+) -> bool {
+    match snapshot.windows.first_mut() {
+        Some(window) => {
+            session_ops::set_workspace_pinned(&mut window.tab_manager, index, pinned)
+        }
+        None => false,
+    }
+}
+
 /// Set the collapse state of group `group_id` in the first window. Delegates
 /// to [`session_ops::set_group_collapsed`].
 fn apply_set_group_collapsed(
@@ -376,6 +391,26 @@ pub fn session_rename_workspace(
     let snapshot = {
         let mut guard = state.snapshot.lock().expect("session snapshot mutex poisoned");
         apply_rename_workspace(&mut guard, index, &title);
+        guard.clone()
+    };
+    emit_session_changed(&app, &snapshot);
+    snapshot
+}
+
+/// Pin/unpin the workspace at `index` (canonical pinned-ahead reorder; the
+/// selection follows its workspace). Emits `cmux://session-changed` and
+/// returns the snapshot. A no-op (still returns the snapshot) on a bad index
+/// or unchanged state.
+#[tauri::command]
+pub fn session_set_workspace_pinned(
+    app: AppHandle,
+    state: State<'_, SessionState>,
+    index: i64,
+    pinned: bool,
+) -> AppSessionSnapshot {
+    let snapshot = {
+        let mut guard = state.snapshot.lock().expect("session snapshot mutex poisoned");
+        apply_set_workspace_pinned(&mut guard, index, pinned);
         guard.clone()
     };
     emit_session_changed(&app, &snapshot);

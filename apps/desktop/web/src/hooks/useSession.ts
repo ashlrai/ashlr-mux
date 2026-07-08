@@ -47,6 +47,11 @@ export interface UseSession {
   /** Collapse/expand the sidebar workspace group `groupId`. */
   setGroupCollapsed: (groupId: string, collapsed: boolean) => void;
   /**
+   * Pin/unpin the workspace at `index` (canonical pinned-ahead reorder — the
+   * row moves to the boundary of the leading pinned block).
+   */
+  setWorkspacePinned: (index: number, pinned: boolean) => void;
+  /**
    * Split the pane holding `panelId` in `orientation`. `insertFirst` places
    * the NEW pane before the existing one (splitting left/up); omitted/false
    * appends it after (right/down) — see `session/splitDirection.ts`.
@@ -181,6 +186,13 @@ export function useSession(): UseSession {
       .catch((error) => console.error("session_set_group_collapsed failed", error));
   }, []);
 
+  const setWorkspacePinned = useCallback((index: number, pinned: boolean) => {
+    void host
+      .invoke<AppSessionSnapshot>("session_set_workspace_pinned", { index, pinned })
+      .then(setSnapshot)
+      .catch((error) => console.error("session_set_workspace_pinned failed", error));
+  }, []);
+
   const tabs = snapshot?.windows[0]?.tab_manager;
   const workspaces = tabs?.workspaces ?? [];
   const rawIndex = tabs?.selected_workspace_index ?? 0;
@@ -202,5 +214,6 @@ export function useSession(): UseSession {
     closeWorkspace,
     renameWorkspace,
     setGroupCollapsed,
+    setWorkspacePinned,
   };
 }

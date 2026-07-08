@@ -40,6 +40,7 @@ export interface SidebarViewProps {
   onSelectWorkspace: (index: number) => void;
   onCloseWorkspace: (index: number) => void;
   onRenameWorkspace?: (index: number, title: string) => void;
+  onSetWorkspacePinned?: (index: number, pinned: boolean) => void;
   onSetGroupCollapsed?: (groupId: string, collapsed: boolean) => void;
 }
 
@@ -51,6 +52,7 @@ export function SidebarView({
   onSelectWorkspace,
   onCloseWorkspace,
   onRenameWorkspace,
+  onSetWorkspacePinned,
   onSetGroupCollapsed,
 }: SidebarViewProps): React.JSX.Element {
   if (collapsed) {
@@ -123,6 +125,16 @@ export function SidebarView({
               }
             : undefined
         }
+        onSetWorkspacePinned={
+          onSetWorkspacePinned
+            ? (workspaceId, pinned) => {
+                const index = indexById.get(workspaceId);
+                if (index !== undefined) {
+                  onSetWorkspacePinned(index, pinned);
+                }
+              }
+            : undefined
+        }
         onSetGroupCollapsed={onSetGroupCollapsed}
       />
     </nav>
@@ -143,6 +155,7 @@ export function Sidebar({ collapsed }: SidebarProps): React.JSX.Element {
     closeWorkspace,
     renameWorkspace,
     setGroupCollapsed,
+    setWorkspacePinned,
   } = useSession();
 
   return (
@@ -153,6 +166,7 @@ export function Sidebar({ collapsed }: SidebarProps): React.JSX.Element {
       onSelectWorkspace={selectWorkspace}
       onCloseWorkspace={closeWorkspace}
       onRenameWorkspace={renameWorkspace}
+      onSetWorkspacePinned={setWorkspacePinned}
       onSetGroupCollapsed={setGroupCollapsed}
     />
   );
