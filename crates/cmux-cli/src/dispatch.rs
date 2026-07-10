@@ -236,6 +236,9 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
         "capture-pane" => Some(
             "Usage:\n  cmux capture-pane [--workspace WORKSPACE] [--surface SURFACE] [--window WINDOW] [--scrollback] [--lines N]\n\nReads plain text from the selected terminal pane.",
         ),
+        "clear-history" => Some(
+            "Usage:\n  cmux clear-history [--workspace WORKSPACE] [--surface SURFACE] [--window WINDOW]\n\nClears retained scrollback for the selected terminal surface.",
+        ),
         "send" => Some(
             "Usage:\n  cmux send [--workspace WORKSPACE] [--surface SURFACE] [--] TEXT\n\nSends literal text to a terminal surface.",
         ),
@@ -478,6 +481,7 @@ mod tests {
     fn mapped_socket_command_help_is_concrete_for_control_aliases() {
         for command in [
             "browser-reload",
+            "clear-history",
             "close-workspaces",
             "focus-webview",
             "get-url",

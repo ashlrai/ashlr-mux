@@ -45,7 +45,10 @@ impl ControlCommand {
     }
 
     pub fn with_window_id(mut self, window_id: Option<&str>) -> Self {
-        if self.method != "surface.read_text" {
+        if !matches!(
+            self.method.as_str(),
+            "surface.read_text" | "surface.clear_history"
+        ) {
             return self;
         }
         let Some(window_id) = window_id.map(str::trim).filter(|value| !value.is_empty()) else {
@@ -120,6 +123,7 @@ fn workspace_scoped_method(method: &str) -> bool {
             | "surface.focus"
             | "surface.health"
             | "surface.read_text"
+            | "surface.clear_history"
             | "debug.terminals"
             | "surface.send_text"
             | "surface.send_key"
@@ -345,6 +349,10 @@ pub fn control_command_for(
         "read-screen" | "capture-pane" => Some(ControlCommand::new(
             "surface.read_text",
             surface_read_text_params(args, command)?,
+        )),
+        "clear-history" => Some(ControlCommand::new(
+            "surface.clear_history",
+            surface_selector_params(args)?,
         )),
         "debug-terminals" => Some(ControlCommand::new(
             "debug.terminals",
@@ -3214,6 +3222,9 @@ mod tests {
         let command = mapped("read-screen", &[]).with_window_id(Some("2"));
         assert_eq!(command.params["window_ref"], serde_json::json!("window:2"));
 
+        let command = mapped("clear-history", &[]).with_window_id(Some("2"));
+        assert_eq!(command.params["window_ref"], serde_json::json!("window:2"));
+
         let command =
             mapped("read-screen", &["--window", "window:3"]).with_window_id(Some("window:2"));
         assert_eq!(command.params["window_ref"], serde_json::json!("window:3"));
@@ -3250,6 +3261,7 @@ mod tests {
             ("focus-pane", vec!["surface:1"]),
             ("focus-panel", vec!["--panel", "surface:1"]),
             ("surface-health", vec![]),
+            ("clear-history", vec![]),
         ] {
             let control = mapped(command, &tokens).with_ambient_workspace_id(Some("workspace-2"));
             assert_eq!(
@@ -4417,5 +4429,15 @@ mod tests {
         let error = control_command_for("read-screen", &args(&["--lines", "0"]))
             .expect_err("zero line count must fail");
         assert!(error.message.contains("greater than 0"));
+
+        let clear = mapped(
+            "clear-history",
+            &["--workspace", "workspace:2", "--surface", "surface:3"],
+        );
+        assert_eq!(clear.method, "surface.clear_history");
+        assert_eq!(
+            clear.params,
+            serde_json::json!({"workspace_ref": "workspace:2", "surface_ref": "surface:3"})
+        );
     }
 }

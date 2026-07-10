@@ -59,8 +59,8 @@ use crate::session::{
     toggle_split_zoom_for_control, SessionState, WorkspaceRemoteControlConfig,
 };
 use crate::terminal::{
-    scan_listening_ports_for_root_pid, scan_panel_listening_ports, terminal_read_panel,
-    terminal_runtime_snapshots, terminal_write_panel, TerminalState,
+    scan_listening_ports_for_root_pid, scan_panel_listening_ports, terminal_clear_history_panel,
+    terminal_read_panel, terminal_runtime_snapshots, terminal_write_panel, TerminalState,
 };
 
 const CONTROL_PIPE_BASE_NAME: &str = "cmux";
@@ -873,6 +873,7 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "ports_kick",
     "surface.focus",
     "surface.health",
+    "surface.clear_history",
     "surface.read_text",
     "surface.send_text",
     "surface.send_key",
@@ -1141,6 +1142,7 @@ fn handle_control_request(app: &AppHandle, request: ControlRequest) -> ControlCa
         "surface.ports_kick" | "ports_kick" => surface_ports_kick(app, &request.params),
         "surface.focus" => surface_focus(app, &request.params),
         "surface.health" => surface_health(app, &request.params),
+        "surface.clear_history" => surface_clear_history(app, &request.params),
         "surface.read_text" => surface_read_text(app, &request.params),
         "surface.send_text" => surface_send_text(app, &request.params),
         "surface.send_key" => surface_send_key(app, &request.params),
@@ -3804,25 +3806,59 @@ fn surface_health(app: &AppHandle, params: &serde_json::Map<String, Value>) -> C
     }))
 }
 
+fn terminal_workspace_index(
+    current: &AppSessionSnapshot,
+    params: &serde_json::Map<String, Value>,
+) -> Result<usize, ControlCallResult> {
+    if current.windows.is_empty() {
+        return Err(ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Workspace not found".to_string(),
+            data: None,
+        });
+    }
+    workspace_index_from_workspace_scope_or_selected(current, params).ok_or_else(|| {
+        ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Workspace not found".to_string(),
+            data: None,
+        }
+    })
+}
+
+fn terminal_panel_id(
+    current: &AppSessionSnapshot,
+    workspace_index: usize,
+    params: &serde_json::Map<String, Value>,
+) -> Result<String, ControlCallResult> {
+    let panel_id = surface_id_from_params_or_workspace_focused(current, workspace_index, params)
+        .ok_or_else(|| ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "No focused surface".to_string(),
+            data: None,
+        })?;
+    if !surface_is_terminal(current, workspace_index, &panel_id) {
+        return Err(ControlCallResult::Err {
+            code: "invalid_params".to_string(),
+            message: "Surface is not a terminal".to_string(),
+            data: Some(
+                json!({"surface_id": panel_id})
+                    .try_into()
+                    .unwrap_or(JsonValue::Null),
+            ),
+        });
+    }
+    Ok(panel_id)
+}
+
 fn surface_read_text(
     app: &AppHandle,
     params: &serde_json::Map<String, Value>,
 ) -> ControlCallResult {
     let current = snapshot(app);
-    let Some(window) = current.windows.first() else {
-        return ControlCallResult::Err {
-            code: "not_found".to_string(),
-            message: "Workspace not found".to_string(),
-            data: None,
-        };
-    };
-    let Some(workspace_index) = workspace_index_from_workspace_scope_or_selected(&current, params)
-    else {
-        return ControlCallResult::Err {
-            code: "not_found".to_string(),
-            message: "Workspace not found".to_string(),
-            data: None,
-        };
+    let workspace_index = match terminal_workspace_index(&current, params) {
+        Ok(index) => index,
+        Err(error) => return error,
     };
     let line_limit = if params.contains_key("lines") {
         match usize_param(params, &["lines"]) {
@@ -3832,26 +3868,11 @@ fn surface_read_text(
     } else {
         None
     };
-    let Some(panel_id) =
-        surface_id_from_params_or_workspace_focused(&current, workspace_index, params)
-    else {
-        return ControlCallResult::Err {
-            code: "not_found".to_string(),
-            message: "No focused surface".to_string(),
-            data: None,
-        };
+    let panel_id = match terminal_panel_id(&current, workspace_index, params) {
+        Ok(panel_id) => panel_id,
+        Err(error) => return error,
     };
-    if !surface_is_terminal(&current, workspace_index, &panel_id) {
-        return ControlCallResult::Err {
-            code: "invalid_params".to_string(),
-            message: "Surface is not a terminal".to_string(),
-            data: Some(
-                json!({"surface_id": panel_id.clone()})
-                    .try_into()
-                    .unwrap_or(JsonValue::Null),
-            ),
-        };
-    }
+    let window = &current.windows[0];
     let include_scrollback =
         bool_param(params, &["scrollback"]).unwrap_or(false) || line_limit.is_some();
     let terminal_state = app.state::<TerminalState>();
@@ -3877,6 +3898,42 @@ fn surface_read_text(
     ok(json!({
         "text": text,
         "base64": BASE64_STANDARD.encode(text.as_bytes()),
+        "workspace_id": window.tab_manager.workspaces[workspace_index].workspace_id,
+        "workspace_ref": workspace_ref(workspace_index),
+        "surface_id": panel_id,
+        "surface_ref": surface_ref_for_panel(&current, workspace_index, &panel_id),
+        "window_id": window.window_id,
+        "window_ref": window.window_id.as_ref().map(|_| "window:1"),
+    }))
+}
+
+fn surface_clear_history(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let workspace_index = match terminal_workspace_index(&current, params) {
+        Ok(index) => index,
+        Err(error) => return error,
+    };
+    let panel_id = match terminal_panel_id(&current, workspace_index, params) {
+        Ok(panel_id) => panel_id,
+        Err(error) => return error,
+    };
+    let window = &current.windows[0];
+    let terminal_state = app.state::<TerminalState>();
+    if let Err(message) = terminal_clear_history_panel(terminal_state.inner(), &panel_id) {
+        return ControlCallResult::Err {
+            code: "surface_unavailable".to_string(),
+            message,
+            data: Some(
+                json!({"surface_id": panel_id.clone()})
+                    .try_into()
+                    .unwrap_or(JsonValue::Null),
+            ),
+        };
+    }
+    ok(json!({
         "workspace_id": window.tab_manager.workspaces[workspace_index].workspace_id,
         "workspace_ref": workspace_ref(workspace_index),
         "surface_id": panel_id,
@@ -10819,6 +10876,7 @@ mod tests {
             "workspace.clear_agent_pid",
             "surface.report_tty",
             "surface.report_shell_state",
+            "surface.clear_history",
             "surface.read_text",
             "workspace.report_pr",
             "workspace.report_review",

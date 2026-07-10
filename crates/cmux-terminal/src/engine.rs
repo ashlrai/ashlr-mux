@@ -96,6 +96,11 @@ impl<L: EventListener> TerminalGrid<L> {
         self.size = size;
     }
 
+    /// Discard retained scrollback while preserving the visible viewport.
+    pub fn clear_history(&mut self) {
+        self.term.grid_mut().clear_history();
+    }
+
     /// The visible viewport as one string per row, top to bottom, with trailing
     /// blank cells trimmed.
     pub fn visible_lines(&self) -> Vec<String> {
@@ -227,5 +232,17 @@ mod tests {
         assert_eq!(term.visible_lines(), vec!["one", "", "", ""]);
         assert_eq!(term.text_lines(false, None), vec!["one", ""]);
         assert_eq!(term.text_lines(false, Some(1)), vec![""]);
+    }
+
+    #[test]
+    fn clear_history_discards_scrollback_without_erasing_the_viewport() {
+        let mut term = TerminalGrid::new(GridSize::new(20, 2));
+        term.advance(b"one\r\ntwo\r\nthree");
+        assert_eq!(term.text_lines(true, None), vec!["one", "two", "three"]);
+
+        term.clear_history();
+
+        assert_eq!(term.text_lines(true, None), vec!["two", "three"]);
+        assert_eq!(term.text_lines(false, None), vec!["two", "three"]);
     }
 }

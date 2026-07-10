@@ -349,6 +349,32 @@ pub(crate) fn terminal_read_panel(
     Ok(terminal_text(&grid, include_scrollback, line_limit))
 }
 
+pub(crate) fn terminal_clear_history_panel(
+    state: &TerminalState,
+    panel_id: &str,
+) -> Result<(), String> {
+    let normalized_panel_id = panel_id.trim();
+    if normalized_panel_id.is_empty() {
+        return Err("missing terminal panel id".to_string());
+    }
+    let grid = {
+        let sessions = state
+            .sessions
+            .lock()
+            .expect("terminal sessions mutex poisoned");
+        sessions
+            .values()
+            .find(|session| session.panel_id.as_deref() == Some(normalized_panel_id))
+            .map(|session| session.grid.clone())
+            .ok_or_else(|| format!("unknown terminal panel {normalized_panel_id}"))?
+    };
+    let mut grid = grid
+        .lock()
+        .map_err(|_| "terminal grid mutex poisoned".to_string())?;
+    grid.clear_history();
+    Ok(())
+}
+
 fn terminal_text(
     grid: &TerminalGrid,
     include_scrollback: bool,

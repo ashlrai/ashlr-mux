@@ -396,7 +396,10 @@ fn format_control_result(method: &str, result: &serde_json::Value) -> String {
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false)
             .to_string(),
-        "browser.focus_webview" | "browser.reload" | "session.restore_previous" => "OK".to_string(),
+        "browser.focus_webview"
+        | "browser.reload"
+        | "session.restore_previous"
+        | "surface.clear_history" => "OK".to_string(),
         "workspace.list_status" => format_status_entries(result),
         "workspace.list_meta" => format_metadata_entries(result),
         "workspace.list_meta_blocks" => format_metadata_blocks(result),
@@ -441,6 +444,14 @@ mod control_result_tests {
     fn restore_session_prints_plain_ok() {
         assert_eq!(
             format_control_result("session.restore_previous", &serde_json::json!({})),
+            "OK"
+        );
+    }
+
+    #[test]
+    fn clear_terminal_history_prints_plain_ok() {
+        assert_eq!(
+            format_control_result("surface.clear_history", &serde_json::json!({})),
             "OK"
         );
     }
