@@ -402,6 +402,7 @@ fn format_control_result(method: &str, result: &serde_json::Value) -> String {
         | "notification.dismiss"
         | "notification.mark_read"
         | "notification.clear"
+        | "notification.create"
         | "session.restore_previous"
         | "surface.clear_history"
         | "surface.trigger_flash" => "OK".to_string(),
@@ -645,6 +646,7 @@ mod control_result_tests {
             "notification.dismiss",
             "notification.mark_read",
             "notification.clear",
+            "notification.create",
         ] {
             assert_eq!(format_control_result(method, &serde_json::json!({})), "OK");
         }

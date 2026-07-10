@@ -798,6 +798,7 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "notification.clear",
     "notification.open",
     "notification.jump_to_unread",
+    "notification.create",
     "events.stream",
     "extension.sidebar.snapshot",
     "sidebar.snapshot",
@@ -1035,6 +1036,7 @@ fn handle_control_request(app: &AppHandle, request: ControlRequest) -> ControlCa
         "notification.clear" => notification_clear(app, &request.params),
         "notification.open" => notification_open(app, &request.params),
         "notification.jump_to_unread" => notification_jump_to_unread(app),
+        "notification.create" => notification_create(app, &request.params),
         "events.stream" => ok(events_snapshot_payload(app, &request.params)),
         "extension.sidebar.snapshot" | "sidebar.snapshot" => {
             let snapshot = snapshot(app);
@@ -2787,6 +2789,59 @@ fn notification_clear(
         state.inner(),
         workspace_id.as_deref(),
     ))
+}
+
+fn notification_create(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(workspace_index) = workspace_index_from_workspace_scope_or_selected(&current, params)
+    else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let Some(workspace_id) = current.windows[0].tab_manager.workspaces[workspace_index]
+        .workspace_id
+        .clone()
+    else {
+        return invalid_params("Workspace has no stable id");
+    };
+    let Some(surface_id) =
+        surface_id_from_params_or_workspace_focused(&current, workspace_index, params)
+    else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    let title = raw_string_param(params, &["title"]).unwrap_or_else(|| "Notification".to_string());
+    let subtitle = raw_string_param(params, &["subtitle"]).unwrap_or_default();
+    let body = raw_string_param(params, &["body"]).unwrap_or_default();
+    let state = app.state::<crate::notifications::NotificationCommandState>();
+    match crate::notifications::notification_create_for_control(
+        state.inner(),
+        workspace_id.clone(),
+        surface_id.clone(),
+        title,
+        subtitle,
+        body,
+    ) {
+        Ok(notification) => ok(json!({
+            "id": notification.id,
+            "workspace_id": workspace_id,
+            "workspace_ref": workspace_ref(workspace_index),
+            "surface_id": surface_id,
+            "surface_ref": surface_ref_for_panel(&current, workspace_index, &surface_id),
+            "title": notification.title,
+            "subtitle": notification.subtitle,
+            "body": notification.body,
+            "created_at": notification.created_at,
+            "is_read": false,
+            "delivered": true,
+        })),
+        Err(message) => ControlCallResult::Err {
+            code: "notification_delivery_failed".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn notification_open(
@@ -11228,6 +11283,7 @@ mod tests {
             "notification.clear",
             "notification.open",
             "notification.jump_to_unread",
+            "notification.create",
             "session.restore_previous",
             "events.stream",
             "extension.sidebar.snapshot",

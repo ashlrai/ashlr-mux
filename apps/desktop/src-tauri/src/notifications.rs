@@ -292,6 +292,44 @@ pub(crate) fn notification_open_target_for_control(
     })
 }
 
+pub(crate) fn notification_create_for_control(
+    state: &NotificationCommandState,
+    workspace_id: String,
+    surface_id: String,
+    title: String,
+    subtitle: String,
+    body: String,
+) -> Result<TerminalNotification, String> {
+    let notification = TerminalNotification {
+        id: uuid::Uuid::new_v4().to_string(),
+        tab_id: workspace_id,
+        surface_id: Some(surface_id.clone()),
+        panel_id: Some(surface_id),
+        title,
+        subtitle,
+        body,
+        created_at: current_unix_timestamp_seconds(),
+        is_read: false,
+        pane_flash: true,
+        click_action: None,
+    };
+    with_notification_store(state, |store| {
+        store.record(notification.clone(), false);
+    })?;
+    deliver_control_notification(&notification)?;
+    Ok(notification)
+}
+
+#[cfg(windows)]
+fn deliver_control_notification(notification: &TerminalNotification) -> Result<(), String> {
+    deliver_windows_notification(notification, "default", None).map(|_| ())
+}
+
+#[cfg(not(windows))]
+fn deliver_control_notification(_notification: &TerminalNotification) -> Result<(), String> {
+    Ok(())
+}
+
 #[tauri::command]
 pub fn notification_mark_read(
     id: String,
@@ -519,6 +557,25 @@ fn send_test_toast(
         surface_id,
         panel_id,
     );
+    let (tag, group) = deliver_windows_notification(
+        &notification,
+        sound.unwrap_or("default"),
+        custom_sound_file_path,
+    )?;
+    Ok(NotificationToastSendReply {
+        sent: true,
+        tag,
+        group,
+        message: "Windows test toast sent.".to_owned(),
+    })
+}
+
+#[cfg(windows)]
+fn deliver_windows_notification(
+    notification: &TerminalNotification,
+    sound: &str,
+    custom_sound_file_path: Option<&str>,
+) -> Result<(Option<String>, Option<String>), String> {
     let identity = NotificationAppIdentity::new("Cmuxterm.Cmux.Dev", "cmux-dev");
     let effects = TerminalNotificationPolicyEffects {
         desktop: true,
@@ -528,23 +585,19 @@ fn send_test_toast(
     };
     let plan = delivery_plan(
         &identity,
-        &notification,
+        notification,
         &effects,
         false,
-        sound.unwrap_or("default"),
+        sound,
         custom_sound_file_path,
     )
-    .ok_or_else(|| "test toast did not produce a deliverable notification plan".to_owned())?;
+    .ok_or_else(|| "notification did not produce a deliverable plan".to_owned())?;
     let tag = plan.toast.as_ref().map(|toast| toast.tag.clone());
     let group = plan.toast.as_ref().map(|toast| toast.group.clone());
-    let delivery = WindowsToastDelivery::new(identity);
-    delivery.deliver(&plan).map_err(|error| error.to_string())?;
-    Ok(NotificationToastSendReply {
-        sent: true,
-        tag,
-        group,
-        message: "Windows test toast sent.".to_owned(),
-    })
+    WindowsToastDelivery::new(identity)
+        .deliver(&plan)
+        .map_err(|error| error.to_string())?;
+    Ok((tag, group))
 }
 
 #[cfg(not(windows))]

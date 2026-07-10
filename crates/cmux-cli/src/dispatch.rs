@@ -113,6 +113,9 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
         "jump-to-unread" => Some(
             "Usage:\n  cmux jump-to-unread\n\nOpens the latest unread notification target.",
         ),
+        "notify" => Some(
+            "Usage:\n  cmux notify [--title TITLE] [--subtitle SUBTITLE] [--body BODY] [--workspace WORKSPACE] [--surface SURFACE]\n\nCreates and delivers a notification for the selected target.",
+        ),
         "list-workspaces" => Some(
             "Usage:\n  cmux list-workspaces\n\nLists workspaces from the active desktop session.",
         ),
@@ -454,13 +457,13 @@ mod tests {
     fn unmapped_subcommand_help_prints_header_and_pointer() {
         let plan = plan(
             &PreSocketAction::SubcommandHelp {
-                command: "notify".to_owned(),
+                command: "new-window".to_owned(),
             },
-            "notify",
+            "new-window",
         );
         match plan {
             DispatchPlan::PrintLine(text) => {
-                assert!(text.starts_with("cmux notify\n\n"), "got: {text:?}");
+                assert!(text.starts_with("cmux new-window\n\n"), "got: {text:?}");
                 assert!(text.contains("run 'cmux help'"));
                 assert!(text.contains("not yet ported"));
             }
@@ -524,6 +527,7 @@ mod tests {
             "open-notification",
             "new-browser-workspace",
             "new-terminal-tab",
+            "notify",
             "reload-config",
             "rename-window",
             "reopen-closed-browser-tab",

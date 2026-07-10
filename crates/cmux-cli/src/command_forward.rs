@@ -51,6 +51,7 @@ impl ControlCommand {
                 | "surface.clear_history"
                 | "surface.trigger_flash"
                 | "notification.clear"
+                | "notification.create"
         ) {
             return self;
         }
@@ -129,6 +130,7 @@ fn workspace_scoped_method(method: &str) -> bool {
             | "surface.clear_history"
             | "surface.trigger_flash"
             | "notification.clear"
+            | "notification.create"
             | "debug.terminals"
             | "surface.send_text"
             | "surface.send_key"
@@ -198,6 +200,10 @@ pub fn control_command_for(
         "jump-to-unread" => Some(ControlCommand::new(
             "notification.jump_to_unread",
             serde_json::json!({}),
+        )),
+        "notify" => Some(ControlCommand::new(
+            "notification.create",
+            notification_create_params(args)?,
         )),
         "sidebar-snapshot" | "extension-sidebar-snapshot" => Some(ControlCommand::new(
             "extension.sidebar.snapshot",
@@ -1249,6 +1255,33 @@ fn open_notification_params(args: &[String]) -> Result<serde_json::Value, CliErr
         .value(&["--id"])
         .ok_or_else(|| CliError::new("open-notification requires --id"))?;
     Ok(serde_json::json!({"id": id}))
+}
+
+fn notification_create_params(args: &[String]) -> Result<serde_json::Value, CliError> {
+    let parsed = ParsedArgs::parse(args)?;
+    let mut params = serde_json::Map::new();
+    params.insert(
+        "title".to_string(),
+        serde_json::json!(parsed
+            .value(&["--title"])
+            .map(String::as_str)
+            .unwrap_or("Notification")),
+    );
+    params.insert(
+        "subtitle".to_string(),
+        serde_json::json!(parsed
+            .value(&["--subtitle"])
+            .map(String::as_str)
+            .unwrap_or("")),
+    );
+    params.insert(
+        "body".to_string(),
+        serde_json::json!(parsed.value(&["--body"]).map(String::as_str).unwrap_or("")),
+    );
+    apply_workspace_scope_selector(&parsed, &mut params);
+    apply_surface_selector(&parsed, &mut params)?;
+    apply_window_scope_selector(&parsed, &mut params);
+    Ok(serde_json::Value::Object(params))
 }
 
 fn workspace_description_params(args: &[String]) -> Result<serde_json::Value, CliError> {
@@ -3243,6 +3276,7 @@ fn takes_value(arg: &str) -> bool {
             | "--script"
             | "--selector"
             | "--state"
+            | "--subtitle"
             | "--surface"
             | "--surface-id"
             | "--surface-ref"
@@ -3429,6 +3463,36 @@ mod tests {
         assert_eq!(
             mapped("jump-to-unread", &[]).method,
             "notification.jump_to_unread"
+        );
+        let notify = mapped(
+            "notify",
+            &[
+                "--title",
+                "Build",
+                "--subtitle",
+                "Agent",
+                "--body",
+                "Needs input",
+                "--workspace",
+                "workspace:2",
+                "--surface",
+                "surface:3",
+            ],
+        );
+        assert_eq!(notify.method, "notification.create");
+        assert_eq!(
+            notify.params,
+            serde_json::json!({
+                "title": "Build",
+                "subtitle": "Agent",
+                "body": "Needs input",
+                "workspace_ref": "workspace:2",
+                "surface_ref": "surface:3"
+            })
+        );
+        assert_eq!(
+            mapped("notify", &[]).params,
+            serde_json::json!({"title": "Notification", "subtitle": "", "body": ""})
         );
     }
 
