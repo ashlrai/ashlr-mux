@@ -30,6 +30,7 @@ enum HooksRequest {
     Pi { yes: bool },
     Omp { yes: bool },
     Amp { yes: bool },
+    Rovo { yes: bool },
 }
 
 const OPENCODE_SESSION_PLUGIN_SOURCE: &str =
@@ -72,6 +73,7 @@ pub fn run_hooks_command(command: &str, args: &[String]) -> Result<String, CliEr
         HooksRequest::Pi { yes } => install_pi_hooks(yes),
         HooksRequest::Omp { yes } => install_omp_hooks(yes),
         HooksRequest::Amp { yes } => install_amp_hooks(yes),
+        HooksRequest::Rovo { yes } => install_rovo_hooks(yes),
     }
 }
 
@@ -133,6 +135,12 @@ fn parse_hooks_subcommand(tokens: &[String], yes: bool) -> Result<HooksRequest, 
                 "unsupported Amp hooks action '{other}'; use 'cmux hooks amp install'"
             ))),
         },
+        Some("rovodev") | Some("rovo") => match tokens.get(1).map(String::as_str) {
+            None | Some("install") | Some("setup") => Ok(HooksRequest::Rovo { yes }),
+            Some(other) => Err(CliError::new(format!(
+                "unsupported Rovo Dev hooks action '{other}'; use 'cmux hooks rovodev install'"
+            ))),
+        },
         Some(agent) if nested_agent(agent).is_some() => match tokens.get(1).map(String::as_str) {
             None | Some("install") | Some("setup") => Ok(HooksRequest::Nested {
                 agent: agent.to_string(),
@@ -190,6 +198,7 @@ fn parse_setup_tokens(tokens: &[String], yes: bool) -> Result<HooksRequest, CliE
         Some("pi") => Ok(HooksRequest::Pi { yes }),
         Some("omp") => Ok(HooksRequest::Omp { yes }),
         Some("amp") => Ok(HooksRequest::Amp { yes }),
+        Some("rovodev") | Some("rovo") => Ok(HooksRequest::Rovo { yes }),
         Some(agent) if nested_agent(agent).is_some() => Ok(HooksRequest::Nested {
             agent: agent.to_string(),
             yes,
@@ -316,6 +325,172 @@ fn install_amp_hooks(yes: bool) -> Result<String, CliError> {
 
 fn amp_plugin_path(config_dir: &Path) -> PathBuf {
     config_dir.join("plugins").join("cmux-session.ts")
+}
+
+const ROVO_BEGIN_MARKER: &str = "# cmux hooks rovodev begin";
+const ROVO_END_MARKER: &str = "# cmux hooks rovodev end";
+
+fn install_rovo_hooks(yes: bool) -> Result<String, CliError> {
+    let path = home_dir()
+        .map(|home| home.join(".rovodev").join("config.yml"))
+        .ok_or_else(|| CliError::new("unable to determine Rovo Dev config directory"))?;
+    let before = read_optional_text(&path)?;
+    let plan = plan_rovo_hooks_update(&before, &path)?;
+    if !plan.changed {
+        return Ok(format!(
+            "Rovo Dev hooks already up to date at {}\n",
+            path.display()
+        ));
+    }
+    if !confirm_hook_change(&plan.diff, yes)? {
+        return Ok("Aborted.\n".to_string());
+    }
+    write_text_exact(&path, &plan.after)?;
+    Ok(format!("Rovo Dev hooks installed at {}\n", path.display()))
+}
+
+fn plan_rovo_hooks_update(before: &str, path: &Path) -> Result<ClaudeIntegrationPlan, CliError> {
+    let before = serialize_yaml_lines(&yaml_lines(before));
+    let mut lines = remove_rovo_blocks(yaml_lines(&before));
+    let events = [
+        ("on_complete", "cmux hooks rovodev stop"),
+        ("on_error", "cmux hooks rovodev stop"),
+        ("on_tool_permission", "cmux hooks rovodev prompt-submit"),
+    ];
+    if let Some(events_index) = rovo_events_index(&lines) {
+        let indent = format!("{}  ", leading_whitespace(&lines[events_index]));
+        let block = rovo_event_block(&events, &indent, true);
+        lines.splice(events_index + 1..events_index + 1, block);
+    } else if let Some(event_hooks_index) = rovo_event_hooks_index(&lines) {
+        let child_indent = format!("{}  ", leading_whitespace(&lines[event_hooks_index]));
+        let mut block = vec![
+            format!("{child_indent}{ROVO_BEGIN_MARKER}"),
+            format!("{child_indent}events:"),
+        ];
+        block.extend(rovo_event_block(
+            &events,
+            &format!("{child_indent}  "),
+            false,
+        ));
+        block.push(format!("{child_indent}{ROVO_END_MARKER}"));
+        lines.splice(event_hooks_index + 1..event_hooks_index + 1, block);
+    } else {
+        if lines.last().is_some_and(|line| !line.trim().is_empty()) {
+            lines.push(String::new());
+        }
+        lines.extend([
+            ROVO_BEGIN_MARKER.to_string(),
+            "eventHooks:".to_string(),
+            "  events:".to_string(),
+        ]);
+        lines.extend(rovo_event_block(&events, "    ", false));
+        lines.push(ROVO_END_MARKER.to_string());
+    }
+    let after = serialize_yaml_lines(&lines);
+    Ok(ClaudeIntegrationPlan {
+        changed: before != after,
+        diff: unified_diff(path, &before, &after),
+        before,
+        after,
+    })
+}
+
+fn yaml_lines(content: &str) -> Vec<String> {
+    let mut lines: Vec<_> = content
+        .replace("\r\n", "\n")
+        .split('\n')
+        .map(str::to_string)
+        .collect();
+    if lines.last().is_some_and(String::is_empty) {
+        lines.pop();
+    }
+    lines
+}
+
+fn serialize_yaml_lines(lines: &[String]) -> String {
+    if lines.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", lines.join("\n"))
+    }
+}
+
+fn remove_rovo_blocks(mut lines: Vec<String>) -> Vec<String> {
+    let mut index = 0;
+    while index < lines.len() {
+        if lines[index].trim() != ROVO_BEGIN_MARKER {
+            index += 1;
+            continue;
+        }
+        let Some(end) = ((index + 1)..lines.len())
+            .find(|candidate| lines[*candidate].trim() == ROVO_END_MARKER)
+        else {
+            index += 1;
+            continue;
+        };
+        let start = if index > 0 && lines[index - 1].trim().is_empty() {
+            index - 1
+        } else {
+            index
+        };
+        lines.drain(start..=end);
+        index = start;
+    }
+    lines
+}
+
+fn rovo_event_hooks_index(lines: &[String]) -> Option<usize> {
+    lines.iter().position(|line| yaml_key(line, "eventHooks"))
+}
+
+fn rovo_events_index(lines: &[String]) -> Option<usize> {
+    let root = rovo_event_hooks_index(lines)?;
+    let indent = format!("{}  ", leading_whitespace(&lines[root]));
+    for (index, line) in lines.iter().enumerate().skip(root + 1) {
+        if line
+            .chars()
+            .next()
+            .is_some_and(|value| !value.is_whitespace())
+        {
+            return None;
+        }
+        if line
+            .strip_prefix(&indent)
+            .is_some_and(|suffix| yaml_key(suffix, "events"))
+        {
+            return Some(index);
+        }
+    }
+    None
+}
+
+fn yaml_key(line: &str, key: &str) -> bool {
+    line.strip_prefix(key)
+        .and_then(|suffix| suffix.strip_prefix(':'))
+        .is_some_and(|suffix| suffix.trim().is_empty() || suffix.trim_start().starts_with('#'))
+}
+
+fn leading_whitespace(line: &str) -> &str {
+    &line[..line.len() - line.trim_start_matches([' ', '\t']).len()]
+}
+
+fn rovo_event_block(events: &[(&str, &str)], indent: &str, markers: bool) -> Vec<String> {
+    let mut lines = Vec::new();
+    if markers {
+        lines.push(format!("{indent}{ROVO_BEGIN_MARKER}"));
+    }
+    for (name, command) in events {
+        lines.push(format!("{indent}- name: {name}"));
+        lines.push(format!("{indent}  commands:"));
+        lines.push(format!(
+            "{indent}    - command: \"{}\"",
+            command.replace('\\', "\\\\").replace('"', "\\\"")
+        ));
+    }
+    if markers {
+        lines.push(format!("{indent}{ROVO_END_MARKER}"));
+    }
+    lines
 }
 
 fn install_opencode_hooks(yes: bool, project: bool) -> Result<String, CliError> {
@@ -1562,5 +1737,41 @@ mod tests {
         );
         assert!(AMP_PLUGIN_SOURCE.contains("cmux-amp-session-extension-marker v2"));
         assert!(AMP_PLUGIN_SOURCE.contains("@i-know-the-amp-plugin-api-is-wip"));
+    }
+
+    #[test]
+    fn rovo_yaml_plan_preserves_user_tree_and_replaces_owned_block() {
+        assert_eq!(
+            parse_hooks_request("hooks", &["rovo".into(), "install".into(), "--yes".into()])
+                .unwrap(),
+            HooksRequest::Rovo { yes: true }
+        );
+        let existing = "eventHooks:\n  nested:\n    events:\n      - name: user_hook\n        commands:\n          - command: \"echo user\"\n";
+        let plan =
+            plan_rovo_hooks_update(existing, Path::new("C:/Users/me/.rovodev/config.yml")).unwrap();
+        assert!(plan
+            .after
+            .contains("eventHooks:\n  # cmux hooks rovodev begin\n  events:"));
+        assert!(plan.after.contains("    events:\n      - name: user_hook"));
+        assert!(plan.after.contains("- name: on_tool_permission"));
+        assert!(plan.after.contains("cmux hooks rovodev prompt-submit"));
+        assert!(
+            !plan_rovo_hooks_update(&plan.after, &path())
+                .unwrap()
+                .changed
+        );
+
+        let dangling = "eventHooks:\n  events:\n    # cmux hooks rovodev begin\nsessions:\n  persistenceDir: /tmp/rovo\n";
+        let dangling_plan = plan_rovo_hooks_update(dangling, &path()).unwrap();
+        assert!(dangling_plan
+            .after
+            .contains("sessions:\n  persistenceDir: /tmp/rovo"));
+        assert_eq!(
+            dangling_plan
+                .after
+                .matches("# cmux hooks rovodev begin")
+                .count(),
+            2
+        );
     }
 }
