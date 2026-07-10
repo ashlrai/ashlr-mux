@@ -7,6 +7,8 @@ import {
   emptyQuestionDraft,
   FeedPanel,
   FeedPanelContent,
+  isPlanInterviewQuestion,
+  SKIP_INTERVIEW_AND_PLAN_ANSWER,
   setQuestionFreeText,
   toggleQuestionOption,
   type FeedItemView,
@@ -190,5 +192,58 @@ describe("FeedPanel", () => {
     expect(markup.match(/Type something\.\.\./g)?.length).toBe(2);
     expect(markup.match(/Submit All Answers/g)?.length).toBe(1);
     expect(markup).toContain("disabled");
+  });
+
+  test("recognizes only Claude plan interviews from mode or canonical text clues", () => {
+    const questions: FeedQuestionView[] = [
+      {
+        id: "approach",
+        header: "Plan mode",
+        prompt: "Would you like to make a plan?",
+        multi_select: false,
+        options: [{ id: "interview", label: "Continue interview" }],
+      },
+    ];
+    expect(isPlanInterviewQuestion("claude", { permissionMode: "PLAN" }, questions)).toBe(
+      true,
+    );
+    expect(isPlanInterviewQuestion("claude", undefined, questions)).toBe(true);
+    expect(isPlanInterviewQuestion("codex", { permissionMode: "plan" }, questions)).toBe(
+      false,
+    );
+    expect(SKIP_INTERVIEW_AND_PLAN_ANSWER).toBe("Skip interview and plan immediately");
+  });
+
+  test("renders the canonical skip-interview action for pending Claude plan questions", () => {
+    const questionItem: FeedItemView = {
+      id: "item-plan-question",
+      workstream_id: "claude-plan-session",
+      source: "claude",
+      kind: "question",
+      status: "pending",
+      request_id: "request-plan-question",
+      context: { permissionMode: "plan" },
+      questions: [
+        {
+          id: "approach",
+          prompt: "Which approach should I plan?",
+          multi_select: false,
+          options: [{ id: "simple", label: "Simple" }],
+        },
+      ],
+    };
+    const markup = renderToStaticMarkup(
+      <FeedPanelContent
+        filter="actionable"
+        items={[questionItem]}
+        loading={false}
+        error={null}
+        onFilterChange={() => {}}
+        onResolve={() => {}}
+      />,
+    );
+
+    expect(markup).toContain("Skip + plan immediately");
+    expect(markup.match(/Submit All Answers/g)?.length).toBe(1);
   });
 });

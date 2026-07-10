@@ -61,6 +61,8 @@ pub struct FeedItemView {
     pub plan: Option<String>,
     pub default_mode: Option<String>,
     pub questions: Vec<FeedQuestionView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<WorkstreamContext>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -383,6 +385,7 @@ fn feed_item_view(item: &WorkstreamItem) -> FeedItemView {
         plan,
         default_mode,
         questions,
+        context: item.context.clone(),
     }
 }
 
@@ -583,6 +586,26 @@ mod tests {
         assert_eq!(list.pending_count, 0);
         assert_eq!(list.items[0].kind, "toolUse");
         assert_eq!(list.items[0].status, "telemetry");
+    }
+
+    #[test]
+    fn feed_item_view_preserves_canonical_context() {
+        let state = FeedState::default();
+        let event = permission_event().with_context(WorkstreamContext::new(
+            Some("Make a plan".to_string()),
+            Some("Choose an approach".to_string()),
+            None,
+            Vec::new(),
+            Some("C:/repo/README.md".to_string()),
+            Some("plan".to_string()),
+        ));
+        state.ingest(event).unwrap();
+
+        let item = state.list().unwrap().items.remove(0);
+        let context = item.context.expect("projected context");
+        assert_eq!(context.last_user_message.as_deref(), Some("Make a plan"));
+        assert_eq!(context.permission_mode.as_deref(), Some("plan"));
+        assert_eq!(context.tool_summary.as_deref(), Some("C:/repo/README.md"));
     }
 
     #[test]

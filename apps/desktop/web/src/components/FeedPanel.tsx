@@ -18,12 +18,47 @@ export interface FeedQuestionView {
   options: FeedQuestionOptionView[];
 }
 
+export interface FeedContextView {
+  lastUserMessage?: string | null;
+  assistantPreamble?: string | null;
+  planSummary?: string | null;
+  allowedPrompts?: readonly { tool: string; prompt: string }[];
+  toolSummary?: string | null;
+  permissionMode?: string | null;
+}
+
 export interface QuestionDraft {
   selectedOptionIds: Readonly<Record<string, readonly string[]>>;
   freeTextByQuestion: Readonly<Record<string, string>>;
 }
 
 const CUSTOM_QUESTION_ANSWER_ID = "__cmux_custom_answer__";
+export const SKIP_INTERVIEW_AND_PLAN_ANSWER = "Skip interview and plan immediately";
+const PLAN_INTERVIEW_CLUES = [
+  "plan mode",
+  "make a plan",
+  "plan-only",
+  "plan immediately",
+] as const;
+
+export function isPlanInterviewQuestion(
+  source: string,
+  context: FeedContextView | undefined,
+  questions: readonly FeedQuestionView[],
+): boolean {
+  if (source !== "claude") return false;
+  if (context?.permissionMode?.toLowerCase() === "plan") return true;
+  const fragments = questions.flatMap((question) => [
+    question.header,
+    question.prompt,
+    ...question.options.flatMap((option) => [option.label, option.description]),
+  ]);
+  const text = [context?.lastUserMessage, context?.assistantPreamble, ...fragments]
+    .filter((value): value is string => value != null)
+    .join(" ")
+    .toLowerCase();
+  return PLAN_INTERVIEW_CLUES.some((clue) => text.includes(clue));
+}
 
 export function emptyQuestionDraft(): QuestionDraft {
   return { selectedOptionIds: {}, freeTextByQuestion: {} };
@@ -111,6 +146,7 @@ export interface FeedItemView {
   plan?: string | null;
   default_mode?: string | null;
   questions: FeedQuestionView[];
+  context?: FeedContextView;
 }
 
 interface FeedListReply {
@@ -337,6 +373,8 @@ function FeedItemCard({
         <QuestionActionArea
           key={item.request_id ?? item.id}
           questions={item.questions}
+          source={item.source}
+          context={item.context}
           pending={pending}
           onReply={(selections) =>
             onResolve(item.request_id!, { kind: "question", selections })
@@ -349,16 +387,21 @@ function FeedItemCard({
 
 function QuestionActionArea({
   questions,
+  source,
+  context,
   pending,
   onReply,
 }: {
   questions: readonly FeedQuestionView[];
+  source: string;
+  context: FeedContextView | undefined;
   pending: boolean;
   onReply: (selections: string[]) => void;
 }): React.JSX.Element {
   const [draft, setDraft] = useState<QuestionDraft>(emptyQuestionDraft);
   const answers = composeQuestionAnswers(questions, draft);
   const canSubmit = pending && canSubmitQuestionAnswers(questions, draft);
+  const showSkipInterview = pending && isPlanInterviewQuestion(source, context, questions);
 
   return (
     <div className="cmux-feed-question-area">
@@ -415,14 +458,25 @@ function QuestionActionArea({
           </section>
         );
       })}
-      <button
-        className="cmux-feed-question-submit"
-        type="button"
-        disabled={!canSubmit}
-        onClick={() => onReply(answers)}
-      >
-        {pending ? "Submit All Answers" : "Submitted"}
-      </button>
+      <div className="cmux-feed-question-actions">
+        {showSkipInterview && (
+          <button
+            className="cmux-feed-question-skip"
+            type="button"
+            onClick={() => onReply([SKIP_INTERVIEW_AND_PLAN_ANSWER])}
+          >
+            Skip + plan immediately
+          </button>
+        )}
+        <button
+          className="cmux-feed-question-submit"
+          type="button"
+          disabled={!canSubmit}
+          onClick={() => onReply(answers)}
+        >
+          {pending ? "Submit All Answers" : "Submitted"}
+        </button>
+      </div>
     </div>
   );
 }
