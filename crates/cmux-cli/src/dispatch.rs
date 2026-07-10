@@ -19,9 +19,10 @@
 //! - The remaining **generic socket command forward** surface still needs
 //!   explicit server-contract entries for each command with bespoke argument
 //!   shapes. Unmapped commands do not send guessed frames.
-//! - The remaining **side-effecting no-socket commands** (`sessions`, local
-//!   `config` inspection, the sigpipe/diff-viewer probes, `open <path>`, …)
-//!   each need a subsystem that is not part of the headless core yet.
+//! - The remaining **side-effecting no-socket commands** (`sessions`, config
+//!   doctor/font-size inspection, the sigpipe/diff-viewer probes,
+//!   `open <path>`, …) each need a subsystem that is not part of the headless
+//!   core yet.
 
 use crate::classify::PreSocketAction;
 use crate::command_forward::{control_command_for, ControlCommand};
@@ -59,6 +60,8 @@ pub enum DispatchPlan {
     RunWelcome,
     /// Render settings paths/docs/help without a socket.
     RunSettings(Vec<String>),
+    /// Render local config help and reference modes without a socket.
+    RunConfig(Vec<String>),
     /// Run a local hooks installer/uninstaller command.
     RunHooksInstaller { command: String, args: Vec<String> },
     /// Read one agent hook payload from stdin and bridge it through `feed.push`.
@@ -91,6 +94,7 @@ pub fn subcommand_help_text(command: &str) -> String {
 
 fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
     match command {
+        "config" => Some(crate::config::CONFIG_USAGE),
         "docs" => Some(crate::docs::DOCS_USAGE),
         "settings" => Some(crate::settings::SETTINGS_USAGE),
         "ping" => Some("Usage:\n  cmux ping\n\nSends a ping to the control socket."),
@@ -449,7 +453,7 @@ pub fn plan_with_args(action: &PreSocketAction, command: &str, args: &[String]) 
         }
         PreSocketAction::SettingsNoSocket => return DispatchPlan::RunSettings(args.to_vec()),
         PreSocketAction::WindowDefaultDisplay => "window default-display",
-        PreSocketAction::ConfigNoSocket => "config",
+        PreSocketAction::ConfigNoSocket => return DispatchPlan::RunConfig(args.to_vec()),
         PreSocketAction::OpenPath { .. } => "open",
     };
     DispatchPlan::Fail(not_yet_ported(label))
@@ -790,6 +794,15 @@ mod tests {
     }
 
     #[test]
+    fn config_no_socket_runs_the_local_config_executor() {
+        let args = vec!["path".to_string(), "--json".to_string()];
+        assert_eq!(
+            plan_with_args(&PreSocketAction::ConfigNoSocket, "config", &args),
+            DispatchPlan::RunConfig(args)
+        );
+    }
+
+    #[test]
     fn mapped_socket_commands_can_use_command_args() {
         let args = vec!["2".to_string()];
         match plan_with_args(&PreSocketAction::NeedsSocket, "select-workspace", &args) {
@@ -840,7 +853,6 @@ mod tests {
         for (action, needle) in [
             (PreSocketAction::Sessions { debug: false }, "sessions"),
             (PreSocketAction::Sessions { debug: true }, "session-debug"),
-            (PreSocketAction::ConfigNoSocket, "config"),
             (
                 PreSocketAction::WindowDefaultDisplay,
                 "window default-display",
