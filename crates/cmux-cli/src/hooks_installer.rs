@@ -4,7 +4,6 @@
 //! with the Claude Code integration path because the Windows desktop menu needs a
 //! concrete CLI target that previews the config diff and asks for confirmation.
 
-use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -26,9 +25,11 @@ pub struct ClaudeIntegrationPlan {
 enum HooksRequest {
     Claude { yes: bool },
     Kiro { yes: bool },
+    KiroUninstall,
     Nested { agent: String, yes: bool },
     NestedUninstall { agent: String },
     Cursor { yes: bool },
+    CursorUninstall,
     Antigravity { yes: bool },
     OpenCode { yes: bool, project: bool },
     OpenCodeUninstall { project: bool },
@@ -75,6 +76,7 @@ pub fn run_hooks_command(command: &str, args: &[String]) -> Result<String, CliEr
     match parse_hooks_request(command, args)? {
         HooksRequest::Claude { yes } => install_claude_code_integration(yes),
         HooksRequest::Kiro { yes } => install_kiro_hooks(yes),
+        HooksRequest::KiroUninstall => uninstall_kiro_hooks(),
         HooksRequest::Nested { agent, yes } => {
             install_nested_hooks(nested_agent(&agent).expect("parsed nested agent"), yes)
         }
@@ -82,6 +84,7 @@ pub fn run_hooks_command(command: &str, args: &[String]) -> Result<String, CliEr
             uninstall_nested_hooks(nested_agent(&agent).expect("parsed nested agent"))
         }
         HooksRequest::Cursor { yes } => install_cursor_hooks(yes),
+        HooksRequest::CursorUninstall => uninstall_cursor_hooks(),
         HooksRequest::Antigravity { yes } => install_antigravity_hooks(yes),
         HooksRequest::OpenCode { yes, project } => install_opencode_hooks(yes, project),
         HooksRequest::OpenCodeUninstall { project } => uninstall_opencode_hooks(project),
@@ -121,14 +124,16 @@ fn parse_hooks_subcommand(tokens: &[String], yes: bool) -> Result<HooksRequest, 
         },
         Some("kiro") => match tokens.get(1).map(String::as_str) {
             None | Some("install") | Some("setup") => Ok(HooksRequest::Kiro { yes }),
+            Some("uninstall") => Ok(HooksRequest::KiroUninstall),
             Some(other) => Err(CliError::new(format!(
-                "unsupported Kiro hooks action '{other}'; use 'cmux hooks kiro install'"
+                "unsupported Kiro hooks action '{other}'; use 'cmux hooks kiro install|uninstall'"
             ))),
         },
         Some("cursor") => match tokens.get(1).map(String::as_str) {
             None | Some("install") | Some("setup") => Ok(HooksRequest::Cursor { yes }),
+            Some("uninstall") => Ok(HooksRequest::CursorUninstall),
             Some(other) => Err(CliError::new(format!(
-                "unsupported Cursor hooks action '{other}'; use 'cmux hooks cursor install'"
+                "unsupported Cursor hooks action '{other}'; use 'cmux hooks cursor install|uninstall'"
             ))),
         },
         Some("antigravity") | Some("agy") => match tokens.get(1).map(String::as_str) {
@@ -1873,11 +1878,7 @@ fn plan_antigravity_hooks_update(
 }
 
 fn install_cursor_hooks(yes: bool) -> Result<String, CliError> {
-    let home = std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(PathBuf::from)
-        .ok_or_else(|| CliError::new("unable to determine Cursor config directory"))?;
-    let path = home.join(".cursor").join("hooks.json");
+    let path = cursor_hooks_path()?;
     let before = read_config_or_empty_object(&path)?;
     let plan = plan_cursor_hooks_update(&before, &path)?;
     if !plan.changed {
@@ -1893,6 +1894,19 @@ fn install_cursor_hooks(yes: bool) -> Result<String, CliError> {
     Ok(format!("Cursor hooks installed at {}\n", path.display()))
 }
 
+fn uninstall_cursor_hooks() -> Result<String, CliError> {
+    let path = cursor_hooks_path()?;
+    uninstall_flat_hooks(&path, "hooks.json", "Cursor", "cursor")
+}
+
+fn cursor_hooks_path() -> Result<PathBuf, CliError> {
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .ok_or_else(|| CliError::new("unable to determine Cursor config directory"))?;
+    Ok(home.join(".cursor").join("hooks.json"))
+}
+
 fn plan_cursor_hooks_update(before: &str, path: &Path) -> Result<ClaudeIntegrationPlan, CliError> {
     let before = normalize_config_text(before)?;
     let mut value: serde_json::Value = serde_json::from_str(&before)
@@ -1906,7 +1920,7 @@ fn plan_cursor_hooks_update(before: &str, path: &Path) -> Result<ClaudeIntegrati
         .or_insert_with(|| serde_json::json!({}))
         .as_object_mut()
         .ok_or_else(|| CliError::new("Cursor config key 'hooks' must be an object"))?;
-    let mut prepared_events = HashSet::new();
+    prune_flat_owned_hooks(hooks, "cursor");
     for (event, command) in [
         ("beforeSubmitPrompt", "cmux hooks cursor prompt-submit"),
         ("stop", "cmux hooks cursor stop"),
@@ -1923,17 +1937,6 @@ fn plan_cursor_hooks_update(before: &str, path: &Path) -> Result<ClaudeIntegrati
             .or_insert_with(|| serde_json::json!([]))
             .as_array_mut()
             .ok_or_else(|| CliError::new(format!("Cursor hook '{event}' must be an array")))?;
-        if prepared_events.insert(event) {
-            entries.retain(|entry| {
-                !entry
-                    .get("command")
-                    .and_then(serde_json::Value::as_str)
-                    .is_some_and(|command| {
-                        command.contains("cmux hooks cursor")
-                            || command.contains("hooks feed --source cursor")
-                    })
-            });
-        }
         entries.push(serde_json::json!({"command":command}));
     }
     let after = serde_json::to_string_pretty(&value)
@@ -2078,21 +2081,12 @@ fn install_nested_hooks(agent: &NestedAgentDef, yes: bool) -> Result<String, Cli
 
 fn uninstall_nested_hooks(agent: &NestedAgentDef) -> Result<String, CliError> {
     let path = nested_hooks_path(agent)?;
-    let before = match fs::read_to_string(&path) {
-        Ok(contents)
-            if serde_json::from_str::<serde_json::Value>(&contents)
-                .ok()
-                .is_some_and(|value| value.is_object()) =>
-        {
-            contents
-        }
-        _ => {
-            return Ok(format!(
-                "No {} found at {}\n",
-                agent.config_file,
-                path.display()
-            ))
-        }
+    let Some(before) = read_existing_json_object(&path) else {
+        return Ok(format!(
+            "No {} found at {}\n",
+            agent.config_file,
+            path.display()
+        ));
     };
     let (plan, removed) = plan_nested_hooks_uninstall(&before, &path, agent)?;
     write_config(&path, &plan.after)?;
@@ -2274,7 +2268,7 @@ fn prune_nested_owned_hooks(
                 !entry
                     .get("command")
                     .and_then(serde_json::Value::as_str)
-                    .is_some_and(|command| nested_command_is_owned(command, agent))
+                    .is_some_and(|command| agent_command_is_owned(command, agent))
             });
             removed += before - entries.len();
             !entries.is_empty()
@@ -2289,7 +2283,98 @@ fn prune_nested_owned_hooks(
     removed
 }
 
-fn nested_command_is_owned(command: &str, agent: &str) -> bool {
+fn prune_flat_owned_hooks(
+    hooks: &mut serde_json::Map<String, serde_json::Value>,
+    agent: &str,
+) -> usize {
+    let mut removed = 0;
+    let mut empty_events = Vec::new();
+    for (event, value) in hooks.iter_mut() {
+        let Some(entries) = value.as_array_mut() else {
+            continue;
+        };
+        let before = entries.len();
+        entries.retain(|entry| {
+            !entry
+                .get("command")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|command| agent_command_is_owned(command, agent))
+        });
+        removed += before - entries.len();
+        if entries.is_empty() {
+            empty_events.push(event.clone());
+        }
+    }
+    for event in empty_events {
+        hooks.remove(&event);
+    }
+    removed
+}
+
+fn plan_flat_hooks_uninstall(
+    before: &str,
+    path: &Path,
+    display_name: &str,
+    agent: &str,
+) -> Result<(ClaudeIntegrationPlan, usize), CliError> {
+    let before = normalize_config_text(before)?;
+    let mut value: serde_json::Value = serde_json::from_str(&before).map_err(|error| {
+        CliError::new(format!("failed to parse {display_name} config: {error}"))
+    })?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| CliError::new(format!("{display_name} config must be a JSON object")))?;
+    if !object
+        .get("hooks")
+        .is_some_and(serde_json::Value::is_object)
+    {
+        object.insert("hooks".to_string(), serde_json::json!({}));
+    }
+    let hooks = object
+        .get_mut("hooks")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("hooks normalized to an object");
+    let removed = prune_flat_owned_hooks(hooks, agent);
+    let after = serde_json::to_string_pretty(&value).map_err(|error| {
+        CliError::new(format!("failed to encode {display_name} config: {error}"))
+    })?;
+    Ok((
+        ClaudeIntegrationPlan {
+            changed: before != after,
+            diff: unified_diff(path, &before, &after),
+            before,
+            after,
+        },
+        removed,
+    ))
+}
+
+fn uninstall_flat_hooks(
+    path: &Path,
+    config_file: &str,
+    display_name: &str,
+    agent: &str,
+) -> Result<String, CliError> {
+    let Some(before) = read_existing_json_object(path) else {
+        return Ok(format!("No {config_file} found at {}\n", path.display()));
+    };
+    let (plan, removed) = plan_flat_hooks_uninstall(&before, path, display_name, agent)?;
+    write_config(path, &plan.after)?;
+    Ok(format!(
+        "Removed {removed} cmux hook(s) from {}\n",
+        path.display()
+    ))
+}
+
+fn read_existing_json_object(path: &Path) -> Option<String> {
+    let contents = fs::read_to_string(path).ok()?;
+    serde_json::from_str::<serde_json::Value>(&contents)
+        .ok()
+        .is_some_and(|value| value.is_object())
+        .then_some(contents)
+}
+
+fn agent_command_is_owned(command: &str, agent: &str) -> bool {
     let tokens: Vec<_> = command.split_whitespace().collect();
     tokens.iter().enumerate().any(|(index, token)| {
         let command_boundary = index == 0 || tokens[index - 1] == "&&";
@@ -2347,6 +2432,11 @@ fn install_kiro_hooks(yes: bool) -> Result<String, CliError> {
     ))
 }
 
+fn uninstall_kiro_hooks() -> Result<String, CliError> {
+    let path = kiro_hooks_path()?;
+    uninstall_flat_hooks(&path, "cmux.json", "Kiro", "kiro")
+}
+
 fn kiro_hooks_path() -> Result<PathBuf, CliError> {
     let base = std::env::var_os("KIRO_HOME")
         .filter(|value| !value.is_empty())
@@ -2384,6 +2474,7 @@ pub fn plan_kiro_hooks_update(
         .or_insert_with(|| serde_json::json!({}))
         .as_object_mut()
         .ok_or_else(|| CliError::new("Kiro agent config key 'hooks' must be an object"))?;
+    prune_flat_owned_hooks(hooks, "kiro");
     for (event, command, timeout) in [
         ("agentSpawn", "cmux hooks kiro session-start", 5_000),
         ("userPromptSubmit", "cmux hooks kiro prompt-submit", 5_000),
@@ -2404,12 +2495,6 @@ pub fn plan_kiro_hooks_update(
             .or_insert_with(|| serde_json::json!([]))
             .as_array_mut()
             .ok_or_else(|| CliError::new(format!("Kiro hook '{event}' must be an array")))?;
-        entries.retain(|entry| {
-            let command = entry.get("command").and_then(serde_json::Value::as_str);
-            !command.is_some_and(|command| {
-                command.contains("cmux hooks kiro") || command.contains("hooks feed --source kiro")
-            })
-        });
         entries.push(serde_json::json!({"command":command,"timeout_ms":timeout}));
     }
     let after = serde_json::to_string_pretty(&value)
@@ -2868,6 +2953,45 @@ mod tests {
                 .unwrap()
                 .changed
         );
+    }
+
+    #[test]
+    fn flat_json_uninstall_preserves_user_entries_for_kiro_and_cursor() {
+        assert_eq!(
+            parse_hooks_request("hooks", &["kiro".into(), "uninstall".into()]).unwrap(),
+            HooksRequest::KiroUninstall
+        );
+        assert_eq!(
+            parse_hooks_request("hooks", &["cursor".into(), "uninstall".into()]).unwrap(),
+            HooksRequest::CursorUninstall
+        );
+        let before = r#"{
+  "version": 1,
+  "theme": "user",
+  "hooks": {
+    "stop": [
+      {"command": "user command"},
+      {"command": "cmux hooks cursor stop"},
+      {"command": "echo cmux hooks cursor should-stay"}
+    ],
+    "OldEvent": [{"command": "cmux hooks feed --source cursor --event OldEvent"}],
+    "UserScalar": "preserve"
+  }
+}"#;
+        let (plan, removed) =
+            plan_flat_hooks_uninstall(before, &path(), "Cursor", "cursor").unwrap();
+        assert_eq!(removed, 2);
+        let value: serde_json::Value = serde_json::from_str(&plan.after).unwrap();
+        assert_eq!(value["version"], 1);
+        assert_eq!(value["theme"], "user");
+        assert_eq!(value["hooks"]["stop"].as_array().unwrap().len(), 2);
+        assert_eq!(value["hooks"]["stop"][0]["command"], "user command");
+        assert_eq!(
+            value["hooks"]["stop"][1]["command"],
+            "echo cmux hooks cursor should-stay"
+        );
+        assert!(value["hooks"].get("OldEvent").is_none());
+        assert_eq!(value["hooks"]["UserScalar"], "preserve");
     }
 
     #[test]
