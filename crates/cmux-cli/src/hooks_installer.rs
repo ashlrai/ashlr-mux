@@ -10,6 +10,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use base64::Engine as _;
+use sha2::{Digest, Sha256};
 
 use crate::invocation::CliError;
 
@@ -35,6 +36,7 @@ enum HooksRequest {
     Rovo { yes: bool },
     Hermes { yes: bool },
     Kimi { yes: bool },
+    Codex { yes: bool },
 }
 
 const OPENCODE_SESSION_PLUGIN_SOURCE: &str =
@@ -80,6 +82,7 @@ pub fn run_hooks_command(command: &str, args: &[String]) -> Result<String, CliEr
         HooksRequest::Rovo { yes } => install_rovo_hooks(yes),
         HooksRequest::Hermes { yes } => install_hermes_hooks(yes),
         HooksRequest::Kimi { yes } => install_kimi_hooks(yes),
+        HooksRequest::Codex { yes } => install_codex_hooks(yes),
     }
 }
 
@@ -159,6 +162,12 @@ fn parse_hooks_subcommand(tokens: &[String], yes: bool) -> Result<HooksRequest, 
                 "unsupported Kimi Code hooks action '{other}'; use 'cmux hooks kimi install'"
             ))),
         },
+        Some("codex") => match tokens.get(1).map(String::as_str) {
+            None | Some("install") | Some("setup") => Ok(HooksRequest::Codex { yes }),
+            Some(other) => Err(CliError::new(format!(
+                "unsupported Codex hooks action '{other}'; use 'cmux hooks codex install'"
+            ))),
+        },
         Some(agent) if nested_agent(agent).is_some() => match tokens.get(1).map(String::as_str) {
             None | Some("install") | Some("setup") => Ok(HooksRequest::Nested {
                 agent: agent.to_string(),
@@ -219,6 +228,7 @@ fn parse_setup_tokens(tokens: &[String], yes: bool) -> Result<HooksRequest, CliE
         Some("rovodev") | Some("rovo") => Ok(HooksRequest::Rovo { yes }),
         Some("hermes-agent") | Some("hermes") => Ok(HooksRequest::Hermes { yes }),
         Some("kimi") => Ok(HooksRequest::Kimi { yes }),
+        Some("codex") => Ok(HooksRequest::Codex { yes }),
         Some(agent) if nested_agent(agent).is_some() => Ok(HooksRequest::Nested {
             agent: agent.to_string(),
             yes,
@@ -1058,6 +1068,379 @@ fn toml_basic_string(value: &str) -> String {
         }
     }
     escaped
+}
+
+const CODEX_FEATURE_BEGIN: &str =
+    "# cmux-codex-hooks-feature-78f1e4ba-66df-4d35-93c1-67fdf1cbb7df begin";
+const CODEX_FEATURE_END: &str =
+    "# cmux-codex-hooks-feature-78f1e4ba-66df-4d35-93c1-67fdf1cbb7df end";
+const CODEX_FEATURE_PREVIOUS: &str =
+    "# cmux-codex-hooks-feature-78f1e4ba-66df-4d35-93c1-67fdf1cbb7df previous line: ";
+const CODEX_TRUST_BEGIN: &str =
+    "# cmux-codex-hook-trust-f5cc24da-7a09-4b20-a756-89e7786f6738 begin";
+const CODEX_TRUST_END: &str = "# cmux-codex-hook-trust-f5cc24da-7a09-4b20-a756-89e7786f6738 end";
+
+fn codex_agent_def() -> NestedAgentDef {
+    NestedAgentDef {
+        name: "codex",
+        display_name: "Codex",
+        config_dir: ".codex",
+        config_file: "hooks.json",
+        env_override: Some("CODEX_HOME"),
+        env_subdir: None,
+        lifecycle_timeout: 5,
+        feed_timeout: 5,
+        events: &[
+            ("SessionStart", "session-start"),
+            ("UserPromptSubmit", "prompt-submit"),
+            ("Stop", "stop"),
+        ],
+        feed_events: &[
+            "PreToolUse",
+            "PermissionRequest",
+            "PostToolUse",
+            "PreCompact",
+            "PostCompact",
+            "SubagentStart",
+            "SubagentStop",
+        ],
+    }
+}
+
+fn install_codex_hooks(yes: bool) -> Result<String, CliError> {
+    let config_dir = if let Some(path) = nonempty_env("CODEX_HOME") {
+        expand_home_path(PathBuf::from(path))?
+    } else {
+        home_dir()
+            .map(|home| home.join(".codex"))
+            .ok_or_else(|| CliError::new("unable to determine Codex config directory"))?
+    };
+    if !config_dir.is_dir() {
+        return Ok(
+            "Required agent configuration is missing. Run `cmux hooks setup` after installing your agent CLI.\n"
+                .to_string(),
+        );
+    }
+    let hooks_path = config_dir.join("hooks.json");
+    let config_path = config_dir.join("config.toml");
+    let hooks_before = read_config_or_empty_object(&hooks_path)?;
+    let hooks_plan = plan_codex_hooks_update(&hooks_before, &hooks_path)?;
+    let config_before = read_optional_text(&config_path)?;
+    let config_plan =
+        plan_codex_config_update(&config_before, &hooks_plan.after, &hooks_path, &config_path)?;
+    let preview = format!("{}{}", hooks_plan.diff, config_plan.diff);
+    if (hooks_plan.changed || config_plan.changed) && !confirm_hook_change(&preview, yes)? {
+        return Ok("Aborted.\n".to_string());
+    }
+    let mut output = String::new();
+    if hooks_plan.changed {
+        write_config(&hooks_path, &hooks_plan.after)?;
+        output.push_str(&format!(
+            "Codex hooks installed at {}\n",
+            hooks_path.display()
+        ));
+    } else {
+        output.push_str(&format!(
+            "Codex hooks already up to date at {}\n",
+            hooks_path.display()
+        ));
+    }
+    if config_plan.changed {
+        write_text_exact(&config_path, &config_plan.after)?;
+        output.push_str(&format!(
+            "Enabled hooks and approved cmux hooks in {}\n",
+            config_path.display()
+        ));
+    }
+    Ok(output)
+}
+
+fn plan_codex_hooks_update(before: &str, path: &Path) -> Result<ClaudeIntegrationPlan, CliError> {
+    plan_nested_hooks_update(before, path, &codex_agent_def())
+}
+
+#[derive(Clone)]
+struct CodexTrustEntry {
+    key: String,
+    hash: String,
+}
+
+fn plan_codex_config_update(
+    before: &str,
+    hooks_json: &str,
+    hooks_path: &Path,
+    config_path: &Path,
+) -> Result<ClaudeIntegrationPlan, CliError> {
+    let before = toml_content(&toml_lines(before));
+    let mut lines = remove_codex_feature_block(toml_lines(&before));
+    install_codex_feature(&mut lines);
+    lines = remove_named_block(lines, CODEX_TRUST_BEGIN, CODEX_TRUST_END);
+    let entries = codex_trust_entries(hooks_json, hooks_path)?;
+    if !entries.is_empty() {
+        if lines.last().is_some_and(|line| !line.is_empty()) {
+            lines.push(String::new());
+        }
+        lines.push(CODEX_TRUST_BEGIN.to_string());
+        for entry in entries {
+            lines.push(format!(
+                "[hooks.state.\"{}\"]",
+                toml_basic_string(&entry.key)
+            ));
+            lines.push(format!(
+                "trusted_hash = \"{}\"",
+                toml_basic_string(&entry.hash)
+            ));
+        }
+        lines.push(CODEX_TRUST_END.to_string());
+    }
+    let after = toml_content(&lines);
+    Ok(ClaudeIntegrationPlan {
+        changed: before != after,
+        diff: unified_diff(config_path, &before, &after),
+        before,
+        after,
+    })
+}
+
+fn remove_codex_feature_block(mut lines: Vec<String>) -> Vec<String> {
+    let mut index = 0;
+    while index < lines.len() {
+        if lines[index] != CODEX_FEATURE_BEGIN {
+            index += 1;
+            continue;
+        }
+        let Some(end) = (index + 1..lines.len()).find(|item| lines[*item] == CODEX_FEATURE_END)
+        else {
+            lines.remove(index);
+            continue;
+        };
+        let previous = lines[index + 1..end]
+            .iter()
+            .find_map(|line| line.strip_prefix(CODEX_FEATURE_PREVIOUS))
+            .map(str::to_string);
+        if let Some(previous) = previous {
+            lines.splice(index..=end, [previous]);
+            index += 1;
+        } else {
+            lines.drain(index..=end);
+        }
+    }
+    lines
+}
+
+fn install_codex_feature(lines: &mut Vec<String>) {
+    if let Some(features) = lines.iter().position(|line| line.trim() == "[features]") {
+        let end = (features + 1..lines.len())
+            .find(|index| lines[*index].trim_start().starts_with('['))
+            .unwrap_or(lines.len());
+        if let Some(hooks) =
+            (features + 1..end).find(|index| toml_key(&lines[*index]) == Some("hooks"))
+        {
+            if !toml_true_value(&lines[hooks]) {
+                let previous = lines[hooks].clone();
+                lines.splice(
+                    hooks..=hooks,
+                    codex_feature_lines("hooks = true", Some(&previous)),
+                );
+            }
+        } else {
+            lines.splice(
+                features + 1..features + 1,
+                codex_feature_lines("hooks = true", None),
+            );
+        }
+        return;
+    }
+    if let Some(hooks) = lines
+        .iter()
+        .position(|line| toml_dotted_feature_key(line).as_deref() == Some("hooks"))
+    {
+        if !toml_true_value(&lines[hooks]) {
+            let previous = lines[hooks].clone();
+            lines.splice(
+                hooks..=hooks,
+                codex_feature_lines("features.hooks = true", Some(&previous)),
+            );
+        }
+        return;
+    }
+    if let Some(first_dotted) = lines
+        .iter()
+        .position(|line| toml_dotted_feature_key(line).is_some())
+    {
+        lines.splice(
+            first_dotted..first_dotted,
+            codex_feature_lines("features.hooks = true", None),
+        );
+        return;
+    }
+    if !lines.is_empty() && lines.last().is_some_and(|line| !line.is_empty()) {
+        lines.push(String::new());
+    }
+    lines.extend([
+        "[features]".to_string(),
+        CODEX_FEATURE_BEGIN.to_string(),
+        "hooks = true".to_string(),
+        CODEX_FEATURE_END.to_string(),
+    ]);
+}
+
+fn codex_feature_lines(setting: &str, previous: Option<&str>) -> Vec<String> {
+    let mut lines = vec![CODEX_FEATURE_BEGIN.to_string()];
+    if let Some(previous) = previous {
+        lines.push(format!("{CODEX_FEATURE_PREVIOUS}{previous}"));
+    }
+    lines.push(setting.to_string());
+    lines.push(CODEX_FEATURE_END.to_string());
+    lines
+}
+
+fn toml_key(line: &str) -> Option<&str> {
+    let body = line.split('#').next()?.trim();
+    let (key, _) = body.split_once('=')?;
+    Some(key.trim())
+}
+
+fn toml_dotted_feature_key(line: &str) -> Option<String> {
+    let key: String = toml_key(line)?
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect();
+    key.strip_prefix("features.").map(str::to_string)
+}
+
+fn toml_true_value(line: &str) -> bool {
+    line.split('#')
+        .next()
+        .and_then(|body| body.split_once('='))
+        .is_some_and(|(_, value)| value.trim() == "true")
+}
+
+fn remove_named_block(mut lines: Vec<String>, begin: &str, end: &str) -> Vec<String> {
+    let mut index = 0;
+    while index < lines.len() {
+        if lines[index] != begin {
+            index += 1;
+            continue;
+        }
+        if let Some(end_index) = (index + 1..lines.len()).find(|item| lines[*item] == end) {
+            let start = if index > 0 && lines[index - 1].is_empty() {
+                index - 1
+            } else {
+                index
+            };
+            lines.drain(start..=end_index);
+            index = start;
+        } else {
+            lines.remove(index);
+        }
+    }
+    lines
+}
+
+fn codex_trust_entries(
+    hooks_json: &str,
+    hooks_path: &Path,
+) -> Result<Vec<CodexTrustEntry>, CliError> {
+    let value: serde_json::Value = serde_json::from_str(hooks_json)
+        .map_err(|error| CliError::new(format!("failed to parse Codex hooks: {error}")))?;
+    let hooks = value
+        .get("hooks")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| CliError::new("Codex hooks key must be an object"))?;
+    let source = normalized_codex_path(hooks_path);
+    let mut entries = Vec::new();
+    for event in [
+        "PreToolUse",
+        "PermissionRequest",
+        "PostToolUse",
+        "PreCompact",
+        "PostCompact",
+        "SessionStart",
+        "SubagentStart",
+        "SubagentStop",
+        "UserPromptSubmit",
+        "Stop",
+    ] {
+        let Some(label) = codex_event_label(event) else {
+            continue;
+        };
+        let Some(groups) = hooks.get(event).and_then(serde_json::Value::as_array) else {
+            continue;
+        };
+        for (group_index, group) in groups.iter().enumerate() {
+            let matcher = group.get("matcher").and_then(serde_json::Value::as_str);
+            let Some(handlers) = group.get("hooks").and_then(serde_json::Value::as_array) else {
+                continue;
+            };
+            for (handler_index, handler) in handlers.iter().enumerate() {
+                let Some(command) = handler.get("command").and_then(serde_json::Value::as_str)
+                else {
+                    continue;
+                };
+                if !command.contains("cmux hooks codex")
+                    && !command.contains("hooks feed --source codex")
+                {
+                    continue;
+                }
+                let timeout = handler
+                    .get("timeout")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(600)
+                    .max(1);
+                entries.push(CodexTrustEntry {
+                    key: format!("{source}:{label}:{group_index}:{handler_index}"),
+                    hash: codex_command_hash(label, matcher, command, timeout),
+                });
+            }
+        }
+    }
+    Ok(entries)
+}
+
+fn normalized_codex_path(path: &Path) -> String {
+    fs::canonicalize(path)
+        .or_else(|_| {
+            let parent = path
+                .parent()
+                .ok_or_else(|| io::Error::other("missing parent"))?;
+            fs::canonicalize(parent).map(|parent| parent.join(path.file_name().unwrap_or_default()))
+        })
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .to_string()
+}
+
+fn codex_event_label(event: &str) -> Option<&'static str> {
+    Some(match event {
+        "PreToolUse" => "pre_tool_use",
+        "PermissionRequest" => "permission_request",
+        "PostToolUse" => "post_tool_use",
+        "PreCompact" => "pre_compact",
+        "PostCompact" => "post_compact",
+        "SessionStart" => "session_start",
+        "SubagentStart" => "subagent_start",
+        "SubagentStop" => "subagent_stop",
+        "UserPromptSubmit" => "user_prompt_submit",
+        "Stop" => "stop",
+        _ => return None,
+    })
+}
+
+fn codex_command_hash(label: &str, matcher: Option<&str>, command: &str, timeout: u64) -> String {
+    let mut handler = std::collections::BTreeMap::new();
+    handler.insert("async", serde_json::json!(false));
+    handler.insert("command", serde_json::json!(command));
+    handler.insert("timeout", serde_json::json!(timeout.max(1)));
+    handler.insert("type", serde_json::json!("command"));
+    let mut identity = std::collections::BTreeMap::new();
+    identity.insert("event_name", serde_json::json!(label));
+    identity.insert("hooks", serde_json::json!([handler]));
+    if let Some(matcher) = matcher {
+        identity.insert("matcher", serde_json::json!(matcher));
+    }
+    let data = serde_json::to_vec(&identity).unwrap_or_default();
+    format!("sha256:{:x}", Sha256::digest(data))
 }
 
 fn install_opencode_hooks(yes: bool, project: bool) -> Result<String, CliError> {
@@ -2384,6 +2767,55 @@ mod tests {
             .any(|entry| entry["event"] == "pre_tool_call"));
         assert!(
             !plan_hermes_allowlist_update(&allowlist.after)
+                .unwrap()
+                .changed
+        );
+    }
+
+    #[test]
+    fn codex_plan_installs_nested_hooks_feature_and_trust() {
+        assert_eq!(
+            parse_hooks_request("hooks", &["codex".into(), "install".into(), "--yes".into()])
+                .unwrap(),
+            HooksRequest::Codex { yes: true }
+        );
+        let hooks_path = Path::new("C:/Users/me/.codex/hooks.json");
+        let hooks = plan_codex_hooks_update(r#"{"theme":"dark"}"#, hooks_path).unwrap();
+        let hooks_value: serde_json::Value = serde_json::from_str(&hooks.after).unwrap();
+        assert_eq!(hooks_value["theme"], "dark");
+        assert_eq!(hooks_value["hooks"].as_object().unwrap().len(), 10);
+        assert_eq!(
+            hooks_value["hooks"]["SessionStart"][0]["hooks"][0]["timeout"],
+            5
+        );
+        assert_eq!(
+            hooks_value["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"],
+            5
+        );
+        let config = plan_codex_config_update(
+            "[features]\nhooks = false # user setting\n",
+            &hooks.after,
+            hooks_path,
+            Path::new("C:/Users/me/.codex/config.toml"),
+        )
+        .unwrap();
+        assert!(config.after.contains("hooks = true"));
+        assert!(config
+            .after
+            .contains("previous line: hooks = false # user setting"));
+        assert_eq!(config.after.matches("[hooks.state.\"").count(), 10);
+        assert_eq!(config.after.matches("trusted_hash = \"sha256:").count(), 10);
+        let dotted = plan_codex_config_update(
+            "features.experimental = true\n",
+            &hooks.after,
+            hooks_path,
+            &path(),
+        )
+        .unwrap();
+        assert!(dotted.after.contains("features.hooks = true"));
+        assert!(!dotted.after.contains("[features]"));
+        assert!(
+            !plan_codex_config_update(&config.after, &hooks.after, hooks_path, &path())
                 .unwrap()
                 .changed
         );
