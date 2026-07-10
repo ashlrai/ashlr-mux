@@ -1,18 +1,20 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use cmux_agent::{
-    make_item, next_context, WorkstreamContext, WorkstreamDecision, WorkstreamEvent,
-    WorkstreamExitPlanMode, WorkstreamItem, WorkstreamKind, WorkstreamPayload,
-    WorkstreamPermissionMode, WorkstreamStatus,
+    append_workstream_item, load_recent_workstream_items, make_item, next_context,
+    WorkstreamContext, WorkstreamDecision, WorkstreamEvent, WorkstreamExitPlanMode, WorkstreamItem,
+    WorkstreamKind, WorkstreamPayload, WorkstreamPermissionMode, WorkstreamStatus,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, State};
 
 pub const FEED_CHANGED_EVENT: &str = "cmux://feed-changed";
-const FEED_ITEM_LIMIT: usize = 500;
+const FEED_ITEM_LIMIT: usize = 2_000;
+const FEED_INITIAL_LOAD_LIMIT: usize = 300;
 
 pub struct FeedState {
     inner: Mutex<FeedInner>,
@@ -24,6 +26,8 @@ struct FeedInner {
     items: Vec<WorkstreamItem>,
     last_context_by_workstream: HashMap<String, WorkstreamContext>,
     decisions_by_request: HashMap<String, WorkstreamDecision>,
+    persistence_path: Option<PathBuf>,
+    home_path: Option<String>,
 }
 
 impl Default for FeedState {
@@ -89,6 +93,24 @@ pub struct FeedInsert {
 }
 
 impl FeedState {
+    pub fn configure_persistence(
+        &self,
+        path: PathBuf,
+        home_path: Option<String>,
+    ) -> Result<FeedListReply, String> {
+        let loaded = load_recent_workstream_items(&path, FEED_INITIAL_LOAD_LIMIT);
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| "Feed state is unavailable".to_string())?;
+        inner.persistence_path = Some(path);
+        inner.home_path = home_path;
+        let items = loaded.map_err(|error| error.to_string())?;
+        inner.items = items;
+        inner.last_context_by_workstream = rebuild_context_index(&inner.items);
+        Ok(feed_list_reply(&inner.items))
+    }
+
     pub fn list(&self) -> Result<FeedListReply, String> {
         let inner = self
             .inner
@@ -121,6 +143,9 @@ impl FeedState {
         if inner.items.len() > FEED_ITEM_LIMIT {
             let overflow = inner.items.len() - FEED_ITEM_LIMIT;
             inner.items.drain(..overflow);
+        }
+        if let (Some(path), Some(item)) = (inner.persistence_path.as_deref(), inner.items.last()) {
+            let _ = append_workstream_item(path, item, inner.home_path.as_deref());
         }
         Ok(FeedInsert {
             item_id,
@@ -206,6 +231,19 @@ impl FeedState {
     }
 }
 
+pub fn bootstrap_feed_history(state: &FeedState) {
+    let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) else {
+        eprintln!("[feed] home directory unavailable; history persistence disabled");
+        return;
+    };
+    let home = PathBuf::from(home);
+    let path = home.join(".cmuxterm").join("workstream.jsonl");
+    if let Err(error) = state.configure_persistence(path, Some(home.to_string_lossy().into_owned()))
+    {
+        eprintln!("[feed] failed to restore history: {error}");
+    }
+}
+
 pub fn permission_decision(mode: &str) -> Result<WorkstreamDecision, String> {
     let mode = match mode {
         "once" => WorkstreamPermissionMode::Once,
@@ -248,6 +286,19 @@ fn feed_list_reply(items: &[WorkstreamItem]) -> FeedListReply {
         pending_count,
         total_count: items.len(),
     }
+}
+
+fn rebuild_context_index(items: &[WorkstreamItem]) -> HashMap<String, WorkstreamContext> {
+    let mut ordered = items.iter().collect::<Vec<_>>();
+    ordered.sort_by(|left, right| left.created_at.total_cmp(&right.created_at));
+    let mut contexts = HashMap::new();
+    for item in ordered {
+        let previous = contexts.get(&item.workstream_id);
+        if let Some(context) = next_context(item, previous) {
+            contexts.insert(item.workstream_id.clone(), context);
+        }
+    }
+    contexts
 }
 
 fn feed_item_view(item: &WorkstreamItem) -> FeedItemView {

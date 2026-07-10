@@ -31,6 +31,7 @@ mod spawn_identity;
 mod version;
 mod workstream_context;
 mod workstream_json;
+mod workstream_persistence;
 mod workstream_source;
 
 pub use auto_naming_agent_catalog::{
@@ -64,6 +65,9 @@ pub use workstream_context::{
     WorkstreamAllowedPrompt, WorkstreamContext, WorkstreamExitPlanPreview,
 };
 pub use workstream_json::{json_from_string, json_to_string};
+pub use workstream_persistence::{
+    append_workstream_item, load_recent_workstream_items, WorkstreamPersistenceError,
+};
 pub use workstream_source::WorkstreamSource;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

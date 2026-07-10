@@ -276,6 +276,7 @@ pub fn run() {
                 &handle,
                 app.state::<right_sidebar::RightSidebarState>().inner(),
             );
+            feed::bootstrap_feed_history(app.state::<feed::FeedState>().inner());
             install_native_menu(&handle)?;
             window::install_window_state_listeners(&handle);
             session::bootstrap_session_persistence(&handle, app.state::<session::SessionState>());
