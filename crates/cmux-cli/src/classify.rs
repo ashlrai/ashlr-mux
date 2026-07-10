@@ -97,7 +97,9 @@ pub fn classify_command(
 
     // 2. Help gate: scan only the tokens before the first `--` for an exact
     //    `--help` / `-h`. `__tmux-compat` is excluded and falls through.
-    if command != "__tmux-compat" {
+    if command != "__tmux-compat"
+        && !(command == "feed" && command_args.first().is_some_and(|arg| arg == "tui"))
+    {
         let pre_separator = match command_args.iter().position(|arg| arg == "--") {
             Some(index) => &command_args[..index],
             None => command_args,
@@ -750,6 +752,14 @@ mod tests {
             PreSocketAction::UnknownCommandHelp {
                 command: "bogus".to_owned()
             }
+        );
+    }
+
+    #[test]
+    fn feed_tui_help_reaches_the_nested_parser() {
+        assert_eq!(
+            classify("feed", &["tui", "--help"], None, false),
+            PreSocketAction::NeedsSocket
         );
     }
 

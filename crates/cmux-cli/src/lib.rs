@@ -16,6 +16,7 @@ pub mod diff_viewer_cli;
 pub mod dispatch;
 pub mod feed_clear;
 pub mod feed_hook;
+pub mod feed_tui;
 pub mod hooks_installer;
 pub mod invocation;
 pub mod password;

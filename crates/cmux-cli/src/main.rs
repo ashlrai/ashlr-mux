@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 use std::{
-    io::{Read, Write},
+    io::{IsTerminal, Read, Write},
     thread,
 };
 
@@ -108,16 +108,60 @@ fn dispatch(
             Ok(())
         }
         DispatchPlan::RunFeedHook(args) => run_feed_hook_command(options, &args),
-        DispatchPlan::RunFeed(args) => run_feed_command(&args),
+        DispatchPlan::RunFeed(args) => run_feed_command(options, &args),
         DispatchPlan::Fail(error) => Err(error),
     }
 }
 
-fn run_feed_command(args: &[String]) -> Result<(), CliError> {
+fn run_feed_command(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
     let home = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .map(PathBuf::from)
         .ok_or_else(|| CliError::new("home directory is unavailable"))?;
+    if args
+        .first()
+        .is_some_and(|argument| argument.eq_ignore_ascii_case("tui"))
+    {
+        let implementation = cmux_cli::feed_tui::parse_feed_tui_args(&args[1..])?;
+        if implementation == cmux_cli::feed_tui::FeedTuiImplementation::Help {
+            println!("{}", cmux_cli::feed_tui::FEED_TUI_USAGE);
+            return Ok(());
+        }
+        if implementation == cmux_cli::feed_tui::FeedTuiImplementation::Legacy
+            || std::env::var("CMUX_FEED_TUI_LEGACY").as_deref() == Ok("1")
+        {
+            return Err(CliError::new(
+                "legacy Feed TUI is not yet ported; use --opentui",
+            ));
+        }
+        let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+        if !interactive {
+            return Err(CliError::new(
+                "cmux feed tui requires an interactive terminal",
+            ));
+        }
+        let bun = cmux_cli::feed_tui::resolve_bun_executable(
+            std::env::var("CMUX_FEED_TUI_BUN_PATH").ok().as_deref(),
+            &home,
+        )
+        .ok_or_else(|| CliError::new("Bun is required for the OpenTUI Feed"))?;
+        eprintln!("cmux feed tui: preparing OpenTUI Feed...");
+        let source = cmux_cli::feed_tui::prepare_open_tui_app(&home, &bun)?;
+        let (socket_path, socket_password) = resolved_control_connection(options)?;
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let plan = cmux_cli::feed_tui::build_open_tui_launch_plan(
+            &cmux_cli::feed_tui::FeedTuiLaunchInputs {
+                interactive,
+                bun_path: bun.to_string_lossy().into_owned(),
+                source_path: source.to_string_lossy().into_owned(),
+                cwd: cwd.to_string_lossy().into_owned(),
+                socket_path,
+                socket_password,
+            },
+        )?;
+        eprintln!("cmux feed tui: starting OpenTUI Feed.");
+        return cmux_cli::feed_tui::run_open_tui_launch_plan(&plan);
+    }
     let output = cmux_cli::feed_clear::run_feed_command(args, &home, |prompt| {
         print!("{prompt}");
         std::io::stdout()
@@ -1152,6 +1196,24 @@ fn call_control_command(
     method: &str,
     params: &serde_json::Value,
 ) -> Result<serde_json::Value, CliError> {
+    let (socket_path, password) = resolved_control_connection(options)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| CliError::new(format!("failed to start async runtime: {error}")))?;
+    let result = runtime.block_on(cmux_cli::transport::run_rpc(
+        &socket_path,
+        password.as_deref(),
+        method,
+        params,
+    ))?;
+    Ok(result)
+}
+
+#[cfg(windows)]
+fn resolved_control_connection(
+    options: &GlobalOptions,
+) -> Result<(String, Option<String>), CliError> {
     let default_addr = cmux_ipc::control_pipe_path("cmux")
         .map_err(|error| CliError::new(format!("invalid default socket name: {error}")))?;
     let env_socket_path = std::env::var("CMUX_SOCKET_PATH").ok();
@@ -1174,18 +1236,7 @@ fn call_control_command(
         file: file_password.as_deref(),
         keychain: None,
     });
-
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| CliError::new(format!("failed to start async runtime: {error}")))?;
-    let result = runtime.block_on(cmux_cli::transport::run_rpc(
-        &resolution.path,
-        password.as_deref(),
-        method,
-        params,
-    ))?;
-    Ok(result)
+    Ok((resolution.path, password))
 }
 
 #[cfg(windows)]
@@ -1195,35 +1246,14 @@ fn stream_control_command(
     params: &serde_json::Value,
     on_frame: impl FnMut(&str) -> Result<bool, CliError>,
 ) -> Result<(), CliError> {
-    let default_addr = cmux_ipc::control_pipe_path("cmux")
-        .map_err(|error| CliError::new(format!("invalid default socket name: {error}")))?;
-    let env_socket_path = std::env::var("CMUX_SOCKET_PATH").ok();
-    let env_socket = std::env::var("CMUX_SOCKET").ok();
-    let resolution = cmux_cli::resolve_socket_path(
-        options.explicit_socket_path.as_deref(),
-        cmux_cli::EnvView {
-            socket_path: env_socket_path.as_deref(),
-            socket: env_socket.as_deref(),
-        },
-        &default_addr,
-    )?;
-
-    let env_password = std::env::var("CMUX_SOCKET_PASSWORD").ok();
-    let local_app_data = std::env::var("LOCALAPPDATA").ok();
-    let file_password = cmux_cli::read_password_file(local_app_data.as_deref());
-    let password = cmux_ipc::resolve_password(cmux_ipc::PasswordSources {
-        explicit: options.socket_password.as_deref(),
-        env: env_password.as_deref(),
-        file: file_password.as_deref(),
-        keychain: None,
-    });
+    let (socket_path, password) = resolved_control_connection(options)?;
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|error| CliError::new(format!("failed to start async runtime: {error}")))?;
     runtime.block_on(cmux_cli::transport::stream_rpc_with_handler(
-        &resolution.path,
+        &socket_path,
         password.as_deref(),
         method,
         params,
