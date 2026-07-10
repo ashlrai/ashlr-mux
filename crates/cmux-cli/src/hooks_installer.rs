@@ -30,6 +30,7 @@ enum HooksRequest {
     Cursor { yes: bool },
     Antigravity { yes: bool },
     OpenCode { yes: bool, project: bool },
+    OpenCodeUninstall { project: bool },
     Pi { yes: bool },
     PiUninstall,
     Omp { yes: bool },
@@ -79,6 +80,7 @@ pub fn run_hooks_command(command: &str, args: &[String]) -> Result<String, CliEr
         HooksRequest::Cursor { yes } => install_cursor_hooks(yes),
         HooksRequest::Antigravity { yes } => install_antigravity_hooks(yes),
         HooksRequest::OpenCode { yes, project } => install_opencode_hooks(yes, project),
+        HooksRequest::OpenCodeUninstall { project } => uninstall_opencode_hooks(project),
         HooksRequest::Pi { yes } => install_pi_hooks(yes),
         HooksRequest::PiUninstall => uninstall_pi_hooks(),
         HooksRequest::Omp { yes } => install_omp_hooks(yes),
@@ -251,19 +253,24 @@ fn parse_setup_tokens(tokens: &[String], yes: bool) -> Result<HooksRequest, CliE
 
 fn parse_opencode_tokens(tokens: &[String], yes: bool) -> Result<HooksRequest, CliError> {
     let mut project = false;
+    let mut uninstall = false;
     for token in tokens {
         match token.as_str() {
             "install" | "setup" => {}
             "--project" => project = true,
-            "uninstall" => return Err(unsupported_hooks_command("hooks opencode uninstall")),
+            "uninstall" => uninstall = true,
             other => {
                 return Err(CliError::new(format!(
-                    "unsupported OpenCode hooks option '{other}'; use 'cmux hooks opencode install [--project]'"
+                    "unsupported OpenCode hooks option '{other}'; use 'cmux hooks opencode install|uninstall [--project]'"
                 )))
             }
         }
     }
-    Ok(HooksRequest::OpenCode { yes, project })
+    if uninstall {
+        Ok(HooksRequest::OpenCodeUninstall { project })
+    } else {
+        Ok(HooksRequest::OpenCode { yes, project })
+    }
 }
 
 fn install_pi_hooks(yes: bool) -> Result<String, CliError> {
@@ -349,23 +356,24 @@ fn marked_removal(existing: Option<&str>, marker: &str) -> MarkedRemoval {
     }
 }
 
+fn marked_removal_at_path(path: &Path, marker: &str) -> Result<MarkedRemoval, CliError> {
+    match fs::read_to_string(path) {
+        Ok(contents) => Ok(marked_removal(Some(&contents), marker)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(MarkedRemoval::Missing),
+        Err(error) => Err(CliError::new(format!(
+            "failed to read {}: {error}",
+            path.display()
+        ))),
+    }
+}
+
 fn remove_marked_extension(
     display_name: &str,
     noun: &str,
     path: &Path,
     marker: &str,
 ) -> Result<String, CliError> {
-    let existing = match fs::read_to_string(path) {
-        Ok(contents) => Some(contents),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-        Err(error) => {
-            return Err(CliError::new(format!(
-                "failed to read {}: {error}",
-                path.display()
-            )))
-        }
-    };
-    match marked_removal(existing.as_deref(), marker) {
+    match marked_removal_at_path(path, marker)? {
         MarkedRemoval::Missing => Ok(format!(
             "No {display_name} cmux {noun} found at {}\n",
             path.display()
@@ -1524,17 +1532,7 @@ fn codex_command_hash(label: &str, matcher: Option<&str>, command: &str, timeout
 
 fn install_opencode_hooks(yes: bool, project: bool) -> Result<String, CliError> {
     let config_dir = opencode_config_dir()?;
-    let plugin_dir = if project {
-        std::env::current_dir()
-            .map_err(|error| {
-                CliError::new(format!("failed to resolve current directory: {error}"))
-            })?
-            .join(".opencode")
-            .join("plugins")
-    } else {
-        config_dir.join("plugins")
-    };
-    let feed_path = plugin_dir.join("cmux-feed.js");
+    let feed_path = opencode_feed_plugin_path(&config_dir, project)?;
     let feed_before = read_optional_text(&feed_path)?;
     ensure_cmux_plugin(&feed_path, &feed_before, OPENCODE_FEED_PLUGIN_MARKER)?;
 
@@ -1551,7 +1549,7 @@ fn install_opencode_hooks(yes: bool, project: bool) -> Result<String, CliError> 
         )?;
         let config_path = config_dir.join("opencode.json");
         let config_before = read_config_or_empty_object(&config_path)?;
-        let plan = plan_opencode_registration_update(&config_before, &config_path)?;
+        let plan = plan_opencode_registration_update(&config_before, &config_path, true)?;
         preview.push_str(&unified_diff(
             &session_path,
             &session_before,
@@ -1600,6 +1598,87 @@ fn install_opencode_hooks(yes: bool, project: bool) -> Result<String, CliError> 
     }
 }
 
+fn uninstall_opencode_hooks(project: bool) -> Result<String, CliError> {
+    let config_dir = opencode_config_dir()?;
+    let mut output = String::new();
+    if !project {
+        output.push_str(&uninstall_opencode_session_plugin(&config_dir)?);
+    }
+    output.push_str(&uninstall_opencode_feed_plugins(&config_dir)?);
+    Ok(output)
+}
+
+fn uninstall_opencode_session_plugin(config_dir: &Path) -> Result<String, CliError> {
+    let path = config_dir.join("plugins").join("cmux-session.js");
+    match marked_removal_at_path(&path, OPENCODE_SESSION_PLUGIN_MARKER)? {
+        MarkedRemoval::Missing => Ok(format!(
+            "No OpenCode cmux plugin found at {}\n",
+            path.display()
+        )),
+        MarkedRemoval::Refuse => Ok(format!(
+            "Refusing to remove {}: missing cmux marker\n",
+            path.display()
+        )),
+        MarkedRemoval::Remove => {
+            fs::remove_file(&path).map_err(|error| {
+                CliError::new(format!("failed to remove {}: {error}", path.display()))
+            })?;
+            let config_path = config_dir.join("opencode.json");
+            let before = read_config_or_empty_object(&config_path)?;
+            let plan = plan_opencode_registration_update(&before, &config_path, false)?;
+            if plan.changed {
+                write_config(&config_path, &plan.after)?;
+            }
+            Ok(format!(
+                "Removed OpenCode cmux plugin from {}\n",
+                path.display()
+            ))
+        }
+    }
+}
+
+fn uninstall_opencode_feed_plugins(config_dir: &Path) -> Result<String, CliError> {
+    let global_path = opencode_feed_plugin_path(config_dir, false)?;
+    let project_path = opencode_feed_plugin_path(config_dir, true)?;
+    let mut output = String::new();
+    for path in [global_path, project_path] {
+        let existing = match fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(_) => {
+                output.push_str(&format!("Skipping {} (no cmux marker)\n", path.display()));
+                continue;
+            }
+        };
+        if !existing.contains(OPENCODE_FEED_PLUGIN_MARKER) {
+            output.push_str(&format!("Skipping {} (no cmux marker)\n", path.display()));
+            continue;
+        }
+        fs::remove_file(&path).map_err(|error| {
+            CliError::new(format!("failed to remove {}: {error}", path.display()))
+        })?;
+        output.push_str(&format!(
+            "OpenCode plugin removed from {}\n",
+            path.display()
+        ));
+    }
+    Ok(output)
+}
+
+fn opencode_feed_plugin_path(config_dir: &Path, project: bool) -> Result<PathBuf, CliError> {
+    let plugin_dir = if project {
+        std::env::current_dir()
+            .map_err(|error| {
+                CliError::new(format!("failed to resolve current directory: {error}"))
+            })?
+            .join(".opencode")
+            .join("plugins")
+    } else {
+        config_dir.join("plugins")
+    };
+    Ok(plugin_dir.join("cmux-feed.js"))
+}
+
 fn opencode_config_dir() -> Result<PathBuf, CliError> {
     if let Some(path) = std::env::var_os("OPENCODE_CONFIG_DIR").filter(|path| !path.is_empty()) {
         return expand_home_path(PathBuf::from(path));
@@ -1633,6 +1712,7 @@ fn expand_home_path(path: PathBuf) -> Result<PathBuf, CliError> {
 fn plan_opencode_registration_update(
     before: &str,
     path: &Path,
+    should_install: bool,
 ) -> Result<ClaudeIntegrationPlan, CliError> {
     let before = normalize_config_text(before)?;
     let mut value: serde_json::Value = serde_json::from_str(&before)
@@ -1649,7 +1729,9 @@ fn plan_opencode_registration_update(
         .into_iter()
         .filter(|entry| !opencode_session_plugin_entry(entry))
         .collect();
-    plugins.push(serde_json::json!(OPENCODE_SESSION_PLUGIN_SPEC));
+    if should_install {
+        plugins.push(serde_json::json!(OPENCODE_SESSION_PLUGIN_SPEC));
+    }
     object.insert("plugin".to_string(), serde_json::Value::Array(plugins));
     let after = serde_json::to_string_pretty(&value)
         .map_err(|error| CliError::new(format!("failed to encode OpenCode config: {error}")))?;
@@ -2676,6 +2758,7 @@ mod tests {
         let plan = plan_opencode_registration_update(
             r#"{"theme":"dark","plugin":["user-plugin",["tuple-plugin",{"flag":true}],"cmux-session","./plugins/cmux-session.js"]}"#,
             &PathBuf::from("C:/Users/me/.config/opencode/opencode.json"),
+            true,
         )
         .unwrap();
         let value: serde_json::Value = serde_json::from_str(&plan.after).unwrap();
@@ -2692,12 +2775,46 @@ mod tests {
             1
         );
         assert!(
-            !plan_opencode_registration_update(&plan.after, &path())
+            !plan_opencode_registration_update(&plan.after, &path(), true)
                 .unwrap()
                 .changed
         );
         assert!(OPENCODE_SESSION_PLUGIN_SOURCE.contains("cmux-opencode-session-plugin-marker"));
         assert!(OPENCODE_FEED_PLUGIN_SOURCE.contains("cmux-feed-plugin-marker"));
+    }
+
+    #[test]
+    fn opencode_uninstall_parses_scope_and_removes_only_session_registration() {
+        assert_eq!(
+            parse_hooks_request("hooks", &["opencode".into(), "uninstall".into()]).unwrap(),
+            HooksRequest::OpenCodeUninstall { project: false }
+        );
+        assert_eq!(
+            parse_hooks_request(
+                "hooks",
+                &["opencode".into(), "uninstall".into(), "--project".into()]
+            )
+            .unwrap(),
+            HooksRequest::OpenCodeUninstall { project: true }
+        );
+
+        let path = Path::new("opencode.json");
+        let before = r#"{
+  "theme": "user",
+  "plugin": [
+    "user-plugin",
+    "./plugins/cmux-session.js",
+    ["cmux-session", {"enabled": true}],
+    ["user-tuple", {"enabled": true}]
+  ]
+}"#;
+        let plan = plan_opencode_registration_update(before, path, false).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&plan.after).unwrap();
+        assert_eq!(value["theme"], "user");
+        assert_eq!(
+            value["plugin"],
+            serde_json::json!(["user-plugin", ["user-tuple", {"enabled": true}]])
+        );
     }
 
     #[test]

@@ -336,7 +336,7 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
             "Usage:\n  cmux markdown [--path PATH]\n\nOpens a markdown surface in the selected pane.",
         ),
         "hooks" => Some(
-            "Usage:\n  cmux hooks feed --source AGENT [--event EVENT]\n  cmux hooks AGENT install [--yes|-y]\n  cmux hooks (pi|omp|amp) uninstall\n  cmux hooks opencode install [--project] [--yes|-y]\n  cmux hooks setup --agent AGENT [--yes|-y]\n\nBridges agent events into Feed or installs hooks for Claude, Codex, Kiro, Gemini, Grok, Copilot, CodeBuddy, Factory, Qoder, Cursor, Antigravity, OpenCode, Pi, OMP, Amp, Rovo Dev, Hermes Agent, and Kimi Code.",
+            "Usage:\n  cmux hooks feed --source AGENT [--event EVENT]\n  cmux hooks AGENT install [--yes|-y]\n  cmux hooks (pi|omp|amp) uninstall\n  cmux hooks opencode install [--project] [--yes|-y]\n  cmux hooks opencode uninstall [--project]\n  cmux hooks setup --agent AGENT [--yes|-y]\n\nBridges agent events into Feed or installs hooks for Claude, Codex, Kiro, Gemini, Grok, Copilot, CodeBuddy, Factory, Qoder, Cursor, Antigravity, OpenCode, Pi, OMP, Amp, Rovo Dev, Hermes Agent, and Kimi Code.",
         ),
         _ => None,
     }
@@ -674,6 +674,7 @@ mod tests {
     #[test]
     fn hooks_commands_run_local_installer() {
         assert!(subcommand_help_text("hooks").contains("cmux hooks (pi|omp|amp) uninstall"));
+        assert!(subcommand_help_text("hooks").contains("cmux hooks opencode uninstall [--project]"));
         match plan_with_args(
             &PreSocketAction::NeedsSocket,
             "hooks",
