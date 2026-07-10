@@ -7,6 +7,7 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
+use std::{collections::HashMap, io};
 use std::{
     io::{IsTerminal, Read, Write},
     thread,
@@ -127,40 +128,25 @@ fn run_feed_command(options: &GlobalOptions, args: &[String]) -> Result<(), CliE
             println!("{}", cmux_cli::feed_tui::FEED_TUI_USAGE);
             return Ok(());
         }
-        if implementation == cmux_cli::feed_tui::FeedTuiImplementation::Legacy
-            || std::env::var("CMUX_FEED_TUI_LEGACY").as_deref() == Ok("1")
-        {
-            return Err(CliError::new(
-                "legacy Feed TUI is not yet ported; use --opentui",
-            ));
-        }
         let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
         if !interactive {
             return Err(CliError::new(
                 "cmux feed tui requires an interactive terminal",
             ));
         }
-        let bun = cmux_cli::feed_tui::resolve_bun_executable(
-            std::env::var("CMUX_FEED_TUI_BUN_PATH").ok().as_deref(),
-            &home,
-        )
-        .ok_or_else(|| CliError::new("Bun is required for the OpenTUI Feed"))?;
-        eprintln!("cmux feed tui: preparing OpenTUI Feed...");
-        let source = cmux_cli::feed_tui::prepare_open_tui_app(&home, &bun)?;
-        let (socket_path, socket_password) = resolved_control_connection(options)?;
-        let cwd = std::env::current_dir().unwrap_or_default();
-        let plan = cmux_cli::feed_tui::build_open_tui_launch_plan(
-            &cmux_cli::feed_tui::FeedTuiLaunchInputs {
-                interactive,
-                bun_path: bun.to_string_lossy().into_owned(),
-                source_path: source.to_string_lossy().into_owned(),
-                cwd: cwd.to_string_lossy().into_owned(),
-                socket_path,
-                socket_password,
-            },
-        )?;
-        eprintln!("cmux feed tui: starting OpenTUI Feed.");
-        return cmux_cli::feed_tui::run_open_tui_launch_plan(&plan);
+        let force_legacy = implementation == cmux_cli::feed_tui::FeedTuiImplementation::Legacy
+            || std::env::var("CMUX_FEED_TUI_LEGACY").as_deref() == Ok("1");
+        if force_legacy {
+            return run_legacy_feed_tui(options);
+        }
+        let open_tui = run_open_feed_tui(options, &home, interactive);
+        if implementation == cmux_cli::feed_tui::FeedTuiImplementation::OpenTui {
+            return open_tui;
+        }
+        return open_tui.or_else(|error| {
+            eprintln!("cmux feed tui: OpenTUI unavailable ({error}); falling back to legacy TUI.");
+            run_legacy_feed_tui(options)
+        });
     }
     let output = cmux_cli::feed_clear::run_feed_command(args, &home, |prompt| {
         print!("{prompt}");
@@ -175,6 +161,271 @@ fn run_feed_command(options: &GlobalOptions, args: &[String]) -> Result<(), CliE
     })?;
     println!("{output}");
     Ok(())
+}
+
+fn run_open_feed_tui(
+    options: &GlobalOptions,
+    home: &Path,
+    interactive: bool,
+) -> Result<(), CliError> {
+    let bun = cmux_cli::feed_tui::resolve_bun_executable(
+        std::env::var("CMUX_FEED_TUI_BUN_PATH").ok().as_deref(),
+        home,
+    )
+    .ok_or_else(|| CliError::new("Bun is required for the OpenTUI Feed"))?;
+    eprintln!("cmux feed tui: preparing OpenTUI Feed...");
+    let source = cmux_cli::feed_tui::prepare_open_tui_app(home, &bun)?;
+    let (socket_path, socket_password) = resolved_control_connection(options)?;
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let plan =
+        cmux_cli::feed_tui::build_open_tui_launch_plan(&cmux_cli::feed_tui::FeedTuiLaunchInputs {
+            interactive,
+            bun_path: bun.to_string_lossy().into_owned(),
+            source_path: source.to_string_lossy().into_owned(),
+            cwd: cwd.to_string_lossy().into_owned(),
+            socket_path,
+            socket_password,
+        })?;
+    eprintln!("cmux feed tui: starting OpenTUI Feed.");
+    cmux_cli::feed_tui::run_open_tui_launch_plan(&plan)
+}
+
+fn run_legacy_feed_tui(options: &GlobalOptions) -> Result<(), CliError> {
+    use crossterm::cursor::{Hide, Show};
+    use crossterm::event::{self, Event, KeyCode};
+    use crossterm::execute;
+    use crossterm::terminal::{
+        disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    };
+
+    struct TerminalGuard;
+    impl Drop for TerminalGuard {
+        fn drop(&mut self) {
+            let _ = disable_raw_mode();
+            let _ = execute!(io::stdout(), Show, LeaveAlternateScreen);
+        }
+    }
+
+    enable_raw_mode()
+        .map_err(|error| CliError::new(format!("Failed to enter terminal raw mode: {error}")))?;
+    let _guard = TerminalGuard;
+    execute!(io::stdout(), EnterAlternateScreen, Hide)
+        .map_err(|error| CliError::new(format!("Failed to initialize Feed TUI: {error}")))?;
+    let mut selected = 0usize;
+    let mut selected_answers = HashMap::<String, Vec<String>>::new();
+    let mut status = "Loaded Feed.".to_string();
+
+    loop {
+        let result = call_control_command(
+            options,
+            "feed.list",
+            &serde_json::json!({"pending_only":true}),
+        )?;
+        let items = result
+            .get("items")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(cmux_cli::feed_tui::legacy_feed_item)
+            .collect::<Vec<_>>();
+        selected = selected.min(items.len().saturating_sub(1));
+        render_legacy_feed_tui(&items, selected, &status, &selected_answers)?;
+
+        let Event::Key(key) = event::read()
+            .map_err(|error| CliError::new(format!("Failed to read Feed TUI input: {error}")))?
+        else {
+            continue;
+        };
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+            KeyCode::Down | KeyCode::Char('j') => {
+                selected = (selected + 1).min(items.len().saturating_sub(1));
+                continue;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                selected = selected.saturating_sub(1);
+                continue;
+            }
+            KeyCode::Char('r') => {
+                status = "Refreshed Feed.".to_string();
+                continue;
+            }
+            _ => {}
+        }
+        let Some(item) = items.get(selected) else {
+            status = "No selection".to_string();
+            continue;
+        };
+        let action_key = match key.code {
+            KeyCode::Enter => cmux_cli::feed_tui::LegacyFeedKey::Enter,
+            KeyCode::Char('o') => cmux_cli::feed_tui::LegacyFeedKey::Once,
+            KeyCode::Char('a') => cmux_cli::feed_tui::LegacyFeedKey::Always,
+            KeyCode::Char('l') => cmux_cli::feed_tui::LegacyFeedKey::All,
+            KeyCode::Char('b') => cmux_cli::feed_tui::LegacyFeedKey::Bypass,
+            KeyCode::Char('d') => cmux_cli::feed_tui::LegacyFeedKey::Deny,
+            KeyCode::Char('m') => cmux_cli::feed_tui::LegacyFeedKey::Manual,
+            KeyCode::Char('u') => cmux_cli::feed_tui::LegacyFeedKey::Ultraplan,
+            KeyCode::Char('f') if item.kind == "exitPlan" => {
+                let feedback = read_legacy_feed_feedback()?;
+                if feedback.is_empty() {
+                    status = "Replan cancelled".to_string();
+                    continue;
+                }
+                cmux_cli::feed_tui::LegacyFeedKey::Feedback(feedback)
+            }
+            KeyCode::Char(digit @ '1'..='9') => {
+                let number = digit.to_digit(10).unwrap_or(1) as usize;
+                if item
+                    .questions
+                    .first()
+                    .is_some_and(|question| question.multi_select)
+                {
+                    if let Some(option) = item
+                        .questions
+                        .first()
+                        .and_then(|question| question.options.get(number - 1))
+                    {
+                        let answers = selected_answers.entry(item.request_id.clone()).or_default();
+                        if let Some(index) = answers.iter().position(|label| label == &option.label)
+                        {
+                            answers.remove(index);
+                        } else {
+                            answers.push(option.label.clone());
+                        }
+                        status = format!("Updated selections for {}", item.title);
+                    }
+                    continue;
+                }
+                cmux_cli::feed_tui::LegacyFeedKey::Number(number)
+            }
+            _ => {
+                status = "Key is not available for this item".to_string();
+                continue;
+            }
+        };
+        let answers = selected_answers
+            .get(&item.request_id)
+            .cloned()
+            .unwrap_or_default();
+        let Some(cmux_cli::feed_tui::LegacyFeedAction::Request { method, params }) =
+            cmux_cli::feed_tui::legacy_action(item, action_key, &answers)
+        else {
+            status = "Key is not available for this item".to_string();
+            continue;
+        };
+        call_control_command(options, method, &params)?;
+        selected_answers.remove(&item.request_id);
+        status = format!("Sent action for {}", item.title);
+    }
+}
+
+fn read_legacy_feed_feedback() -> Result<String, CliError> {
+    use crossterm::cursor::{Hide, Show};
+    use crossterm::execute;
+    use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+
+    disable_raw_mode()
+        .map_err(|error| CliError::new(format!("Failed to pause terminal raw mode: {error}")))?;
+    execute!(io::stdout(), Show)
+        .map_err(|error| CliError::new(format!("Failed to show terminal cursor: {error}")))?;
+    print!("\r\nReplan feedback: ");
+    io::stdout()
+        .flush()
+        .map_err(|error| CliError::new(error.to_string()))?;
+    let mut feedback = String::new();
+    let read_result = io::stdin().read_line(&mut feedback);
+    enable_raw_mode()
+        .map_err(|error| CliError::new(format!("Failed to resume terminal raw mode: {error}")))?;
+    execute!(io::stdout(), Hide)
+        .map_err(|error| CliError::new(format!("Failed to hide terminal cursor: {error}")))?;
+    read_result
+        .map_err(|error| CliError::new(format!("Failed to read replan feedback: {error}")))?;
+    Ok(feedback.trim().to_string())
+}
+
+fn render_legacy_feed_tui(
+    items: &[cmux_cli::feed_tui::LegacyFeedItem],
+    selected: usize,
+    status: &str,
+    selected_answers: &HashMap<String, Vec<String>>,
+) -> Result<(), CliError> {
+    use crossterm::cursor::MoveTo;
+    use crossterm::execute;
+    use crossterm::terminal::{Clear, ClearType};
+
+    let mut stdout = io::stdout();
+    execute!(stdout, MoveTo(0, 0), Clear(ClearType::All))
+        .map_err(|error| CliError::new(format!("Failed to render Feed TUI: {error}")))?;
+    stdout
+        .write_all(legacy_feed_tui_text(items, selected, status, selected_answers).as_bytes())
+        .and_then(|()| stdout.flush())
+        .map_err(|error| CliError::new(error.to_string()))
+}
+
+fn legacy_feed_tui_text(
+    items: &[cmux_cli::feed_tui::LegacyFeedItem],
+    selected: usize,
+    status: &str,
+    selected_answers: &HashMap<String, Vec<String>>,
+) -> String {
+    use std::fmt::Write as _;
+
+    let mut output = format!(
+        "cmux feed — {} pending\n────────────────────────────────────────\n",
+        items.len()
+    );
+    if items.is_empty() {
+        let _ = writeln!(output, "No Feed items yet.");
+    }
+    for (index, item) in items.iter().enumerate() {
+        let marker = if index == selected { ">" } else { " " };
+        let _ = writeln!(
+            output,
+            "{marker} [{}] {} · {}",
+            item.source, item.title, item.kind
+        );
+        if let Some(question) = item.questions.first() {
+            for (option_index, option) in question.options.iter().enumerate() {
+                let checked = selected_answers
+                    .get(&item.request_id)
+                    .is_some_and(|answers| answers.contains(&option.label));
+                let _ = writeln!(
+                    output,
+                    "    {} {}. {}",
+                    if checked { "[x]" } else { "   " },
+                    option_index + 1,
+                    option.label
+                );
+            }
+        }
+    }
+    let _ = writeln!(output, "────────────────────────────────────────");
+    let _ = writeln!(output, "{status}");
+    let _ = writeln!(
+        output,
+        "j/k move · Enter default · o/a/l/b/d actions · f replan · r refresh · q quit"
+    );
+    output
+}
+
+#[cfg(test)]
+mod legacy_feed_tui_tests {
+    use super::*;
+
+    #[test]
+    fn text_projection_marks_selection_and_question_choices() {
+        let item = cmux_cli::feed_tui::legacy_feed_item(&serde_json::json!({
+            "id":"i1","request_id":"r1","workstream_id":"w1","source":"claude",
+            "kind":"question","status":"pending","title":"Choose",
+            "questions":[{"multi_select":true,"options":[{"id":"o1","label":"Tests"}]}]
+        }))
+        .unwrap();
+        let answers = HashMap::from([("r1".to_string(), vec!["Tests".to_string()])]);
+        let text = legacy_feed_tui_text(&[item], 0, "Ready", &answers);
+        assert!(text.contains("> [claude] Choose · question"));
+        assert!(text.contains("[x] 1. Tests"));
+        assert!(text.contains("f replan"));
+    }
 }
 
 #[cfg(windows)]

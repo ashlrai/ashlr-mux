@@ -35,6 +35,193 @@ pub struct FeedTuiLaunchPlan {
     pub environment: BTreeMap<String, String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegacyFeedOption {
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegacyFeedQuestion {
+    pub multi_select: bool,
+    pub options: Vec<LegacyFeedOption>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegacyFeedItem {
+    pub id: String,
+    pub request_id: String,
+    pub source: String,
+    pub kind: String,
+    pub title: String,
+    pub default_mode: Option<String>,
+    pub questions: Vec<LegacyFeedQuestion>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LegacyFeedKey {
+    Enter,
+    Once,
+    Always,
+    All,
+    Bypass,
+    Deny,
+    AutoAccept,
+    Manual,
+    Ultraplan,
+    Feedback(String),
+    Number(usize),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum LegacyFeedAction {
+    Request {
+        method: &'static str,
+        params: serde_json::Value,
+    },
+}
+
+pub fn legacy_feed_item(value: &serde_json::Value) -> Option<LegacyFeedItem> {
+    let object = value.as_object()?;
+    if object.get("status")?.as_str()? != "pending" {
+        return None;
+    }
+    let questions = object
+        .get("questions")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|question| {
+            let question = question.as_object()?;
+            let options = question
+                .get("options")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|option| {
+                    let option = option.as_object()?;
+                    Some(LegacyFeedOption {
+                        id: option.get("id")?.as_str()?.to_string(),
+                        label: option.get("label")?.as_str()?.to_string(),
+                    })
+                })
+                .collect();
+            Some(LegacyFeedQuestion {
+                multi_select: question
+                    .get("multi_select")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
+                options,
+            })
+        })
+        .collect();
+    Some(LegacyFeedItem {
+        id: object.get("id")?.as_str()?.to_string(),
+        request_id: object.get("request_id")?.as_str()?.to_string(),
+        source: object.get("source")?.as_str()?.to_string(),
+        kind: object.get("kind")?.as_str()?.to_string(),
+        title: object
+            .get("title")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_else(|| {
+                object
+                    .get("kind")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("Feed")
+            })
+            .to_string(),
+        default_mode: object
+            .get("default_mode")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        questions,
+    })
+}
+
+pub fn legacy_action(
+    item: &LegacyFeedItem,
+    key: LegacyFeedKey,
+    selected_labels: &[String],
+) -> Option<LegacyFeedAction> {
+    let (method, params) = match item.kind.as_str() {
+        "permissionRequest" => {
+            let mode = match key {
+                LegacyFeedKey::Enter | LegacyFeedKey::Once => "once",
+                LegacyFeedKey::Always => "always",
+                LegacyFeedKey::All if item.source != "hermes-agent" => "all",
+                LegacyFeedKey::Bypass
+                    if !matches!(item.source.as_str(), "codex" | "claude" | "hermes-agent") =>
+                {
+                    "bypass"
+                }
+                LegacyFeedKey::Deny => "deny",
+                _ => return None,
+            };
+            (
+                "feed.permission.reply",
+                serde_json::json!({"request_id":item.request_id,"mode":mode}),
+            )
+        }
+        "exitPlan" => {
+            if let LegacyFeedKey::Feedback(feedback) = key {
+                return Some(LegacyFeedAction::Request {
+                    method: "feed.exit_plan.reply",
+                    params: serde_json::json!({
+                        "request_id":item.request_id,
+                        "mode":"deny",
+                        "feedback":feedback
+                    }),
+                });
+            }
+            let mode = match key {
+                LegacyFeedKey::Enter => item.default_mode.as_deref().unwrap_or("manual"),
+                LegacyFeedKey::Always | LegacyFeedKey::AutoAccept => "autoAccept",
+                LegacyFeedKey::Manual => "manual",
+                LegacyFeedKey::Ultraplan => "ultraplan",
+                LegacyFeedKey::Bypass
+                    if !matches!(item.source.as_str(), "codex" | "claude" | "hermes-agent") =>
+                {
+                    "bypassPermissions"
+                }
+                LegacyFeedKey::Deny => "deny",
+                _ => return None,
+            };
+            (
+                "feed.exit_plan.reply",
+                serde_json::json!({"request_id":item.request_id,"mode":mode}),
+            )
+        }
+        "question" => {
+            let selections = if !selected_labels.is_empty() {
+                selected_labels.to_vec()
+            } else if let LegacyFeedKey::Number(index) = key {
+                vec![item
+                    .questions
+                    .first()?
+                    .options
+                    .get(index.checked_sub(1)?)?
+                    .label
+                    .clone()]
+            } else if key == LegacyFeedKey::Enter {
+                item.questions
+                    .iter()
+                    .filter_map(|question| {
+                        question.options.first().map(|option| option.label.clone())
+                    })
+                    .collect()
+            } else {
+                return None;
+            };
+            (
+                "feed.question.reply",
+                serde_json::json!({"request_id":item.request_id,"selections":selections}),
+            )
+        }
+        _ => return None,
+    };
+    Some(LegacyFeedAction::Request { method, params })
+}
+
 pub fn parse_feed_tui_args(args: &[String]) -> Result<FeedTuiImplementation, CliError> {
     let mut implementation = FeedTuiImplementation::Automatic;
     for argument in args {
@@ -268,5 +455,63 @@ mod tests {
         assert_eq!(source, home.join(".cmuxterm/feed-tui-opentui/index.ts"));
         assert_eq!(fs::read_to_string(source).unwrap(), OPEN_TUI_SOURCE);
         let _ = fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn legacy_actions_map_permission_plan_and_question_replies() {
+        let permission = legacy_feed_item(&serde_json::json!({
+            "id":"p1","request_id":"r1","workstream_id":"w1","source":"claude",
+            "kind":"permissionRequest","status":"pending","title":"Write"
+        }))
+        .unwrap();
+        assert_eq!(
+            legacy_action(&permission, LegacyFeedKey::Enter, &[]).unwrap(),
+            LegacyFeedAction::Request {
+                method: "feed.permission.reply",
+                params: serde_json::json!({"request_id":"r1","mode":"once"}),
+            }
+        );
+
+        let plan = legacy_feed_item(&serde_json::json!({
+            "id":"p2","request_id":"r2","workstream_id":"w2","source":"claude",
+            "kind":"exitPlan","status":"pending","default_mode":"manual","title":"Plan"
+        }))
+        .unwrap();
+        assert_eq!(
+            legacy_action(&plan, LegacyFeedKey::AutoAccept, &[]).unwrap(),
+            LegacyFeedAction::Request {
+                method: "feed.exit_plan.reply",
+                params: serde_json::json!({"request_id":"r2","mode":"autoAccept"}),
+            }
+        );
+        assert_eq!(
+            legacy_action(
+                &plan,
+                LegacyFeedKey::Feedback("Use fewer steps".into()),
+                &[],
+            )
+            .unwrap(),
+            LegacyFeedAction::Request {
+                method: "feed.exit_plan.reply",
+                params: serde_json::json!({
+                    "request_id":"r2","mode":"deny","feedback":"Use fewer steps"
+                }),
+            }
+        );
+
+        let question = legacy_feed_item(&serde_json::json!({
+            "id":"p3","request_id":"r3","workstream_id":"w3","source":"claude",
+            "kind":"question","status":"pending","title":"Question",
+            "questions":[{"id":"q1","prompt":"Choose","multi_select":false,
+                "options":[{"id":"o1","label":"First"},{"id":"o2","label":"Second"}]}]
+        }))
+        .unwrap();
+        assert_eq!(
+            legacy_action(&question, LegacyFeedKey::Enter, &[]).unwrap(),
+            LegacyFeedAction::Request {
+                method: "feed.question.reply",
+                params: serde_json::json!({"request_id":"r3","selections":["First"]}),
+            }
+        );
     }
 }
