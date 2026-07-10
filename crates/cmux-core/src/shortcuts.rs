@@ -1387,6 +1387,7 @@ impl Action {
             ToggleSidebar => StoredShortcut::single("b", true, false, false, false),
             NewTab => StoredShortcut::single("n", true, false, false, false),
             NewBrowserWorkspace => StoredShortcut::single("n", true, false, true, false),
+            SaveLayoutTemplate => StoredShortcut::single("s", true, false, false, true),
             OpenFolder => StoredShortcut::single("o", true, false, false, false),
             ReopenPreviousSession => StoredShortcut::single("o", true, true, false, false),
             GoToWorkspace => StoredShortcut::single("p", true, false, false, false),
@@ -1415,6 +1416,7 @@ impl Action {
             CloseTab => StoredShortcut::single("w", true, false, false, false),
             CloseOtherTabsInPane => StoredShortcut::single("t", true, false, true, false),
             CloseWorkspace => StoredShortcut::single("w", true, true, false, false),
+            NewWorkspaceGroup => StoredShortcut::single("g", true, false, false, true),
             GroupSelectedWorkspaces => StoredShortcut::single("g", true, true, false, false),
             ToggleFocusedWorkspaceGroupCollapsed => {
                 StoredShortcut::single(".", true, false, false, true)
@@ -1452,6 +1454,7 @@ impl Action {
             NewSurface => StoredShortcut::single("t", true, false, false, false),
             ToggleTerminalCopyMode => StoredShortcut::single("m", true, true, false, false),
             FocusTextBoxInput => StoredShortcut::single("a", true, true, false, false),
+            CycleTextBoxSubmitAction => StoredShortcut::single("\t", false, true, false, false),
             AttachTextBoxFile => StoredShortcut::single("a", true, true, true, false),
             // Unbound by default: deliberate escape hatch, opt-in via Settings.
             SendCtrlFToTerminal => StoredShortcut::unbound(),
@@ -1527,7 +1530,9 @@ impl Action {
     pub fn allows_chord_shortcut(&self) -> bool {
         !matches!(
             self,
-            Action::FileExplorerOpenSelection | Action::FileExplorerOpenSelectionFinderAlias
+            Action::FileExplorerOpenSelection
+                | Action::FileExplorerOpenSelectionFinderAlias
+                | Action::CycleTextBoxSubmitAction
         )
     }
 
@@ -2074,6 +2079,25 @@ mod config_and_metadata_tests {
         assert!(Action::SendFeedback.default_shortcut().is_unbound());
         assert!(Action::CanvasAlignLeft.default_shortcut().is_unbound());
         assert!(Action::SendCtrlFToTerminal.default_shortcut().is_unbound());
+        assert_eq!(
+            Action::SaveLayoutTemplate
+                .default_shortcut()
+                .config_identifier(),
+            "cmd+ctrl+s"
+        );
+        assert_eq!(
+            Action::NewWorkspaceGroup
+                .default_shortcut()
+                .config_identifier(),
+            "cmd+ctrl+g"
+        );
+        assert_eq!(
+            Action::CycleTextBoxSubmitAction
+                .default_shortcut()
+                .config_identifier(),
+            "shift+tab"
+        );
+        assert!(!Action::CycleTextBoxSubmitAction.allows_chord_shortcut());
         // A few more precise modifier combos.
         assert_eq!(
             Action::ShowHideAllWindows

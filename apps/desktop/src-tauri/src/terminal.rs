@@ -14,9 +14,10 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use cmux_terminal::conpty::{ConPty, ConPtyCommand, ConPtySize};
+use cmux_terminal::engine::{GridSize, TerminalGrid};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -31,6 +32,7 @@ const TERMINAL_EXIT_EVENT: &str = "cmux://terminal-exit";
 struct TerminalSession {
     pty: ConPty,
     writer: Box<dyn Write + Send>,
+    grid: Arc<Mutex<TerminalGrid>>,
     panel_id: Option<String>,
     root_pid: Option<u32>,
 }
@@ -243,11 +245,16 @@ pub fn terminal_open(
         (!trimmed.is_empty()).then(|| trimmed.to_string())
     });
 
+    let grid = Arc::new(Mutex::new(TerminalGrid::new(GridSize::new(
+        size.cols as usize,
+        size.rows as usize,
+    ))));
     let pump_app = app.clone();
     let pump_panel_id = panel_id.clone();
+    let pump_grid = grid.clone();
     std::thread::Builder::new()
         .name(format!("cmux-terminal-pump-{id}"))
-        .spawn(move || pump_reader(pump_app, id, pump_panel_id, reader))
+        .spawn(move || pump_reader(pump_app, id, pump_panel_id, pump_grid, reader))
         .map_err(|e| e.to_string())?;
 
     state
@@ -259,6 +266,7 @@ pub fn terminal_open(
             TerminalSession {
                 pty,
                 writer,
+                grid,
                 panel_id,
                 root_pid,
             },
@@ -314,6 +322,41 @@ pub(crate) fn terminal_write_panel(
     Ok(())
 }
 
+pub(crate) fn terminal_read_panel(
+    state: &TerminalState,
+    panel_id: &str,
+    include_scrollback: bool,
+    line_limit: Option<usize>,
+) -> Result<String, String> {
+    let normalized_panel_id = panel_id.trim();
+    if normalized_panel_id.is_empty() {
+        return Err("missing terminal panel id".to_string());
+    }
+    let grid = {
+        let sessions = state
+            .sessions
+            .lock()
+            .expect("terminal sessions mutex poisoned");
+        sessions
+            .values()
+            .find(|session| session.panel_id.as_deref() == Some(normalized_panel_id))
+            .map(|session| session.grid.clone())
+            .ok_or_else(|| format!("unknown terminal panel {normalized_panel_id}"))?
+    };
+    let grid = grid
+        .lock()
+        .map_err(|_| "terminal grid mutex poisoned".to_string())?;
+    Ok(terminal_text(&grid, include_scrollback, line_limit))
+}
+
+fn terminal_text(
+    grid: &TerminalGrid,
+    include_scrollback: bool,
+    line_limit: Option<usize>,
+) -> String {
+    grid.text_lines(include_scrollback, line_limit).join("\n")
+}
+
 pub(crate) fn terminal_runtime_snapshots(state: &TerminalState) -> Vec<TerminalRuntimeSnapshot> {
     let sessions = {
         let sessions = state
@@ -354,7 +397,13 @@ pub fn terminal_resize(
     session
         .pty
         .resize(ConPtySize::new(cols.max(1), rows.max(1)))
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    session
+        .grid
+        .lock()
+        .map_err(|_| "terminal grid mutex poisoned".to_string())?
+        .resize(GridSize::new(cols.max(1) as usize, rows.max(1) as usize));
+    Ok(())
 }
 
 /// Kill a session's shell and drop its PTY. The pump thread observes EOF on the
@@ -447,6 +496,7 @@ fn pump_reader(
     app: AppHandle,
     id: u32,
     panel_id: Option<String>,
+    grid: Arc<Mutex<TerminalGrid>>,
     mut reader: Box<dyn Read + Send>,
 ) {
     let mut buf = [0u8; 4096];
@@ -455,6 +505,9 @@ fn pump_reader(
         match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
+                if let Ok(mut grid) = grid.lock() {
+                    grid.advance(&buf[..n]);
+                }
                 if let Some(panel_id) = panel_id.as_deref() {
                     for title in title_parser.consume(&buf[..n]) {
                         let state = app.state::<session::SessionState>();
@@ -829,9 +882,10 @@ mod tests {
 
     use super::{
         base64_encode, default_shell_command, descendant_pid_set, ports_for_pid_set,
-        tcp_port_from_owner_pid_row, terminal_runtime_snapshot_from_processes,
+        tcp_port_from_owner_pid_row, terminal_runtime_snapshot_from_processes, terminal_text,
         ProcessSnapshotEntry, TerminalTitleParser,
     };
+    use cmux_terminal::engine::{GridSize, TerminalGrid};
 
     #[test]
     fn base64_matches_rfc_test_vectors() {
@@ -863,6 +917,16 @@ mod tests {
         // bridge is base64 rather than a UTF-8 string.
         assert_eq!(base64_encode(&[0xff, 0xfe, 0xfd]), "//79");
         assert_eq!(base64_encode(&[0x00]), "AA==");
+    }
+
+    #[test]
+    fn terminal_text_reads_viewport_scrollback_and_line_tail() {
+        let mut grid = TerminalGrid::new(GridSize::new(20, 2));
+        grid.advance(b"one\r\ntwo\r\nthree");
+
+        assert_eq!(terminal_text(&grid, false, None), "two\nthree");
+        assert_eq!(terminal_text(&grid, true, None), "one\ntwo\nthree");
+        assert_eq!(terminal_text(&grid, true, Some(2)), "two\nthree");
     }
 
     #[test]

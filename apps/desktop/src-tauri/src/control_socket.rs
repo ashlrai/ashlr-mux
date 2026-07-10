@@ -59,8 +59,8 @@ use crate::session::{
     toggle_split_zoom_for_control, SessionState, WorkspaceRemoteControlConfig,
 };
 use crate::terminal::{
-    scan_listening_ports_for_root_pid, scan_panel_listening_ports, terminal_runtime_snapshots,
-    terminal_write_panel, TerminalState,
+    scan_listening_ports_for_root_pid, scan_panel_listening_ports, terminal_read_panel,
+    terminal_runtime_snapshots, terminal_write_panel, TerminalState,
 };
 
 const CONTROL_PIPE_BASE_NAME: &str = "cmux";
@@ -872,6 +872,7 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "ports_kick",
     "surface.focus",
     "surface.health",
+    "surface.read_text",
     "surface.send_text",
     "surface.send_key",
     "surface.move_to_new_workspace",
@@ -1139,6 +1140,7 @@ fn handle_control_request(app: &AppHandle, request: ControlRequest) -> ControlCa
         "surface.ports_kick" | "ports_kick" => surface_ports_kick(app, &request.params),
         "surface.focus" => surface_focus(app, &request.params),
         "surface.health" => surface_health(app, &request.params),
+        "surface.read_text" => surface_read_text(app, &request.params),
         "surface.send_text" => surface_send_text(app, &request.params),
         "surface.send_key" => surface_send_key(app, &request.params),
         "surface.move_to_new_workspace" => surface_move_to_new_workspace(app, &request.params),
@@ -3796,6 +3798,88 @@ fn surface_health(app: &AppHandle, params: &serde_json::Map<String, Value>) -> C
         "workspace_id": workspace.workspace_id,
         "workspace_ref": workspace_ref(workspace_index),
         "surfaces": surfaces,
+        "window_id": window.window_id,
+        "window_ref": window.window_id.as_ref().map(|_| "window:1"),
+    }))
+}
+
+fn surface_read_text(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(window) = current.windows.first() else {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Workspace not found".to_string(),
+            data: None,
+        };
+    };
+    let Some(workspace_index) = workspace_index_from_workspace_scope_or_selected(&current, params)
+    else {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Workspace not found".to_string(),
+            data: None,
+        };
+    };
+    let line_limit = if params.contains_key("lines") {
+        match usize_param(params, &["lines"]) {
+            Some(lines) if lines > 0 => Some(lines),
+            _ => return invalid_params("lines must be greater than 0"),
+        }
+    } else {
+        None
+    };
+    let Some(panel_id) =
+        surface_id_from_params_or_workspace_focused(&current, workspace_index, params)
+    else {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "No focused surface".to_string(),
+            data: None,
+        };
+    };
+    if !surface_is_terminal(&current, workspace_index, &panel_id) {
+        return ControlCallResult::Err {
+            code: "invalid_params".to_string(),
+            message: "Surface is not a terminal".to_string(),
+            data: Some(
+                json!({"surface_id": panel_id.clone()})
+                    .try_into()
+                    .unwrap_or(JsonValue::Null),
+            ),
+        };
+    }
+    let include_scrollback =
+        bool_param(params, &["scrollback"]).unwrap_or(false) || line_limit.is_some();
+    let terminal_state = app.state::<TerminalState>();
+    let text = match terminal_read_panel(
+        terminal_state.inner(),
+        &panel_id,
+        include_scrollback,
+        line_limit,
+    ) {
+        Ok(text) => text,
+        Err(message) => {
+            return ControlCallResult::Err {
+                code: "surface_unavailable".to_string(),
+                message,
+                data: Some(
+                    json!({"surface_id": panel_id.clone()})
+                        .try_into()
+                        .unwrap_or(JsonValue::Null),
+                ),
+            };
+        }
+    };
+    ok(json!({
+        "text": text,
+        "base64": BASE64_STANDARD.encode(text.as_bytes()),
+        "workspace_id": window.tab_manager.workspaces[workspace_index].workspace_id,
+        "workspace_ref": workspace_ref(workspace_index),
+        "surface_id": panel_id,
+        "surface_ref": surface_ref_for_panel(&current, workspace_index, &panel_id),
         "window_id": window.window_id,
         "window_ref": window.window_id.as_ref().map(|_| "window:1"),
     }))
@@ -10733,6 +10817,7 @@ mod tests {
             "workspace.clear_agent_pid",
             "surface.report_tty",
             "surface.report_shell_state",
+            "surface.read_text",
             "workspace.report_pr",
             "workspace.report_review",
             "workspace.clear_pr",

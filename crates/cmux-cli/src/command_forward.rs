@@ -43,6 +43,23 @@ impl ControlCommand {
         params.insert("workspace_id".to_string(), serde_json::json!(workspace_id));
         self
     }
+
+    pub fn with_window_id(mut self, window_id: Option<&str>) -> Self {
+        if self.method != "surface.read_text" {
+            return self;
+        }
+        let Some(window_id) = window_id.map(str::trim).filter(|value| !value.is_empty()) else {
+            return self;
+        };
+        let Some(params) = self.params.as_object_mut() else {
+            return self;
+        };
+        if params.contains_key("window_id") || params.contains_key("window_ref") {
+            return self;
+        }
+        apply_window_selector_value(window_id, params);
+        self
+    }
 }
 
 fn workspace_scoped_method(method: &str) -> bool {
@@ -102,6 +119,7 @@ fn workspace_scoped_method(method: &str) -> bool {
             | "ports_kick"
             | "surface.focus"
             | "surface.health"
+            | "surface.read_text"
             | "debug.terminals"
             | "surface.send_text"
             | "surface.send_key"
@@ -311,6 +329,10 @@ pub fn control_command_for(
         "surface-health" => Some(ControlCommand::new(
             "surface.health",
             surface_workspace_params(args)?,
+        )),
+        "read-screen" | "capture-pane" => Some(ControlCommand::new(
+            "surface.read_text",
+            surface_read_text_params(args, command)?,
         )),
         "debug-terminals" => Some(ControlCommand::new(
             "debug.terminals",
@@ -1476,6 +1498,47 @@ fn surface_selector_params(args: &[String]) -> Result<serde_json::Value, CliErro
     let mut params = serde_json::Map::new();
     apply_workspace_scope_selector(&parsed, &mut params);
     apply_surface_selector_or_positional(&parsed, &mut params)?;
+    Ok(serde_json::Value::Object(params))
+}
+
+fn surface_read_text_params(
+    args: &[String],
+    command_label: &str,
+) -> Result<serde_json::Value, CliError> {
+    let parsed = ParsedArgs::parse(args)?;
+    if !parsed.positionals.is_empty() {
+        return Err(CliError::new(format!(
+            "{command_label}: unexpected arguments: {}",
+            parsed.positionals.join(" ")
+        )));
+    }
+    if let Some(flag) = parsed
+        .flags
+        .iter()
+        .find(|flag| flag.as_str() != "--scrollback")
+    {
+        return Err(CliError::new(format!(
+            "{command_label}: unexpected argument: {flag}"
+        )));
+    }
+
+    let mut params = serde_json::Map::new();
+    apply_window_scope_selector(&parsed, &mut params);
+    apply_workspace_scope_selector(&parsed, &mut params);
+    apply_surface_selector(&parsed, &mut params)?;
+    if parsed.has_flag("--scrollback") {
+        params.insert("scrollback".to_string(), serde_json::json!(true));
+    }
+    if let Some(lines) = parsed.value(&["--lines"]) {
+        let lines = lines
+            .parse::<usize>()
+            .map_err(|_| CliError::new("--lines must be greater than 0"))?;
+        if lines == 0 {
+            return Err(CliError::new("--lines must be greater than 0"));
+        }
+        params.insert("lines".to_string(), serde_json::json!(lines));
+        params.insert("scrollback".to_string(), serde_json::json!(true));
+    }
     Ok(serde_json::Value::Object(params))
 }
 
@@ -2686,6 +2749,32 @@ fn apply_workspace_scope_selector(
     }
 }
 
+fn apply_window_scope_selector(
+    parsed: &ParsedArgs,
+    params: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    let Some(value) = parsed.value(&["--window", "--window-id"]) else {
+        return;
+    };
+    apply_window_selector_value(value, params);
+}
+
+fn apply_window_selector_value(
+    value: &str,
+    params: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    if value.chars().all(|ch| ch.is_ascii_digit()) {
+        params.insert(
+            "window_ref".to_string(),
+            serde_json::json!(format!("window:{value}")),
+        );
+    } else if value.starts_with("window:") {
+        params.insert("window_ref".to_string(), serde_json::json!(value));
+    } else {
+        params.insert("window_id".to_string(), serde_json::json!(value));
+    }
+}
+
 fn has_explicit_workspace_selector(parsed: &ParsedArgs) -> bool {
     parsed.value(&["--ref", "--workspace-ref"]).is_some()
         || parsed
@@ -2970,6 +3059,7 @@ fn takes_value(arg: &str) -> bool {
             | "--load-state"
             | "--loadState"
             | "--limit"
+            | "--lines"
             | "--level"
             | "--lng"
             | "--lon"
@@ -3024,6 +3114,8 @@ fn takes_value(arg: &str) -> bool {
             | "--workspace"
             | "--workspace-id"
             | "--workspace-ref"
+            | "--window"
+            | "--window-id"
             | "--width"
             | "--zoom"
             | "--enabled"
@@ -3072,6 +3164,16 @@ mod tests {
             command.params,
             serde_json::json!({"workspace_id": "workspace-1"})
         );
+    }
+
+    #[test]
+    fn window_scope_is_normalized_without_overriding_explicit_params() {
+        let command = mapped("read-screen", &[]).with_window_id(Some("2"));
+        assert_eq!(command.params["window_ref"], serde_json::json!("window:2"));
+
+        let command =
+            mapped("read-screen", &["--window", "window:3"]).with_window_id(Some("window:2"));
+        assert_eq!(command.params["window_ref"], serde_json::json!("window:3"));
     }
 
     #[test]
@@ -4205,7 +4307,37 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_socket_commands_are_unmapped() {
-        assert_eq!(control_command_for("read-screen", &[]).unwrap(), None);
+    fn maps_terminal_text_capture_commands() {
+        for command in ["read-screen", "capture-pane"] {
+            let control = mapped(
+                command,
+                &[
+                    "--workspace",
+                    "workspace:2",
+                    "--surface",
+                    "surface:3",
+                    "--window",
+                    "window:1",
+                    "--scrollback",
+                    "--lines",
+                    "200",
+                ],
+            );
+            assert_eq!(control.method, "surface.read_text");
+            assert_eq!(
+                control.params,
+                serde_json::json!({
+                    "workspace_ref": "workspace:2",
+                    "surface_ref": "surface:3",
+                    "window_ref": "window:1",
+                    "scrollback": true,
+                    "lines": 200,
+                })
+            );
+        }
+
+        let error = control_command_for("read-screen", &args(&["--lines", "0"]))
+            .expect_err("zero line count must fail");
+        assert!(error.message.contains("greater than 0"));
     }
 }

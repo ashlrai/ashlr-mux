@@ -34,6 +34,8 @@ pub enum Action {
     NewTab,
     #[serde(rename = "newBrowserWorkspace")]
     NewBrowserWorkspace,
+    #[serde(rename = "saveLayoutTemplate")]
+    SaveLayoutTemplate,
     #[serde(rename = "openFolder")]
     OpenFolder,
     #[serde(rename = "reopenPreviousSession")]
@@ -98,6 +100,8 @@ pub enum Action {
     CloseOtherTabsInPane,
     #[serde(rename = "closeWorkspace")]
     CloseWorkspace,
+    #[serde(rename = "newWorkspaceGroup")]
+    NewWorkspaceGroup,
     #[serde(rename = "groupSelectedWorkspaces")]
     GroupSelectedWorkspaces,
     #[serde(rename = "toggleFocusedWorkspaceGroupCollapsed")]
@@ -110,6 +114,8 @@ pub enum Action {
     ToggleTerminalCopyMode,
     #[serde(rename = "focusTextBoxInput")]
     FocusTextBoxInput,
+    #[serde(rename = "cycleTextBoxSubmitAction")]
+    CycleTextBoxSubmitAction,
     #[serde(rename = "attachTextBoxFile")]
     AttachTextBoxFile,
     #[serde(rename = "sendCtrlFToTerminal")]
@@ -234,10 +240,10 @@ pub enum Action {
 
 impl Action {
     /// Total number of variants. Asserted in tests against the Swift case count.
-    pub const COUNT: usize = 109;
+    pub const COUNT: usize = 112;
 
     /// All variants in Swift source declaration order.
-    pub const ALL: [Action; 109] = [
+    pub const ALL: [Action; 112] = [
         Action::OpenSettings,
         Action::ReloadConfiguration,
         Action::ShowHideAllWindows,
@@ -249,6 +255,7 @@ impl Action {
         Action::ToggleSidebar,
         Action::NewTab,
         Action::NewBrowserWorkspace,
+        Action::SaveLayoutTemplate,
         Action::OpenFolder,
         Action::ReopenPreviousSession,
         Action::GoToWorkspace,
@@ -281,12 +288,14 @@ impl Action {
         Action::CloseTab,
         Action::CloseOtherTabsInPane,
         Action::CloseWorkspace,
+        Action::NewWorkspaceGroup,
         Action::GroupSelectedWorkspaces,
         Action::ToggleFocusedWorkspaceGroupCollapsed,
         Action::ReopenClosedBrowserPanel,
         Action::NewSurface,
         Action::ToggleTerminalCopyMode,
         Action::FocusTextBoxInput,
+        Action::CycleTextBoxSubmitAction,
         Action::AttachTextBoxFile,
         Action::SendCtrlFToTerminal,
         Action::ClearScreenKeepScrollback,
@@ -363,6 +372,7 @@ impl Action {
             Action::ToggleSidebar => "toggleSidebar",
             Action::NewTab => "newTab",
             Action::NewBrowserWorkspace => "newBrowserWorkspace",
+            Action::SaveLayoutTemplate => "saveLayoutTemplate",
             Action::OpenFolder => "openFolder",
             Action::ReopenPreviousSession => "reopenPreviousSession",
             Action::GoToWorkspace => "goToWorkspace",
@@ -395,12 +405,14 @@ impl Action {
             Action::CloseTab => "closeTab",
             Action::CloseOtherTabsInPane => "closeOtherTabsInPane",
             Action::CloseWorkspace => "closeWorkspace",
+            Action::NewWorkspaceGroup => "newWorkspaceGroup",
             Action::GroupSelectedWorkspaces => "groupSelectedWorkspaces",
             Action::ToggleFocusedWorkspaceGroupCollapsed => "toggleFocusedWorkspaceGroupCollapsed",
             Action::ReopenClosedBrowserPanel => "reopenClosedBrowserPanel",
             Action::NewSurface => "newSurface",
             Action::ToggleTerminalCopyMode => "toggleTerminalCopyMode",
             Action::FocusTextBoxInput => "focusTextBoxInput",
+            Action::CycleTextBoxSubmitAction => "cycleTextBoxSubmitAction",
             Action::AttachTextBoxFile => "attachTextBoxFile",
             Action::SendCtrlFToTerminal => "sendCtrlFToTerminal",
             Action::ClearScreenKeepScrollback => "clearScreenKeepScrollback",
@@ -478,6 +490,7 @@ impl Action {
             "toggleSidebar" => Some(Action::ToggleSidebar),
             "newTab" => Some(Action::NewTab),
             "newBrowserWorkspace" => Some(Action::NewBrowserWorkspace),
+            "saveLayoutTemplate" => Some(Action::SaveLayoutTemplate),
             "openFolder" => Some(Action::OpenFolder),
             "reopenPreviousSession" => Some(Action::ReopenPreviousSession),
             "goToWorkspace" => Some(Action::GoToWorkspace),
@@ -510,6 +523,7 @@ impl Action {
             "closeTab" => Some(Action::CloseTab),
             "closeOtherTabsInPane" => Some(Action::CloseOtherTabsInPane),
             "closeWorkspace" => Some(Action::CloseWorkspace),
+            "newWorkspaceGroup" => Some(Action::NewWorkspaceGroup),
             "groupSelectedWorkspaces" => Some(Action::GroupSelectedWorkspaces),
             "toggleFocusedWorkspaceGroupCollapsed" => {
                 Some(Action::ToggleFocusedWorkspaceGroupCollapsed)
@@ -518,6 +532,7 @@ impl Action {
             "newSurface" => Some(Action::NewSurface),
             "toggleTerminalCopyMode" => Some(Action::ToggleTerminalCopyMode),
             "focusTextBoxInput" => Some(Action::FocusTextBoxInput),
+            "cycleTextBoxSubmitAction" => Some(Action::CycleTextBoxSubmitAction),
             "attachTextBoxFile" => Some(Action::AttachTextBoxFile),
             "sendCtrlFToTerminal" => Some(Action::SendCtrlFToTerminal),
             "clearScreenKeepScrollback" => Some(Action::ClearScreenKeepScrollback),
@@ -592,7 +607,7 @@ mod tests {
     // The Swift source `enum Action: String` declares exactly this many cases.
     // Derived mechanically by the extraction script (see module header) and
     // re-verified below by parsing the Swift file when it is available.
-    const SWIFT_CASE_COUNT: usize = 109;
+    const SWIFT_CASE_COUNT: usize = 112;
 
     #[test]
     fn variant_count_matches_swift() {

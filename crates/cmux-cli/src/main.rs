@@ -83,7 +83,9 @@ fn dispatch(
         DispatchPlan::RunSsh(args) => run_ssh_command(options, &args),
         DispatchPlan::RunControl(control) => {
             let ambient_workspace_id = std::env::var(CMUX_WORKSPACE_ID_ENV).ok();
-            let control = control.with_ambient_workspace_id(ambient_workspace_id.as_deref());
+            let control = control
+                .with_ambient_workspace_id(ambient_workspace_id.as_deref())
+                .with_window_id(options.window_id.as_deref());
             run_control_command(options, &control.method, &control.params)
         }
         DispatchPlan::RunEvents(args) => run_events_command(options, &args),
@@ -379,12 +381,31 @@ fn format_control_result(method: &str, result: &serde_json::Value) -> String {
         | "workspace.log"
         | "workspace.clear_log" => "OK".to_string(),
         "surface.report_tty" | "surface.report_shell_state" => "OK".to_string(),
+        "surface.read_text" => result
+            .get("text")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
         "workspace.list_status" => format_status_entries(result),
         "workspace.list_meta" => format_metadata_entries(result),
         "workspace.list_meta_blocks" => format_metadata_blocks(result),
         "workspace.list_log" => format_log_entries(result),
         "workspace.sidebar_state" => format_sidebar_state(result),
         _ => serde_json::to_string(result).unwrap_or_default(),
+    }
+}
+
+#[cfg(test)]
+mod control_result_tests {
+    use super::*;
+
+    #[test]
+    fn terminal_text_result_prints_plain_text() {
+        let result = serde_json::json!({"text": "first\nsecond", "surface_ref": "surface:1"});
+        assert_eq!(
+            format_control_result("surface.read_text", &result),
+            "first\nsecond"
+        );
     }
 }
 

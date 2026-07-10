@@ -135,7 +135,7 @@ Environment:
 | `select-workspace` | Select a workspace. |
 | `rename-workspace`, `rename-window` | Rename a workspace. `rename-window` is a compatibility alias. |
 | `current-workspace` | Print current workspace information. |
-| `read-screen` | Read terminal text from a surface. |
+| `read-screen` | Read plain terminal text from a surface. `--scrollback` includes retained history; `--lines N` returns the last `N` retained rows and implies scrollback. The Windows/Tauri backend captures the same viewport/history contract from its mirrored VT grid. |
 | `send` | Send text to a terminal surface. |
 | `send-key` | Send one key to a terminal surface. |
 | `send-panel` | Send text to a panel/surface. |
@@ -290,7 +290,7 @@ tmux compatibility commands:
 
 | Command | Contract |
 | --- | --- |
-| `capture-pane` | Read pane text. |
+| `capture-pane` | Read pane text with the same `--scrollback` / `--lines N` capture semantics as `read-screen`. |
 | `resize-pane` | Resize a pane with direction flags. |
 | `pipe-pane` | Pipe pane text to a shell command. |
 | `wait-for` | Signal or wait on a named synchronization point. |

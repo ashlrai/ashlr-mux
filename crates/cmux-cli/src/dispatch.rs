@@ -221,6 +221,12 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
         "surface-health" => Some(
             "Usage:\n  cmux surface-health [--workspace WORKSPACE]\n\nReports surface health for a workspace.",
         ),
+        "read-screen" => Some(
+            "Usage:\n  cmux read-screen [--workspace WORKSPACE] [--surface SURFACE] [--window WINDOW] [--scrollback] [--lines N]\n\nReads plain text from the selected terminal viewport or retained scrollback.",
+        ),
+        "capture-pane" => Some(
+            "Usage:\n  cmux capture-pane [--workspace WORKSPACE] [--surface SURFACE] [--window WINDOW] [--scrollback] [--lines N]\n\nReads plain text from the selected terminal pane.",
+        ),
         "send" => Some(
             "Usage:\n  cmux send [--workspace WORKSPACE] [--surface SURFACE] [--] TEXT\n\nSends literal text to a terminal surface.",
         ),
@@ -393,16 +399,16 @@ mod tests {
     }
 
     #[test]
-    fn subcommand_help_prints_header_and_pointer() {
+    fn unmapped_subcommand_help_prints_header_and_pointer() {
         let plan = plan(
             &PreSocketAction::SubcommandHelp {
-                command: "read-screen".to_owned(),
+                command: "notify".to_owned(),
             },
-            "read-screen",
+            "notify",
         );
         match plan {
             DispatchPlan::PrintLine(text) => {
-                assert!(text.starts_with("cmux read-screen\n\n"), "got: {text:?}");
+                assert!(text.starts_with("cmux notify\n\n"), "got: {text:?}");
                 assert!(text.contains("run 'cmux help'"));
                 assert!(text.contains("not yet ported"));
             }
@@ -439,6 +445,8 @@ mod tests {
             "new-browser-workspace",
             "new-terminal-tab",
             "reopen-closed-browser-tab",
+            "read-screen",
+            "capture-pane",
             "restore-previous-launch",
             "split-browser",
         ] {
@@ -512,12 +520,11 @@ mod tests {
             other => panic!("expected RunControl, got {other:?}"),
         }
         match plan(&PreSocketAction::NeedsSocket, "read-screen") {
-            DispatchPlan::Fail(error) => {
-                assert_eq!(error.exit_code, 1);
-                assert!(error.message.contains("read-screen"));
-                assert!(error.message.contains("raw v2 control-socket calls"));
+            DispatchPlan::RunControl(control) => {
+                assert_eq!(control.method, "surface.read_text");
+                assert_eq!(control.params, serde_json::json!({}));
             }
-            other => panic!("expected Fail, got {other:?}"),
+            other => panic!("expected RunControl, got {other:?}"),
         }
     }
 
