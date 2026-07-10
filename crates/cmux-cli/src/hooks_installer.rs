@@ -27,6 +27,7 @@ enum HooksRequest {
     Claude { yes: bool },
     Kiro { yes: bool },
     Nested { agent: String, yes: bool },
+    NestedUninstall { agent: String },
     Cursor { yes: bool },
     Antigravity { yes: bool },
     OpenCode { yes: bool, project: bool },
@@ -76,6 +77,9 @@ pub fn run_hooks_command(command: &str, args: &[String]) -> Result<String, CliEr
         HooksRequest::Kiro { yes } => install_kiro_hooks(yes),
         HooksRequest::Nested { agent, yes } => {
             install_nested_hooks(nested_agent(&agent).expect("parsed nested agent"), yes)
+        }
+        HooksRequest::NestedUninstall { agent } => {
+            uninstall_nested_hooks(nested_agent(&agent).expect("parsed nested agent"))
         }
         HooksRequest::Cursor { yes } => install_cursor_hooks(yes),
         HooksRequest::Antigravity { yes } => install_antigravity_hooks(yes),
@@ -184,8 +188,11 @@ fn parse_hooks_subcommand(tokens: &[String], yes: bool) -> Result<HooksRequest, 
                 agent: agent.to_string(),
                 yes,
             }),
+            Some("uninstall") => Ok(HooksRequest::NestedUninstall {
+                agent: agent.to_string(),
+            }),
             Some(other) => Err(CliError::new(format!(
-                "unsupported {agent} hooks action '{other}'; use 'cmux hooks {agent} install'"
+                "unsupported {agent} hooks action '{other}'; use 'cmux hooks {agent} install|uninstall'"
             ))),
         },
         Some("setup") => parse_setup_tokens(&tokens[1..], yes),
@@ -2069,6 +2076,32 @@ fn install_nested_hooks(agent: &NestedAgentDef, yes: bool) -> Result<String, Cli
     ))
 }
 
+fn uninstall_nested_hooks(agent: &NestedAgentDef) -> Result<String, CliError> {
+    let path = nested_hooks_path(agent)?;
+    let before = match fs::read_to_string(&path) {
+        Ok(contents)
+            if serde_json::from_str::<serde_json::Value>(&contents)
+                .ok()
+                .is_some_and(|value| value.is_object()) =>
+        {
+            contents
+        }
+        _ => {
+            return Ok(format!(
+                "No {} found at {}\n",
+                agent.config_file,
+                path.display()
+            ))
+        }
+    };
+    let (plan, removed) = plan_nested_hooks_uninstall(&before, &path, agent)?;
+    write_config(&path, &plan.after)?;
+    Ok(format!(
+        "Removed {removed} cmux hook(s) from {}\n",
+        path.display()
+    ))
+}
+
 fn nested_hooks_path(agent: &NestedAgentDef) -> Result<PathBuf, CliError> {
     let home = || {
         std::env::var_os("USERPROFILE")
@@ -2128,6 +2161,7 @@ fn plan_nested_hooks_update(
                 agent.display_name
             ))
         })?;
+    prune_nested_owned_hooks(hooks, agent.name);
     for (event, action, timeout, feed) in agent
         .events
         .iter()
@@ -2149,7 +2183,6 @@ fn plan_nested_hooks_update(
                     agent.display_name
                 ))
             })?;
-        groups.retain(|group| !nested_group_is_owned(group, agent.name));
         let command = if feed {
             format!("cmux hooks feed --source {} --event {event}", agent.name)
         } else {
@@ -2173,16 +2206,109 @@ fn plan_nested_hooks_update(
     })
 }
 
-fn nested_group_is_owned(group: &serde_json::Value, agent: &str) -> bool {
-    group
+fn plan_nested_hooks_uninstall(
+    before: &str,
+    path: &Path,
+    agent: &NestedAgentDef,
+) -> Result<(ClaudeIntegrationPlan, usize), CliError> {
+    let before = normalize_config_text(before)?;
+    let mut value: serde_json::Value = serde_json::from_str(&before).map_err(|error| {
+        CliError::new(format!(
+            "failed to parse {} config: {error}",
+            agent.display_name
+        ))
+    })?;
+    let object = value.as_object_mut().ok_or_else(|| {
+        CliError::new(format!(
+            "{} config must be a JSON object",
+            agent.display_name
+        ))
+    })?;
+    if !object
         .get("hooks")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|hook| hook.get("command").and_then(serde_json::Value::as_str))
-        .any(|command| {
-            command.contains(&format!("cmux hooks {agent}"))
-                || command.contains(&format!("hooks feed --source {agent}"))
+        .is_some_and(serde_json::Value::is_object)
+    {
+        object.insert("hooks".to_string(), serde_json::json!({}));
+    }
+    let hooks = object
+        .get_mut("hooks")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("hooks normalized to an object");
+    let removed = prune_nested_owned_hooks(hooks, agent.name);
+    let after = serde_json::to_string_pretty(&value).map_err(|error| {
+        CliError::new(format!(
+            "failed to encode {} config: {error}",
+            agent.display_name
+        ))
+    })?;
+    Ok((
+        ClaudeIntegrationPlan {
+            changed: before != after,
+            diff: unified_diff(path, &before, &after),
+            before,
+            after,
+        },
+        removed,
+    ))
+}
+
+fn prune_nested_owned_hooks(
+    hooks: &mut serde_json::Map<String, serde_json::Value>,
+    agent: &str,
+) -> usize {
+    let mut removed = 0;
+    let mut empty_events = Vec::new();
+    for (event, value) in hooks.iter_mut() {
+        let Some(groups) = value.as_array_mut() else {
+            continue;
+        };
+        groups.retain_mut(|group| {
+            let Some(entries) = group
+                .get_mut("hooks")
+                .and_then(serde_json::Value::as_array_mut)
+            else {
+                return true;
+            };
+            let before = entries.len();
+            entries.retain(|entry| {
+                !entry
+                    .get("command")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|command| nested_command_is_owned(command, agent))
+            });
+            removed += before - entries.len();
+            !entries.is_empty()
+        });
+        if groups.is_empty() {
+            empty_events.push(event.clone());
+        }
+    }
+    for event in empty_events {
+        hooks.remove(&event);
+    }
+    removed
+}
+
+fn nested_command_is_owned(command: &str, agent: &str) -> bool {
+    let tokens: Vec<_> = command.split_whitespace().collect();
+    tokens.iter().enumerate().any(|(index, token)| {
+        let command_boundary = index == 0 || tokens[index - 1] == "&&";
+        if !command_boundary || !cmux_executable_token(token) {
+            return false;
+        }
+        let args = &tokens[index + 1..];
+        matches!(args, ["hooks", candidate, ..] if *candidate == agent)
+            || matches!(args, ["hooks", "feed", "--source", candidate, ..] if *candidate == agent)
+    })
+}
+
+fn cmux_executable_token(token: &str) -> bool {
+    let token = token.trim_matches(['\'', '"']);
+    Path::new(token)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            name.eq_ignore_ascii_case("cmux") || name.eq_ignore_ascii_case("cmux.exe")
         })
 }
 
@@ -2657,6 +2783,58 @@ mod tests {
             grok_value["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"],
             120
         );
+    }
+
+    #[test]
+    fn nested_json_uninstall_preserves_mixed_user_groups_and_prunes_stale_events() {
+        for agent in ["gemini", "grok", "copilot", "codebuddy", "factory", "qoder"] {
+            assert_eq!(
+                parse_hooks_request("hooks", &[agent.into(), "uninstall".into()]).unwrap(),
+                HooksRequest::NestedUninstall {
+                    agent: agent.to_string()
+                }
+            );
+        }
+
+        let gemini = nested_agent("gemini").unwrap();
+        let before = r#"{
+  "theme": "user",
+  "hooks": {
+    "SessionStart": [
+      {"matcher": "mixed", "hooks": [
+        {"type": "command", "command": "user command"},
+        {"type": "command", "command": "cmux hooks gemini session-start"}
+      ]},
+      {"hooks": [{"type": "command", "command": "cmux hooks feed --source gemini --event SessionStart"}]},
+      {"custom": "unknown shape"}
+    ],
+    "OldEvent": [{"hooks": [
+      {"command": "cmux hooks gemini stale"},
+      {"command": "user old command"},
+      {"command": "echo cmux hooks gemini should-stay"}
+    ]}],
+    "UserScalar": "preserve"
+  }
+}"#;
+        let (plan, removed) = plan_nested_hooks_uninstall(before, &path(), gemini).unwrap();
+        assert_eq!(removed, 3);
+        let value: serde_json::Value = serde_json::from_str(&plan.after).unwrap();
+        assert_eq!(value["theme"], "user");
+        assert_eq!(value["hooks"]["SessionStart"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            value["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+            "user command"
+        );
+        assert_eq!(value["hooks"]["SessionStart"][1]["custom"], "unknown shape");
+        assert_eq!(
+            value["hooks"]["OldEvent"][0]["hooks"][0]["command"],
+            "user old command"
+        );
+        assert_eq!(
+            value["hooks"]["OldEvent"][0]["hooks"][1]["command"],
+            "echo cmux hooks gemini should-stay"
+        );
+        assert_eq!(value["hooks"]["UserScalar"], "preserve");
     }
 
     #[test]
