@@ -34,6 +34,23 @@ pub enum WorkstreamPersistenceError {
     Json(#[from] serde_json::Error),
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorkstreamPersistencePage {
+    pub items: Vec<WorkstreamItem>,
+    pub has_more_before: bool,
+    pub start_offset: Option<u64>,
+}
+
+impl WorkstreamPersistencePage {
+    fn empty() -> Self {
+        Self {
+            items: Vec::new(),
+            has_more_before: false,
+            start_offset: None,
+        }
+    }
+}
+
 pub fn append_workstream_item(
     path: &Path,
     item: &WorkstreamItem,
@@ -57,16 +74,27 @@ pub fn load_recent_workstream_items(
     path: &Path,
     limit: usize,
 ) -> Result<Vec<WorkstreamItem>, WorkstreamPersistenceError> {
+    Ok(load_workstream_page(path, None, limit)?.items)
+}
+
+pub fn load_workstream_page(
+    path: &Path,
+    ending_before: Option<u64>,
+    limit: usize,
+) -> Result<WorkstreamPersistencePage, WorkstreamPersistenceError> {
     if limit == 0 || !path.exists() {
-        return Ok(Vec::new());
+        return Ok(WorkstreamPersistencePage::empty());
     }
     let mut file = File::open(path)?;
-    let mut offset = file.seek(SeekFrom::End(0))?;
-    if offset == 0 {
-        return Ok(Vec::new());
+    let file_size = file.seek(SeekFrom::End(0))?;
+    let page_end = ending_before.unwrap_or(file_size).min(file_size);
+    if page_end == 0 {
+        return Ok(WorkstreamPersistencePage::empty());
     }
 
+    let mut offset = page_end;
     let mut tail = Vec::new();
+    let mut ranges = Vec::new();
     while offset > 0 {
         let read_size = usize::try_from(offset.min(READ_CHUNK_BYTES as u64)).unwrap_or(0);
         offset -= read_size as u64;
@@ -75,29 +103,28 @@ pub fn load_recent_workstream_items(
         file.read_exact(&mut chunk)?;
         chunk.extend(tail);
         tail = chunk;
-        if line_ranges(&tail).len() > limit {
+        ranges = line_ranges(&tail, offset);
+        if ranges.len() > limit {
             break;
         }
     }
 
-    let ranges = line_ranges(&tail);
-    let mut items = Vec::with_capacity(limit.min(ranges.len()));
-    for range in ranges
-        .into_iter()
-        .rev()
-        .take(limit)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-    {
+    let selected = ranges.into_iter().rev().take(limit).collect::<Vec<_>>();
+    let start_offset = selected.last().map(|(_, offset)| *offset);
+    let mut items = Vec::with_capacity(selected.len());
+    for (range, _) in selected.into_iter().rev() {
         if let Ok(item) = serde_json::from_slice::<WorkstreamItem>(&tail[range]) {
             items.push(item);
         }
     }
-    Ok(items)
+    Ok(WorkstreamPersistencePage {
+        items,
+        has_more_before: start_offset.is_some_and(|offset| offset > 0),
+        start_offset,
+    })
 }
 
-fn line_ranges(bytes: &[u8]) -> Vec<Range<usize>> {
+fn line_ranges(bytes: &[u8], base_offset: u64) -> Vec<(Range<usize>, u64)> {
     let mut ranges = Vec::new();
     let mut start = 0;
     for (index, byte) in bytes.iter().enumerate() {
@@ -105,12 +132,12 @@ fn line_ranges(bytes: &[u8]) -> Vec<Range<usize>> {
             continue;
         }
         if start < index {
-            ranges.push(start..index);
+            ranges.push((start..index, base_offset + start as u64));
         }
         start = index + 1;
     }
     if start < bytes.len() {
-        ranges.push(start..bytes.len());
+        ranges.push((start..bytes.len(), base_offset + start as u64));
     }
     ranges
 }
@@ -263,6 +290,31 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].workstream_id, "session-r2");
         assert_eq!(items[1].workstream_id, "session-r3");
+    }
+
+    #[test]
+    fn pages_backward_with_a_stable_byte_offset_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("workstream.jsonl");
+        for id in ["r1", "r2", "r3"] {
+            super::append_workstream_item(&path, &permission_item(id, "{}"), None).unwrap();
+        }
+
+        let newest = super::load_workstream_page(&path, None, 2).unwrap();
+        assert_eq!(
+            newest
+                .items
+                .iter()
+                .map(|item| item.workstream_id.as_str())
+                .collect::<Vec<_>>(),
+            ["session-r2", "session-r3"]
+        );
+        assert!(newest.has_more_before);
+
+        let older = super::load_workstream_page(&path, newest.start_offset, 2).unwrap();
+        assert_eq!(older.items.len(), 1);
+        assert_eq!(older.items[0].workstream_id, "session-r1");
+        assert!(!older.has_more_before);
     }
 
     #[test]

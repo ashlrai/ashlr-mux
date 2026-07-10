@@ -66,7 +66,8 @@ pub use workstream_context::{
 };
 pub use workstream_json::{json_from_string, json_to_string};
 pub use workstream_persistence::{
-    append_workstream_item, load_recent_workstream_items, WorkstreamPersistenceError,
+    append_workstream_item, load_recent_workstream_items, load_workstream_page,
+    WorkstreamPersistenceError, WorkstreamPersistencePage,
 };
 pub use workstream_source::WorkstreamSource;
 

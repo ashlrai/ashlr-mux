@@ -153,6 +153,7 @@ interface FeedListReply {
   items: FeedItemView[];
   pending_count: number;
   total_count: number;
+  has_more_persisted_items: boolean;
 }
 
 export type FeedDecision =
@@ -168,6 +169,8 @@ export function FeedPanel(): React.JSX.Element {
   const [filter, setFilter] = useState<FeedFilter>("actionable");
   const [items, setItems] = useState<FeedItemView[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [hasMorePersistedItems, setHasMorePersistedItems] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -175,9 +178,8 @@ export function FeedPanel(): React.JSX.Element {
     let unlisten: (() => void) | null = null;
     const apply = (reply: FeedListReply) => {
       if (!disposed) {
-        setItems(reply.items);
+        applyFeedReply(reply, setItems, setHasMorePersistedItems, setError);
         setLoading(false);
-        setError(null);
       }
     };
     setLoading(true);
@@ -210,13 +212,25 @@ export function FeedPanel(): React.JSX.Element {
   const resolve = (requestId: string, decision: FeedDecision) => {
     void host
       .invoke<FeedListReply>("feed_resolve", { requestId, decision })
-      .then((reply) => {
-        setItems(reply.items);
-        setError(null);
-      })
+      .then((reply) => applyFeedReply(reply, setItems, setHasMorePersistedItems, setError))
       .catch((reason) =>
         setError(reason instanceof Error ? reason.message : String(reason)),
       );
+  };
+
+  const loadOlder = () => {
+    if (loadingOlder || !hasMorePersistedItems) return;
+    setLoadingOlder(true);
+    void host
+      .invoke<FeedListReply>("feed_load_older")
+      .then((reply) => {
+        applyFeedReply(reply, setItems, setHasMorePersistedItems, setError);
+        setLoadingOlder(false);
+      })
+      .catch((reason) => {
+        setError(reason instanceof Error ? reason.message : String(reason));
+        setLoadingOlder(false);
+      });
   };
 
   return (
@@ -225,8 +239,11 @@ export function FeedPanel(): React.JSX.Element {
       items={items}
       loading={loading}
       error={error}
+      hasMorePersistedItems={hasMorePersistedItems}
+      isLoadingOlderItems={loadingOlder}
       onFilterChange={setFilter}
       onResolve={resolve}
+      onLoadOlderItems={loadOlder}
     />
   );
 }
@@ -236,8 +253,11 @@ export interface FeedPanelContentProps {
   items: readonly FeedItemView[];
   loading: boolean;
   error: string | null;
+  hasMorePersistedItems?: boolean;
+  isLoadingOlderItems?: boolean;
   onFilterChange: (filter: FeedFilter) => void;
   onResolve: (requestId: string, decision: FeedDecision) => void;
+  onLoadOlderItems?: () => void;
 }
 
 export function FeedPanelContent({
@@ -245,15 +265,14 @@ export function FeedPanelContent({
   items,
   loading,
   error,
+  hasMorePersistedItems = false,
+  isLoadingOlderItems = false,
   onFilterChange,
   onResolve,
+  onLoadOlderItems,
 }: FeedPanelContentProps): React.JSX.Element {
   const actionable = filter === "actionable";
-  const visibleItems = items.filter((item) =>
-    actionable
-      ? isActionableKind(item.kind)
-      : isActionableKind(item.kind) || item.kind === "todos" || item.kind === "stop",
-  );
+  const visibleItems = actionable ? items.filter((item) => isActionableKind(item.kind)) : items;
 
   return (
     <section className="cmux-feed-panel" aria-label="Feed">
@@ -278,7 +297,7 @@ export function FeedPanelContent({
       {error != null && <p className="cmux-file-explorer-status">{error}</p>}
       {loading ? (
         <div className="cmux-file-explorer-empty">Loading Feed…</div>
-      ) : visibleItems.length === 0 ? (
+      ) : visibleItems.length === 0 && !(filter === "activity" && hasMorePersistedItems) ? (
         <FeedEmptyState actionable={actionable} />
       ) : (
         <ul className="cmux-feed-list">
@@ -287,10 +306,34 @@ export function FeedPanelContent({
               <FeedItemCard item={item} onResolve={onResolve} />
             </li>
           ))}
+          {filter === "activity" && hasMorePersistedItems && (
+            <li className="cmux-feed-history-loader">
+              <button
+                type="button"
+                disabled={isLoadingOlderItems}
+                onClick={onLoadOlderItems}
+              >
+                {isLoadingOlderItems
+                  ? "Loading older activity..."
+                  : "Load older activity"}
+              </button>
+            </li>
+          )}
         </ul>
       )}
     </section>
   );
+}
+
+function applyFeedReply(
+  reply: FeedListReply,
+  setItems: (items: FeedItemView[]) => void,
+  setHasMore: (hasMore: boolean) => void,
+  setError: (error: string | null) => void,
+): void {
+  setItems(reply.items);
+  setHasMore(reply.has_more_persisted_items);
+  setError(null);
 }
 
 function FeedEmptyState({ actionable }: { actionable: boolean }): React.JSX.Element {

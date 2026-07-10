@@ -65,7 +65,7 @@ describe("FeedPanel", () => {
       id: "item-2",
       workstream_id: "codex-session-1",
       source: "codex",
-      kind: "stop",
+      kind: "toolUse",
       status: "telemetry",
       title: "Agent stopped",
       cwd: null,
@@ -98,6 +98,30 @@ describe("FeedPanel", () => {
         />,
       ),
     ).toContain("cargo test");
+  });
+
+  test("offers older persisted history only from All Activity", () => {
+    const props = {
+      items: [] as FeedItemView[],
+      loading: false,
+      error: null,
+      hasMorePersistedItems: true,
+      isLoadingOlderItems: false,
+      onFilterChange: () => {},
+      onResolve: () => {},
+      onLoadOlderItems: () => {},
+    };
+    expect(
+      renderToStaticMarkup(<FeedPanelContent {...props} filter="actionable" />),
+    ).not.toContain("Load older activity");
+    expect(renderToStaticMarkup(<FeedPanelContent {...props} filter="activity" />)).toContain(
+      "Load older activity",
+    );
+    expect(
+      renderToStaticMarkup(
+        <FeedPanelContent {...props} filter="activity" isLoadingOlderItems={true} />,
+      ),
+    ).toContain("Loading older activity...");
   });
 
   test("question draft supports single-select and multi-select before one composed reply", () => {

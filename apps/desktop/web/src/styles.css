@@ -420,6 +420,25 @@ body,
   border-top: 1px solid color-mix(in srgb, currentColor 9%, transparent);
 }
 
+.cmux-feed-history-loader {
+  padding: 10px 12px;
+  text-align: center;
+}
+
+.cmux-feed-history-loader button {
+  border: 0;
+  background: transparent;
+  color: #8995aa;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+}
+
+.cmux-feed-history-loader button:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
 .cmux-feed-card {
   display: grid;
   gap: 7px;

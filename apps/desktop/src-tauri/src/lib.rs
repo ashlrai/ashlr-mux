@@ -407,6 +407,7 @@ pub fn run() {
             right_sidebar::right_sidebar_beta_settings,
             right_sidebar::right_sidebar_set_beta_feature,
             feed::feed_list,
+            feed::feed_load_older,
             feed::feed_resolve,
             open_file::pick_markdown_file,
             open_folder::pick_workspace_folder,

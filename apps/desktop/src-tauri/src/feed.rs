@@ -1,12 +1,12 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use cmux_agent::{
-    append_workstream_item, load_recent_workstream_items, make_item, next_context,
-    WorkstreamContext, WorkstreamDecision, WorkstreamEvent, WorkstreamExitPlanMode, WorkstreamItem,
-    WorkstreamKind, WorkstreamPayload, WorkstreamPermissionMode, WorkstreamStatus,
+    append_workstream_item, load_workstream_page, make_item, next_context, WorkstreamContext,
+    WorkstreamDecision, WorkstreamEvent, WorkstreamExitPlanMode, WorkstreamItem, WorkstreamKind,
+    WorkstreamPayload, WorkstreamPermissionMode, WorkstreamStatus,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -15,6 +15,7 @@ use tauri::{AppHandle, Emitter, State};
 pub const FEED_CHANGED_EVENT: &str = "cmux://feed-changed";
 const FEED_ITEM_LIMIT: usize = 2_000;
 const FEED_INITIAL_LOAD_LIMIT: usize = 300;
+const FEED_HISTORY_PAGE_SIZE: usize = 300;
 
 pub struct FeedState {
     inner: Mutex<FeedInner>,
@@ -27,6 +28,8 @@ struct FeedInner {
     last_context_by_workstream: HashMap<String, WorkstreamContext>,
     decisions_by_request: HashMap<String, WorkstreamDecision>,
     persistence_path: Option<PathBuf>,
+    oldest_loaded_persistence_offset: Option<u64>,
+    has_more_persisted_items: bool,
     home_path: Option<String>,
 }
 
@@ -44,6 +47,7 @@ pub struct FeedListReply {
     pub items: Vec<FeedItemView>,
     pub pending_count: usize,
     pub total_count: usize,
+    pub has_more_persisted_items: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -100,17 +104,22 @@ impl FeedState {
         path: PathBuf,
         home_path: Option<String>,
     ) -> Result<FeedListReply, String> {
-        let loaded = load_recent_workstream_items(&path, FEED_INITIAL_LOAD_LIMIT);
+        let loaded = load_workstream_page(&path, None, FEED_INITIAL_LOAD_LIMIT);
         let mut inner = self
             .inner
             .lock()
             .map_err(|_| "Feed state is unavailable".to_string())?;
         inner.persistence_path = Some(path);
         inner.home_path = home_path;
-        let items = loaded.map_err(|error| error.to_string())?;
-        inner.items = items;
+        let page = loaded.map_err(|error| error.to_string())?;
+        inner.items = page.items;
+        inner.oldest_loaded_persistence_offset = page.start_offset;
+        inner.has_more_persisted_items = page.has_more_before;
         inner.last_context_by_workstream = rebuild_context_index(&inner.items);
-        Ok(feed_list_reply(&inner.items))
+        Ok(feed_list_reply(
+            &inner.items,
+            inner.has_more_persisted_items,
+        ))
     }
 
     pub fn list(&self) -> Result<FeedListReply, String> {
@@ -118,7 +127,65 @@ impl FeedState {
             .inner
             .lock()
             .map_err(|_| "Feed state is unavailable".to_string())?;
-        Ok(feed_list_reply(&inner.items))
+        Ok(feed_list_reply(
+            &inner.items,
+            inner.has_more_persisted_items,
+        ))
+    }
+
+    pub fn load_older(&self) -> Result<FeedListReply, String> {
+        let (path, ending_before) = {
+            let mut inner = self
+                .inner
+                .lock()
+                .map_err(|_| "Feed state is unavailable".to_string())?;
+            if !inner.has_more_persisted_items {
+                return Ok(feed_list_reply(&inner.items, false));
+            }
+            let (Some(path), Some(offset)) = (
+                inner.persistence_path.clone(),
+                inner.oldest_loaded_persistence_offset,
+            ) else {
+                inner.has_more_persisted_items = false;
+                return Ok(feed_list_reply(&inner.items, false));
+            };
+            (path, offset)
+        };
+        let page = match load_workstream_page(&path, Some(ending_before), FEED_HISTORY_PAGE_SIZE) {
+            Ok(page) => page,
+            Err(_) => {
+                let mut inner = self
+                    .inner
+                    .lock()
+                    .map_err(|_| "Feed state is unavailable".to_string())?;
+                inner.has_more_persisted_items = false;
+                return Ok(feed_list_reply(&inner.items, false));
+            }
+        };
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| "Feed state is unavailable".to_string())?;
+        let existing_ids = inner
+            .items
+            .iter()
+            .map(|item| item.id)
+            .collect::<HashSet<_>>();
+        let older = page
+            .items
+            .into_iter()
+            .filter(|item| !existing_ids.contains(&item.id))
+            .collect::<Vec<_>>();
+        if !older.is_empty() {
+            inner.items.splice(0..0, older);
+        }
+        inner.oldest_loaded_persistence_offset = page.start_offset.or(Some(ending_before));
+        inner.has_more_persisted_items = page.has_more_before;
+        inner.last_context_by_workstream = rebuild_context_index(&inner.items);
+        Ok(feed_list_reply(
+            &inner.items,
+            inner.has_more_persisted_items,
+        ))
     }
 
     pub fn ingest(&self, mut event: WorkstreamEvent) -> Result<FeedInsert, String> {
@@ -227,7 +294,7 @@ impl FeedState {
         inner
             .decisions_by_request
             .insert(request_id.to_string(), decision);
-        let reply = feed_list_reply(&inner.items);
+        let reply = feed_list_reply(&inner.items, inner.has_more_persisted_items);
         self.decisions_changed.notify_all();
         Ok(reply)
     }
@@ -281,12 +348,13 @@ pub fn exit_plan_decision(
     Ok(WorkstreamDecision::ExitPlan { mode, feedback })
 }
 
-fn feed_list_reply(items: &[WorkstreamItem]) -> FeedListReply {
+fn feed_list_reply(items: &[WorkstreamItem], has_more_persisted_items: bool) -> FeedListReply {
     let pending_count = items.iter().filter(|item| item.status.is_pending()).count();
     FeedListReply {
         items: items.iter().rev().map(feed_item_view).collect(),
         pending_count,
         total_count: items.len(),
+        has_more_persisted_items,
     }
 }
 
@@ -485,6 +553,17 @@ pub fn feed_list(state: State<'_, FeedState>) -> Result<FeedListReply, String> {
 }
 
 #[tauri::command]
+pub fn feed_load_older(
+    app: AppHandle,
+    state: State<'_, FeedState>,
+) -> Result<FeedListReply, String> {
+    let reply = state.load_older()?;
+    app.emit(FEED_CHANGED_EVENT, &reply)
+        .map_err(|error| error.to_string())?;
+    Ok(reply)
+}
+
+#[tauri::command]
 pub fn feed_resolve(
     app: AppHandle,
     request_id: String,
@@ -606,6 +685,44 @@ mod tests {
         assert_eq!(context.last_user_message.as_deref(), Some("Make a plan"));
         assert_eq!(context.permission_mode.as_deref(), Some("plan"));
         assert_eq!(context.tool_summary.as_deref(), Some("C:/repo/README.md"));
+    }
+
+    #[test]
+    fn persisted_history_pages_older_items_into_the_feed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("workstream.jsonl");
+        for index in 0..=FEED_INITIAL_LOAD_LIMIT {
+            let event = WorkstreamEvent::new(
+                format!("session-{index}"),
+                HookEventName::PreToolUse,
+                "codex",
+            )
+            .with_tool_name("Shell")
+            .with_tool_input_json(format!("command-{index}"));
+            let item = make_item(&event, None, &|_| None);
+            append_workstream_item(&path, &item, None).unwrap();
+        }
+
+        let missing_page_state = FeedState::default();
+        missing_page_state
+            .configure_persistence(path.clone(), None)
+            .unwrap();
+        let hidden_path = dir.path().join("hidden.jsonl");
+        std::fs::rename(&path, &hidden_path).unwrap();
+        let missing_page = missing_page_state.load_older().unwrap();
+        assert!(!missing_page.has_more_persisted_items);
+        assert_eq!(missing_page.total_count, FEED_INITIAL_LOAD_LIMIT);
+        std::fs::rename(&hidden_path, &path).unwrap();
+
+        let state = FeedState::default();
+        let initial = state.configure_persistence(path, None).unwrap();
+        assert_eq!(initial.total_count, FEED_INITIAL_LOAD_LIMIT);
+        assert!(initial.has_more_persisted_items);
+
+        let loaded = state.load_older().unwrap();
+        assert_eq!(loaded.total_count, FEED_INITIAL_LOAD_LIMIT + 1);
+        assert!(!loaded.has_more_persisted_items);
+        assert_eq!(loaded.items.last().unwrap().workstream_id, "session-0");
     }
 
     #[test]
