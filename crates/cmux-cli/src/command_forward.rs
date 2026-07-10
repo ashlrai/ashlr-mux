@@ -171,6 +171,10 @@ pub fn control_command_for(
         )),
         "list-windows" => Some(ControlCommand::new("window.list", serde_json::json!({}))),
         "current-window" => Some(ControlCommand::new("window.current", serde_json::json!({}))),
+        "list-notifications" => Some(ControlCommand::new(
+            "notification.list",
+            serde_json::json!({}),
+        )),
         "sidebar-snapshot" | "extension-sidebar-snapshot" => Some(ControlCommand::new(
             "extension.sidebar.snapshot",
             serde_json::json!({}),
@@ -3273,6 +3277,10 @@ mod tests {
         );
         assert_eq!(mapped("list-windows", &[]).method, "window.list");
         assert_eq!(mapped("current-window", &[]).method, "window.current");
+        assert_eq!(
+            mapped("list-notifications", &[]).method,
+            "notification.list"
+        );
     }
 
     #[test]

@@ -200,6 +200,16 @@ pub fn notification_list(
     with_notification_store(state, |store| notification_center_reply(store))
 }
 
+pub(crate) fn notification_list_for_control(
+    state: &NotificationCommandState,
+) -> Result<NotificationCenterReply, String> {
+    let store = state
+        .store
+        .lock()
+        .map_err(|_| "notification store mutex poisoned".to_string())?;
+    Ok(notification_center_reply(&store))
+}
+
 #[tauri::command]
 pub fn notification_mark_read(
     id: String,

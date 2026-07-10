@@ -408,6 +408,7 @@ fn format_control_result(method: &str, result: &serde_json::Value) -> String {
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default()
             .to_string(),
+        "notification.list" => format_notification_entries(result),
         "workspace.list_status" => format_status_entries(result),
         "workspace.list_meta" => format_metadata_entries(result),
         "workspace.list_meta_blocks" => format_metadata_blocks(result),
@@ -454,6 +455,52 @@ fn format_window_entries(result: &serde_json::Value) -> String {
                 .unwrap_or_default();
             format!(
                 "{selected} {index}: {id} selected_workspace={selected_workspace} workspaces={workspace_count}"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn format_notification_entries(result: &serde_json::Value) -> String {
+    let Some(rows) = result.as_array() else {
+        return "No notifications".to_string();
+    };
+    if rows.is_empty() {
+        return "No notifications".to_string();
+    }
+    rows.iter()
+        .enumerate()
+        .map(|(index, row)| {
+            let surface = row
+                .get("surface_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("none");
+            let read = if row
+                .get("is_read")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+            {
+                "read"
+            } else {
+                "unread"
+            };
+            let created_at = row
+                .get("created_at")
+                .map(|value| {
+                    value
+                        .as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| value.to_string())
+                })
+                .unwrap_or_default();
+            format!(
+                "{index}:{}|{}|{surface}|{read}|{}|{}|{}|{created_at}|{}",
+                string_field(row, "id"),
+                string_field(row, "workspace_id"),
+                string_field(row, "title"),
+                string_field(row, "subtitle"),
+                string_field(row, "body"),
+                string_field(row, "tab_title")
             )
         })
         .collect::<Vec<_>>()
@@ -544,6 +591,25 @@ mod control_result_tests {
                 &serde_json::json!({"window_id": "window-id"})
             ),
             "window-id"
+        );
+    }
+
+    #[test]
+    fn notification_list_keeps_canonical_plain_text() {
+        let result = serde_json::json!([{
+            "id": "notification-1",
+            "workspace_id": "workspace-1",
+            "surface_id": "surface-1",
+            "is_read": false,
+            "title": "Build",
+            "subtitle": "Agent",
+            "body": "Needs input",
+            "created_at": 42,
+            "tab_title": "API"
+        }]);
+        assert_eq!(
+            format_control_result("notification.list", &result),
+            "0:notification-1|workspace-1|surface-1|unread|Build|Agent|Needs input|42|API"
         );
     }
 }

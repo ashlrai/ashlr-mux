@@ -792,6 +792,7 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "config.reload",
     "window.list",
     "window.current",
+    "notification.list",
     "events.stream",
     "extension.sidebar.snapshot",
     "sidebar.snapshot",
@@ -1023,6 +1024,7 @@ fn handle_control_request(app: &AppHandle, request: ControlRequest) -> ControlCa
         "config.reload" => config_reload(app),
         "window.list" => window_list(app),
         "window.current" => window_current(app),
+        "notification.list" => notification_list(app),
         "events.stream" => ok(events_snapshot_payload(app, &request.params)),
         "extension.sidebar.snapshot" | "sidebar.snapshot" => {
             let snapshot = snapshot(app);
@@ -2652,6 +2654,33 @@ fn window_current(app: &AppHandle) -> ControlCallResult {
         "window_id": window_id,
         "window_ref": "window:1",
     }))
+}
+
+fn notification_list(app: &AppHandle) -> ControlCallResult {
+    let state = app.state::<crate::notifications::NotificationCommandState>();
+    match crate::notifications::notification_list_for_control(state.inner()) {
+        Ok(reply) => ok(json!(reply
+            .notifications
+            .into_iter()
+            .map(|item| json!({
+                "id": item.id,
+                "workspace_id": item.workspace_id,
+                "surface_id": item.surface_id,
+                "panel_id": item.panel_id,
+                "is_read": item.is_read,
+                "title": item.title,
+                "subtitle": item.subtitle,
+                "body": item.body,
+                "created_at": item.created_at,
+                "tab_title": Value::Null,
+            }))
+            .collect::<Vec<_>>())),
+        Err(message) => ControlCallResult::Err {
+            code: "notification_store_failed".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn session_restore_previous_launch(app: &AppHandle) -> ControlCallResult {
@@ -10980,6 +11009,7 @@ mod tests {
             "config.reload",
             "window.list",
             "window.current",
+            "notification.list",
             "session.restore_previous",
             "events.stream",
             "extension.sidebar.snapshot",
