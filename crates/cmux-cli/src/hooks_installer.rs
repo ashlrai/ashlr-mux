@@ -41,6 +41,7 @@ enum HooksRequest {
     Amp { yes: bool },
     AmpUninstall,
     Rovo { yes: bool },
+    RovoUninstall,
     Hermes { yes: bool },
     Kimi { yes: bool },
     Codex { yes: bool },
@@ -97,6 +98,7 @@ pub fn run_hooks_command(command: &str, args: &[String]) -> Result<String, CliEr
         HooksRequest::Amp { yes } => install_amp_hooks(yes),
         HooksRequest::AmpUninstall => uninstall_amp_hooks(),
         HooksRequest::Rovo { yes } => install_rovo_hooks(yes),
+        HooksRequest::RovoUninstall => uninstall_rovo_hooks(),
         HooksRequest::Hermes { yes } => install_hermes_hooks(yes),
         HooksRequest::Kimi { yes } => install_kimi_hooks(yes),
         HooksRequest::Codex { yes } => install_codex_hooks(yes),
@@ -169,8 +171,9 @@ fn parse_hooks_subcommand(tokens: &[String], yes: bool) -> Result<HooksRequest, 
         },
         Some("rovodev") | Some("rovo") => match tokens.get(1).map(String::as_str) {
             None | Some("install") | Some("setup") => Ok(HooksRequest::Rovo { yes }),
+            Some("uninstall") => Ok(HooksRequest::RovoUninstall),
             Some(other) => Err(CliError::new(format!(
-                "unsupported Rovo Dev hooks action '{other}'; use 'cmux hooks rovodev install'"
+                "unsupported Rovo Dev hooks action '{other}'; use 'cmux hooks rovodev install|uninstall'"
             ))),
         },
         Some("hermes-agent") | Some("hermes") => match tokens.get(1).map(String::as_str) {
@@ -463,9 +466,7 @@ const ROVO_BEGIN_MARKER: &str = "# cmux hooks rovodev begin";
 const ROVO_END_MARKER: &str = "# cmux hooks rovodev end";
 
 fn install_rovo_hooks(yes: bool) -> Result<String, CliError> {
-    let path = home_dir()
-        .map(|home| home.join(".rovodev").join("config.yml"))
-        .ok_or_else(|| CliError::new("unable to determine Rovo Dev config directory"))?;
+    let path = rovo_hooks_path()?;
     let before = read_optional_text(&path)?;
     let plan = plan_rovo_hooks_update(&before, &path)?;
     if !plan.changed {
@@ -481,8 +482,50 @@ fn install_rovo_hooks(yes: bool) -> Result<String, CliError> {
     Ok(format!("Rovo Dev hooks installed at {}\n", path.display()))
 }
 
+fn uninstall_rovo_hooks() -> Result<String, CliError> {
+    let path = rovo_hooks_path()?;
+    let before = match fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(format!("No config.yml found at {}\n", path.display()))
+        }
+        Err(error) => {
+            return Err(CliError::new(format!(
+                "failed to read {}: {error}",
+                path.display()
+            )))
+        }
+    };
+    let plan = plan_rovo_hooks_uninstall(&before, &path);
+    if !plan.changed {
+        return Ok(format!("Removed 0 cmux hook(s) from {}\n", path.display()));
+    }
+    write_text_exact(&path, &plan.after)?;
+    Ok(format!(
+        "Removed Rovo Dev cmux hooks from {}\n",
+        path.display()
+    ))
+}
+
+fn rovo_hooks_path() -> Result<PathBuf, CliError> {
+    home_dir()
+        .map(|home| home.join(".rovodev").join("config.yml"))
+        .ok_or_else(|| CliError::new("unable to determine Rovo Dev config directory"))
+}
+
+fn plan_rovo_hooks_uninstall(before: &str, path: &Path) -> ClaudeIntegrationPlan {
+    let before = normalize_yaml_text(before);
+    let after = serialize_yaml_lines(&remove_rovo_blocks(yaml_lines(&before)));
+    ClaudeIntegrationPlan {
+        changed: before != after,
+        diff: unified_diff(path, &before, &after),
+        before,
+        after,
+    }
+}
+
 fn plan_rovo_hooks_update(before: &str, path: &Path) -> Result<ClaudeIntegrationPlan, CliError> {
-    let before = serialize_yaml_lines(&yaml_lines(before));
+    let before = normalize_yaml_text(before);
     let mut lines = remove_rovo_blocks(yaml_lines(&before));
     let events = [
         ("on_complete", "cmux hooks rovodev stop"),
@@ -545,6 +588,10 @@ fn serialize_yaml_lines(lines: &[String]) -> String {
     } else {
         format!("{}\n", lines.join("\n"))
     }
+}
+
+fn normalize_yaml_text(content: &str) -> String {
+    serialize_yaml_lines(&yaml_lines(content))
 }
 
 fn remove_rovo_blocks(mut lines: Vec<String>) -> Vec<String> {
@@ -716,7 +763,7 @@ fn install_hermes_hooks(yes: bool) -> Result<String, CliError> {
 }
 
 fn plan_hermes_hooks_update(before: &str, path: &Path) -> ClaudeIntegrationPlan {
-    let before = serialize_yaml_lines(&yaml_lines(before));
+    let before = normalize_yaml_text(before);
     let mut lines = remove_hermes_blocks(yaml_lines(&before));
     let groups = hermes_event_groups();
     if let Some(hooks_index) = hermes_hooks_index(&lines) {
@@ -3330,6 +3377,29 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    #[test]
+    fn rovo_uninstall_removes_complete_blocks_and_preserves_dangling_markers() {
+        assert_eq!(
+            parse_hooks_request("hooks", &["rovodev".into(), "uninstall".into()]).unwrap(),
+            HooksRequest::RovoUninstall
+        );
+        assert_eq!(
+            parse_hooks_request("hooks", &["rovo".into(), "uninstall".into()]).unwrap(),
+            HooksRequest::RovoUninstall
+        );
+        let before = "theme: user\n\neventHooks:\n  events:\n    # cmux hooks rovodev begin\n    - name: on_complete\n      commands:\n        - command: owned\n    # cmux hooks rovodev end\n    - name: user\n      commands:\n        - command: user\n";
+        let plan = plan_rovo_hooks_uninstall(before, &path());
+        assert!(plan.changed);
+        assert!(!plan.after.contains(ROVO_BEGIN_MARKER));
+        assert!(plan.after.contains("- name: user"));
+        assert!(plan.after.contains("theme: user"));
+
+        let dangling = "theme: user\n# cmux hooks rovodev begin\nuser: keep\n";
+        let plan = plan_rovo_hooks_uninstall(dangling, &path());
+        assert!(!plan.changed);
+        assert_eq!(plan.after, dangling);
     }
 
     #[test]
