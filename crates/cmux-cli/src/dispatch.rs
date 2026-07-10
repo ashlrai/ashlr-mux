@@ -115,6 +115,9 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
         "rename-workspace" => Some(
             "Usage:\n  cmux rename-workspace [WORKSPACE] TITLE\n\nSets or clears a workspace title.",
         ),
+        "rename-window" => Some(
+            "Usage:\n  cmux rename-window [WORKSPACE] TITLE\n\nCompatibility alias for `cmux rename-workspace`.",
+        ),
         "workspace" => Some(
             "Usage:\n  cmux workspace [list|current|new|close WORKSPACE|select|rename|set-progress|clear-progress|set-status|set-agent-pid|clear-agent-pid|report-pr|report-review|report-meta|report-meta-block|log|sidebar-state|next|previous|pin|unpin|mark-read|mark-unread]\n\nRuns a workspace control command through the desktop control socket.",
         ),
@@ -478,6 +481,7 @@ mod tests {
             "is-webview-focused",
             "new-browser-workspace",
             "new-terminal-tab",
+            "rename-window",
             "reopen-closed-browser-tab",
             "read-screen",
             "capture-pane",

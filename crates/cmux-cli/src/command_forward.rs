@@ -198,9 +198,9 @@ pub fn control_command_for(
             "workspace.select",
             workspace_selector_params(args)?,
         )),
-        "rename-workspace" => Some(ControlCommand::new(
+        "rename-workspace" | "rename-window" => Some(ControlCommand::new(
             "workspace.rename",
-            workspace_rename_params(args)?,
+            workspace_rename_params(args, command)?,
         )),
         "set-progress" => Some(ControlCommand::new(
             "workspace.set_progress",
@@ -439,7 +439,10 @@ fn workspace_subcommand(args: &[String]) -> Result<Option<ControlCommand>, CliEr
         }
         "next" => ControlCommand::new("workspace.next", serde_json::json!({})),
         "previous" | "prev" => ControlCommand::new("workspace.previous", serde_json::json!({})),
-        "rename" => ControlCommand::new("workspace.rename", workspace_rename_params(rest)?),
+        "rename" => ControlCommand::new(
+            "workspace.rename",
+            workspace_rename_params(rest, "workspace rename")?,
+        ),
         "description" | "set-description" => ControlCommand::new(
             "workspace.set_description",
             workspace_description_params(rest)?,
@@ -1105,7 +1108,10 @@ fn workspace_reorder_params(args: &[String]) -> Result<serde_json::Value, CliErr
     Ok(serde_json::Value::Object(params))
 }
 
-fn workspace_rename_params(args: &[String]) -> Result<serde_json::Value, CliError> {
+fn workspace_rename_params(
+    args: &[String],
+    command_name: &str,
+) -> Result<serde_json::Value, CliError> {
     let parsed = ParsedArgs::parse(args)?;
     let mut params = serde_json::Map::new();
     apply_workspace_selector_for_rename(&parsed, &mut params)?;
@@ -1113,7 +1119,7 @@ fn workspace_rename_params(args: &[String]) -> Result<serde_json::Value, CliErro
         .value(&["--title", "--name"])
         .cloned()
         .or_else(|| workspace_title_from_positionals(&parsed))
-        .ok_or_else(|| CliError::new("rename-workspace requires a title"))?;
+        .ok_or_else(|| CliError::new(format!("{command_name} requires a title")))?;
     params.insert("title".to_string(), serde_json::json!(title));
     Ok(serde_json::Value::Object(params))
 }
@@ -3412,6 +3418,15 @@ mod tests {
         );
         let error = control_command_for("rename-workspace", &[]).unwrap_err();
         assert_eq!(error.message, "rename-workspace requires a title");
+
+        let alias = mapped("rename-window", &["2", "Build", "Lane"]);
+        assert_eq!(alias.method, "workspace.rename");
+        assert_eq!(
+            alias.params,
+            serde_json::json!({"workspace_ref": "workspace:2", "title": "Build Lane"})
+        );
+        let error = control_command_for("rename-window", &[]).unwrap_err();
+        assert_eq!(error.message, "rename-window requires a title");
     }
 
     #[test]
