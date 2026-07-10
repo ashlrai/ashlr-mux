@@ -53,6 +53,8 @@ pub enum DispatchPlan {
     RunDiffViewerRefs(Vec<String>),
     /// Regenerate a branch-base diff page and manifest entries.
     RunDiffViewerBranch(Vec<String>),
+    /// Render the canonical no-socket documentation index or topic.
+    RunDocs(Vec<String>),
     /// Run a local hooks installer/uninstaller command.
     RunHooksInstaller { command: String, args: Vec<String> },
     /// Read one agent hook payload from stdin and bridge it through `feed.push`.
@@ -85,6 +87,7 @@ pub fn subcommand_help_text(command: &str) -> String {
 
 fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
     match command {
+        "docs" => Some(crate::docs::DOCS_USAGE),
         "ping" => Some("Usage:\n  cmux ping\n\nSends a ping to the control socket."),
         "capabilities" => Some(
             "Usage:\n  cmux capabilities\n\nPrints the control socket's supported methods and platform metadata as JSON.",
@@ -420,7 +423,7 @@ pub fn plan_with_args(action: &PreSocketAction, command: &str, args: &[String]) 
         }
         PreSocketAction::RemoteDaemonStatus => "remote-daemon-status",
         PreSocketAction::VmPtyConnect => "vm-pty-connect",
-        PreSocketAction::Docs => "docs",
+        PreSocketAction::Docs => return DispatchPlan::RunDocs(args.to_vec()),
         PreSocketAction::Welcome => "welcome",
         PreSocketAction::Sessions { debug } => {
             if *debug {
@@ -756,6 +759,15 @@ mod tests {
     }
 
     #[test]
+    fn docs_command_runs_the_local_docs_executor() {
+        let args = vec!["configuration".to_string(), "--json".to_string()];
+        assert_eq!(
+            plan_with_args(&PreSocketAction::Docs, "docs", &args),
+            DispatchPlan::RunDocs(args)
+        );
+    }
+
+    #[test]
     fn mapped_socket_commands_can_use_command_args() {
         let args = vec!["2".to_string()];
         match plan_with_args(&PreSocketAction::NeedsSocket, "select-workspace", &args) {
@@ -804,7 +816,6 @@ mod tests {
     #[test]
     fn side_effecting_no_socket_actions_fail_with_not_ported() {
         for (action, needle) in [
-            (PreSocketAction::Docs, "docs"),
             (PreSocketAction::Welcome, "welcome"),
             (PreSocketAction::Sessions { debug: false }, "sessions"),
             (PreSocketAction::Sessions { debug: true }, "session-debug"),

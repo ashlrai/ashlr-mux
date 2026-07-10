@@ -103,6 +103,11 @@ fn dispatch(
             println!("{output}");
             Ok(())
         }
+        DispatchPlan::RunDocs(args) => {
+            let output = cmux_cli::docs::run_docs_command(&args, options.json_output)?;
+            println!("{output}");
+            Ok(())
+        }
         DispatchPlan::RunHooksInstaller { command, args } => {
             let output = cmux_cli::hooks_installer::run_hooks_command(&command, &args)?;
             print!("{output}");
