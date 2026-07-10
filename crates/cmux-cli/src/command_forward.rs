@@ -169,6 +169,16 @@ pub fn control_command_for(
             "system.capabilities",
             serde_json::json!({}),
         )),
+        "config"
+            if args
+                .first()
+                .is_some_and(|argument| argument.eq_ignore_ascii_case("reload")) =>
+        {
+            Some(ControlCommand::new(
+                "config.reload",
+                config_reload_alias_params(args)?,
+            ))
+        }
         "reload-config" => Some(ControlCommand::new(
             "config.reload",
             reload_config_params(args)?,
@@ -1205,6 +1215,13 @@ fn reload_config_params(args: &[String]) -> Result<serde_json::Value, CliError> 
         return Err(CliError::new(format!(
             "reload-config does not accept arguments. Unexpected argument '{unexpected}'"
         )));
+    }
+    Ok(serde_json::json!({}))
+}
+
+fn config_reload_alias_params(args: &[String]) -> Result<serde_json::Value, CliError> {
+    if args.len() != 1 {
+        return Err(CliError::new("Usage: cmux config reload"));
     }
     Ok(serde_json::json!({}))
 }

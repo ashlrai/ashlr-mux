@@ -802,6 +802,34 @@ mod tests {
     }
 
     #[test]
+    fn config_reload_routes_to_the_existing_reload_control_method() {
+        let args = vec!["reload".to_string()];
+        match plan_with_args(&PreSocketAction::NeedsSocket, "config", &args) {
+            DispatchPlan::RunControl(control) => {
+                assert_eq!(control.method, "config.reload");
+                assert_eq!(control.params, serde_json::json!({}));
+            }
+            other => panic!("expected RunControl, got {other:?}"),
+        }
+
+        let extra = vec!["reload".to_string(), "extra".to_string()];
+        match plan_with_args(&PreSocketAction::NeedsSocket, "config", &extra) {
+            DispatchPlan::Fail(error) => assert_eq!(error.message, "Usage: cmux config reload"),
+            other => panic!("expected Fail, got {other:?}"),
+        }
+
+        let set = vec![
+            "set".to_string(),
+            "sidebar-font-size".to_string(),
+            "14".to_string(),
+        ];
+        match plan_with_args(&PreSocketAction::NeedsSocket, "config", &set) {
+            DispatchPlan::Fail(error) => assert!(error.message.contains("not yet ported")),
+            other => panic!("expected Fail, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn mapped_socket_commands_can_use_command_args() {
         let args = vec!["2".to_string()];
         match plan_with_args(&PreSocketAction::NeedsSocket, "select-workspace", &args) {
