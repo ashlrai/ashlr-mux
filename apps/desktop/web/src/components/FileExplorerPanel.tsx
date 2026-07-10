@@ -13,11 +13,12 @@ import {
 } from "../host/fileExplorer";
 import { useSession } from "../hooks/useSession";
 import {
-  RIGHT_SIDEBAR_MODE_ITEMS,
+  rightSidebarModeItems,
   type RightSidebarMode,
 } from "../rightSidebarModes";
 import { useFocusedPanelId } from "../session/focusedPane";
 import { SessionsIndexPanel } from "./SessionsIndexPanel";
+import { FeedPanel } from "./FeedPanel";
 
 export { isMarkdownFilePath } from "../host/fileExplorer";
 export type { RightSidebarMode } from "../rightSidebarModes";
@@ -28,6 +29,7 @@ export interface FileExplorerPanelProps {
   doubleClickAction?: DoubleClickAction;
   preferredEditor?: string;
   rightMaxWidth?: number;
+  feedEnabled?: boolean;
   onModeChange?: (mode: RightSidebarMode) => void;
   onOpenFind?: () => void;
   onClose: () => void;
@@ -87,6 +89,7 @@ export function FileExplorerPanel({
   doubleClickAction = "preview",
   preferredEditor = "",
   rightMaxWidth,
+  feedEnabled = false,
   onModeChange,
   onOpenFind,
   onClose,
@@ -110,6 +113,10 @@ export function FileExplorerPanel({
   const [status, setStatus] = useState<string | null>(null);
   const [refreshToken, setRefreshToken] = useState(0);
   const widthStyle = rightSidebarWidthStyle(rightMaxWidth);
+  const modeItems = rightSidebarModeItems({
+    feedEnabled,
+    dockEnabled: false,
+  });
 
   useEffect(() => {
     if (open) {
@@ -257,6 +264,8 @@ export function FileExplorerPanel({
           <p>
             {mode === "sessions"
               ? "Vault"
+              : mode === "feed"
+                ? "Feed"
               : mode === "find"
                 ? "Find in files"
                 : relativePath === ""
@@ -273,7 +282,7 @@ export function FileExplorerPanel({
         role="tablist"
         aria-label="Right sidebar mode"
       >
-        {RIGHT_SIDEBAR_MODE_ITEMS.map((item) => (
+        {modeItems.map((item) => (
           <button
             key={item.mode}
             type="button"
@@ -291,7 +300,9 @@ export function FileExplorerPanel({
           </button>
         ))}
       </div>
-      {mode === "sessions" ? (
+      {mode === "feed" ? (
+        <FeedPanel />
+      ) : mode === "sessions" ? (
         <SessionsIndexPanel
           workspaces={workspaces}
           selectedWorkspaceIndex={selectedWorkspaceIndex}

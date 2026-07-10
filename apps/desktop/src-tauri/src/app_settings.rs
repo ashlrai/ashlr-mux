@@ -42,6 +42,10 @@ impl SettingsStore {
             .map(str::to_string)
     }
 
+    pub fn get_bool(&self, key: &str) -> Option<bool> {
+        self.load().get(key).and_then(Value::as_bool)
+    }
+
     /// Set one string value, preserving every other key in the file.
     ///
     /// Read-modify-write of the whole object: load the existing map (or start
@@ -51,6 +55,16 @@ impl SettingsStore {
     pub fn set_string(&self, key: &str, value: &str) {
         let mut map = self.load();
         map.insert(key.to_string(), Value::String(value.to_string()));
+        self.save(map);
+    }
+
+    pub fn set_bool(&self, key: &str, value: bool) {
+        let mut map = self.load();
+        map.insert(key.to_string(), Value::Bool(value));
+        self.save(map);
+    }
+
+    fn save(&self, map: Map<String, Value>) {
         let Ok(bytes) = serde_json::to_vec_pretty(&Value::Object(map)) else {
             return;
         };
@@ -158,5 +172,23 @@ mod tests {
         let path = dir.path().join("settings.json");
         std::fs::write(&path, br#"{"k": 7}"#).unwrap();
         assert_eq!(SettingsStore::new(path).get_string("k"), None);
+    }
+
+    #[test]
+    fn round_trips_boolean_preferences_without_disturbing_strings() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_in(dir.path());
+        store.set_string(SELECTED_PROVIDER_KEY, "codex");
+        store.set_bool("rightSidebar.beta.feed.enabled", true);
+        assert_eq!(store.get_bool("rightSidebar.beta.feed.enabled"), Some(true));
+        assert_eq!(
+            store.get_string(SELECTED_PROVIDER_KEY),
+            Some("codex".to_string())
+        );
+        store.set_bool("rightSidebar.beta.feed.enabled", false);
+        assert_eq!(
+            store.get_bool("rightSidebar.beta.feed.enabled"),
+            Some(false)
+        );
     }
 }

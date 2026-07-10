@@ -1,10 +1,16 @@
 import {
-  RIGHT_SIDEBAR_MODE_ITEMS,
+  rightSidebarModeItems,
+  type RightSidebarModeAvailability,
 } from "../rightSidebarModes";
 import type { CommandContribution } from "./commandCatalog";
 
-export function buildRightSidebarModeContributions(): CommandContribution[] {
-  return RIGHT_SIDEBAR_MODE_ITEMS.map((item, index) => ({
+export function buildRightSidebarModeContributions(
+  availability: RightSidebarModeAvailability = {
+    feedEnabled: false,
+    dockEnabled: false,
+  },
+): CommandContribution[] {
+  return rightSidebarModeItems(availability).map((item, index) => ({
     commandId: `palette.rightSidebar.${item.mode}`,
     title: () => `Show Sidebar ${item.label}`,
     subtitle: () => "Right Sidebar",

@@ -439,6 +439,20 @@ describe("dynamic-contribution insertion points (contentsOf splice parity)", () 
     );
     expect(catalog.some((id) => id.startsWith("palette.rightSidebar."))).toBe(false);
   });
+
+  test("Feed right-sidebar row is contributed only when the beta is enabled", () => {
+    expect(
+      buildRightSidebarModeContributions().some(
+        (row) => row.commandId === "palette.rightSidebar.feed",
+      ),
+    ).toBe(false);
+    expect(
+      buildRightSidebarModeContributions({
+        feedEnabled: true,
+        dockEnabled: false,
+      }).some((row) => row.commandId === "palette.rightSidebar.feed"),
+    ).toBe(true);
+  });
 });
 
 describe("declared-order golden (id, rank) under the empty context", () => {

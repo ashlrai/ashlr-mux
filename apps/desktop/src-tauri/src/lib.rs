@@ -270,6 +270,10 @@ pub fn run() {
 
             let handle = app.handle().clone();
             app.manage(diff::DiffState::new(&handle)?);
+            right_sidebar::bootstrap_beta_settings(
+                &handle,
+                app.state::<right_sidebar::RightSidebarState>().inner(),
+            );
             install_native_menu(&handle)?;
             window::install_window_state_listeners(&handle);
             session::bootstrap_session_persistence(&handle, app.state::<session::SessionState>());
@@ -397,6 +401,8 @@ pub fn run() {
             control_socket::restart_control_socket_listener,
             control_socket::custom_sidebar_action_invoke,
             right_sidebar::right_sidebar_update_state,
+            right_sidebar::right_sidebar_beta_settings,
+            right_sidebar::right_sidebar_set_beta_feature,
             open_file::pick_markdown_file,
             open_folder::pick_workspace_folder,
             open_folder::open_folder_in_vscode_inline,

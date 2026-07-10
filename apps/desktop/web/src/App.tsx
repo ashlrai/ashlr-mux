@@ -26,6 +26,7 @@ import type {
   DefaultTerminalStatusView,
   GlobalHotkeyStatusView,
   MobilePairingStatusView,
+  RightSidebarBetaSettingsView,
   UpdaterStatusView,
 } from "./components/SettingsPane";
 import { Sidebar } from "./components/Sidebar";
@@ -143,6 +144,8 @@ export function App(): React.JSX.Element {
   const [fileExplorerOpen, setFileExplorerOpen] = useState(false);
   const [rightSidebarMode, setRightSidebarMode] =
     useState<RightSidebarMode>("files");
+  const [rightSidebarBetaSettings, setRightSidebarBetaSettings] =
+    useState<RightSidebarBetaSettingsView | null>(null);
   const rightSidebarStateRef = useRef<RightSidebarState>({
     visible: false,
     mode: "files",
@@ -668,6 +671,26 @@ export function App(): React.JSX.Element {
       .invoke("right_sidebar_update_state", next)
       .catch((error) => console.warn("right sidebar state sync failed", error));
   }, [fileExplorerOpen, rightSidebarMode]);
+
+  useEffect(() => {
+    void host
+      .invoke<RightSidebarBetaSettingsView>("right_sidebar_beta_settings")
+      .then(setRightSidebarBetaSettings)
+      .catch((error) => console.warn("right sidebar beta settings load failed", error));
+  }, []);
+
+  const setRightSidebarBetaFeature = useCallback(
+    (feature: "feed" | "dock", enabled: boolean) => {
+      void host
+        .invoke<RightSidebarBetaSettingsView>("right_sidebar_set_beta_feature", {
+          feature,
+          enabled,
+        })
+        .then(setRightSidebarBetaSettings)
+        .catch((error) => console.warn("right sidebar beta setting failed", error));
+    },
+    [],
+  );
 
   useEffect(() => {
     let disposed = false;
@@ -1293,6 +1316,7 @@ export function App(): React.JSX.Element {
           doubleClickAction={settingsConfig?.file_explorer?.doubleClickAction}
           preferredEditor={settingsConfig?.app?.preferredEditor}
           rightMaxWidth={sidebarSettings?.right_max_width}
+          feedEnabled={rightSidebarBetaSettings?.feed_enabled ?? false}
           onModeChange={setRightSidebarMode}
           onOpenFind={openFindInDirectory}
           onClose={() => setFileExplorerOpen(false)}
@@ -1303,6 +1327,10 @@ export function App(): React.JSX.Element {
           toggleSidebar: () => setSidebarCollapsed((v) => !v),
           toggleFileExplorer,
           setRightSidebarMode: openRightSidebarMode,
+          rightSidebarModeAvailability: {
+            feedEnabled: rightSidebarBetaSettings?.feed_enabled ?? false,
+            dockEnabled: false,
+          },
           openSettings,
           openNotifications: () => setNotificationsOpen(true),
           openFindInDirectory,
@@ -1358,6 +1386,8 @@ export function App(): React.JSX.Element {
         controlSocketStatusError={controlSocketStatusError}
         vscodeInlineAvailable={vscodeInlineAvailable}
         vscodeInlineStatusError={vscodeInlineStatusError}
+        rightSidebarBetaSettings={rightSidebarBetaSettings}
+        onSetRightSidebarBetaFeature={setRightSidebarBetaFeature}
         onOpenFolderInVSCodeInline={openFolderInVSCodeInline}
         onRestartVSCodeServeWeb={restartVSCodeServeWeb}
         onStopVSCodeServeWeb={stopVSCodeServeWeb}

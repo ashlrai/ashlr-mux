@@ -17,6 +17,7 @@ import {
   type DefaultTerminalStatusView,
   type GlobalHotkeyStatusView,
   type MobilePairingStatusView,
+  type RightSidebarBetaSettingsView,
   type UpdaterStatusView,
 } from "./SettingsPane";
 
@@ -57,6 +58,11 @@ export interface SettingsOverlayProps {
   controlSocketStatusError?: string | null;
   vscodeInlineAvailable?: boolean | null;
   vscodeInlineStatusError?: string | null;
+  rightSidebarBetaSettings?: RightSidebarBetaSettingsView | null;
+  onSetRightSidebarBetaFeature?: (
+    feature: "feed" | "dock",
+    enabled: boolean,
+  ) => void;
   onRefreshAgentProviderStatus?: () => void;
   onRefreshBrowserImportProfiles?: () => void;
   onStartBrowserImport?: (request: BrowserImportStartRequest) => void;
@@ -138,6 +144,8 @@ export function SettingsOverlay({
   controlSocketStatusError,
   vscodeInlineAvailable,
   vscodeInlineStatusError,
+  rightSidebarBetaSettings,
+  onSetRightSidebarBetaFeature,
   onRefreshAgentProviderStatus,
   onRefreshBrowserImportProfiles,
   onStartBrowserImport,
@@ -301,6 +309,8 @@ export function SettingsOverlay({
               controlSocketStatusError={controlSocketStatusError}
               vscodeInlineAvailable={vscodeInlineAvailable}
               vscodeInlineStatusError={vscodeInlineStatusError}
+              rightSidebarBetaSettings={rightSidebarBetaSettings}
+              onSetRightSidebarBetaFeature={onSetRightSidebarBetaFeature}
               onRefreshAgentProviderStatus={onRefreshAgentProviderStatus}
               onRefreshBrowserImportProfiles={onRefreshBrowserImportProfiles}
               onStartBrowserImport={onStartBrowserImport}

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  rightSidebarModeItems,
   rightSidebarStateFromRemote,
   type RightSidebarState,
 } from "./rightSidebarModes";
@@ -27,12 +28,27 @@ describe("right sidebar remote state", () => {
     ).toEqual({ visible: false, mode: "find" });
   });
 
-  test("ignores unavailable or malformed remote modes", () => {
+  test("accepts Feed events but ignores unimplemented or malformed modes", () => {
+    expect(
+      rightSidebarStateFromRemote(filesClosed, { visible: true, mode: "feed" }),
+    ).toEqual({ visible: true, mode: "feed" });
     expect(
       rightSidebarStateFromRemote(filesClosed, { visible: true, mode: "dock" }),
     ).toEqual({ visible: true, mode: "files" });
     expect(
       rightSidebarStateFromRemote(filesClosed, { visible: true, mode: 42 }),
     ).toEqual({ visible: true, mode: "files" });
+  });
+
+  test("adds beta modes only when enabled", () => {
+    expect(rightSidebarModeItems({ feedEnabled: false, dockEnabled: false })).toEqual([
+      { mode: "files", label: "Files" },
+      { mode: "find", label: "Find" },
+      { mode: "sessions", label: "Vault" },
+    ]);
+    expect(rightSidebarModeItems({ feedEnabled: true, dockEnabled: false })).toContainEqual({
+      mode: "feed",
+      label: "Feed",
+    });
   });
 });

@@ -591,6 +591,22 @@ describe("SettingsPane config extension status", () => {
     expect(markup).toContain("Beta keys");
     expect(markup).toContain("Preserved unknown keys");
   });
+
+  test("renders persisted Feed beta availability control", () => {
+    const markup = renderToStaticMarkup(
+      <SettingsPane
+        config={{ app: makeApp() }}
+        onChange={noop}
+        rightSidebarBetaSettings={{ feed_enabled: true, dock_enabled: false }}
+        onSetRightSidebarBetaFeature={noop}
+      />,
+    );
+
+    expect(markup).toContain("Feed in right sidebar");
+    expect(markup).toContain("inline agent decisions");
+    expect(markup).toContain('data-field="rightSidebar.beta.feed.enabled"');
+    expect(markup).toContain("checked");
+  });
 });
 
 // ---- Automation settings ----------------------------------------------------

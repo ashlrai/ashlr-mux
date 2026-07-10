@@ -151,6 +151,16 @@ export interface SettingsPaneProps {
   searchQuery?: string;
   onSearchQueryChange?: (query: string) => void;
   onNavigate?: (section: SettingsPaneSection) => void;
+  rightSidebarBetaSettings?: RightSidebarBetaSettingsView | null;
+  onSetRightSidebarBetaFeature?: (
+    feature: "feed" | "dock",
+    enabled: boolean,
+  ) => void;
+}
+
+export interface RightSidebarBetaSettingsView {
+  feed_enabled: boolean;
+  dock_enabled: boolean;
 }
 
 export interface AgentProviderStatusView {
@@ -895,6 +905,8 @@ export function SettingsPane({
   searchQuery,
   onSearchQueryChange,
   onNavigate,
+  rightSidebarBetaSettings,
+  onSetRightSidebarBetaFeature,
 }: SettingsPaneProps) {
   const {
     sidebar,
@@ -1249,6 +1261,26 @@ export function SettingsPane({
 
       <section className="cmux-settings-section" data-section="betaFeatures">
         <h2>Beta Features</h2>
+        <label className="cmux-settings-row">
+          <input
+            type="checkbox"
+            data-field="rightSidebar.beta.feed.enabled"
+            checked={rightSidebarBetaSettings?.feed_enabled ?? false}
+            disabled={
+              rightSidebarBetaSettings == null ||
+              onSetRightSidebarBetaFeature == null
+            }
+            onChange={(event) =>
+              onSetRightSidebarBetaFeature?.("feed", event.currentTarget.checked)
+            }
+          />
+          <div>
+            <span>Feed in right sidebar</span>
+            <p className="cmux-settings-row-description">
+              Shows Feed for inline agent decisions, permissions, and questions.
+            </p>
+          </div>
+        </label>
         <div className="cmux-settings-row">
           <div>
             <span>Experimental feature flags</span>

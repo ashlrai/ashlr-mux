@@ -99,6 +99,20 @@ describe("FileExplorerPanel", () => {
     expect(markup).toContain("Project Alpha");
     expect(markup).toContain('aria-selected="true"');
   });
+
+  test("renders Feed only when its persisted beta mode is enabled", () => {
+    const markup = renderToStaticMarkup(
+      <FileExplorerPanel
+        open={true}
+        mode="feed"
+        feedEnabled={true}
+        onClose={() => {}}
+      />,
+    );
+    expect(markup).toContain('aria-label="Show Sidebar Feed"');
+    expect(markup).toContain('aria-label="Feed"');
+    expect(markup).toContain("No pending decisions");
+  });
 });
 
 describe("file explorer selection helpers", () => {

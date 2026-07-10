@@ -68,6 +68,7 @@ import {
   type CommandPaletteUsageHistory,
 } from "./usageHistory";
 import type { ConfigAction } from "../settings/configReducer";
+import type { RightSidebarModeAvailability } from "../rightSidebarModes";
 import type { SettingsPaneSection } from "../settings/settingsSearchResults";
 import {
   WARM_CLAUDE_CODE_SHORTCUT_ACTION,
@@ -455,6 +456,7 @@ export interface CommandPaletteHostActions {
   toggleFileExplorer?: () => void;
   /** Open the right sidebar to a specific canonical mode. */
   setRightSidebarMode?: (mode: RightSidebarMode) => void;
+  rightSidebarModeAvailability?: RightSidebarModeAvailability;
   /** Open the Settings surface (App-owned modal state). */
   openSettings?: (options?: { section?: SettingsPaneSection; query?: string }) => void;
   /** Open the session-backed notification drawer. */
@@ -829,14 +831,20 @@ export function useCommandPalette(
         rightSidebarMode:
           hostActions?.setRightSidebarMode === undefined
             ? []
-            : buildRightSidebarModeContributions(),
+            : buildRightSidebarModeContributions(
+                hostActions.rightSidebarModeAvailability,
+              ),
         canvas: [canvasToggleContribution, ...canvasActionContributions],
         settingsToggle: buildSettingsToggleContributions(
           hostActions?.settingsConfig,
         ),
       },
     }),
-    [hostActions?.setRightSidebarMode, hostActions?.settingsConfig],
+    [
+      hostActions?.rightSidebarModeAvailability,
+      hostActions?.setRightSidebarMode,
+      hostActions?.settingsConfig,
+    ],
   );
 
   const intentPlanContext = useMemo<IntentPlanContext>(() => {

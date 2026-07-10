@@ -397,6 +397,17 @@ body,
   text-align: center;
 }
 
+.cmux-feed-panel {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.cmux-feed-panel .cmux-file-explorer-empty {
+  flex: 1;
+}
+
 .cmux-file-explorer-empty button {
   border: 1px solid #2b3548;
   border-radius: 999px;
