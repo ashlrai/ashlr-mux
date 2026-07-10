@@ -398,6 +398,7 @@ fn format_control_result(method: &str, result: &serde_json::Value) -> String {
             .to_string(),
         "browser.focus_webview"
         | "browser.reload"
+        | "config.reload"
         | "session.restore_previous"
         | "surface.clear_history"
         | "surface.trigger_flash" => "OK".to_string(),
@@ -461,6 +462,14 @@ mod control_result_tests {
     fn trigger_flash_prints_plain_ok() {
         assert_eq!(
             format_control_result("surface.trigger_flash", &serde_json::json!({})),
+            "OK"
+        );
+    }
+
+    #[test]
+    fn reload_config_prints_plain_ok() {
+        assert_eq!(
+            format_control_result("config.reload", &serde_json::json!({})),
             "OK"
         );
     }

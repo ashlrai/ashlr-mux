@@ -85,6 +85,9 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
         "capabilities" => Some(
             "Usage:\n  cmux capabilities\n\nPrints the control socket's supported methods and platform metadata as JSON.",
         ),
+        "reload-config" => Some(
+            "Usage:\n  cmux reload-config\n\nReloads cmux.json from disk and broadcasts the updated configuration.",
+        ),
         "identify" => Some(
             "Usage:\n  cmux identify\n\nPrints desktop/control-socket identity metadata.",
         ),
@@ -491,6 +494,7 @@ mod tests {
             "is-webview-focused",
             "new-browser-workspace",
             "new-terminal-tab",
+            "reload-config",
             "rename-window",
             "reopen-closed-browser-tab",
             "restore-session",

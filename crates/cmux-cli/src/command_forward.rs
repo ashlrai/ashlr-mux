@@ -161,6 +161,10 @@ pub fn control_command_for(
             "system.capabilities",
             serde_json::json!({}),
         )),
+        "reload-config" => Some(ControlCommand::new(
+            "config.reload",
+            reload_config_params(args)?,
+        )),
         "identify" => Some(ControlCommand::new(
             "system.identify",
             serde_json::json!({}),
@@ -1145,6 +1149,15 @@ fn restore_session_params(args: &[String]) -> Result<serde_json::Value, CliError
     if let Some(unknown) = args.iter().find(|arg| arg.as_str() != "--") {
         return Err(CliError::new(format!(
             "restore-session: unknown flag '{unknown}'"
+        )));
+    }
+    Ok(serde_json::json!({}))
+}
+
+fn reload_config_params(args: &[String]) -> Result<serde_json::Value, CliError> {
+    if let Some(unexpected) = args.first() {
+        return Err(CliError::new(format!(
+            "reload-config does not accept arguments. Unexpected argument '{unexpected}'"
         )));
     }
     Ok(serde_json::json!({}))
@@ -3250,6 +3263,12 @@ mod tests {
         assert_eq!(mapped("ping", &[]).method, "ping");
         assert_eq!(mapped("capabilities", &[]).method, "system.capabilities");
         assert_eq!(mapped("identify", &[]).method, "system.identify");
+        assert_eq!(mapped("reload-config", &[]).method, "config.reload");
+        let error = control_command_for("reload-config", &args(&["extra"])).unwrap_err();
+        assert_eq!(
+            error.message,
+            "reload-config does not accept arguments. Unexpected argument 'extra'"
+        );
     }
 
     #[test]

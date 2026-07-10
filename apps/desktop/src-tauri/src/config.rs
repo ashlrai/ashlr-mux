@@ -175,6 +175,19 @@ fn reload_config_from_disk(
     Ok(payload)
 }
 
+fn reload_config_at_path(app: &AppHandle, path: &Path) -> Result<ConfigChangedPayload, String> {
+    let state = app.state::<ConfigState>();
+    let payload = reload_config_from_disk(&state, path)?;
+    app.emit(CONFIG_CHANGED_EVENT, payload.clone())
+        .map_err(|error| format!("failed to emit config reload event: {error}"))?;
+    Ok(payload)
+}
+
+pub(crate) fn reload_config_for_control(app: &AppHandle) -> Result<ConfigChangedPayload, String> {
+    let path = config_file_path()?;
+    reload_config_at_path(app, &path)
+}
+
 fn parse_raw_config_contents(contents: &str) -> Result<Value, String> {
     let raw: Value = serde_json::from_str(contents)
         .map_err(|error| format!("failed to parse edited cmux.json: {error}"))?;
@@ -216,14 +229,8 @@ pub fn start_config_file_watcher(app: &AppHandle) -> Result<(), String> {
                     continue;
                 }
                 last_modified = next_modified;
-                let state = app.state::<ConfigState>();
-                match reload_config_from_disk(&state, &path) {
-                    Ok(payload) => {
-                        let _ = app.emit(CONFIG_CHANGED_EVENT, payload);
-                    }
-                    Err(error) => {
-                        eprintln!("[config] failed to reload changed cmux.json: {error}");
-                    }
+                if let Err(error) = reload_config_at_path(&app, &path) {
+                    eprintln!("[config] failed to reload changed cmux.json: {error}");
                 }
             }
         })
@@ -627,6 +634,22 @@ mod tests {
             Some(cmux_config::Appearance::Dark)
         );
         assert!(payload.config.shortcuts.is_some());
+    }
+
+    #[test]
+    fn reload_config_from_disk_replaces_the_raw_cache() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("cmux.json");
+        std::fs::write(&path, r#"{"app":{"appearance":"dark"}}"#).expect("write config");
+        let state = ConfigState::default();
+
+        let payload = reload_config_from_disk(&state, &path).expect("reload config");
+
+        assert_eq!(payload.path, path.to_string_lossy());
+        assert_eq!(
+            *state.raw.lock().expect("raw cache"),
+            Some(json!({"app": {"appearance": "dark"}}))
+        );
     }
 
     #[test]

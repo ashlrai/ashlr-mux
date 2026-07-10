@@ -789,6 +789,7 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "system.ping",
     "system.identify",
     "system.capabilities",
+    "config.reload",
     "events.stream",
     "extension.sidebar.snapshot",
     "sidebar.snapshot",
@@ -1017,6 +1018,7 @@ fn handle_control_request(app: &AppHandle, request: ControlRequest) -> ControlCa
                 "schema": custom_sidebar_action_schema_catalog(),
             },
         })),
+        "config.reload" => config_reload(app),
         "events.stream" => ok(events_snapshot_payload(app, &request.params)),
         "extension.sidebar.snapshot" | "sidebar.snapshot" => {
             let snapshot = snapshot(app);
@@ -2581,6 +2583,20 @@ fn workspace_create_browser(
         &state,
         url.as_deref(),
     ))
+}
+
+fn config_reload(app: &AppHandle) -> ControlCallResult {
+    match crate::config::reload_config_for_control(app) {
+        Ok(payload) => ok(json!({
+            "path": payload.path,
+            "reloaded": true,
+        })),
+        Err(message) => ControlCallResult::Err {
+            code: "config_reload_failed".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn session_restore_previous_launch(app: &AppHandle) -> ControlCallResult {
@@ -10906,6 +10922,7 @@ mod tests {
     fn control_socket_methods_advertise_browser_network_and_platform_gaps() {
         for method in [
             "system.capabilities",
+            "config.reload",
             "session.restore_previous",
             "events.stream",
             "extension.sidebar.snapshot",
