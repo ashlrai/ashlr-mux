@@ -23,6 +23,7 @@ pub struct ClaudeIntegrationPlan {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum HooksRequest {
+    UninstallAll,
     Claude { yes: bool },
     Kiro { yes: bool },
     KiroUninstall,
@@ -79,6 +80,7 @@ struct NestedAgentDef {
 
 pub fn run_hooks_command(command: &str, args: &[String]) -> Result<String, CliError> {
     match parse_hooks_request(command, args)? {
+        HooksRequest::UninstallAll => uninstall_all_hooks(),
         HooksRequest::Claude { yes } => install_claude_code_integration(yes),
         HooksRequest::Kiro { yes } => install_kiro_hooks(yes),
         HooksRequest::KiroUninstall => uninstall_kiro_hooks(),
@@ -116,7 +118,7 @@ fn parse_hooks_request(command: &str, args: &[String]) -> Result<HooksRequest, C
     match command {
         "hooks" => parse_hooks_subcommand(&tokens, yes),
         "setup-hooks" => parse_setup_tokens(&tokens, yes),
-        "uninstall-hooks" => Err(unsupported_hooks_command("uninstall-hooks")),
+        "uninstall-hooks" => parse_uninstall_tokens(&tokens),
         other => Err(CliError::new(format!(
             "unsupported hooks installer command '{other}'"
         ))),
@@ -216,7 +218,7 @@ fn parse_hooks_subcommand(tokens: &[String], yes: bool) -> Result<HooksRequest, 
             ))),
         },
         Some("setup") => parse_setup_tokens(&tokens[1..], yes),
-        Some("uninstall") => Err(unsupported_hooks_command("hooks uninstall")),
+        Some("uninstall") => parse_uninstall_tokens(&tokens[1..]),
         Some(other) => Err(CliError::new(format!(
             "hook installation for '{other}' is not available yet"
         ))),
@@ -226,6 +228,7 @@ fn parse_hooks_subcommand(tokens: &[String], yes: bool) -> Result<HooksRequest, 
 
 fn parse_setup_tokens(tokens: &[String], yes: bool) -> Result<HooksRequest, CliError> {
     let mut agent: Option<&str> = None;
+    let mut uninstall = false;
     let mut index = 0;
     while index < tokens.len() {
         match tokens[index].as_str() {
@@ -239,6 +242,7 @@ fn parse_setup_tokens(tokens: &[String], yes: bool) -> Result<HooksRequest, CliE
             value if value.starts_with("--agent=") => {
                 agent = Some(value.trim_start_matches("--agent="));
             }
+            "--uninstall" => uninstall = true,
             value if value.starts_with('-') => {
                 return Err(CliError::new(format!(
                     "unsupported hooks setup option '{value}'"
@@ -251,6 +255,9 @@ fn parse_setup_tokens(tokens: &[String], yes: bool) -> Result<HooksRequest, CliE
         index += 1;
     }
 
+    if uninstall {
+        return agent.map_or(Ok(HooksRequest::UninstallAll), uninstall_request);
+    }
     match agent {
         Some("claude") | Some("claude-code") => Ok(HooksRequest::Claude { yes }),
         Some("kiro") => Ok(HooksRequest::Kiro { yes }),
@@ -276,6 +283,88 @@ fn parse_setup_tokens(tokens: &[String], yes: bool) -> Result<HooksRequest, CliE
         ))),
         None => Err(CliError::new("cmux hooks setup requires --agent AGENT")),
     }
+}
+
+fn parse_uninstall_tokens(tokens: &[String]) -> Result<HooksRequest, CliError> {
+    let mut agent = None;
+    let mut index = 0;
+    while index < tokens.len() {
+        match tokens[index].as_str() {
+            "--agent" => {
+                index += 1;
+                agent = Some(
+                    tokens
+                        .get(index)
+                        .ok_or_else(|| CliError::new("missing value for --agent"))?
+                        .as_str(),
+                );
+            }
+            value if value.starts_with("--agent=") => {
+                agent = Some(value.trim_start_matches("--agent="));
+            }
+            "--yes" | "-y" | "--uninstall" => {}
+            value if value.starts_with('-') => {
+                return Err(CliError::new(format!(
+                    "unsupported hooks uninstall option '{value}'"
+                )))
+            }
+            value => agent = Some(value),
+        }
+        index += 1;
+    }
+    agent.map_or(Ok(HooksRequest::UninstallAll), uninstall_request)
+}
+
+fn uninstall_request(agent: &str) -> Result<HooksRequest, CliError> {
+    Ok(match agent {
+        "kiro" => HooksRequest::KiroUninstall,
+        "cursor" => HooksRequest::CursorUninstall,
+        "antigravity" | "agy" => HooksRequest::AntigravityUninstall,
+        "opencode" => HooksRequest::OpenCodeUninstall { project: false },
+        "pi" => HooksRequest::PiUninstall,
+        "omp" => HooksRequest::OmpUninstall,
+        "amp" => HooksRequest::AmpUninstall,
+        "rovodev" | "rovo" => HooksRequest::RovoUninstall,
+        "hermes-agent" | "hermes" => HooksRequest::HermesUninstall,
+        "kimi" => HooksRequest::KimiUninstall,
+        "codex" => HooksRequest::CodexUninstall,
+        agent if nested_agent(agent).is_some() => HooksRequest::NestedUninstall {
+            agent: agent.to_string(),
+        },
+        other => return Err(CliError::new(format!("Unknown hooks target: {other}"))),
+    })
+}
+
+fn uninstall_all_hooks() -> Result<String, CliError> {
+    let mut output = "cmux hooks uninstall: uninstalling agent hooks\n\n".to_string();
+    for agent in [
+        "kiro",
+        "gemini",
+        "grok",
+        "copilot",
+        "codebuddy",
+        "factory",
+        "qoder",
+        "cursor",
+        "antigravity",
+        "opencode",
+        "pi",
+        "omp",
+        "amp",
+        "rovodev",
+        "hermes-agent",
+        "kimi",
+        "codex",
+    ] {
+        output.push_str(&format!("  {agent}:\n"));
+        output.push_str(&run_hooks_command(
+            "hooks",
+            &[agent.to_string(), "uninstall".to_string()],
+        )?);
+        output.push('\n');
+    }
+    output.push_str("Done: 17 uninstalled, 0 skipped\n");
+    Ok(output)
 }
 
 fn parse_opencode_tokens(tokens: &[String], yes: bool) -> Result<HooksRequest, CliError> {
@@ -3806,6 +3895,47 @@ mod tests {
         assert_eq!(
             marked_removal(None, PI_EXTENSION_MARKER),
             MarkedRemoval::Missing
+        );
+    }
+
+    #[test]
+    fn namespace_uninstall_spellings_route_filtered_and_batch_requests() {
+        assert_eq!(
+            parse_hooks_request(
+                "hooks",
+                &["uninstall".into(), "--agent".into(), "kimi".into()]
+            )
+            .unwrap(),
+            HooksRequest::KimiUninstall
+        );
+        assert_eq!(
+            parse_hooks_request("hooks", &["uninstall".into(), "rovo".into()]).unwrap(),
+            HooksRequest::RovoUninstall
+        );
+        assert_eq!(
+            parse_hooks_request("uninstall-hooks", &["--agent=codex".into()]).unwrap(),
+            HooksRequest::CodexUninstall
+        );
+        assert_eq!(
+            parse_hooks_request(
+                "hooks",
+                &[
+                    "setup".into(),
+                    "--uninstall".into(),
+                    "--agent".into(),
+                    "cursor".into()
+                ]
+            )
+            .unwrap(),
+            HooksRequest::CursorUninstall
+        );
+        assert_eq!(
+            parse_hooks_request("hooks", &["uninstall".into()]).unwrap(),
+            HooksRequest::UninstallAll
+        );
+        assert_eq!(
+            parse_hooks_request("uninstall-hooks", &[]).unwrap(),
+            HooksRequest::UninstallAll
         );
     }
 

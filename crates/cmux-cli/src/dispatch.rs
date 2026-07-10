@@ -336,7 +336,7 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
             "Usage:\n  cmux markdown [--path PATH]\n\nOpens a markdown surface in the selected pane.",
         ),
         "hooks" => Some(
-            "Usage:\n  cmux hooks feed --source AGENT [--event EVENT]\n  cmux hooks AGENT install [--yes|-y]\n  cmux hooks (gemini|grok|copilot|codebuddy|factory|qoder) uninstall\n  cmux hooks (kiro|cursor|codex) uninstall\n  cmux hooks (antigravity|agy) uninstall\n  cmux hooks (rovodev|rovo) uninstall\n  cmux hooks (hermes-agent|hermes) uninstall\n  cmux hooks kimi uninstall\n  cmux hooks (pi|omp|amp) uninstall\n  cmux hooks opencode install [--project] [--yes|-y]\n  cmux hooks opencode uninstall [--project]\n  cmux hooks setup --agent AGENT [--yes|-y]\n\nBridges agent events into Feed or installs hooks for Claude, Codex, Kiro, Gemini, Grok, Copilot, CodeBuddy, Factory, Qoder, Cursor, Antigravity, OpenCode, Pi, OMP, Amp, Rovo Dev, Hermes Agent, and Kimi Code.",
+            "Usage:\n  cmux hooks feed --source AGENT [--event EVENT]\n  cmux hooks AGENT install [--yes|-y]\n  cmux hooks uninstall [AGENT|--agent AGENT]\n  cmux hooks (gemini|grok|copilot|codebuddy|factory|qoder) uninstall\n  cmux hooks (kiro|cursor|codex) uninstall\n  cmux hooks (antigravity|agy) uninstall\n  cmux hooks (rovodev|rovo) uninstall\n  cmux hooks (hermes-agent|hermes) uninstall\n  cmux hooks kimi uninstall\n  cmux hooks (pi|omp|amp) uninstall\n  cmux hooks opencode install [--project] [--yes|-y]\n  cmux hooks opencode uninstall [--project]\n  cmux hooks setup [--agent AGENT] [--uninstall] [--yes|-y]\n\nBridges agent events into Feed or installs hooks for Claude, Codex, Kiro, Gemini, Grok, Copilot, CodeBuddy, Factory, Qoder, Cursor, Antigravity, OpenCode, Pi, OMP, Amp, Rovo Dev, Hermes Agent, and Kimi Code.",
         ),
         _ => None,
     }
@@ -673,6 +673,9 @@ mod tests {
 
     #[test]
     fn hooks_commands_run_local_installer() {
+        assert!(
+            subcommand_help_text("hooks").contains("cmux hooks uninstall [AGENT|--agent AGENT]")
+        );
         assert!(subcommand_help_text("hooks").contains("cmux hooks (pi|omp|amp) uninstall"));
         assert!(subcommand_help_text("hooks")
             .contains("cmux hooks (gemini|grok|copilot|codebuddy|factory|qoder) uninstall"));
