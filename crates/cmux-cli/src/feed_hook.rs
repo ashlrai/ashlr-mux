@@ -138,14 +138,33 @@ pub fn prepare_feed_hook(
         .or_else(|| raw_object.get("toolResponse"))
         .or_else(|| raw_object.get("tool_result"))
         .or_else(|| raw_object.get("toolResult"));
-    let tool_input =
+    let mut tool_input =
         if source == "codex" && hook_event_name == "PostToolUse" && post_tool_response.is_some() {
             post_tool_response.map(sanitize_post_tool_use)
         } else {
             tool_request_input
         };
+    if hook_event_name == "UserPromptSubmit" {
+        if let Some(prompt) = feed_prompt_text(&raw_object) {
+            let mut input = tool_input
+                .take()
+                .and_then(|value| value.as_object().cloned())
+                .unwrap_or_default();
+            input.insert("prompt".to_string(), Value::String(prompt));
+            tool_input = Some(Value::Object(input));
+        }
+    }
     if let Some(tool_input) = &tool_input {
         event.insert("tool_input".to_string(), tool_input.clone());
+    }
+    let context = build_feed_context(
+        &hook_event_name,
+        &tool_name,
+        tool_input.as_ref(),
+        &raw_object,
+    );
+    if !context.is_empty() {
+        event.insert("context".to_string(), Value::Object(context));
     }
     let request_id = first_string(
         &raw_object,
@@ -701,6 +720,275 @@ fn stable_fallback_session_id(source: &str, raw: &Map<String, Value>, agent_pid:
     format!("fallback-{prefix}")
 }
 
+fn build_feed_context(
+    hook_event_name: &str,
+    tool_name: &str,
+    tool_input: Option<&Value>,
+    raw: &Map<String, Value>,
+) -> Map<String, Value> {
+    let mut context = Map::new();
+    if let Some(raw_context) = raw.get("context").and_then(Value::as_object) {
+        set_context_string(
+            &mut context,
+            "lastUserMessage",
+            first_string(
+                raw_context,
+                &[
+                    "lastUserMessage",
+                    "last_user_message",
+                    "userPrompt",
+                    "prompt",
+                ],
+            ),
+            1_000,
+            false,
+        );
+        set_context_string(
+            &mut context,
+            "assistantPreamble",
+            first_string(
+                raw_context,
+                &[
+                    "assistantPreamble",
+                    "assistant_preamble",
+                    "lastAssistantMessage",
+                    "last_assistant_message",
+                ],
+            ),
+            1_000,
+            false,
+        );
+        set_context_string(
+            &mut context,
+            "planSummary",
+            first_string(raw_context, &["planSummary", "plan_summary"]),
+            600,
+            false,
+        );
+        set_context_string(
+            &mut context,
+            "toolSummary",
+            first_string(raw_context, &["toolSummary", "tool_summary"]),
+            600,
+            false,
+        );
+        set_context_string(
+            &mut context,
+            "permissionMode",
+            first_string(raw_context, &["permissionMode", "permission_mode"]),
+            80,
+            false,
+        );
+        let allowed = allowed_prompts(
+            raw_context
+                .get("allowedPrompts")
+                .or_else(|| raw_context.get("allowed_prompts")),
+        );
+        if !allowed.is_empty() {
+            context.insert("allowedPrompts".to_string(), Value::Array(allowed));
+        }
+    }
+
+    if hook_event_name == "UserPromptSubmit" {
+        set_context_string(
+            &mut context,
+            "lastUserMessage",
+            feed_prompt_text(raw),
+            1_000,
+            false,
+        );
+    }
+    set_context_string(
+        &mut context,
+        "permissionMode",
+        first_string(raw, &["permissionMode", "permission_mode"]),
+        80,
+        false,
+    );
+    set_context_string(
+        &mut context,
+        "assistantPreamble",
+        first_string(
+            raw,
+            &[
+                "assistantPreamble",
+                "assistant_preamble",
+                "last_assistant_message",
+                "lastAssistantMessage",
+            ],
+        ),
+        1_000,
+        false,
+    );
+
+    if let Some(input) = tool_input_dictionary(tool_input) {
+        if let Some(plan) = first_string(&input, &["plan"]) {
+            set_context_string(&mut context, "planSummary", plan_summary(&plan), 600, true);
+            let allowed = allowed_prompts(input.get("allowedPrompts"));
+            if !allowed.is_empty() {
+                context.insert("allowedPrompts".to_string(), Value::Array(allowed));
+            }
+        }
+        if !context.contains_key("toolSummary") {
+            if let Some(summary) = tool_summary(tool_name, &input) {
+                set_context_string(&mut context, "toolSummary", Some(summary), 600, false);
+            }
+        }
+    }
+    context
+}
+
+fn feed_prompt_text(raw: &Map<String, Value>) -> Option<String> {
+    first_string(raw, &["prompt", "text", "message", "body"]).or_else(|| {
+        ["notification", "data"].iter().find_map(|key| {
+            raw.get(*key)
+                .and_then(Value::as_object)
+                .and_then(|nested| first_string(nested, &["prompt", "text", "message", "body"]))
+        })
+    })
+}
+
+fn set_context_string(
+    context: &mut Map<String, Value>,
+    key: &str,
+    value: Option<String>,
+    max_chars: usize,
+    overwrite: bool,
+) {
+    if !overwrite && context.contains_key(key) {
+        return;
+    }
+    let Some(value) = value else { return };
+    if let Some(value) = normalized_truncated(&value, max_chars) {
+        context.insert(key.to_string(), Value::String(value));
+    }
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    value
+        .chars()
+        .take(max_chars.saturating_sub(1))
+        .chain(std::iter::once('…'))
+        .collect()
+}
+
+fn normalized_truncated(value: &str, max_chars: usize) -> Option<String> {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!normalized.is_empty()).then(|| truncate_chars(&normalized, max_chars))
+}
+
+fn tool_input_dictionary(value: Option<&Value>) -> Option<Map<String, Value>> {
+    match value? {
+        Value::Object(object) => Some(object.clone()),
+        Value::String(json) => serde_json::from_str::<Value>(json)
+            .ok()
+            .and_then(|value| value.as_object().cloned()),
+        _ => None,
+    }
+}
+
+fn allowed_prompts(value: Option<&Value>) -> Vec<Value> {
+    value
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|row| match row {
+            Value::String(prompt) => {
+                normalized_truncated(prompt, 260).map(|prompt| json!({"prompt":prompt}))
+            }
+            Value::Object(object) => {
+                let prompt = first_string(object, &["prompt", "description", "text"])?;
+                let mut output = Map::new();
+                output.insert(
+                    "prompt".to_string(),
+                    Value::String(normalized_truncated(&prompt, 260)?),
+                );
+                if let Some(tool) = first_string(object, &["tool", "toolName"]) {
+                    if let Some(tool) = normalized_truncated(&tool, 80) {
+                        output.insert("tool".to_string(), Value::String(tool));
+                    }
+                }
+                Some(Value::Object(output))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn plan_summary(plan: &str) -> Option<String> {
+    let mut first_heading = None;
+    for raw_line in plan.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with('#') {
+            let heading = line.trim_matches(|character| matches!(character, '#' | ' '));
+            if first_heading.is_none() && !heading.is_empty() {
+                first_heading = Some(heading.to_string());
+            }
+            continue;
+        }
+        if let Some(item) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
+            return Some(item.trim().to_string());
+        }
+        if let Some((number, item)) = line.split_once('.') {
+            if !number.is_empty() && number.chars().all(|character| character.is_ascii_digit()) {
+                return Some(item.trim().to_string());
+            }
+        }
+        return Some(line.to_string());
+    }
+    first_heading
+}
+
+fn tool_summary(tool_name: &str, input: &Map<String, Value>) -> Option<String> {
+    let lower = tool_name.to_ascii_lowercase();
+    match lower.as_str() {
+        "bash" => first_string(input, &["description", "command"]),
+        "run_command" | "execute_bash" | "shell" => first_string(
+            input,
+            &["CommandLine", "commandLine", "command", "Cwd", "cwd"],
+        ),
+        "write" | "edit" | "multiedit" | "read" | "fs_read" | "fs_write" => {
+            first_string(input, &["file_path", "path"]).or_else(|| first_operation_path(input))
+        }
+        "view_file" | "write_to_file" | "replace_file_content" | "multi_replace_file_content" => {
+            first_string(
+                input,
+                &[
+                    "AbsolutePath",
+                    "TargetFile",
+                    "SearchPath",
+                    "DirectoryPath",
+                    "path",
+                ],
+            )
+        }
+        "askuserquestion" | "ask_question" => input
+            .get("questions")
+            .and_then(Value::as_array)
+            .and_then(|questions| questions.first())
+            .and_then(Value::as_object)
+            .and_then(|question| first_string(question, &["question", "prompt", "header"]))
+            .or_else(|| first_string(input, &["question", "prompt"])),
+        _ => None,
+    }
+}
+
+fn first_operation_path(input: &Map<String, Value>) -> Option<String> {
+    input
+        .get("operations")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object)
+        .find_map(|operation| first_string(operation, &["path", "file_path", "filePath"]))
+}
+
 fn extract_hook_cwd(raw: &Map<String, Value>) -> Option<String> {
     const CWD_KEYS: &[&str] = &[
         "cwd",
@@ -1010,6 +1298,57 @@ mod tests {
         assert_eq!(summary["_cmux_omitted_key_count"], 1);
         assert!(!summary.to_string().contains("sensitive output"));
         assert!(!summary.to_string().contains("hidden"));
+    }
+
+    #[test]
+    fn prompt_plan_and_tool_payloads_project_canonical_context() {
+        let prompt = prepare_feed_hook(
+            &["--source=gemini".into(), "--event=UserPromptSubmit".into()],
+            br#"{"session_id":"g1","message":"  Build   the feature  ","assistant_preamble":" I can help ","permission_mode":"plan","context":{"tool_summary":"existing"}}"#,
+            &environment(),
+            "request-prompt",
+        )
+        .unwrap()
+        .unwrap();
+        let prompt_event = &prompt.params["event"];
+        assert_eq!(prompt_event["tool_input"]["prompt"], "Build   the feature");
+        assert_eq!(
+            prompt_event["context"]["lastUserMessage"],
+            "Build the feature"
+        );
+        assert_eq!(prompt_event["context"]["assistantPreamble"], "I can help");
+        assert_eq!(prompt_event["context"]["permissionMode"], "plan");
+        assert_eq!(prompt_event["context"]["toolSummary"], "existing");
+
+        let plan = prepare_feed_hook(
+            &["--source=claude".into()],
+            br##"{"hook_event_name":"PermissionRequest","session_id":"c1","tool_name":"ExitPlanMode","tool_input":{"plan":"# Release plan\n\n- Ship safely","allowedPrompts":[{"tool":"Bash","prompt":"Run tests"},"Deploy"]}}"##,
+            &environment(),
+            "request-plan",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            plan.params["event"]["context"]["planSummary"],
+            "Ship safely"
+        );
+        assert_eq!(
+            plan.params["event"]["context"]["allowedPrompts"],
+            json!([{"tool":"Bash","prompt":"Run tests"},{"prompt":"Deploy"}])
+        );
+
+        let tool = prepare_feed_hook(
+            &["--source=gemini".into(), "--event=PreToolUse".into()],
+            br#"{"session_id":"g2","tool_name":"Write","tool_input":{"file_path":"C:/repo/src/main.rs"}}"#,
+            &environment(),
+            "request-tool",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            tool.params["event"]["context"]["toolSummary"],
+            "C:/repo/src/main.rs"
+        );
     }
 
     #[test]
