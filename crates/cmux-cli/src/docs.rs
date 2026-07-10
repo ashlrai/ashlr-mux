@@ -97,25 +97,12 @@ const REFS: &[Reference] = &[
 ];
 
 pub fn run_docs_command(command_args: &[String], global_json: bool) -> Result<String, CliError> {
-    let separator = command_args.iter().position(|arg| arg == "--");
-    let head = separator.map_or(command_args, |index| &command_args[..index]);
-    let tail = separator.map_or(&[][..], |index| &command_args[index + 1..]);
-    let wants_json = global_json || head.iter().any(|arg| arg == "--json");
-    let mut args: Vec<&str> = head
-        .iter()
-        .filter(|arg| arg.as_str() != "--json")
-        .map(String::as_str)
-        .collect();
-    args.extend(tail.iter().map(String::as_str));
-    if head
-        .iter()
-        .any(|arg| matches!(arg.as_str(), "--help" | "-h"))
-        || args
-            .first()
-            .is_some_and(|arg| arg.eq_ignore_ascii_case("help"))
-    {
+    let parsed = parse_docs_settings_args(command_args, global_json);
+    let args = &parsed.arguments;
+    if parsed.help_requested() {
         return Ok(DOCS_USAGE.to_string());
     }
+    let wants_json = parsed.wants_json;
     let Some(topic) = args.first().map(|topic| topic.to_lowercase()) else {
         return Ok(if wants_json {
             render_index_json()?
@@ -151,6 +138,45 @@ pub fn run_docs_command(command_args: &[String], global_json: bool) -> Result<St
             .map_err(|error| CliError::new(format!("failed to encode docs JSON: {error}")))
     } else {
         Ok(render_reference(reference))
+    }
+}
+
+pub(crate) struct DocsSettingsArgs<'a> {
+    head: &'a [String],
+    pub(crate) arguments: Vec<&'a str>,
+    pub(crate) wants_json: bool,
+}
+
+impl DocsSettingsArgs<'_> {
+    pub(crate) fn help_requested(&self) -> bool {
+        self.head
+            .iter()
+            .any(|arg| matches!(arg.as_str(), "--help" | "-h"))
+            || self
+                .arguments
+                .first()
+                .is_some_and(|arg| arg.eq_ignore_ascii_case("help"))
+    }
+}
+
+pub(crate) fn parse_docs_settings_args(
+    command_args: &[String],
+    global_json: bool,
+) -> DocsSettingsArgs<'_> {
+    let separator = command_args.iter().position(|arg| arg == "--");
+    let head = separator.map_or(command_args, |index| &command_args[..index]);
+    let tail = separator.map_or(&[][..], |index| &command_args[index + 1..]);
+    let wants_json = global_json || head.iter().any(|arg| arg == "--json");
+    let mut arguments: Vec<&str> = head
+        .iter()
+        .filter(|arg| arg.as_str() != "--json")
+        .map(String::as_str)
+        .collect();
+    arguments.extend(tail.iter().map(String::as_str));
+    DocsSettingsArgs {
+        head,
+        arguments,
+        wants_json,
     }
 }
 

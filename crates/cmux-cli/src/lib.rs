@@ -22,6 +22,7 @@ pub mod hooks_installer;
 pub mod invocation;
 pub mod password;
 pub mod rpc;
+pub mod settings;
 pub mod socket;
 pub mod ssh;
 #[cfg(windows)]

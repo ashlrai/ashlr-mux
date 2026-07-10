@@ -112,6 +112,11 @@ fn dispatch(
             print!("{}", cmux_cli::welcome::render_welcome(false));
             Ok(())
         }
+        DispatchPlan::RunSettings(args) => {
+            let output = cmux_cli::settings::run_settings_no_socket(&args, options.json_output)?;
+            println!("{output}");
+            Ok(())
+        }
         DispatchPlan::RunHooksInstaller { command, args } => {
             let output = cmux_cli::hooks_installer::run_hooks_command(&command, &args)?;
             print!("{output}");
