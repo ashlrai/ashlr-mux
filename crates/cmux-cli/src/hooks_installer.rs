@@ -43,6 +43,7 @@ enum HooksRequest {
     Rovo { yes: bool },
     RovoUninstall,
     Hermes { yes: bool },
+    HermesUninstall,
     Kimi { yes: bool },
     KimiUninstall,
     Codex { yes: bool },
@@ -101,6 +102,7 @@ pub fn run_hooks_command(command: &str, args: &[String]) -> Result<String, CliEr
         HooksRequest::Rovo { yes } => install_rovo_hooks(yes),
         HooksRequest::RovoUninstall => uninstall_rovo_hooks(),
         HooksRequest::Hermes { yes } => install_hermes_hooks(yes),
+        HooksRequest::HermesUninstall => uninstall_hermes_hooks(),
         HooksRequest::Kimi { yes } => install_kimi_hooks(yes),
         HooksRequest::KimiUninstall => uninstall_kimi_hooks(),
         HooksRequest::Codex { yes } => install_codex_hooks(yes),
@@ -180,8 +182,9 @@ fn parse_hooks_subcommand(tokens: &[String], yes: bool) -> Result<HooksRequest, 
         },
         Some("hermes-agent") | Some("hermes") => match tokens.get(1).map(String::as_str) {
             None | Some("install") | Some("setup") => Ok(HooksRequest::Hermes { yes }),
+            Some("uninstall") => Ok(HooksRequest::HermesUninstall),
             Some(other) => Err(CliError::new(format!(
-                "unsupported Hermes Agent hooks action '{other}'; use 'cmux hooks hermes-agent install'"
+                "unsupported Hermes Agent hooks action '{other}'; use 'cmux hooks hermes-agent install|uninstall'"
             ))),
         },
         Some("kimi") => match tokens.get(1).map(String::as_str) {
@@ -720,13 +723,7 @@ fn hermes_events() -> Vec<HermesEvent> {
 }
 
 fn install_hermes_hooks(yes: bool) -> Result<String, CliError> {
-    let config_dir = if let Some(path) = nonempty_env("HERMES_HOME") {
-        expand_home_path(PathBuf::from(path))?
-    } else {
-        home_dir()
-            .map(|home| home.join(".hermes"))
-            .ok_or_else(|| CliError::new("unable to determine Hermes Agent config directory"))?
-    };
+    let config_dir = hermes_config_dir()?;
     if !config_dir.is_dir() {
         return Ok(format!(
             "{} does not exist. Install Hermes Agent first.\n",
@@ -763,6 +760,69 @@ fn install_hermes_hooks(yes: bool) -> Result<String, CliError> {
         ));
     }
     Ok(output)
+}
+
+fn uninstall_hermes_hooks() -> Result<String, CliError> {
+    let config_dir = hermes_config_dir()?;
+    let config_path = config_dir.join("config.yaml");
+    let allowlist_path = config_dir.join("shell-hooks-allowlist.json");
+    let mut output = String::new();
+    match fs::read_to_string(&config_path) {
+        Ok(before) => {
+            let plan = plan_hermes_hooks_uninstall(&before, &config_path);
+            if plan.changed {
+                write_text_exact(&config_path, &plan.after)?;
+                output.push_str(&format!(
+                    "Removed Hermes Agent cmux hooks from {}\n",
+                    config_path.display()
+                ));
+            } else {
+                output.push_str(&format!(
+                    "Removed 0 cmux hook(s) from {}\n",
+                    config_path.display()
+                ));
+            }
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => output.push_str(&format!(
+            "No config.yaml found at {}\n",
+            config_path.display()
+        )),
+        Err(error) => {
+            return Err(CliError::new(format!(
+                "failed to read {}: {error}",
+                config_path.display()
+            )))
+        }
+    }
+    let allowlist_before = match fs::read_to_string(&allowlist_path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(output),
+        Err(error) => {
+            return Err(CliError::new(format!(
+                "failed to read {}: {error}",
+                allowlist_path.display()
+            )))
+        }
+    };
+    let plan = plan_hermes_allowlist_uninstall(&allowlist_before)?;
+    if plan.changed {
+        write_text_exact(&allowlist_path, &plan.after)?;
+        output.push_str(&format!(
+            "Removed Hermes Agent cmux shell hook approvals from {}\n",
+            allowlist_path.display()
+        ));
+    }
+    Ok(output)
+}
+
+fn hermes_config_dir() -> Result<PathBuf, CliError> {
+    if let Some(path) = nonempty_env("HERMES_HOME") {
+        expand_home_path(PathBuf::from(path))
+    } else {
+        home_dir()
+            .map(|home| home.join(".hermes"))
+            .ok_or_else(|| CliError::new("unable to determine Hermes Agent config directory"))
+    }
 }
 
 fn plan_hermes_hooks_update(before: &str, path: &Path) -> ClaudeIntegrationPlan {
@@ -829,6 +889,16 @@ fn plan_hermes_hooks_update(before: &str, path: &Path) -> ClaudeIntegrationPlan 
         changed: before != after,
         diff: unified_diff(path, &before, &after),
         before,
+        after,
+    }
+}
+
+fn plan_hermes_hooks_uninstall(before: &str, path: &Path) -> ClaudeIntegrationPlan {
+    let after = serialize_yaml_lines(&remove_hermes_blocks(yaml_lines(before)));
+    ClaudeIntegrationPlan {
+        changed: before != after,
+        diff: unified_diff(path, before, &after),
+        before: before.to_string(),
         after,
     }
 }
@@ -988,16 +1058,7 @@ fn hermes_direct_event_indexes(
 }
 
 fn plan_hermes_allowlist_update(before: &str) -> Result<ClaudeIntegrationPlan, CliError> {
-    let before_value = if before.trim().is_empty() {
-        serde_json::json!({"approvals":[]})
-    } else {
-        serde_json::from_str(before)
-            .map_err(|error| CliError::new(format!("failed to parse Hermes allowlist: {error}")))?
-    };
-    let mut object = before_value
-        .as_object()
-        .cloned()
-        .ok_or_else(|| CliError::new("Hermes allowlist must be a JSON object"))?;
+    let (before_value, mut object) = parse_hermes_allowlist(before)?;
     let approvals = object
         .remove("approvals")
         .and_then(|value| value.as_array().cloned())
@@ -1045,6 +1106,58 @@ fn plan_hermes_allowlist_update(before: &str) -> Result<ClaudeIntegrationPlan, C
         before,
         after,
     })
+}
+
+fn plan_hermes_allowlist_uninstall(before: &str) -> Result<ClaudeIntegrationPlan, CliError> {
+    let (_, mut object) = parse_hermes_allowlist(before)?;
+    let owned: std::collections::HashSet<_> = hermes_events()
+        .into_iter()
+        .map(|event| format!("{}\0{}", event.name, event.command))
+        .collect();
+    let approvals = object
+        .remove("approvals")
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default();
+    let approvals = approvals
+        .into_iter()
+        .filter(|approval| {
+            let event = approval.get("event").and_then(serde_json::Value::as_str);
+            let command = approval.get("command").and_then(serde_json::Value::as_str);
+            !matches!((event, command), (Some(event), Some(command)) if owned.contains(&format!("{event}\0{command}")))
+        })
+        .collect();
+    object.insert("approvals".to_string(), serde_json::Value::Array(approvals));
+    let after = serde_json::to_string_pretty(&object)
+        .map_err(|error| CliError::new(format!("failed to encode Hermes allowlist: {error}")))?;
+    let path = PathBuf::from("shell-hooks-allowlist.json");
+    Ok(ClaudeIntegrationPlan {
+        changed: before != after,
+        diff: unified_diff(&path, before, &after),
+        before: before.to_string(),
+        after,
+    })
+}
+
+fn parse_hermes_allowlist(
+    before: &str,
+) -> Result<
+    (
+        serde_json::Value,
+        serde_json::Map<String, serde_json::Value>,
+    ),
+    CliError,
+> {
+    let value = if before.trim().is_empty() {
+        serde_json::json!({"approvals":[]})
+    } else {
+        serde_json::from_str(before)
+            .map_err(|error| CliError::new(format!("failed to parse Hermes allowlist: {error}")))?
+    };
+    let object = value
+        .as_object()
+        .cloned()
+        .ok_or_else(|| CliError::new("Hermes allowlist must be a JSON object"))?;
+    Ok((value, object))
 }
 
 fn yaml_double_quoted(value: &str) -> String {
@@ -3494,6 +3607,40 @@ mod tests {
                 .unwrap()
                 .changed
         );
+    }
+
+    #[test]
+    fn hermes_uninstall_restores_yaml_and_removes_only_owned_approvals() {
+        assert_eq!(
+            parse_hooks_request("hooks", &["hermes-agent".into(), "uninstall".into()]).unwrap(),
+            HooksRequest::HermesUninstall
+        );
+        assert_eq!(
+            parse_hooks_request("hooks", &["hermes".into(), "uninstall".into()]).unwrap(),
+            HooksRequest::HermesUninstall
+        );
+        let original = "model: user\nhooks: [] # intentionally empty\n";
+        let installed = plan_hermes_hooks_update(original, &path());
+        let removed = plan_hermes_hooks_uninstall(&installed.after, &path());
+        assert!(removed.changed);
+        assert_eq!(removed.after, original);
+
+        let owned = &hermes_events()[0];
+        let before = serde_json::json!({
+            "version": 1,
+            "approvals": [
+                {"event": owned.name, "command": owned.command, "approved_at": "old"},
+                {"event": "user", "command": "user command", "approved_at": "keep"},
+                {"custom": "passthrough"}
+            ]
+        })
+        .to_string();
+        let plan = plan_hermes_allowlist_uninstall(&before).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&plan.after).unwrap();
+        assert_eq!(value["version"], 1);
+        assert_eq!(value["approvals"].as_array().unwrap().len(), 2);
+        assert_eq!(value["approvals"][0]["event"], "user");
+        assert_eq!(value["approvals"][1]["custom"], "passthrough");
     }
 
     #[test]
