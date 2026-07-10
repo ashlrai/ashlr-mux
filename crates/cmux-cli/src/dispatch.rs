@@ -103,6 +103,9 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
         "restore-previous-launch" => Some(
             "Usage:\n  cmux restore-previous-launch\n\nRestores the previous launch's saved desktop session.",
         ),
+        "restore-session" => Some(
+            "Usage:\n  cmux restore-session\n\nReopens the previously saved cmux session.",
+        ),
         "close-workspace" => Some(
             "Usage:\n  cmux close-workspace WORKSPACE\n\nCloses the workspace identified by workspace:N ref or workspace id.",
         ),
@@ -483,6 +486,7 @@ mod tests {
             "new-terminal-tab",
             "rename-window",
             "reopen-closed-browser-tab",
+            "restore-session",
             "read-screen",
             "capture-pane",
             "restore-previous-launch",

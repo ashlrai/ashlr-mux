@@ -186,6 +186,10 @@ pub fn control_command_for(
             "session.restore_previous_launch",
             serde_json::json!({}),
         )),
+        "restore-session" => Some(ControlCommand::new(
+            "session.restore_previous",
+            restore_session_params(args)?,
+        )),
         "close-workspace" => Some(ControlCommand::new(
             "workspace.close",
             workspace_close_params(args, "close-workspace")?,
@@ -1122,6 +1126,15 @@ fn workspace_rename_params(
         .ok_or_else(|| CliError::new(format!("{command_name} requires a title")))?;
     params.insert("title".to_string(), serde_json::json!(title));
     Ok(serde_json::Value::Object(params))
+}
+
+fn restore_session_params(args: &[String]) -> Result<serde_json::Value, CliError> {
+    if let Some(unknown) = args.iter().find(|arg| arg.as_str() != "--") {
+        return Err(CliError::new(format!(
+            "restore-session: unknown flag '{unknown}'"
+        )));
+    }
+    Ok(serde_json::json!({}))
 }
 
 fn workspace_description_params(args: &[String]) -> Result<serde_json::Value, CliError> {
@@ -3270,6 +3283,12 @@ mod tests {
             mapped("workspace", &["restore-previous"]).method,
             "session.restore_previous_launch"
         );
+        assert_eq!(
+            mapped("restore-session", &[]).method,
+            "session.restore_previous"
+        );
+        let error = control_command_for("restore-session", &args(&["--force"])).unwrap_err();
+        assert_eq!(error.message, "restore-session: unknown flag '--force'");
     }
 
     #[test]

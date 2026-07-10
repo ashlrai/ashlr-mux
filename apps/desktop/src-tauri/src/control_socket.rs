@@ -801,6 +801,7 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "workspace.create",
     "workspace.create_browser",
     "browser.new_workspace",
+    "session.restore_previous",
     "session.restore_previous_launch",
     "workspace.restore_previous_launch",
     "workspace.close",
@@ -1032,9 +1033,9 @@ fn handle_control_request(app: &AppHandle, request: ControlRequest) -> ControlCa
         "workspace.create_browser" | "browser.new_workspace" => {
             workspace_create_browser(app, &request.params)
         }
-        "session.restore_previous_launch" | "workspace.restore_previous_launch" => {
-            session_restore_previous_launch(app)
-        }
+        "session.restore_previous"
+        | "session.restore_previous_launch"
+        | "workspace.restore_previous_launch" => session_restore_previous_launch(app),
         "workspace.close" => workspace_close(app, &request.params),
         "workspace.close_many" | "workspace.close_workspaces" => {
             workspace_close_many(app, &request.params)
@@ -10810,6 +10811,7 @@ mod tests {
     fn control_socket_methods_advertise_browser_network_and_platform_gaps() {
         for method in [
             "system.capabilities",
+            "session.restore_previous",
             "events.stream",
             "extension.sidebar.snapshot",
             "sidebar.snapshot",
