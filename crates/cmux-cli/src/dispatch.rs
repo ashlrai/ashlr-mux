@@ -57,6 +57,8 @@ pub enum DispatchPlan {
     RunHooksInstaller { command: String, args: Vec<String> },
     /// Read one agent hook payload from stdin and bridge it through `feed.push`.
     RunFeedHook(Vec<String>),
+    /// Run a local Feed helper such as persistent-history clearing.
+    RunFeed(Vec<String>),
     /// Abort with this error and its exit code.
     Fail(CliError),
 }
@@ -124,6 +126,7 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
         "right-sidebar" => Some(
             "Usage:\n  cmux right-sidebar <toggle|show|hide|focus|set|mode|files|find|vault|sessions|feed|dock> [--workspace WORKSPACE] [--window WINDOW] [--no-focus]\n\nControls right-sidebar visibility, mode, and focus. The mode command prints its current state.",
         ),
+        "feed" => Some(crate::feed_clear::FEED_USAGE),
         "list-workspaces" => Some(
             "Usage:\n  cmux list-workspaces\n\nLists workspaces from the active desktop session.",
         ),
@@ -388,6 +391,8 @@ pub fn plan_with_args(action: &PreSocketAction, command: &str, args: &[String]) 
                 DispatchPlan::RunSsh(args.to_vec())
             } else if command == "feed-hook" {
                 DispatchPlan::RunFeedHook(args.to_vec())
+            } else if command == "feed" {
+                DispatchPlan::RunFeed(args.to_vec())
             } else if command == "hooks" && args.first().is_some_and(|arg| arg == "feed") {
                 DispatchPlan::RunFeedHook(args[1..].to_vec())
             } else if matches!(command, "hooks" | "setup-hooks" | "uninstall-hooks") {
@@ -667,6 +672,15 @@ mod tests {
                 DispatchPlan::RunFeedHook(planned) => assert_eq!(planned, expected),
                 other => panic!("expected RunFeedHook, got {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn feed_commands_run_the_local_feed_executor() {
+        let args = vec!["clear".to_string(), "--yes".to_string()];
+        match plan_with_args(&PreSocketAction::NeedsSocket, "feed", &args) {
+            DispatchPlan::RunFeed(planned) => assert_eq!(planned, args),
+            other => panic!("expected RunFeed, got {other:?}"),
         }
     }
 

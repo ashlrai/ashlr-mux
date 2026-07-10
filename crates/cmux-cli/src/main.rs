@@ -108,8 +108,29 @@ fn dispatch(
             Ok(())
         }
         DispatchPlan::RunFeedHook(args) => run_feed_hook_command(options, &args),
+        DispatchPlan::RunFeed(args) => run_feed_command(&args),
         DispatchPlan::Fail(error) => Err(error),
     }
+}
+
+fn run_feed_command(args: &[String]) -> Result<(), CliError> {
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .ok_or_else(|| CliError::new("home directory is unavailable"))?;
+    let output = cmux_cli::feed_clear::run_feed_command(args, &home, |prompt| {
+        print!("{prompt}");
+        std::io::stdout()
+            .flush()
+            .map_err(|error| CliError::new(format!("failed to write Feed prompt: {error}")))?;
+        let mut answer = String::new();
+        std::io::stdin()
+            .read_line(&mut answer)
+            .map_err(|error| CliError::new(format!("failed to read Feed confirmation: {error}")))?;
+        Ok(answer.to_ascii_lowercase().starts_with('y'))
+    })?;
+    println!("{output}");
+    Ok(())
 }
 
 #[cfg(windows)]
