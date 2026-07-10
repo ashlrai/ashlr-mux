@@ -4,6 +4,7 @@
 //! with the Claude Code integration path because the Windows desktop menu needs a
 //! concrete CLI target that previews the config diff and asks for confirmation.
 
+use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -23,6 +24,7 @@ enum HooksRequest {
     Claude { yes: bool },
     Kiro { yes: bool },
     Nested { agent: String, yes: bool },
+    Cursor { yes: bool },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -46,6 +48,7 @@ pub fn run_hooks_command(command: &str, args: &[String]) -> Result<String, CliEr
         HooksRequest::Nested { agent, yes } => {
             install_nested_hooks(nested_agent(&agent).expect("parsed nested agent"), yes)
         }
+        HooksRequest::Cursor { yes } => install_cursor_hooks(yes),
     }
 }
 
@@ -74,6 +77,12 @@ fn parse_hooks_subcommand(tokens: &[String], yes: bool) -> Result<HooksRequest, 
             None | Some("install") | Some("setup") => Ok(HooksRequest::Kiro { yes }),
             Some(other) => Err(CliError::new(format!(
                 "unsupported Kiro hooks action '{other}'; use 'cmux hooks kiro install'"
+            ))),
+        },
+        Some("cursor") => match tokens.get(1).map(String::as_str) {
+            None | Some("install") | Some("setup") => Ok(HooksRequest::Cursor { yes }),
+            Some(other) => Err(CliError::new(format!(
+                "unsupported Cursor hooks action '{other}'; use 'cmux hooks cursor install'"
             ))),
         },
         Some(agent) if nested_agent(agent).is_some() => match tokens.get(1).map(String::as_str) {
@@ -124,6 +133,7 @@ fn parse_setup_tokens(tokens: &[String], yes: bool) -> Result<HooksRequest, CliE
     match agent {
         Some("claude") | Some("claude-code") => Ok(HooksRequest::Claude { yes }),
         Some("kiro") => Ok(HooksRequest::Kiro { yes }),
+        Some("cursor") => Ok(HooksRequest::Cursor { yes }),
         Some(agent) if nested_agent(agent).is_some() => Ok(HooksRequest::Nested {
             agent: agent.to_string(),
             yes,
@@ -133,6 +143,80 @@ fn parse_setup_tokens(tokens: &[String], yes: bool) -> Result<HooksRequest, CliE
         ))),
         None => Err(CliError::new("cmux hooks setup requires --agent AGENT")),
     }
+}
+
+fn install_cursor_hooks(yes: bool) -> Result<String, CliError> {
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .ok_or_else(|| CliError::new("unable to determine Cursor config directory"))?;
+    let path = home.join(".cursor").join("hooks.json");
+    let before = read_config_or_empty_object(&path)?;
+    let plan = plan_cursor_hooks_update(&before, &path)?;
+    if !plan.changed {
+        return Ok(format!(
+            "Cursor hooks already up to date at {}\n",
+            path.display()
+        ));
+    }
+    if !confirm_hook_change(&plan.diff, yes)? {
+        return Ok("Cancelled. No files were changed.\n".to_string());
+    }
+    write_config(&path, &plan.after)?;
+    Ok(format!("Cursor hooks installed at {}\n", path.display()))
+}
+
+fn plan_cursor_hooks_update(before: &str, path: &Path) -> Result<ClaudeIntegrationPlan, CliError> {
+    let before = normalize_config_text(before)?;
+    let mut value: serde_json::Value = serde_json::from_str(&before)
+        .map_err(|error| CliError::new(format!("failed to parse Cursor config: {error}")))?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| CliError::new("Cursor config must be a JSON object"))?;
+    object.insert("version".to_string(), serde_json::json!(1));
+    let hooks = object
+        .entry("hooks")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .ok_or_else(|| CliError::new("Cursor config key 'hooks' must be an object"))?;
+    let mut prepared_events = HashSet::new();
+    for (event, command) in [
+        ("beforeSubmitPrompt", "cmux hooks cursor prompt-submit"),
+        ("stop", "cmux hooks cursor stop"),
+        ("afterAgentResponse", "cmux hooks cursor agent-response"),
+        ("beforeShellExecution", "cmux hooks cursor shell-exec"),
+        ("afterShellExecution", "cmux hooks cursor shell-done"),
+        (
+            "beforeShellExecution",
+            "cmux hooks feed --source cursor --event beforeShellExecution",
+        ),
+    ] {
+        let entries = hooks
+            .entry(event)
+            .or_insert_with(|| serde_json::json!([]))
+            .as_array_mut()
+            .ok_or_else(|| CliError::new(format!("Cursor hook '{event}' must be an array")))?;
+        if prepared_events.insert(event) {
+            entries.retain(|entry| {
+                !entry
+                    .get("command")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|command| {
+                        command.contains("cmux hooks cursor")
+                            || command.contains("hooks feed --source cursor")
+                    })
+            });
+        }
+        entries.push(serde_json::json!({"command":command}));
+    }
+    let after = serde_json::to_string_pretty(&value)
+        .map_err(|error| CliError::new(format!("failed to encode Cursor config: {error}")))?;
+    Ok(ClaudeIntegrationPlan {
+        changed: before != after,
+        diff: unified_diff(path, &before, &after),
+        before,
+        after,
+    })
 }
 
 fn nested_agent(name: &str) -> Option<&'static NestedAgentDef> {
@@ -852,6 +936,39 @@ mod tests {
         assert_eq!(
             grok_value["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"],
             120
+        );
+    }
+
+    #[test]
+    fn cursor_flat_plan_preserves_user_hooks_and_sets_version() {
+        let request = parse_hooks_request(
+            "hooks",
+            &["cursor".into(), "install".into(), "--yes".into()],
+        )
+        .unwrap();
+        assert_eq!(request, HooksRequest::Cursor { yes: true });
+
+        let plan = plan_cursor_hooks_update(
+            r#"{"custom":true,"hooks":{"stop":[{"command":"user-stop"}]}}"#,
+            &PathBuf::from("C:/Users/me/.cursor/hooks.json"),
+        )
+        .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&plan.after).unwrap();
+        assert_eq!(value["custom"], true);
+        assert_eq!(value["version"], 1);
+        assert_eq!(value["hooks"]["stop"][0]["command"], "user-stop");
+        assert!(value["hooks"]["beforeSubmitPrompt"][0]["command"]
+            .as_str()
+            .unwrap()
+            .contains("hooks cursor prompt-submit"));
+        assert!(value["hooks"]["beforeShellExecution"][1]["command"]
+            .as_str()
+            .unwrap()
+            .contains("hooks feed --source cursor --event beforeShellExecution"));
+        assert!(
+            !plan_cursor_hooks_update(&plan.after, &path())
+                .unwrap()
+                .changed
         );
     }
 }
