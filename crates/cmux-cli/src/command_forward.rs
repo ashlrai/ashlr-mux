@@ -169,6 +169,8 @@ pub fn control_command_for(
             "system.identify",
             serde_json::json!({}),
         )),
+        "list-windows" => Some(ControlCommand::new("window.list", serde_json::json!({}))),
+        "current-window" => Some(ControlCommand::new("window.current", serde_json::json!({}))),
         "sidebar-snapshot" | "extension-sidebar-snapshot" => Some(ControlCommand::new(
             "extension.sidebar.snapshot",
             serde_json::json!({}),
@@ -3269,6 +3271,8 @@ mod tests {
             error.message,
             "reload-config does not accept arguments. Unexpected argument 'extra'"
         );
+        assert_eq!(mapped("list-windows", &[]).method, "window.list");
+        assert_eq!(mapped("current-window", &[]).method, "window.current");
     }
 
     #[test]

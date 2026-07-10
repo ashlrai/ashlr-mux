@@ -402,6 +402,12 @@ fn format_control_result(method: &str, result: &serde_json::Value) -> String {
         | "session.restore_previous"
         | "surface.clear_history"
         | "surface.trigger_flash" => "OK".to_string(),
+        "window.list" => format_window_entries(result),
+        "window.current" => result
+            .get("window_id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
         "workspace.list_status" => format_status_entries(result),
         "workspace.list_meta" => format_metadata_entries(result),
         "workspace.list_meta_blocks" => format_metadata_blocks(result),
@@ -409,6 +415,49 @@ fn format_control_result(method: &str, result: &serde_json::Value) -> String {
         "workspace.sidebar_state" => format_sidebar_state(result),
         _ => serde_json::to_string(result).unwrap_or_default(),
     }
+}
+
+fn format_window_entries(result: &serde_json::Value) -> String {
+    let windows = result
+        .as_array()
+        .or_else(|| result.get("windows").and_then(serde_json::Value::as_array));
+    let Some(windows) = windows else {
+        return "No windows".to_string();
+    };
+    if windows.is_empty() {
+        return "No windows".to_string();
+    }
+    windows
+        .iter()
+        .map(|window| {
+            let selected = if window
+                .get("selected")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+            {
+                "*"
+            } else {
+                " "
+            };
+            let index = window
+                .get("index")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default();
+            let id = string_field(window, "id");
+            let selected_workspace = window
+                .get("selected_workspace_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("none");
+            let workspace_count = window
+                .get("workspace_count")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default();
+            format!(
+                "{selected} {index}: {id} selected_workspace={selected_workspace} workspaces={workspace_count}"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]
@@ -471,6 +520,30 @@ mod control_result_tests {
         assert_eq!(
             format_control_result("config.reload", &serde_json::json!({})),
             "OK"
+        );
+    }
+
+    #[test]
+    fn window_introspection_keeps_canonical_plain_text() {
+        let result = serde_json::json!({
+            "windows": [{
+                "index": 0,
+                "id": "window-id",
+                "selected": true,
+                "selected_workspace_id": "workspace-id",
+                "workspace_count": 2
+            }]
+        });
+        assert_eq!(
+            format_control_result("window.list", &result),
+            "* 0: window-id selected_workspace=workspace-id workspaces=2"
+        );
+        assert_eq!(
+            format_control_result(
+                "window.current",
+                &serde_json::json!({"window_id": "window-id"})
+            ),
+            "window-id"
         );
     }
 }

@@ -91,6 +91,10 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
         "identify" => Some(
             "Usage:\n  cmux identify\n\nPrints desktop/control-socket identity metadata.",
         ),
+        "list-windows" => Some("Usage:\n  cmux list-windows\n\nLists desktop windows."),
+        "current-window" => Some(
+            "Usage:\n  cmux current-window\n\nPrints the active desktop window ID.",
+        ),
         "list-workspaces" => Some(
             "Usage:\n  cmux list-workspaces\n\nLists workspaces from the active desktop session.",
         ),
@@ -489,9 +493,11 @@ mod tests {
             "browser-reload",
             "clear-history",
             "close-workspaces",
+            "current-window",
             "focus-webview",
             "get-url",
             "is-webview-focused",
+            "list-windows",
             "new-browser-workspace",
             "new-terminal-tab",
             "reload-config",

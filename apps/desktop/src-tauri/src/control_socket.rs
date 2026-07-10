@@ -790,6 +790,8 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "system.identify",
     "system.capabilities",
     "config.reload",
+    "window.list",
+    "window.current",
     "events.stream",
     "extension.sidebar.snapshot",
     "sidebar.snapshot",
@@ -1019,6 +1021,8 @@ fn handle_control_request(app: &AppHandle, request: ControlRequest) -> ControlCa
             },
         })),
         "config.reload" => config_reload(app),
+        "window.list" => window_list(app),
+        "window.current" => window_current(app),
         "events.stream" => ok(events_snapshot_payload(app, &request.params)),
         "extension.sidebar.snapshot" | "sidebar.snapshot" => {
             let snapshot = snapshot(app);
@@ -2597,6 +2601,57 @@ fn config_reload(app: &AppHandle) -> ControlCallResult {
             data: None,
         },
     }
+}
+
+fn window_list(app: &AppHandle) -> ControlCallResult {
+    let current = snapshot(app);
+    ok(json!(current
+        .windows
+        .iter()
+        .enumerate()
+        .map(|(index, window)| {
+            let selected_index = window
+                .tab_manager
+                .selected_workspace_index
+                .unwrap_or_default()
+                .max(0) as usize;
+            json!({
+                "index": index,
+                "id": window.window_id,
+                "ref": window.window_id.as_ref().map(|_| format!("window:{}", index + 1)),
+                "key": window.window_id,
+                "selected": index == 0,
+                "workspace_count": window.tab_manager.workspaces.len(),
+                "selected_workspace_id": window
+                    .tab_manager
+                    .workspaces
+                    .get(selected_index)
+                    .and_then(|workspace| workspace.workspace_id.clone()),
+            })
+        })
+        .collect::<Vec<_>>()))
+}
+
+fn window_current(app: &AppHandle) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(window) = current.windows.first() else {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "No active window".to_string(),
+            data: None,
+        };
+    };
+    let Some(window_id) = window.window_id.as_ref() else {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "No active window".to_string(),
+            data: None,
+        };
+    };
+    ok(json!({
+        "window_id": window_id,
+        "window_ref": "window:1",
+    }))
 }
 
 fn session_restore_previous_launch(app: &AppHandle) -> ControlCallResult {
@@ -10923,6 +10978,8 @@ mod tests {
         for method in [
             "system.capabilities",
             "config.reload",
+            "window.list",
+            "window.current",
             "session.restore_previous",
             "events.stream",
             "extension.sidebar.snapshot",
