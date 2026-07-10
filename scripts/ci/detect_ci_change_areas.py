@@ -138,6 +138,7 @@ def is_macos_neutral(path: str) -> bool:
     if path.startswith(
         (
             "apps/desktop/",
+            "cmux-tui/",
             "contracts/",
             "crates/",
             "docs/",

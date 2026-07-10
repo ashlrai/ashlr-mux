@@ -39,36 +39,7 @@ struct MobileSettingsView: View {
         @Bindable var displaySettings = displaySettings
         return NavigationStack {
             Form {
-                Section {
-                    LabeledContent {
-                        Text(accountEmail)
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                    } label: {
-                        Label(accountDisplayName, systemImage: "person.crop.circle")
-                    }
-                    .accessibilityIdentifier("MobileSettingsAccountRow")
-
-                    if let signOut {
-                        Button(role: .destructive) {
-                            signOut()
-                            dismiss()
-                        } label: {
-                            Label(
-                                L10n.string("mobile.signOut", defaultValue: "Sign Out"),
-                                systemImage: "rectangle.portrait.and.arrow.right"
-                            )
-                        }
-                        .accessibilityIdentifier("MobileSettingsSignOut")
-                    }
-                } header: {
-                    Text(L10n.string("mobile.settings.account", defaultValue: "Account"))
-                } footer: {
-                    Text(L10n.string(
-                        "mobile.settings.accountFooter",
-                        defaultValue: "This device must be signed in to the same cmux account as the Mac you pair with."
-                    ))
-                }
+                MobileSettingsAccountSection(signOut: signOut)
 
                 // Stack team switcher. Only shown when the user belongs to more than
                 // one team. Rendered as an INLINE picker — each team is a row with a
@@ -96,7 +67,7 @@ struct MobileSettingsView: View {
                     } footer: {
                         Text(L10n.string(
                             "mobile.settings.teamFooter",
-                            defaultValue: "Switches which Stack team's Macs and devices this app shows."
+                            defaultValue: "Switches which Stack team's computers and devices this app shows."
                         ))
                     }
                 }
@@ -108,7 +79,7 @@ struct MobileSettingsView: View {
                     Section(L10n.string("mobile.settings.connection", defaultValue: "Connection")) {
                         if !connectedHostName.isEmpty {
                             LabeledContent(
-                                L10n.string("mobile.settings.mac", defaultValue: "Mac"),
+                                L10n.string("mobile.settings.mac", defaultValue: "Computer"),
                                 value: connectedHostName
                             )
                         }
@@ -117,7 +88,7 @@ struct MobileSettingsView: View {
                                 showingHostPicker = true
                             } label: {
                                 Label(
-                                    L10n.string("mobile.settings.switchMac", defaultValue: "Switch Mac"),
+                                    L10n.string("mobile.settings.switchMac", defaultValue: "Switch Computer"),
                                     systemImage: "macbook.and.iphone"
                                 )
                             }
@@ -140,7 +111,7 @@ struct MobileSettingsView: View {
                         showingSetupHelp = true
                     } label: {
                         Label(
-                            L10n.string("mobile.settings.setUpYourMac", defaultValue: "Set up your Mac"),
+                            L10n.string("mobile.settings.setUpYourMac", defaultValue: "Set Up Computer"),
                             systemImage: "macbook.and.iphone"
                         )
                     }
@@ -157,6 +128,14 @@ struct MobileSettingsView: View {
                 }
 
                 Section(L10n.string("mobile.settings.terminal", defaultValue: "Terminal")) {
+                    Toggle(isOn: $displaySettings.showAltScreenNotice) {
+                        Text(L10n.string(
+                            "mobile.settings.altScreenNotice",
+                            defaultValue: "Full-Screen Sizing Notice"
+                        ))
+                    }
+                    .accessibilityIdentifier("MobileSettingsAltScreenNoticeToggle")
+
                     Button {
                         showingShortcuts = true
                     } label: {
@@ -257,6 +236,8 @@ struct MobileSettingsView: View {
                     .accessibilityIdentifier("MobileSettingsNotifications")
                 }
 
+                MobileSettingsLegalSupportSection()
+
                 Section(L10n.string("mobile.settings.about", defaultValue: "About")) {
                     LabeledContent {
                         Text(AppVersionInfo.current().displayString)
@@ -349,18 +330,6 @@ struct MobileSettingsView: View {
         )
     }
 
-    private var accountEmail: String {
-        let email = authManager.currentUser?.primaryEmail?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let email, !email.isEmpty { return email }
-        return L10n.string("mobile.settings.notSignedIn", defaultValue: "Not signed in")
-    }
-
-    private var accountDisplayName: String {
-        let name = authManager.currentUser?.displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let name, !name.isEmpty { return name }
-        return L10n.string("mobile.settings.account", defaultValue: "Account")
-    }
-
     #if DEBUG
     private func debugLayoutSlider(
         title: String,
@@ -388,6 +357,5 @@ struct MobileSettingsView: View {
         )
     }
     #endif
-
 }
 #endif

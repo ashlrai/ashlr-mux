@@ -11,13 +11,17 @@ import (
 )
 
 type wsPTYServerConfig struct {
-	ListenAddr       string
-	PTYAuthLeaseFile string
-	RPCAuthLeaseFile string
-	Shell            string
-	PTYHub           *wsPTYHub
-	ScrollbackLimit  int
-	SessionIdleTTL   time.Duration
+	ListenAddr          string
+	PTYAuthLeaseFile    string
+	RPCAuthLeaseFile    string
+	AdminTokenSHA256    string
+	AdminEd25519PubKey  string
+	CLIBridgeSocketPath string
+	CLIBridge           *cloudCLIBridge
+	Shell               string
+	PTYHub              *wsPTYHub
+	ScrollbackLimit     int
+	SessionIdleTTL      time.Duration
 }
 
 type wsPTYOutgoingFrame struct {
@@ -30,7 +34,14 @@ const (
 	wsPTYInputWriteOK wsPTYInputWriteStatus = iota
 	wsPTYInputWriteNotFound
 	wsPTYInputWriteQueueFull
+	wsPTYInputWriteSeqGap
 )
+
+type wsPTYInputWriteResult struct {
+	status wsPTYInputWriteStatus
+	got    uint64
+	want   uint64
+}
 
 type wsPTYSessionKind uint8
 
@@ -73,6 +84,7 @@ func (h *wsPTYHub) attachRPC(
 	_ string,
 	attachmentToken string,
 	_ bool,
+	_ bool,
 ) (*wsPTYAttachment, context.Context, <-chan struct{}, error) {
 	return &wsPTYAttachment{
 		sessionKey:  wsPTYSessionKey{sessionID: sessionID},
@@ -90,6 +102,17 @@ func (h *wsPTYHub) dropAttachment(_ *wsPTYAttachment) {}
 
 func (h *wsPTYHub) writeInputByID(_ string, _ string, _ string, _ []byte) wsPTYInputWriteStatus {
 	return wsPTYInputWriteNotFound
+}
+
+func (h *wsPTYHub) writeInputByIDWithSeq(
+	_ string,
+	_ string,
+	_ string,
+	_ []byte,
+	_ uint64,
+	_ bool,
+) wsPTYInputWriteResult {
+	return wsPTYInputWriteResult{status: wsPTYInputWriteNotFound}
 }
 
 func (h *wsPTYHub) resizeByID(_ string, _ string, _ string, _ int, _ int) bool {

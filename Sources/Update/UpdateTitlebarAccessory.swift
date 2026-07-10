@@ -14,7 +14,31 @@ enum TitlebarControlsStyle: Int, CaseIterable, Identifiable {
     case pillGroup
     case softButtons
 
+    static let storageKey = "titlebarControlsStyle"
+    static let defaultStyle = TitlebarControlsStyle.compact
+    static var defaultRawValue: Int { defaultStyle.rawValue }
+
     var id: Int { rawValue }
+
+    static func stored(in defaults: UserDefaults = .standard) -> TitlebarControlsStyle {
+        guard let rawObject = defaults.object(forKey: storageKey) else {
+            return defaultStyle
+        }
+        let rawValue: Int?
+        if let integer = rawObject as? Int {
+            rawValue = integer
+        } else if let number = rawObject as? NSNumber {
+            rawValue = number.intValue
+        } else {
+            rawValue = nil
+        }
+        guard let rawValue else { return defaultStyle }
+        return TitlebarControlsStyle(rawValue: rawValue) ?? defaultStyle
+    }
+
+    static func stored(rawValue: Int) -> TitlebarControlsStyle {
+        TitlebarControlsStyle(rawValue: rawValue) ?? defaultStyle
+    }
 
     var menuTitle: String {
         switch self {
@@ -431,7 +455,8 @@ func titlebarHintLayoutRightmostExtent(
     let xOffset = CGFloat(ShortcutHintDebugSettings.clamped(titlebarShortcutHintXOffset))
     var intervals: [ClosedRange<CGFloat>] = []
     for slot in TitlebarShortcutHintActionSlot.allCases {
-        let shortcut = KeyboardShortcutSettings.shortcut(for: slot.action)
+        guard let action = slot.action else { continue }
+        let shortcut = KeyboardShortcutSettings.shortcut(for: action)
         guard !shortcut.isUnbound, shortcut.command else { continue }
         let width = titlebarHintPillWidth(for: shortcut, config: config)
         intervals.append(
@@ -462,7 +487,7 @@ enum TitlebarShortcutHintActionSlot: Int, CaseIterable {
     case focusHistoryBack
     case focusHistoryForward
 
-    var action: KeyboardShortcutSettings.Action {
+    var action: KeyboardShortcutSettings.Action? {
         switch self {
         case .toggleSidebar:
             return .toggleSidebar
@@ -495,19 +520,31 @@ enum TitlebarControlsLayoutMetrics {
     }
 
     static func buttonRowWidth(config: TitlebarControlsStyleConfig) -> CGFloat {
-        let buttonCount = CGFloat(TitlebarShortcutHintActionSlot.allCases.count)
-        let gapCount = max(0, buttonCount - 1)
-        return (buttonCount * config.buttonSize) + (gapCount * config.spacing)
+        let ranges = TitlebarControlsHitRegions.buttonXRanges(config: config)
+        guard let first = ranges.first, let last = ranges.last else { return 0 }
+        return last.upperBound - first.lowerBound
     }
 
     static func buttonCenterX(
         for slot: TitlebarShortcutHintActionSlot,
         config: TitlebarControlsStyleConfig
     ) -> CGFloat {
-        let index = CGFloat(slot.rawValue)
-        return config.groupPadding.leading
-            + (index * (config.buttonSize + config.spacing))
-            + (config.buttonSize / 2.0)
+        let actionSlot: MinimalModeSidebarControlActionSlot = switch slot {
+        case .toggleSidebar:
+            .toggleSidebar
+        case .showNotifications:
+            .showNotifications
+        case .newTab:
+            .newTab
+        case .focusHistoryBack:
+            .focusHistoryBack
+        case .focusHistoryForward:
+            .focusHistoryForward
+        }
+        guard let range = TitlebarControlsHitRegions.buttonXRange(for: actionSlot, config: config) else {
+            return config.groupPadding.leading + (config.buttonSize / 2.0)
+        }
+        return (range.lowerBound + range.upperBound) / 2.0
     }
 
     static func hintInterval(
@@ -647,6 +684,24 @@ func titlebarControlBorderOpacity(
     )
 }
 
+func titlebarControlActiveHoverBackgroundOpacity(
+    isHovering: Bool,
+    isPressed: Bool,
+    isEnabled: Bool
+) -> Double {
+    guard isEnabled, isHovering, !isPressed else { return 0 }
+    return 0.09
+}
+
+func titlebarControlPassiveHoverBackgroundOpacity(
+    isHovering: Bool,
+    isPressed: Bool,
+    isEnabled: Bool
+) -> Double {
+    guard isEnabled, isHovering, !isPressed else { return 0 }
+    return 0.016
+}
+
 struct TitlebarControlButton<Content: View>: View {
     let config: TitlebarControlsStyleConfig
     let foregroundColor: Color
@@ -758,12 +813,18 @@ private struct TitlebarControlButtonStyleBody: View {
     }
 
     private var backgroundOpacity: Double {
-        titlebarControlBackgroundOpacity(
+        let baseOpacity = titlebarControlBackgroundOpacity(
             config: config,
             isHovering: isHovering,
             isPressed: configuration.isPressed,
             isEnabled: isEnabled
         )
+        let activeHoverOpacity = titlebarControlActiveHoverBackgroundOpacity(
+            isHovering: isHovering,
+            isPressed: configuration.isPressed,
+            isEnabled: isEnabled
+        )
+        return max(baseOpacity, activeHoverOpacity)
     }
 
     private var borderOpacity: Double {
@@ -818,7 +879,7 @@ struct TitlebarControlsView: View {
     let onFocusHistoryForward: () -> Void
     let visibilityMode: TitlebarControlsVisibilityMode
     @ObservedObject private var popoverVisibilityState = NotificationsPopoverVisibilityState.shared
-    @AppStorage("titlebarControlsStyle") private var styleRawValue = TitlebarControlsStyle.classic.rawValue
+    @AppStorage(TitlebarControlsStyle.storageKey) private var styleRawValue = TitlebarControlsStyle.defaultRawValue
     @Environment(\.cmuxGlobalFontMagnificationPercent) private var globalFontPercent
     @State private var shortcutRefreshTick = 0
     @State private var appearanceRefreshTick = 0
@@ -871,7 +932,7 @@ struct TitlebarControlsView: View {
         let _ = shortcutRefreshTick
         let _ = appearanceRefreshTick
         let _ = globalFontPercent
-        let style = TitlebarControlsStyle(rawValue: styleRawValue) ?? .classic
+        let style = TitlebarControlsStyle.stored(rawValue: styleRawValue)
         let config = style.config
         let contentSize = TitlebarControlsLayoutMetrics.contentSize(
             config: config,
@@ -999,24 +1060,16 @@ struct TitlebarControlsView: View {
             .background(NotificationsAnchorView { viewModel.notificationsAnchorView = $0 })
             .safeHelp(KeyboardShortcutSettings.Action.showNotifications.tooltip(String(localized: "titlebar.notifications.tooltip", defaultValue: "Show notifications")))
 
-            TitlebarControlButton(
+            TitlebarNewWorkspaceCloudSplitButton(
                 config: config,
                 foregroundColor: foregroundColor,
-                accessibilityIdentifier: "titlebarControl.newTab",
-                accessibilityLabel: String(localized: "titlebar.newWorkspace.accessibilityLabel", defaultValue: "New Workspace"),
-                action: {
-                #if DEBUG
-                cmuxDebugLog("titlebar.newTab")
-                #endif
-                onNewTab()
-            },
-                rightClickAction: { anchorView, event in
-                    _ = AppDelegate.shared?.showNewWorkspaceContextMenu(anchorView: anchorView, event: event)
-                }) {
-                iconLabel(systemName: "plus", config: config, iconGeometryKeyPrefix: "titlebarControl_newTabIcon")
-            }
-            .safeHelp(KeyboardShortcutSettings.Action.newTab.tooltip(String(localized: "titlebar.newWorkspace.tooltip", defaultValue: "New workspace")))
-
+                onNewTab: {
+                    #if DEBUG
+                    cmuxDebugLog("titlebar.newTab")
+                    #endif
+                    onNewTab()
+                }
+            )
             TitlebarControlButton(
                 config: config,
                 foregroundColor: foregroundColor,
@@ -1114,7 +1167,8 @@ struct TitlebarControlsView: View {
         guard shouldShowTitlebarShortcutHints else { return [] }
 
         return TitlebarShortcutHintActionSlot.allCases.compactMap { slot in
-            let shortcut = KeyboardShortcutSettings.shortcut(for: slot.action)
+            guard let action = slot.action else { return nil }
+            let shortcut = KeyboardShortcutSettings.shortcut(for: action)
             guard ShortcutHintTitlebarPolicy.shouldShow(
                 shortcut: shortcut,
                 alwaysShowShortcutHints: alwaysShowShortcutHints,
@@ -1129,7 +1183,7 @@ struct TitlebarControlsView: View {
                 config: config,
                 xOffset: xOffset
             )
-            return (slot.action, shortcut, width, interval)
+            return (action, shortcut, width, interval)
         }
     }
 
@@ -1179,9 +1233,7 @@ struct TitlebarControlsView: View {
         iconGeometryKeyPrefix: String? = nil
     ) -> some View {
         titlebarIconChrome(config: config, iconGeometryKeyPrefix: iconGeometryKeyPrefix) {
-            Image(systemName: systemName)
-                .symbolRenderingMode(.monochrome)
-                .cmuxSymbolRasterSize(config.iconSize, weight: TitlebarControlIconStyle.weight)
+            CmuxSystemSymbolImage(systemName: systemName, pointSize: config.iconSize, weight: TitlebarControlIconStyle.weight)
         }
     }
 
@@ -1344,14 +1396,14 @@ struct HiddenTitlebarSidebarControlsView: View {
     @State private var isHoveringHost = false
     @State private var isHoveringWindowChrome = false
     @State private var hostWindowNumber: Int?
-    @AppStorage("titlebarControlsStyle") private var styleRawValue = TitlebarControlsStyle.classic.rawValue
+    @AppStorage(TitlebarControlsStyle.storageKey) private var styleRawValue = TitlebarControlsStyle.defaultRawValue
 
     private var shouldPinControls: Bool {
         isHoveringHost || isHoveringWindowChrome || popoverVisibilityState.isShown(in: hostWindowNumber)
     }
 
     var body: some View {
-        let style = TitlebarControlsStyle(rawValue: styleRawValue) ?? .classic
+        let style = TitlebarControlsStyle.stored(rawValue: styleRawValue)
 
         ZStack(alignment: .leading) {
             WindowAccessor { window in
@@ -1422,6 +1474,11 @@ struct HiddenTitlebarSidebarControlsView: View {
                     onToggleNotifications(anchorView)
                 case .newTab:
                     onNewTab()
+                case .cloudVM:
+                    _ = AppDelegate.shared?.showNewWorkspaceContextMenu(
+                        anchorView: anchorView,
+                        debugSource: "titlebar.minimalSidebar.cloudMenu"
+                    )
                 case .focusHistoryBack:
                     let availability = focusHistoryNavigationAvailability(
                         preferredWindow: hostWindowForFocusHistoryNavigation
@@ -1894,8 +1951,7 @@ final class TitlebarControlsAccessoryViewController: NSTitlebarAccessoryViewCont
         updateObservedWindowIfNeeded()
         applyWorkspaceTitlebarVisibility()
         guard showsWorkspaceTitlebar else { return }
-        let styleRawValue = UserDefaults.standard.integer(forKey: "titlebarControlsStyle")
-        let style = TitlebarControlsStyle(rawValue: styleRawValue) ?? .classic
+        let style = TitlebarControlsStyle.stored()
         let contentSize = TitlebarControlsLayoutMetrics.contentSize(config: style.config)
         if intrinsicSizeNeedsRefresh {
             hostingView.invalidateIntrinsicContentSize()
@@ -2199,8 +2255,7 @@ private struct NotificationsPopoverView: View {
             Spacer()
             Button(action: jumpToLatestUnread) {
                 HStack(spacing: 5) {
-                    Image(systemName: "arrow.down.to.line")
-                        .cmuxSymbolRasterSize(10, weight: .semibold)
+                    CmuxSystemSymbolImage(systemName: "arrow.down.to.line", pointSize: 10, weight: .semibold)
                     Text(String(localized: "notifications.jumpToLatest", defaultValue: "Jump to Latest"))
                         .cmuxFont(size: 11)
                     if !jumpToUnreadShortcut.displayString.isEmpty {
@@ -2277,12 +2332,14 @@ private struct NotificationsPopoverView: View {
             // sidebar/sessions panel (https://github.com/manaflow-ai/cmux/issues/2586).
             let snapshot = notificationStore.notifications
             let lastIndex = snapshot.count - 1
+            // One tabId -> title index per render, not an O(tabs) scan per row (#5794).
+            let tabTitles = AppDelegate.shared?.tabTitlesByTabId() ?? [:]
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(Array(snapshot.enumerated()), id: \.element.id) { index, notification in
                         NotificationPopoverRow(
                             notification: notification,
-                            tabTitle: tabTitle(for: notification.tabId),
+                            tabTitle: tabTitles[notification.tabId],
                             onOpen: { open(notification) },
                             onClear: {
                                 withAnimation(.easeOut(duration: 0.18)) {
@@ -2310,6 +2367,7 @@ private struct NotificationsPopoverView: View {
                                 }
                             }
                         )
+                        .equatable()  // snapshot-boundary: skip unchanged rows (#5794)
                         if index < lastIndex {
                             Divider()
                                 .opacity(0.4)
@@ -2323,8 +2381,7 @@ private struct NotificationsPopoverView: View {
 
     private func emptyState(systemImage: String, title: String, subtitle: String?) -> some View {
         VStack(spacing: 10) {
-            Image(systemName: systemImage)
-                .cmuxSymbolRasterSize(30, weight: .light)
+            CmuxSystemSymbolImage(systemName: systemImage, pointSize: 30, weight: .light)
                 .foregroundColor(.secondary.opacity(0.7))
             Text(title)
                 .cmuxFont(size: 14, weight: .medium)
@@ -2340,9 +2397,6 @@ private struct NotificationsPopoverView: View {
         .padding(24)
     }
 
-    private func tabTitle(for tabId: UUID) -> String? {
-        AppDelegate.shared?.tabTitle(for: tabId)
-    }
 
     private var jumpToUnreadShortcut: StoredShortcut {
         let _ = keyboardShortcutSettingsObserver.revision
@@ -2374,7 +2428,12 @@ private struct NotificationsPopoverView: View {
     }
 }
 
-private struct NotificationPopoverRow: View {
+struct NotificationPopoverRow: View, Equatable {
+    // Closures excluded from ==; equality is the rendered snapshot only (#2586).
+    nonisolated static func == (lhs: NotificationPopoverRow, rhs: NotificationPopoverRow) -> Bool {
+        lhs.notification == rhs.notification && lhs.tabTitle == rhs.tabTitle
+    }
+
     let notification: TerminalNotification
     let tabTitle: String?
     let onOpen: () -> Void
@@ -2507,8 +2566,7 @@ private struct NotificationPopoverRow: View {
             ZStack {
                 Circle()
                     .fill(Color.primary.opacity(0.1))
-                Image(systemName: "xmark")
-                    .cmuxSymbolRasterSize(9, weight: .bold)
+                CmuxSystemSymbolImage(systemName: "xmark", pointSize: 9, weight: .bold)
                     .foregroundColor(.primary.opacity(0.7))
             }
             .frame(width: 20, height: 20)
@@ -2676,6 +2734,7 @@ final class UpdateTitlebarAccessoryController {
     private var pendingAttachRetries: [ObjectIdentifier: Int] = [:]
     private var startupScanWorkItems: [DispatchWorkItem] = []
     private let controlsIdentifier = NSUserInterfaceItemIdentifier("cmux.titlebarControls")
+    private let mobileConnectIdentifier = NSUserInterfaceItemIdentifier("cmux.titlebarMobileConnect")
     private let controlsControllers = NSHashTable<TitlebarControlsAccessoryViewController>.weakObjects()
     private var lastKnownPresentationMode: WorkspacePresentationModeSettings.Mode = WorkspacePresentationModeSettings.mode()
     private var detachedNotificationsPopover: NSPopover?
@@ -2837,6 +2896,12 @@ final class UpdateTitlebarAccessoryController {
             controlsControllers.add(controls)
         }
 
+        if !window.titlebarAccessoryViewControllers.contains(where: { $0.view.identifier == mobileConnectIdentifier }) {
+            let mobileConnect = MobileConnectTitlebarAccessoryViewController()
+            mobileConnect.view.identifier = mobileConnectIdentifier
+            window.addTitlebarAccessoryViewController(mobileConnect)
+        }
+
         attachedWindows.add(window)
         applyAccessoryVisibility(for: window)
 
@@ -2858,7 +2923,8 @@ final class UpdateTitlebarAccessoryController {
         let shouldHide = WorkspacePresentationModeSettings.mode() == .minimal
             || window.styleMask.contains(.fullScreen)
         for accessory in window.titlebarAccessoryViewControllers
-            where accessory.view.identifier == controlsIdentifier {
+            where accessory.view.identifier == controlsIdentifier
+                || accessory.view.identifier == mobileConnectIdentifier {
             accessory.isHidden = shouldHide
             accessory.view.isHidden = shouldHide
             accessory.view.alphaValue = shouldHide ? 0 : 1
@@ -2873,7 +2939,7 @@ final class UpdateTitlebarAccessoryController {
         }
         let matchingIndices = window.titlebarAccessoryViewControllers.indices.reversed().filter { index in
             let id = window.titlebarAccessoryViewControllers[index].view.identifier
-            return id == controlsIdentifier
+            return id == controlsIdentifier || id == mobileConnectIdentifier
         }
         guard !matchingIndices.isEmpty || attachedWindows.contains(window) else { return }
 

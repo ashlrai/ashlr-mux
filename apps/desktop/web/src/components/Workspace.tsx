@@ -805,7 +805,7 @@ export function Workspace({
                 initialCommand={startupByPanelId.get(panelId)?.initialCommand}
                 initialInput={startupByPanelId.get(panelId)?.initialInput}
                 environment={startupByPanelId.get(panelId)?.environment}
-                isActive={kind === "terminal" && activePanelId === panelId}
+                isActive={terminalPaneIsActive(kind, activePanelId, panelId)}
                 onOpenLinkInBrowser={
                   openTerminalLinksInCmuxBrowser
                     ? (url) => openBrowserUrl(panelId, url)
@@ -1410,6 +1410,14 @@ export function browserHistoryNavigationAvailability(
     canGoBack: backHistory?.some(isSerializableBrowserHistoryUrl) ?? false,
     canGoForward: forwardHistory?.some(isSerializableBrowserHistoryUrl) ?? false,
   };
+}
+
+export function terminalPaneIsActive(
+  kind: SurfaceKind,
+  activePanelId: string | undefined,
+  panelId: string,
+): boolean {
+  return kind === "terminal" && activePanelId === panelId;
 }
 
 function workspaceUnreadPanelIds(

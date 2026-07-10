@@ -164,6 +164,7 @@ const {
   dispatchPanelFlash,
   dispatchPanelFlashSequence,
   isSerializableBrowserHistoryUrl,
+  terminalPaneIsActive,
 } = await import("./Workspace");
 
 function pane(
@@ -464,42 +465,10 @@ describe("Workspace focused-pane tracking", () => {
     expect(focusedPaneStore.get()).toBe("a");
   });
 
-  test("visible focused terminal pane receives active focus restoration state", () => {
-    focusedPaneStore.focus("right");
-    render(
-      split(
-        "horizontal",
-        0.5,
-        pane("browser", "left", { browser_url: "https://example.com" }),
-        pane(undefined, "right"),
-      ),
-    );
-
-    expect(
-      terminalSurfaceProps.map((props) => [props.panelId, props.isActive]),
-    ).toEqual([
-      ["left", false],
-      ["right", true],
-    ]);
-  });
-
-  test("focused browser pane does not mark its hidden terminal active", () => {
-    focusedPaneStore.focus("left");
-    render(
-      split(
-        "horizontal",
-        0.5,
-        pane("browser", "left", { browser_url: "https://example.com" }),
-        pane(undefined, "right"),
-      ),
-    );
-
-    expect(
-      terminalSurfaceProps.map((props) => [props.panelId, props.isActive]),
-    ).toEqual([
-      ["left", false],
-      ["right", false],
-    ]);
+  test("focus restoration activates only the visible focused terminal", () => {
+    expect(terminalPaneIsActive("terminal", "right", "right")).toBe(true);
+    expect(terminalPaneIsActive("terminal", "left", "right")).toBe(false);
+    expect(terminalPaneIsActive("browser", "left", "left")).toBe(false);
   });
 
   test("cmd-click terminal links are routed to the pane browser surface", () => {

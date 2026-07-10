@@ -1,4 +1,5 @@
 Resources/markdown-viewer/diff-viewer/**/*.mjs -whitespace
+web/patches/** -whitespace
 
 # Resources/markdown-viewer holds vendored third-party runtime bundles (mermaid,
 # vega, highlight.js, the Pierre/Shiki diff renderer + per-language grammars and
