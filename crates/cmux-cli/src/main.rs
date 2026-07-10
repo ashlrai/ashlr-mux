@@ -7,7 +7,10 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
-use std::{io::Write, thread};
+use std::{
+    io::{Read, Write},
+    thread,
+};
 
 use cmux_cli::{
     classify_command, parse_global_options, plan_with_args, ClassifyEnv, CliError, DispatchPlan,
@@ -104,8 +107,74 @@ fn dispatch(
             print!("{output}");
             Ok(())
         }
+        DispatchPlan::RunFeedHook(args) => run_feed_hook_command(options, &args),
         DispatchPlan::Fail(error) => Err(error),
     }
+}
+
+#[cfg(windows)]
+fn run_feed_hook_command(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
+    let mut stdin =
+        std::io::stdin().take((cmux_cli::feed_hook::FEED_HOOK_MAX_STDIN_BYTES + 1) as u64);
+    let mut input = Vec::new();
+    stdin
+        .read_to_end(&mut input)
+        .map_err(|error| CliError::new(format!("failed to read Feed hook stdin: {error}")))?;
+    let environment = cmux_cli::feed_hook::FeedHookEnvironment {
+        surface_id: std::env::var("CMUX_SURFACE_ID").ok(),
+        workspace_id: std::env::var(CMUX_WORKSPACE_ID_ENV).ok(),
+        agent_pid: feed_hook_agent_pid(args),
+    };
+    let Some(prepared) = cmux_cli::feed_hook::prepare_feed_hook(
+        args,
+        &input,
+        &environment,
+        &uuid::Uuid::new_v4().to_string(),
+    )?
+    else {
+        println!("{{}}");
+        return Ok(());
+    };
+    let result = match call_control_command(options, "feed.push", &prepared.params) {
+        Ok(result) => result,
+        Err(_) => {
+            println!("{{}}");
+            return Ok(());
+        }
+    };
+    let output = (result.get("status").and_then(serde_json::Value::as_str) == Some("resolved"))
+        .then(|| result.get("decision"))
+        .flatten()
+        .map(|decision| cmux_cli::feed_hook::render_agent_decision(&prepared, decision))
+        .unwrap_or_else(|| "{}".to_string());
+    println!("{output}");
+    Ok(())
+}
+
+#[cfg(windows)]
+fn feed_hook_agent_pid(args: &[String]) -> i64 {
+    let source = args.iter().enumerate().find_map(|(index, arg)| {
+        (arg == "--source")
+            .then(|| args.get(index + 1).cloned())
+            .flatten()
+            .or_else(|| arg.strip_prefix("--source=").map(str::to_string))
+    });
+    let key = source.map(|source| {
+        format!(
+            "CMUX_{}_PID",
+            source
+                .chars()
+                .map(|character| if character.is_ascii_alphanumeric() {
+                    character.to_ascii_uppercase()
+                } else {
+                    '_'
+                })
+                .collect::<String>()
+        )
+    });
+    key.and_then(|key| std::env::var(key).ok())
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or_else(|| i64::from(std::process::id()))
 }
 
 /// Print the version summary to stdout. The standalone Rust CLI reports the
@@ -1161,6 +1230,13 @@ fn generated_relay_port(unique_id: &str) -> u16 {
 fn run_rpc_command(_options: &GlobalOptions, _command_args: &[String]) -> Result<(), CliError> {
     Err(CliError::new(
         "socket commands are only supported on Windows in this build",
+    ))
+}
+
+#[cfg(not(windows))]
+fn run_feed_hook_command(_options: &GlobalOptions, _args: &[String]) -> Result<(), CliError> {
+    Err(CliError::new(
+        "Feed hook socket bridging is only supported on Windows in this build",
     ))
 }
 

@@ -55,6 +55,8 @@ pub enum DispatchPlan {
     RunDiffViewerBranch(Vec<String>),
     /// Run a local hooks installer/uninstaller command.
     RunHooksInstaller { command: String, args: Vec<String> },
+    /// Read one agent hook payload from stdin and bridge it through `feed.push`.
+    RunFeedHook(Vec<String>),
     /// Abort with this error and its exit code.
     Fail(CliError),
 }
@@ -331,7 +333,7 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
             "Usage:\n  cmux markdown [--path PATH]\n\nOpens a markdown surface in the selected pane.",
         ),
         "hooks" => Some(
-            "Usage:\n  cmux hooks claude install [--yes|-y]\n  cmux hooks setup --agent claude [--yes|-y]\n\nShows the cmux.json diff for enabling Claude Code integration, prompts for confirmation, and applies it.",
+            "Usage:\n  cmux hooks feed --source AGENT [--event EVENT]\n  cmux hooks claude install [--yes|-y]\n  cmux hooks setup --agent claude [--yes|-y]\n\nBridges agent events into Feed or installs the Claude Code integration.",
         ),
         _ => None,
     }
@@ -384,6 +386,10 @@ pub fn plan_with_args(action: &PreSocketAction, command: &str, args: &[String]) 
                 DispatchPlan::RunEvents(args.to_vec())
             } else if command == "ssh" {
                 DispatchPlan::RunSsh(args.to_vec())
+            } else if command == "feed-hook" {
+                DispatchPlan::RunFeedHook(args.to_vec())
+            } else if command == "hooks" && args.first().is_some_and(|arg| arg == "feed") {
+                DispatchPlan::RunFeedHook(args[1..].to_vec())
             } else if matches!(command, "hooks" | "setup-hooks" | "uninstall-hooks") {
                 DispatchPlan::RunHooksInstaller {
                     command: command.to_owned(),
@@ -636,6 +642,31 @@ mod tests {
                 assert_eq!(args, vec!["claude", "install"]);
             }
             other => panic!("expected RunHooksInstaller, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn feed_hook_spellings_run_the_local_bridge() {
+        for (command, args, expected) in [
+            (
+                "hooks",
+                vec![
+                    "feed".to_string(),
+                    "--source".to_string(),
+                    "claude".to_string(),
+                ],
+                vec!["--source".to_string(), "claude".to_string()],
+            ),
+            (
+                "feed-hook",
+                vec!["--source".to_string(), "claude".to_string()],
+                vec!["--source".to_string(), "claude".to_string()],
+            ),
+        ] {
+            match plan_with_args(&PreSocketAction::NeedsSocket, command, &args) {
+                DispatchPlan::RunFeedHook(planned) => assert_eq!(planned, expected),
+                other => panic!("expected RunFeedHook, got {other:?}"),
+            }
         }
     }
 
