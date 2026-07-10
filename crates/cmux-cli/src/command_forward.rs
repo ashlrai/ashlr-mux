@@ -171,6 +171,10 @@ pub fn control_command_for(
             "config.reload",
             reload_config_params(args)?,
         )),
+        "refresh-surfaces" => Some(ControlCommand::new(
+            "surface.refresh_all",
+            serde_json::json!({}),
+        )),
         "identify" => Some(ControlCommand::new(
             "system.identify",
             serde_json::json!({}),
@@ -3399,6 +3403,10 @@ mod tests {
         assert_eq!(
             mapped("list-notifications", &[]).method,
             "notification.list"
+        );
+        assert_eq!(
+            mapped("refresh-surfaces", &[]).method,
+            "surface.refresh_all"
         );
     }
 

@@ -162,6 +162,7 @@ const {
   Workspace,
   browserHistoryNavigationAvailability,
   dispatchNativePanelFlash,
+  dispatchNativeSurfaceRefresh,
   dispatchPanelFlash,
   dispatchPanelFlashSequence,
   isSerializableBrowserHistoryUrl,
@@ -270,6 +271,31 @@ describe("dispatchPanelFlash", () => {
       dispatchNativePanelFlash({});
 
       expect(events).toEqual(["surface-2"]);
+    } finally {
+      Object.defineProperty(globalThis, "window", {
+        configurable: true,
+        value: previousWindow,
+      });
+    }
+  });
+});
+
+describe("dispatchNativeSurfaceRefresh", () => {
+  test("dispatches one resize event for mounted surface refits", () => {
+    const previousWindow = globalThis.window;
+    const events: string[] = [];
+    try {
+      Object.defineProperty(globalThis, "window", {
+        configurable: true,
+        value: {
+          dispatchEvent(event: Event) {
+            events.push(event.type);
+            return true;
+          },
+        },
+      });
+      dispatchNativeSurfaceRefresh();
+      expect(events).toEqual(["resize"]);
     } finally {
       Object.defineProperty(globalThis, "window", {
         configurable: true,

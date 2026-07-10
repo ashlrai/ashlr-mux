@@ -66,6 +66,7 @@ use crate::terminal::{
 const CONTROL_PIPE_BASE_NAME: &str = "cmux";
 const CONTROL_EVENTS_CHANGED_EVENT: &str = "cmux://events-changed";
 const PANEL_FLASH_EVENT: &str = "cmux://panel-flash";
+const SURFACE_REFRESH_EVENT: &str = "cmux://refresh-surfaces";
 const CUSTOM_SIDEBAR_RELOAD_EVENT: &str = "cmux://custom-sidebar-reload";
 const CUSTOM_SIDEBAR_SELECT_EVENT: &str = "cmux://custom-sidebar-select";
 const CUSTOM_SIDEBAR_ACTION_POLICY: &str = "cmux-custom-sidebar-safe-default";
@@ -886,6 +887,7 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "surface.health",
     "surface.clear_history",
     "surface.trigger_flash",
+    "surface.refresh_all",
     "surface.read_text",
     "surface.send_text",
     "surface.send_key",
@@ -1166,6 +1168,7 @@ fn handle_control_request(app: &AppHandle, request: ControlRequest) -> ControlCa
         "surface.health" => surface_health(app, &request.params),
         "surface.clear_history" => surface_clear_history(app, &request.params),
         "surface.trigger_flash" => surface_trigger_flash(app, &request.params),
+        "surface.refresh_all" => surface_refresh_all(app),
         "surface.read_text" => surface_read_text(app, &request.params),
         "surface.send_text" => surface_send_text(app, &request.params),
         "surface.send_key" => surface_send_key(app, &request.params),
@@ -4342,6 +4345,20 @@ fn surface_trigger_flash(
         "surface_ref": surface_ref_for_panel(&current, workspace_index, &panel_id),
         "window_id": window.window_id,
         "window_ref": window.window_id.as_ref().map(|_| "window:1"),
+    }))
+}
+
+fn surface_refresh_all(app: &AppHandle) -> ControlCallResult {
+    if let Err(error) = app.emit(SURFACE_REFRESH_EVENT, json!({"refresh": true})) {
+        return ControlCallResult::Err {
+            code: "internal_error".to_string(),
+            message: format!("Failed to emit surface refresh event: {error}"),
+            data: None,
+        };
+    }
+    ok(json!({
+        "accepted": true,
+        "event": SURFACE_REFRESH_EVENT,
     }))
 }
 
@@ -11294,6 +11311,7 @@ mod tests {
             "surface.report_shell_state",
             "surface.clear_history",
             "surface.trigger_flash",
+            "surface.refresh_all",
             "surface.read_text",
             "workspace.report_pr",
             "workspace.report_review",

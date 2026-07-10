@@ -405,6 +405,7 @@ fn format_control_result(method: &str, result: &serde_json::Value) -> String {
         | "notification.create"
         | "session.restore_previous"
         | "surface.clear_history"
+        | "surface.refresh_all"
         | "surface.trigger_flash" => "OK".to_string(),
         "window.list" => format_window_entries(result),
         "window.current" => result
@@ -647,6 +648,7 @@ mod control_result_tests {
             "notification.mark_read",
             "notification.clear",
             "notification.create",
+            "surface.refresh_all",
         ] {
             assert_eq!(format_control_result(method, &serde_json::json!({})), "OK");
         }

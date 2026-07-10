@@ -88,6 +88,9 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
         "reload-config" => Some(
             "Usage:\n  cmux reload-config\n\nReloads cmux.json from disk and broadcasts the updated configuration.",
         ),
+        "refresh-surfaces" => Some(
+            "Usage:\n  cmux refresh-surfaces\n\nRequests mounted surfaces to refresh their layout and terminal fit.",
+        ),
         "identify" => Some(
             "Usage:\n  cmux identify\n\nPrints desktop/control-socket identity metadata.",
         ),
@@ -529,6 +532,7 @@ mod tests {
             "new-terminal-tab",
             "notify",
             "reload-config",
+            "refresh-surfaces",
             "rename-window",
             "reopen-closed-browser-tab",
             "restore-session",

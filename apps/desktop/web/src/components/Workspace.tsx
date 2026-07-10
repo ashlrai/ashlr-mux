@@ -73,6 +73,7 @@ interface PaneTerminalStartup {
 
 const PANEL_FLASH_EVENT = "cmux:panel-flash";
 const NATIVE_PANEL_FLASH_EVENT = "cmux://panel-flash";
+const NATIVE_SURFACE_REFRESH_EVENT = "cmux://refresh-surfaces";
 
 interface PanelFlashDetail {
   panelId: string;
@@ -98,6 +99,12 @@ export function dispatchNativePanelFlash(payload: unknown): void {
     return;
   }
   dispatchPanelFlash(panelId);
+}
+
+export function dispatchNativeSurfaceRefresh(): void {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event("resize"));
+  }
 }
 
 export function dispatchPanelFlashSequence(
@@ -252,6 +259,27 @@ export function Workspace({
       })
       .catch((error) => {
         console.error("panel flash listener failed", error);
+      });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void host
+      .on(NATIVE_SURFACE_REFRESH_EVENT, dispatchNativeSurfaceRefresh)
+      .then((nextUnlisten) => {
+        if (disposed) {
+          nextUnlisten();
+        } else {
+          unlisten = nextUnlisten;
+        }
+      })
+      .catch((error) => {
+        console.error("surface refresh listener failed", error);
       });
     return () => {
       disposed = true;
