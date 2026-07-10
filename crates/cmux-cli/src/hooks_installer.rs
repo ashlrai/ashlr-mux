@@ -9,6 +9,8 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use base64::Engine as _;
+
 use crate::invocation::CliError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,6 +33,7 @@ enum HooksRequest {
     Omp { yes: bool },
     Amp { yes: bool },
     Rovo { yes: bool },
+    Hermes { yes: bool },
 }
 
 const OPENCODE_SESSION_PLUGIN_SOURCE: &str =
@@ -74,6 +77,7 @@ pub fn run_hooks_command(command: &str, args: &[String]) -> Result<String, CliEr
         HooksRequest::Omp { yes } => install_omp_hooks(yes),
         HooksRequest::Amp { yes } => install_amp_hooks(yes),
         HooksRequest::Rovo { yes } => install_rovo_hooks(yes),
+        HooksRequest::Hermes { yes } => install_hermes_hooks(yes),
     }
 }
 
@@ -141,6 +145,12 @@ fn parse_hooks_subcommand(tokens: &[String], yes: bool) -> Result<HooksRequest, 
                 "unsupported Rovo Dev hooks action '{other}'; use 'cmux hooks rovodev install'"
             ))),
         },
+        Some("hermes-agent") | Some("hermes") => match tokens.get(1).map(String::as_str) {
+            None | Some("install") | Some("setup") => Ok(HooksRequest::Hermes { yes }),
+            Some(other) => Err(CliError::new(format!(
+                "unsupported Hermes Agent hooks action '{other}'; use 'cmux hooks hermes-agent install'"
+            ))),
+        },
         Some(agent) if nested_agent(agent).is_some() => match tokens.get(1).map(String::as_str) {
             None | Some("install") | Some("setup") => Ok(HooksRequest::Nested {
                 agent: agent.to_string(),
@@ -199,6 +209,7 @@ fn parse_setup_tokens(tokens: &[String], yes: bool) -> Result<HooksRequest, CliE
         Some("omp") => Ok(HooksRequest::Omp { yes }),
         Some("amp") => Ok(HooksRequest::Amp { yes }),
         Some("rovodev") | Some("rovo") => Ok(HooksRequest::Rovo { yes }),
+        Some("hermes-agent") | Some("hermes") => Ok(HooksRequest::Hermes { yes }),
         Some(agent) if nested_agent(agent).is_some() => Ok(HooksRequest::Nested {
             agent: agent.to_string(),
             yes,
@@ -483,14 +494,422 @@ fn rovo_event_block(events: &[(&str, &str)], indent: &str, markers: bool) -> Vec
         lines.push(format!("{indent}- name: {name}"));
         lines.push(format!("{indent}  commands:"));
         lines.push(format!(
-            "{indent}    - command: \"{}\"",
-            command.replace('\\', "\\\\").replace('"', "\\\"")
+            "{indent}    - command: {}",
+            yaml_double_quoted(command)
         ));
     }
     if markers {
         lines.push(format!("{indent}{ROVO_END_MARKER}"));
     }
     lines
+}
+
+const HERMES_BEGIN_MARKER: &str = "# cmux hooks hermes-agent begin";
+const HERMES_END_MARKER: &str = "# cmux hooks hermes-agent end";
+const HERMES_RESTORE_PREFIX: &str = "# cmux hooks hermes-agent begin restore-line-base64:";
+
+#[derive(Clone)]
+struct HermesEvent {
+    name: &'static str,
+    command: String,
+    timeout: u64,
+}
+
+fn hermes_events() -> Vec<HermesEvent> {
+    let mut events = Vec::new();
+    for (name, action) in [
+        ("on_session_start", "session-start"),
+        ("pre_llm_call", "prompt-submit"),
+        ("post_llm_call", "agent-response"),
+        ("pre_approval_request", "notification"),
+        ("post_approval_response", "approval-response"),
+        ("on_session_end", "session-end"),
+        ("on_session_finalize", "session-finalize"),
+        ("on_session_reset", "session-start"),
+    ] {
+        events.push(HermesEvent {
+            name,
+            command: format!("sh -c 'cmux hooks hermes-agent {action}'"),
+            timeout: 5,
+        });
+    }
+    for name in [
+        "pre_tool_call",
+        "post_tool_call",
+        "pre_approval_request",
+        "post_approval_response",
+    ] {
+        events.push(HermesEvent {
+            name,
+            command: format!("sh -c 'cmux hooks feed --source hermes-agent --event {name}'"),
+            timeout: 120,
+        });
+    }
+    events
+}
+
+fn install_hermes_hooks(yes: bool) -> Result<String, CliError> {
+    let config_dir = if let Some(path) = nonempty_env("HERMES_HOME") {
+        expand_home_path(PathBuf::from(path))?
+    } else {
+        home_dir()
+            .map(|home| home.join(".hermes"))
+            .ok_or_else(|| CliError::new("unable to determine Hermes Agent config directory"))?
+    };
+    if !config_dir.is_dir() {
+        return Ok(format!(
+            "{} does not exist. Install Hermes Agent first.\n",
+            config_dir.display()
+        ));
+    }
+    let config_path = config_dir.join("config.yaml");
+    let allowlist_path = config_dir.join("shell-hooks-allowlist.json");
+    let config_before = read_optional_text(&config_path)?;
+    let config_plan = plan_hermes_hooks_update(&config_before, &config_path);
+    let allowlist_before = read_optional_text(&allowlist_path)?;
+    let allowlist_plan = plan_hermes_allowlist_update(&allowlist_before)?;
+    if config_plan.changed && !confirm_hook_change(&config_plan.diff, yes)? {
+        return Ok("Aborted.\n".to_string());
+    }
+    let mut output = String::new();
+    if config_plan.changed {
+        write_text_exact(&config_path, &config_plan.after)?;
+        output.push_str(&format!(
+            "Hermes Agent hooks installed at {}\n",
+            config_path.display()
+        ));
+    } else {
+        output.push_str(&format!(
+            "Hermes Agent hooks already up to date at {}\n",
+            config_path.display()
+        ));
+    }
+    if allowlist_plan.changed {
+        write_text_exact(&allowlist_path, &allowlist_plan.after)?;
+        output.push_str(&format!(
+            "Approved Hermes Agent cmux shell hooks in {}\n",
+            allowlist_path.display()
+        ));
+    }
+    Ok(output)
+}
+
+fn plan_hermes_hooks_update(before: &str, path: &Path) -> ClaudeIntegrationPlan {
+    let before = serialize_yaml_lines(&yaml_lines(before));
+    let mut lines = remove_hermes_blocks(yaml_lines(&before));
+    let groups = hermes_event_groups();
+    if let Some(hooks_index) = hermes_hooks_index(&lines) {
+        let hooks_restore = if yaml_inline_empty_line(&lines[hooks_index]) {
+            let original = lines[hooks_index].clone();
+            lines[hooks_index] = "hooks:".to_string();
+            Some(original)
+        } else {
+            None
+        };
+        let child_indent = format!("{}  ", leading_whitespace(&lines[hooks_index]));
+        let existing = hermes_direct_event_indexes(&lines, hooks_index, &child_indent);
+        let mut missing = Vec::new();
+        let mut matched = Vec::new();
+        for group in &groups {
+            if let Some(index) = existing
+                .iter()
+                .find_map(|(name, index)| (name == &group.0).then_some(*index))
+            {
+                matched.push((group, index));
+            } else {
+                missing.push(group);
+            }
+        }
+        matched.sort_by_key(|(_, index)| std::cmp::Reverse(*index));
+        for (group, event_index) in matched {
+            let restore = if yaml_inline_empty_line(&lines[event_index]) {
+                let original = lines[event_index].clone();
+                let colon = original.find(':').unwrap_or(original.len() - 1);
+                lines[event_index] = original[..=colon].to_string();
+                Some(original)
+            } else {
+                None
+            };
+            let indent = format!("{}  ", leading_whitespace(&lines[event_index]));
+            let block = hermes_entries_block(&group.1, &indent, true, restore.as_deref());
+            lines.splice(event_index + 1..event_index + 1, block);
+        }
+        if !missing.is_empty() {
+            let block =
+                hermes_sections_block(&missing, &child_indent, true, hooks_restore.as_deref());
+            lines.splice(hooks_index + 1..hooks_index + 1, block);
+        }
+    } else {
+        if lines.last().is_some_and(|line| !line.trim().is_empty()) {
+            lines.push(String::new());
+        }
+        lines.push(HERMES_BEGIN_MARKER.to_string());
+        lines.push("hooks:".to_string());
+        lines.extend(hermes_sections_block(
+            &groups.iter().collect::<Vec<_>>(),
+            "  ",
+            false,
+            None,
+        ));
+        lines.push(HERMES_END_MARKER.to_string());
+    }
+    let after = serialize_yaml_lines(&lines);
+    ClaudeIntegrationPlan {
+        changed: before != after,
+        diff: unified_diff(path, &before, &after),
+        before,
+        after,
+    }
+}
+
+fn hermes_event_groups() -> Vec<(String, Vec<HermesEvent>)> {
+    let mut groups: Vec<(String, Vec<HermesEvent>)> = Vec::new();
+    for event in hermes_events() {
+        if let Some((_, events)) = groups.iter_mut().find(|(name, _)| name == event.name) {
+            events.push(event);
+        } else {
+            groups.push((event.name.to_string(), vec![event]));
+        }
+    }
+    groups
+}
+
+fn hermes_sections_block(
+    groups: &[&(String, Vec<HermesEvent>)],
+    indent: &str,
+    markers: bool,
+    restore: Option<&str>,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    if markers {
+        lines.push(format!("{indent}{}", hermes_begin_line(restore)));
+    }
+    for group in groups {
+        lines.push(format!("{indent}{}:", group.0));
+        lines.extend(hermes_hook_entries(&group.1, &format!("{indent}  ")));
+    }
+    if markers {
+        lines.push(format!("{indent}{HERMES_END_MARKER}"));
+    }
+    lines
+}
+
+fn hermes_entries_block(
+    events: &[HermesEvent],
+    indent: &str,
+    markers: bool,
+    restore: Option<&str>,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    if markers {
+        lines.push(format!("{indent}{}", hermes_begin_line(restore)));
+    }
+    lines.extend(hermes_hook_entries(events, indent));
+    if markers {
+        lines.push(format!("{indent}{HERMES_END_MARKER}"));
+    }
+    lines
+}
+
+fn hermes_hook_entries(events: &[HermesEvent], indent: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    for event in events {
+        lines.push(format!(
+            "{indent}- command: {}",
+            yaml_double_quoted(&event.command)
+        ));
+        lines.push(format!("{indent}  timeout: {}", event.timeout));
+    }
+    lines
+}
+
+fn hermes_begin_line(restore: Option<&str>) -> String {
+    match restore {
+        Some(line) => format!(
+            "{HERMES_RESTORE_PREFIX} {}",
+            base64::engine::general_purpose::STANDARD.encode(line)
+        ),
+        None => HERMES_BEGIN_MARKER.to_string(),
+    }
+}
+
+fn remove_hermes_blocks(mut lines: Vec<String>) -> Vec<String> {
+    let mut index = 0;
+    while index < lines.len() {
+        let trimmed = lines[index].trim();
+        if trimmed != HERMES_BEGIN_MARKER && !trimmed.starts_with(HERMES_RESTORE_PREFIX) {
+            index += 1;
+            continue;
+        }
+        let Some(end) = ((index + 1)..lines.len())
+            .find(|candidate| lines[*candidate].trim() == HERMES_END_MARKER)
+        else {
+            index += 1;
+            continue;
+        };
+        if let Some(encoded) = trimmed.strip_prefix(HERMES_RESTORE_PREFIX) {
+            if index > 0 {
+                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(encoded.trim())
+                {
+                    if let Ok(restored) = String::from_utf8(bytes) {
+                        lines[index - 1] = restored;
+                        lines.drain(index..=end);
+                        continue;
+                    }
+                }
+            }
+        }
+        let start = if index > 0 && lines[index - 1].trim().is_empty() {
+            index - 1
+        } else {
+            index
+        };
+        lines.drain(start..=end);
+        index = start;
+    }
+    lines
+}
+
+fn hermes_hooks_index(lines: &[String]) -> Option<usize> {
+    lines.iter().position(|line| {
+        leading_whitespace(line).is_empty()
+            && line
+                .strip_prefix("hooks:")
+                .is_some_and(yaml_inline_empty_suffix)
+    })
+}
+
+fn yaml_inline_empty_line(line: &str) -> bool {
+    line.find(':')
+        .is_some_and(|colon| yaml_inline_empty_suffix(&line[colon + 1..]))
+}
+
+fn yaml_inline_empty_suffix(suffix: &str) -> bool {
+    let value = suffix.split('#').next().unwrap_or_default().trim();
+    value.is_empty() || value == "{}" || value == "[]"
+}
+
+fn hermes_direct_event_indexes(
+    lines: &[String],
+    hooks_index: usize,
+    child_indent: &str,
+) -> Vec<(String, usize)> {
+    let mut indexes = Vec::new();
+    for (index, line) in lines.iter().enumerate().skip(hooks_index + 1) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if !line.starts_with(child_indent) {
+            break;
+        }
+        if leading_whitespace(line) != child_indent {
+            continue;
+        }
+        let Some(colon) = trimmed.find(':') else {
+            continue;
+        };
+        if yaml_inline_empty_suffix(&trimmed[colon + 1..]) {
+            indexes.push((trimmed[..colon].to_string(), index));
+        }
+    }
+    indexes
+}
+
+fn plan_hermes_allowlist_update(before: &str) -> Result<ClaudeIntegrationPlan, CliError> {
+    let before_value = if before.trim().is_empty() {
+        serde_json::json!({"approvals":[]})
+    } else {
+        serde_json::from_str(before)
+            .map_err(|error| CliError::new(format!("failed to parse Hermes allowlist: {error}")))?
+    };
+    let mut object = before_value
+        .as_object()
+        .cloned()
+        .ok_or_else(|| CliError::new("Hermes allowlist must be a JSON object"))?;
+    let approvals = object
+        .remove("approvals")
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default();
+    let mut passthrough = Vec::new();
+    let mut keyed = std::collections::BTreeMap::new();
+    for approval in approvals {
+        let event = approval.get("event").and_then(serde_json::Value::as_str);
+        let command = approval.get("command").and_then(serde_json::Value::as_str);
+        if let (Some(event), Some(command)) = (event, command) {
+            keyed.insert(format!("{event}\0{command}"), approval);
+        } else {
+            passthrough.push(approval);
+        }
+    }
+    let approved_at = current_rfc3339();
+    for event in hermes_events() {
+        let key = format!("{}\0{}", event.name, event.command);
+        keyed.entry(key).or_insert_with(|| {
+            serde_json::json!({
+                "event":event.name,
+                "command":event.command,
+                "approved_at":approved_at
+            })
+        });
+    }
+    passthrough.extend(keyed.into_values());
+    object.insert(
+        "approvals".to_string(),
+        serde_json::Value::Array(passthrough),
+    );
+    let after = serde_json::to_string_pretty(&object)
+        .map_err(|error| CliError::new(format!("failed to encode Hermes allowlist: {error}")))?;
+    let before = if before.trim().is_empty() {
+        serde_json::to_string_pretty(&serde_json::json!({"approvals":[]})).unwrap()
+    } else {
+        serde_json::to_string_pretty(&before_value).map_err(|error| {
+            CliError::new(format!("failed to normalize Hermes allowlist: {error}"))
+        })?
+    };
+    let path = PathBuf::from("shell-hooks-allowlist.json");
+    Ok(ClaudeIntegrationPlan {
+        changed: before != after,
+        diff: unified_diff(&path, &before, &after),
+        before,
+        after,
+    })
+}
+
+fn yaml_double_quoted(value: &str) -> String {
+    format!(
+        "\"{}\"",
+        value
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', "\\n")
+    )
+}
+
+fn current_rfc3339() -> String {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let days = seconds / 86_400;
+    let day_seconds = seconds % 86_400;
+    let shifted = days + 719_468;
+    let era = shifted / 146_097;
+    let day_of_era = shifted - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+    year += i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        day_seconds / 3_600,
+        (day_seconds % 3_600) / 60,
+        day_seconds % 60
+    )
 }
 
 fn install_opencode_hooks(yes: bool, project: bool) -> Result<String, CliError> {
@@ -1772,6 +2191,53 @@ mod tests {
                 .matches("# cmux hooks rovodev begin")
                 .count(),
             2
+        );
+    }
+
+    #[test]
+    fn hermes_yaml_plan_preserves_user_hooks_and_builds_allowlist() {
+        assert_eq!(
+            parse_hooks_request(
+                "hooks",
+                &["hermes-agent".into(), "install".into(), "--yes".into()],
+            )
+            .unwrap(),
+            HooksRequest::Hermes { yes: true }
+        );
+        let existing = "model: test\nhooks:\n  pre_tool_call:\n    - command: \"echo user\"\n      timeout: 10\n";
+        let plan = plan_hermes_hooks_update(existing, Path::new("C:/Users/me/.hermes/config.yaml"));
+        assert!(plan.after.contains("# cmux hooks hermes-agent begin"));
+        assert!(plan.after.contains("- command: \"echo user\""));
+        assert!(plan
+            .after
+            .contains("cmux hooks feed --source hermes-agent --event pre_tool_call"));
+        assert!(plan.after.contains("timeout: 120"));
+        assert_eq!(plan.after.matches("\n  pre_approval_request:").count(), 1);
+        assert!(!plan_hermes_hooks_update(&plan.after, &path()).changed);
+
+        let inline = plan_hermes_hooks_update("hooks: [] # intentionally empty\n", &path());
+        assert!(inline.after.contains("restore-line-base64:"));
+        assert!(!plan_hermes_hooks_update(&inline.after, &path()).changed);
+
+        let allowlist = plan_hermes_allowlist_update(
+            r#"{"approvals":[{"event":"custom","command":"echo user","scope":"user"}]}"#,
+        )
+        .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&allowlist.after).unwrap();
+        assert!(value["approvals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["scope"] == "user"));
+        assert!(value["approvals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["event"] == "pre_tool_call"));
+        assert!(
+            !plan_hermes_allowlist_update(&allowlist.after)
+                .unwrap()
+                .changed
         );
     }
 }
