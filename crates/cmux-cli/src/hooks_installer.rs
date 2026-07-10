@@ -25,6 +25,7 @@ enum HooksRequest {
     Kiro { yes: bool },
     Nested { agent: String, yes: bool },
     Cursor { yes: bool },
+    Antigravity { yes: bool },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -49,6 +50,7 @@ pub fn run_hooks_command(command: &str, args: &[String]) -> Result<String, CliEr
             install_nested_hooks(nested_agent(&agent).expect("parsed nested agent"), yes)
         }
         HooksRequest::Cursor { yes } => install_cursor_hooks(yes),
+        HooksRequest::Antigravity { yes } => install_antigravity_hooks(yes),
     }
 }
 
@@ -83,6 +85,12 @@ fn parse_hooks_subcommand(tokens: &[String], yes: bool) -> Result<HooksRequest, 
             None | Some("install") | Some("setup") => Ok(HooksRequest::Cursor { yes }),
             Some(other) => Err(CliError::new(format!(
                 "unsupported Cursor hooks action '{other}'; use 'cmux hooks cursor install'"
+            ))),
+        },
+        Some("antigravity") | Some("agy") => match tokens.get(1).map(String::as_str) {
+            None | Some("install") | Some("setup") => Ok(HooksRequest::Antigravity { yes }),
+            Some(other) => Err(CliError::new(format!(
+                "unsupported Antigravity hooks action '{other}'; use 'cmux hooks antigravity install'"
             ))),
         },
         Some(agent) if nested_agent(agent).is_some() => match tokens.get(1).map(String::as_str) {
@@ -134,6 +142,7 @@ fn parse_setup_tokens(tokens: &[String], yes: bool) -> Result<HooksRequest, CliE
         Some("claude") | Some("claude-code") => Ok(HooksRequest::Claude { yes }),
         Some("kiro") => Ok(HooksRequest::Kiro { yes }),
         Some("cursor") => Ok(HooksRequest::Cursor { yes }),
+        Some("antigravity") | Some("agy") => Ok(HooksRequest::Antigravity { yes }),
         Some(agent) if nested_agent(agent).is_some() => Ok(HooksRequest::Nested {
             agent: agent.to_string(),
             yes,
@@ -143,6 +152,82 @@ fn parse_setup_tokens(tokens: &[String], yes: bool) -> Result<HooksRequest, CliE
         ))),
         None => Err(CliError::new("cmux hooks setup requires --agent AGENT")),
     }
+}
+
+fn install_antigravity_hooks(yes: bool) -> Result<String, CliError> {
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .ok_or_else(|| CliError::new("unable to determine Antigravity config directory"))?;
+    let path = home.join(".gemini").join("config").join("hooks.json");
+    let before = read_config_or_empty_object(&path)?;
+    let plan = plan_antigravity_hooks_update(&before, &path)?;
+    if !plan.changed {
+        return Ok(format!(
+            "Antigravity hooks already up to date at {}\n",
+            path.display()
+        ));
+    }
+    if !confirm_hook_change(&plan.diff, yes)? {
+        return Ok("Aborted.\n".to_string());
+    }
+    write_config(&path, &plan.after)?;
+    Ok(format!(
+        "Antigravity hooks installed at {}\n",
+        path.display()
+    ))
+}
+
+fn plan_antigravity_hooks_update(
+    before: &str,
+    path: &Path,
+) -> Result<ClaudeIntegrationPlan, CliError> {
+    let before = normalize_config_text(before)?;
+    let mut value: serde_json::Value = serde_json::from_str(&before)
+        .map_err(|error| CliError::new(format!("failed to parse Antigravity config: {error}")))?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| CliError::new("Antigravity config must be a JSON object"))?;
+    let mut group = serde_json::Map::new();
+    for (event, action) in [
+        ("SessionStart", "session-start"),
+        ("PreInvocation", "prompt-submit"),
+        ("Stop", "stop"),
+        ("turn-completion", "stop"),
+        ("Notification", "notification"),
+        ("SessionEnd", "session-end"),
+    ] {
+        group.insert(
+            event.to_string(),
+            serde_json::json!([{
+                "type":"command",
+                "command":format!("cmux hooks antigravity {action}"),
+                "timeout":10
+            }]),
+        );
+    }
+    for event in ["PreToolUse", "PostToolUse"] {
+        group.insert(
+            event.to_string(),
+            serde_json::json!([{
+                "matcher":"*",
+                "hooks":[{
+                    "type":"command",
+                    "command":format!("cmux hooks feed --source antigravity --event {event}"),
+                    "timeout":120
+                }]
+            }]),
+        );
+    }
+    object.insert("cmux".to_string(), serde_json::Value::Object(group));
+    let after = serde_json::to_string_pretty(&value)
+        .map_err(|error| CliError::new(format!("failed to encode Antigravity config: {error}")))?;
+    Ok(ClaudeIntegrationPlan {
+        changed: before != after,
+        diff: unified_diff(path, &before, &after),
+        before,
+        after,
+    })
 }
 
 fn install_cursor_hooks(yes: bool) -> Result<String, CliError> {
@@ -967,6 +1052,35 @@ mod tests {
             .contains("hooks feed --source cursor --event beforeShellExecution"));
         assert!(
             !plan_cursor_hooks_update(&plan.after, &path())
+                .unwrap()
+                .changed
+        );
+    }
+
+    #[test]
+    fn antigravity_named_group_plan_preserves_other_groups_and_alias() {
+        assert_eq!(
+            parse_hooks_request("hooks", &["agy".into(), "install".into(), "--yes".into()])
+                .unwrap(),
+            HooksRequest::Antigravity { yes: true }
+        );
+        let plan = plan_antigravity_hooks_update(
+            r#"{"other":{"PreToolUse":[{"command":"user-hook"}]},"cmux":{"old":true}}"#,
+            &PathBuf::from("C:/Users/me/.gemini/config/hooks.json"),
+        )
+        .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&plan.after).unwrap();
+        assert_eq!(value["other"]["PreToolUse"][0]["command"], "user-hook");
+        assert!(value["cmux"].get("old").is_none());
+        assert_eq!(value["cmux"]["SessionStart"][0]["timeout"], 10);
+        assert_eq!(value["cmux"]["PreToolUse"][0]["matcher"], "*");
+        assert_eq!(value["cmux"]["PreToolUse"][0]["hooks"][0]["timeout"], 120);
+        assert!(value["cmux"]["PostToolUse"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .contains("hooks feed --source antigravity --event PostToolUse"));
+        assert!(
+            !plan_antigravity_hooks_update(&plan.after, &path())
                 .unwrap()
                 .changed
         );
