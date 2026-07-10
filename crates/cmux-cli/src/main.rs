@@ -145,9 +145,20 @@ fn run_feed_hook_command(options: &GlobalOptions, args: &[String]) -> Result<(),
     let output = (result.get("status").and_then(serde_json::Value::as_str) == Some("resolved"))
         .then(|| result.get("decision"))
         .flatten()
-        .map(|decision| cmux_cli::feed_hook::render_agent_decision(&prepared, decision))
-        .unwrap_or_else(|| "{}".to_string());
-    println!("{output}");
+        .map(|decision| cmux_cli::feed_hook::render_agent_decision_output(&prepared, decision));
+    let Some(output) = output else {
+        println!("{{}}");
+        return Ok(());
+    };
+    if let Some(stderr) = output.stderr {
+        eprintln!("{stderr}");
+    }
+    if !output.stdout.is_empty() {
+        println!("{}", output.stdout);
+    }
+    if output.exit_code != 0 {
+        std::process::exit(output.exit_code.into());
+    }
     Ok(())
 }
 

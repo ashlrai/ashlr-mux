@@ -319,7 +319,47 @@ fn is_side_effecting_tool(tool_name: &str, source: &str) -> bool {
         )
 }
 
-pub fn render_agent_decision(prepared: &PreparedFeedHook, decision: &Value) -> String {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentDecisionOutput {
+    pub stdout: String,
+    pub stderr: Option<String>,
+    pub exit_code: u8,
+}
+
+pub fn render_agent_decision_output(
+    prepared: &PreparedFeedHook,
+    decision: &Value,
+) -> AgentDecisionOutput {
+    if prepared.source == "kiro"
+        && decision.get("kind").and_then(Value::as_str) == Some("permission")
+    {
+        let mode = decision
+            .get("mode")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .map(str::to_ascii_lowercase);
+        if mode
+            .as_deref()
+            .is_some_and(|mode| matches!(mode, "once" | "always" | "all" | "bypass"))
+        {
+            return AgentDecisionOutput {
+                stdout: "{}".to_string(),
+                stderr: None,
+                exit_code: 0,
+            };
+        }
+        return AgentDecisionOutput {
+            stdout: String::new(),
+            stderr: Some(if mode.as_deref() == Some("deny") {
+                "User denied permission via cmux Feed.".to_string()
+            } else {
+                "cmux Feed returned an unrecognized Kiro permission decision; denying for safety."
+                    .to_string()
+            }),
+            exit_code: 2,
+        };
+    }
+
     let kind = decision
         .get("kind")
         .and_then(Value::as_str)
@@ -330,7 +370,11 @@ pub fn render_agent_decision(prepared: &PreparedFeedHook, decision: &Value) -> S
         "question" => question_decision(prepared, decision),
         _ => json!({}),
     };
-    serde_json::to_string(&output).unwrap_or_else(|_| "{}".to_string())
+    AgentDecisionOutput {
+        stdout: serde_json::to_string(&output).unwrap_or_else(|_| "{}".to_string()),
+        stderr: None,
+        exit_code: 0,
+    }
 }
 
 fn permission_decision(prepared: &PreparedFeedHook, decision: &Value) -> Value {
@@ -349,15 +393,34 @@ fn permission_decision(prepared: &PreparedFeedHook, decision: &Value) -> Value {
             updated_permissions,
         );
     }
-    let permission = if mode == "deny" { "deny" } else { "allow" };
-    non_claude_pre_tool_decision(
-        permission,
-        if mode == "deny" {
-            "User denied permission via cmux Feed."
+    if prepared.source == "hermes-agent" {
+        return if mode == "deny" {
+            json!({"action":"block","message":"User denied permission via cmux Feed."})
         } else {
-            "User approved via cmux Feed."
-        },
-    )
+            json!({})
+        };
+    }
+    if prepared.source == "antigravity" {
+        return json!({
+            "decision": if mode == "deny" { "deny" } else { "allow" },
+            "reason": if mode == "deny" {
+                "User denied permission via cmux Feed."
+            } else {
+                "User approved via cmux Feed."
+            },
+        });
+    }
+    let permission = if mode == "deny" { "deny" } else { "allow" };
+    let reason = if mode == "deny" {
+        "User denied permission via cmux Feed.".to_string()
+    } else if matches!(mode, "always" | "all" | "bypass") {
+        format!(
+            "User granted {mode} permission via cmux Feed. Reduce subsequent approval prompts for similar calls."
+        )
+    } else {
+        "User approved via cmux Feed.".to_string()
+    };
+    non_claude_pre_tool_decision(permission, &reason, None)
 }
 
 fn exit_plan_decision(prepared: &PreparedFeedHook, decision: &Value) -> Value {
@@ -403,18 +466,37 @@ fn exit_plan_decision(prepared: &PreparedFeedHook, decision: &Value) -> Value {
             .then(|| json!([{"type":"setMode","mode":"auto","destination":"session"}]));
         return claude_hook_decision("allow", None, prepared.tool_input.clone(), permissions);
     }
-    let reason = feedback.map_or_else(
-        || "User accepted this plan via cmux Feed. Exit plan mode and proceed.".to_string(),
-        |feedback| format!("User rejected the plan via cmux Feed: {feedback}"),
-    );
-    non_claude_pre_tool_decision(
-        if feedback.is_some() || mode == "deny" {
-            "deny"
+    if prepared.source == "hermes-agent" {
+        return if let Some(feedback) = feedback {
+            json!({"action":"block","message":format!("User rejected the plan via cmux Feed and wants this change: {feedback}")})
+        } else if mode == "deny" {
+            json!({"action":"block","message":"User rejected the plan via cmux Feed."})
         } else {
-            "allow"
-        },
-        &reason,
-    )
+            json!({})
+        };
+    }
+    if let Some(feedback) = feedback {
+        let reason =
+            format!("User rejected the plan via cmux Feed and wants this change: {feedback}");
+        return non_claude_pre_tool_decision("deny", &reason, Some(&reason));
+    }
+    if mode == "deny" {
+        return non_claude_pre_tool_decision("deny", "User rejected the plan via cmux Feed.", None);
+    }
+    if mode == "ultraplan" {
+        let reason =
+            "User chose Ultraplan via cmux Feed. Refine this plan with Ultraplan if available.";
+        return non_claude_pre_tool_decision("deny", reason, Some(reason));
+    }
+    let mode_text = match mode {
+        "bypassPermissions" => "bypass-permissions mode (no per-edit approval)",
+        "autoAccept" => "auto mode",
+        _ => "manual-approval mode (approve each edit)",
+    };
+    let context = format!(
+        "User accepted this plan via cmux Feed with {mode_text}. Exit plan mode now and proceed to implement without re-entering ExitPlanMode. Do not ask again."
+    );
+    non_claude_pre_tool_decision("deny", &context, Some(&context))
 }
 
 fn question_decision(prepared: &PreparedFeedHook, decision: &Value) -> Value {
@@ -432,8 +514,20 @@ fn question_decision(prepared: &PreparedFeedHook, decision: &Value) -> Value {
         return if prepared.source == "claude" {
             claude_hook_decision("deny", Some(message), None, None)
         } else {
-            non_claude_pre_tool_decision("deny", message)
+            non_claude_pre_tool_decision("deny", message, Some(message))
         };
+    }
+    if prepared.source == "hermes-agent" {
+        let strings = selections
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        let context = match strings.as_slice() {
+            [] => "The user submitted an empty answer.".to_string(),
+            [answer] => format!("The user answered: {answer}"),
+            answers => format!("The user answered: {}", answers.join(", ")),
+        };
+        return json!({"context":context});
     }
     if prepared.source == "claude" {
         let mut updated_input = prepared
@@ -461,12 +555,27 @@ fn question_decision(prepared: &PreparedFeedHook, decision: &Value) -> Value {
         updated_input.insert("answers".to_string(), Value::Object(answers));
         return claude_hook_decision("allow", None, Some(Value::Object(updated_input)), None);
     }
-    let text = selections
+    let strings = selections
         .iter()
         .filter_map(Value::as_str)
-        .collect::<Vec<_>>()
-        .join(", ");
-    non_claude_pre_tool_decision("deny", &format!("[cmux Feed] The user answered: {text}"))
+        .collect::<Vec<_>>();
+    let body = match strings.as_slice() {
+        [] => "The user submitted an empty answer.".to_string(),
+        [answer] => format!("The user answered: {answer}"),
+        answers => format!(
+            "The user answered:\n{}",
+            answers
+                .iter()
+                .enumerate()
+                .map(|(index, answer)| format!("{}. {answer}", index + 1))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ),
+    };
+    let context = format!(
+        "[cmux Feed] {body}. Treat these as the user's response to your AskUserQuestion prompt; do not call AskUserQuestion again for the same question."
+    );
+    non_claude_pre_tool_decision("deny", &context, Some(&context))
 }
 
 fn claude_hook_decision(
@@ -496,16 +605,50 @@ fn claude_hook_decision(
     })
 }
 
-fn non_claude_pre_tool_decision(permission: &str, reason: &str) -> Value {
-    json!({
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": permission,
-            "permissionDecisionReason": reason,
-        },
-        "decision": if permission == "deny" { "block" } else { "approve" },
-        "reason": reason,
-    })
+fn non_claude_pre_tool_decision(
+    permission: &str,
+    reason: &str,
+    additional_context: Option<&str>,
+) -> Value {
+    let mut specific = Map::new();
+    specific.insert(
+        "hookEventName".to_string(),
+        Value::String("PreToolUse".to_string()),
+    );
+    specific.insert(
+        "permissionDecision".to_string(),
+        Value::String(permission.to_string()),
+    );
+    if !reason.is_empty() {
+        specific.insert(
+            "permissionDecisionReason".to_string(),
+            Value::String(reason.to_string()),
+        );
+    }
+    if let Some(context) = additional_context.filter(|value| !value.is_empty()) {
+        specific.insert(
+            "additionalContext".to_string(),
+            Value::String(context.to_string()),
+        );
+    }
+    let mut output = Map::new();
+    output.insert("hookSpecificOutput".to_string(), Value::Object(specific));
+    if permission == "deny" {
+        output.insert("decision".to_string(), Value::String("block".to_string()));
+        if !reason.is_empty() {
+            output.insert("reason".to_string(), Value::String(reason.to_string()));
+        }
+    } else if permission == "allow" {
+        output.insert("decision".to_string(), Value::String("approve".to_string()));
+        let message = additional_context.unwrap_or(reason);
+        if !message.is_empty() {
+            output.insert(
+                "systemMessage".to_string(),
+                Value::String(message.to_string()),
+            );
+        }
+    }
+    Value::Object(output)
 }
 
 fn option_value(args: &[String], name: &str) -> Option<String> {
@@ -530,6 +673,10 @@ fn first_string(object: &Map<String, Value>, keys: &[&str]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn render_agent_decision(prepared: &PreparedFeedHook, decision: &Value) -> String {
+        render_agent_decision_output(prepared, decision).stdout
+    }
 
     fn environment() -> FeedHookEnvironment {
         FeedHookEnvironment {
@@ -664,6 +811,139 @@ mod tests {
         assert_eq!(
             auto["hookSpecificOutput"]["decision"]["updatedPermissions"],
             json!([{"type":"setMode","mode":"auto","destination":"session"}])
+        );
+    }
+
+    #[test]
+    fn kiro_permission_adapter_allows_or_denies_with_native_exit_contract() {
+        let prepared = prepare_feed_hook(
+            &["--source=kiro".into(), "--event=preToolUse".into()],
+            br#"{"session_id":"kiro-1","tool_name":"fs_write","tool_input":{}}"#,
+            &environment(),
+            "request",
+        )
+        .unwrap()
+        .unwrap();
+        let allowed =
+            render_agent_decision_output(&prepared, &json!({"kind":"permission","mode":"once"}));
+        assert_eq!(allowed.stdout, "{}");
+        assert_eq!(allowed.stderr, None);
+        assert_eq!(allowed.exit_code, 0);
+
+        let denied =
+            render_agent_decision_output(&prepared, &json!({"kind":"permission","mode":"deny"}));
+        assert_eq!(denied.stdout, "");
+        assert_eq!(
+            denied.stderr.as_deref(),
+            Some("User denied permission via cmux Feed.")
+        );
+        assert_eq!(denied.exit_code, 2);
+
+        let malformed =
+            render_agent_decision_output(&prepared, &json!({"kind":"permission","mode":"typo"}));
+        assert_eq!(malformed.exit_code, 2);
+        assert!(malformed
+            .stderr
+            .as_deref()
+            .unwrap_or_default()
+            .contains("denying for safety"));
+    }
+
+    #[test]
+    fn hermes_and_antigravity_permission_adapters_match_native_shapes() {
+        let mut prepared = prepare_feed_hook(
+            &[
+                "--source=hermes-agent".into(),
+                "--event=pre_tool_call".into(),
+            ],
+            br#"{"session_id":"h1","tool_name":"terminal","tool_input":{}}"#,
+            &environment(),
+            "request",
+        )
+        .unwrap()
+        .unwrap();
+        let hermes: Value = serde_json::from_str(&render_agent_decision(
+            &prepared,
+            &json!({"kind":"permission","mode":"deny"}),
+        ))
+        .unwrap();
+        assert_eq!(
+            hermes,
+            json!({"action":"block","message":"User denied permission via cmux Feed."})
+        );
+
+        prepared.source = "antigravity".to_string();
+        let antigravity: Value = serde_json::from_str(&render_agent_decision(
+            &prepared,
+            &json!({"kind":"permission","mode":"always"}),
+        ))
+        .unwrap();
+        assert_eq!(
+            antigravity,
+            json!({"decision":"allow","reason":"User approved via cmux Feed."})
+        );
+    }
+
+    #[test]
+    fn generic_plan_and_question_adapters_carry_blocking_context() {
+        let mut prepared = prepare_feed_hook(
+            &["--source=gemini".into(), "--event=PermissionRequest".into()],
+            br#"{"session_id":"g1","tool_name":"ExitPlanMode","tool_input":{}}"#,
+            &environment(),
+            "request",
+        )
+        .unwrap()
+        .unwrap();
+        let plan: Value = serde_json::from_str(&render_agent_decision(
+            &prepared,
+            &json!({"kind":"exit_plan","mode":"autoAccept"}),
+        ))
+        .unwrap();
+        assert_eq!(plan["decision"], "block");
+        assert_eq!(plan["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert!(plan["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("auto mode"));
+
+        prepared.tool_name = "AskUserQuestion".to_string();
+        let question: Value = serde_json::from_str(&render_agent_decision(
+            &prepared,
+            &json!({"kind":"question","selections":["Rust","Unit, E2E"]}),
+        ))
+        .unwrap();
+        assert!(question["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("1. Rust\n2. Unit, E2E"));
+        assert_eq!(
+            question["hookSpecificOutput"]["additionalContext"],
+            question["reason"]
+        );
+    }
+
+    #[test]
+    fn hermes_questions_return_context_and_approved_plans_return_empty_json() {
+        let prepared = prepare_feed_hook(
+            &[
+                "--source=hermes-agent".into(),
+                "--event=pre_tool_call".into(),
+            ],
+            br#"{"session_id":"h1","tool_name":"AskUserQuestion","tool_input":{}}"#,
+            &environment(),
+            "request",
+        )
+        .unwrap()
+        .unwrap();
+        let answer: Value = serde_json::from_str(&render_agent_decision(
+            &prepared,
+            &json!({"kind":"question","selections":["One","Two"]}),
+        ))
+        .unwrap();
+        assert_eq!(answer, json!({"context":"The user answered: One, Two"}));
+        assert_eq!(
+            render_agent_decision(&prepared, &json!({"kind":"exit_plan","mode":"manual"})),
+            "{}"
         );
     }
 }
