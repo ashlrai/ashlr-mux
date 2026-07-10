@@ -386,6 +386,17 @@ fn format_control_result(method: &str, result: &serde_json::Value) -> String {
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default()
             .to_string(),
+        "browser.url.get" => result
+            .get("url")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        "browser.is_webview_focused" => result
+            .get("focused")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+            .to_string(),
+        "browser.focus_webview" | "browser.reload" => "OK".to_string(),
         "workspace.list_status" => format_status_entries(result),
         "workspace.list_meta" => format_metadata_entries(result),
         "workspace.list_meta_blocks" => format_metadata_blocks(result),
@@ -406,6 +417,24 @@ mod control_result_tests {
             format_control_result("surface.read_text", &result),
             "first\nsecond"
         );
+    }
+
+    #[test]
+    fn legacy_browser_aliases_keep_their_plain_output_contracts() {
+        let result = serde_json::json!({"url": "https://example.com", "focused": true});
+        assert_eq!(
+            format_control_result("browser.url.get", &result),
+            "https://example.com"
+        );
+        assert_eq!(
+            format_control_result("browser.is_webview_focused", &result),
+            "true"
+        );
+        assert_eq!(
+            format_control_result("browser.focus_webview", &result),
+            "OK"
+        );
+        assert_eq!(format_control_result("browser.reload", &result), "OK");
     }
 }
 

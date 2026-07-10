@@ -132,6 +132,10 @@ fn workspace_scoped_method(method: &str) -> bool {
             | "surface.toggle_split_zoom"
             | "browser.back"
             | "browser.forward"
+            | "browser.reload"
+            | "browser.url.get"
+            | "browser.focus_webview"
+            | "browser.is_webview_focused"
             | "browser.clear_history"
             | "browser.toggle_omnibar"
             | "browser.toggle_focus_mode"
@@ -372,6 +376,22 @@ pub fn control_command_for(
         )),
         "browser-forward" => Some(ControlCommand::new(
             "browser.forward",
+            surface_selector_params(args)?,
+        )),
+        "browser-reload" => Some(ControlCommand::new(
+            "browser.reload",
+            surface_selector_params(args)?,
+        )),
+        "get-url" => Some(ControlCommand::new(
+            "browser.url.get",
+            surface_selector_params(args)?,
+        )),
+        "focus-webview" => Some(ControlCommand::new(
+            "browser.focus_webview",
+            surface_selector_params(args)?,
+        )),
+        "is-webview-focused" => Some(ControlCommand::new(
+            "browser.is_webview_focused",
             surface_selector_params(args)?,
         )),
         "browser" => browser_subcommand(args)?,
@@ -3980,6 +4000,19 @@ mod tests {
             mapped("browser-forward", &["--surface", "surface-1"]).params,
             serde_json::json!({"surface_id": "surface-1"})
         );
+        for (command, method) in [
+            ("browser-reload", "browser.reload"),
+            ("get-url", "browser.url.get"),
+            ("focus-webview", "browser.focus_webview"),
+            ("is-webview-focused", "browser.is_webview_focused"),
+        ] {
+            let control = mapped(command, &["--panel", "surface:1"]);
+            assert_eq!(control.method, method);
+            assert_eq!(
+                control.params,
+                serde_json::json!({"surface_ref": "surface:1"})
+            );
+        }
         assert_eq!(
             mapped("navigate", &["https://example.com"]).params,
             serde_json::json!({"url": "https://example.com"})

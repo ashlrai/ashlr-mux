@@ -263,6 +263,18 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
         "browser-forward" => Some(
             "Usage:\n  cmux browser-forward [SURFACE]\n\nNavigates the selected browser surface forward.",
         ),
+        "browser-reload" => Some(
+            "Usage:\n  cmux browser-reload --panel SURFACE\n\nReloads a browser surface. Legacy alias for `cmux browser reload`.",
+        ),
+        "get-url" => Some(
+            "Usage:\n  cmux get-url --panel SURFACE\n\nPrints the current browser URL. Legacy alias for `cmux browser get-url`.",
+        ),
+        "focus-webview" => Some(
+            "Usage:\n  cmux focus-webview --panel SURFACE\n\nFocuses browser web content. Legacy alias for `cmux browser focus-webview`.",
+        ),
+        "is-webview-focused" => Some(
+            "Usage:\n  cmux is-webview-focused --panel SURFACE\n\nPrints whether browser web content is focused. Legacy alias for `cmux browser is-webview-focused`.",
+        ),
         "reopen-closed-browser-tab" => Some(
             "Usage:\n  cmux reopen-closed-browser-tab\n\nReopens the most recently closed browser tab.",
         ),
@@ -459,7 +471,11 @@ mod tests {
     #[test]
     fn mapped_socket_command_help_is_concrete_for_control_aliases() {
         for command in [
+            "browser-reload",
             "close-workspaces",
+            "focus-webview",
+            "get-url",
+            "is-webview-focused",
             "new-browser-workspace",
             "new-terminal-tab",
             "reopen-closed-browser-tab",
