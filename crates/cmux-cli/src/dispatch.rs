@@ -395,6 +395,15 @@ pub fn plan_with_args(action: &PreSocketAction, command: &str, args: &[String]) 
                 DispatchPlan::RunFeed(args.to_vec())
             } else if command == "hooks" && args.first().is_some_and(|arg| arg == "feed") {
                 DispatchPlan::RunFeedHook(args[1..].to_vec())
+            } else if command == "hooks" {
+                if let Some(feed_args) = generated_hook_feed_args(args) {
+                    DispatchPlan::RunFeedHook(feed_args)
+                } else {
+                    DispatchPlan::RunHooksInstaller {
+                        command: command.to_owned(),
+                        args: args.to_vec(),
+                    }
+                }
             } else if matches!(command, "hooks" | "setup-hooks" | "uninstall-hooks") {
                 DispatchPlan::RunHooksInstaller {
                     command: command.to_owned(),
@@ -436,6 +445,33 @@ pub fn plan_with_args(action: &PreSocketAction, command: &str, args: &[String]) 
         PreSocketAction::OpenPath { .. } => "open",
     };
     DispatchPlan::Fail(not_yet_ported(label))
+}
+
+fn generated_hook_feed_args(args: &[String]) -> Option<Vec<String>> {
+    let source = args.first()?;
+    let event = args.get(1)?;
+    if !matches!(
+        event.as_str(),
+        "session-start"
+            | "prompt-submit"
+            | "stop"
+            | "notification"
+            | "notify"
+            | "agent-response"
+            | "approval-response"
+            | "shell-exec"
+            | "shell-done"
+            | "session-end"
+            | "session-finalize"
+    ) {
+        return None;
+    }
+    Some(vec![
+        "--source".to_string(),
+        source.to_string(),
+        "--event".to_string(),
+        event.to_string(),
+    ])
 }
 
 #[cfg(test)]
@@ -671,6 +707,27 @@ mod tests {
             match plan_with_args(&PreSocketAction::NeedsSocket, command, &args) {
                 DispatchPlan::RunFeedHook(planned) => assert_eq!(planned, expected),
                 other => panic!("expected RunFeedHook, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn generated_agent_lifecycle_hooks_run_through_the_feed_bridge() {
+        for (agent, action) in [
+            ("kiro", "session-start"),
+            ("gemini", "prompt-submit"),
+            ("copilot", "stop"),
+        ] {
+            let args = vec![agent.to_string(), action.to_string()];
+            match plan_with_args(&PreSocketAction::NeedsSocket, "hooks", &args) {
+                DispatchPlan::RunFeedHook(planned) => assert_eq!(
+                    planned,
+                    vec!["--source", agent, "--event", action]
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                ),
+                other => panic!("expected lifecycle Feed bridge, got {other:?}"),
             }
         }
     }
