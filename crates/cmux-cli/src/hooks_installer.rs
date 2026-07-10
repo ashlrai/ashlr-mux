@@ -27,6 +27,7 @@ enum HooksRequest {
     Cursor { yes: bool },
     Antigravity { yes: bool },
     OpenCode { yes: bool, project: bool },
+    Pi { yes: bool },
 }
 
 const OPENCODE_SESSION_PLUGIN_SOURCE: &str =
@@ -35,6 +36,8 @@ const OPENCODE_FEED_PLUGIN_SOURCE: &str = include_str!("../../../Resources/openc
 const OPENCODE_SESSION_PLUGIN_SPEC: &str = "./plugins/cmux-session.js";
 const OPENCODE_SESSION_PLUGIN_MARKER: &str = "cmux-opencode-session-plugin-marker";
 const OPENCODE_FEED_PLUGIN_MARKER: &str = "cmux-feed-plugin-marker";
+const PI_EXTENSION_SOURCE: &str = include_str!("../../../Resources/pi-session-extension.ts");
+const PI_EXTENSION_MARKER: &str = "cmux-pi-session-extension-marker";
 
 #[derive(Debug, Clone, Copy)]
 struct NestedAgentDef {
@@ -60,6 +63,7 @@ pub fn run_hooks_command(command: &str, args: &[String]) -> Result<String, CliEr
         HooksRequest::Cursor { yes } => install_cursor_hooks(yes),
         HooksRequest::Antigravity { yes } => install_antigravity_hooks(yes),
         HooksRequest::OpenCode { yes, project } => install_opencode_hooks(yes, project),
+        HooksRequest::Pi { yes } => install_pi_hooks(yes),
     }
 }
 
@@ -103,6 +107,12 @@ fn parse_hooks_subcommand(tokens: &[String], yes: bool) -> Result<HooksRequest, 
             ))),
         },
         Some("opencode") => parse_opencode_tokens(&tokens[1..], yes),
+        Some("pi") => match tokens.get(1).map(String::as_str) {
+            None | Some("install") | Some("setup") => Ok(HooksRequest::Pi { yes }),
+            Some(other) => Err(CliError::new(format!(
+                "unsupported Pi hooks action '{other}'; use 'cmux hooks pi install'"
+            ))),
+        },
         Some(agent) if nested_agent(agent).is_some() => match tokens.get(1).map(String::as_str) {
             None | Some("install") | Some("setup") => Ok(HooksRequest::Nested {
                 agent: agent.to_string(),
@@ -157,6 +167,7 @@ fn parse_setup_tokens(tokens: &[String], yes: bool) -> Result<HooksRequest, CliE
             yes,
             project: false,
         }),
+        Some("pi") => Ok(HooksRequest::Pi { yes }),
         Some(agent) if nested_agent(agent).is_some() => Ok(HooksRequest::Nested {
             agent: agent.to_string(),
             yes,
@@ -183,6 +194,40 @@ fn parse_opencode_tokens(tokens: &[String], yes: bool) -> Result<HooksRequest, C
         }
     }
     Ok(HooksRequest::OpenCode { yes, project })
+}
+
+fn install_pi_hooks(yes: bool) -> Result<String, CliError> {
+    let path = pi_extension_path(&pi_config_dir()?);
+    let before = read_optional_text(&path)?;
+    ensure_cmux_plugin(&path, &before, PI_EXTENSION_MARKER)?;
+    if before == PI_EXTENSION_SOURCE {
+        return Ok(format!(
+            "Pi hooks already up to date at {}\n",
+            path.display()
+        ));
+    }
+    let preview = unified_diff(&path, &before, PI_EXTENSION_SOURCE);
+    if !confirm_hook_change(&preview, yes)? {
+        return Ok("Aborted.\n".to_string());
+    }
+    write_text_exact(&path, PI_EXTENSION_SOURCE)?;
+    Ok(format!("Pi hooks installed at {}\n", path.display()))
+}
+
+fn pi_config_dir() -> Result<PathBuf, CliError> {
+    if let Ok(raw) = std::env::var("PI_CODING_AGENT_DIR") {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            return expand_home_path(PathBuf::from(trimmed));
+        }
+    }
+    home_dir()
+        .map(|home| home.join(".pi").join("agent"))
+        .ok_or_else(|| CliError::new("unable to determine Pi config directory"))
+}
+
+fn pi_extension_path(config_dir: &Path) -> PathBuf {
+    config_dir.join("extensions/cmux-session.ts")
 }
 
 fn install_opencode_hooks(yes: bool, project: bool) -> Result<String, CliError> {
@@ -1361,5 +1406,27 @@ mod tests {
         );
         assert!(OPENCODE_SESSION_PLUGIN_SOURCE.contains("cmux-opencode-session-plugin-marker"));
         assert!(OPENCODE_FEED_PLUGIN_SOURCE.contains("cmux-feed-plugin-marker"));
+    }
+
+    #[test]
+    fn pi_extension_plan_uses_canonical_path_source_and_setup_alias() {
+        assert_eq!(
+            parse_hooks_request("hooks", &["pi".into(), "install".into(), "--yes".into()]).unwrap(),
+            HooksRequest::Pi { yes: true }
+        );
+        assert_eq!(
+            parse_hooks_request(
+                "hooks",
+                &["setup".into(), "--agent=pi".into(), "--yes".into()],
+            )
+            .unwrap(),
+            HooksRequest::Pi { yes: true }
+        );
+        assert_eq!(
+            pi_extension_path(Path::new("C:/Users/me/.pi/agent")),
+            PathBuf::from("C:/Users/me/.pi/agent/extensions/cmux-session.ts")
+        );
+        assert!(PI_EXTENSION_SOURCE.contains("cmux-pi-session-extension-marker v2"));
+        assert!(PI_EXTENSION_SOURCE.contains("[\"hooks\", \"feed\", \"--source\", \"pi\""));
     }
 }
