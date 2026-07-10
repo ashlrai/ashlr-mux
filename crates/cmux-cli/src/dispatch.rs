@@ -98,6 +98,15 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
         "list-notifications" => Some(
             "Usage:\n  cmux list-notifications\n\nLists retained desktop notifications.",
         ),
+        "dismiss-notification" => Some(
+            "Usage:\n  cmux dismiss-notification (--id ID | --all-read)\n\nDismisses one notification or all read notifications.",
+        ),
+        "mark-notification-read" => Some(
+            "Usage:\n  cmux mark-notification-read (--id ID | --workspace WORKSPACE [--surface SURFACE] | --all)\n\nMarks matching notifications read.",
+        ),
+        "clear-notifications" => Some(
+            "Usage:\n  cmux clear-notifications [--workspace WORKSPACE]\n\nClears all notifications or those for one workspace.",
+        ),
         "list-workspaces" => Some(
             "Usage:\n  cmux list-workspaces\n\nLists workspaces from the active desktop session.",
         ),
@@ -495,13 +504,16 @@ mod tests {
         for command in [
             "browser-reload",
             "clear-history",
+            "clear-notifications",
             "close-workspaces",
             "current-window",
+            "dismiss-notification",
             "focus-webview",
             "get-url",
             "is-webview-focused",
             "list-windows",
             "list-notifications",
+            "mark-notification-read",
             "new-browser-workspace",
             "new-terminal-tab",
             "reload-config",

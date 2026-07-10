@@ -399,6 +399,9 @@ fn format_control_result(method: &str, result: &serde_json::Value) -> String {
         "browser.focus_webview"
         | "browser.reload"
         | "config.reload"
+        | "notification.dismiss"
+        | "notification.mark_read"
+        | "notification.clear"
         | "session.restore_previous"
         | "surface.clear_history"
         | "surface.trigger_flash" => "OK".to_string(),
@@ -611,6 +614,17 @@ mod control_result_tests {
             format_control_result("notification.list", &result),
             "0:notification-1|workspace-1|surface-1|unread|Build|Agent|Needs input|42|API"
         );
+    }
+
+    #[test]
+    fn notification_mutations_print_plain_ok() {
+        for method in [
+            "notification.dismiss",
+            "notification.mark_read",
+            "notification.clear",
+        ] {
+            assert_eq!(format_control_result(method, &serde_json::json!({})), "OK");
+        }
     }
 }
 

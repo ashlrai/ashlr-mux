@@ -183,7 +183,7 @@ fn waiting_input_notification(
 }
 
 fn with_notification_store<R>(
-    state: State<'_, NotificationCommandState>,
+    state: &NotificationCommandState,
     action: impl FnOnce(&mut NotificationStore) -> R,
 ) -> Result<R, String> {
     let mut store = state
@@ -197,17 +197,73 @@ fn with_notification_store<R>(
 pub fn notification_list(
     state: State<'_, NotificationCommandState>,
 ) -> Result<NotificationCenterReply, String> {
-    with_notification_store(state, |store| notification_center_reply(store))
+    with_notification_store(state.inner(), |store| notification_center_reply(store))
 }
 
 pub(crate) fn notification_list_for_control(
     state: &NotificationCommandState,
 ) -> Result<NotificationCenterReply, String> {
-    let store = state
-        .store
-        .lock()
-        .map_err(|_| "notification store mutex poisoned".to_string())?;
-    Ok(notification_center_reply(&store))
+    with_notification_store(state, |store| notification_center_reply(store))
+}
+
+pub(crate) fn notification_dismiss_for_control(
+    state: &NotificationCommandState,
+    id: Option<&str>,
+    all_read: bool,
+) -> Result<NotificationCenterReply, String> {
+    with_notification_store(state, |store| {
+        if let Some(id) = id {
+            store.remove(id);
+        } else if all_read {
+            let ids = store
+                .notifications()
+                .iter()
+                .filter(|item| item.is_read)
+                .map(|item| item.id.clone())
+                .collect::<Vec<_>>();
+            for id in ids {
+                store.remove(&id);
+            }
+        }
+        notification_center_reply(store)
+    })
+}
+
+pub(crate) fn notification_mark_read_for_control(
+    state: &NotificationCommandState,
+    id: Option<&str>,
+    workspace_id: Option<&str>,
+    surface_id: Option<&str>,
+    all: bool,
+) -> Result<NotificationCenterReply, String> {
+    with_notification_store(state, |store| {
+        if let Some(id) = id {
+            store.mark_read(id);
+        } else if let Some(workspace_id) = workspace_id {
+            if surface_id.is_some() {
+                store.mark_read_for_tab_surface(workspace_id, surface_id);
+            } else {
+                store.mark_read_for_tab(workspace_id);
+            }
+        } else if all {
+            store.mark_all_read();
+        }
+        notification_center_reply(store)
+    })
+}
+
+pub(crate) fn notification_clear_for_control(
+    state: &NotificationCommandState,
+    workspace_id: Option<&str>,
+) -> Result<NotificationCenterReply, String> {
+    with_notification_store(state, |store| {
+        if let Some(workspace_id) = workspace_id {
+            store.clear_for_tab(workspace_id);
+        } else {
+            store.clear_all();
+        }
+        notification_center_reply(store)
+    })
 }
 
 #[tauri::command]
@@ -215,7 +271,7 @@ pub fn notification_mark_read(
     id: String,
     state: State<'_, NotificationCommandState>,
 ) -> Result<NotificationCenterReply, String> {
-    with_notification_store(state, |store| {
+    with_notification_store(state.inner(), |store| {
         store.mark_read(&id);
         notification_center_reply(store)
     })
@@ -226,7 +282,7 @@ pub fn notification_mark_unread(
     id: String,
     state: State<'_, NotificationCommandState>,
 ) -> Result<NotificationCenterReply, String> {
-    with_notification_store(state, |store| {
+    with_notification_store(state.inner(), |store| {
         store.mark_unread(&id);
         notification_center_reply(store)
     })
@@ -237,7 +293,7 @@ pub fn notification_remove(
     id: String,
     state: State<'_, NotificationCommandState>,
 ) -> Result<NotificationCenterReply, String> {
-    with_notification_store(state, |store| {
+    with_notification_store(state.inner(), |store| {
         store.remove(&id);
         notification_center_reply(store)
     })
@@ -247,7 +303,7 @@ pub fn notification_remove(
 pub fn notification_mark_all_read(
     state: State<'_, NotificationCommandState>,
 ) -> Result<NotificationCenterReply, String> {
-    with_notification_store(state, |store| {
+    with_notification_store(state.inner(), |store| {
         store.mark_all_read();
         notification_center_reply(store)
     })
@@ -257,7 +313,7 @@ pub fn notification_mark_all_read(
 pub fn notification_clear_all(
     state: State<'_, NotificationCommandState>,
 ) -> Result<NotificationCenterReply, String> {
-    with_notification_store(state, |store| {
+    with_notification_store(state.inner(), |store| {
         store.clear_all();
         notification_center_reply(store)
     })
@@ -278,7 +334,7 @@ pub fn notification_record_waiting_input(
         panel_title,
         current_unix_timestamp_seconds(),
     );
-    with_notification_store(state, |store| {
+    with_notification_store(state.inner(), |store| {
         store.record(notification, false);
         notification_center_reply(store)
     })

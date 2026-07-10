@@ -47,7 +47,10 @@ impl ControlCommand {
     pub fn with_window_id(mut self, window_id: Option<&str>) -> Self {
         if !matches!(
             self.method.as_str(),
-            "surface.read_text" | "surface.clear_history" | "surface.trigger_flash"
+            "surface.read_text"
+                | "surface.clear_history"
+                | "surface.trigger_flash"
+                | "notification.clear"
         ) {
             return self;
         }
@@ -125,6 +128,7 @@ fn workspace_scoped_method(method: &str) -> bool {
             | "surface.read_text"
             | "surface.clear_history"
             | "surface.trigger_flash"
+            | "notification.clear"
             | "debug.terminals"
             | "surface.send_text"
             | "surface.send_key"
@@ -174,6 +178,18 @@ pub fn control_command_for(
         "list-notifications" => Some(ControlCommand::new(
             "notification.list",
             serde_json::json!({}),
+        )),
+        "dismiss-notification" => Some(ControlCommand::new(
+            "notification.dismiss",
+            dismiss_notification_params(args)?,
+        )),
+        "mark-notification-read" => Some(ControlCommand::new(
+            "notification.mark_read",
+            mark_notification_read_params(args)?,
+        )),
+        "clear-notifications" => Some(ControlCommand::new(
+            "notification.clear",
+            clear_notifications_params(args)?,
         )),
         "sidebar-snapshot" | "extension-sidebar-snapshot" => Some(ControlCommand::new(
             "extension.sidebar.snapshot",
@@ -1167,6 +1183,56 @@ fn reload_config_params(args: &[String]) -> Result<serde_json::Value, CliError> 
         )));
     }
     Ok(serde_json::json!({}))
+}
+
+fn dismiss_notification_params(args: &[String]) -> Result<serde_json::Value, CliError> {
+    let parsed = ParsedArgs::parse(args)?;
+    let id = parsed.value(&["--id"]);
+    let all_read = parsed.has_flag("--all-read");
+    if id.is_some() == all_read {
+        return Err(CliError::new(
+            "dismiss-notification requires exactly one of --id or --all-read",
+        ));
+    }
+    Ok(match id {
+        Some(id) => serde_json::json!({"id": id}),
+        None => serde_json::json!({"all_read": true}),
+    })
+}
+
+fn mark_notification_read_params(args: &[String]) -> Result<serde_json::Value, CliError> {
+    let parsed = ParsedArgs::parse(args)?;
+    let id = parsed.value(&["--id"]);
+    let workspace = parsed.value(&["--workspace", "--workspace-id", "--workspace-ref"]);
+    let surface = parsed.value(&["--surface", "--surface-id", "--surface-ref"]);
+    let all = parsed.has_flag("--all");
+    if surface.is_some() && workspace.is_none() {
+        return Err(CliError::new("--surface requires --workspace"));
+    }
+    if usize::from(id.is_some()) + usize::from(workspace.is_some()) + usize::from(all) != 1 {
+        return Err(CliError::new(
+            "mark-notification-read requires exactly one selector: --id, --workspace, or --all",
+        ));
+    }
+    if let Some(id) = id {
+        return Ok(serde_json::json!({"id": id}));
+    }
+    if all {
+        return Ok(serde_json::json!({"all": true}));
+    }
+    let mut params = serde_json::Map::new();
+    apply_workspace_scope_selector(&parsed, &mut params);
+    apply_surface_selector(&parsed, &mut params)?;
+    apply_window_scope_selector(&parsed, &mut params);
+    Ok(serde_json::Value::Object(params))
+}
+
+fn clear_notifications_params(args: &[String]) -> Result<serde_json::Value, CliError> {
+    let parsed = ParsedArgs::parse(args)?;
+    let mut params = serde_json::Map::new();
+    apply_workspace_scope_selector(&parsed, &mut params);
+    apply_window_scope_selector(&parsed, &mut params);
+    Ok(serde_json::Value::Object(params))
 }
 
 fn workspace_description_params(args: &[String]) -> Result<serde_json::Value, CliError> {
@@ -3252,6 +3318,9 @@ mod tests {
         let command = mapped("trigger-flash", &[]).with_window_id(Some("2"));
         assert_eq!(command.params["window_ref"], serde_json::json!("window:2"));
 
+        let command = mapped("clear-notifications", &[]).with_window_id(Some("2"));
+        assert_eq!(command.params["window_ref"], serde_json::json!("window:2"));
+
         let command =
             mapped("read-screen", &["--window", "window:3"]).with_window_id(Some("window:2"));
         assert_eq!(command.params["window_ref"], serde_json::json!("window:3"));
@@ -3284,6 +3353,56 @@ mod tests {
     }
 
     #[test]
+    fn maps_notification_mutation_commands() {
+        assert_eq!(
+            mapped("dismiss-notification", &["--id", "notification-1"]).params,
+            serde_json::json!({"id": "notification-1"})
+        );
+        assert_eq!(
+            mapped("dismiss-notification", &["--all-read"]).params,
+            serde_json::json!({"all_read": true})
+        );
+        for tokens in [vec![], vec!["--id", "notification-1", "--all-read"]] {
+            assert_eq!(
+                control_command_for("dismiss-notification", &args(&tokens))
+                    .unwrap_err()
+                    .message,
+                "dismiss-notification requires exactly one of --id or --all-read"
+            );
+        }
+        assert_eq!(
+            mapped("mark-notification-read", &["--id", "notification-1"]).params,
+            serde_json::json!({"id": "notification-1"})
+        );
+        assert_eq!(
+            mapped(
+                "mark-notification-read",
+                &["--workspace", "workspace:2", "--surface", "surface:3"]
+            )
+            .params,
+            serde_json::json!({"workspace_ref": "workspace:2", "surface_ref": "surface:3"})
+        );
+        assert_eq!(
+            mapped("mark-notification-read", &["--all"]).params,
+            serde_json::json!({"all": true})
+        );
+        assert_eq!(
+            control_command_for("mark-notification-read", &args(&["--surface", "surface:1"]))
+                .unwrap_err()
+                .message,
+            "--surface requires --workspace"
+        );
+        assert_eq!(
+            mapped("clear-notifications", &["--workspace", "workspace:2"]).params,
+            serde_json::json!({"workspace_ref": "workspace:2"})
+        );
+        assert_eq!(
+            mapped("clear-notifications", &[]).params,
+            serde_json::json!({})
+        );
+    }
+
+    #[test]
     fn p0_workspace_scoped_cli_aliases_accept_ambient_workspace_id() {
         for (command, tokens) in [
             ("send", vec!["hello"]),
@@ -3302,6 +3421,7 @@ mod tests {
             ("surface-health", vec![]),
             ("clear-history", vec![]),
             ("trigger-flash", vec![]),
+            ("clear-notifications", vec![]),
         ] {
             let control = mapped(command, &tokens).with_ambient_workspace_id(Some("workspace-2"));
             assert_eq!(

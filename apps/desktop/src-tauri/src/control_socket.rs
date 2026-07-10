@@ -793,6 +793,9 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "window.list",
     "window.current",
     "notification.list",
+    "notification.dismiss",
+    "notification.mark_read",
+    "notification.clear",
     "events.stream",
     "extension.sidebar.snapshot",
     "sidebar.snapshot",
@@ -1025,6 +1028,9 @@ fn handle_control_request(app: &AppHandle, request: ControlRequest) -> ControlCa
         "window.list" => window_list(app),
         "window.current" => window_current(app),
         "notification.list" => notification_list(app),
+        "notification.dismiss" => notification_dismiss(app, &request.params),
+        "notification.mark_read" => notification_mark_read(app, &request.params),
+        "notification.clear" => notification_clear(app, &request.params),
         "events.stream" => ok(events_snapshot_payload(app, &request.params)),
         "extension.sidebar.snapshot" | "sidebar.snapshot" => {
             let snapshot = snapshot(app);
@@ -2681,6 +2687,102 @@ fn notification_list(app: &AppHandle) -> ControlCallResult {
             data: None,
         },
     }
+}
+
+fn notification_mutation_result(
+    result: Result<crate::notifications::NotificationCenterReply, String>,
+) -> ControlCallResult {
+    match result {
+        Ok(reply) => ok(json!({
+            "remaining_count": reply.total_count,
+            "unread_count": reply.unread_count,
+        })),
+        Err(message) => ControlCallResult::Err {
+            code: "notification_store_failed".to_string(),
+            message,
+            data: None,
+        },
+    }
+}
+
+fn notification_dismiss(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let id = string_param(params, &["id"]);
+    let all_read = bool_param(params, &["all_read"]).unwrap_or(false);
+    if id.is_some() == all_read {
+        return invalid_params("notification.dismiss requires exactly one of id or all_read");
+    }
+    let state = app.state::<crate::notifications::NotificationCommandState>();
+    notification_mutation_result(crate::notifications::notification_dismiss_for_control(
+        state.inner(),
+        id.as_deref(),
+        all_read,
+    ))
+}
+
+fn notification_mark_read(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let id = string_param(params, &["id"]);
+    let all = bool_param(params, &["all"]).unwrap_or(false);
+    let current = snapshot(app);
+    let workspace_index = workspace_index_from_params(&current, params);
+    if usize::from(id.is_some()) + usize::from(workspace_index.is_some()) + usize::from(all) != 1 {
+        return invalid_params("notification.mark_read requires exactly one selector");
+    }
+    let workspace_id = workspace_index.and_then(|index| {
+        current.windows[0].tab_manager.workspaces[index]
+            .workspace_id
+            .clone()
+    });
+    let has_surface = ["surface_ref", "surface_id", "panel_id"]
+        .iter()
+        .any(|key| params.contains_key(*key));
+    let surface_id = if has_surface {
+        let Some(index) = workspace_index else {
+            return invalid_params("surface selector requires workspace selector");
+        };
+        match surface_id_from_params_or_workspace_focused(&current, index, params) {
+            Some(id) => Some(id),
+            None => return invalid_params("Missing or invalid surface selector"),
+        }
+    } else {
+        None
+    };
+    let state = app.state::<crate::notifications::NotificationCommandState>();
+    notification_mutation_result(crate::notifications::notification_mark_read_for_control(
+        state.inner(),
+        id.as_deref(),
+        workspace_id.as_deref(),
+        surface_id.as_deref(),
+        all,
+    ))
+}
+
+fn notification_clear(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let workspace_id =
+        if params.contains_key("workspace_id") || params.contains_key("workspace_ref") {
+            let Some(index) = workspace_index_from_params(&current, params) else {
+                return invalid_params("Missing or invalid workspace selector");
+            };
+            current.windows[0].tab_manager.workspaces[index]
+                .workspace_id
+                .clone()
+        } else {
+            None
+        };
+    let state = app.state::<crate::notifications::NotificationCommandState>();
+    notification_mutation_result(crate::notifications::notification_clear_for_control(
+        state.inner(),
+        workspace_id.as_deref(),
+    ))
 }
 
 fn session_restore_previous_launch(app: &AppHandle) -> ControlCallResult {
@@ -11010,6 +11112,9 @@ mod tests {
             "window.list",
             "window.current",
             "notification.list",
+            "notification.dismiss",
+            "notification.mark_read",
+            "notification.clear",
             "session.restore_previous",
             "events.stream",
             "extension.sidebar.snapshot",
