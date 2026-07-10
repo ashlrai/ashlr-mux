@@ -118,9 +118,9 @@ fn dispatch(
             Ok(())
         }
         DispatchPlan::RunConfig(args) => {
-            let output = cmux_cli::config::run_config_no_socket(&args, options.json_output)?;
-            println!("{output}");
-            Ok(())
+            let result = cmux_cli::config::run_config_no_socket(&args, options.json_output)?;
+            println!("{}", result.output);
+            result.failure.map_or(Ok(()), Err)
         }
         DispatchPlan::RunHooksInstaller { command, args } => {
             let output = cmux_cli::hooks_installer::run_hooks_command(&command, &args)?;

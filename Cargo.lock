@@ -577,6 +577,7 @@ dependencies = [
  "cmux-config",
  "cmux-diff",
  "cmux-ipc",
+ "cmux-jsonc",
  "cmux-ssh",
  "crossterm",
  "serde_json",

@@ -4,8 +4,8 @@ use crate::invocation::CliError;
 
 pub const SETTINGS_USAGE: &str = "Usage: cmux settings [open [target]|path|docs|<target>]\n\nOpen cmux Settings, print cmux.json paths, or show settings documentation.\n\nSubcommands:\n  open [target]       Open Settings, optionally to a target section.\n  path                Print cmux.json paths, docs URL, and schema URL.\n  docs                Print the same output as `cmux docs settings`.\n\nTargets:\n  account, app, terminal, sidebar-appearance, custom-sidebars,\n  automation, browser, browser-import, global-hotkey,\n  keyboard-shortcuts, shortcuts, workspace-colors, cmux-json,\n  json, reset\n\nConfig file:\n  ~/.config/cmux/cmux.json\n  legacy config: ~/.config/cmux/settings.json\n  legacy app support: ~/Library/Application Support/com.cmuxterm.app/settings.json\n\nRelated (not cmux-owned, but cmux reads it for terminal behavior):\n  ~/.config/ghostty/config\n\nBefore editing cmux.json:\n  Back up any existing cmux.json file to a timestamped .bak copy so the user can revert.\n\nReload after editing cmux.json or Ghostty config:\n  cmux reload-config   (reloads BOTH and refreshes terminals; no app restart needed)";
 
-const DOCS_URL: &str = "https://cmux.com/docs/configuration#cmux-json";
-const SCHEMA_URL: &str =
+pub(crate) const DOCS_URL: &str = "https://cmux.com/docs/configuration#cmux-json";
+pub(crate) const SCHEMA_URL: &str =
     "https://raw.githubusercontent.com/manaflow-ai/cmux/main/web/data/cmux.schema.json";
 
 pub fn run_settings_no_socket(

@@ -17,6 +17,7 @@ base64 = "0.22"
 cmux-config = { path = "../cmux-config" }
 cmux-diff = { path = "../cmux-diff" }
 cmux-ipc = { path = "../cmux-ipc" }
+cmux-jsonc = { path = "../cmux-jsonc" }
 cmux-ssh = { path = "../cmux-ssh" }
 crossterm = "0.29"
 serde_json = { workspace = true }
