@@ -47,6 +47,7 @@ enum HooksRequest {
     Kimi { yes: bool },
     KimiUninstall,
     Codex { yes: bool },
+    CodexUninstall,
 }
 
 const OPENCODE_SESSION_PLUGIN_SOURCE: &str =
@@ -106,6 +107,7 @@ pub fn run_hooks_command(command: &str, args: &[String]) -> Result<String, CliEr
         HooksRequest::Kimi { yes } => install_kimi_hooks(yes),
         HooksRequest::KimiUninstall => uninstall_kimi_hooks(),
         HooksRequest::Codex { yes } => install_codex_hooks(yes),
+        HooksRequest::CodexUninstall => uninstall_codex_hooks(),
     }
 }
 
@@ -196,8 +198,9 @@ fn parse_hooks_subcommand(tokens: &[String], yes: bool) -> Result<HooksRequest, 
         },
         Some("codex") => match tokens.get(1).map(String::as_str) {
             None | Some("install") | Some("setup") => Ok(HooksRequest::Codex { yes }),
+            Some("uninstall") => Ok(HooksRequest::CodexUninstall),
             Some(other) => Err(CliError::new(format!(
-                "unsupported Codex hooks action '{other}'; use 'cmux hooks codex install'"
+                "unsupported Codex hooks action '{other}'; use 'cmux hooks codex install|uninstall'"
             ))),
         },
         Some(agent) if nested_agent(agent).is_some() => match tokens.get(1).map(String::as_str) {
@@ -1417,13 +1420,7 @@ fn codex_agent_def() -> NestedAgentDef {
 }
 
 fn install_codex_hooks(yes: bool) -> Result<String, CliError> {
-    let config_dir = if let Some(path) = nonempty_env("CODEX_HOME") {
-        expand_home_path(PathBuf::from(path))?
-    } else {
-        home_dir()
-            .map(|home| home.join(".codex"))
-            .ok_or_else(|| CliError::new("unable to determine Codex config directory"))?
-    };
+    let config_dir = codex_config_dir()?;
     if !config_dir.is_dir() {
         return Ok(
             "Required agent configuration is missing. Run `cmux hooks setup` after installing your agent CLI.\n"
@@ -1462,6 +1459,51 @@ fn install_codex_hooks(yes: bool) -> Result<String, CliError> {
         ));
     }
     Ok(output)
+}
+
+fn uninstall_codex_hooks() -> Result<String, CliError> {
+    let config_dir = codex_config_dir()?;
+    let hooks_path = config_dir.join("hooks.json");
+    let Some(hooks_before) = read_existing_json_object(&hooks_path) else {
+        return Ok(format!("No hooks.json found at {}\n", hooks_path.display()));
+    };
+    let (hooks_plan, removed) =
+        plan_nested_hooks_uninstall(&hooks_before, &hooks_path, &codex_agent_def())?;
+    write_config(&hooks_path, &hooks_plan.after)?;
+    let mut output = format!(
+        "Removed {removed} cmux hook(s) from {}\n",
+        hooks_path.display()
+    );
+    let config_path = config_dir.join("config.toml");
+    let config_before = match fs::read_to_string(&config_path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(output),
+        Err(error) => {
+            return Err(CliError::new(format!(
+                "failed to read {}: {error}",
+                config_path.display()
+            )))
+        }
+    };
+    let config_plan = plan_codex_config_uninstall(&config_before, &config_path);
+    if config_plan.changed {
+        write_text_exact(&config_path, &config_plan.after)?;
+        output.push_str(&format!(
+            "Removed Codex hooks feature from {}\n",
+            config_path.display()
+        ));
+    }
+    Ok(output)
+}
+
+fn codex_config_dir() -> Result<PathBuf, CliError> {
+    if let Some(path) = nonempty_env("CODEX_HOME") {
+        expand_home_path(PathBuf::from(path))
+    } else {
+        home_dir()
+            .map(|home| home.join(".codex"))
+            .ok_or_else(|| CliError::new("unable to determine Codex config directory"))
+    }
 }
 
 fn plan_codex_hooks_update(before: &str, path: &Path) -> Result<ClaudeIntegrationPlan, CliError> {
@@ -1509,6 +1551,22 @@ fn plan_codex_config_update(
         before,
         after,
     })
+}
+
+fn plan_codex_config_uninstall(before: &str, config_path: &Path) -> ClaudeIntegrationPlan {
+    let before = normalize_toml_text(before);
+    let lines = remove_named_block(
+        remove_codex_feature_block(toml_lines(&before)),
+        CODEX_TRUST_BEGIN,
+        CODEX_TRUST_END,
+    );
+    let after = toml_content(&lines);
+    ClaudeIntegrationPlan {
+        changed: before != after,
+        diff: unified_diff(config_path, &before, &after),
+        before,
+        after,
+    }
 }
 
 fn remove_codex_feature_block(mut lines: Vec<String>) -> Vec<String> {
@@ -3690,6 +3748,37 @@ mod tests {
                 .unwrap()
                 .changed
         );
+    }
+
+    #[test]
+    fn codex_uninstall_removes_owned_hooks_and_restores_owned_feature_state() {
+        assert_eq!(
+            parse_hooks_request("hooks", &["codex".into(), "uninstall".into()]).unwrap(),
+            HooksRequest::CodexUninstall
+        );
+        let hooks_path = Path::new("hooks.json");
+        let hooks_before = r#"{"hooks":{"UserEvent":[{"hooks":[{"command":"user command"}]}]}}"#;
+        let installed_hooks = plan_codex_hooks_update(hooks_before, hooks_path).unwrap();
+        let config_path = Path::new("config.toml");
+        let config_before = "model = \"user\"\n[features]\nhooks = false\n";
+        let installed_config = plan_codex_config_update(
+            config_before,
+            &installed_hooks.after,
+            hooks_path,
+            config_path,
+        )
+        .unwrap();
+        let (removed_hooks, count) =
+            plan_nested_hooks_uninstall(&installed_hooks.after, hooks_path, &codex_agent_def())
+                .unwrap();
+        assert_eq!(count, 10);
+        assert!(removed_hooks.after.contains("user command"));
+        assert!(!removed_hooks.after.contains("cmux hooks codex"));
+        let removed_config = plan_codex_config_uninstall(&installed_config.after, config_path);
+        assert!(removed_config.after.contains("hooks = false"));
+        assert!(!removed_config.after.contains(CODEX_FEATURE_BEGIN));
+        assert!(!removed_config.after.contains(CODEX_TRUST_BEGIN));
+        assert!(removed_config.after.contains("model = \"user\""));
     }
 
     #[test]
