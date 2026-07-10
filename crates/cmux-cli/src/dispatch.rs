@@ -336,7 +336,7 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
             "Usage:\n  cmux markdown [--path PATH]\n\nOpens a markdown surface in the selected pane.",
         ),
         "hooks" => Some(
-            "Usage:\n  cmux hooks feed --source AGENT [--event EVENT]\n  cmux hooks AGENT install [--yes|-y]\n  cmux hooks setup --agent AGENT [--yes|-y]\n\nBridges agent events into Feed or installs hooks for Claude, Kiro, Gemini, Grok, Copilot, CodeBuddy, Factory, Qoder, Cursor, and Antigravity.",
+            "Usage:\n  cmux hooks feed --source AGENT [--event EVENT]\n  cmux hooks AGENT install [--yes|-y]\n  cmux hooks opencode install [--project] [--yes|-y]\n  cmux hooks setup --agent AGENT [--yes|-y]\n\nBridges agent events into Feed or installs hooks for Claude, Kiro, Gemini, Grok, Copilot, CodeBuddy, Factory, Qoder, Cursor, Antigravity, and OpenCode.",
         ),
         _ => None,
     }

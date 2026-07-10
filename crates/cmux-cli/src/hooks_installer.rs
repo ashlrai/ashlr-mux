@@ -26,7 +26,15 @@ enum HooksRequest {
     Nested { agent: String, yes: bool },
     Cursor { yes: bool },
     Antigravity { yes: bool },
+    OpenCode { yes: bool, project: bool },
 }
+
+const OPENCODE_SESSION_PLUGIN_SOURCE: &str =
+    include_str!("../../../Resources/opencode-session-plugin.js");
+const OPENCODE_FEED_PLUGIN_SOURCE: &str = include_str!("../../../Resources/opencode-plugin.js");
+const OPENCODE_SESSION_PLUGIN_SPEC: &str = "./plugins/cmux-session.js";
+const OPENCODE_SESSION_PLUGIN_MARKER: &str = "cmux-opencode-session-plugin-marker";
+const OPENCODE_FEED_PLUGIN_MARKER: &str = "cmux-feed-plugin-marker";
 
 #[derive(Debug, Clone, Copy)]
 struct NestedAgentDef {
@@ -51,6 +59,7 @@ pub fn run_hooks_command(command: &str, args: &[String]) -> Result<String, CliEr
         }
         HooksRequest::Cursor { yes } => install_cursor_hooks(yes),
         HooksRequest::Antigravity { yes } => install_antigravity_hooks(yes),
+        HooksRequest::OpenCode { yes, project } => install_opencode_hooks(yes, project),
     }
 }
 
@@ -93,6 +102,7 @@ fn parse_hooks_subcommand(tokens: &[String], yes: bool) -> Result<HooksRequest, 
                 "unsupported Antigravity hooks action '{other}'; use 'cmux hooks antigravity install'"
             ))),
         },
+        Some("opencode") => parse_opencode_tokens(&tokens[1..], yes),
         Some(agent) if nested_agent(agent).is_some() => match tokens.get(1).map(String::as_str) {
             None | Some("install") | Some("setup") => Ok(HooksRequest::Nested {
                 agent: agent.to_string(),
@@ -143,6 +153,10 @@ fn parse_setup_tokens(tokens: &[String], yes: bool) -> Result<HooksRequest, CliE
         Some("kiro") => Ok(HooksRequest::Kiro { yes }),
         Some("cursor") => Ok(HooksRequest::Cursor { yes }),
         Some("antigravity") | Some("agy") => Ok(HooksRequest::Antigravity { yes }),
+        Some("opencode") => Ok(HooksRequest::OpenCode {
+            yes,
+            project: false,
+        }),
         Some(agent) if nested_agent(agent).is_some() => Ok(HooksRequest::Nested {
             agent: agent.to_string(),
             yes,
@@ -152,6 +166,208 @@ fn parse_setup_tokens(tokens: &[String], yes: bool) -> Result<HooksRequest, CliE
         ))),
         None => Err(CliError::new("cmux hooks setup requires --agent AGENT")),
     }
+}
+
+fn parse_opencode_tokens(tokens: &[String], yes: bool) -> Result<HooksRequest, CliError> {
+    let mut project = false;
+    for token in tokens {
+        match token.as_str() {
+            "install" | "setup" => {}
+            "--project" => project = true,
+            "uninstall" => return Err(unsupported_hooks_command("hooks opencode uninstall")),
+            other => {
+                return Err(CliError::new(format!(
+                    "unsupported OpenCode hooks option '{other}'; use 'cmux hooks opencode install [--project]'"
+                )))
+            }
+        }
+    }
+    Ok(HooksRequest::OpenCode { yes, project })
+}
+
+fn install_opencode_hooks(yes: bool, project: bool) -> Result<String, CliError> {
+    let config_dir = opencode_config_dir()?;
+    let plugin_dir = if project {
+        std::env::current_dir()
+            .map_err(|error| {
+                CliError::new(format!("failed to resolve current directory: {error}"))
+            })?
+            .join(".opencode")
+            .join("plugins")
+    } else {
+        config_dir.join("plugins")
+    };
+    let feed_path = plugin_dir.join("cmux-feed.js");
+    let feed_before = read_optional_text(&feed_path)?;
+    ensure_cmux_plugin(&feed_path, &feed_before, OPENCODE_FEED_PLUGIN_MARKER)?;
+
+    let mut preview = unified_diff(&feed_path, &feed_before, OPENCODE_FEED_PLUGIN_SOURCE);
+    let mut registration = None;
+    let mut session_before = String::new();
+    let session_path = config_dir.join("plugins").join("cmux-session.js");
+    if !project {
+        session_before = read_optional_text(&session_path)?;
+        ensure_cmux_plugin(
+            &session_path,
+            &session_before,
+            OPENCODE_SESSION_PLUGIN_MARKER,
+        )?;
+        let config_path = config_dir.join("opencode.json");
+        let config_before = read_config_or_empty_object(&config_path)?;
+        let plan = plan_opencode_registration_update(&config_before, &config_path)?;
+        preview.push_str(&unified_diff(
+            &session_path,
+            &session_before,
+            OPENCODE_SESSION_PLUGIN_SOURCE,
+        ));
+        preview.push_str(&plan.diff);
+        registration = Some((config_path, plan));
+    }
+
+    let feed_changed = feed_before != OPENCODE_FEED_PLUGIN_SOURCE;
+    let session_changed = !project && session_before != OPENCODE_SESSION_PLUGIN_SOURCE;
+    let registration_changed = registration.as_ref().is_some_and(|(_, plan)| plan.changed);
+    if !feed_changed && !session_changed && !registration_changed {
+        return Ok(format!(
+            "OpenCode hooks already up to date at {}\n",
+            feed_path.display()
+        ));
+    }
+    if !confirm_hook_change(&preview, yes)? {
+        return Ok("Aborted.\n".to_string());
+    }
+
+    if session_changed {
+        write_text_exact(&session_path, OPENCODE_SESSION_PLUGIN_SOURCE)?;
+    }
+    if let Some((config_path, plan)) = registration {
+        if plan.changed {
+            write_config(&config_path, &plan.after)?;
+        }
+    }
+    if feed_changed {
+        write_text_exact(&feed_path, OPENCODE_FEED_PLUGIN_SOURCE)?;
+    }
+
+    if project {
+        Ok(format!(
+            "OpenCode plugin installed at {}\n",
+            feed_path.display()
+        ))
+    } else {
+        Ok(format!(
+            "OpenCode hooks installed at {}\nOpenCode plugin installed at {}\n",
+            session_path.display(),
+            feed_path.display()
+        ))
+    }
+}
+
+fn opencode_config_dir() -> Result<PathBuf, CliError> {
+    if let Some(path) = std::env::var_os("OPENCODE_CONFIG_DIR").filter(|path| !path.is_empty()) {
+        return expand_home_path(PathBuf::from(path));
+    }
+    home_dir()
+        .map(|home| home.join(".config").join("opencode"))
+        .ok_or_else(|| CliError::new("unable to determine OpenCode config directory"))
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+}
+
+fn expand_home_path(path: PathBuf) -> Result<PathBuf, CliError> {
+    let text = path.to_string_lossy();
+    if text == "~" {
+        return home_dir()
+            .ok_or_else(|| CliError::new("unable to expand OpenCode config directory"));
+    }
+    if let Some(rest) = text.strip_prefix("~/").or_else(|| text.strip_prefix("~\\")) {
+        return home_dir()
+            .map(|home| home.join(rest))
+            .ok_or_else(|| CliError::new("unable to expand OpenCode config directory"));
+    }
+    Ok(path)
+}
+
+fn plan_opencode_registration_update(
+    before: &str,
+    path: &Path,
+) -> Result<ClaudeIntegrationPlan, CliError> {
+    let before = normalize_config_text(before)?;
+    let mut value: serde_json::Value = serde_json::from_str(&before)
+        .map_err(|error| CliError::new(format!("failed to parse OpenCode config: {error}")))?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| CliError::new("OpenCode config must be a JSON object"))?;
+    let plugins = object
+        .get("plugin")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut plugins: Vec<_> = plugins
+        .into_iter()
+        .filter(|entry| !opencode_session_plugin_entry(entry))
+        .collect();
+    plugins.push(serde_json::json!(OPENCODE_SESSION_PLUGIN_SPEC));
+    object.insert("plugin".to_string(), serde_json::Value::Array(plugins));
+    let after = serde_json::to_string_pretty(&value)
+        .map_err(|error| CliError::new(format!("failed to encode OpenCode config: {error}")))?;
+    Ok(ClaudeIntegrationPlan {
+        changed: before != after,
+        diff: unified_diff(path, &before, &after),
+        before,
+        after,
+    })
+}
+
+fn opencode_session_plugin_entry(entry: &serde_json::Value) -> bool {
+    let value = entry
+        .as_str()
+        .or_else(|| entry.as_array()?.first()?.as_str());
+    value.is_some_and(|value| {
+        value == OPENCODE_SESSION_PLUGIN_SPEC
+            || value == "cmux-session"
+            || value.ends_with("/plugins/cmux-session.js")
+            || value.ends_with("/cmux-session.js")
+    })
+}
+
+fn read_optional_text(path: &Path) -> Result<String, CliError> {
+    match fs::read_to_string(path) {
+        Ok(contents) => Ok(contents),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(String::new()),
+        Err(error) => Err(CliError::new(format!(
+            "failed to read {}: {error}",
+            path.display()
+        ))),
+    }
+}
+
+fn ensure_cmux_plugin(path: &Path, existing: &str, marker: &str) -> Result<(), CliError> {
+    if !existing.is_empty() && !existing.contains(marker) {
+        return Err(CliError::new(format!(
+            "{} exists and is not a cmux plugin; leaving it alone",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+fn write_text_exact(path: &Path, contents: &str) -> Result<(), CliError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            CliError::new(format!(
+                "failed to create config directory {}: {error}",
+                parent.display()
+            ))
+        })?;
+    }
+    fs::write(path, contents)
+        .map_err(|error| CliError::new(format!("failed to write {}: {error}", path.display())))
 }
 
 fn install_antigravity_hooks(yes: bool) -> Result<String, CliError> {
@@ -1084,5 +1300,66 @@ mod tests {
                 .unwrap()
                 .changed
         );
+    }
+
+    #[test]
+    fn opencode_plan_registers_session_plugin_and_preserves_user_plugins() {
+        assert_eq!(
+            parse_hooks_request(
+                "hooks",
+                &[
+                    "opencode".into(),
+                    "install".into(),
+                    "--project".into(),
+                    "--yes".into(),
+                ],
+            )
+            .unwrap(),
+            HooksRequest::OpenCode {
+                yes: true,
+                project: true,
+            }
+        );
+        assert_eq!(
+            parse_hooks_request(
+                "hooks",
+                &[
+                    "setup".into(),
+                    "--agent".into(),
+                    "opencode".into(),
+                    "--yes".into(),
+                ],
+            )
+            .unwrap(),
+            HooksRequest::OpenCode {
+                yes: true,
+                project: false,
+            }
+        );
+        let plan = plan_opencode_registration_update(
+            r#"{"theme":"dark","plugin":["user-plugin",["tuple-plugin",{"flag":true}],"cmux-session","./plugins/cmux-session.js"]}"#,
+            &PathBuf::from("C:/Users/me/.config/opencode/opencode.json"),
+        )
+        .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&plan.after).unwrap();
+        assert_eq!(value["theme"], "dark");
+        assert_eq!(value["plugin"][0], "user-plugin");
+        assert_eq!(value["plugin"][1][0], "tuple-plugin");
+        assert_eq!(
+            value["plugin"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|entry| entry.as_str() == Some("./plugins/cmux-session.js"))
+                .count(),
+            1
+        );
+        assert!(
+            !plan_opencode_registration_update(&plan.after, &path())
+                .unwrap()
+                .changed
+        );
+        assert!(OPENCODE_SESSION_PLUGIN_SOURCE.contains("cmux-opencode-session-plugin-marker"));
+        assert!(OPENCODE_FEED_PLUGIN_SOURCE.contains("cmux-feed-plugin-marker"));
     }
 }
