@@ -6,7 +6,7 @@
 
 use std::fs;
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::invocation::CliError;
 
@@ -21,11 +21,13 @@ pub struct ClaudeIntegrationPlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum HooksRequest {
     InstallClaude { yes: bool },
+    InstallKiro { yes: bool },
 }
 
 pub fn run_hooks_command(command: &str, args: &[String]) -> Result<String, CliError> {
     match parse_hooks_request(command, args)? {
         HooksRequest::InstallClaude { yes } => install_claude_code_integration(yes),
+        HooksRequest::InstallKiro { yes } => install_kiro_hooks(yes),
     }
 }
 
@@ -48,6 +50,12 @@ fn parse_hooks_subcommand(tokens: &[String], yes: bool) -> Result<HooksRequest, 
             Some("uninstall") => Err(unsupported_hooks_command("hooks claude uninstall")),
             Some(other) => Err(CliError::new(format!(
                 "unsupported Claude hooks action '{other}'; use 'cmux hooks claude install'"
+            ))),
+        },
+        Some("kiro") => match tokens.get(1).map(String::as_str) {
+            None | Some("install") | Some("setup") => Ok(HooksRequest::InstallKiro { yes }),
+            Some(other) => Err(CliError::new(format!(
+                "unsupported Kiro hooks action '{other}'; use 'cmux hooks kiro install'"
             ))),
         },
         Some("setup") => parse_setup_tokens(&tokens[1..], yes),
@@ -89,6 +97,7 @@ fn parse_setup_tokens(tokens: &[String], yes: bool) -> Result<HooksRequest, CliE
 
     match agent {
         Some("claude") | Some("claude-code") => Ok(HooksRequest::InstallClaude { yes }),
+        Some("kiro") => Ok(HooksRequest::InstallKiro { yes }),
         Some(other) => Err(CliError::new(format!(
             "only Claude Code hook installation is available in this Windows port slice; \
              '{other}' is not installed by this command yet"
@@ -97,6 +106,111 @@ fn parse_setup_tokens(tokens: &[String], yes: bool) -> Result<HooksRequest, CliE
             "cmux hooks setup requires --agent claude in the Windows port today",
         )),
     }
+}
+
+fn install_kiro_hooks(yes: bool) -> Result<String, CliError> {
+    let path = kiro_hooks_path()?;
+    let before = read_config_or_empty_object(&path)?;
+    let plan = plan_kiro_hooks_update(&before, &path)?;
+    if !plan.changed {
+        return Ok(format!(
+            "Kiro hooks already up to date at {}\n",
+            path.display()
+        ));
+    }
+    if !yes {
+        print!("{}\nType y to apply this change: ", plan.diff);
+        io::stdout()
+            .flush()
+            .map_err(|error| CliError::new(format!("failed to flush stdout: {error}")))?;
+        let mut answer = String::new();
+        io::stdin()
+            .read_line(&mut answer)
+            .map_err(|error| CliError::new(format!("failed to read confirmation: {error}")))?;
+        if !matches!(answer.trim(), "y" | "Y") {
+            return Ok("Cancelled. No files were changed.\n".to_string());
+        }
+    }
+    write_config(&path, &plan.after)?;
+    Ok(format!(
+        "Kiro hooks installed at {}\nKiro applies these hooks only when run as the cmux agent. Start Kiro with `kiro-cli chat --agent cmux`, or make it the default with `kiro-cli settings chat.defaultAgent cmux`.\n",
+        path.display()
+    ))
+}
+
+fn kiro_hooks_path() -> Result<PathBuf, CliError> {
+    let base = std::env::var_os("KIRO_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("USERPROFILE")
+                .or_else(|| std::env::var_os("HOME"))
+                .map(|home| PathBuf::from(home).join(".kiro"))
+        })
+        .ok_or_else(|| CliError::new("unable to determine Kiro config directory"))?;
+    Ok(base.join("agents").join("cmux.json"))
+}
+
+pub fn plan_kiro_hooks_update(
+    before: &str,
+    path: &Path,
+) -> Result<ClaudeIntegrationPlan, CliError> {
+    let before = normalize_config_text(before)?;
+    let mut value: serde_json::Value = serde_json::from_str(&before)
+        .map_err(|error| CliError::new(format!("failed to parse Kiro config: {error}")))?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| CliError::new("Kiro agent config must be a JSON object"))?;
+    object
+        .entry("name")
+        .or_insert_with(|| serde_json::json!("cmux"));
+    object.entry("description").or_insert_with(|| {
+        serde_json::json!("CMUX notification and Feed bridge hooks for Kiro CLI.")
+    });
+    object
+        .entry("tools")
+        .or_insert_with(|| serde_json::json!(["*"]));
+    let hooks = object
+        .entry("hooks")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .ok_or_else(|| CliError::new("Kiro agent config key 'hooks' must be an object"))?;
+    for (event, command, timeout) in [
+        ("agentSpawn", "cmux hooks kiro session-start", 5_000),
+        ("userPromptSubmit", "cmux hooks kiro prompt-submit", 5_000),
+        ("stop", "cmux hooks kiro stop", 5_000),
+        (
+            "preToolUse",
+            "cmux hooks feed --source kiro --event preToolUse",
+            120_000,
+        ),
+        (
+            "postToolUse",
+            "cmux hooks feed --source kiro --event postToolUse",
+            120_000,
+        ),
+    ] {
+        let entries = hooks
+            .entry(event)
+            .or_insert_with(|| serde_json::json!([]))
+            .as_array_mut()
+            .ok_or_else(|| CliError::new(format!("Kiro hook '{event}' must be an array")))?;
+        entries.retain(|entry| {
+            let command = entry.get("command").and_then(serde_json::Value::as_str);
+            !command.is_some_and(|command| {
+                command.contains("cmux hooks kiro") || command.contains("hooks feed --source kiro")
+            })
+        });
+        entries.push(serde_json::json!({"command":command,"timeout_ms":timeout}));
+    }
+    let after = serde_json::to_string_pretty(&value)
+        .map_err(|error| CliError::new(format!("failed to encode Kiro config: {error}")))?;
+    Ok(ClaudeIntegrationPlan {
+        changed: before != after,
+        diff: unified_diff(path, &before, &after),
+        before,
+        after,
+    })
 }
 
 fn split_yes_flag(args: &[String]) -> (bool, Vec<String>) {
@@ -351,5 +465,53 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn parses_supported_kiro_install_spellings() {
+        for (command, args) in [
+            ("hooks", vec!["kiro", "install"]),
+            ("hooks", vec!["setup", "--agent", "kiro", "--yes"]),
+            ("setup-hooks", vec!["kiro", "-y"]),
+        ] {
+            let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            assert_eq!(
+                parse_hooks_request(command, &args).expect("request"),
+                HooksRequest::InstallKiro {
+                    yes: args.iter().any(|arg| arg == "--yes" || arg == "-y")
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn kiro_plan_uses_custom_agent_shape_and_preserves_user_fields() {
+        let plan = plan_kiro_hooks_update(
+            r#"{"model":"claude-sonnet","tools":["fs_read"],"custom":true,"hooks":{"preToolUse":[{"command":"user-check","timeout_ms":42}]}}"#,
+            &PathBuf::from("C:/Users/me/.kiro/agents/cmux.json"),
+        )
+        .expect("plan");
+        let value: serde_json::Value = serde_json::from_str(&plan.after).unwrap();
+        assert_eq!(value["model"], "claude-sonnet");
+        assert_eq!(value["tools"], serde_json::json!(["fs_read"]));
+        assert_eq!(value["custom"], true);
+        assert_eq!(value["name"], "cmux");
+        assert!(value.get("version").is_none());
+        assert_eq!(value["hooks"]["agentSpawn"][0]["timeout_ms"], 5_000);
+        assert_eq!(value["hooks"]["preToolUse"][0]["timeout_ms"], 42);
+        assert_eq!(value["hooks"]["preToolUse"][0]["command"], "user-check");
+        assert_eq!(value["hooks"]["preToolUse"][1]["timeout_ms"], 120_000);
+        assert!(value["hooks"]["preToolUse"][1]["command"]
+            .as_str()
+            .unwrap()
+            .contains("hooks feed --source kiro --event preToolUse"));
+        assert_eq!(value["hooks"]["postToolUse"][0]["timeout_ms"], 120_000);
+
+        let fresh = plan_kiro_hooks_update("{}", &path()).unwrap();
+        let fresh: serde_json::Value = serde_json::from_str(&fresh.after).unwrap();
+        assert_eq!(fresh["tools"], serde_json::json!(["*"]));
+
+        let repeated = plan_kiro_hooks_update(&plan.after, &path()).unwrap();
+        assert!(!repeated.changed);
     }
 }
