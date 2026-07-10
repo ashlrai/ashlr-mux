@@ -19,6 +19,7 @@ cmux-diff = { path = "../cmux-diff" }
 cmux-ipc = { path = "../cmux-ipc" }
 cmux-ssh = { path = "../cmux-ssh" }
 serde_json = { workspace = true }
+sha2 = "0.10"
 uuid = { workspace = true }
 # rt drives the one-shot socket round-trip; io-util backs tokio::io::split.
 tokio = { version = "1", features = ["io-util", "rt"] }

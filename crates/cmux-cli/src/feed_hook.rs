@@ -1,6 +1,7 @@
 //! Agent hook JSON to Feed control-socket bridge.
 
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 
 use crate::invocation::CliError;
 
@@ -49,6 +50,7 @@ pub fn prepare_feed_hook(
     fallback_request_id: &str,
 ) -> Result<Option<PreparedFeedHook>, CliError> {
     let source = option_value(args, "--source")
+        .map(|source| source.trim().to_string())
         .filter(|source| !source.is_empty())
         .ok_or_else(|| CliError::new("cmux hooks feed requires --source <agent-name>"))?;
     if environment.surface_id.as_deref().is_none_or(str::is_empty) {
@@ -83,12 +85,7 @@ pub fn prepare_feed_hook(
             "conversationId",
         ],
     )
-    .unwrap_or_else(|| {
-        format!(
-            "fallback-{}",
-            environment.surface_id.as_deref().unwrap_or("unknown")
-        )
-    });
+    .unwrap_or_else(|| stable_fallback_session_id(&source, &raw_object, environment.agent_pid));
     let mut event = Map::new();
     event.insert(
         "session_id".to_string(),
@@ -103,27 +100,50 @@ pub fn prepare_feed_hook(
     if let Some(workspace_id) = environment
         .workspace_id
         .as_deref()
+        .map(str::trim)
         .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            first_string(
+                &raw_object,
+                &[
+                    "workspace_id",
+                    "workspaceId",
+                    "workspace_ref",
+                    "workspaceRef",
+                ],
+            )
+        })
     {
-        event.insert(
-            "workspace_id".to_string(),
-            Value::String(workspace_id.to_string()),
-        );
-    }
-    if let Some(cwd) = first_string(
-        &raw_object,
-        &["cwd", "working_directory", "workingDirectory"],
-    ) {
-        event.insert("cwd".to_string(), Value::String(cwd));
+        event.insert("workspace_id".to_string(), Value::String(workspace_id));
     }
     if !tool_name.is_empty() {
         event.insert("tool_name".to_string(), Value::String(tool_name.clone()));
     }
-    let tool_input = raw_object
+    let tool_request_input = raw_object
         .get("tool_input")
         .or_else(|| raw_object.get("toolInput"))
         .or_else(|| tool_call.and_then(|call| call.get("args")))
         .cloned();
+    if let Some(cwd) = extract_hook_cwd(&raw_object).or_else(|| {
+        tool_request_input
+            .as_ref()
+            .and_then(Value::as_object)
+            .and_then(|input| first_string(input, &["Cwd", "cwd"]))
+    }) {
+        event.insert("cwd".to_string(), Value::String(cwd));
+    }
+    let post_tool_response = raw_object
+        .get("tool_response")
+        .or_else(|| raw_object.get("toolResponse"))
+        .or_else(|| raw_object.get("tool_result"))
+        .or_else(|| raw_object.get("toolResult"));
+    let tool_input =
+        if source == "codex" && hook_event_name == "PostToolUse" && post_tool_response.is_some() {
+            post_tool_response.map(sanitize_post_tool_use)
+        } else {
+            tool_request_input
+        };
     if let Some(tool_input) = &tool_input {
         event.insert("tool_input".to_string(), tool_input.clone());
     }
@@ -651,6 +671,176 @@ fn non_claude_pre_tool_decision(
     Value::Object(output)
 }
 
+fn stable_fallback_session_id(source: &str, raw: &Map<String, Value>, agent_pid: i64) -> String {
+    let mut components = vec![
+        format!("source={source}"),
+        format!("pid={}", agent_pid.max(0)),
+    ];
+    if let Some(workspace_id) = first_string(
+        raw,
+        &[
+            "workspace_id",
+            "workspaceId",
+            "workspace_ref",
+            "workspaceRef",
+        ],
+    ) {
+        components.push(format!("workspace={workspace_id}"));
+    }
+    if let Some(cwd) = extract_hook_cwd(raw) {
+        components.push(format!("cwd={cwd}"));
+    }
+    if let Some(transcript) = extract_nested_string(raw, &["transcript_path", "transcriptPath"]) {
+        components.push(format!("transcript={transcript}"));
+    }
+    let digest = Sha256::digest(components.join("\n").as_bytes());
+    let prefix = digest[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("fallback-{prefix}")
+}
+
+fn extract_hook_cwd(raw: &Map<String, Value>) -> Option<String> {
+    const CWD_KEYS: &[&str] = &[
+        "cwd",
+        "working_directory",
+        "workingDirectory",
+        "project_dir",
+        "projectDir",
+        "project_path",
+        "projectPath",
+    ];
+    first_string(raw, CWD_KEYS)
+        .or_else(|| first_workspace_path(raw))
+        .or_else(|| {
+            ["notification", "data", "context"].iter().find_map(|key| {
+                raw.get(*key).and_then(Value::as_object).and_then(|nested| {
+                    first_string(nested, CWD_KEYS).or_else(|| first_workspace_path(nested))
+                })
+            })
+        })
+}
+
+fn extract_nested_string(raw: &Map<String, Value>, keys: &[&str]) -> Option<String> {
+    first_string(raw, keys).or_else(|| {
+        ["notification", "data", "context"].iter().find_map(|key| {
+            raw.get(*key)
+                .and_then(Value::as_object)
+                .and_then(|nested| first_string(nested, keys))
+        })
+    })
+}
+
+fn first_workspace_path(raw: &Map<String, Value>) -> Option<String> {
+    raw.get("workspacePaths")
+        .or_else(|| raw.get("workspace_paths"))
+        .and_then(Value::as_array)
+        .and_then(|paths| {
+            paths.iter().find_map(|path| {
+                path.as_str()
+                    .map(str::trim)
+                    .filter(|path| !path.is_empty())
+                    .map(str::to_string)
+            })
+        })
+}
+
+fn sanitize_post_tool_use(value: &Value) -> Value {
+    let mut summary = Map::new();
+    summary.insert("_cmux_sanitized".to_string(), Value::Bool(true));
+    match value {
+        Value::Object(object) => {
+            summary.insert("_cmux_original_key_count".to_string(), json!(object.len()));
+            let mut summarized = 0usize;
+            for (key, value) in object {
+                let normalized = key
+                    .chars()
+                    .filter(|character| !matches!(character, '_' | '-'))
+                    .collect::<String>()
+                    .to_ascii_lowercase();
+                if matches!(
+                    normalized.as_str(),
+                    "exitcode" | "status" | "signal" | "durationms" | "timedout" | "success"
+                ) {
+                    if let Some((value, truncated)) = bounded_scalar(value) {
+                        summary.insert(key.clone(), value);
+                        if truncated {
+                            summary.insert(format!("{key}_truncated"), Value::Bool(true));
+                        }
+                        summarized += 1;
+                        continue;
+                    }
+                }
+                if matches!(
+                    normalized.as_str(),
+                    "stdout" | "stderr" | "output" | "text" | "result" | "message" | "error"
+                ) {
+                    summarize_omitted_field(&mut summary, key, value);
+                    summarized += 1;
+                }
+            }
+            let omitted = object.len().saturating_sub(summarized);
+            if omitted > 0 {
+                summary.insert("_cmux_omitted_key_count".to_string(), json!(omitted));
+            }
+        }
+        Value::Array(values) => {
+            summary.insert("_cmux_array_count".to_string(), json!(values.len()));
+        }
+        Value::String(_) => {
+            summary.insert("_cmux_text_omitted".to_string(), Value::Bool(true));
+        }
+        scalar => {
+            if let Some((value, truncated)) = bounded_scalar(scalar) {
+                summary.insert("_cmux_value".to_string(), value);
+                if truncated {
+                    summary.insert("_cmux_value_truncated".to_string(), Value::Bool(true));
+                }
+            }
+        }
+    }
+    Value::Object(summary)
+}
+
+fn summarize_omitted_field(summary: &mut Map<String, Value>, key: &str, value: &Value) {
+    match value {
+        Value::String(_) => {
+            summary.insert(format!("{key}_text_omitted"), Value::Bool(true));
+        }
+        Value::Array(values) => {
+            summary.insert(format!("{key}_array_count"), json!(values.len()));
+            summary.insert(format!("{key}_omitted"), Value::Bool(true));
+        }
+        Value::Object(object) => {
+            summary.insert(format!("{key}_object_key_count"), json!(object.len()));
+            summary.insert(format!("{key}_omitted"), Value::Bool(true));
+        }
+        _ => {
+            summary.insert(format!("{key}_omitted"), Value::Bool(true));
+        }
+    }
+}
+
+fn bounded_scalar(value: &Value) -> Option<(Value, bool)> {
+    match value {
+        Value::Null | Value::Bool(_) | Value::Number(_) => Some((value.clone(), false)),
+        Value::String(value) => {
+            let mut end = value.len();
+            if value.len() > 512 {
+                end = value
+                    .char_indices()
+                    .take_while(|(index, character)| index + character.len_utf8() <= 512)
+                    .map(|(index, character)| index + character.len_utf8())
+                    .last()
+                    .unwrap_or(0);
+            }
+            Some((Value::String(value[..end].to_string()), end < value.len()))
+        }
+        Value::Array(_) | Value::Object(_) => None,
+    }
+}
+
 fn option_value(args: &[String], name: &str) -> Option<String> {
     args.iter().enumerate().find_map(|(index, arg)| {
         if arg == name {
@@ -665,6 +855,7 @@ fn first_string(object: &Map<String, Value>, keys: &[&str]) -> Option<String> {
         object
             .get(*key)
             .and_then(Value::as_str)
+            .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string)
     })
@@ -751,6 +942,74 @@ mod tests {
         )
         .unwrap()
         .is_none());
+    }
+
+    #[test]
+    fn missing_session_id_uses_stable_payload_identity_and_nested_paths() {
+        let mut env = environment();
+        env.workspace_id = None;
+        env.agent_pid = 424242;
+        let input = r#"{"hook_event_name":"PreToolUse","workspace_id":"workspace-payload","workspacePaths":["  C:/repo  "],"notification":{"transcript_path":"C:/logs/transcript-a.jsonl"},"toolCall":{"name":"read_file","args":{"path":"README.md"}}}"#;
+        let first = prepare_feed_hook(
+            &["--source=antigravity".into()],
+            input.as_bytes(),
+            &env,
+            "request-one",
+        )
+        .unwrap()
+        .unwrap();
+        let second = prepare_feed_hook(
+            &["--source=antigravity".into()],
+            input.as_bytes(),
+            &env,
+            "request-two",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            first.params["event"]["session_id"],
+            second.params["event"]["session_id"]
+        );
+        assert!(first.params["event"]["session_id"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("antigravity-fallback-"));
+        assert_eq!(first.params["event"]["workspace_id"], "workspace-payload");
+        assert_eq!(first.params["event"]["cwd"], "C:/repo");
+
+        let changed = prepare_feed_hook(
+            &["--source=antigravity".into()],
+            input.replace("transcript-a", "transcript-b").as_bytes(),
+            &env,
+            "request-three",
+        )
+        .unwrap()
+        .unwrap();
+        assert_ne!(
+            first.params["event"]["session_id"],
+            changed.params["event"]["session_id"]
+        );
+    }
+
+    #[test]
+    fn codex_post_tool_use_summarizes_response_without_retaining_output() {
+        let prepared = prepare_feed_hook(
+            &["--source=codex".into(), "--event=PostToolUse".into()],
+            br#"{"session_id":"codex-1","tool_name":"shell","tool_input":{"command":"secret"},"tool_response":{"exitCode":0,"status":"ok","stdout":"sensitive output","details":{"token":"hidden"}}}"#,
+            &environment(),
+            "request",
+        )
+        .unwrap()
+        .unwrap();
+        let summary = &prepared.params["event"]["tool_input"];
+        assert_eq!(summary["_cmux_sanitized"], true);
+        assert_eq!(summary["exitCode"], 0);
+        assert_eq!(summary["status"], "ok");
+        assert_eq!(summary["stdout_text_omitted"], true);
+        assert_eq!(summary["_cmux_original_key_count"], 4);
+        assert_eq!(summary["_cmux_omitted_key_count"], 1);
+        assert!(!summary.to_string().contains("sensitive output"));
+        assert!(!summary.to_string().contains("hidden"));
     }
 
     #[test]
