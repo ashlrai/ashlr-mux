@@ -107,6 +107,12 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
         "clear-notifications" => Some(
             "Usage:\n  cmux clear-notifications [--workspace WORKSPACE]\n\nClears all notifications or those for one workspace.",
         ),
+        "open-notification" => Some(
+            "Usage:\n  cmux open-notification --id ID\n\nOpens the workspace and surface targeted by a notification.",
+        ),
+        "jump-to-unread" => Some(
+            "Usage:\n  cmux jump-to-unread\n\nOpens the latest unread notification target.",
+        ),
         "list-workspaces" => Some(
             "Usage:\n  cmux list-workspaces\n\nLists workspaces from the active desktop session.",
         ),
@@ -511,9 +517,11 @@ mod tests {
             "focus-webview",
             "get-url",
             "is-webview-focused",
+            "jump-to-unread",
             "list-windows",
             "list-notifications",
             "mark-notification-read",
+            "open-notification",
             "new-browser-workspace",
             "new-terminal-tab",
             "reload-config",

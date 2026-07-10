@@ -266,6 +266,32 @@ pub(crate) fn notification_clear_for_control(
     })
 }
 
+pub(crate) fn notification_open_target_for_control(
+    state: &NotificationCommandState,
+    id: Option<&str>,
+) -> Result<Option<TerminalNotification>, String> {
+    with_notification_store(state, |store| {
+        let target_id = match id {
+            Some(id) => store
+                .notifications()
+                .iter()
+                .find(|item| item.id == id)
+                .map(|item| item.id.clone()),
+            None => store
+                .notifications()
+                .iter()
+                .find(|item| !item.is_read)
+                .map(|item| item.id.clone()),
+        }?;
+        store.mark_read(&target_id);
+        store
+            .notifications()
+            .iter()
+            .find(|item| item.id == target_id)
+            .cloned()
+    })
+}
+
 #[tauri::command]
 pub fn notification_mark_read(
     id: String,

@@ -191,6 +191,14 @@ pub fn control_command_for(
             "notification.clear",
             clear_notifications_params(args)?,
         )),
+        "open-notification" => Some(ControlCommand::new(
+            "notification.open",
+            open_notification_params(args)?,
+        )),
+        "jump-to-unread" => Some(ControlCommand::new(
+            "notification.jump_to_unread",
+            serde_json::json!({}),
+        )),
         "sidebar-snapshot" | "extension-sidebar-snapshot" => Some(ControlCommand::new(
             "extension.sidebar.snapshot",
             serde_json::json!({}),
@@ -1233,6 +1241,14 @@ fn clear_notifications_params(args: &[String]) -> Result<serde_json::Value, CliE
     apply_workspace_scope_selector(&parsed, &mut params);
     apply_window_scope_selector(&parsed, &mut params);
     Ok(serde_json::Value::Object(params))
+}
+
+fn open_notification_params(args: &[String]) -> Result<serde_json::Value, CliError> {
+    let parsed = ParsedArgs::parse(args)?;
+    let id = parsed
+        .value(&["--id"])
+        .ok_or_else(|| CliError::new("open-notification requires --id"))?;
+    Ok(serde_json::json!({"id": id}))
 }
 
 fn workspace_description_params(args: &[String]) -> Result<serde_json::Value, CliError> {
@@ -3399,6 +3415,20 @@ mod tests {
         assert_eq!(
             mapped("clear-notifications", &[]).params,
             serde_json::json!({})
+        );
+        assert_eq!(
+            mapped("open-notification", &["--id", "notification-1"]).params,
+            serde_json::json!({"id": "notification-1"})
+        );
+        assert_eq!(
+            control_command_for("open-notification", &[])
+                .unwrap_err()
+                .message,
+            "open-notification requires --id"
+        );
+        assert_eq!(
+            mapped("jump-to-unread", &[]).method,
+            "notification.jump_to_unread"
         );
     }
 

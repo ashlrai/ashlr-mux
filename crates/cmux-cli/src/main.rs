@@ -412,6 +412,9 @@ fn format_control_result(method: &str, result: &serde_json::Value) -> String {
             .unwrap_or_default()
             .to_string(),
         "notification.list" => format_notification_entries(result),
+        "notification.open" | "notification.jump_to_unread" => {
+            format_notification_navigation(result)
+        }
         "workspace.list_status" => format_status_entries(result),
         "workspace.list_meta" => format_metadata_entries(result),
         "workspace.list_meta_blocks" => format_metadata_blocks(result),
@@ -508,6 +511,26 @@ fn format_notification_entries(result: &serde_json::Value) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn format_notification_navigation(result: &serde_json::Value) -> String {
+    if result.get("opened").and_then(serde_json::Value::as_bool) != Some(true) {
+        return "OK".to_string();
+    }
+    let mut parts = vec!["OK".to_string()];
+    for (reference, id) in [
+        ("workspace_ref", "workspace_id"),
+        ("surface_ref", "surface_id"),
+    ] {
+        if let Some(handle) = result
+            .get(reference)
+            .or_else(|| result.get(id))
+            .and_then(serde_json::Value::as_str)
+        {
+            parts.push(handle.to_string());
+        }
+    }
+    parts.join(" ")
 }
 
 #[cfg(test)]
@@ -625,6 +648,26 @@ mod control_result_tests {
         ] {
             assert_eq!(format_control_result(method, &serde_json::json!({})), "OK");
         }
+    }
+
+    #[test]
+    fn notification_navigation_prints_canonical_summary() {
+        let opened = serde_json::json!({
+            "opened": true,
+            "workspace_ref": "workspace:2",
+            "surface_ref": "surface:3"
+        });
+        assert_eq!(
+            format_control_result("notification.open", &opened),
+            "OK workspace:2 surface:3"
+        );
+        assert_eq!(
+            format_control_result(
+                "notification.jump_to_unread",
+                &serde_json::json!({"opened": false})
+            ),
+            "OK"
+        );
     }
 }
 

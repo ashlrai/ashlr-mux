@@ -796,6 +796,8 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "notification.dismiss",
     "notification.mark_read",
     "notification.clear",
+    "notification.open",
+    "notification.jump_to_unread",
     "events.stream",
     "extension.sidebar.snapshot",
     "sidebar.snapshot",
@@ -1031,6 +1033,8 @@ fn handle_control_request(app: &AppHandle, request: ControlRequest) -> ControlCa
         "notification.dismiss" => notification_dismiss(app, &request.params),
         "notification.mark_read" => notification_mark_read(app, &request.params),
         "notification.clear" => notification_clear(app, &request.params),
+        "notification.open" => notification_open(app, &request.params),
+        "notification.jump_to_unread" => notification_jump_to_unread(app),
         "events.stream" => ok(events_snapshot_payload(app, &request.params)),
         "extension.sidebar.snapshot" | "sidebar.snapshot" => {
             let snapshot = snapshot(app);
@@ -2783,6 +2787,109 @@ fn notification_clear(
         state.inner(),
         workspace_id.as_deref(),
     ))
+}
+
+fn notification_open(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(id) = string_param(params, &["id"]) else {
+        return invalid_params("notification.open requires id");
+    };
+    notification_open_selected(app, Some(&id), false)
+}
+
+fn notification_jump_to_unread(app: &AppHandle) -> ControlCallResult {
+    notification_open_selected(app, None, true)
+}
+
+fn notification_open_selected(
+    app: &AppHandle,
+    id: Option<&str>,
+    allow_empty: bool,
+) -> ControlCallResult {
+    let notification_state = app.state::<crate::notifications::NotificationCommandState>();
+    let notification = match crate::notifications::notification_open_target_for_control(
+        notification_state.inner(),
+        id,
+    ) {
+        Ok(Some(notification)) => notification,
+        Ok(None) if allow_empty => return ok(json!({"opened": false})),
+        Ok(None) => {
+            return ControlCallResult::Err {
+                code: "not_found".to_string(),
+                message: "Notification not found".to_string(),
+                data: id.map(|id| json!({"id": id}).try_into().unwrap_or(JsonValue::Null)),
+            };
+        }
+        Err(message) => {
+            return ControlCallResult::Err {
+                code: "notification_store_failed".to_string(),
+                message,
+                data: None,
+            };
+        }
+    };
+    let session_state = app.state::<SessionState>();
+    let target_surface = notification
+        .surface_id
+        .clone()
+        .or(notification.panel_id.clone());
+    let opened = if let Some(surface_id) = target_surface.as_deref() {
+        let (changed, snapshot) = crate::session::select_workspace_surface(
+            app,
+            &session_state,
+            &notification.tab_id,
+            surface_id,
+        );
+        changed
+            || crate::session::workspace_surface_is_selected(
+                &snapshot,
+                &notification.tab_id,
+                surface_id,
+            )
+    } else {
+        let current = snapshot(app);
+        match workspace_index_for_id(&current, &notification.tab_id) {
+            Some(index) => {
+                select_workspace_for_control(app, &session_state, index as i64);
+                true
+            }
+            None => false,
+        }
+    };
+    if !opened {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Notification target not found".to_string(),
+            data: Some(
+                json!({"id": notification.id})
+                    .try_into()
+                    .unwrap_or(JsonValue::Null),
+            ),
+        };
+    }
+    let current = snapshot(app);
+    let workspace_index = workspace_index_for_id(&current, &notification.tab_id);
+    let workspace_ref_value = workspace_index.map(workspace_ref);
+    let surface_ref_value = workspace_index.and_then(|index| {
+        target_surface
+            .as_deref()
+            .and_then(|surface| surface_ref_for_panel(&current, index, surface))
+    });
+    ok(json!({
+        "id": notification.id,
+        "workspace_id": notification.tab_id,
+        "workspace_ref": workspace_ref_value,
+        "surface_id": target_surface,
+        "surface_ref": surface_ref_value,
+        "title": notification.title,
+        "subtitle": notification.subtitle,
+        "body": notification.body,
+        "created_at": notification.created_at,
+        "is_read": true,
+        "opened": true,
+    }))
 }
 
 fn session_restore_previous_launch(app: &AppHandle) -> ControlCallResult {
@@ -8738,6 +8845,16 @@ fn selected_workspace_index(snapshot: &AppSessionSnapshot) -> usize {
         .unwrap_or(0)
 }
 
+fn workspace_index_for_id(snapshot: &AppSessionSnapshot, workspace_id: &str) -> Option<usize> {
+    snapshot
+        .windows
+        .first()?
+        .tab_manager
+        .workspaces
+        .iter()
+        .position(|workspace| workspace.workspace_id.as_deref() == Some(workspace_id))
+}
+
 fn workspace_index_from_params(
     snapshot: &AppSessionSnapshot,
     params: &serde_json::Map<String, Value>,
@@ -8761,13 +8878,7 @@ fn workspace_index_from_params(
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())?;
-    snapshot
-        .windows
-        .first()?
-        .tab_manager
-        .workspaces
-        .iter()
-        .position(|workspace| workspace.workspace_id.as_deref() == Some(workspace_id))
+    workspace_index_for_id(snapshot, workspace_id)
 }
 
 fn workspace_index_from_close_params(
@@ -11115,6 +11226,8 @@ mod tests {
             "notification.dismiss",
             "notification.mark_read",
             "notification.clear",
+            "notification.open",
+            "notification.jump_to_unread",
             "session.restore_previous",
             "events.stream",
             "extension.sidebar.snapshot",
