@@ -29,6 +29,7 @@ enum HooksRequest {
     OpenCode { yes: bool, project: bool },
     Pi { yes: bool },
     Omp { yes: bool },
+    Amp { yes: bool },
 }
 
 const OPENCODE_SESSION_PLUGIN_SOURCE: &str =
@@ -41,6 +42,8 @@ const PI_EXTENSION_SOURCE: &str = include_str!("../../../Resources/pi-session-ex
 const PI_EXTENSION_MARKER: &str = "cmux-pi-session-extension-marker";
 const OMP_EXTENSION_SOURCE: &str = include_str!("../../../Resources/omp-session-extension.ts");
 const OMP_EXTENSION_MARKER: &str = "cmux-omp-session-extension-marker";
+const AMP_PLUGIN_SOURCE: &str = include_str!("../../../Resources/amp-session-plugin.ts");
+const AMP_PLUGIN_MARKER: &str = "cmux-amp-session-extension-marker";
 
 #[derive(Debug, Clone, Copy)]
 struct NestedAgentDef {
@@ -68,6 +71,7 @@ pub fn run_hooks_command(command: &str, args: &[String]) -> Result<String, CliEr
         HooksRequest::OpenCode { yes, project } => install_opencode_hooks(yes, project),
         HooksRequest::Pi { yes } => install_pi_hooks(yes),
         HooksRequest::Omp { yes } => install_omp_hooks(yes),
+        HooksRequest::Amp { yes } => install_amp_hooks(yes),
     }
 }
 
@@ -121,6 +125,12 @@ fn parse_hooks_subcommand(tokens: &[String], yes: bool) -> Result<HooksRequest, 
             None | Some("install") | Some("setup") => Ok(HooksRequest::Omp { yes }),
             Some(other) => Err(CliError::new(format!(
                 "unsupported OMP hooks action '{other}'; use 'cmux hooks omp install'"
+            ))),
+        },
+        Some("amp") => match tokens.get(1).map(String::as_str) {
+            None | Some("install") | Some("setup") => Ok(HooksRequest::Amp { yes }),
+            Some(other) => Err(CliError::new(format!(
+                "unsupported Amp hooks action '{other}'; use 'cmux hooks amp install'"
             ))),
         },
         Some(agent) if nested_agent(agent).is_some() => match tokens.get(1).map(String::as_str) {
@@ -179,6 +189,7 @@ fn parse_setup_tokens(tokens: &[String], yes: bool) -> Result<HooksRequest, CliE
         }),
         Some("pi") => Ok(HooksRequest::Pi { yes }),
         Some("omp") => Ok(HooksRequest::Omp { yes }),
+        Some("amp") => Ok(HooksRequest::Amp { yes }),
         Some(agent) if nested_agent(agent).is_some() => Ok(HooksRequest::Nested {
             agent: agent.to_string(),
             yes,
@@ -225,7 +236,7 @@ fn pi_config_dir() -> Result<PathBuf, CliError> {
 }
 
 fn pi_extension_path(config_dir: &Path) -> PathBuf {
-    config_dir.join("extensions/cmux-session.ts")
+    config_dir.join("extensions").join("cmux-session.ts")
 }
 
 fn install_omp_hooks(yes: bool) -> Result<String, CliError> {
@@ -292,7 +303,19 @@ fn nonempty_env(name: &str) -> Option<String> {
 }
 
 fn omp_extension_path(config_dir: &Path) -> PathBuf {
-    config_dir.join("extensions/cmux-omp-session.ts")
+    config_dir.join("extensions").join("cmux-omp-session.ts")
+}
+
+fn install_amp_hooks(yes: bool) -> Result<String, CliError> {
+    let config_dir = home_dir()
+        .map(|home| home.join(".config").join("amp"))
+        .ok_or_else(|| CliError::new("unable to determine Amp config directory"))?;
+    let path = amp_plugin_path(&config_dir);
+    install_marked_extension("Amp", &path, AMP_PLUGIN_SOURCE, AMP_PLUGIN_MARKER, yes)
+}
+
+fn amp_plugin_path(config_dir: &Path) -> PathBuf {
+    config_dir.join("plugins").join("cmux-session.ts")
 }
 
 fn install_opencode_hooks(yes: bool, project: bool) -> Result<String, CliError> {
@@ -1516,5 +1539,28 @@ mod tests {
         );
         assert!(OMP_EXTENSION_SOURCE.contains("cmux-omp-session-extension-marker v1"));
         assert!(OMP_EXTENSION_SOURCE.contains("[\"hooks\", \"omp\", subcommand]"));
+    }
+
+    #[test]
+    fn amp_plugin_plan_uses_canonical_path_source_and_setup_alias() {
+        assert_eq!(
+            parse_hooks_request("hooks", &["amp".into(), "install".into(), "--yes".into()])
+                .unwrap(),
+            HooksRequest::Amp { yes: true }
+        );
+        assert_eq!(
+            parse_hooks_request(
+                "hooks",
+                &["setup".into(), "--agent=amp".into(), "--yes".into()],
+            )
+            .unwrap(),
+            HooksRequest::Amp { yes: true }
+        );
+        assert_eq!(
+            amp_plugin_path(Path::new("C:/Users/me/.config/amp")),
+            PathBuf::from("C:/Users/me/.config/amp/plugins/cmux-session.ts")
+        );
+        assert!(AMP_PLUGIN_SOURCE.contains("cmux-amp-session-extension-marker v2"));
+        assert!(AMP_PLUGIN_SOURCE.contains("@i-know-the-amp-plugin-api-is-wip"));
     }
 }
