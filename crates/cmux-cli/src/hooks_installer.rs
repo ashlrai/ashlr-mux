@@ -31,6 +31,7 @@ enum HooksRequest {
     Cursor { yes: bool },
     CursorUninstall,
     Antigravity { yes: bool },
+    AntigravityUninstall,
     OpenCode { yes: bool, project: bool },
     OpenCodeUninstall { project: bool },
     Pi { yes: bool },
@@ -86,6 +87,7 @@ pub fn run_hooks_command(command: &str, args: &[String]) -> Result<String, CliEr
         HooksRequest::Cursor { yes } => install_cursor_hooks(yes),
         HooksRequest::CursorUninstall => uninstall_cursor_hooks(),
         HooksRequest::Antigravity { yes } => install_antigravity_hooks(yes),
+        HooksRequest::AntigravityUninstall => uninstall_antigravity_hooks(),
         HooksRequest::OpenCode { yes, project } => install_opencode_hooks(yes, project),
         HooksRequest::OpenCodeUninstall { project } => uninstall_opencode_hooks(project),
         HooksRequest::Pi { yes } => install_pi_hooks(yes),
@@ -138,8 +140,9 @@ fn parse_hooks_subcommand(tokens: &[String], yes: bool) -> Result<HooksRequest, 
         },
         Some("antigravity") | Some("agy") => match tokens.get(1).map(String::as_str) {
             None | Some("install") | Some("setup") => Ok(HooksRequest::Antigravity { yes }),
+            Some("uninstall") => Ok(HooksRequest::AntigravityUninstall),
             Some(other) => Err(CliError::new(format!(
-                "unsupported Antigravity hooks action '{other}'; use 'cmux hooks antigravity install'"
+                "unsupported Antigravity hooks action '{other}'; use 'cmux hooks antigravity install|uninstall'"
             ))),
         },
         Some("opencode") => parse_opencode_tokens(&tokens[1..], yes),
@@ -1802,11 +1805,7 @@ fn write_text_exact(path: &Path, contents: &str) -> Result<(), CliError> {
 }
 
 fn install_antigravity_hooks(yes: bool) -> Result<String, CliError> {
-    let home = std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(PathBuf::from)
-        .ok_or_else(|| CliError::new("unable to determine Antigravity config directory"))?;
-    let path = home.join(".gemini").join("config").join("hooks.json");
+    let path = antigravity_hooks_path()?;
     let before = read_config_or_empty_object(&path)?;
     let plan = plan_antigravity_hooks_update(&before, &path)?;
     if !plan.changed {
@@ -1823,6 +1822,41 @@ fn install_antigravity_hooks(yes: bool) -> Result<String, CliError> {
         "Antigravity hooks installed at {}\n",
         path.display()
     ))
+}
+
+fn uninstall_antigravity_hooks() -> Result<String, CliError> {
+    let path = antigravity_hooks_path()?;
+    let before = match fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(_) => return Ok(format!("No hooks.json found at {}\n", path.display())),
+    };
+    let value: serde_json::Value = match serde_json::from_str(&before) {
+        Ok(value) => value,
+        Err(_) => {
+            return Ok(format!(
+                "Malformed hooks.json at {}. Fix or remove it before uninstalling hooks.\n",
+                path.display()
+            ))
+        }
+    };
+    if !value.is_object() {
+        return Ok(format!("Removed 0 cmux hook(s) from {}\n", path.display()));
+    }
+    let (plan, removed) = plan_antigravity_hooks_uninstall(&before, &path)?;
+    if !removed {
+        return Ok(format!("Removed 0 cmux hook(s) from {}\n", path.display()));
+    }
+    write_config(&path, &plan.after)?;
+    Ok(format!(
+        "Removed Antigravity cmux hooks from {}\n",
+        path.display()
+    ))
+}
+
+fn antigravity_hooks_path() -> Result<PathBuf, CliError> {
+    let home = home_dir()
+        .ok_or_else(|| CliError::new("unable to determine Antigravity config directory"))?;
+    Ok(home.join(".gemini").join("config").join("hooks.json"))
 }
 
 fn plan_antigravity_hooks_update(
@@ -1875,6 +1909,48 @@ fn plan_antigravity_hooks_update(
         before,
         after,
     })
+}
+
+fn plan_antigravity_hooks_uninstall(
+    before: &str,
+    path: &Path,
+) -> Result<(ClaudeIntegrationPlan, bool), CliError> {
+    let before = normalize_config_text(before)?;
+    let mut value: serde_json::Value = serde_json::from_str(&before)
+        .map_err(|error| CliError::new(format!("failed to parse Antigravity config: {error}")))?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| CliError::new("Antigravity config must be a JSON object"))?;
+    let removed = object
+        .get("cmux")
+        .is_some_and(|group| json_value_contains_owned_command(group, "antigravity"));
+    if removed {
+        object.remove("cmux");
+    }
+    let after = serde_json::to_string_pretty(&value)
+        .map_err(|error| CliError::new(format!("failed to encode Antigravity config: {error}")))?;
+    Ok((
+        ClaudeIntegrationPlan {
+            changed: before != after,
+            diff: unified_diff(path, &before, &after),
+            before,
+            after,
+        },
+        removed,
+    ))
+}
+
+fn json_value_contains_owned_command(value: &serde_json::Value, agent: &str) -> bool {
+    match value {
+        serde_json::Value::String(command) => agent_command_is_owned(command, agent),
+        serde_json::Value::Array(values) => values
+            .iter()
+            .any(|value| json_value_contains_owned_command(value, agent)),
+        serde_json::Value::Object(object) => object
+            .values()
+            .any(|value| json_value_contains_owned_command(value, agent)),
+        _ => false,
+    }
 }
 
 fn install_cursor_hooks(yes: bool) -> Result<String, CliError> {
@@ -3020,6 +3096,39 @@ mod tests {
             !plan_antigravity_hooks_update(&plan.after, &path())
                 .unwrap()
                 .changed
+        );
+    }
+
+    #[test]
+    fn antigravity_uninstall_removes_only_an_owned_cmux_group() {
+        assert_eq!(
+            parse_hooks_request("hooks", &["antigravity".into(), "uninstall".into()]).unwrap(),
+            HooksRequest::AntigravityUninstall
+        );
+        assert_eq!(
+            parse_hooks_request("hooks", &["agy".into(), "uninstall".into()]).unwrap(),
+            HooksRequest::AntigravityUninstall
+        );
+        let before = r#"{
+  "theme": "user",
+  "other": {"Stop": [{"command": "user command"}]},
+  "cmux": {
+    "Stop": [{"command": "cmux hooks antigravity stop"}],
+    "UserEvent": [{"command": "user command inside reserved group"}]
+  }
+}"#;
+        let (plan, removed) = plan_antigravity_hooks_uninstall(before, &path()).unwrap();
+        assert!(removed);
+        let value: serde_json::Value = serde_json::from_str(&plan.after).unwrap();
+        assert_eq!(value["theme"], "user");
+        assert_eq!(value["other"]["Stop"][0]["command"], "user command");
+        assert!(value.get("cmux").is_none());
+
+        let mention_only = r#"{"cmux":{"Stop":[{"command":"echo cmux hooks antigravity stop"}]}}"#;
+        let (plan, removed) = plan_antigravity_hooks_uninstall(mention_only, &path()).unwrap();
+        assert!(!removed);
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&plan.after).unwrap()["cmux"].is_object()
         );
     }
 
