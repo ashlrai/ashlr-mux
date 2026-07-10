@@ -55,6 +55,8 @@ pub enum DispatchPlan {
     RunDiffViewerBranch(Vec<String>),
     /// Render the canonical no-socket documentation index or topic.
     RunDocs(Vec<String>),
+    /// Print the canonical ANSI welcome card without a socket.
+    RunWelcome,
     /// Run a local hooks installer/uninstaller command.
     RunHooksInstaller { command: String, args: Vec<String> },
     /// Read one agent hook payload from stdin and bridge it through `feed.push`.
@@ -424,7 +426,7 @@ pub fn plan_with_args(action: &PreSocketAction, command: &str, args: &[String]) 
         PreSocketAction::RemoteDaemonStatus => "remote-daemon-status",
         PreSocketAction::VmPtyConnect => "vm-pty-connect",
         PreSocketAction::Docs => return DispatchPlan::RunDocs(args.to_vec()),
-        PreSocketAction::Welcome => "welcome",
+        PreSocketAction::Welcome => return DispatchPlan::RunWelcome,
         PreSocketAction::Sessions { debug } => {
             if *debug {
                 "session-debug"
@@ -768,6 +770,14 @@ mod tests {
     }
 
     #[test]
+    fn welcome_command_runs_the_local_welcome_executor() {
+        assert_eq!(
+            plan_with_args(&PreSocketAction::Welcome, "welcome", &[]),
+            DispatchPlan::RunWelcome
+        );
+    }
+
+    #[test]
     fn mapped_socket_commands_can_use_command_args() {
         let args = vec!["2".to_string()];
         match plan_with_args(&PreSocketAction::NeedsSocket, "select-workspace", &args) {
@@ -816,7 +826,6 @@ mod tests {
     #[test]
     fn side_effecting_no_socket_actions_fail_with_not_ported() {
         for (action, needle) in [
-            (PreSocketAction::Welcome, "welcome"),
             (PreSocketAction::Sessions { debug: false }, "sessions"),
             (PreSocketAction::Sessions { debug: true }, "session-debug"),
             (PreSocketAction::SettingsNoSocket, "settings"),

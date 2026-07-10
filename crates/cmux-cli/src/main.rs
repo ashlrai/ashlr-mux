@@ -108,6 +108,10 @@ fn dispatch(
             println!("{output}");
             Ok(())
         }
+        DispatchPlan::RunWelcome => {
+            print!("{}", cmux_cli::welcome::render_welcome(false));
+            Ok(())
+        }
         DispatchPlan::RunHooksInstaller { command, args } => {
             let output = cmux_cli::hooks_installer::run_hooks_command(&command, &args)?;
             print!("{output}");

@@ -26,6 +26,7 @@ pub mod socket;
 pub mod ssh;
 #[cfg(windows)]
 pub mod transport;
+pub mod welcome;
 
 pub use classify::{classify_command, ClassifyEnv, PreSocketAction};
 pub use command_forward::{control_command_for, ControlCommand, CMUX_WORKSPACE_ID_ENV};
