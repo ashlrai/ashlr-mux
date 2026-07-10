@@ -44,6 +44,7 @@ enum HooksRequest {
     RovoUninstall,
     Hermes { yes: bool },
     Kimi { yes: bool },
+    KimiUninstall,
     Codex { yes: bool },
 }
 
@@ -101,6 +102,7 @@ pub fn run_hooks_command(command: &str, args: &[String]) -> Result<String, CliEr
         HooksRequest::RovoUninstall => uninstall_rovo_hooks(),
         HooksRequest::Hermes { yes } => install_hermes_hooks(yes),
         HooksRequest::Kimi { yes } => install_kimi_hooks(yes),
+        HooksRequest::KimiUninstall => uninstall_kimi_hooks(),
         HooksRequest::Codex { yes } => install_codex_hooks(yes),
     }
 }
@@ -184,8 +186,9 @@ fn parse_hooks_subcommand(tokens: &[String], yes: bool) -> Result<HooksRequest, 
         },
         Some("kimi") => match tokens.get(1).map(String::as_str) {
             None | Some("install") | Some("setup") => Ok(HooksRequest::Kimi { yes }),
+            Some("uninstall") => Ok(HooksRequest::KimiUninstall),
             Some(other) => Err(CliError::new(format!(
-                "unsupported Kimi Code hooks action '{other}'; use 'cmux hooks kimi install'"
+                "unsupported Kimi Code hooks action '{other}'; use 'cmux hooks kimi install|uninstall'"
             ))),
         },
         Some("codex") => match tokens.get(1).map(String::as_str) {
@@ -1084,14 +1087,7 @@ const KIMI_BEGIN_MARKER: &str = "# cmux-kimi-hooks-7c3a9f12-4e8b-4d2a-9f15-6b8c0
 const KIMI_END_MARKER: &str = "# cmux-kimi-hooks-7c3a9f12-4e8b-4d2a-9f15-6b8c0d1e2a3f end";
 
 fn install_kimi_hooks(yes: bool) -> Result<String, CliError> {
-    let config_dir = if let Some(path) = nonempty_env("KIMI_CODE_HOME") {
-        expand_home_path(PathBuf::from(path))?
-    } else {
-        home_dir()
-            .map(|home| home.join(".kimi-code"))
-            .ok_or_else(|| CliError::new("unable to determine Kimi Code config directory"))?
-    };
-    let path = config_dir.join("config.toml");
+    let path = kimi_hooks_path()?;
     let before = read_optional_text(&path)?;
     let plan = plan_kimi_hooks_update(&before, &path);
     if !plan.changed {
@@ -1107,8 +1103,44 @@ fn install_kimi_hooks(yes: bool) -> Result<String, CliError> {
     Ok(format!("Kimi Code hooks installed at {}\n", path.display()))
 }
 
+fn uninstall_kimi_hooks() -> Result<String, CliError> {
+    let path = kimi_hooks_path()?;
+    let before = match fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(format!("No config.toml found at {}\n", path.display()))
+        }
+        Err(error) => {
+            return Err(CliError::new(format!(
+                "failed to read {}: {error}",
+                path.display()
+            )))
+        }
+    };
+    let plan = plan_kimi_hooks_uninstall(&before, &path);
+    if !plan.changed {
+        return Ok(format!("Removed 0 cmux hook(s) from {}\n", path.display()));
+    }
+    write_text_exact(&path, &plan.after)?;
+    Ok(format!(
+        "Removed Kimi Code cmux hooks from {}\n",
+        path.display()
+    ))
+}
+
+fn kimi_hooks_path() -> Result<PathBuf, CliError> {
+    let config_dir = if let Some(path) = nonempty_env("KIMI_CODE_HOME") {
+        expand_home_path(PathBuf::from(path))?
+    } else {
+        home_dir()
+            .map(|home| home.join(".kimi-code"))
+            .ok_or_else(|| CliError::new("unable to determine Kimi Code config directory"))?
+    };
+    Ok(config_dir.join("config.toml"))
+}
+
 fn plan_kimi_hooks_update(before: &str, path: &Path) -> ClaudeIntegrationPlan {
-    let before = toml_content(&toml_lines(before));
+    let before = normalize_toml_text(before);
     let mut lines = remove_kimi_blocks(toml_lines(&before));
     if lines.last().is_some_and(|line| !line.is_empty()) {
         lines.push(String::new());
@@ -1125,6 +1157,17 @@ fn plan_kimi_hooks_update(before: &str, path: &Path) -> ClaudeIntegrationPlan {
     }
     lines.push(KIMI_END_MARKER.to_string());
     let after = toml_content(&lines);
+    ClaudeIntegrationPlan {
+        changed: before != after,
+        diff: unified_diff(path, &before, &after),
+        before,
+        after,
+    }
+}
+
+fn plan_kimi_hooks_uninstall(before: &str, path: &Path) -> ClaudeIntegrationPlan {
+    let before = normalize_toml_text(before);
+    let after = toml_content(&remove_kimi_blocks(toml_lines(&before)));
     ClaudeIntegrationPlan {
         changed: before != after,
         diff: unified_diff(path, &before, &after),
@@ -1174,6 +1217,10 @@ fn toml_content(lines: &[String]) -> String {
     } else {
         format!("{}\n", lines.join("\n"))
     }
+}
+
+fn normalize_toml_text(content: &str) -> String {
+    toml_content(&toml_lines(content))
 }
 
 fn remove_kimi_blocks(mut lines: Vec<String>) -> Vec<String> {
@@ -1320,7 +1367,7 @@ fn plan_codex_config_update(
     hooks_path: &Path,
     config_path: &Path,
 ) -> Result<ClaudeIntegrationPlan, CliError> {
-    let before = toml_content(&toml_lines(before));
+    let before = normalize_toml_text(before);
     let mut lines = remove_codex_feature_block(toml_lines(&before));
     install_codex_feature(&mut lines);
     lines = remove_named_block(lines, CODEX_TRUST_BEGIN, CODEX_TRUST_END);
@@ -3558,5 +3605,27 @@ mod tests {
             toml_basic_string("cmux hooks \"kimi\" \\\tpermission"),
             "cmux hooks \\\"kimi\\\" \\\\\\tpermission"
         );
+    }
+
+    #[test]
+    fn kimi_uninstall_removes_complete_and_orphan_markers_without_user_toml() {
+        assert_eq!(
+            parse_hooks_request("hooks", &["kimi".into(), "uninstall".into()]).unwrap(),
+            HooksRequest::KimiUninstall
+        );
+        let before = format!(
+            "model = \"kimi\"\n\n{KIMI_BEGIN_MARKER}\n[[hooks]]\nevent = \"Stop\"\ncommand = \"owned\"\ntimeout = 10\n\n{KIMI_END_MARKER}\n[user]\nkeep = true\n"
+        );
+        let plan = plan_kimi_hooks_uninstall(&before, &path());
+        assert!(plan.changed);
+        assert!(!plan.after.contains(KIMI_BEGIN_MARKER));
+        assert!(plan.after.contains("model = \"kimi\""));
+        assert!(plan.after.contains("[user]\nkeep = true"));
+
+        let orphan = format!("model = \"kimi\"\n{KIMI_BEGIN_MARKER}\n[user]\nkeep = true\n");
+        let plan = plan_kimi_hooks_uninstall(&orphan, &path());
+        assert!(plan.changed);
+        assert!(!plan.after.contains(KIMI_BEGIN_MARKER));
+        assert!(plan.after.contains("[user]\nkeep = true"));
     }
 }
