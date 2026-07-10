@@ -208,9 +208,7 @@ impl<'a, P: Clone> SearchEngine<'a, P> {
                 entry
                     .prepared_title
                     .as_ref()
-                    .map(|prepared_title| {
-                        match_character_indices(&prepared_query, prepared_title)
-                    })
+                    .map(|prepared_title| match_character_indices(&prepared_query, prepared_title))
                     .unwrap_or_default()
             };
             results.push(SearchCorpusResult {
@@ -225,10 +223,7 @@ impl<'a, P: Clone> SearchEngine<'a, P> {
     }
 }
 
-fn weighted_score<P>(
-    prepared_query: &PreparedQuery,
-    entry: &SearchCorpusEntry<P>,
-) -> Option<i64> {
+fn weighted_score<P>(prepared_query: &PreparedQuery, entry: &SearchCorpusEntry<P>) -> Option<i64> {
     let fuzzy_score = score_prepared_candidates(
         prepared_query,
         &entry.prepared_searchable_texts,
@@ -243,16 +238,14 @@ fn weighted_score<P>(
         {
             if let Some(title_score) = score_prepared_candidate(prepared_query, prepared_title) {
                 return Some(
-                    fuzzy_score
-                        .max(title_score + TITLE_MATCH_BONUS)
-                        .max(
-                            title_word_score(
-                                prepared_query,
-                                &prepared_title.normalized_text,
-                                &entry.normalized_title_search_word_text,
-                            )
-                            .unwrap_or(i64::MIN),
-                        ),
+                    fuzzy_score.max(title_score + TITLE_MATCH_BONUS).max(
+                        title_word_score(
+                            prepared_query,
+                            &prepared_title.normalized_text,
+                            &entry.normalized_title_search_word_text,
+                        )
+                        .unwrap_or(i64::MIN),
+                    ),
                 );
             }
         }
@@ -276,9 +269,7 @@ fn title_word_score(
             .iter()
             .map(|token| token.score_upper_bound)
             .sum();
-        return Some(
-            exact_token_score + scaled_title_match_bonus(prepared_query.tokens.len()),
-        );
+        return Some(exact_token_score + scaled_title_match_bonus(prepared_query.tokens.len()));
     }
 
     if !title_search_word_text.starts_with(&prepared_query.normalized_token_text) {
@@ -325,7 +316,11 @@ mod tests {
 
     #[test]
     fn result_limit_keeps_best_entries() {
-        let entries = [entry("match", 0), entry("match-longer", 1), entry("other", 2)];
+        let entries = [
+            entry("match", 0),
+            entry("match-longer", 1),
+            entry("other", 2),
+        ];
         let engine = SearchEngine::new(entries.iter().collect());
         let results = engine.search("match", Some(1), |_, _| 0, None);
         assert_eq!(results.len(), 1);

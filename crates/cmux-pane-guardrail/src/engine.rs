@@ -70,7 +70,8 @@ impl PaneMemoryGuardrailEngine {
         threshold_bytes: i64,
     ) -> PaneMemoryGuardrailEngineOutput {
         let clear_bytes = (threshold_bytes as f64 * Self::CLEAR_FRACTION) as i64;
-        let live_keys: HashSet<PaneMemoryPaneKey> = samples.iter().map(PaneMemorySample::key).collect();
+        let live_keys: HashSet<PaneMemoryPaneKey> =
+            samples.iter().map(PaneMemorySample::key).collect();
         // Forget panes that no longer exist so closed panes never keep a badge.
         self.warned_panes.retain(|k| live_keys.contains(k));
         self.dismissed_panes.retain(|k| live_keys.contains(k));
@@ -465,11 +466,7 @@ mod tests {
         let mut engine = PaneMemoryGuardrailEngine::new();
         // pane(1,1) and pane(1,2) both cross; pane(2,3) stays low.
         let out = engine.ingest(
-            &[
-                sample(1, 1, 1500),
-                sample(2, 3, 100),
-                sample(1, 2, 1200),
-            ],
+            &[sample(1, 1, 1500), sample(2, 3, 100), sample(1, 2, 1200)],
             THRESHOLD,
         );
         // Banners follow sample order (Vec is order-dependent, matching Swift).
@@ -487,10 +484,7 @@ mod tests {
     #[test]
     fn warned_workspace_ids_spans_multiple_workspaces() {
         let mut engine = PaneMemoryGuardrailEngine::new();
-        let out = engine.ingest(
-            &[sample(1, 1, 1500), sample(2, 2, 1500)],
-            THRESHOLD,
-        );
+        let out = engine.ingest(&[sample(1, 1, 1500), sample(2, 2, 1500)], THRESHOLD);
         assert_eq!(out.warned_workspace_ids, set_ws([ws(1), ws(2)]));
         assert_eq!(out.warned_pane_keys, set_keys([key(1, 1), key(2, 2)]));
     }
@@ -498,10 +492,7 @@ mod tests {
     #[test]
     fn banner_to_present_returns_first() {
         let mut engine = PaneMemoryGuardrailEngine::new();
-        let out = engine.ingest(
-            &[sample(1, 1, 1500), sample(1, 2, 1200)],
-            THRESHOLD,
-        );
+        let out = engine.ingest(&[sample(1, 1, 1500), sample(1, 2, 1200)], THRESHOLD);
         assert_eq!(out.banner_to_present(), Some(&warning(1, 1, 1500)));
     }
 

@@ -64,8 +64,8 @@ pub use hermes_codex_config::{
     applying_default_codex_base_url, codex_base_url_from_chatgpt_base_url,
     codex_base_url_from_codex_config_content, codex_model_from_codex_config_content,
     custom_base_url_from_chatgpt_base_url, custom_base_url_from_codex_config_content,
-    custom_base_url_from_openai_base_url, CODEX_BASE_URL_ENVIRONMENT_KEY,
-    CODEX_RESPONSES_API_MODE, CUSTOM_BASE_URL_ENVIRONMENT_KEY, DEFAULT_PROVIDER,
+    custom_base_url_from_openai_base_url, CODEX_BASE_URL_ENVIRONMENT_KEY, CODEX_RESPONSES_API_MODE,
+    CUSTOM_BASE_URL_ENVIRONMENT_KEY, DEFAULT_PROVIDER,
 };
 
 use policies::{
@@ -196,7 +196,10 @@ pub fn preserved_arguments(kind: &str, args: &[String]) -> Option<Vec<String>> {
                     .is_some_and(|next| continue_aliases.contains(&next.as_str()))
                 {
                     tail.remove(0);
-                    if tail.first().is_some_and(|candidate| !candidate.starts_with('-')) {
+                    if tail
+                        .first()
+                        .is_some_and(|candidate| !candidate.starts_with('-'))
+                    {
                         tail.remove(0);
                     }
                 }
@@ -215,7 +218,10 @@ pub fn preserved_arguments(kind: &str, args: &[String]) -> Option<Vec<String>> {
             let mut tail: Vec<String> = args.to_vec();
             if tail.first().map(String::as_str) == Some("chat") {
                 tail.remove(0);
-            } else if tail.first().is_some_and(|command| !command.starts_with('-')) {
+            } else if tail
+                .first()
+                .is_some_and(|command| !command.starts_with('-'))
+            {
                 return None;
             }
             preserve_options(&tail, &kiro_policy())
@@ -241,7 +247,10 @@ pub fn preserved_arguments(kind: &str, args: &[String]) -> Option<Vec<String>> {
             }
             if tail.first().map(String::as_str) == Some("run") {
                 tail.remove(0);
-            } else if tail.first().is_some_and(|command| !command.starts_with('-')) {
+            } else if tail
+                .first()
+                .is_some_and(|command| !command.starts_with('-'))
+            {
                 return None;
             }
             preserve_options(&tail, &rovo_dev_policy())
@@ -250,7 +259,10 @@ pub fn preserved_arguments(kind: &str, args: &[String]) -> Option<Vec<String>> {
             let mut tail: Vec<String> = args.to_vec();
             if tail.first().map(String::as_str) == Some("chat") {
                 tail.remove(0);
-            } else if tail.first().is_some_and(|command| !command.starts_with('-')) {
+            } else if tail
+                .first()
+                .is_some_and(|command| !command.starts_with('-'))
+            {
                 return None;
             }
             let preserved = preserve_options(&tail, &hermes_agent_policy())?;
@@ -296,7 +308,11 @@ pub fn claude_teams_launch_has_option(option: &str, args: &[String]) -> bool {
             Some(true) => continue,
             Some(false) => {}
         }
-        if arg == option || arg.strip_prefix(option).is_some_and(|rest| rest.starts_with('=')) {
+        if arg == option
+            || arg
+                .strip_prefix(option)
+                .is_some_and(|rest| rest.starts_with('='))
+        {
             return true;
         }
         let width = option_width(args, index, &policy);
@@ -331,8 +347,9 @@ pub fn removing_saved_working_directory_options(
     let Some(working_directory) = normalized_working_directory(working_directory) else {
         return args.to_vec();
     };
-    let value_options: HashSet<&'static str> =
-        ["--cd", "-C", "--cwd", "--workspace", "-w"].into_iter().collect();
+    let value_options: HashSet<&'static str> = ["--cd", "-C", "--cwd", "--workspace", "-w"]
+        .into_iter()
+        .collect();
     let option_prefixes: Vec<String> = value_options.iter().map(|opt| format!("{opt}=")).collect();
     let mut result: Vec<String> = Vec::new();
     let mut index = 0usize;
@@ -349,7 +366,10 @@ pub fn removing_saved_working_directory_options(
             index += 2;
             continue;
         }
-        if let Some(prefix) = option_prefixes.iter().find(|prefix| arg.starts_with(prefix.as_str())) {
+        if let Some(prefix) = option_prefixes
+            .iter()
+            .find(|prefix| arg.starts_with(prefix.as_str()))
+        {
             let value = &arg[prefix.len()..];
             if working_directory_value_matches(value, &working_directory) {
                 index += 1;
@@ -655,7 +675,8 @@ fn option_width(args: &[String], index: usize, policy: &Policy) -> usize {
         } else {
             None
         };
-        if policy.greedy_optional_value_options.contains(arg) && looks_like_greedy_optional_value(value)
+        if policy.greedy_optional_value_options.contains(arg)
+            && looks_like_greedy_optional_value(value)
         {
             return 2;
         }
@@ -772,7 +793,9 @@ fn claude_settings_object(value: &str) -> Option<serde_json::Map<String, serde_j
 
 /// `isClaudeHookSettingsObject(_:)`.
 fn is_claude_hook_settings_object(object: &serde_json::Map<String, serde_json::Value>) -> bool {
-    if object.get("preferredNotifChannel").and_then(serde_json::Value::as_str)
+    if object
+        .get("preferredNotifChannel")
+        .and_then(serde_json::Value::as_str)
         == Some("notifications_disabled")
     {
         return true;
@@ -790,9 +813,9 @@ fn contains_legacy_claude_hook_settings_value(value: &serde_json::Value) -> bool
         serde_json::Value::Array(array) => {
             array.iter().any(contains_legacy_claude_hook_settings_value)
         }
-        serde_json::Value::Object(object) => {
-            object.values().any(contains_legacy_claude_hook_settings_value)
-        }
+        serde_json::Value::Object(object) => object
+            .values()
+            .any(contains_legacy_claude_hook_settings_value),
         _ => false,
     }
 }
@@ -801,7 +824,9 @@ fn contains_legacy_claude_hook_settings_value(value: &serde_json::Value) -> bool
 /// cmux keys, re-serialized compactly with sorted keys; `None` when nothing is
 /// left. serde_json's default map is a `BTreeMap`, so all nesting levels sort,
 /// matching Foundation's `.sortedKeys`.
-fn user_claude_settings_json(object: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
+fn user_claude_settings_json(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Option<String> {
     let mut object = object.clone();
     for key in CLAUDE_CMUX_SETTINGS_KEYS {
         object.remove(key);
@@ -863,7 +888,11 @@ fn home_directory() -> Option<String> {
     std::env::var("HOME")
         .ok()
         .filter(|home| !home.is_empty())
-        .or_else(|| std::env::var("USERPROFILE").ok().filter(|home| !home.is_empty()))
+        .or_else(|| {
+            std::env::var("USERPROFILE")
+                .ok()
+                .filter(|home| !home.is_empty())
+        })
 }
 
 // ---------------------------------------------------------------------------

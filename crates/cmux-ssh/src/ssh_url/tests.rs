@@ -44,7 +44,14 @@ fn parses_ssh_url_with_explicit_host_user_port_and_title() {
     assert_eq!(request.title.as_deref(), Some("Dev SSH"));
     assert_eq!(
         request.cli_arguments(),
-        ["ssh", "--port", "2222", "--name", "Dev SSH", "alice@dev.example.com"]
+        [
+            "ssh",
+            "--port",
+            "2222",
+            "--name",
+            "Dev SSH",
+            "alice@dev.example.com"
+        ]
     );
 }
 
@@ -121,7 +128,10 @@ fn command_preview_includes_socket_path_when_provided() {
 fn parses_no_focus_flag_without_value() {
     let request = expect_request("cmux://ssh?host=dev.example.com&no-focus");
     assert!(request.no_focus);
-    assert_eq!(request.cli_arguments(), ["ssh", "--no-focus", "dev.example.com"]);
+    assert_eq!(
+        request.cli_arguments(),
+        ["ssh", "--no-focus", "dev.example.com"]
+    );
 }
 
 // Swift: testParsesNoFocusFalseAsDisabled
@@ -159,7 +169,10 @@ fn ignores_non_ssh_urls() {
         parse("cmux://auth-callback?stack_refresh=abc&stack_access=def"),
         Ok(None)
     );
-    assert_eq!(parse("https://example.com/ssh?host=dev.example.com"), Ok(None));
+    assert_eq!(
+        parse("https://example.com/ssh?host=dev.example.com"),
+        Ok(None)
+    );
 }
 
 // Swift: testTrimsWhitespaceAroundStructuredHost
@@ -176,7 +189,10 @@ fn uses_name_when_title_is_blank() {
     // title = " " (blank → dropped), name = "Dev SSH".
     let request = expect_request("cmux://ssh?host=dev.example.com&title=%20&name=Dev%20SSH");
     assert_eq!(request.title.as_deref(), Some("Dev SSH"));
-    assert_eq!(request.cli_arguments(), ["ssh", "--name", "Dev SSH", "dev.example.com"]);
+    assert_eq!(
+        request.cli_arguments(),
+        ["ssh", "--name", "Dev SSH", "dev.example.com"]
+    );
 }
 
 // --- standard ssh:// URLs --------------------------------------------------
@@ -190,7 +206,14 @@ fn parses_standard_ssh_url() {
     assert_eq!(request.title.as_deref(), Some("Dev SSH"));
     assert_eq!(
         request.cli_arguments(),
-        ["ssh", "--port", "2222", "--name", "Dev SSH", "alice@dev.example.com"]
+        [
+            "ssh",
+            "--port",
+            "2222",
+            "--name",
+            "Dev SSH",
+            "alice@dev.example.com"
+        ]
     );
 }
 
@@ -233,7 +256,11 @@ fn rejects_standard_ssh_url_with_invalid_port() {
         "ssh://dev.example.com:65536",
         "ssh://dev.example.com:999999999999999999999999999999",
     ] {
-        assert_eq!(expect_error(url), CmuxSSHURLParseError::InvalidPort, "{url}");
+        assert_eq!(
+            expect_error(url),
+            CmuxSSHURLParseError::InvalidPort,
+            "{url}"
+        );
     }
 }
 
@@ -246,11 +273,12 @@ fn rejects_standard_ssh_url_with_invalid_port() {
 // `standard_ssh_url_port` (Swift: CmuxSSHURLRequest.swift 306-340).
 #[test]
 fn rejects_standard_ssh_url_with_signed_port() {
-    for url in [
-        "ssh://dev.example.com:+22",
-        "ssh://dev.example.com:-22",
-    ] {
-        assert_eq!(expect_error(url), CmuxSSHURLParseError::InvalidPort, "{url}");
+    for url in ["ssh://dev.example.com:+22", "ssh://dev.example.com:-22"] {
+        assert_eq!(
+            expect_error(url),
+            CmuxSSHURLParseError::InvalidPort,
+            "{url}"
+        );
     }
 }
 
@@ -532,7 +560,11 @@ fn url_components_conformance_nil_vs_empty_value() {
 fn url_components_conformance_username_decoding() {
     // `url` crate keeps the userinfo percent-encoded.
     let u = url::Url::parse("ssh://%20@dev.example.com").unwrap();
-    assert_eq!(u.username(), "%20", "url crate diverges: username not decoded");
+    assert_eq!(
+        u.username(),
+        "%20",
+        "url crate diverges: username not decoded"
+    );
 
     // Our splitter (matching URLComponents.user) decodes it → blank → host-only.
     let parsed = ParsedUrl::parse("ssh://%20@dev.example.com");

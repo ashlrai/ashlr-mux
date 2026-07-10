@@ -209,13 +209,15 @@ pub fn records_by_remapping_panel_workspace_ids(
                 return record.clone();
             }
             did_update = true;
-            let fallback = panel.fallback_split_placement.as_ref().map(|p| {
-                ClosedPanelSplitPlacement {
-                    orientation: p.orientation,
-                    insert_first: p.insert_first,
-                    anchor_panel_id: remap_anchor(p.anchor_panel_id, panel_id_map),
-                }
-            });
+            let fallback =
+                panel
+                    .fallback_split_placement
+                    .as_ref()
+                    .map(|p| ClosedPanelSplitPlacement {
+                        orientation: p.orientation,
+                        insert_first: p.insert_first,
+                        anchor_panel_id: remap_anchor(p.anchor_panel_id, panel_id_map),
+                    });
             ClosedItemHistoryRecord::new(
                 record.id,
                 record.closed_at,
@@ -623,8 +625,7 @@ impl ClosedItemHistory {
         if workspace_ids.is_empty() {
             return;
         }
-        let (records, did_update) =
-            records_by_removing_panel_records(&self.records, workspace_ids);
+        let (records, did_update) = records_by_removing_panel_records(&self.records, workspace_ids);
         if did_update {
             self.records = records;
             self.revision = self.revision.wrapping_add(1);
@@ -711,7 +712,11 @@ mod tests {
         })
     }
 
-    fn record(id: Uuid, closed_at: ClosedAt, entry: ClosedItemHistoryEntry) -> ClosedItemHistoryRecord {
+    fn record(
+        id: Uuid,
+        closed_at: ClosedAt,
+        entry: ClosedItemHistoryEntry,
+    ) -> ClosedItemHistoryRecord {
         ClosedItemHistoryRecord::new(id, closed_at, entry)
     }
 
@@ -783,12 +788,7 @@ mod tests {
         history.push(record(newer_first, 5, panel_entry(Uuid::new_v4())));
         history.push(record(newer_second, 5, panel_entry(Uuid::new_v4())));
         // Same closedAt tie broken by higher offset (last pushed) first.
-        let ok = history.restore_first_restorable(
-            None,
-            &HashSet::new(),
-            |_entry| true,
-            |_id| {},
-        );
+        let ok = history.restore_first_restorable(None, &HashSet::new(), |_entry| true, |_id| {});
         assert!(ok);
         // newer_second (offset 2, closedAt 5) should have been restored+removed.
         assert!(!history.records().iter().any(|r| r.id == newer_second));
@@ -906,7 +906,11 @@ mod tests {
         assert!(!panel.restore_in_original_pane);
         assert_eq!(panel.pane_anchor_panel_id, Some(new_anchor));
         assert_eq!(
-            panel.fallback_split_placement.as_ref().unwrap().anchor_panel_id,
+            panel
+                .fallback_split_placement
+                .as_ref()
+                .unwrap()
+                .anchor_panel_id,
             Some(new_anchor)
         );
         // Non-matching workspace → no change.
@@ -944,7 +948,11 @@ mod tests {
         };
         assert_eq!(panel.pane_anchor_panel_id, Some(new_anchor));
         assert_eq!(
-            panel.fallback_split_placement.as_ref().unwrap().anchor_panel_id,
+            panel
+                .fallback_split_placement
+                .as_ref()
+                .unwrap()
+                .anchor_panel_id,
             Some(new_anchor)
         );
         // Idempotent second pass reports no update.
@@ -1061,11 +1069,17 @@ mod tests {
         assert!(snap.is_limited);
         assert_eq!(snap.total_item_count, 3);
         // Most recent first: c, b (a dropped).
-        assert_eq!(snap.items.iter().map(|i| i.id).collect::<Vec<_>>(), vec![c, b]);
+        assert_eq!(
+            snap.items.iter().map(|i| i.id).collect::<Vec<_>>(),
+            vec![c, b]
+        );
 
         let full = history.menu_snapshot(None);
         assert!(!full.is_limited);
-        assert_eq!(full.items.iter().map(|i| i.id).collect::<Vec<_>>(), vec![c, b, a]);
+        assert_eq!(
+            full.items.iter().map(|i| i.id).collect::<Vec<_>>(),
+            vec![c, b, a]
+        );
     }
 
     #[test]

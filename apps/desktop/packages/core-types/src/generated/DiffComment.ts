@@ -14,33 +14,33 @@
  * `serde_json/preserve_order` feature — mirroring Swift's
  * `JSONEncoder.OutputFormatting.sortedKeys`.
  */
-export type DiffComment = { 
+export type DiffComment = {
 /**
  * Set when a submission delivered this comment to an agent; consumed
  * comments never re-enter the pending pool. ISO8601 string.
  */
-consumedAt?: string, 
+consumedAt?: string,
 /**
  * ISO8601 string; preserved across updates.
  */
-createdAt: string, endLine: number, endSide?: string, filePath: string, 
+createdAt: string, endLine: number, endSide?: string, filePath: string,
 /**
  * UUID string.
  */
-id: string, 
+id: string,
 /**
  * The anchor line's content at save time.
  */
-lineText: string, message: string, 
+lineText: string, message: string,
 /**
  * `"additions"` or `"deletions"`.
  */
-side: string, startLine: number, 
+side: string, startLine: number,
 /**
  * Formatted text block appended to a submission when the workspace's
  * pending pool is consumed.
  */
-submissionText?: string, 
+submissionText?: string,
 /**
  * ISO8601 string; refreshed on every save.
  */

@@ -136,8 +136,14 @@ mod tests {
             color_scheme_override(Some(AppearanceMode::Dark.raw_value())),
             Some(ColorScheme::Dark)
         );
-        assert_eq!(color_scheme_override(Some(AppearanceMode::System.raw_value())), None);
-        assert_eq!(color_scheme_override(Some(AppearanceMode::Auto.raw_value())), None);
+        assert_eq!(
+            color_scheme_override(Some(AppearanceMode::System.raw_value())),
+            None
+        );
+        assert_eq!(
+            color_scheme_override(Some(AppearanceMode::Auto.raw_value())),
+            None
+        );
         assert_eq!(color_scheme_override(Some("invalid")), None);
 
         assert_eq!(
@@ -178,7 +184,11 @@ mod tests {
             assert_eq!(once, twice);
         }
         // The resolved rawValue is always a stable fixed point of normalize.
-        for mode in [AppearanceMode::System, AppearanceMode::Light, AppearanceMode::Dark] {
+        for mode in [
+            AppearanceMode::System,
+            AppearanceMode::Light,
+            AppearanceMode::Dark,
+        ] {
             assert_eq!(normalize(Some(mode.raw_value())), mode);
         }
     }
@@ -193,7 +203,10 @@ mod tests {
         // Unknown -> system, needs rewrite.
         assert_eq!(resolved_mode(Some("bogus")), (AppearanceMode::System, true));
         // Already-canonical values need no rewrite.
-        assert_eq!(resolved_mode(Some("system")), (AppearanceMode::System, false));
+        assert_eq!(
+            resolved_mode(Some("system")),
+            (AppearanceMode::System, false)
+        );
         assert_eq!(resolved_mode(Some("light")), (AppearanceMode::Light, false));
         assert_eq!(resolved_mode(Some("dark")), (AppearanceMode::Dark, false));
     }

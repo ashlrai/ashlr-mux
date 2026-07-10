@@ -579,9 +579,7 @@ mod tests {
             "records":[{"id":"a","rev":9,"payload":{}}]}"#;
         assert_eq!(
             codec().parse(bytes).unwrap_err(),
-            SyncFrameParseError::Malformed(
-                "sync.delta record a rev 9 exceeds frame head 3".into()
-            )
+            SyncFrameParseError::Malformed("sync.delta record a rev 9 exceeds frame head 3".into())
         );
     }
 
@@ -696,7 +694,8 @@ mod tests {
     #[test]
     fn int_value_rejects_negative() {
         // A negative snapshotRev is not a valid non-negative int → malformed.
-        let bytes = br#"{"type":"sync.snapshot","collection":"devices","snapshotRev":-1,"records":[]}"#;
+        let bytes =
+            br#"{"type":"sync.snapshot","collection":"devices","snapshotRev":-1,"records":[]}"#;
         assert_eq!(
             codec().parse(bytes).unwrap_err(),
             SyncFrameParseError::Malformed("sync.snapshot missing collection/snapshotRev".into())
@@ -764,7 +763,10 @@ mod tests {
         match frame {
             SyncServerFrame::Delta { records, .. } => {
                 // serde_json (BTreeMap Map) re-serializes with sorted keys.
-                assert_eq!(records[0].payload_json, br#"{"a":[true,null],"z":1}"#.to_vec());
+                assert_eq!(
+                    records[0].payload_json,
+                    br#"{"a":[true,null],"z":1}"#.to_vec()
+                );
             }
             other => panic!("expected delta, got {other:?}"),
         }

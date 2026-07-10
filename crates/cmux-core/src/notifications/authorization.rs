@@ -33,10 +33,7 @@ impl NotificationAuthorizationState {
     /// Verbatim port of Swift `allowsDelivery`
     /// (`TerminalNotificationStore.swift` 136-143).
     pub fn allows_delivery(self) -> bool {
-        matches!(
-            self,
-            Self::Authorized | Self::Provisional | Self::Ephemeral
-        )
+        matches!(self, Self::Authorized | Self::Provisional | Self::Ephemeral)
     }
 
     /// The settings-row status label.
@@ -185,8 +182,7 @@ mod tests {
     /// Oracle: `deniedAuthorizationStripsFallbackSound`.
     #[test]
     fn denied_strips_fallback_sound() {
-        let denied =
-            fallback_effects(effects_with_sound(), NotificationAuthorizationState::Denied);
+        let denied = fallback_effects(effects_with_sound(), NotificationAuthorizationState::Denied);
         assert!(!denied.sound);
     }
 

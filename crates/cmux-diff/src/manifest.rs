@@ -79,7 +79,10 @@ pub fn parse_manifest_files(data: &[u8]) -> Option<Vec<RegisteredFile>> {
         let file_object = file_object.as_object()?;
         // Swift `fileObject["file_path"] as? String ?? ""`: a present-but-
         // non-string file_path collapses to "" and is then rejected as empty.
-        let file_path = file_object.get("file_path").and_then(Value::as_str).unwrap_or("");
+        let file_path = file_object
+            .get("file_path")
+            .and_then(Value::as_str)
+            .unwrap_or("");
         // Swift `fileObject["remote_url"] is String || filePath.isEmpty`.
         if file_object.get("remote_url").is_some_and(Value::is_string) || file_path.is_empty() {
             return None;
@@ -277,7 +280,10 @@ mod tests {
     #[test]
     fn restorable_true_for_plain_page() {
         let root = TempRoot::new();
-        let f = root.file("index.html", "<!doctype html><html><body>diff</body></html>");
+        let f = root.file(
+            "index.html",
+            "<!doctype html><html><body>diff</body></html>",
+        );
         let token = "tok-restore-abcd12345";
         write_manifest(&root, token, &[("/index.html", &f, "text/html")]);
         assert!(diff_viewer_restorable(&root.path, token, "/index.html"));

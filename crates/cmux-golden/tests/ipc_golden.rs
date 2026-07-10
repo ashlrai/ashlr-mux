@@ -52,8 +52,12 @@ fn request_proj(request: &ControlRequest) -> Value {
 
 fn error_proj(error: &ControlRequestParseError) -> Value {
     match error {
-        ControlRequestParseError::InvalidUtf8 => json!({ "outcome": "error", "code": "invalidUTF8" }),
-        ControlRequestParseError::InvalidJson => json!({ "outcome": "error", "code": "invalidJSON" }),
+        ControlRequestParseError::InvalidUtf8 => {
+            json!({ "outcome": "error", "code": "invalidUTF8" })
+        }
+        ControlRequestParseError::InvalidJson => {
+            json!({ "outcome": "error", "code": "invalidJSON" })
+        }
         ControlRequestParseError::NotAnObject => {
             json!({ "outcome": "error", "code": "notAnObject" })
         }

@@ -114,7 +114,9 @@ describe("surfaceKinds", () => {
     const kinds = surfaceKinds(paneKind("agent", "a"));
     expect(kinds.get("a")).toBe("agent");
     expect(surfaceKinds(paneKind("markdown", "m")).get("m")).toBe("markdown");
+    expect(surfaceKinds(paneKind("file", "f")).get("f")).toBe("file");
     expect(surfaceKinds(paneKind("diff", "d")).get("d")).toBe("diff");
+    expect(surfaceKinds(paneKind("browser", "b")).get("b")).toBe("browser");
   });
 
   test("an explicit terminal / absent / unknown kind resolves to terminal", () => {
@@ -122,7 +124,7 @@ describe("surfaceKinds", () => {
     // Absent surface_kind (a plain pane) → terminal.
     expect(surfaceKinds(pane("bare")).get("bare")).toBe("terminal");
     // Unknown/future tag → terminal (not passed through).
-    expect(surfaceKinds(paneKind("browser", "u")).get("u")).toBe("terminal");
+    expect(surfaceKinds(paneKind("canvas", "u")).get("u")).toBe("terminal");
   });
 
   test("keys by the selected panel id, like paneRects", () => {

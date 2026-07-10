@@ -146,7 +146,8 @@ impl NotificationState {
     }
 
     pub fn remove(&mut self, id: &str) {
-        self.notifications.retain(|notification| notification.id != id);
+        self.notifications
+            .retain(|notification| notification.id != id);
         self.refresh();
     }
 
@@ -429,13 +430,15 @@ impl NotificationStore {
             }
         }
 
-        let reservation = self.make_cooldown_reservation(add.cooldown_key.as_deref(), resolved_interval);
+        let reservation =
+            self.make_cooldown_reservation(add.cooldown_key.as_deref(), resolved_interval);
         if let Some(reservation) = &reservation {
             self.last_notification_date_by_cooldown_key
                 .insert(reservation.key.clone(), now);
         }
 
-        let outcome = self.apply_notification(add.request, effects, should_suppress_external_delivery);
+        let outcome =
+            self.apply_notification(add.request, effects, should_suppress_external_delivery);
 
         // The record path always commits the reservation (already set to `now`).
         // The effects-only path commits when a deliverable effect occurred and
@@ -455,7 +458,10 @@ impl NotificationStore {
         match (key, interval) {
             (Some(key), Some(_)) => Some(CooldownReservation {
                 key: key.to_string(),
-                previous_date: self.last_notification_date_by_cooldown_key.get(key).copied(),
+                previous_date: self
+                    .last_notification_date_by_cooldown_key
+                    .get(key)
+                    .copied(),
             }),
             _ => None,
         }
@@ -503,11 +509,14 @@ impl NotificationStore {
         let Some(index) = self.notifications.iter().position(|item| item.id == id) else {
             return;
         };
-        if !self.notifications[index].is_read {
+        let mut notification = self.notifications.remove(index);
+        if !notification.is_read {
+            self.notifications.insert(index, notification);
             return;
         }
-        let tab_id = self.notifications[index].tab_id.clone();
-        self.notifications[index].is_read = false;
+        let tab_id = notification.tab_id.clone();
+        notification.is_read = false;
+        self.notifications.insert(0, notification);
         self.rebuild_indexes();
         self.set_workspace_manual_unread(false, &tab_id);
         self.set_workspace_restored_unread(false, &tab_id);
@@ -541,7 +550,11 @@ impl NotificationStore {
     ///
     /// Mirrors Swift `markRead(forTabId:surfaceId:)`
     /// (`TerminalNotificationStore.swift` 1406-1439).
-    pub fn mark_read_for_tab_surface(&mut self, tab_id: &str, surface_id: Option<&str>) -> Vec<String> {
+    pub fn mark_read_for_tab_surface(
+        &mut self,
+        tab_id: &str,
+        surface_id: Option<&str>,
+    ) -> Vec<String> {
         let mut ids_to_clear = Vec::new();
         for notification in &mut self.notifications {
             if notification.matches(tab_id, surface_id) && !notification.is_read {
@@ -620,7 +633,9 @@ impl NotificationStore {
                 return Some(index);
             }
         }
-        self.notifications.iter().position(|item| item.tab_id == tab_id)
+        self.notifications
+            .iter()
+            .position(|item| item.tab_id == tab_id)
     }
 
     /// Mark every unread notification read. Returns the cleared ids.
@@ -693,7 +708,8 @@ impl NotificationStore {
             .map(|item| item.id.clone())
             .collect();
 
-        if ids_to_clear.is_empty() && !had_focused_read_indicator && !had_restored_workspace_unread {
+        if ids_to_clear.is_empty() && !had_focused_read_indicator && !had_restored_workspace_unread
+        {
             return Vec::new();
         }
         if !ids_to_clear.is_empty() {
@@ -715,8 +731,7 @@ impl NotificationStore {
     /// (`TerminalNotificationStore.swift` 1700-1731). The
     /// `clearWorkspacePanelUnread` AppDelegate side effect is deferred.
     pub fn clear_for_tab(&mut self, tab_id: &str) -> Vec<String> {
-        let had_focused_read_indicator =
-            self.focused_read_indicator_by_tab_id.contains_key(tab_id);
+        let had_focused_read_indicator = self.focused_read_indicator_by_tab_id.contains_key(tab_id);
         let ids_to_clear: Vec<String> = self
             .notifications
             .iter()
@@ -753,7 +768,11 @@ impl NotificationStore {
         if !has_state {
             return Vec::new();
         }
-        let ids: Vec<String> = self.notifications.iter().map(|item| item.id.clone()).collect();
+        let ids: Vec<String> = self
+            .notifications
+            .iter()
+            .map(|item| item.id.clone())
+            .collect();
         self.notifications.clear();
         self.clear_workspace_manual_unread();
         self.clear_panel_derived_workspace_unread();
@@ -767,7 +786,12 @@ impl NotificationStore {
     ///
     /// Mirrors Swift `rebindSurfaceNotifications(fromTabId:toTabId:surfaceId:)`
     /// (`TerminalNotificationStore.swift` 1664-1698).
-    pub fn rebind_surface(&mut self, source_tab_id: &str, destination_tab_id: &str, surface_id: &str) {
+    pub fn rebind_surface(
+        &mut self,
+        source_tab_id: &str,
+        destination_tab_id: &str,
+        surface_id: &str,
+    ) {
         if source_tab_id == destination_tab_id {
             return;
         }
@@ -804,7 +828,11 @@ impl NotificationStore {
     /// Mirrors Swift `restoreSessionNotifications(_:forTabId:)`
     /// (`TerminalNotificationStore.swift` 1544-1568). The
     /// `TerminalMutationBus` discard and delivery seam are out of scope.
-    pub fn restore_session(&mut self, restored_notifications: Vec<TerminalNotification>, tab_id: &str) {
+    pub fn restore_session(
+        &mut self,
+        restored_notifications: Vec<TerminalNotification>,
+        tab_id: &str,
+    ) {
         let mut used_ids: HashSet<String> = self
             .notifications
             .iter()
@@ -950,7 +978,8 @@ impl NotificationStore {
 
     fn set_workspace_restored_unread(&mut self, is_unread: bool, tab_id: &str) -> bool {
         if is_unread {
-            self.restored_unread_workspace_ids.insert(tab_id.to_string())
+            self.restored_unread_workspace_ids
+                .insert(tab_id.to_string())
         } else {
             self.restored_unread_workspace_ids.remove(tab_id)
         }
@@ -1043,7 +1072,11 @@ impl NotificationStore {
         let has_workspace_unread_indicator = self.manual_unread_workspace_ids.contains(tab_id)
             || self.panel_derived_unread_workspace_ids.contains(tab_id)
             || self.restored_unread_workspace_ids.contains(tab_id);
-        self.indexes.unread_count_by_tab_id.get(tab_id).copied().unwrap_or(0)
+        self.indexes
+            .unread_count_by_tab_id
+            .get(tab_id)
+            .copied()
+            .unwrap_or(0)
             + usize::from(has_workspace_unread_indicator)
     }
 
@@ -1086,7 +1119,11 @@ impl NotificationStore {
 
     /// Mirrors Swift `hasVisibleNotificationIndicator(forTabId:surfaceId:)`
     /// (`TerminalNotificationStore.swift` 855-858).
-    pub fn has_visible_notification_indicator(&self, tab_id: &str, surface_id: Option<&str>) -> bool {
+    pub fn has_visible_notification_indicator(
+        &self,
+        tab_id: &str,
+        surface_id: Option<&str>,
+    ) -> bool {
         self.has_unread_notification(tab_id, surface_id)
             || self
                 .focused_read_indicator_by_tab_id
@@ -1277,6 +1314,23 @@ mod tests {
     }
 
     #[test]
+    fn mark_unread_moves_the_notification_to_the_front() {
+        let mut store = NotificationStore::new();
+        store.record(unread("old", "tab", Some("s1"), 1), false);
+        store.record(unread("new", "tab", Some("s2"), 2), false);
+        store.mark_read("old");
+
+        store.mark_unread("old");
+
+        let ids: Vec<&str> = store
+            .notifications()
+            .iter()
+            .map(|notification| notification.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["old", "new"]);
+    }
+
+    #[test]
     fn mark_read_for_tab_clears_all_and_indicators() {
         let mut store = NotificationStore::new();
         store.record(unread("a", "tab", Some("s1"), 1), false);
@@ -1352,7 +1406,9 @@ mod tests {
         assert_eq!(cleared, vec!["a".to_string()]);
         assert_eq!(store.notifications().len(), 1);
         // nothing to clear → empty
-        assert!(store.clear_for_tab_surface("tab", Some("missing")).is_empty());
+        assert!(store
+            .clear_for_tab_surface("tab", Some("missing"))
+            .is_empty());
     }
 
     #[test]
@@ -1400,13 +1456,26 @@ mod tests {
         // existing notification in a different tab with id "x"
         store.record(unread("x", "other", Some("s"), 5), false);
         // restored set for "tab" collides with id "x"
-        let restored = vec![unread("x", "tab", Some("s"), 1), unread("y", "tab", Some("s2"), 2)];
+        let restored = vec![
+            unread("x", "tab", Some("s"), 1),
+            unread("y", "tab", Some("s2"), 2),
+        ];
         store.restore_session(restored, "tab");
         // the colliding id was reassigned; all ids stay unique
-        let ids: HashSet<&str> = store.notifications().iter().map(|n| n.id.as_str()).collect();
+        let ids: HashSet<&str> = store
+            .notifications()
+            .iter()
+            .map(|n| n.id.as_str())
+            .collect();
         assert_eq!(ids.len(), store.notifications().len());
-        assert!(store.notifications().iter().any(|n| n.id == "x" && n.tab_id == "other"));
-        assert!(store.notifications().iter().any(|n| n.id == "x#1" && n.tab_id == "tab"));
+        assert!(store
+            .notifications()
+            .iter()
+            .any(|n| n.id == "x" && n.tab_id == "other"));
+        assert!(store
+            .notifications()
+            .iter()
+            .any(|n| n.id == "x#1" && n.tab_id == "tab"));
     }
 
     #[test]
@@ -1418,7 +1487,11 @@ mod tests {
             unread("c", "tab", Some("s3"), 2),
         ];
         store.restore_session(restored, "tab");
-        let ids: Vec<&str> = store.notifications().iter().map(|n| n.id.as_str()).collect();
+        let ids: Vec<&str> = store
+            .notifications()
+            .iter()
+            .map(|n| n.id.as_str())
+            .collect();
         assert_eq!(ids, vec!["b", "c", "a"]);
     }
 
@@ -1476,7 +1549,12 @@ mod tests {
 
     // --- cooldown -----------------------------------------------------------
 
-    fn add_request(id: &str, created_at: i64, key: Option<&str>, interval: Option<i64>) -> AddNotificationRequest {
+    fn add_request(
+        id: &str,
+        created_at: i64,
+        key: Option<&str>,
+        interval: Option<i64>,
+    ) -> AddNotificationRequest {
         AddNotificationRequest {
             request: NotificationRequest {
                 id: id.to_owned(),
@@ -1548,7 +1626,8 @@ mod tests {
         assert!(!outcome.recorded);
         assert_eq!(outcome.delivery, DeliveryDecision::None);
         // the reservation rolled back, so an immediate second add is NOT skipped
-        let second = store.add_notification(add_request("b", 110, Some("k"), Some(50)), &effects, false);
+        let second =
+            store.add_notification(add_request("b", 110, Some("k"), Some(50)), &effects, false);
         assert!(second.is_some());
     }
 

@@ -35,7 +35,7 @@ pub mod store;
 pub use record::{SurfaceResumeApprovalPolicy, SurfaceResumeApprovalRecord};
 pub use signature::SurfaceResumeApprovalSignature;
 pub use store::{
-    AppliedApproval, StoredFile, applying_promptless_cli_manual_approval_if_needed,
-    applying_stored_approval, approve, load_records, load_standalone_records, matching_record,
-    should_prompt_for_proposal, update, valid_records,
+    applying_promptless_cli_manual_approval_if_needed, applying_stored_approval, approve,
+    load_records, load_standalone_records, matching_record, should_prompt_for_proposal, update,
+    valid_records, AppliedApproval, StoredFile,
 };

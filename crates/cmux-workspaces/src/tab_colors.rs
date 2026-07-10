@@ -373,7 +373,9 @@ pub fn custom_palette_entries(snapshot: &PaletteStoreSnapshot) -> Vec<TabColorEn
 
 /// Whether `name` is one of the built-in palette names (exact, case-sensitive).
 fn is_built_in_name(name: &str) -> bool {
-    DEFAULT_PALETTE.iter().any(|(built_in, _)| *built_in == name)
+    DEFAULT_PALETTE
+        .iter()
+        .any(|(built_in, _)| *built_in == name)
 }
 
 /// `defaultColorHex(named:)` (lines 64-66): exact-match (case-sensitive)
@@ -588,7 +590,9 @@ pub fn resolve_set_color_input(
 /// caller) can run [`resolved_color_hex`] as a post-decode validation pass
 /// without string drift.
 pub fn invalid_color_message(raw: &str) -> String {
-    format!("Invalid color \"{raw}\". Expected 6-digit hex format (#RRGGBB) or a workspace color name")
+    format!(
+        "Invalid color \"{raw}\". Expected 6-digit hex format (#RRGGBB) or a workspace color name"
+    )
 }
 
 /// `paletteCacheFingerprint`
@@ -694,10 +698,7 @@ fn split_digit_run(s: &str) -> (&str, &str) {
 fn cmp_digit_runs(a: &str, b: &str) -> Ordering {
     let a_sig = a.trim_start_matches('0');
     let b_sig = b.trim_start_matches('0');
-    a_sig
-        .len()
-        .cmp(&b_sig.len())
-        .then_with(|| a_sig.cmp(b_sig))
+    a_sig.len().cmp(&b_sig.len()).then_with(|| a_sig.cmp(b_sig))
 }
 
 // ---------------------------------------------------------------------------
@@ -863,9 +864,9 @@ mod tests {
             // Edge pins.
             ("", None),
             ("   ", None),
-            ("##ABCDEF", None),   // strip at most ONE '#': body "#ABCDEF" is 7 chars
-            ("#ABCDEFF", None),   // 7-char body
-            ("#ABCDE", None),     // 5-char body
+            ("##ABCDEF", None), // strip at most ONE '#': body "#ABCDEF" is 7 chars
+            ("#ABCDEFF", None), // 7-char body
+            ("#ABCDE", None),   // 5-char body
             ("\u{00A0}ABCDEF\n", Some("#ABCDEF")), // NBSP + newline trimmed
             ("\u{3000}#abc123\u{2028}", Some("#ABC123")), // ideographic space + line sep
             ("FFFFFF", Some("#FFFFFF")),
@@ -873,9 +874,9 @@ mod tests {
             // Swift UInt64(_, radix:16) sign rule.
             ("+ABCDE", Some("#+ABCDE")),
             ("-00000", Some("#-00000")),
-            ("-00001", None), // negative nonzero out of range for UInt64
-            ("++ABCD", None), // only one sign consumed
-            ("A BCDE", None), // interior whitespace is not trimmed
+            ("-00001", None),        // negative nonzero out of range for UInt64
+            ("++ABCD", None),        // only one sign consumed
+            ("A BCDE", None),        // interior whitespace is not trimmed
             ("ABC12\u{0301}", None), // combining char fails the ASCII parse
             ("ＡＢＣ１２３", None),  // fullwidth digits are not ASCII hex
         ];
@@ -890,7 +891,10 @@ mod tests {
 
     #[test]
     fn normalized_color_name_trims_and_rejects_empty() {
-        assert_eq!(normalized_color_name("  Neon Mint "), Some("Neon Mint".to_owned()));
+        assert_eq!(
+            normalized_color_name("  Neon Mint "),
+            Some("Neon Mint".to_owned())
+        );
         assert_eq!(normalized_color_name("\u{00A0}\n"), None);
         assert_eq!(normalized_color_name(""), None);
         // Interior whitespace and case preserved.
@@ -1089,7 +1093,10 @@ mod tests {
         };
         let resolved = palette(&snap);
         assert_eq!(
-            resolved.iter().find(|e| e.name == "Blue").map(|e| e.hex.as_str()),
+            resolved
+                .iter()
+                .find(|e| e.name == "Blue")
+                .map(|e| e.hex.as_str()),
             Some("#010203")
         );
         assert_eq!(
@@ -1170,11 +1177,26 @@ mod tests {
     fn resolved_color_hex_hex_first_then_case_insensitive_name() {
         let snap = empty_snapshot();
         // CmuxConfigNamedColorTests: named color resolves via the palette.
-        assert_eq!(resolved_color_hex("Indigo", &snap).as_deref(), Some("#283593"));
-        assert_eq!(resolved_color_hex("indigo", &snap).as_deref(), Some("#283593"));
-        assert_eq!(resolved_color_hex(" INDIGO \n", &snap).as_deref(), Some("#283593"));
-        assert_eq!(resolved_color_hex("#abc123", &snap).as_deref(), Some("#ABC123"));
-        assert_eq!(resolved_color_hex("Definitely Not A Palette Color", &snap), None);
+        assert_eq!(
+            resolved_color_hex("Indigo", &snap).as_deref(),
+            Some("#283593")
+        );
+        assert_eq!(
+            resolved_color_hex("indigo", &snap).as_deref(),
+            Some("#283593")
+        );
+        assert_eq!(
+            resolved_color_hex(" INDIGO \n", &snap).as_deref(),
+            Some("#283593")
+        );
+        assert_eq!(
+            resolved_color_hex("#abc123", &snap).as_deref(),
+            Some("#ABC123")
+        );
+        assert_eq!(
+            resolved_color_hex("Definitely Not A Palette Color", &snap),
+            None
+        );
         assert_eq!(resolved_color_hex("", &snap), None);
         assert_eq!(resolved_color_hex("   ", &snap), None);
 
@@ -1182,7 +1204,10 @@ mod tests {
         let mut map = default_palette_map();
         map.push(("C0FFEE".to_owned(), "#111111".to_owned()));
         let snap = stored_from_outcome(persist_palette_map(&map));
-        assert_eq!(resolved_color_hex("C0FFEE", &snap).as_deref(), Some("#C0FFEE"));
+        assert_eq!(
+            resolved_color_hex("C0FFEE", &snap).as_deref(),
+            Some("#C0FFEE")
+        );
     }
 
     // §7(b) — socket set_color: NAME FIRST (opposite precedence).
@@ -1201,7 +1226,10 @@ mod tests {
             resolve_set_color_input("#abc123", &entries),
             Ok("#ABC123".to_owned())
         );
-        assert_eq!(resolve_set_color_input("   ", &entries), Err(SetColorError::Missing));
+        assert_eq!(
+            resolve_set_color_input("   ", &entries),
+            Err(SetColorError::Missing)
+        );
         assert_eq!(SetColorError::Missing.message(), "Missing or invalid color");
 
         let err = resolve_set_color_input("nope", &entries).unwrap_err();
@@ -1210,7 +1238,10 @@ mod tests {
         };
         assert_eq!(
             named_colors,
-            &DEFAULT_PALETTE.iter().map(|(n, _)| (*n).to_owned()).collect::<Vec<_>>()
+            &DEFAULT_PALETTE
+                .iter()
+                .map(|(n, _)| (*n).to_owned())
+                .collect::<Vec<_>>()
         );
         assert_eq!(
             err.message(),
@@ -1283,7 +1314,11 @@ mod tests {
             ("x100", "x20", Greater),
         ];
         for (a, b, expected) in cases {
-            assert_eq!(finder_like_cmp(a, b), *expected, "finder_like_cmp({a:?}, {b:?})");
+            assert_eq!(
+                finder_like_cmp(a, b),
+                *expected,
+                "finder_like_cmp({a:?}, {b:?})"
+            );
         }
         // Custom entries sort numerically inside palette().
         let mut map = default_palette_map();
@@ -1398,7 +1433,10 @@ mod tests {
     // §13 — Workspace.setCustomColor silent-clear semantics.
     #[test]
     fn normalized_custom_color_silently_clears_invalid_hex() {
-        assert_eq!(normalized_custom_color(Some("#abc123")).as_deref(), Some("#ABC123"));
+        assert_eq!(
+            normalized_custom_color(Some("#abc123")).as_deref(),
+            Some("#ABC123")
+        );
         assert_eq!(normalized_custom_color(Some("nope")), None); // invalid → silent clear
         assert_eq!(normalized_custom_color(None), None);
     }

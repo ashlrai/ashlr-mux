@@ -10,13 +10,12 @@
  * starting the SAME provider in the same tick racing for `provider.started`;
  * that race predates this module and is unaffected by mount bookkeeping.
  *
- * What a surface may NOT do is unmount while its run is in flight: the agent
- * app has NO transcript replay — `loadInitialData` fetches only context +
- * providers, the transcript is rebuilt purely from live events, and a fresh
- * mount re-fires auto-start — so unmounting is irrecoverable and can even
- * spawn a second run. The workspace therefore keeps a pane's surface mounted
- * (hidden) across a toggle back to the terminal. This function encodes that
- * stickiness. Given the previous owners:
+ * What a surface may NOT do is unmount while its run is in flight: restored
+ * pane bindings can replay saved Codex/Claude transcripts, but live runs still
+ * depend on their mounted chat instance for in-memory activity/output state.
+ * The workspace therefore keeps a pane's surface mounted (hidden) across a
+ * toggle back to the terminal instead of relying on replay for active work.
+ * This function encodes that stickiness. Given the previous owners:
  *  - every pane that is CURRENTLY an agent owns a surface;
  *  - a previous owner keeps its (hidden) surface as long as the pane still
  *    exists — toggling it to a terminal does not tear down its in-flight run;

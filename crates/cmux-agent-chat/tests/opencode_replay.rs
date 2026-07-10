@@ -60,6 +60,9 @@ fn opencode_1_17_event_stream_yields_assistant_reply() {
         !text.contains("The user just said"),
         "reasoning leaked into the reply: {text:?}"
     );
-    assert!(text.contains("Hi"), "expected reply to contain 'Hi', got {text:?}");
+    assert!(
+        text.contains("Hi"),
+        "expected reply to contain 'Hi', got {text:?}"
+    );
     assert!(completed, "expected a turn-complete (session.idle)");
 }

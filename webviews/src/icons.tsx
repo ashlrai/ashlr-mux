@@ -2,6 +2,7 @@ export type IconName =
   | "arrow"
   | "background"
   | "bars"
+  | "browser"
   | "check"
   | "classic"
   | "collapse"
@@ -37,6 +38,8 @@ function IconPaths({ name }: { name: IconName }) {
     return <><rect x="4" y="4" width="12" height="12" rx="2" /><path d="M7 8h6" /><path d="M7 12h6" /></>;
   case "bars":
     return <><path d="M5 4v12" /><path d="M9 6v8" /><path d="M13 8v4" /></>;
+  case "browser":
+    return <><rect x="3.5" y="4.5" width="13" height="11" rx="2" /><path d="M3.5 8h13" /><path d="M6 6.3h.01" data-precision-dot="true" /><path d="M8 6.3h.01" data-precision-dot="true" /><path d="M10 11h4" /></>;
   case "check":
     return <path d="M4 10.5 8 14l8-9" />;
   case "classic":

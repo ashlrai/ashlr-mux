@@ -96,6 +96,37 @@ describe("installDiffCommentsRelay", () => {
     ]);
   });
 
+  test("threads token and panel id alongside the bridge message when provided", async () => {
+    const { target, dispatch } = makeWindowTarget();
+    const { posted, source } = makeSource();
+    let seenArgs: Record<string, unknown> | undefined;
+
+    installDiffCommentsRelay({
+      windowTarget: target,
+      token: "tok-abcdef0123456789",
+      panelId: "surface-7",
+      invokeRaw: async (_command, args) => {
+        seenArgs = args;
+        return { ok: true, value: null } as unknown;
+      },
+    });
+
+    const message: HostMessage = {
+      id: "c2",
+      method: "comments.save",
+      params: { repoRoot: "/r" },
+    };
+    dispatch({ data: requestData("r-token", message), origin: DIFF_VIEWER_HTTP_ORIGIN, source });
+    await flush();
+
+    expect(seenArgs).toEqual({
+      message,
+      token: "tok-abcdef0123456789",
+      panelId: "surface-7",
+    });
+    expect(posted).toHaveLength(1);
+  });
+
   test("wraps a bare (non-envelope) invoke result as { ok: true, value }", async () => {
     const { target, dispatch } = makeWindowTarget();
     const { posted, source } = makeSource();

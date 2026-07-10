@@ -44,6 +44,8 @@ export interface WorkspaceRow {
   groupId?: string;
   /// Whether the workspace is pinned (pinned rows float above unpinned).
   isPinned: boolean;
+  /// Workspace-level color override (hex string), or absent for inherited tint.
+  customColor?: string;
 }
 
 /// Stable identity for a render item. The `kind` keeps group headers and

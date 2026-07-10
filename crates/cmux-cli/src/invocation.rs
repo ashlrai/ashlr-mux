@@ -90,17 +90,21 @@ pub enum ParseOutcome {
 /// re-interpreted as a presentation flag. Verbatim port of Swift
 /// `CmuxCLI.commandOptionsWithValues` (cmux.swift:2929).
 const COMMAND_OPTIONS_WITH_VALUES: &[&str] = &[
+    "-i",
+    "-p",
     "--action",
     "--after-workspace",
     "--agent",
     "--amount",
     "--arch",
     "--attr",
+    "--attribute",
     "--before-workspace",
     "--body",
     "--color",
     "--command",
     "--config",
+    "--css",
     "--cwd",
     "--description",
     "--direction",
@@ -109,6 +113,7 @@ const COMMAND_OPTIONS_WITH_VALUES: &[&str] = &[
     "--dy",
     "--email",
     "--event",
+    "--expression",
     "--expires",
     "--focus",
     "--function",
@@ -118,6 +123,7 @@ const COMMAND_OPTIONS_WITH_VALUES: &[&str] = &[
     "--key",
     "--kind",
     "--layout",
+    "--loadState",
     "--lines",
     "--load-state",
     "--max-depth",
@@ -136,12 +142,14 @@ const COMMAND_OPTIONS_WITH_VALUES: &[&str] = &[
     "--selector",
     "--session",
     "--shell",
+    "--ssh-option",
     "--source",
     "--subtitle",
     "--surface",
     "--tab",
     "--target-pane",
     "--text",
+    "--text-contains",
     "--timeout",
     "--timeout-ms",
     "--title",
@@ -153,6 +161,7 @@ const COMMAND_OPTIONS_WITH_VALUES: &[&str] = &[
     "--value",
     "--window",
     "--workspace",
+    "--identity",
     "--checkpoint",
     "--checkpoint-id",
 ];
@@ -310,7 +319,10 @@ mod tests {
     #[test]
     fn explicit_socket_is_captured_and_command_follows() {
         let (options, command, args) = command_outcome(&["--socket", "\\\\.\\pipe\\x", "list"]);
-        assert_eq!(options.explicit_socket_path.as_deref(), Some("\\\\.\\pipe\\x"));
+        assert_eq!(
+            options.explicit_socket_path.as_deref(),
+            Some("\\\\.\\pipe\\x")
+        );
         assert_eq!(command, "list");
         assert!(args.is_empty());
     }
@@ -342,7 +354,9 @@ mod tests {
         assert!(error.message.starts_with("Missing command. Usage: cmux"));
         // A trailing global flag with no command also yields missing-command.
         assert_eq!(
-            parse_global_options(&argv(&["--json"])).unwrap_err().exit_code,
+            parse_global_options(&argv(&["--json"]))
+                .unwrap_err()
+                .exit_code,
             2
         );
     }
@@ -351,7 +365,10 @@ mod tests {
     fn value_flags_missing_value_are_exit_code_1_with_exact_messages() {
         for (tokens, message) in [
             (vec!["--socket"], "--socket requires a path"),
-            (vec!["--id-format"], "--id-format requires a value (refs|uuids|both)"),
+            (
+                vec!["--id-format"],
+                "--id-format requires a value (refs|uuids|both)",
+            ),
             (vec!["--window"], "--window requires a window id"),
             (vec!["--password"], "--password requires a value"),
         ] {
@@ -384,7 +401,8 @@ mod tests {
         let (options, _, _) = command_outcome(&["--json", "list"]);
         assert!(options.json_output);
         // Post-command --id-format overwrites a pre-command one.
-        let (options, _, _) = command_outcome(&["--id-format", "refs", "list", "--id-format", "uuids"]);
+        let (options, _, _) =
+            command_outcome(&["--id-format", "refs", "list", "--id-format", "uuids"]);
         assert_eq!(options.id_format.as_deref(), Some("uuids"));
     }
 
@@ -400,7 +418,11 @@ mod tests {
         assert!(!pres.json_output);
         assert_eq!(
             pres.remaining,
-            vec!["--".to_owned(), "--json".to_owned(), "--id-format".to_owned()]
+            vec![
+                "--".to_owned(),
+                "--json".to_owned(),
+                "--id-format".to_owned()
+            ]
         );
     }
 
@@ -408,7 +430,10 @@ mod tests {
     fn presentation_id_format_missing_value_errors() {
         let error = parse_presentation_options(&["--id-format".to_owned()]).unwrap_err();
         assert_eq!(error.exit_code, 1);
-        assert_eq!(error.message, "--id-format requires a value (refs|uuids|both)");
+        assert_eq!(
+            error.message,
+            "--id-format requires a value (refs|uuids|both)"
+        );
     }
 
     #[test]
@@ -422,7 +447,38 @@ mod tests {
         .unwrap();
         assert_eq!(
             pres.remaining,
-            vec!["--workspace".to_owned(), "ws1".to_owned(), "--flag".to_owned()]
+            vec![
+                "--workspace".to_owned(),
+                "ws1".to_owned(),
+                "--flag".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn ssh_value_options_keep_values_paired() {
+        let pres = parse_presentation_options(&[
+            "--ssh-option".to_owned(),
+            "ControlPath=/tmp/cmux-%C".to_owned(),
+            "--identity".to_owned(),
+            "C:\\Users\\me\\id_ed25519".to_owned(),
+            "-p".to_owned(),
+            "2222".to_owned(),
+            "--json".to_owned(),
+        ])
+        .unwrap();
+
+        assert!(pres.json_output);
+        assert_eq!(
+            pres.remaining,
+            vec![
+                "--ssh-option".to_owned(),
+                "ControlPath=/tmp/cmux-%C".to_owned(),
+                "--identity".to_owned(),
+                "C:\\Users\\me\\id_ed25519".to_owned(),
+                "-p".to_owned(),
+                "2222".to_owned(),
+            ]
         );
     }
 }

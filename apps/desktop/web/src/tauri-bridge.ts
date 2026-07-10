@@ -1,7 +1,7 @@
 type NativeReply<T> =
   | T
   | { ok: true; value: T }
-  | { ok: false; error?: { code?: string; userMessage?: string } };
+  | { ok: false; error?: { code?: string; userMessage?: string; data?: unknown } };
 
 type AgentEvent = {
   type: string;
@@ -34,11 +34,13 @@ let nativeEventSubscription: Promise<(() => void) | null> | null = null;
 
 export class NativeBridgeError extends Error {
   readonly code?: string;
+  readonly data?: unknown;
 
-  constructor(message: string, code?: string) {
+  constructor(message: string, code?: string, data?: unknown) {
     super(message);
     this.name = "NativeBridgeError";
     this.code = code;
+    this.data = data;
   }
 }
 
@@ -63,6 +65,7 @@ export async function callNative<T>(
     throw new NativeBridgeError(
       reply.error?.userMessage || "Native bridge request failed.",
       reply.error?.code,
+      reply.error?.data,
     );
   }
 

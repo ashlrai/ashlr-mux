@@ -261,8 +261,14 @@ impl PartialEq for ResolvedNotificationHook {
             && self.timeout_seconds == other.timeout_seconds
             && self.source_path == other.source_path
             && self.cwd == other.cwd
-            && self.trust_descriptor.as_ref().map(ActionTrustDescriptor::fingerprint)
-                == other.trust_descriptor.as_ref().map(ActionTrustDescriptor::fingerprint)
+            && self
+                .trust_descriptor
+                .as_ref()
+                .map(ActionTrustDescriptor::fingerprint)
+                == other
+                    .trust_descriptor
+                    .as_ref()
+                    .map(ActionTrustDescriptor::fingerprint)
     }
 }
 
@@ -435,7 +441,10 @@ mod tests {
     #[test]
     fn project_root_strips_cmux_directory() {
         // `.../project/.cmux/cmux.json` -> `.../project`
-        assert_eq!(project_root("/root/project/.cmux/cmux.json"), "/root/project");
+        assert_eq!(
+            project_root("/root/project/.cmux/cmux.json"),
+            "/root/project"
+        );
         // `.../project/child/.cmux/cmux.json` -> `.../project/child`
         assert_eq!(
             project_root("/root/project/child/.cmux/cmux.json"),
@@ -543,7 +552,9 @@ mod tests {
         // 64 lowercase hex chars.
         let fp = d.fingerprint();
         assert_eq!(fp.len(), 64);
-        assert!(fp.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert!(fp
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
     }
 
     #[test]

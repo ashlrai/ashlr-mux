@@ -23,28 +23,28 @@
 //!   allocates request ids, builds the handshake / thread / turn frames while
 //!   tracking their ids, and consumes one server→client JSON-RPC line at a time,
 //!   mapping notifications to [`AgentEvent`]s (`provider.output`,
-//!   `provider.activity`, `provider.turnComplete`) exactly as the Swift
-//!   `handleNotification` + `AgentSessionProcessStore` sinks do. It tracks the
-//!   pure turn state (`is_turn_in_flight`, `active_permission_mode`) and the
-//!   startup/thread state, and exposes the pure server-request approval logic via
-//!   [`CodexAccumulator::approval_response`].
+//!   `provider.activity`, `provider.turnComplete`, `app.rateLimitRows`) exactly
+//!   as the Swift `handleNotification` + `AgentSessionProcessStore` sinks do. It
+//!   tracks the pure turn state (`is_turn_in_flight`, `active_permission_mode`),
+//!   the startup/thread state, rate-limit snapshot request ids, and exposes the
+//!   pure server-request approval logic via [`CodexAccumulator::approval_response`].
 //!
 //! ## Deferred (NOT in this slice — needs the live child process)
 //!
-//! The actual stdio transport (writing the framed lines, reading stdout), the
-//! process spawn, and the **async single-input queue** (Swift `queuedInputs` with
-//! its `CheckedContinuation`s, `startThreadIfNeeded` sequencing after
-//! `initialized`, and `drainCodexAppServerQueuedInputs`). The queue's *pure*
-//! backpressure predicate is provided as [`CodexAccumulator::can_queue_input`],
-//! but the continuation bookkeeping and the "send `initialized` then
-//! `thread/start` on the initialize response, then drain the queue" orchestration
-//! belong to the transport layer.
+//! The actual stdio transport (writing the framed lines, reading stdout) and the
+//! process spawn. The higher-level sequencing around `initialized`, `thread/start`,
+//! queued inputs, and rate-limit refetches lives in [`crate::RunningSession`],
+//! where it can be converted into host [`crate::TransportAction`]s without doing
+//! I/O in this pure crate.
 
 use std::collections::HashSet;
 
 use serde_json::{json, Map, Value};
 
-use crate::event::{ActivityKind, ActivityStatus, AgentEvent, ProviderId, ProviderStream};
+use crate::event::{
+    ActivityKind, ActivityStatus, AgentEvent, AgentSessionRateLimitRow, ProviderId, ProviderStream,
+    RateLimitRole,
+};
 use crate::permission_mode::PermissionMode;
 
 /// Swift `CodexAppServerSession.maxQueuedInputCount`.
@@ -107,6 +107,18 @@ pub fn thread_start_request(id: i64, working_directory: Option<&str>) -> Value {
         "id": id,
         "method": "thread/start",
         "params": Value::Object(params),
+    })
+}
+
+/// Build the `account/rateLimits/read` request envelope.
+///
+/// Codex app-server emits sparse `account/rateLimits/updated` notifications, so
+/// cmux reads the full snapshot after startup and whenever a sparse update
+/// arrives before pushing `app.rateLimitRows` to the reused footer UI.
+pub fn rate_limits_read_request(id: i64) -> Value {
+    json!({
+        "id": id,
+        "method": "account/rateLimits/read",
     })
 }
 
@@ -200,6 +212,8 @@ pub struct CodexAccumulator {
     did_initialize: bool,
     thread_start_request_id: Option<i64>,
     thread_id: Option<String>,
+    rate_limit_request_ids: HashSet<i64>,
+    rate_limits_refetch_requested: bool,
     did_fail_startup: bool,
     active_permission_mode: PermissionMode,
     is_turn_in_flight: bool,
@@ -222,6 +236,8 @@ impl CodexAccumulator {
             did_initialize: false,
             thread_start_request_id: None,
             thread_id: None,
+            rate_limit_request_ids: HashSet::new(),
+            rate_limits_refetch_requested: false,
             did_fail_startup: false,
             active_permission_mode: PermissionMode::Standard,
             is_turn_in_flight: false,
@@ -267,6 +283,13 @@ impl CodexAccumulator {
         let id = self.allocate_request_id();
         self.thread_start_request_id = Some(id);
         Some(thread_start_request(id, self.working_directory.as_deref()))
+    }
+
+    /// Build a full rate-limit snapshot request and record its id.
+    pub fn rate_limits_read(&mut self) -> Value {
+        let id = self.allocate_request_id();
+        self.rate_limit_request_ids.insert(id);
+        rate_limits_read_request(id)
     }
 
     /// Build a `turn/start` request, recording its id and marking the turn
@@ -367,6 +390,11 @@ impl CodexAccumulator {
         std::mem::take(&mut self.startup_failed_signaled)
     }
 
+    /// Whether a sparse rate-limit update requested a full snapshot refetch.
+    pub fn take_rate_limits_refetch_requested(&mut self) -> bool {
+        std::mem::take(&mut self.rate_limits_refetch_requested)
+    }
+
     // ---- line consumption ----
 
     /// Consume one server→client JSON-RPC line, mapping it to [`AgentEvent`]s.
@@ -409,7 +437,11 @@ impl CodexAccumulator {
         if let Some(error) = object.get("error").and_then(Value::as_object) {
             return self.handle_rpc_error(id, error, session_id);
         }
-        self.handle_response(id, object.get("result").and_then(Value::as_object), session_id)
+        self.handle_response(
+            id,
+            object.get("result").and_then(Value::as_object),
+            session_id,
+        )
     }
 
     fn handle_response(
@@ -442,6 +474,12 @@ impl CodexAccumulator {
                 _ => self.fail_startup(None, session_id),
             }
         } else {
+            if self.rate_limit_request_ids.remove(&id) {
+                return match rate_limit_rows_from_result(result) {
+                    Some(rate_limit_rows) => vec![AgentEvent::AppRateLimitRows { rate_limit_rows }],
+                    None => Vec::new(),
+                };
+            }
             // Turn-start responses are acknowledged (Swift removes the id); any
             // other response id is ignored. Neither yields an event.
             self.turn_start_request_ids.remove(&id);
@@ -455,9 +493,17 @@ impl CodexAccumulator {
         error: &Map<String, Value>,
         session_id: &str,
     ) -> Vec<AgentEvent> {
-        let details = error.get("message").and_then(Value::as_str).map(str::to_string);
+        let details = error
+            .get("message")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         if self.initialize_request_id == Some(id) || self.thread_start_request_id == Some(id) {
             return self.fail_startup(details, session_id);
+        }
+        if self.rate_limit_request_ids.remove(&id) {
+            // Rate-limit reads are auxiliary UI data; failures must not affect the
+            // active turn or surface as a scary transcript error.
+            return Vec::new();
         }
         if self.turn_start_request_ids.remove(&id) {
             self.is_turn_in_flight = false;
@@ -497,11 +543,17 @@ impl CodexAccumulator {
             "item/agentMessage/completed"
             | "item/agentMessage/complete"
             | "item/agentMessage/finished" => self.complete_turn(session_id),
-            "item/started" => match params.and_then(|p| p.get("item")).and_then(Value::as_object) {
+            "item/started" => match params
+                .and_then(|p| p.get("item"))
+                .and_then(Value::as_object)
+            {
                 Some(item) => self.activity_for_item(item, ActivityStatus::InProgress, session_id),
                 None => Vec::new(),
             },
-            "item/completed" => match params.and_then(|p| p.get("item")).and_then(Value::as_object) {
+            "item/completed" => match params
+                .and_then(|p| p.get("item"))
+                .and_then(Value::as_object)
+            {
                 Some(item) => {
                     if item_is_agent_message(item) {
                         self.complete_turn(session_id)
@@ -550,6 +602,13 @@ impl CodexAccumulator {
                     session_id,
                 )]
             }
+            "account/rateLimits/updated" => {
+                self.rate_limits_refetch_requested = true;
+                match params.and_then(rate_limit_rows_from_params) {
+                    Some(rate_limit_rows) => vec![AgentEvent::AppRateLimitRows { rate_limit_rows }],
+                    None => Vec::new(),
+                }
+            }
             "error" => {
                 let details = params
                     .and_then(|p| p.get("error"))
@@ -567,7 +626,8 @@ impl CodexAccumulator {
                 }
             }
             "warning" | "guardianWarning" | "configWarning" | "deprecationNotice" => {
-                let message = codex_message(params).unwrap_or_else(|| UNKNOWN_WARNING_MESSAGE.to_string());
+                let message =
+                    codex_message(params).unwrap_or_else(|| UNKNOWN_WARNING_MESSAGE.to_string());
                 vec![self.stderr_owned(session_id, message)]
             }
             _ => Vec::new(),
@@ -593,6 +653,8 @@ impl CodexAccumulator {
         self.did_initialize = false;
         self.thread_start_request_id = None;
         self.thread_id = None;
+        self.rate_limit_request_ids.clear();
+        self.rate_limits_refetch_requested = false;
         self.is_turn_in_flight = false;
         self.active_permission_mode = PermissionMode::Standard;
         self.turn_start_request_ids.clear();
@@ -793,6 +855,97 @@ pub fn unsupported_server_request_error(id: Value, method: &str) -> Value {
     })
 }
 
+/// Parse the Codex app-server rate-limit payload into footer rows.
+///
+/// The canonical app-server shape is camelCase:
+/// `{ "rateLimits": { "primary": { "usedPercent": 12, ... } } }`, but older
+/// transcript/event payloads and tests use snake_case. Accept both spellings and
+/// only emit rows with enough information to compute `remainingPercent`.
+pub fn rate_limit_rows_from_value(value: &Value) -> Option<Vec<AgentSessionRateLimitRow>> {
+    let object = value.as_object()?;
+    let limits = object
+        .get("rateLimits")
+        .or_else(|| object.get("rate_limits"))
+        .unwrap_or(value);
+    let limits = limits.as_object()?;
+    if !limits.contains_key("primary") && !limits.contains_key("secondary") {
+        return None;
+    }
+    let mut rows = Vec::new();
+    if let Some(row) = limits
+        .get("primary")
+        .and_then(|value| rate_limit_row_from_value(value, RateLimitRole::Primary))
+    {
+        rows.push(row);
+    }
+    if let Some(row) = limits
+        .get("secondary")
+        .and_then(|value| rate_limit_row_from_value(value, RateLimitRole::Secondary))
+    {
+        rows.push(row);
+    }
+    Some(rows)
+}
+
+fn rate_limit_rows_from_result(
+    result: Option<&Map<String, Value>>,
+) -> Option<Vec<AgentSessionRateLimitRow>> {
+    let result = Value::Object(result?.clone());
+    rate_limit_rows_from_value(&result)
+}
+
+fn rate_limit_rows_from_params(
+    params: &Map<String, Value>,
+) -> Option<Vec<AgentSessionRateLimitRow>> {
+    rate_limit_rows_from_value(&Value::Object(params.clone()))
+}
+
+fn rate_limit_row_from_value(
+    value: &Value,
+    role: RateLimitRole,
+) -> Option<AgentSessionRateLimitRow> {
+    let object = value.as_object()?;
+    let used_percent = number_field(object, &["usedPercent", "used_percent", "used"]);
+    let remaining_percent = number_field(
+        object,
+        &["remainingPercent", "remaining_percent", "remaining"],
+    )
+    .or_else(|| used_percent.map(|used| 100.0 - used))?;
+    Some(AgentSessionRateLimitRow {
+        role,
+        remaining_percent: clamp_percent(remaining_percent),
+        used_percent: used_percent.map(clamp_percent),
+        window_duration_mins: number_field(
+            object,
+            &[
+                "windowDurationMins",
+                "window_duration_mins",
+                "windowMinutes",
+                "window_minutes",
+                "durationMins",
+                "duration_mins",
+            ],
+        ),
+        resets_at: number_field(object, &["resetsAt", "resets_at", "resetAt", "reset_at"]),
+    })
+}
+
+fn number_field(object: &Map<String, Value>, keys: &[&str]) -> Option<f64> {
+    keys.iter().find_map(|key| number_value(object.get(*key)?))
+}
+
+fn number_value(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(number) => number.as_f64().filter(|value| value.is_finite()),
+        Value::String(text) => text.parse::<f64>().ok().filter(|value| value.is_finite()),
+        _ => None,
+    }
+}
+
+fn clamp_percent(value: f64) -> f64 {
+    value.clamp(0.0, 100.0)
+}
+
 // ---------------------------------------------------------------------------
 // Pure helpers (ported from CodexAppServerSession statics)
 // ---------------------------------------------------------------------------
@@ -826,8 +979,10 @@ fn activity_status(item: &Map<String, Value>, default_status: ActivityStatus) ->
         .and_then(Value::as_str)
         .or_else(|| item.get("status").and_then(Value::as_str));
     match raw_status.map(str::to_ascii_lowercase).as_deref() {
-        Some("interrupted" | "canceled" | "cancelled" | "stopped" | "declined" | "denied"
-        | "rejected") => ActivityStatus::Stopped,
+        Some(
+            "interrupted" | "canceled" | "cancelled" | "stopped" | "declined" | "denied"
+            | "rejected",
+        ) => ActivityStatus::Stopped,
         Some("failed" | "failure" | "error") => ActivityStatus::Failed,
         Some("inprogress" | "in_progress" | "running" | "started") => ActivityStatus::InProgress,
         Some("completed" | "complete" | "succeeded" | "success") => ActivityStatus::Completed,
@@ -901,19 +1056,31 @@ fn file_change_summary(value: Option<&Value>) -> FileChangeSummary {
                     change_type: file_change_type(change),
                 };
             }
-            FileChangeSummary { path: None, change_type: None }
+            FileChangeSummary {
+                path: None,
+                change_type: None,
+            }
         }
         Some(Value::Array(changes)) => {
             if let Some(first) = changes.first().and_then(Value::as_object) {
                 let path = non_empty_string(first.get("path"))
                     .or_else(|| non_empty_string(first.get("filePath")))
                     .or_else(|| non_empty_string(first.get("name")));
-                FileChangeSummary { path, change_type: file_change_type(Some(first)) }
+                FileChangeSummary {
+                    path,
+                    change_type: file_change_type(Some(first)),
+                }
             } else {
-                FileChangeSummary { path: None, change_type: None }
+                FileChangeSummary {
+                    path: None,
+                    change_type: None,
+                }
             }
         }
-        _ => FileChangeSummary { path: None, change_type: None },
+        _ => FileChangeSummary {
+            path: None,
+            change_type: None,
+        },
     }
 }
 
@@ -991,7 +1158,10 @@ mod tests {
         assert_eq!(v["params"]["clientInfo"]["title"], json!("cmux"));
         assert_eq!(v["params"]["clientInfo"]["version"], json!("9.9.9"));
         assert_eq!(v["params"]["capabilities"]["experimentalApi"], json!(true));
-        assert_eq!(v["params"]["capabilities"]["requestAttestation"], json!(false));
+        assert_eq!(
+            v["params"]["capabilities"]["requestAttestation"],
+            json!(false)
+        );
     }
 
     #[test]
@@ -1029,14 +1199,20 @@ mod tests {
         assert_eq!(v["params"]["input"][0]["text_elements"], json!([]));
         assert_eq!(v["params"]["approvalPolicy"], json!("never"));
         assert_eq!(v["params"]["approvalsReviewer"], json!("user"));
-        assert_eq!(v["params"]["sandboxPolicy"]["type"], json!("dangerFullAccess"));
+        assert_eq!(
+            v["params"]["sandboxPolicy"]["type"],
+            json!("dangerFullAccess")
+        );
     }
 
     #[test]
     fn turn_start_standard_includes_null_overrides() {
         let v = turn_start_request(5, "t", "hi", PermissionMode::Standard);
         assert_eq!(v["params"]["approvalPolicy"], json!("never"));
-        assert!(v["params"].as_object().unwrap().contains_key("approvalsReviewer"));
+        assert!(v["params"]
+            .as_object()
+            .unwrap()
+            .contains_key("approvalsReviewer"));
         assert_eq!(v["params"]["approvalsReviewer"], Value::Null);
         assert_eq!(v["params"]["sandboxPolicy"], Value::Null);
     }
@@ -1121,7 +1297,10 @@ mod tests {
     #[test]
     fn turn_start_empty_text_rejected() {
         let mut a = established();
-        assert_eq!(a.turn_start("", PermissionMode::Standard), Err(SubmitRejection::EmptyText));
+        assert_eq!(
+            a.turn_start("", PermissionMode::Standard),
+            Err(SubmitRejection::EmptyText)
+        );
     }
 
     #[test]
@@ -1142,7 +1321,10 @@ mod tests {
     fn turn_completion_notification_resets_turn_state() {
         let mut a = established();
         a.turn_start("do it", PermissionMode::FullAccess).unwrap();
-        let out = a.consume_line(r#"{"method":"turn/completed","params":{"threadId":"thread-1"}}"#, "s");
+        let out = a.consume_line(
+            r#"{"method":"turn/completed","params":{"threadId":"thread-1"}}"#,
+            "s",
+        );
         assert_eq!(
             out,
             vec![AgentEvent::ProviderTurnComplete {
@@ -1250,7 +1432,12 @@ mod tests {
             "s",
         );
         match &created[0] {
-            AgentEvent::ProviderActivity { action, detail, kind, .. } => {
+            AgentEvent::ProviderActivity {
+                action,
+                detail,
+                kind,
+                ..
+            } => {
                 assert_eq!(*kind, ActivityKind::FileChange);
                 assert_eq!(action, "Created");
                 assert_eq!(detail.as_deref(), Some("Created.swift"));
@@ -1263,7 +1450,12 @@ mod tests {
             "s",
         );
         match &updated[0] {
-            AgentEvent::ProviderActivity { action, detail, status, .. } => {
+            AgentEvent::ProviderActivity {
+                action,
+                detail,
+                status,
+                ..
+            } => {
                 // patchUpdated is always inProgress -> delete+inProgress = "Deleting".
                 assert_eq!(*status, ActivityStatus::InProgress);
                 assert_eq!(action, "Deleting");
@@ -1281,7 +1473,12 @@ mod tests {
             "s",
         );
         match &cmd[0] {
-            AgentEvent::ProviderActivity { status, action, kind, .. } => {
+            AgentEvent::ProviderActivity {
+                status,
+                action,
+                kind,
+                ..
+            } => {
                 assert_eq!(*kind, ActivityKind::Command);
                 assert_eq!(*status, ActivityStatus::Stopped);
                 assert_eq!(action, "Stopped");
@@ -1294,7 +1491,12 @@ mod tests {
             "s",
         );
         match &file[0] {
-            AgentEvent::ProviderActivity { status, action, kind, .. } => {
+            AgentEvent::ProviderActivity {
+                status,
+                action,
+                kind,
+                ..
+            } => {
                 assert_eq!(*kind, ActivityKind::FileChange);
                 assert_eq!(*status, ActivityStatus::Stopped);
                 assert_eq!(action, "Stopped");
@@ -1311,7 +1513,12 @@ mod tests {
             "s",
         );
         match &out[0] {
-            AgentEvent::ProviderActivity { status, action, detail, .. } => {
+            AgentEvent::ProviderActivity {
+                status,
+                action,
+                detail,
+                ..
+            } => {
                 assert_eq!(*status, ActivityStatus::InProgress);
                 assert_eq!(action, "Running");
                 assert_eq!(detail.as_deref(), Some("sleep 5"));
@@ -1328,7 +1535,13 @@ mod tests {
             "s",
         );
         match &out[0] {
-            AgentEvent::ProviderActivity { output_delta, detail, action, status, .. } => {
+            AgentEvent::ProviderActivity {
+                output_delta,
+                detail,
+                action,
+                status,
+                ..
+            } => {
                 assert_eq!(*status, ActivityStatus::InProgress);
                 assert_eq!(action, "Running");
                 assert_eq!(output_delta.as_deref(), Some("line of output"));
@@ -1427,7 +1640,10 @@ mod tests {
         let mut a = established();
         let turn = a.turn_start("go", PermissionMode::FullAccess).unwrap();
         let turn_id = turn["id"].as_i64().unwrap();
-        let out = a.consume_line(&format!(r#"{{"id":{turn_id},"error":{{"message":"rejected"}}}}"#), "s");
+        let out = a.consume_line(
+            &format!(r#"{{"id":{turn_id},"error":{{"message":"rejected"}}}}"#),
+            "s",
+        );
         match &out[0] {
             AgentEvent::ProviderOutput { stream, text, .. } => {
                 assert_eq!(*stream, ProviderStream::Stderr);
@@ -1502,7 +1718,9 @@ mod tests {
     #[test]
     fn unknown_notification_is_ignored() {
         let mut a = acc();
-        assert!(a.consume_line(r#"{"method":"item/reasoning/delta","params":{}}"#, "s").is_empty());
+        assert!(a
+            .consume_line(r#"{"method":"item/reasoning/delta","params":{}}"#, "s")
+            .is_empty());
     }
 
     #[test]
@@ -1553,10 +1771,8 @@ mod tests {
     fn permission_approval_echoes_permissions_only_for_full_access() {
         let mut a = established();
         a.turn_start("go", PermissionMode::FullAccess).unwrap();
-        let params: Map<String, Value> = serde_json::from_str(
-            r#"{"permissions":{"network":{"enabled":true}}}"#,
-        )
-        .unwrap();
+        let params: Map<String, Value> =
+            serde_json::from_str(r#"{"permissions":{"network":{"enabled":true}}}"#).unwrap();
         let response = a
             .approval_response("item/permissions/requestApproval", Some(&params))
             .unwrap();
@@ -1581,6 +1797,37 @@ mod tests {
         assert_eq!(err["error"]["code"], json!(-32601));
     }
 
+    #[test]
+    fn rate_limit_rows_parse_camel_and_snake_payloads() {
+        let camel = json!({
+            "rateLimits": {
+                "primary": { "usedPercent": 12.5, "windowDurationMins": 300, "resetsAt": 1_850_000_000 },
+                "secondary": { "remainingPercent": 82, "windowDurationMins": 10_080 },
+            }
+        });
+        let rows = rate_limit_rows_from_value(&camel).expect("camel rows");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].role, RateLimitRole::Primary);
+        assert_eq!(rows[0].remaining_percent, 87.5);
+        assert_eq!(rows[0].used_percent, Some(12.5));
+        assert_eq!(rows[0].window_duration_mins, Some(300.0));
+        assert_eq!(rows[0].resets_at, Some(1_850_000_000.0));
+        assert_eq!(rows[1].role, RateLimitRole::Secondary);
+        assert_eq!(rows[1].remaining_percent, 82.0);
+
+        let snake = json!({
+            "rate_limits": {
+                "primary": { "used_percent": "101", "window_minutes": 60, "resets_at": "1850001000" },
+            }
+        });
+        let rows = rate_limit_rows_from_value(&snake).expect("snake rows");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].remaining_percent, 0.0);
+        assert_eq!(rows[0].used_percent, Some(100.0));
+        assert_eq!(rows[0].window_duration_mins, Some(60.0));
+        assert_eq!(rows[0].resets_at, Some(1_850_001_000.0));
+    }
+
     // ---- backpressure predicate ----
 
     #[test]
@@ -1601,7 +1848,8 @@ mod tests {
     #[test]
     fn full_turn_flow_streams_output_then_completes() {
         let mut a = established();
-        a.turn_start("what is 2+2", PermissionMode::Standard).unwrap();
+        a.turn_start("what is 2+2", PermissionMode::Standard)
+            .unwrap();
         let mut text = String::new();
         let mut completed = false;
         let lines = [
@@ -1613,9 +1861,11 @@ mod tests {
         for line in lines {
             for ev in a.consume_line(line, "s") {
                 match ev {
-                    AgentEvent::ProviderOutput { text: t, stream: ProviderStream::Stdout, .. } => {
-                        text.push_str(&t)
-                    }
+                    AgentEvent::ProviderOutput {
+                        text: t,
+                        stream: ProviderStream::Stdout,
+                        ..
+                    } => text.push_str(&t),
                     AgentEvent::ProviderTurnComplete { .. } => completed = true,
                     other => panic!("unexpected event {other:?}"),
                 }

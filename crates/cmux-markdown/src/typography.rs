@@ -241,7 +241,10 @@ mod tests {
     fn font_family_css_value_escaping() {
         assert_eq!(font_family::css_value(""), None);
         assert_eq!(font_family::css_value("   "), None);
-        assert_eq!(font_family::css_value("Comic Sans").as_deref(), Some("\"Comic Sans\""));
+        assert_eq!(
+            font_family::css_value("Comic Sans").as_deref(),
+            Some("\"Comic Sans\"")
+        );
         assert_eq!(
             font_family::css_value("say \"hi\"").as_deref(),
             Some("\"say \\\"hi\\\"\"")
@@ -256,7 +259,10 @@ mod tests {
     fn font_family_store_value() {
         assert_eq!(font_family::store_value(""), None);
         assert_eq!(font_family::store_value("  "), None);
-        assert_eq!(font_family::store_value("  Inter  ").as_deref(), Some("Inter"));
+        assert_eq!(
+            font_family::store_value("  Inter  ").as_deref(),
+            Some("Inter")
+        );
     }
 
     #[test]
@@ -267,7 +273,14 @@ mod tests {
         assert_eq!(applied.max_width, 320);
 
         let reset = MarkdownTypography::reset_to_builtin();
-        assert_eq!(reset, MarkdownTypography { font_size: 15, font_family: String::new(), max_width: 980 });
+        assert_eq!(
+            reset,
+            MarkdownTypography {
+                font_size: 15,
+                font_family: String::new(),
+                max_width: 980
+            }
+        );
 
         // Empty family in apply() collapses to the System default.
         let no_font = MarkdownTypography::apply(15.0, "  ", 980.0);

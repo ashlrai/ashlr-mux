@@ -52,9 +52,67 @@ pub async fn run_rpc(
         .await
         .map_err(|error| CliError::new(format!("failed to read response: {error}")))?
         .ok_or_else(|| CliError::new("connection closed before a response"))?;
-    let raw = String::from_utf8(frame)
-        .map_err(|_| CliError::new("response was not valid UTF-8"))?;
+    let raw =
+        String::from_utf8(frame).map_err(|_| CliError::new("response was not valid UTF-8"))?;
     interpret_v2_response(&raw).map_err(|error| CliError::new(error.to_string()))
+}
+
+/// Run a v2 request that takes over the connection and returns raw NDJSON
+/// stream frames instead of a single JSON-RPC response envelope.
+pub async fn stream_rpc(
+    socket_addr: &str,
+    password: Option<&str>,
+    method: &str,
+    params: &serde_json::Value,
+) -> Result<Vec<String>, CliError> {
+    let mut frames = Vec::new();
+    stream_rpc_with_handler(socket_addr, password, method, params, |frame| {
+        frames.push(frame.to_string());
+        Ok(true)
+    })
+    .await?;
+    Ok(frames)
+}
+
+/// Run a streaming v2 request and invoke `on_frame` as each raw NDJSON frame is
+/// received. Returning `Ok(false)` stops reading and closes the connection.
+pub async fn stream_rpc_with_handler<F>(
+    socket_addr: &str,
+    password: Option<&str>,
+    method: &str,
+    params: &serde_json::Value,
+    mut on_frame: F,
+) -> Result<(), CliError>
+where
+    F: FnMut(&str) -> Result<bool, CliError>,
+{
+    let client = connect_pipe(socket_addr, CONNECT_TIMEOUT)
+        .await
+        .map_err(|error| CliError::new(format!("could not connect to {socket_addr}: {error}")))?;
+    let (mut reader, mut writer) = tokio::io::split(client);
+
+    if let Some(password) = password {
+        authenticate_client(&mut reader, &mut writer, password)
+            .await
+            .map_err(|error| CliError::new(format!("socket authentication failed: {error}")))?;
+    }
+
+    let request = build_v2_request(method, params);
+    write_frame(&mut writer, &request)
+        .await
+        .map_err(|error| CliError::new(format!("failed to send request: {error}")))?;
+
+    while let Some(frame) = read_frame(&mut reader, MAX_RPC_FRAME_BYTES)
+        .await
+        .map_err(|error| CliError::new(format!("failed to read stream frame: {error}")))?
+    {
+        let raw = String::from_utf8(frame)
+            .map_err(|_| CliError::new("stream frame was not valid UTF-8"))?;
+        if !on_frame(&raw)? {
+            break;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -62,15 +120,36 @@ mod tests {
     use super::*;
     use cmux_ipc::{
         control_pipe_path, serve_named_pipe, serve_named_pipe_authenticated, ControlCallResult,
-        ControlRequest, JsonValue, PasswordAuthGate, PasswordVerifier,
+        ControlRequest, ControlRequestHandler, ControlStream, JsonValue, PasswordAuthGate,
+        PasswordVerifier,
     };
 
     /// A handler that echoes the request method back as `result.method`, so a
     /// round-trip can assert the request reached the server intact.
     fn echo_method(request: ControlRequest) -> ControlCallResult {
         let mut result = serde_json::Map::new();
-        result.insert("method".to_owned(), serde_json::Value::String(request.method));
+        result.insert(
+            "method".to_owned(),
+            serde_json::Value::String(request.method),
+        );
         ControlCallResult::Ok(JsonValue::Object(result))
+    }
+
+    struct StreamHandler;
+
+    impl ControlRequestHandler for StreamHandler {
+        fn handle(&mut self, request: ControlRequest) -> ControlCallResult {
+            echo_method(request)
+        }
+
+        fn handle_stream(&mut self, request: ControlRequest) -> Option<ControlStream> {
+            (request.method == "events.stream").then(|| {
+                ControlStream::Frames(vec![
+                    r#"{"type":"ack"}"#.to_string(),
+                    r#"{"type":"heartbeat"}"#.to_string(),
+                ])
+            })
+        }
     }
 
     fn test_addr(tag: &str) -> String {
@@ -97,6 +176,13 @@ mod tests {
         });
     }
 
+    fn spawn_stream(addr: &str) {
+        let addr = addr.to_owned();
+        tokio::spawn(async move {
+            let _ = serve_named_pipe(&addr, || StreamHandler).await;
+        });
+    }
+
     /// Spawn an auth-gated echo server (password `s3cret`) at `addr`.
     fn spawn_auth_echo(addr: &str) {
         let addr = addr.to_owned();
@@ -114,6 +200,22 @@ mod tests {
             .await
             .expect("rpc");
         assert_eq!(result, serde_json::json!({"method": "surface.list"}));
+    }
+
+    #[tokio::test]
+    async fn stream_rpc_collects_raw_frames_until_eof() {
+        let addr = test_addr("stream");
+        spawn_stream(&addr);
+        let frames = stream_rpc(&addr, None, "events.stream", &serde_json::json!({}))
+            .await
+            .expect("stream");
+        assert_eq!(
+            frames,
+            vec![
+                r#"{"type":"ack"}"#.to_string(),
+                r#"{"type":"heartbeat"}"#.to_string()
+            ]
+        );
     }
 
     #[tokio::test]
@@ -135,6 +237,10 @@ mod tests {
         let error = run_rpc(&addr, None, "ping", &serde_json::json!({}))
             .await
             .unwrap_err();
-        assert!(error.message.starts_with("auth_required:"), "got: {}", error.message);
+        assert!(
+            error.message.starts_with("auth_required:"),
+            "got: {}",
+            error.message
+        );
     }
 }

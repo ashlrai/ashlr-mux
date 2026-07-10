@@ -204,9 +204,13 @@ mod tests {
     /// wins over the context fallback and is whitespace-collapsed.
     #[test]
     fn prompt_submit_extracts_tool_input_message() {
-        let event = WorkstreamEvent::new("opencode-session", HookEventName::UserPromptSubmit, "opencode")
-            .with_tool_input_json(r#"{"prompt":"  shipped from feed\npath  "}"#)
-            .with_context(context_with_user_message("fallback message"));
+        let event = WorkstreamEvent::new(
+            "opencode-session",
+            HookEventName::UserPromptSubmit,
+            "opencode",
+        )
+        .with_tool_input_json(r#"{"prompt":"  shipped from feed\npath  "}"#)
+        .with_context(context_with_user_message("fallback message"));
         assert_eq!(
             event.submitted_prompt_message().as_deref(),
             Some("shipped from feed path")
@@ -220,7 +224,10 @@ mod tests {
     fn prompt_submit_falls_back_to_context_message() {
         let event = WorkstreamEvent::new("agent-session", HookEventName::UserPromptSubmit, "codex")
             .with_context(context_with_user_message("from context"));
-        assert_eq!(event.submitted_prompt_message().as_deref(), Some("from context"));
+        assert_eq!(
+            event.submitted_prompt_message().as_deref(),
+            Some("from context")
+        );
     }
 
     /// `testFeedPromptSubmitSkipsBlankContextBeforeExtraFields`
@@ -228,8 +235,9 @@ mod tests {
     /// empty is skipped and the extra-fields `message` is used instead.
     #[test]
     fn prompt_submit_skips_blank_context_before_extra_fields() {
-        let mut event = WorkstreamEvent::new("agent-session", HookEventName::UserPromptSubmit, "codex")
-            .with_context(context_with_user_message(" \n "));
+        let mut event =
+            WorkstreamEvent::new("agent-session", HookEventName::UserPromptSubmit, "codex")
+                .with_context(context_with_user_message(" \n "));
         event.extra_fields_json = Some(r#"{"message":"from extra fields"}"#.to_string());
         assert_eq!(
             event.submitted_prompt_message().as_deref(),
@@ -243,7 +251,10 @@ mod tests {
     fn stop_extracts_assistant_final_message_from_context() {
         let event = WorkstreamEvent::new("agent-session", HookEventName::Stop, "codex")
             .with_context(context_with_assistant_preamble("  finished\n\nthis  "));
-        assert_eq!(event.assistant_final_message().as_deref(), Some("finished this"));
+        assert_eq!(
+            event.assistant_final_message().as_deref(),
+            Some("finished this")
+        );
     }
 
     /// `testFeedStopEventExtractsAssistantFinalMessageFromExtraFields`
@@ -288,7 +299,10 @@ mod tests {
     fn prompt_submit_extracts_from_nested_notification() {
         let event = WorkstreamEvent::new("s", HookEventName::UserPromptSubmit, "codex")
             .with_tool_input_json(r#"{"notification":{"text":"nested prompt"}}"#);
-        assert_eq!(event.submitted_prompt_message().as_deref(), Some("nested prompt"));
+        assert_eq!(
+            event.submitted_prompt_message().as_deref(),
+            Some("nested prompt")
+        );
     }
 
     /// Unparseable tool-input JSON falls back to normalizing the raw string
@@ -297,7 +311,10 @@ mod tests {
     fn prompt_submit_normalizes_unparseable_tool_input() {
         let event = WorkstreamEvent::new("s", HookEventName::UserPromptSubmit, "codex")
             .with_tool_input_json("  plain   text  ");
-        assert_eq!(event.submitted_prompt_message().as_deref(), Some("plain text"));
+        assert_eq!(
+            event.submitted_prompt_message().as_deref(),
+            Some("plain text")
+        );
     }
 
     /// A bare JSON string tool input (`.fragmentsAllowed`) normalizes its
@@ -306,7 +323,10 @@ mod tests {
     fn prompt_submit_normalizes_json_string_fragment() {
         let event = WorkstreamEvent::new("s", HookEventName::UserPromptSubmit, "codex")
             .with_tool_input_json(r#""  json  string  ""#);
-        assert_eq!(event.submitted_prompt_message().as_deref(), Some("json string"));
+        assert_eq!(
+            event.submitted_prompt_message().as_deref(),
+            Some("json string")
+        );
     }
 
     /// A JSON number/array (neither string nor object) yields `None` from that
@@ -316,7 +336,10 @@ mod tests {
         let event = WorkstreamEvent::new("s", HookEventName::UserPromptSubmit, "codex")
             .with_tool_input_json("[1, 2, 3]")
             .with_context(context_with_user_message("context wins"));
-        assert_eq!(event.submitted_prompt_message().as_deref(), Some("context wins"));
+        assert_eq!(
+            event.submitted_prompt_message().as_deref(),
+            Some("context wins")
+        );
     }
 
     /// `conversationMessagePreview` collapses whitespace and returns the whole

@@ -8,6 +8,7 @@ license.workspace = true
 path = "src/lib.rs"
 
 [dependencies]
+cmux-browser-history = { path = "../cmux-browser-history" }
 cmux-workspaces = { path = "../cmux-workspaces" }
 regex.workspace = true
 serde.workspace = true
@@ -15,6 +16,9 @@ serde_json.workspace = true
 thiserror.workspace = true
 ts-rs = { version = "10.1", optional = true }
 uuid.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = ["Win32_UI_Shell"] }
 
 [features]
 # Opt-in feature that derives `ts_rs::TS` on the serde wire models so the

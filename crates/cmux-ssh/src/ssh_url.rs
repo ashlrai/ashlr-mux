@@ -303,7 +303,9 @@ fn parse_standard_ssh_url(
         return Err(CmuxSSHURLParseError::ConflictingDestinationParameters);
     }
     if components.password_present {
-        return Err(CmuxSSHURLParseError::UnsupportedParameter("password".to_string()));
+        return Err(CmuxSSHURLParseError::UnsupportedParameter(
+            "password".to_string(),
+        ));
     }
 
     let query_items = &components.query_items;
@@ -850,9 +852,7 @@ impl ParsedUrl {
 
         // Authority is present iff the remainder begins with "//".
         let (authority, after_authority) = if let Some(after) = rest.strip_prefix("//") {
-            let end = after
-                .find(['/', '?', '#'])
-                .unwrap_or(after.len());
+            let end = after.find(['/', '?', '#']).unwrap_or(after.len());
             (Some(&after[..end]), &after[end..])
         } else {
             (None, rest)

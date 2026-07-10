@@ -170,8 +170,8 @@ impl DiffSessionRegistry {
                 return Err(DiffSessionError::DuplicateEntry);
             }
 
-            let canonical = std::fs::canonicalize(&file.file_path)
-                .unwrap_or_else(|_| file.file_path.clone());
+            let canonical =
+                std::fs::canonicalize(&file.file_path).unwrap_or_else(|_| file.file_path.clone());
             by_path.insert(
                 file.request_path.clone(),
                 RegisteredFile {
@@ -186,7 +186,10 @@ impl DiffSessionRegistry {
         Self::prune_expired(&mut sessions, self.max_age, now);
         sessions.insert(
             token.to_string(),
-            Session { files_by_path: by_path, created_at: now },
+            Session {
+                files_by_path: by_path,
+                created_at: now,
+            },
         );
         Ok(())
     }
@@ -398,9 +401,15 @@ mod tests {
     #[test]
     fn token_charset() {
         assert!(DiffSessionRegistry::is_valid_token("abcABC012-def-GHI789"));
-        assert!(!DiffSessionRegistry::is_valid_token("has spaces in it xxxx"));
-        assert!(!DiffSessionRegistry::is_valid_token("under_score_not_allow"));
-        assert!(!DiffSessionRegistry::is_valid_token("slash/not/allowed/xxx"));
+        assert!(!DiffSessionRegistry::is_valid_token(
+            "has spaces in it xxxx"
+        ));
+        assert!(!DiffSessionRegistry::is_valid_token(
+            "under_score_not_allow"
+        ));
+        assert!(!DiffSessionRegistry::is_valid_token(
+            "slash/not/allowed/xxx"
+        ));
     }
 
     // --- request path traversal ---
@@ -408,22 +417,24 @@ mod tests {
     #[test]
     fn request_path_accepts_normal_paths() {
         assert!(DiffSessionRegistry::is_valid_request_path("/index.html"));
-        assert!(DiffSessionRegistry::is_valid_request_path("/assets/app.mjs"));
+        assert!(DiffSessionRegistry::is_valid_request_path(
+            "/assets/app.mjs"
+        ));
         assert!(DiffSessionRegistry::is_valid_request_path("/a/b/c.patch"));
     }
 
     #[test]
     fn request_path_rejects_traversal_and_malformed() {
         for bad in [
-            "/",            // no real component
-            "relative",     // not absolute
-            "//double",     // empty interior component
-            "/a//b",        // empty interior component
-            "/a/",          // empty trailing component
-            "/a/../b",      // parent traversal
-            "/a/./b",       // dot segment
-            "/..",          // parent traversal at root
-            "/a\\b",        // backslash
+            "/",        // no real component
+            "relative", // not absolute
+            "//double", // empty interior component
+            "/a//b",    // empty interior component
+            "/a/",      // empty trailing component
+            "/a/../b",  // parent traversal
+            "/a/./b",   // dot segment
+            "/..",      // parent traversal at root
+            "/a\\b",    // backslash
         ] {
             assert!(
                 !DiffSessionRegistry::is_valid_request_path(bad),
@@ -441,12 +452,30 @@ mod tests {
         assert!(DiffSessionRegistry::is_allowed_mime_type("text/x-diff"));
         assert!(!DiffSessionRegistry::is_allowed_mime_type("image/png"));
 
-        assert!(DiffSessionRegistry::path_extension_matches_mime_type("/a.html", "text/html"));
-        assert!(!DiffSessionRegistry::path_extension_matches_mime_type("/a.js", "text/html"));
-        assert!(DiffSessionRegistry::path_extension_matches_mime_type("/a.mjs", "text/javascript"));
-        assert!(DiffSessionRegistry::path_extension_matches_mime_type("/a.js", "text/javascript"));
-        assert!(DiffSessionRegistry::path_extension_matches_mime_type("/a.patch", "text/x-diff"));
-        assert!(!DiffSessionRegistry::path_extension_matches_mime_type("/a.patch", "text/html"));
+        assert!(DiffSessionRegistry::path_extension_matches_mime_type(
+            "/a.html",
+            "text/html"
+        ));
+        assert!(!DiffSessionRegistry::path_extension_matches_mime_type(
+            "/a.js",
+            "text/html"
+        ));
+        assert!(DiffSessionRegistry::path_extension_matches_mime_type(
+            "/a.mjs",
+            "text/javascript"
+        ));
+        assert!(DiffSessionRegistry::path_extension_matches_mime_type(
+            "/a.js",
+            "text/javascript"
+        ));
+        assert!(DiffSessionRegistry::path_extension_matches_mime_type(
+            "/a.patch",
+            "text/x-diff"
+        ));
+        assert!(!DiffSessionRegistry::path_extension_matches_mime_type(
+            "/a.patch",
+            "text/html"
+        ));
     }
 
     // --- register round-trip + lookups ---
@@ -458,8 +487,12 @@ mod tests {
         let reg = DiffSessionRegistry::new(&root.path);
         let now = SystemTime::now();
 
-        reg.register("tok-abcdef0123456789", vec![entry("/index.html", f.clone(), "text/html")], now)
-            .expect("register");
+        reg.register(
+            "tok-abcdef0123456789",
+            vec![entry("/index.html", f.clone(), "text/html")],
+            now,
+        )
+        .expect("register");
 
         assert!(reg.has_active_session("tok-abcdef0123456789", now));
         let got = reg
@@ -468,7 +501,9 @@ mod tests {
         assert_eq!(got.request_path, "/index.html");
         assert_eq!(got.mime_type, "text/html");
         // Miss on unknown path / unknown token.
-        assert!(reg.registered_file("tok-abcdef0123456789", "/missing.html", now).is_none());
+        assert!(reg
+            .registered_file("tok-abcdef0123456789", "/missing.html", now)
+            .is_none());
         assert!(!reg.has_active_session("other-token-1234567", now));
     }
 
@@ -488,7 +523,11 @@ mod tests {
         let f = root.file("index.html", "x");
         let reg = DiffSessionRegistry::new(&root.path);
         let err = reg
-            .register("short", vec![entry("/index.html", f, "text/html")], SystemTime::now())
+            .register(
+                "short",
+                vec![entry("/index.html", f, "text/html")],
+                SystemTime::now(),
+            )
             .unwrap_err();
         assert_eq!(err, DiffSessionError::InvalidToken);
     }
@@ -573,8 +612,12 @@ mod tests {
         let f = root.file("index.html", "x");
         let reg = DiffSessionRegistry::with_max_age(&root.path, Duration::from_secs(24 * 60 * 60));
         let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
-        reg.register("tok-abcdef0123456789", vec![entry("/index.html", f, "text/html")], t0)
-            .expect("register");
+        reg.register(
+            "tok-abcdef0123456789",
+            vec![entry("/index.html", f, "text/html")],
+            t0,
+        )
+        .expect("register");
 
         let within = t0 + Duration::from_secs(23 * 60 * 60);
         assert!(reg.has_active_session("tok-abcdef0123456789", within));
@@ -582,7 +625,9 @@ mod tests {
         let after = t0 + Duration::from_secs(25 * 60 * 60);
         assert!(!reg.has_active_session("tok-abcdef0123456789", after));
         // And a lookup after expiry misses too.
-        assert!(reg.registered_file("tok-abcdef0123456789", "/index.html", after).is_none());
+        assert!(reg
+            .registered_file("tok-abcdef0123456789", "/index.html", after)
+            .is_none());
     }
 
     #[test]
@@ -592,13 +637,25 @@ mod tests {
         let b = root.file("b.html", "y");
         let reg = DiffSessionRegistry::new(&root.path);
         let now = SystemTime::now();
-        reg.register("tok-abcdef0123456789", vec![entry("/a.html", a, "text/html")], now)
-            .expect("register a");
-        reg.register("tok-abcdef0123456789", vec![entry("/b.html", b, "text/html")], now)
-            .expect("register b");
+        reg.register(
+            "tok-abcdef0123456789",
+            vec![entry("/a.html", a, "text/html")],
+            now,
+        )
+        .expect("register a");
+        reg.register(
+            "tok-abcdef0123456789",
+            vec![entry("/b.html", b, "text/html")],
+            now,
+        )
+        .expect("register b");
         // Old path is gone, new path is present.
-        assert!(reg.registered_file("tok-abcdef0123456789", "/a.html", now).is_none());
-        assert!(reg.registered_file("tok-abcdef0123456789", "/b.html", now).is_some());
+        assert!(reg
+            .registered_file("tok-abcdef0123456789", "/a.html", now)
+            .is_none());
+        assert!(reg
+            .registered_file("tok-abcdef0123456789", "/b.html", now)
+            .is_some());
     }
 
     // --- manifest session-restore ---

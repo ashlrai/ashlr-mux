@@ -501,7 +501,9 @@ mod tests {
             PixelRect::new(0.0, 0.0, 100.0, 100.0),
             &[(Uuid::new_v4(), PixelRect::new(0.0, 0.0, 50.0, 50.0))],
         );
-        assert!(TmuxPaneOverlayGeometry::has_renderable_geometry(&renderable));
+        assert!(TmuxPaneOverlayGeometry::has_renderable_geometry(
+            &renderable
+        ));
 
         let tiny_container = snapshot(
             PixelRect::new(0.0, 0.0, 1.0, 1.0),

@@ -229,10 +229,8 @@ impl Serialize for WorkstreamEvent {
         map.serialize_entry("_received_at", &self.received_at)?;
 
         // Dynamic extra fields (skip any that collide with a known key).
-        if let Some(Value::Object(extra)) = self
-            .extra_fields_json
-            .as_deref()
-            .and_then(json_from_string)
+        if let Some(Value::Object(extra)) =
+            self.extra_fields_json.as_deref().and_then(json_from_string)
         {
             for (key, value) in &extra {
                 if !KNOWN_KEYS.contains(&key.as_str()) {
@@ -282,7 +280,10 @@ impl<'de> Deserialize<'de> for WorkstreamEvent {
         };
 
         let ppid = optional_i64(&obj, "_ppid")?;
-        let received_at = obj.get("_received_at").and_then(Value::as_f64).unwrap_or(0.0);
+        let received_at = obj
+            .get("_received_at")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
 
         // Capture unknown keys into a sorted extra-fields object string.
         let mut extra: Map<String, Value> = Map::new();
@@ -317,7 +318,10 @@ impl<'de> Deserialize<'de> for WorkstreamEvent {
     }
 }
 
-fn require_str<E: serde::de::Error>(obj: &Map<String, Value>, key: &'static str) -> Result<String, E> {
+fn require_str<E: serde::de::Error>(
+    obj: &Map<String, Value>,
+    key: &'static str,
+) -> Result<String, E> {
     obj.get(key)
         .and_then(Value::as_str)
         .map(str::to_string)
@@ -330,7 +334,10 @@ fn require_str<E: serde::de::Error>(obj: &Map<String, Value>, key: &'static str)
 /// silently dropped — Swift's `decodeIfPresent` throws
 /// `DecodingError.typeMismatch` and fails the whole decode, so we surface a
 /// custom error here rather than coercing to `None`.
-fn optional_str<E: serde::de::Error>(obj: &Map<String, Value>, key: &str) -> Result<Option<String>, E> {
+fn optional_str<E: serde::de::Error>(
+    obj: &Map<String, Value>,
+    key: &str,
+) -> Result<Option<String>, E> {
     match obj.get(key) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(s)) => Ok(Some(s.clone())),
@@ -345,12 +352,16 @@ fn optional_str<E: serde::de::Error>(obj: &Map<String, Value>, key: &str) -> Res
 /// present, non-null value that is not representable as an `Int` throws
 /// `DecodingError.typeMismatch` in Swift, so we reject it instead of coercing to
 /// `None`.
-fn optional_i64<E: serde::de::Error>(obj: &Map<String, Value>, key: &str) -> Result<Option<i64>, E> {
+fn optional_i64<E: serde::de::Error>(
+    obj: &Map<String, Value>,
+    key: &str,
+) -> Result<Option<i64>, E> {
     match obj.get(key) {
         None | Some(Value::Null) => Ok(None),
-        Some(v) => v.as_i64().map(Some).ok_or_else(|| {
-            E::custom(format!("type mismatch decoding optional int field {key:?}"))
-        }),
+        Some(v) => v
+            .as_i64()
+            .map(Some)
+            .ok_or_else(|| E::custom(format!("type mismatch decoding optional int field {key:?}"))),
     }
 }
 
@@ -388,11 +399,17 @@ mod tests {
         );
         assert_eq!(event.tool_name.as_deref(), Some("Write"));
         assert_eq!(
-            event.context.as_ref().and_then(|c| c.last_user_message.as_deref()),
+            event
+                .context
+                .as_ref()
+                .and_then(|c| c.last_user_message.as_deref()),
             Some("write a file")
         );
         assert_eq!(
-            event.context.as_ref().and_then(|c| c.permission_mode.as_deref()),
+            event
+                .context
+                .as_ref()
+                .and_then(|c| c.permission_mode.as_deref()),
             Some("plan")
         );
         assert_eq!(event.request_id.as_deref(), Some("req-1"));
@@ -431,16 +448,21 @@ mod tests {
         assert!(plan["plan"].as_str().unwrap().contains("step1"));
         let ctx = back.context.unwrap();
         assert_eq!(ctx.last_user_message.as_deref(), Some("make a plan"));
-        assert_eq!(ctx.assistant_preamble.as_deref(), Some("I will make a short plan."));
-        assert_eq!(ctx.allowed_prompts.first().map(|p| p.prompt.as_str()), Some("run tests"));
+        assert_eq!(
+            ctx.assistant_preamble.as_deref(),
+            Some("I will make a short plan.")
+        );
+        assert_eq!(
+            ctx.allowed_prompts.first().map(|p| p.prompt.as_str()),
+            Some("run tests")
+        );
         assert_eq!(ctx.permission_mode.as_deref(), Some("plan"));
     }
 
     /// `missingOptionals` (WorkstreamEventTests.swift:81-94).
     #[test]
     fn missing_optionals() {
-        let json =
-            r#"{"session_id": "s", "hook_event_name": "SessionStart", "_source": "claude"}"#;
+        let json = r#"{"session_id": "s", "hook_event_name": "SessionStart", "_source": "claude"}"#;
         let event: WorkstreamEvent = serde_json::from_str(json).unwrap();
         assert_eq!(event.cwd, None);
         assert_eq!(event.tool_name, None);
@@ -458,7 +480,8 @@ mod tests {
     /// (`WorkstreamEvent.swift:96`).
     #[test]
     fn rejects_wrong_typed_optional_string() {
-        let json = r#"{"session_id":"s","hook_event_name":"SessionStart","_source":"claude","cwd":123}"#;
+        let json =
+            r#"{"session_id":"s","hook_event_name":"SessionStart","_source":"claude","cwd":123}"#;
         let err = serde_json::from_str::<WorkstreamEvent>(json).unwrap_err();
         assert!(
             err.to_string().contains("type mismatch"),
@@ -471,8 +494,7 @@ mod tests {
     /// (`WorkstreamEvent.swift:100`). A present string value must fail the decode.
     #[test]
     fn rejects_wrong_typed_optional_int() {
-        let json =
-            r#"{"session_id":"s","hook_event_name":"SessionStart","_source":"claude","_ppid":"1234"}"#;
+        let json = r#"{"session_id":"s","hook_event_name":"SessionStart","_source":"claude","_ppid":"1234"}"#;
         let err = serde_json::from_str::<WorkstreamEvent>(json).unwrap_err();
         assert!(
             err.to_string().contains("type mismatch"),
@@ -524,7 +546,8 @@ mod tests {
         }
         "#;
         let event: WorkstreamEvent = serde_json::from_str(json).unwrap();
-        let extra: Value = serde_json::from_str(event.extra_fields_json.as_deref().unwrap()).unwrap();
+        let extra: Value =
+            serde_json::from_str(event.extra_fields_json.as_deref().unwrap()).unwrap();
         let future = &extra["future_field"];
         assert_eq!(future["enabled"], Value::Bool(true));
         assert_eq!(future["count"], Value::from(2));

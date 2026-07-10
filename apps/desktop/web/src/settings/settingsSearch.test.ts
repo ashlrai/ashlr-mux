@@ -479,8 +479,8 @@ describe("settingsEntriesMatching", () => {
   test("corpus sizes guard transcription completeness", () => {
     // 16 sections; 115 setting rows + 1 scroll-speed row = 116 settings.
     expect(sectionEntries).toHaveLength(16);
-    expect(settingEntries).toHaveLength(116);
-    expect(allEntries).toHaveLength(132);
+    expect(settingEntries).toHaveLength(118);
+    expect(allEntries).toHaveLength(134);
     // ids are unique across the corpus.
     expect(new Set(allEntries.map((e) => e.id)).size).toBe(allEntries.length);
   });

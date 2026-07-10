@@ -165,7 +165,9 @@ pub fn native_process_describes_known_agent(
         .any(|descriptor| {
             NATIVE_PROCESS_ALIASES_BY_KIND
                 .iter()
-                .any(|(kind, aliases)| *kind == descriptor || aliases.contains(&descriptor.as_str()))
+                .any(|(kind, aliases)| {
+                    *kind == descriptor || aliases.contains(&descriptor.as_str())
+                })
         })
 }
 
@@ -321,13 +323,13 @@ mod tests {
             // `--chrome` is a long option, not a shell command-string flag.
             (&["zsh", "--chrome"], false),
             // Added edges:
-            (&["sh", "-c"], true),           // argc==2, letters == "c"
-            (&["sh", "-"], false),           // letters empty after dropFirst
-            (&["/bin/zsh/", "-lc"], true),   // trailing-slash argv0 still basenames to "zsh"
-            (&["/", "-c"], false),           // basename of "/" is "/", not a shell
-            (&["zsh", "-x"], false),         // 'x' outside the "cilms" letter set
-            (&["zsh", "-il"], false),        // mode letters but no 'c'
-            (&["zsh", " -c"], false),        // flag is UNtrimmed in Swift
+            (&["sh", "-c"], true),            // argc==2, letters == "c"
+            (&["sh", "-"], false),            // letters empty after dropFirst
+            (&["/bin/zsh/", "-lc"], true),    // trailing-slash argv0 still basenames to "zsh"
+            (&["/", "-c"], false),            // basename of "/" is "/", not a shell
+            (&["zsh", "-x"], false),          // 'x' outside the "cilms" letter set
+            (&["zsh", "-il"], false),         // mode letters but no 'c'
+            (&["zsh", " -c"], false),         // flag is UNtrimmed in Swift
             (&["  BASH  ", "-c", "x"], true), // argv0 trimmed + basename lowercased
         ];
         for (arguments, expected) in cases {
@@ -359,7 +361,11 @@ mod tests {
             ),
             (
                 Some("grok-macos-aarch64"),
-                Some(&["/Users/alice/.local/bin/grok-macos-aarch64", "-r", "session"]),
+                Some(&[
+                    "/Users/alice/.local/bin/grok-macos-aarch64",
+                    "-r",
+                    "session",
+                ]),
                 "grok",
                 true,
             ),
@@ -385,15 +391,35 @@ mod tests {
                 "codex",
                 false,
             ),
-            (Some("codex"), Some(&["/opt/homebrew/bin/codex"]), "claude", false),
-            (Some("agy"), Some(&["/usr/local/bin/agy"]), "antigravity", true),
+            (
+                Some("codex"),
+                Some(&["/opt/homebrew/bin/codex"]),
+                "claude",
+                false,
+            ),
+            (
+                Some("agy"),
+                Some(&["/usr/local/bin/agy"]),
+                "antigravity",
+                true,
+            ),
             // Added edges:
             (Some("codex"), None, "codex", false), // absent argv ⇒ never trusted
-            (Some("codex"), Some(&["/opt/homebrew/bin/codex"]), "  ", false), // blank kind
+            (
+                Some("codex"),
+                Some(&["/opt/homebrew/bin/codex"]),
+                "  ",
+                false,
+            ), // blank kind
             // The "<kind>-cli" suffix rule applies to kinds without a map entry.
             (Some("foo-cli"), Some(&["/usr/bin/foo-cli"]), "foo", true),
             // node/bun EARLY RETURN skips the codex substring checks entirely.
-            (Some("node"), Some(&["node", "/opt/codex/codex"]), "codex", false),
+            (
+                Some("node"),
+                Some(&["node", "/opt/codex/codex"]),
+                "codex",
+                false,
+            ),
             (
                 Some("bun"),
                 Some(&["bun", "/Users/a/.local/share/claude/versions/1.2/cli.js"]),
@@ -402,9 +428,19 @@ mod tests {
             ),
             // Executable-path substring rules (non-runtime argv0).
             (None, Some(&["/opt/Codex/codex-x86_64"]), "codex", true), // "/codex/codex" in lowered path
-            (None, Some(&["/opt/claude/versions/2.0/bin/x"]), "claude", true),
+            (
+                None,
+                Some(&["/opt/claude/versions/2.0/bin/x"]),
+                "claude",
+                true,
+            ),
             // Kind is trimmed + lowercased before alias lookup.
-            (Some("agy"), Some(&["/usr/local/bin/agy"]), " Antigravity\n", true),
+            (
+                Some("agy"),
+                Some(&["/usr/local/bin/agy"]),
+                " Antigravity\n",
+                true,
+            ),
         ];
         for (process_name, arguments, kind, expected) in cases {
             let arguments = arguments.map(argv);
@@ -429,10 +465,18 @@ mod tests {
             (Some("droid"), &["/usr/local/bin/droid"], true),
             // Unmapped self-named agents are NOT "known".
             (Some("acme-agent"), &["/Users/alice/bin/acme-agent"], false),
-            (Some("cmux DEV"), &["/Applications/cmux DEV.app/Contents/MacOS/cmux DEV"], false),
+            (
+                Some("cmux DEV"),
+                &["/Applications/cmux DEV.app/Contents/MacOS/cmux DEV"],
+                false,
+            ),
             (None, &[], false),
             // node runtime with a claude script yields the synthesized "claude" descriptor.
-            (Some("node"), &["node", "/Users/alice/.claude/local/claude.js"], true),
+            (
+                Some("node"),
+                &["node", "/Users/alice/.claude/local/claude.js"],
+                true,
+            ),
         ];
         for (process_name, arguments, expected) in cases {
             assert_eq!(

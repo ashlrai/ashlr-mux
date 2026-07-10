@@ -51,7 +51,11 @@ impl CanvasSpatialNavigator {
         best.map(|(id, _)| id)
     }
 
-    fn score(candidate: &CanvasRect, origin: &CanvasRect, direction: CanvasDirection) -> Option<f64> {
+    fn score(
+        candidate: &CanvasRect,
+        origin: &CanvasRect,
+        direction: CanvasDirection,
+    ) -> Option<f64> {
         let axis_distance: f64;
         let orthogonal_distance: f64;
         let overlaps: bool;
@@ -121,10 +125,22 @@ mod tests {
             (3, CanvasRect::new(300.0, 100.0, 100.0, 100.0)),
             (4, CanvasRect::new(300.0, 500.0, 100.0, 100.0)),
         ]);
-        assert_eq!(navigator().pane(CanvasDirection::Left, id(0), &layout), Some(id(1)));
-        assert_eq!(navigator().pane(CanvasDirection::Right, id(0), &layout), Some(id(2)));
-        assert_eq!(navigator().pane(CanvasDirection::Up, id(0), &layout), Some(id(3)));
-        assert_eq!(navigator().pane(CanvasDirection::Down, id(0), &layout), Some(id(4)));
+        assert_eq!(
+            navigator().pane(CanvasDirection::Left, id(0), &layout),
+            Some(id(1))
+        );
+        assert_eq!(
+            navigator().pane(CanvasDirection::Right, id(0), &layout),
+            Some(id(2))
+        );
+        assert_eq!(
+            navigator().pane(CanvasDirection::Up, id(0), &layout),
+            Some(id(3))
+        );
+        assert_eq!(
+            navigator().pane(CanvasDirection::Down, id(0), &layout),
+            Some(id(4))
+        );
     }
 
     #[test]
@@ -134,7 +150,10 @@ mod tests {
             (1, CanvasRect::new(150.0, 400.0, 100.0, 100.0)),
             (2, CanvasRect::new(300.0, 20.0, 100.0, 100.0)),
         ]);
-        assert_eq!(navigator().pane(CanvasDirection::Right, id(0), &layout), Some(id(2)));
+        assert_eq!(
+            navigator().pane(CanvasDirection::Right, id(0), &layout),
+            Some(id(2))
+        );
     }
 
     #[test]
@@ -143,14 +162,23 @@ mod tests {
             (0, CanvasRect::new(0.0, 0.0, 100.0, 100.0)),
             (1, CanvasRect::new(200.0, 0.0, 100.0, 100.0)),
         ]);
-        assert_eq!(navigator().pane(CanvasDirection::Left, id(0), &layout), None);
-        assert_eq!(navigator().pane(CanvasDirection::Right, id(1), &layout), None);
+        assert_eq!(
+            navigator().pane(CanvasDirection::Left, id(0), &layout),
+            None
+        );
+        assert_eq!(
+            navigator().pane(CanvasDirection::Right, id(1), &layout),
+            None
+        );
     }
 
     #[test]
     fn returns_nil_for_unknown_origin() {
         let layout = layout(&[(0, CanvasRect::new(0.0, 0.0, 100.0, 100.0))]);
-        assert_eq!(navigator().pane(CanvasDirection::Left, id(9), &layout), None);
+        assert_eq!(
+            navigator().pane(CanvasDirection::Left, id(9), &layout),
+            None
+        );
     }
 
     #[test]
@@ -160,7 +188,10 @@ mod tests {
             (5, CanvasRect::new(200.0, 110.0, 100.0, 100.0)),
             (3, CanvasRect::new(200.0, -110.0, 100.0, 100.0)),
         ]);
-        assert_eq!(navigator().pane(CanvasDirection::Right, id(0), &layout), Some(id(3)));
+        assert_eq!(
+            navigator().pane(CanvasDirection::Right, id(0), &layout),
+            Some(id(3))
+        );
     }
 
     #[test]
@@ -169,7 +200,13 @@ mod tests {
             (0, CanvasRect::new(0.0, 0.0, 600.0, 100.0)),
             (1, CanvasRect::new(616.0, 0.0, 100.0, 100.0)),
         ]);
-        assert_eq!(navigator().pane(CanvasDirection::Right, id(0), &layout), Some(id(1)));
-        assert_eq!(navigator().pane(CanvasDirection::Left, id(1), &layout), Some(id(0)));
+        assert_eq!(
+            navigator().pane(CanvasDirection::Right, id(0), &layout),
+            Some(id(1))
+        );
+        assert_eq!(
+            navigator().pane(CanvasDirection::Left, id(1), &layout),
+            Some(id(0))
+        );
     }
 }

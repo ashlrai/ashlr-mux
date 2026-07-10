@@ -35,7 +35,8 @@ mod workstream_source;
 
 pub use auto_naming_agent_catalog::{
     display_name_for_slug, option_for_slug, other_agents, resolve_summarizer, summarizer_supported,
-    supported_agents, AutoNamingAgentOption, SummarizerDecision, AGENTS, AUTO_SLUG, SUPPORTED_SLUGS,
+    supported_agents, AutoNamingAgentOption, SummarizerDecision, AGENTS, AUTO_SLUG,
+    SUPPORTED_SLUGS,
 };
 pub use capture_trust::{
     argv_looks_like_shell_wrapper, launcher_describes_kind, native_process_describes_kind,
@@ -49,9 +50,7 @@ pub use env_policy::{
     selected_environment, ClaudeConfigContext, ESSENTIAL_WINDOWS_ENV_KEYS,
     HERMES_AGENT_ENVIRONMENT_KEYS, SAFE_ENVIRONMENT_KEYS,
 };
-pub use version::{
-    opencode_version_supports_fork, SemanticVersion, MINIMUM_OPENCODE_FORK_VERSION,
-};
+pub use version::{opencode_version_supports_fork, SemanticVersion, MINIMUM_OPENCODE_FORK_VERSION};
 
 pub use feed_event::{HookEventName, WorkstreamEvent};
 pub use hook_payload::{
@@ -212,7 +211,8 @@ impl AgentSessionLaunchPlan {
         kind: Option<&str>,
         claude_context: &ClaudeConfigContext,
     ) -> cmux_process::SpawnSpec {
-        let mut environment = env_policy::launch_environment(&self.environment, kind, claude_context);
+        let mut environment =
+            env_policy::launch_environment(&self.environment, kind, claude_context);
         self.apply_working_directory_overrides(&mut environment, working_directory);
 
         let mut spec = cmux_process::SpawnSpec::new(self.executable_path.clone())
@@ -318,7 +318,12 @@ impl AgentExecutableResolver {
             }
             if let Some(local_app_data) = self.environment.get("LOCALAPPDATA") {
                 let local_app_data = PathBuf::from(local_app_data);
-                directories.push(local_app_data.join("Microsoft").join("WinGet").join("Links"));
+                directories.push(
+                    local_app_data
+                        .join("Microsoft")
+                        .join("WinGet")
+                        .join("Links"),
+                );
                 // The official OpenAI Codex native installer drops `codex.exe`
                 // under %LOCALAPPDATA%\OpenAI\Codex\bin and does NOT add it to
                 // PATH, so a PATH-only search misses it.
@@ -374,7 +379,11 @@ impl AgentExecutableResolver {
         self.environment.get("USERPROFILE").map(PathBuf::from)
     }
 
-    fn runtime_search_path(&self, search_directories: &[PathBuf], executable_path: &Path) -> String {
+    fn runtime_search_path(
+        &self,
+        search_directories: &[PathBuf],
+        executable_path: &Path,
+    ) -> String {
         let executable_directory = executable_path
             .parent()
             .map(|parent| normalize_path(parent.to_path_buf()))
@@ -519,11 +528,15 @@ impl AgentExecutableResolver {
             }
         }
         let shim_roots = [
-            self.environment.get("CMUX_CLAUDE_WRAPPER_SHIM_ROOT").cloned(),
             self.environment
-                .get("TMPDIR")
-                .cloned()
-                .map(|path| PathBuf::from(path).join("cmux-cli-shims").to_string_lossy().to_string()),
+                .get("CMUX_CLAUDE_WRAPPER_SHIM_ROOT")
+                .cloned(),
+            self.environment.get("TMPDIR").cloned().map(|path| {
+                PathBuf::from(path)
+                    .join("cmux-cli-shims")
+                    .to_string_lossy()
+                    .to_string()
+            }),
         ];
         shim_roots
             .into_iter()
@@ -544,18 +557,16 @@ impl AgentExecutableResolver {
             .is_some_and(|resource_path| candidate.starts_with(resource_path))
     }
 
-    fn is_known_cmux_claude_wrapper(
-        &self,
-        path: &Path,
-        provider: AgentSessionProviderId,
-    ) -> bool {
+    fn is_known_cmux_claude_wrapper(&self, path: &Path, provider: AgentSessionProviderId) -> bool {
         if provider != AgentSessionProviderId::Claude {
             return false;
         }
         fs::read(path)
             .ok()
             .and_then(|bytes| String::from_utf8(bytes.into_iter().take(512).collect()).ok())
-            .is_some_and(|prefix| prefix.contains("cmux claude wrapper - injects hooks and session tracking"))
+            .is_some_and(|prefix| {
+                prefix.contains("cmux claude wrapper - injects hooks and session tracking")
+            })
     }
 
     fn is_cmux_app_bundle_resource_bin_directory(&self, path: &Path) -> bool {
@@ -569,7 +580,12 @@ impl AgentExecutableResolver {
                 && window[1] == "Contents"
                 && window[2] == "Resources"
                 && window[3] == "bin"
-                && parts.len() == window.len() + parts.iter().position(|item| item == &window[0]).unwrap_or(0)
+                && parts.len()
+                    == window.len()
+                        + parts
+                            .iter()
+                            .position(|item| item == &window[0])
+                            .unwrap_or(0)
         })
     }
 
@@ -632,9 +648,14 @@ mod tests {
             ..Default::default()
         };
 
-        let plan = resolver.resolve(AgentSessionProviderId::Codex).expect("plan");
+        let plan = resolver
+            .resolve(AgentSessionProviderId::Codex)
+            .expect("plan");
         assert_eq!(plan.executable_path, normalize_path(executable));
-        assert_eq!(plan.arguments, AgentSessionProviderId::Codex.launch_arguments());
+        assert_eq!(
+            plan.arguments,
+            AgentSessionProviderId::Codex.launch_arguments()
+        );
     }
 
     #[test]
@@ -653,15 +674,23 @@ mod tests {
         let resolver = AgentExecutableResolver {
             environment: BTreeMap::from([
                 // PATH deliberately excludes the codex bin dir.
-                ("PATH".into(), root.join("empty").to_string_lossy().to_string()),
-                ("LOCALAPPDATA".into(), local_app_data.to_string_lossy().to_string()),
+                (
+                    "PATH".into(),
+                    root.join("empty").to_string_lossy().to_string(),
+                ),
+                (
+                    "LOCALAPPDATA".into(),
+                    local_app_data.to_string_lossy().to_string(),
+                ),
                 ("USERPROFILE".into(), root.to_string_lossy().to_string()),
             ]),
             include_standard_search_directories: true,
             ..Default::default()
         };
 
-        let plan = resolver.resolve(AgentSessionProviderId::Codex).expect("plan");
+        let plan = resolver
+            .resolve(AgentSessionProviderId::Codex)
+            .expect("plan");
         assert_eq!(plan.executable_path, normalize_path(codex));
     }
 
@@ -677,7 +706,10 @@ mod tests {
         let resolver = AgentExecutableResolver {
             environment: BTreeMap::from([
                 // PATH deliberately excludes the npm global bin dir.
-                ("PATH".into(), root.join("empty").to_string_lossy().to_string()),
+                (
+                    "PATH".into(),
+                    root.join("empty").to_string_lossy().to_string(),
+                ),
                 ("APPDATA".into(), app_data.to_string_lossy().to_string()),
                 ("USERPROFILE".into(), root.to_string_lossy().to_string()),
             ]),
@@ -685,7 +717,9 @@ mod tests {
             ..Default::default()
         };
 
-        let plan = resolver.resolve(AgentSessionProviderId::OpenCode).expect("plan");
+        let plan = resolver
+            .resolve(AgentSessionProviderId::OpenCode)
+            .expect("plan");
         assert_eq!(plan.executable_path, normalize_path(opencode));
     }
 
@@ -739,7 +773,9 @@ mod tests {
             ..Default::default()
         };
 
-        let plan = resolver.resolve(AgentSessionProviderId::Claude).expect("plan");
+        let plan = resolver
+            .resolve(AgentSessionProviderId::Claude)
+            .expect("plan");
         let runtime_path = plan.environment.get("PATH").expect("path");
         assert_eq!(plan.executable_path, normalize_path(configured_claude));
         assert_eq!(
@@ -759,14 +795,14 @@ mod tests {
 
         let environment = plan.environment_with_working_directory(None);
         assert_eq!(
-            environment.get("OPENCODE_SERVER_USERNAME").map(String::as_str),
+            environment
+                .get("OPENCODE_SERVER_USERNAME")
+                .map(String::as_str),
             Some("opencode")
         );
-        assert!(
-            environment
-                .get("OPENCODE_SERVER_PASSWORD")
-                .is_some_and(|value| value.len() >= 32)
-        );
+        assert!(environment
+            .get("OPENCODE_SERVER_PASSWORD")
+            .is_some_and(|value| value.len() >= 32));
     }
 
     #[test]
@@ -796,7 +832,9 @@ mod tests {
             ..Default::default()
         };
 
-        let plan = resolver.resolve(AgentSessionProviderId::OpenCode).expect("plan");
+        let plan = resolver
+            .resolve(AgentSessionProviderId::OpenCode)
+            .expect("plan");
         assert_eq!(plan.executable_path, normalize_path(executable));
     }
 
@@ -821,7 +859,9 @@ mod tests {
             ..Default::default()
         };
 
-        let plan = resolver.resolve(AgentSessionProviderId::Codex).expect("plan");
+        let plan = resolver
+            .resolve(AgentSessionProviderId::Codex)
+            .expect("plan");
         assert_eq!(plan.executable_path, normalize_path(bin.join("codex.cmd")));
     }
 
@@ -844,10 +884,7 @@ mod tests {
             ..Default::default()
         };
         // Lowercased, dot-prefixed, declared order, first-seen dedupe.
-        assert_eq!(
-            resolver.path_extensions(),
-            vec![".ps1", ".exe", ".cmd"]
-        );
+        assert_eq!(resolver.path_extensions(), vec![".ps1", ".exe", ".cmd"]);
     }
 
     #[test]
@@ -870,12 +907,27 @@ mod tests {
         assert_eq!(spec.args, AgentSessionProviderId::Claude.launch_arguments());
         assert_eq!(spec.current_dir, Some(PathBuf::from("C:\\work\\proj")));
         // Curated env: rewritten PATH + system var + allowlisted config kept.
-        assert_eq!(spec.env.get("PATH").map(String::as_str), Some("C:\\rt;C:\\Windows\\System32"));
-        assert_eq!(spec.env.get("SystemRoot").map(String::as_str), Some("C:\\Windows"));
-        assert_eq!(spec.env.get("ANTHROPIC_MODEL").map(String::as_str), Some("claude-opus-4-8"));
+        assert_eq!(
+            spec.env.get("PATH").map(String::as_str),
+            Some("C:\\rt;C:\\Windows\\System32")
+        );
+        assert_eq!(
+            spec.env.get("SystemRoot").map(String::as_str),
+            Some("C:\\Windows")
+        );
+        assert_eq!(
+            spec.env.get("ANTHROPIC_MODEL").map(String::as_str),
+            Some("claude-opus-4-8")
+        );
         // Secret excluded; PWD override applied (forward-slash normalized).
-        assert!(!spec.env.contains_key("AMP_API_KEY"), "secret must not cross into launch env");
-        assert_eq!(spec.env.get("PWD").map(String::as_str), Some("C:/work/proj"));
+        assert!(
+            !spec.env.contains_key("AMP_API_KEY"),
+            "secret must not cross into launch env"
+        );
+        assert_eq!(
+            spec.env.get("PWD").map(String::as_str),
+            Some("C:/work/proj")
+        );
     }
 
     #[test]

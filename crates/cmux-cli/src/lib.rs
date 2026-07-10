@@ -7,20 +7,25 @@
 //! - [`socket`]: `--socket` / `CMUX_SOCKET_PATH` / `CMUX_SOCKET` address resolution.
 //! - [`password`]: socket-password source assembly over [`cmux_ipc::resolve_password`].
 //!
-//! The control-socket connect + command dispatch (`classify_command`, the
-//! Windows named-pipe transport) build on top of this and are added next.
+//! User-facing socket commands are mapped through [`command_forward`], then the
+//! Windows named-pipe transport performs the v2 control-socket round-trip.
 
 pub mod classify;
+pub mod command_forward;
+pub mod diff_viewer_cli;
 pub mod dispatch;
+pub mod hooks_installer;
 pub mod invocation;
 pub mod password;
 pub mod rpc;
 pub mod socket;
+pub mod ssh;
 #[cfg(windows)]
 pub mod transport;
 
 pub use classify::{classify_command, ClassifyEnv, PreSocketAction};
-pub use dispatch::{plan, DispatchPlan};
+pub use command_forward::{control_command_for, ControlCommand, CMUX_WORKSPACE_ID_ENV};
+pub use dispatch::{plan, plan_with_args, DispatchPlan};
 pub use invocation::{parse_global_options, CliError, GlobalOptions, ParseOutcome};
 pub use password::{password_file_path, read_password_file};
 pub use rpc::parse_rpc_params;
@@ -28,3 +33,4 @@ pub use socket::{
     resolve_socket_path, EnvView, SocketPathSource, SocketResolution,
     CONFLICTING_ENVIRONMENT_MESSAGE,
 };
+pub use ssh::{build_ssh_command_plan, SshCommandBuildOptions, SshCommandPlan, SSH_USAGE_TEXT};

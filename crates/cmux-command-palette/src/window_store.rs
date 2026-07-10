@@ -398,8 +398,7 @@ impl CommandPaletteWindowStore {
     ///
     /// Swift `setSelectionIndex` (`CommandPaletteWindowStore.swift:214-216`).
     pub fn set_selection_index(&mut self, index: i64, window_id: Uuid) {
-        self.selection_by_window_id
-            .insert(window_id, index.max(0));
+        self.selection_by_window_id.insert(window_id, index.max(0));
     }
 
     /// The selection index for a window, defaulting to zero.
@@ -476,9 +475,10 @@ mod tests {
         let id = Uuid::new_v4();
         store.mark_open_requested(id, 100.0);
         assert!(store.is_pending_open(id, 100.0 + CommandPaletteWindowStore::PENDING_OPEN_MAX_AGE));
-        assert!(
-            !store.is_pending_open(id, 100.0 + CommandPaletteWindowStore::PENDING_OPEN_MAX_AGE + 0.01)
-        );
+        assert!(!store.is_pending_open(
+            id,
+            100.0 + CommandPaletteWindowStore::PENDING_OPEN_MAX_AGE + 0.01
+        ));
     }
 
     /// Swift `recentRequestAgeWithinGrace` (`CommandPaletteWindowStoreTests.swift:45-53`).
@@ -487,8 +487,10 @@ mod tests {
         let mut store = CommandPaletteWindowStore::new();
         let id = Uuid::new_v4();
         store.mark_open_requested(id, 100.0);
-        let age =
-            store.recent_request_age(id, 100.0 + CommandPaletteWindowStore::REQUEST_GRACE_INTERVAL);
+        let age = store.recent_request_age(
+            id,
+            100.0 + CommandPaletteWindowStore::REQUEST_GRACE_INTERVAL,
+        );
         assert_eq!(age, Some(CommandPaletteWindowStore::REQUEST_GRACE_INTERVAL));
         assert_eq!(
             store.recent_request_age(
@@ -572,8 +574,9 @@ mod tests {
         let mut store = CommandPaletteWindowStore::new();
         let stale = Uuid::new_v4();
         store.mark_open_requested(stale, 0.0);
-        let pruned =
-            store.prune_expired_pending_open_states(CommandPaletteWindowStore::PENDING_OPEN_MAX_AGE + 1.0);
+        let pruned = store.prune_expired_pending_open_states(
+            CommandPaletteWindowStore::PENDING_OPEN_MAX_AGE + 1.0,
+        );
         assert_eq!(pruned.len(), 1);
         match pruned[0] {
             PrunedPendingOpen::Stale { window_id, .. } => assert_eq!(window_id, stale),
@@ -611,8 +614,9 @@ mod tests {
         let mut store = CommandPaletteWindowStore::new();
         let id = Uuid::new_v4();
         store.mark_open_requested(id, 100.0);
-        let pruned = store
-            .prune_expired_pending_open_states(100.0 + CommandPaletteWindowStore::PENDING_OPEN_MAX_AGE);
+        let pruned = store.prune_expired_pending_open_states(
+            100.0 + CommandPaletteWindowStore::PENDING_OPEN_MAX_AGE,
+        );
         assert!(pruned.is_empty());
         assert!(store.is_pending_open_raw(id));
     }

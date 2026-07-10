@@ -13,11 +13,16 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::session::{
-    SessionPaneLayoutSnapshot, SessionSplitLayoutSnapshot, SessionSplitOrientation,
-    SessionTabManagerSnapshot, SessionWorkspaceLayoutSnapshot, SessionWorkspaceSnapshot,
+    SessionCanvasPaneSnapshot, SessionPaneLayoutSnapshot, SessionPanelListeningPortsSnapshot,
+    SessionPanelPinSnapshot, SessionPanelRestorableAgentSnapshot,
+    SessionPanelShellActivitySnapshot, SessionPanelTerminalStartupSnapshot,
+    SessionPanelTitleSnapshot, SessionPanelTtySnapshot, SessionPanelUnreadSnapshot,
+    SessionSplitLayoutSnapshot, SessionSplitOrientation, SessionTabManagerSnapshot,
+    SessionWorkspaceLayoutSnapshot, SessionWorkspaceSnapshot,
 };
+use cmux_browser_history::{NavigationAvailability, SessionHistoryURLSanitizer};
 use cmux_workspaces::{
-    clamped_reorder_index, clamped_top_level_reorder_index, insertion_index,
+    assign_group, clamped_reorder_index, clamped_top_level_reorder_index, insertion_index,
     is_workspace_group_anchor, normalize_workspace_group_contiguity,
     normalize_workspace_group_runs_preserving_order, sidebar_top_level_workspace_ids,
     sync_workspace_groups_order_to_anchor_order, NewWorkspacePlacement, WorkspaceGroup,
@@ -34,6 +39,94 @@ type Layout = SessionWorkspaceLayoutSnapshot;
 /// zero width/height.
 pub const MIN_DIVIDER: f64 = 0.1;
 pub const MAX_DIVIDER: f64 = 0.9;
+const CANVAS_SEED_WIDTH: i64 = 1200;
+const CANVAS_SEED_HEIGHT: i64 = 800;
+
+fn browser_history_sanitizer() -> SessionHistoryURLSanitizer {
+    SessionHistoryURLSanitizer::new(|url| {
+        let Some(url) = url else {
+            return false;
+        };
+        if matches!(url.scheme(), "cmux-diff-viewer" | "cmux-remote-image") {
+            return true;
+        }
+        if !matches!(url.scheme(), "http" | "https") {
+            return false;
+        }
+        matches!(
+            url.host_str().map(|host| host.to_ascii_lowercase()),
+            Some(host) if matches!(
+                host.as_str(),
+                "cmux-diff-viewer.localhost" | "cmux-remote-image.localhost"
+            )
+        )
+    })
+}
+
+/// Return the canonical persisted browser-history string for `url`, dropping
+/// blank, `about:blank`, invalid, and temporary app-proxy URLs.
+pub fn serializable_browser_history_url(url: &str) -> Option<String> {
+    let sanitizer = browser_history_sanitizer();
+    let sanitized = sanitizer.sanitized_session_history_url(Some(url))?;
+    sanitizer.serializable_session_history_url_string(Some(&sanitized))
+}
+
+fn push_browser_history_url(stack: &mut Option<Vec<String>>, url: &str) {
+    if let Some(serialized) = serializable_browser_history_url(url) {
+        stack.get_or_insert_with(Vec::new).push(serialized);
+    }
+}
+
+fn sanitize_browser_history_stack(stack: &mut Option<Vec<String>>) {
+    let Some(urls) = stack.as_mut() else {
+        return;
+    };
+    let sanitized: Vec<String> = urls
+        .iter()
+        .filter_map(|url| serializable_browser_history_url(url))
+        .collect();
+    if sanitized.is_empty() {
+        *stack = None;
+    } else {
+        *urls = sanitized;
+    }
+}
+
+fn pop_browser_history_url(stack: &mut Option<Vec<String>>) -> Option<String> {
+    sanitize_browser_history_stack(stack);
+    loop {
+        let Some(candidate) = stack.as_mut().and_then(Vec::pop) else {
+            *stack = None;
+            return None;
+        };
+        if stack.as_ref().is_some_and(Vec::is_empty) {
+            *stack = None;
+        }
+        if let Some(serialized) = serializable_browser_history_url(&candidate) {
+            return Some(serialized);
+        }
+    }
+}
+
+fn has_serializable_browser_history_url(stack: Option<&[String]>) -> bool {
+    stack.is_some_and(|urls| {
+        urls.iter()
+            .any(|url| serializable_browser_history_url(url).is_some())
+    })
+}
+
+/// Resolve pane-local browser back/forward availability using the same
+/// sanitizer as the session-history replay model.
+pub fn browser_navigation_availability(
+    back_history: Option<&[String]>,
+    forward_history: Option<&[String]>,
+) -> NavigationAvailability {
+    NavigationAvailability::new(
+        has_serializable_browser_history_url(back_history),
+        has_serializable_browser_history_url(forward_history),
+    )
+}
+const CANVAS_DEFAULT_GAP: i64 = 16;
 
 /// One step down the split tree, addressing a child of a split node. Serialized
 /// as `"first"`/`"second"` to match the web-side `SplitPath`.
@@ -56,6 +149,46 @@ pub enum CloseOutcome {
     Emptied,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CanvasAction {
+    Tidy,
+    AlignLeft,
+    AlignRight,
+    AlignTop,
+    AlignBottom,
+    EqualizeWidths,
+    EqualizeHeights,
+    DistributeHorizontally,
+    DistributeVertically,
+}
+
+impl CanvasAction {
+    fn parse(action: &str) -> Option<Self> {
+        let normalized = action
+            .trim()
+            .chars()
+            .filter(|ch| !matches!(ch, '-' | '_' | '.' | ' '))
+            .flat_map(char::to_lowercase)
+            .collect::<String>();
+        match normalized.as_str() {
+            "tidy" | "canvastidy" => Some(Self::Tidy),
+            "alignleft" | "canvasalignleft" => Some(Self::AlignLeft),
+            "alignright" | "canvasalignright" => Some(Self::AlignRight),
+            "aligntop" | "canvasaligntop" => Some(Self::AlignTop),
+            "alignbottom" | "canvasalignbottom" => Some(Self::AlignBottom),
+            "equalizewidths" | "canvasequalizewidths" => Some(Self::EqualizeWidths),
+            "equalizeheights" | "canvasequalizeheights" => Some(Self::EqualizeHeights),
+            "distributehorizontally" | "canvasdistributehorizontally" => {
+                Some(Self::DistributeHorizontally)
+            }
+            "distributevertically" | "canvasdistributevertically" => {
+                Some(Self::DistributeVertically)
+            }
+            _ => None,
+        }
+    }
+}
+
 /// Clamp a divider ratio into the legal range; NaN falls back to centered.
 pub fn clamp_divider(position: f64) -> f64 {
     if position.is_nan() {
@@ -70,17 +203,45 @@ pub fn clamp_divider(position: f64) -> f64 {
 pub fn single_pane(panel_id: impl Into<String>) -> Layout {
     let id = panel_id.into();
     Layout::Pane(SessionPaneLayoutSnapshot {
+        pane_id: None,
         selected_panel_id: Some(id.clone()),
         panel_ids: vec![id],
         surface_kind: None,
+        markdown_file_path: None,
+        file_path: None,
+        diff_viewer_token: None,
+        diff_viewer_request_path: None,
+        browser_url: None,
+        browser_proxy_url: None,
+        browser_back_history: None,
+        browser_forward_history: None,
+        browser_omnibar_visible: None,
+        browser_focus_mode_active: None,
+        browser_developer_tools_visible: None,
+        browser_developer_tools_panel: None,
+        browser_page_zoom: None,
     })
 }
 
 fn empty_pane() -> Layout {
     Layout::Pane(SessionPaneLayoutSnapshot {
+        pane_id: None,
         panel_ids: Vec::new(),
         selected_panel_id: None,
         surface_kind: None,
+        markdown_file_path: None,
+        file_path: None,
+        diff_viewer_token: None,
+        diff_viewer_request_path: None,
+        browser_url: None,
+        browser_proxy_url: None,
+        browser_back_history: None,
+        browser_forward_history: None,
+        browser_omnibar_visible: None,
+        browser_focus_mode_active: None,
+        browser_developer_tools_visible: None,
+        browser_developer_tools_panel: None,
+        browser_page_zoom: None,
     })
 }
 
@@ -105,6 +266,403 @@ pub fn set_surface_kind(node: &mut Layout, panel_id: &str, kind: Option<String>)
     }
 }
 
+/// Select the next/previous panel id within the pane that contains `panel_id`.
+/// Returns true only when the selected panel actually changes.
+pub fn select_adjacent_panel(node: &mut Layout, panel_id: &str, next: bool) -> bool {
+    match node {
+        Layout::Pane(p) => {
+            if !p.panel_ids.iter().any(|id| id == panel_id) {
+                return false;
+            }
+            let count = p.panel_ids.len();
+            if count <= 1 {
+                return false;
+            }
+            let current_index = p
+                .selected_panel_id
+                .as_deref()
+                .and_then(|selected| p.panel_ids.iter().position(|id| id == selected))
+                .or_else(|| p.panel_ids.iter().position(|id| id == panel_id))
+                .unwrap_or(0);
+            let next_index = if next {
+                (current_index + 1) % count
+            } else {
+                (current_index + count - 1) % count
+            };
+            let selected = p.panel_ids[next_index].clone();
+            if p.selected_panel_id.as_deref() == Some(selected.as_str()) {
+                return false;
+            }
+            p.selected_panel_id = Some(selected);
+            true
+        }
+        Layout::Split(s) => {
+            select_adjacent_panel(&mut s.first, panel_id, next)
+                || select_adjacent_panel(&mut s.second, panel_id, next)
+        }
+    }
+}
+
+/// Select `panel_id` within the pane that contains it. Returns true only when
+/// the pane's selected panel actually changes.
+pub fn select_panel(node: &mut Layout, panel_id: &str) -> bool {
+    match node {
+        Layout::Pane(pane) => {
+            if !pane.panel_ids.iter().any(|id| id == panel_id) {
+                return false;
+            }
+            if pane.selected_panel_id.as_deref() == Some(panel_id) {
+                return false;
+            }
+            pane.selected_panel_id = Some(panel_id.to_string());
+            true
+        }
+        Layout::Split(split) => {
+            select_panel(&mut split.first, panel_id) || select_panel(&mut split.second, panel_id)
+        }
+    }
+}
+
+/// Add `new_panel_id` as a sibling tab in the pane containing
+/// `anchor_panel_id`, immediately after the anchor, and select it.
+pub fn add_panel_to_pane(node: &mut Layout, anchor_panel_id: &str, new_panel_id: &str) -> bool {
+    match node {
+        Layout::Pane(pane) => {
+            let Some(anchor_index) = pane
+                .panel_ids
+                .iter()
+                .position(|panel_id| panel_id == anchor_panel_id)
+            else {
+                return false;
+            };
+            if pane
+                .panel_ids
+                .iter()
+                .any(|panel_id| panel_id == new_panel_id)
+            {
+                return false;
+            }
+            pane.panel_ids
+                .insert(anchor_index + 1, new_panel_id.to_string());
+            pane.selected_panel_id = Some(new_panel_id.to_string());
+            true
+        }
+        Layout::Split(split) => {
+            add_panel_to_pane(&mut split.first, anchor_panel_id, new_panel_id)
+                || add_panel_to_pane(&mut split.second, anchor_panel_id, new_panel_id)
+        }
+    }
+}
+
+/// Bind or clear the markdown file path of the pane that holds `panel_id`.
+/// Returns `false` if no pane holds the id. The file path rides on the pane
+/// node itself, so it survives splits and divider moves with the same
+/// persistence semantics as `surface_kind`.
+pub fn set_markdown_file_path(
+    node: &mut Layout,
+    panel_id: &str,
+    file_path: Option<String>,
+) -> bool {
+    match node {
+        Layout::Pane(p) => {
+            if p.panel_ids.iter().any(|id| id == panel_id) {
+                p.markdown_file_path = file_path;
+                true
+            } else {
+                false
+            }
+        }
+        Layout::Split(s) => {
+            set_markdown_file_path(&mut s.first, panel_id, file_path.clone())
+                || set_markdown_file_path(&mut s.second, panel_id, file_path)
+        }
+    }
+}
+
+/// Bind or clear the plain-text file path of the pane that holds `panel_id`.
+/// Returns `false` if no pane holds the id. The file path rides on the pane
+/// node itself, so it survives splits and divider moves with the same
+/// persistence semantics as `surface_kind`.
+pub fn set_file_path(node: &mut Layout, panel_id: &str, file_path: Option<String>) -> bool {
+    match node {
+        Layout::Pane(p) => {
+            if p.panel_ids.iter().any(|id| id == panel_id) {
+                p.file_path = file_path;
+                true
+            } else {
+                false
+            }
+        }
+        Layout::Split(s) => {
+            set_file_path(&mut s.first, panel_id, file_path.clone())
+                || set_file_path(&mut s.second, panel_id, file_path)
+        }
+    }
+}
+
+/// Bind or clear the diff-viewer session of the pane that holds `panel_id`.
+/// Returns `false` if no pane holds the id. The token + request path ride on
+/// the pane node, so they survive splits and divider moves with the same
+/// persistence semantics as `surface_kind`.
+pub fn set_diff_viewer_session(
+    node: &mut Layout,
+    panel_id: &str,
+    token: Option<String>,
+    request_path: Option<String>,
+) -> bool {
+    match node {
+        Layout::Pane(p) => {
+            if p.panel_ids.iter().any(|id| id == panel_id) {
+                p.diff_viewer_token = token;
+                p.diff_viewer_request_path = request_path;
+                true
+            } else {
+                false
+            }
+        }
+        Layout::Split(s) => {
+            set_diff_viewer_session(&mut s.first, panel_id, token.clone(), request_path.clone())
+                || set_diff_viewer_session(&mut s.second, panel_id, token, request_path)
+        }
+    }
+}
+
+/// Bind or clear the browser URL of the pane that holds `panel_id`.
+pub fn set_browser_url(node: &mut Layout, panel_id: &str, url: Option<String>) -> bool {
+    match node {
+        Layout::Pane(p) => {
+            if p.panel_ids.iter().any(|id| id == panel_id) {
+                p.browser_url = url;
+                if p.browser_url.is_none() {
+                    p.browser_back_history = None;
+                    p.browser_forward_history = None;
+                }
+                true
+            } else {
+                false
+            }
+        }
+        Layout::Split(s) => {
+            set_browser_url(&mut s.first, panel_id, url.clone())
+                || set_browser_url(&mut s.second, panel_id, url)
+        }
+    }
+}
+
+/// Navigate the pane-local browser to `url`, preserving back/forward stacks.
+/// The history vectors are stacks: the last entry is the next destination.
+pub fn navigate_browser(node: &mut Layout, panel_id: &str, url: String) -> bool {
+    match node {
+        Layout::Pane(p) => {
+            if !p.panel_ids.iter().any(|id| id == panel_id) {
+                return false;
+            }
+            if p.browser_url.as_deref() == Some(url.as_str()) {
+                return true;
+            }
+            if let Some(current) = p.browser_url.as_deref() {
+                push_browser_history_url(&mut p.browser_back_history, current);
+            }
+            p.browser_url = Some(url);
+            p.browser_forward_history = None;
+            true
+        }
+        Layout::Split(s) => {
+            navigate_browser(&mut s.first, panel_id, url.clone())
+                || navigate_browser(&mut s.second, panel_id, url)
+        }
+    }
+}
+
+/// Move the pane-local browser to the previous history entry, if any.
+pub fn browser_go_back(node: &mut Layout, panel_id: &str) -> bool {
+    match node {
+        Layout::Pane(p) => {
+            if !p.panel_ids.iter().any(|id| id == panel_id) {
+                return false;
+            }
+            let Some(previous) = pop_browser_history_url(&mut p.browser_back_history) else {
+                return false;
+            };
+            if let Some(current) = p.browser_url.as_deref() {
+                push_browser_history_url(&mut p.browser_forward_history, current);
+            }
+            p.browser_url = Some(previous);
+            true
+        }
+        Layout::Split(s) => {
+            browser_go_back(&mut s.first, panel_id) || browser_go_back(&mut s.second, panel_id)
+        }
+    }
+}
+
+/// Move the pane-local browser to the next forward-history entry, if any.
+pub fn browser_go_forward(node: &mut Layout, panel_id: &str) -> bool {
+    match node {
+        Layout::Pane(p) => {
+            if !p.panel_ids.iter().any(|id| id == panel_id) {
+                return false;
+            }
+            let Some(next) = pop_browser_history_url(&mut p.browser_forward_history) else {
+                return false;
+            };
+            if let Some(current) = p.browser_url.as_deref() {
+                push_browser_history_url(&mut p.browser_back_history, current);
+            }
+            p.browser_url = Some(next);
+            true
+        }
+        Layout::Split(s) => {
+            browser_go_forward(&mut s.first, panel_id)
+                || browser_go_forward(&mut s.second, panel_id)
+        }
+    }
+}
+
+/// Clear the pane-local browser back/forward history while keeping the current
+/// URL and zoom. Returns true only when the stored history changed.
+pub fn clear_browser_history(node: &mut Layout, panel_id: &str) -> bool {
+    match node {
+        Layout::Pane(p) => {
+            if !p.panel_ids.iter().any(|id| id == panel_id) {
+                return false;
+            }
+            let changed = p.browser_back_history.is_some() || p.browser_forward_history.is_some();
+            p.browser_back_history = None;
+            p.browser_forward_history = None;
+            changed
+        }
+        Layout::Split(s) => {
+            clear_browser_history(&mut s.first, panel_id)
+                || clear_browser_history(&mut s.second, panel_id)
+        }
+    }
+}
+
+/// Toggle the pane-local browser omnibar. Absence means visible, so the first
+/// toggle stores `false`.
+pub fn toggle_browser_omnibar_visible(node: &mut Layout, panel_id: &str) -> bool {
+    match node {
+        Layout::Pane(p) => {
+            if p.panel_ids.iter().any(|id| id == panel_id) {
+                let current = p.browser_omnibar_visible.unwrap_or(true);
+                p.browser_omnibar_visible = Some(!current);
+                true
+            } else {
+                false
+            }
+        }
+        Layout::Split(s) => {
+            toggle_browser_omnibar_visible(&mut s.first, panel_id)
+                || toggle_browser_omnibar_visible(&mut s.second, panel_id)
+        }
+    }
+}
+
+/// Toggle pane-local browser focus mode. Absence means inactive.
+pub fn toggle_browser_focus_mode(node: &mut Layout, panel_id: &str) -> bool {
+    match node {
+        Layout::Pane(p) => {
+            if p.panel_ids.iter().any(|id| id == panel_id) {
+                let current = p.browser_focus_mode_active.unwrap_or(false);
+                p.browser_focus_mode_active = Some(!current);
+                true
+            } else {
+                false
+            }
+        }
+        Layout::Split(s) => {
+            toggle_browser_focus_mode(&mut s.first, panel_id)
+                || toggle_browser_focus_mode(&mut s.second, panel_id)
+        }
+    }
+}
+
+/// Toggle the pane-local browser developer-tools drawer. When opening without
+/// a selected panel, default to the inspector lane.
+pub fn toggle_browser_developer_tools(node: &mut Layout, panel_id: &str) -> bool {
+    match node {
+        Layout::Pane(p) => {
+            if p.panel_ids.iter().any(|id| id == panel_id) {
+                let current = p.browser_developer_tools_visible.unwrap_or(false);
+                p.browser_developer_tools_visible = Some(!current);
+                if !current && p.browser_developer_tools_panel.is_none() {
+                    p.browser_developer_tools_panel = Some("inspector".to_string());
+                }
+                true
+            } else {
+                false
+            }
+        }
+        Layout::Split(s) => {
+            toggle_browser_developer_tools(&mut s.first, panel_id)
+                || toggle_browser_developer_tools(&mut s.second, panel_id)
+        }
+    }
+}
+
+/// Show the pane-local browser developer-tools drawer on a specific lane.
+pub fn show_browser_developer_tools(
+    node: &mut Layout,
+    panel_id: &str,
+    panel: impl Into<String>,
+) -> bool {
+    match node {
+        Layout::Pane(p) => {
+            if p.panel_ids.iter().any(|id| id == panel_id) {
+                p.browser_developer_tools_visible = Some(true);
+                p.browser_developer_tools_panel = Some(panel.into());
+                true
+            } else {
+                false
+            }
+        }
+        Layout::Split(s) => {
+            let panel = panel.into();
+            show_browser_developer_tools(&mut s.first, panel_id, panel.clone())
+                || show_browser_developer_tools(&mut s.second, panel_id, panel)
+        }
+    }
+}
+
+/// Ensure a pane-local browser zoom exists without resetting an existing zoom.
+pub fn ensure_browser_page_zoom(node: &mut Layout, panel_id: &str, zoom: f64) -> bool {
+    match node {
+        Layout::Pane(p) => {
+            if p.panel_ids.iter().any(|id| id == panel_id) {
+                if p.browser_page_zoom.is_none() {
+                    p.browser_page_zoom = Some(zoom);
+                }
+                true
+            } else {
+                false
+            }
+        }
+        Layout::Split(s) => {
+            ensure_browser_page_zoom(&mut s.first, panel_id, zoom)
+                || ensure_browser_page_zoom(&mut s.second, panel_id, zoom)
+        }
+    }
+}
+
+/// Set the browser zoom factor for the pane that holds `panel_id`.
+pub fn set_browser_page_zoom(node: &mut Layout, panel_id: &str, zoom: Option<f64>) -> bool {
+    match node {
+        Layout::Pane(p) => {
+            if p.panel_ids.iter().any(|id| id == panel_id) {
+                p.browser_page_zoom = zoom;
+                true
+            } else {
+                false
+            }
+        }
+        Layout::Split(s) => {
+            set_browser_page_zoom(&mut s.first, panel_id, zoom)
+                || set_browser_page_zoom(&mut s.second, panel_id, zoom)
+        }
+    }
+}
+
 /// Number of leaf panes in a subtree.
 pub fn count_leaves(layout: &Layout) -> usize {
     match layout {
@@ -117,8 +675,501 @@ pub fn count_leaves(layout: &Layout) -> usize {
 pub fn contains_panel(layout: &Layout, panel_id: &str) -> bool {
     match layout {
         Layout::Pane(p) => p.panel_ids.iter().any(|id| id == panel_id),
-        Layout::Split(s) => contains_panel(&s.first, panel_id) || contains_panel(&s.second, panel_id),
+        Layout::Split(s) => {
+            contains_panel(&s.first, panel_id) || contains_panel(&s.second, panel_id)
+        }
     }
+}
+
+/// Toggle split zoom for `panel_id` within a workspace. A split zoom only makes
+/// sense when the workspace has at least two leaf panes; missing/single-pane
+/// layouts are no-ops.
+pub fn toggle_split_zoom(workspace: &mut SessionWorkspaceSnapshot, panel_id: &str) -> bool {
+    let Some(layout) = workspace.layout.as_ref() else {
+        return false;
+    };
+    if count_leaves(layout) <= 1 || !contains_panel(layout, panel_id) {
+        return false;
+    }
+    if workspace.zoomed_panel_id.as_deref() == Some(panel_id) {
+        workspace.zoomed_panel_id = None;
+    } else {
+        workspace.zoomed_panel_id = Some(panel_id.to_string());
+    }
+    true
+}
+
+fn selected_panel_id(pane: &SessionPaneLayoutSnapshot) -> Option<&str> {
+    pane.selected_panel_id
+        .as_deref()
+        .filter(|selected| pane.panel_ids.iter().any(|id| id == selected))
+        .or_else(|| pane.panel_ids.first().map(String::as_str))
+}
+
+fn canvas_panes_from_layout_rect(
+    layout: &Layout,
+    x: i64,
+    y: i64,
+    width: i64,
+    height: i64,
+    out: &mut Vec<SessionCanvasPaneSnapshot>,
+) {
+    match layout {
+        Layout::Pane(pane) => {
+            let Some(panel_id) = selected_panel_id(pane) else {
+                return;
+            };
+            out.push(SessionCanvasPaneSnapshot {
+                panel_id: panel_id.to_string(),
+                x,
+                y,
+                width,
+                height,
+                panel_ids: (pane.panel_ids.len() > 1).then(|| pane.panel_ids.clone()),
+                selected_panel_id: pane.selected_panel_id.clone(),
+            });
+        }
+        Layout::Split(split) => {
+            let divider = clamp_divider(split.divider_position);
+            match split.orientation {
+                SessionSplitOrientation::Horizontal => {
+                    let first_width = ((width as f64) * divider).round() as i64;
+                    let first_width = first_width.clamp(1, width.saturating_sub(1).max(1));
+                    let second_width = width.saturating_sub(first_width);
+                    canvas_panes_from_layout_rect(&split.first, x, y, first_width, height, out);
+                    canvas_panes_from_layout_rect(
+                        &split.second,
+                        x.saturating_add(first_width),
+                        y,
+                        second_width,
+                        height,
+                        out,
+                    );
+                }
+                SessionSplitOrientation::Vertical => {
+                    let first_height = ((height as f64) * divider).round() as i64;
+                    let first_height = first_height.clamp(1, height.saturating_sub(1).max(1));
+                    let second_height = height.saturating_sub(first_height);
+                    canvas_panes_from_layout_rect(&split.first, x, y, width, first_height, out);
+                    canvas_panes_from_layout_rect(
+                        &split.second,
+                        x,
+                        y.saturating_add(first_height),
+                        width,
+                        second_height,
+                        out,
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Seed the workspace's canvas pane list from its current split tree. The seed
+/// preserves split ratios inside a deterministic 1200x800 canvas so the first
+/// canvas render has stable geometry even before the richer canvas engine
+/// starts mutating frames.
+pub fn canvas_panes_from_layout(layout: &Layout) -> Vec<SessionCanvasPaneSnapshot> {
+    let mut panes = Vec::new();
+    canvas_panes_from_layout_rect(
+        layout,
+        0,
+        0,
+        CANVAS_SEED_WIDTH,
+        CANVAS_SEED_HEIGHT,
+        &mut panes,
+    );
+    panes
+}
+
+fn normalized_layout_mode(mode: Option<&str>) -> Option<String> {
+    match mode.map(str::trim).filter(|mode| !mode.is_empty()) {
+        Some(mode) if mode.eq_ignore_ascii_case("canvas") => Some("canvas".to_string()),
+        Some(mode) if mode.eq_ignore_ascii_case("split") => None,
+        Some(mode) if mode.eq_ignore_ascii_case("default") => None,
+        Some(_) | None => None,
+    }
+}
+
+/// Set the workspace layout mode. `None`, `"split"`, and `"default"` all mean
+/// the canonical split layout; `"canvas"` flips the workspace into canvas mode
+/// and lazily seeds `canvas_panes` from the current split tree when needed.
+pub fn set_layout_mode(workspace: &mut SessionWorkspaceSnapshot, mode: Option<&str>) -> bool {
+    let next = normalized_layout_mode(mode);
+    let mut changed = workspace.layout_mode != next;
+    workspace.layout_mode = next.clone();
+
+    if next.as_deref() == Some("canvas") {
+        let needs_seed = workspace
+            .canvas_panes
+            .as_ref()
+            .is_none_or(|panes| panes.is_empty());
+        if needs_seed {
+            if let Some(layout) = workspace.layout.as_ref() {
+                let panes = canvas_panes_from_layout(layout);
+                if !panes.is_empty() {
+                    workspace.canvas_panes = Some(panes);
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    changed
+}
+
+fn canvas_pane_matches(pane: &SessionCanvasPaneSnapshot, panel_id: &str) -> bool {
+    pane.panel_id == panel_id
+        || pane.selected_panel_id.as_deref() == Some(panel_id)
+        || pane
+            .panel_ids
+            .as_ref()
+            .is_some_and(|ids| ids.iter().any(|id| id == panel_id))
+}
+
+/// Persist a canvas pane frame for `panel_id`, seeding from the split layout
+/// first when the workspace has not entered canvas mode before.
+pub fn set_canvas_pane_frame(
+    workspace: &mut SessionWorkspaceSnapshot,
+    panel_id: &str,
+    x: i64,
+    y: i64,
+    width: i64,
+    height: i64,
+) -> bool {
+    if panel_id.trim().is_empty() {
+        return false;
+    }
+    if workspace
+        .canvas_panes
+        .as_ref()
+        .is_none_or(|panes| panes.is_empty())
+    {
+        if let Some(layout) = workspace.layout.as_ref() {
+            let panes = canvas_panes_from_layout(layout);
+            if !panes.is_empty() {
+                workspace.canvas_panes = Some(panes);
+            }
+        }
+    }
+
+    let next = SessionCanvasPaneSnapshot {
+        panel_id: panel_id.to_string(),
+        x,
+        y,
+        width: width.max(1),
+        height: height.max(1),
+        panel_ids: None,
+        selected_panel_id: Some(panel_id.to_string()),
+    };
+    let panes = workspace.canvas_panes.get_or_insert_with(Vec::new);
+    if let Some(existing) = panes
+        .iter_mut()
+        .find(|pane| canvas_pane_matches(pane, panel_id))
+    {
+        if existing.x == next.x
+            && existing.y == next.y
+            && existing.width == next.width
+            && existing.height == next.height
+        {
+            return false;
+        }
+        existing.x = next.x;
+        existing.y = next.y;
+        existing.width = next.width;
+        existing.height = next.height;
+        if existing.selected_panel_id.is_none() {
+            existing.selected_panel_id = Some(panel_id.to_string());
+        }
+        true
+    } else {
+        panes.push(next);
+        true
+    }
+}
+
+/// Apply a canvas geometry command to the active workspace's persisted pane
+/// frames. Until the web canvas grows multi-pane selection state, commands
+/// operate on every canvas pane in z-order.
+pub fn apply_canvas_action(workspace: &mut SessionWorkspaceSnapshot, action: &str) -> bool {
+    apply_canvas_action_with_gap(workspace, action, None)
+}
+
+/// Apply a canvas geometry command with an optional configured pane gap.
+/// Invalid gaps fall back to the shared default.
+pub fn apply_canvas_action_with_gap(
+    workspace: &mut SessionWorkspaceSnapshot,
+    action: &str,
+    pane_gap: Option<i64>,
+) -> bool {
+    if workspace.layout_mode.as_deref() != Some("canvas") {
+        return false;
+    }
+    let Some(action) = CanvasAction::parse(action) else {
+        return false;
+    };
+    if workspace
+        .canvas_panes
+        .as_ref()
+        .is_none_or(|panes| panes.is_empty())
+    {
+        if let Some(layout) = workspace.layout.as_ref() {
+            let panes = canvas_panes_from_layout(layout);
+            if !panes.is_empty() {
+                workspace.canvas_panes = Some(panes);
+            }
+        }
+    }
+    let Some(panes) = workspace.canvas_panes.as_mut() else {
+        return false;
+    };
+    let indexes = canvas_valid_pane_indexes(panes);
+    if indexes.len() < 2 {
+        return false;
+    }
+
+    let updates = canvas_action_frames(panes, &indexes, action, canvas_gap(pane_gap));
+    if updates.is_empty() {
+        return false;
+    }
+    let mut changed = false;
+    for (index, x, y, width, height) in updates {
+        let pane = &mut panes[index];
+        let width = width.max(1);
+        let height = height.max(1);
+        if (pane.x, pane.y, pane.width, pane.height) != (x, y, width, height) {
+            pane.x = x;
+            pane.y = y;
+            pane.width = width;
+            pane.height = height;
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn canvas_gap(pane_gap: Option<i64>) -> i64 {
+    pane_gap
+        .filter(|gap| *gap >= 0)
+        .unwrap_or(CANVAS_DEFAULT_GAP)
+}
+
+fn canvas_valid_pane_indexes(panes: &[SessionCanvasPaneSnapshot]) -> Vec<usize> {
+    panes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, pane)| (pane.width > 0 && pane.height > 0).then_some(index))
+        .collect()
+}
+
+fn canvas_action_frames(
+    panes: &[SessionCanvasPaneSnapshot],
+    indexes: &[usize],
+    action: CanvasAction,
+    gap: i64,
+) -> Vec<(usize, i64, i64, i64, i64)> {
+    match action {
+        CanvasAction::AlignLeft => {
+            let target = indexes
+                .iter()
+                .map(|index| panes[*index].x)
+                .min()
+                .unwrap_or(0);
+            indexes
+                .iter()
+                .map(|index| {
+                    let pane = &panes[*index];
+                    (*index, target, pane.y, pane.width, pane.height)
+                })
+                .collect()
+        }
+        CanvasAction::AlignRight => {
+            let target = indexes
+                .iter()
+                .map(|index| panes[*index].x + panes[*index].width)
+                .max()
+                .unwrap_or(0);
+            indexes
+                .iter()
+                .map(|index| {
+                    let pane = &panes[*index];
+                    (*index, target - pane.width, pane.y, pane.width, pane.height)
+                })
+                .collect()
+        }
+        CanvasAction::AlignTop => {
+            let target = indexes
+                .iter()
+                .map(|index| panes[*index].y)
+                .min()
+                .unwrap_or(0);
+            indexes
+                .iter()
+                .map(|index| {
+                    let pane = &panes[*index];
+                    (*index, pane.x, target, pane.width, pane.height)
+                })
+                .collect()
+        }
+        CanvasAction::AlignBottom => {
+            let target = indexes
+                .iter()
+                .map(|index| panes[*index].y + panes[*index].height)
+                .max()
+                .unwrap_or(0);
+            indexes
+                .iter()
+                .map(|index| {
+                    let pane = &panes[*index];
+                    (
+                        *index,
+                        pane.x,
+                        target - pane.height,
+                        pane.width,
+                        pane.height,
+                    )
+                })
+                .collect()
+        }
+        CanvasAction::EqualizeWidths => {
+            let target = indexes
+                .iter()
+                .map(|index| panes[*index].width)
+                .max()
+                .unwrap_or(1);
+            indexes
+                .iter()
+                .map(|index| {
+                    let pane = &panes[*index];
+                    (*index, pane.x, pane.y, target, pane.height)
+                })
+                .collect()
+        }
+        CanvasAction::EqualizeHeights => {
+            let target = indexes
+                .iter()
+                .map(|index| panes[*index].height)
+                .max()
+                .unwrap_or(1);
+            indexes
+                .iter()
+                .map(|index| {
+                    let pane = &panes[*index];
+                    (*index, pane.x, pane.y, pane.width, target)
+                })
+                .collect()
+        }
+        CanvasAction::DistributeHorizontally => {
+            distributed_canvas_frames(panes, indexes, true, gap)
+        }
+        CanvasAction::DistributeVertically => distributed_canvas_frames(panes, indexes, false, gap),
+        CanvasAction::Tidy => tidy_canvas_frames(panes, indexes, gap),
+    }
+}
+
+fn distributed_canvas_frames(
+    panes: &[SessionCanvasPaneSnapshot],
+    indexes: &[usize],
+    horizontally: bool,
+    gap: i64,
+) -> Vec<(usize, i64, i64, i64, i64)> {
+    let mut sorted = indexes.to_vec();
+    sorted.sort_by(|lhs, rhs| {
+        let left = if horizontally {
+            panes[*lhs].x
+        } else {
+            panes[*lhs].y
+        };
+        let right = if horizontally {
+            panes[*rhs].x
+        } else {
+            panes[*rhs].y
+        };
+        left.cmp(&right)
+            .then_with(|| panes[*lhs].panel_id.cmp(&panes[*rhs].panel_id))
+    });
+    let Some(first) = sorted.first().copied() else {
+        return Vec::new();
+    };
+    let mut cursor = if horizontally {
+        panes[first].x + panes[first].width
+    } else {
+        panes[first].y + panes[first].height
+    };
+    let mut updates = Vec::new();
+    for index in sorted.into_iter().skip(1) {
+        let pane = &panes[index];
+        if horizontally {
+            let x = cursor + gap;
+            updates.push((index, x, pane.y, pane.width, pane.height));
+            cursor = x + pane.width;
+        } else {
+            let y = cursor + gap;
+            updates.push((index, pane.x, y, pane.width, pane.height));
+            cursor = y + pane.height;
+        }
+    }
+    updates
+}
+
+fn tidy_canvas_frames(
+    panes: &[SessionCanvasPaneSnapshot],
+    indexes: &[usize],
+    gap: i64,
+) -> Vec<(usize, i64, i64, i64, i64)> {
+    let origin_x = indexes
+        .iter()
+        .map(|index| panes[*index].x)
+        .min()
+        .unwrap_or(0);
+    let origin_y = indexes
+        .iter()
+        .map(|index| panes[*index].y)
+        .min()
+        .unwrap_or(0);
+    let mut sorted = indexes.to_vec();
+    sorted.sort_by(|lhs, rhs| {
+        let left_mid_y = panes[*lhs].y + panes[*lhs].height / 2;
+        let right_mid_y = panes[*rhs].y + panes[*rhs].height / 2;
+        let left_mid_x = panes[*lhs].x + panes[*lhs].width / 2;
+        let right_mid_x = panes[*rhs].x + panes[*rhs].width / 2;
+        left_mid_y
+            .cmp(&right_mid_y)
+            .then_with(|| left_mid_x.cmp(&right_mid_x))
+            .then_with(|| panes[*lhs].panel_id.cmp(&panes[*rhs].panel_id))
+    });
+
+    let mut rows: Vec<Vec<usize>> = Vec::new();
+    let mut row_bottom = i64::MIN;
+    for index in sorted {
+        let pane = &panes[index];
+        let mid_y = pane.y + pane.height / 2;
+        if rows.is_empty() || mid_y >= row_bottom {
+            row_bottom = pane.y + pane.height;
+            rows.push(vec![index]);
+        } else {
+            row_bottom = row_bottom.max(pane.y + pane.height);
+            rows.last_mut().unwrap().push(index);
+        }
+    }
+
+    let mut y = origin_y;
+    let mut updates = Vec::new();
+    for row in rows {
+        let row_height = row
+            .iter()
+            .map(|index| panes[*index].height)
+            .max()
+            .unwrap_or(0);
+        let mut x = origin_x;
+        for index in row {
+            let pane = &panes[index];
+            updates.push((index, x, y, pane.width, pane.height));
+            x += pane.width + gap;
+        }
+        y += row_height + gap;
+    }
+    updates
 }
 
 /// Set the OSC/process title of the workspace whose layout owns `panel_id`.
@@ -293,8 +1344,19 @@ fn split_pane_impl(
     }
     match node {
         Layout::Split(s) => {
-            split_pane_impl(&mut s.first, target_panel_id, orientation, new_panel_id, insert_first)
-                || split_pane_impl(&mut s.second, target_panel_id, orientation, new_panel_id, insert_first)
+            split_pane_impl(
+                &mut s.first,
+                target_panel_id,
+                orientation,
+                new_panel_id,
+                insert_first,
+            ) || split_pane_impl(
+                &mut s.second,
+                target_panel_id,
+                orientation,
+                new_panel_id,
+                insert_first,
+            )
         }
         Layout::Pane(_) => false,
     }
@@ -368,6 +1430,176 @@ fn remove_from_node(node: &mut Layout, panel_id: &str) -> NodeEdit {
     NodeEdit::RemovedFromPane
 }
 
+fn panel_count(layout: &Layout) -> usize {
+    match layout {
+        Layout::Pane(pane) => pane.panel_ids.len(),
+        Layout::Split(split) => panel_count(&split.first) + panel_count(&split.second),
+    }
+}
+
+fn pane_for_panel(layout: &Layout, panel_id: &str) -> Option<SessionPaneLayoutSnapshot> {
+    match layout {
+        Layout::Pane(pane) => {
+            if pane.panel_ids.iter().any(|id| id == panel_id) {
+                let mut pane = pane.clone();
+                pane.panel_ids = vec![panel_id.to_string()];
+                pane.selected_panel_id = Some(panel_id.to_string());
+                Some(pane)
+            } else {
+                None
+            }
+        }
+        Layout::Split(split) => pane_for_panel(&split.first, panel_id)
+            .or_else(|| pane_for_panel(&split.second, panel_id)),
+    }
+}
+
+fn take_panel_title(
+    titles: &mut Option<Vec<SessionPanelTitleSnapshot>>,
+    panel_id: &str,
+) -> Option<SessionPanelTitleSnapshot> {
+    let entries = titles.as_mut()?;
+    let index = entries
+        .iter()
+        .position(|entry| entry.panel_id == panel_id)?;
+    let entry = entries.remove(index);
+    if entries.is_empty() {
+        *titles = None;
+    }
+    Some(entry)
+}
+
+fn take_panel_pin(
+    pins: &mut Option<Vec<SessionPanelPinSnapshot>>,
+    panel_id: &str,
+) -> Option<SessionPanelPinSnapshot> {
+    let entries = pins.as_mut()?;
+    let index = entries
+        .iter()
+        .position(|entry| entry.panel_id == panel_id)?;
+    let entry = entries.remove(index);
+    if entries.is_empty() {
+        *pins = None;
+    }
+    Some(entry)
+}
+
+fn take_panel_unread(
+    unreads: &mut Option<Vec<SessionPanelUnreadSnapshot>>,
+    panel_id: &str,
+) -> Option<SessionPanelUnreadSnapshot> {
+    let entries = unreads.as_mut()?;
+    let index = entries
+        .iter()
+        .position(|entry| entry.panel_id == panel_id)?;
+    let entry = entries.remove(index);
+    if entries.is_empty() {
+        *unreads = None;
+    }
+    Some(entry)
+}
+
+fn take_panel_restorable_agent(
+    agents: &mut Option<Vec<SessionPanelRestorableAgentSnapshot>>,
+    panel_id: &str,
+) -> Option<SessionPanelRestorableAgentSnapshot> {
+    let entries = agents.as_mut()?;
+    let index = entries
+        .iter()
+        .position(|entry| entry.panel_id == panel_id)?;
+    let entry = entries.remove(index);
+    if entries.is_empty() {
+        *agents = None;
+    }
+    Some(entry)
+}
+
+fn take_panel_terminal_startup(
+    startups: &mut Option<Vec<SessionPanelTerminalStartupSnapshot>>,
+    panel_id: &str,
+) -> Option<SessionPanelTerminalStartupSnapshot> {
+    let entries = startups.as_mut()?;
+    let index = entries
+        .iter()
+        .position(|entry| entry.panel_id == panel_id)?;
+    let entry = entries.remove(index);
+    if entries.is_empty() {
+        *startups = None;
+    }
+    Some(entry)
+}
+
+fn take_panel_listening_ports(
+    ports: &mut Option<Vec<SessionPanelListeningPortsSnapshot>>,
+    panel_id: &str,
+) -> Option<SessionPanelListeningPortsSnapshot> {
+    let entries = ports.as_mut()?;
+    let index = entries
+        .iter()
+        .position(|entry| entry.panel_id == panel_id)?;
+    let entry = entries.remove(index);
+    if entries.is_empty() {
+        *ports = None;
+    }
+    Some(entry)
+}
+
+fn take_panel_tty(
+    ttys: &mut Option<Vec<SessionPanelTtySnapshot>>,
+    panel_id: &str,
+) -> Option<SessionPanelTtySnapshot> {
+    let entries = ttys.as_mut()?;
+    let index = entries
+        .iter()
+        .position(|entry| entry.panel_id == panel_id)?;
+    let entry = entries.remove(index);
+    if entries.is_empty() {
+        *ttys = None;
+    }
+    Some(entry)
+}
+
+fn take_panel_shell_activity(
+    shell_activity: &mut Option<Vec<SessionPanelShellActivitySnapshot>>,
+    panel_id: &str,
+) -> Option<SessionPanelShellActivitySnapshot> {
+    let entries = shell_activity.as_mut()?;
+    let index = entries
+        .iter()
+        .position(|entry| entry.panel_id == panel_id)?;
+    let entry = entries.remove(index);
+    if entries.is_empty() {
+        *shell_activity = None;
+    }
+    Some(entry)
+}
+
+fn recompute_workspace_listening_ports(workspace: &mut SessionWorkspaceSnapshot) {
+    let ports: Vec<u16> = workspace
+        .agent_listening_ports
+        .as_ref()
+        .into_iter()
+        .flat_map(|ports| ports.iter().copied())
+        .chain(
+            workspace
+                .panel_listening_ports
+                .as_ref()
+                .into_iter()
+                .flat_map(|entries| entries.iter())
+                .flat_map(|entry| entry.ports.iter().copied()),
+        )
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    if ports.is_empty() {
+        workspace.listening_ports = None;
+        return;
+    }
+    let mut ports = ports;
+    ports.sort_unstable();
+    workspace.listening_ports = Some(ports);
+}
+
 // --- Tab-manager (workspace) operations -------------------------------------
 //
 // The layer above the split tree: a window's `SessionTabManagerSnapshot` holds
@@ -397,6 +1629,123 @@ pub fn new_workspace(tabs: &mut SessionTabManagerSnapshot, panel_id: &str) {
     new_workspace_with_placement(tabs, panel_id, NewWorkspacePlacement::default());
 }
 
+/// Move `panel_id` out of its current workspace into a newly-created workspace,
+/// selecting the new workspace. The command is only meaningful when the source
+/// workspace has at least one other panel/surface left behind.
+///
+/// Pane-local state (surface kind, browser/markdown/diff bindings, zoom, etc.)
+/// follows the moved panel. Panel-level title/pin/unread metadata is transferred
+/// from the source workspace to the destination workspace.
+pub fn move_panel_to_new_workspace(tabs: &mut SessionTabManagerSnapshot, panel_id: &str) -> bool {
+    let Some(source_index) = tabs.workspaces.iter().position(|workspace| {
+        workspace
+            .layout
+            .as_ref()
+            .is_some_and(|layout| contains_panel(layout, panel_id))
+    }) else {
+        return false;
+    };
+
+    let Some(source_layout) = tabs.workspaces[source_index].layout.as_ref() else {
+        return false;
+    };
+    if panel_count(source_layout) <= 1 {
+        return false;
+    }
+    let Some(detached_pane) = pane_for_panel(source_layout, panel_id) else {
+        return false;
+    };
+
+    let total_count = tabs.workspaces.len() as i64;
+    let pinned_count = tabs
+        .workspaces
+        .iter()
+        .filter(|workspace| workspace.is_pinned == Some(true))
+        .count() as i64;
+    let selected_is_pinned = tabs.workspaces[source_index].is_pinned == Some(true);
+    let insert_index = insertion_index(
+        NewWorkspacePlacement::default(),
+        Some(source_index as i64),
+        selected_is_pinned,
+        pinned_count,
+        total_count,
+    )
+    .clamp(0, total_count) as usize;
+
+    let source = &mut tabs.workspaces[source_index];
+    let panel_title = take_panel_title(&mut source.panel_titles, panel_id);
+    let panel_pin = take_panel_pin(&mut source.panel_pins, panel_id);
+    let panel_unread = take_panel_unread(&mut source.panel_unreads, panel_id);
+    let panel_restorable_agent =
+        take_panel_restorable_agent(&mut source.restorable_agent_snapshots, panel_id);
+    let panel_terminal_startup =
+        take_panel_terminal_startup(&mut source.panel_terminal_startups, panel_id);
+    let panel_listening_ports =
+        take_panel_listening_ports(&mut source.panel_listening_ports, panel_id);
+    let panel_tty = take_panel_tty(&mut source.panel_ttys, panel_id);
+    let panel_shell_activity =
+        take_panel_shell_activity(&mut source.panel_shell_activity, panel_id);
+    if panel_listening_ports.is_some() {
+        recompute_workspace_listening_ports(source);
+    }
+    let process_title = panel_title
+        .as_ref()
+        .and_then(|entry| entry.custom_title.clone())
+        .unwrap_or_else(|| source.process_title.clone());
+    let current_directory = source.current_directory.clone();
+    let initial_terminal_command = source.initial_terminal_command.clone();
+    let initial_terminal_input = source.initial_terminal_input.clone();
+    let initial_terminal_environment = source.initial_terminal_environment.clone();
+    if !matches!(
+        close_panel(&mut source.layout, panel_id),
+        CloseOutcome::Removed
+    ) {
+        return false;
+    }
+    if source.zoomed_panel_id.as_deref() == Some(panel_id) {
+        source.zoomed_panel_id = None;
+    }
+
+    let mut detached = SessionWorkspaceSnapshot {
+        process_title,
+        current_directory,
+        initial_terminal_command,
+        initial_terminal_input,
+        initial_terminal_environment,
+        layout: Some(Layout::Pane(detached_pane)),
+        ..Default::default()
+    };
+    if let Some(title) = panel_title {
+        detached.panel_titles = Some(vec![title]);
+    }
+    if let Some(pin) = panel_pin {
+        detached.panel_pins = Some(vec![pin]);
+    }
+    if let Some(unread) = panel_unread {
+        detached.panel_unreads = Some(vec![unread]);
+    }
+    if let Some(agent) = panel_restorable_agent {
+        detached.restorable_agent_snapshots = Some(vec![agent]);
+    }
+    if let Some(startup) = panel_terminal_startup {
+        detached.panel_terminal_startups = Some(vec![startup]);
+    }
+    if let Some(ports) = panel_listening_ports {
+        detached.listening_ports = (!ports.ports.is_empty()).then(|| ports.ports.clone());
+        detached.panel_listening_ports = Some(vec![ports]);
+    }
+    if let Some(tty) = panel_tty {
+        detached.panel_ttys = Some(vec![tty]);
+    }
+    if let Some(shell_activity) = panel_shell_activity {
+        detached.panel_shell_activity = Some(vec![shell_activity]);
+    }
+
+    tabs.workspaces.insert(insert_index, detached);
+    tabs.selected_workspace_index = Some(insert_index as i64);
+    true
+}
+
 /// Insert a fresh single-pane workspace into `tabs` at the position dictated by
 /// `placement`, then select it. This is the Rust port of the macOS
 /// `TabManager.addWorkspace` → `newTabInsertIndex(snapshot:placementOverride:)`
@@ -420,12 +1769,11 @@ pub fn new_workspace(tabs: &mut SessionTabManagerSnapshot, panel_id: &str) {
 ///   returns End unconditionally. In the index-based session model a valid
 ///   selection always resolves, so this only differs for a `None`/stale
 ///   selection — then the port yields End.
-/// - GROUP CONTIGUITY GAP: canonical inserts by flat index THEN runs
+/// - GROUP CONTIGUITY: canonical inserts by flat index THEN runs
 ///   `normalizeWorkspaceGroupContiguity` (`TabManager.swift:1136-1138`). The
-///   Rust port of that pass consumes `WorkspaceRow`/`WorkspaceGroup`, not the
-///   session snapshot types, so it is out of reach (and out of Lane scope) here.
-///   A9 therefore places by flat index only; the new workspace inherits no
-///   `group_id` and a contiguity fix-up is a documented future bridge.
+///   port mirrors that through the snapshot↔workspace-row mirror: a fresh
+///   ungrouped workspace inserted into a group run stays ungrouped, but is
+///   moved out of the middle of the run so grouped members remain contiguous.
 pub fn new_workspace_with_placement(
     tabs: &mut SessionTabManagerSnapshot,
     panel_id: &str,
@@ -456,9 +1804,11 @@ pub fn new_workspace_with_placement(
     // defensively before the unsigned cast (Swift's `insert` also falls back to
     // an append when the index is out of range, `TabManager.swift:1126-1132`).
     let at = idx.clamp(0, total_count) as usize;
-    tabs.workspaces.insert(at, fresh_terminal_workspace(panel_id));
+    tabs.workspaces
+        .insert(at, fresh_terminal_workspace(panel_id));
     // Canonical selects the newly created workspace (`TabManager.swift:1156`).
     tabs.selected_workspace_index = Some(at as i64);
+    normalize_workspace_groups_in_snapshot(tabs);
 }
 
 /// Select the workspace at `index`, ignoring an out-of-range index. Mirrors
@@ -475,15 +1825,133 @@ pub fn select_workspace(tabs: &mut SessionTabManagerSnapshot, index: i64) -> boo
 /// Close the workspace at `index`. Mirrors canonical `TabManager.closeWorkspace`
 /// (`guard tabs.count > 1`): closing the only workspace is a **no-op**. When the
 /// removed workspace was at or before the selection, the selection is re-clamped
-/// to keep pointing at the same surviving workspace (else the new last one).
+/// to keep pointing at the same surviving workspace (else the new last one). If
+/// the closed workspace anchored a group, that group dissolves and its
+/// surviving members become ungrouped, matching canonical `closeWorkspace`.
 /// Returns whether a close happened.
-pub fn close_workspace(tabs: &mut SessionTabManagerSnapshot, index: i64) -> bool {
-    let count = tabs.workspaces.len();
-    if count <= 1 || index < 0 || (index as usize) >= count {
-        return false;
+fn anchored_group_ids_for_workspace_id(
+    tabs: &SessionTabManagerSnapshot,
+    workspace_id: &str,
+) -> HashSet<String> {
+    let mut group_ids = HashSet::new();
+    for group in tabs.workspace_groups.as_deref().unwrap_or(&[]) {
+        let members: Vec<&SessionWorkspaceSnapshot> = tabs
+            .workspaces
+            .iter()
+            .filter(|ws| ws.group_id.as_deref() == Some(group.id.as_str()))
+            .collect();
+        if members.is_empty() {
+            continue;
+        }
+        let anchor_workspace_id = group
+            .anchor_workspace_id
+            .as_ref()
+            .filter(|anchor| {
+                members
+                    .iter()
+                    .any(|member| member.workspace_id.as_ref() == Some(*anchor))
+            })
+            .cloned()
+            .or_else(|| {
+                group
+                    .anchor_member_index
+                    .and_then(|index| usize::try_from(index).ok())
+                    .and_then(|index| members.get(index))
+                    .and_then(|member| member.workspace_id.clone())
+            })
+            .or_else(|| {
+                members
+                    .first()
+                    .and_then(|member| member.workspace_id.clone())
+            });
+        if anchor_workspace_id.as_deref() == Some(workspace_id) {
+            group_ids.insert(group.id.clone());
+        }
     }
-    let removed = index as usize;
+    group_ids
+}
+
+fn reconcile_workspace_groups_after_membership_change(tabs: &mut SessionTabManagerSnapshot) {
+    let Some(groups) = tabs.workspace_groups.take() else {
+        return;
+    };
+
+    let mut next_groups = Vec::new();
+    for mut group in groups {
+        let members: Vec<&SessionWorkspaceSnapshot> = tabs
+            .workspaces
+            .iter()
+            .filter(|ws| ws.group_id.as_deref() == Some(group.id.as_str()))
+            .collect();
+        if members.is_empty() {
+            continue;
+        }
+
+        let anchor_workspace_id = group
+            .anchor_workspace_id
+            .as_ref()
+            .filter(|anchor| {
+                members
+                    .iter()
+                    .any(|member| member.workspace_id.as_ref() == Some(*anchor))
+            })
+            .cloned()
+            .or_else(|| {
+                group
+                    .anchor_member_index
+                    .and_then(|index| usize::try_from(index).ok())
+                    .and_then(|index| members.get(index))
+                    .and_then(|member| member.workspace_id.clone())
+            })
+            .or_else(|| {
+                members
+                    .first()
+                    .and_then(|member| member.workspace_id.clone())
+            });
+
+        if let Some(anchor_workspace_id) = anchor_workspace_id {
+            let anchor_member_index = members
+                .iter()
+                .position(|member| {
+                    member.workspace_id.as_deref() == Some(anchor_workspace_id.as_str())
+                })
+                .map(|index| index as i64);
+            group.anchor_workspace_id = Some(anchor_workspace_id);
+            group.anchor_member_index = anchor_member_index;
+        } else {
+            group.anchor_workspace_id = None;
+            group.anchor_member_index = None;
+        }
+        next_groups.push(group);
+    }
+
+    tabs.workspace_groups = if next_groups.is_empty() {
+        None
+    } else {
+        Some(next_groups)
+    };
+}
+
+fn close_workspace_at_index(tabs: &mut SessionTabManagerSnapshot, removed: usize) -> bool {
+    let anchored_group_ids = tabs.workspaces[removed]
+        .workspace_id
+        .as_deref()
+        .map(|workspace_id| anchored_group_ids_for_workspace_id(tabs, workspace_id))
+        .unwrap_or_default();
     tabs.workspaces.remove(removed);
+
+    if !anchored_group_ids.is_empty() {
+        for workspace in &mut tabs.workspaces {
+            if workspace
+                .group_id
+                .as_ref()
+                .is_some_and(|group_id| anchored_group_ids.contains(group_id))
+            {
+                workspace.group_id = None;
+            }
+        }
+    }
+    reconcile_workspace_groups_after_membership_change(tabs);
 
     // Selection here is index-based (canonical is id-based). To keep the same
     // surviving workspace focused: removing a tab before the selected one shifts
@@ -497,6 +1965,66 @@ pub fn close_workspace(tabs: &mut SessionTabManagerSnapshot, index: i64) -> bool
     };
     tabs.selected_workspace_index = Some(next as i64);
     true
+}
+
+pub fn close_workspace(tabs: &mut SessionTabManagerSnapshot, index: i64) -> bool {
+    let count = tabs.workspaces.len();
+    if count <= 1 || index < 0 || (index as usize) >= count {
+        return false;
+    }
+    close_workspace_at_index(tabs, index as usize)
+}
+
+/// Close multiple workspaces identified by their ORIGINAL indices in
+/// `tabs.workspaces`. The request is canonicalized into current tab order,
+/// deduplicated, then each close is applied against the live snapshot so
+/// selection and group-anchor dissolution mirror repeated explicit closes.
+///
+/// Semantics:
+/// - Empty, all-invalid, or single-workspace snapshots are no-ops.
+/// - Indices are interpreted against the pre-close snapshot, sorted into the
+///   window's current order (matching canonical `orderedClosableWorkspaces`).
+/// - Duplicate indices close once.
+/// - The last remaining workspace is preserved: once only one workspace
+///   survives, later requested closes are skipped (the session model never
+///   closes the final workspace/window).
+/// - If a closed workspace anchored a group, that group dissolves and its
+///   surviving members become ungrouped, matching canonical `closeWorkspace`.
+///
+/// Returns `true` iff at least one workspace actually closed.
+pub fn close_workspaces(tabs: &mut SessionTabManagerSnapshot, indices: &[i64]) -> bool {
+    if tabs.workspaces.len() <= 1 || indices.is_empty() {
+        return false;
+    }
+
+    let mut ordered_indices: Vec<usize> = indices
+        .iter()
+        .filter_map(|&index| usize::try_from(index).ok())
+        .filter(|&index| index < tabs.workspaces.len())
+        .collect();
+    ordered_indices.sort_unstable();
+    ordered_indices.dedup();
+
+    let ordered_workspace_ids: Vec<String> = ordered_indices
+        .into_iter()
+        .filter_map(|index| tabs.workspaces[index].workspace_id.clone())
+        .collect();
+
+    let mut changed = false;
+    for workspace_id in ordered_workspace_ids {
+        if tabs.workspaces.len() <= 1 {
+            break;
+        }
+        let Some(index) = tabs
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.workspace_id.as_deref() == Some(workspace_id.as_str()))
+        else {
+            continue;
+        };
+        changed |= close_workspace_at_index(tabs, index);
+    }
+    changed
 }
 
 /// Rename the workspace at `index` — the user-rename path of canonical
@@ -547,6 +2075,264 @@ pub fn rename_workspace(tabs: &mut SessionTabManagerSnapshot, index: i64, title:
     true
 }
 
+fn normalized_workspace_description(description: &str) -> Option<String> {
+    let normalized = description.replace("\r\n", "\n").replace('\r', "\n");
+    if normalized.trim().is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+/// Set or clear the workspace description at `index` — the port of canonical
+/// `Workspace.setCustomDescription(_:)` (`Workspace.swift:4409-4428`) reached
+/// through `TabManager.setCustomDescription`.
+///
+/// Line endings normalize to `\n`; blank/whitespace-only descriptions clear the
+/// field; non-empty descriptions preserve their edge whitespace after line
+/// normalization. Out-of-range/negative `index` is a silent no-op.
+///
+/// Returns `true` iff `custom_description` actually changed.
+pub fn set_workspace_description(
+    tabs: &mut SessionTabManagerSnapshot,
+    index: i64,
+    description: &str,
+) -> bool {
+    if index < 0 || index as usize >= tabs.workspaces.len() {
+        return false;
+    }
+    let workspace = &mut tabs.workspaces[index as usize];
+    let next_description = normalized_workspace_description(description);
+    if workspace.custom_description == next_description {
+        return false;
+    }
+    workspace.custom_description = next_description;
+    true
+}
+
+/// Clear the workspace color override at `index`. Canonical cmux stores the
+/// workspace tab color as `customColor` / `custom_color`; reset removes that
+/// override so the row falls back to group/default coloring.
+///
+/// Returns `true` iff a color was actually cleared.
+pub fn reset_workspace_color(tabs: &mut SessionTabManagerSnapshot, index: i64) -> bool {
+    if index < 0 || index as usize >= tabs.workspaces.len() {
+        return false;
+    }
+    let workspace = &mut tabs.workspaces[index as usize];
+    if workspace.custom_color.is_none() {
+        return false;
+    }
+    workspace.custom_color = None;
+    true
+}
+
+fn normalized_panel_title(title: &str) -> Option<String> {
+    let trimmed = title.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// Set or clear a panel/tab custom title within `workspace`. The target panel
+/// must exist in the workspace layout; blank/whitespace-only titles clear the
+/// custom title and remove its metadata entry.
+///
+/// Returns `true` iff the stored metadata actually changed.
+pub fn set_panel_title(
+    workspace: &mut SessionWorkspaceSnapshot,
+    panel_id: &str,
+    title: &str,
+) -> bool {
+    let Some(layout) = workspace.layout.as_ref() else {
+        return false;
+    };
+    if !contains_panel(layout, panel_id) {
+        return false;
+    }
+
+    let next_title = normalized_panel_title(title);
+    let mut titles = workspace.panel_titles.take().unwrap_or_default();
+    let existing = titles
+        .iter()
+        .find(|entry| entry.panel_id == panel_id)
+        .and_then(|entry| entry.custom_title.clone());
+    if existing == next_title {
+        workspace.panel_titles = (!titles.is_empty()).then_some(titles);
+        return false;
+    }
+
+    titles.retain(|entry| entry.panel_id != panel_id);
+    if let Some(custom_title) = next_title {
+        titles.push(SessionPanelTitleSnapshot {
+            panel_id: panel_id.to_string(),
+            custom_title: Some(custom_title),
+        });
+    }
+    workspace.panel_titles = (!titles.is_empty()).then_some(titles);
+    true
+}
+
+/// Set or clear a panel/tab pin within `workspace`. The target panel must
+/// exist in the workspace layout. Unpinned panels are represented by absence,
+/// so clearing the last pin removes `panel_pins` entirely.
+///
+/// Returns `true` iff the stored metadata actually changed.
+pub fn set_panel_pinned(
+    workspace: &mut SessionWorkspaceSnapshot,
+    panel_id: &str,
+    is_pinned: bool,
+) -> bool {
+    let Some(layout) = workspace.layout.as_ref() else {
+        return false;
+    };
+    if !contains_panel(layout, panel_id) {
+        return false;
+    }
+
+    let mut pins = workspace.panel_pins.take().unwrap_or_default();
+    let existing = pins
+        .iter()
+        .find(|entry| entry.panel_id == panel_id)
+        .is_some_and(|entry| entry.is_pinned);
+    if existing == is_pinned {
+        workspace.panel_pins = (!pins.is_empty()).then_some(pins);
+        return false;
+    }
+
+    pins.retain(|entry| entry.panel_id != panel_id);
+    if is_pinned {
+        pins.push(SessionPanelPinSnapshot {
+            panel_id: panel_id.to_string(),
+            is_pinned: true,
+        });
+    }
+    workspace.panel_pins = (!pins.is_empty()).then_some(pins);
+    true
+}
+
+/// Set or clear a panel/tab manual unread indicator within `workspace`. The
+/// target panel must exist in the workspace layout. Read panels are represented
+/// by absence, so clearing the last unread entry removes `panel_unreads`.
+///
+/// Returns `true` iff the stored metadata actually changed.
+pub fn set_panel_unread(
+    workspace: &mut SessionWorkspaceSnapshot,
+    panel_id: &str,
+    is_unread: bool,
+) -> bool {
+    set_panel_unread_at(workspace, panel_id, is_unread, None)
+}
+
+/// Timestamp-aware variant of [`set_panel_unread`]. New unread entries carry
+/// `unread_at` when the caller has a clock; read/legacy callers can pass `None`.
+pub fn set_panel_unread_at(
+    workspace: &mut SessionWorkspaceSnapshot,
+    panel_id: &str,
+    is_unread: bool,
+    unread_at: Option<i64>,
+) -> bool {
+    let Some(layout) = workspace.layout.as_ref() else {
+        return false;
+    };
+    if !contains_panel(layout, panel_id) {
+        return false;
+    }
+
+    let mut unreads = workspace.panel_unreads.take().unwrap_or_default();
+    let existing = unreads
+        .iter()
+        .find(|entry| entry.panel_id == panel_id)
+        .is_some_and(|entry| entry.is_unread);
+    if existing == is_unread {
+        workspace.panel_unreads = (!unreads.is_empty()).then_some(unreads);
+        return false;
+    }
+
+    unreads.retain(|entry| entry.panel_id != panel_id);
+    if is_unread {
+        unreads.push(SessionPanelUnreadSnapshot {
+            panel_id: panel_id.to_string(),
+            is_unread: true,
+            unread_at,
+        });
+    }
+    workspace.panel_unreads = (!unreads.is_empty()).then_some(unreads);
+    true
+}
+
+fn first_panel_id(layout: &Layout) -> Option<String> {
+    match layout {
+        Layout::Pane(pane) => pane
+            .selected_panel_id
+            .clone()
+            .or_else(|| pane.panel_ids.first().cloned()),
+        Layout::Split(split) => {
+            first_panel_id(&split.first).or_else(|| first_panel_id(&split.second))
+        }
+    }
+}
+
+fn workspace_has_unread_panel(workspace: &SessionWorkspaceSnapshot) -> bool {
+    workspace
+        .panel_unreads
+        .as_ref()
+        .is_some_and(|unreads| unreads.iter().any(|entry| entry.is_unread))
+}
+
+/// Mark a workspace read/unread using the representative panel unread marker.
+/// In the full notification model, manual workspace unread is owned by the
+/// notification store and mirrored onto a representative panel. The desktop
+/// snapshot currently owns that mirror, so this op updates the panel metadata
+/// directly while preserving the same user-visible read/unread affordance.
+pub fn set_workspace_unread(
+    tabs: &mut SessionTabManagerSnapshot,
+    index: i64,
+    preferred_panel_id: Option<&str>,
+    is_unread: bool,
+) -> bool {
+    set_workspace_unread_at(tabs, index, preferred_panel_id, is_unread, None)
+}
+
+/// Timestamp-aware variant of [`set_workspace_unread`]. The timestamp is stored
+/// on the representative panel unread entry created for the workspace.
+pub fn set_workspace_unread_at(
+    tabs: &mut SessionTabManagerSnapshot,
+    index: i64,
+    preferred_panel_id: Option<&str>,
+    is_unread: bool,
+    unread_at: Option<i64>,
+) -> bool {
+    if index < 0 || index as usize >= tabs.workspaces.len() {
+        return false;
+    }
+    let workspace = &mut tabs.workspaces[index as usize];
+    if !is_unread {
+        if workspace.panel_unreads.is_none() {
+            return false;
+        }
+        workspace.panel_unreads = None;
+        return true;
+    }
+    if workspace_has_unread_panel(workspace) {
+        return false;
+    }
+
+    let Some(layout) = workspace.layout.as_ref() else {
+        return false;
+    };
+    let panel_id = preferred_panel_id
+        .filter(|panel_id| contains_panel(layout, panel_id))
+        .map(str::to_owned)
+        .or_else(|| first_panel_id(layout));
+    let Some(panel_id) = panel_id else {
+        return false;
+    };
+    set_panel_unread_at(workspace, &panel_id, true, unread_at)
+}
+
 /// Pin/unpin the workspace at `index` — the port of canonical
 /// `WorkspaceReorderCoordinator.setPinned`
 /// (`WorkspaceReorderCoordinator.swift:467-472`) plus its pinned-ahead
@@ -557,11 +2343,10 @@ pub fn rename_workspace(tabs: &mut SessionTabManagerSnapshot, index: i64, title:
 /// - Already-at-value is a no-op (`guard tab.isPinned != pinned`,
 ///   Coordinator:468). Out-of-range/negative `index` is a silent no-op
 ///   (rename precedent).
-/// - GROUPED workspace (`group_id` present): flag-only — pinning never ejects
-///   a tab from its group and never moves it globally. Canonical additionally
-///   runs `normalizeWorkspaceGroupContiguity` (Coordinator:531-533); that
-///   contiguity pass consumes live model types, not the snapshot, so it is a
-///   documented gap here — same precedent as `new_workspace_with_placement`.
+/// - GROUPED workspace (`group_id` present): pinning never ejects a tab from its
+///   group. Canonical then runs `normalizeWorkspaceGroupContiguity`
+///   (Coordinator:531-533); the port mirrors that through the snapshot mirror,
+///   so any pre-existing broken group run is repaired after the flag change.
 /// - UNGROUPED: remove the tab, count the leading globally-pinned rows of the
 ///   REMAINDER (`leadingGlobalPinnedRowCount` + `isGlobalPinnedRow`,
 ///   `WorkspacesModel+Ordering.swift:190-207`: grouped rows count by their
@@ -600,7 +2385,9 @@ pub fn set_workspace_pinned(
     tabs.workspaces[from].is_pinned = pinned.then_some(true);
 
     if tabs.workspaces[from].group_id.is_some() {
-        // Flag-only for grouped tabs (documented contiguity gap, see above).
+        // Group membership is preserved; canonical still repairs any broken
+        // group runs after changing the flag.
+        normalize_workspace_groups_in_snapshot(tabs);
         return true;
     }
 
@@ -817,6 +2604,28 @@ fn write_back_reordered(
     }
 }
 
+/// Run canonical workspace-group contiguity over the session snapshot mirror and
+/// write any resulting row/group ordering back to the serialized snapshot.
+fn normalize_workspace_groups_in_snapshot(tabs: &mut SessionTabManagerSnapshot) -> bool {
+    let (rows, groups) = workspace_mirror(tabs);
+    if groups.is_empty() {
+        return false;
+    }
+
+    let original_row_ids: Vec<Uuid> = rows.iter().map(|row| row.id).collect();
+    let original_group_ids: Vec<Uuid> = groups.iter().map(|group| group.id).collect();
+    let (final_rows, final_groups) = normalize_workspace_group_contiguity(&rows, &groups, None);
+    let final_row_ids: Vec<Uuid> = final_rows.iter().map(|row| row.id).collect();
+    let final_group_ids: Vec<Uuid> = final_groups.iter().map(|group| group.id).collect();
+
+    if final_row_ids == original_row_ids && final_group_ids == original_group_ids {
+        return false;
+    }
+
+    write_back_reordered(tabs, &original_row_ids, &final_row_ids, &final_group_ids);
+    true
+}
+
 /// Reorder the workspace at `index` toward `to_index` — the port of canonical
 /// `WorkspaceReorderCoordinator.reorderSidebarWorkspace`
 /// (`WorkspaceReorderCoordinator.swift:243-257`): a mover that anchors a group
@@ -834,7 +2643,9 @@ fn write_back_reordered(
 /// that mover: a `tabs.workspaces` index for non-anchors, a TOP-LEVEL row index
 /// for group anchors (canonical UI feeds indices from the matching space via
 /// `sidebarReorderWorkspaceIds`, Coordinator:171-183; the web drag lane does
-/// the same).
+/// the same). The sidebar-drag-only `uses_top_level_rows` mode additionally
+/// promotes a grouped child into that top-level row space, matching canonical
+/// `reorderSidebarWorkspace(... usesTopLevelRows: true)`.
 ///
 /// PLAIN path (Coordinator:109-132 + `workspaceReorderPlan` :142-151):
 /// - Unknown id → plan nil → no-op (:143, :110); `tabs.count <= 1` → no
@@ -893,10 +2704,21 @@ fn write_back_reordered(
 /// `cmux_workspaces::WorkspaceReorderPlanner` (`reorder.rs`) and will back the
 /// future `workspace.reorder_many` socket lane; canonical drag is single-row,
 /// so it is intentionally not part of this op.
-pub fn reorder_workspaces(
+pub fn reorder_workspaces(tabs: &mut SessionTabManagerSnapshot, index: i64, to_index: i64) -> bool {
+    reorder_workspaces_with_mode(tabs, index, to_index, false)
+}
+
+/// Sidebar-reorder variant of [`reorder_workspaces`]. When
+/// `uses_top_level_rows` is `true`, the mover is planned in top-level row space
+/// even if it is a non-anchor grouped child, mirroring canonical
+/// `reorderSidebarWorkspace(... usesTopLevelRows: true)` for "drag this member
+/// out of its group / into top-level space". In that promotion case, the moved
+/// workspace's serialized `group_id` is cleared on write-back too.
+pub fn reorder_workspaces_with_mode(
     tabs: &mut SessionTabManagerSnapshot,
     index: i64,
     to_index: i64,
+    uses_top_level_rows: bool,
 ) -> bool {
     if index < 0 || index as usize >= tabs.workspaces.len() {
         return false;
@@ -911,10 +2733,17 @@ pub fn reorder_workspaces(
     let (rows, groups) = workspace_mirror(tabs);
     let original_row_ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
     let mover_id = rows[from].id;
+    let mover_is_anchor = is_workspace_group_anchor(&groups, mover_id);
+    let promotes_grouped_workspace =
+        uses_top_level_rows && !mover_is_anchor && rows[from].group_id.is_some();
 
-    let (final_rows, final_groups) = if is_workspace_group_anchor(&groups, mover_id) {
+    let (final_rows, final_groups) = if mover_is_anchor || uses_top_level_rows {
         // TOP-LEVEL (group-row) move, Coordinator:260-296.
-        let top = sidebar_top_level_workspace_ids(&rows, &groups, None);
+        let top = sidebar_top_level_workspace_ids(
+            &rows,
+            &groups,
+            promotes_grouped_workspace.then_some(mover_id),
+        );
         let Some(top_from) = top.iter().position(|id| *id == mover_id) else {
             // Coordinator:268 — mover absent from the top-level rows.
             return false;
@@ -927,7 +2756,17 @@ pub fn reorder_workspaces(
         let mut desired = top;
         desired.remove(top_from);
         desired.insert(clamped as usize, mover_id);
-        let new_rows = normalize_workspace_group_runs_preserving_order(&rows, &groups, &desired);
+        let base_rows = if promotes_grouped_workspace {
+            // Canonical `reorderTopLevelWorkspaceItem(... promotesGroupedWorkspace:
+            // true)` clears the mover's group membership before materializing the
+            // desired top-level order, so the dragged child becomes its own
+            // top-level row instead of snapping back into the old group run.
+            assign_group(&rows, mover_id, None)
+        } else {
+            rows.clone()
+        };
+        let new_rows =
+            normalize_workspace_group_runs_preserving_order(&base_rows, &groups, &desired);
         let new_groups = sync_workspace_groups_order_to_anchor_order(&new_rows, &groups);
         (new_rows, new_groups)
     } else {
@@ -955,12 +2794,18 @@ pub fn reorder_workspaces(
     }
     let final_group_ids: Vec<Uuid> = final_groups.iter().map(|g| g.id).collect();
     write_back_reordered(tabs, &original_row_ids, &final_row_ids, &final_group_ids);
+    if promotes_grouped_workspace {
+        if let Some(new_index) = final_row_ids.iter().position(|id| *id == mover_id) {
+            tabs.workspaces[new_index].group_id = None;
+        }
+    }
     true
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::SessionPanelShellActivityStateSnapshot;
 
     fn pane(id: &str) -> Layout {
         single_pane(id)
@@ -1012,7 +2857,12 @@ mod tests {
         let two_vs_one = SessionSplitLayoutSnapshot {
             orientation: SessionSplitOrientation::Horizontal,
             divider_position: 0.5,
-            first: Box::new(split(SessionSplitOrientation::Vertical, 0.5, pane("a"), pane("b"))),
+            first: Box::new(split(
+                SessionSplitOrientation::Vertical,
+                0.5,
+                pane("a"),
+                pane("b"),
+            )),
             second: Box::new(pane("c")),
         };
         assert!((equalize_divider(&two_vs_one) - 2.0 / 3.0).abs() < 1e-9);
@@ -1059,7 +2909,12 @@ mod tests {
             SessionSplitOrientation::Horizontal,
             0.75,
             pane("a"),
-            split(SessionSplitOrientation::Horizontal, 0.15, pane("b"), pane("c")),
+            split(
+                SessionSplitOrientation::Horizontal,
+                0.15,
+                pane("b"),
+                pane("c"),
+            ),
         );
         let before = count_leaves(&tree);
         assert!(equalize_dividers(&mut tree));
@@ -1075,6 +2930,360 @@ mod tests {
         } else {
             panic!("expected a split");
         }
+    }
+
+    #[test]
+    fn toggle_split_zoom_sets_and_clears_the_workspace_zoom_target() {
+        let mut workspace = fresh_terminal_workspace("a");
+        workspace.layout = Some(split(
+            SessionSplitOrientation::Horizontal,
+            0.5,
+            pane("a"),
+            pane("b"),
+        ));
+        assert!(toggle_split_zoom(&mut workspace, "b"));
+        assert_eq!(workspace.zoomed_panel_id.as_deref(), Some("b"));
+        assert!(toggle_split_zoom(&mut workspace, "b"));
+        assert_eq!(workspace.zoomed_panel_id, None);
+    }
+
+    #[test]
+    fn toggle_split_zoom_is_a_noop_without_a_split_or_matching_panel() {
+        let mut workspace = fresh_terminal_workspace("a");
+        assert!(!toggle_split_zoom(&mut workspace, "a"));
+        assert_eq!(workspace.zoomed_panel_id, None);
+
+        workspace.layout = Some(split(
+            SessionSplitOrientation::Horizontal,
+            0.5,
+            pane("a"),
+            pane("b"),
+        ));
+        assert!(!toggle_split_zoom(&mut workspace, "missing"));
+        assert_eq!(workspace.zoomed_panel_id, None);
+    }
+
+    #[test]
+    fn canvas_panes_from_layout_preserves_split_ratios() {
+        let tree = split(
+            SessionSplitOrientation::Horizontal,
+            0.25,
+            pane("a"),
+            split(
+                SessionSplitOrientation::Vertical,
+                0.75,
+                pane("b"),
+                pane("c"),
+            ),
+        );
+
+        let panes = canvas_panes_from_layout(&tree);
+
+        assert_eq!(panes.len(), 3);
+        assert_eq!(panes[0].panel_id, "a");
+        assert_eq!(
+            (panes[0].x, panes[0].y, panes[0].width, panes[0].height),
+            (0, 0, 300, 800)
+        );
+        assert_eq!(panes[1].panel_id, "b");
+        assert_eq!(
+            (panes[1].x, panes[1].y, panes[1].width, panes[1].height),
+            (300, 0, 900, 600)
+        );
+        assert_eq!(panes[2].panel_id, "c");
+        assert_eq!(
+            (panes[2].x, panes[2].y, panes[2].width, panes[2].height),
+            (300, 600, 900, 200)
+        );
+    }
+
+    #[test]
+    fn set_layout_mode_toggles_canvas_and_seeds_once() {
+        let mut workspace = fresh_terminal_workspace("a");
+        workspace.layout = Some(split(
+            SessionSplitOrientation::Horizontal,
+            0.5,
+            pane("a"),
+            pane("b"),
+        ));
+
+        assert!(set_layout_mode(&mut workspace, Some("canvas")));
+        assert_eq!(workspace.layout_mode.as_deref(), Some("canvas"));
+        assert_eq!(workspace.canvas_panes.as_ref().map(Vec::len), Some(2));
+
+        let seeded = workspace.canvas_panes.clone();
+        assert!(!set_layout_mode(&mut workspace, Some("canvas")));
+        assert_eq!(workspace.canvas_panes, seeded);
+
+        assert!(set_layout_mode(&mut workspace, Some("split")));
+        assert_eq!(workspace.layout_mode, None);
+        assert_eq!(workspace.canvas_panes, seeded);
+    }
+
+    #[test]
+    fn set_layout_mode_unknown_values_fall_back_to_split() {
+        let mut workspace = fresh_terminal_workspace("a");
+        assert!(set_layout_mode(&mut workspace, Some("canvas")));
+        assert!(set_layout_mode(&mut workspace, Some("mystery")));
+        assert_eq!(workspace.layout_mode, None);
+    }
+
+    #[test]
+    fn set_canvas_pane_frame_updates_existing_seeded_pane() {
+        let mut workspace = fresh_terminal_workspace("a");
+        assert!(set_layout_mode(&mut workspace, Some("canvas")));
+
+        assert!(set_canvas_pane_frame(&mut workspace, "a", 40, 50, 640, 360));
+        let pane = &workspace.canvas_panes.as_ref().unwrap()[0];
+        assert_eq!(
+            (pane.x, pane.y, pane.width, pane.height),
+            (40, 50, 640, 360)
+        );
+        assert!(!set_canvas_pane_frame(
+            &mut workspace,
+            "a",
+            40,
+            50,
+            640,
+            360
+        ));
+    }
+
+    #[test]
+    fn set_canvas_pane_frame_seeds_from_layout_before_updating() {
+        let mut workspace = fresh_terminal_workspace("a");
+        workspace.layout = Some(split(
+            SessionSplitOrientation::Horizontal,
+            0.5,
+            pane("a"),
+            pane("b"),
+        ));
+
+        assert!(set_canvas_pane_frame(
+            &mut workspace,
+            "b",
+            700,
+            20,
+            300,
+            240
+        ));
+
+        let panes = workspace.canvas_panes.as_ref().unwrap();
+        assert_eq!(panes.len(), 2);
+        let updated = panes.iter().find(|pane| pane.panel_id == "b").unwrap();
+        assert_eq!(
+            (updated.x, updated.y, updated.width, updated.height),
+            (700, 20, 300, 240)
+        );
+    }
+
+    #[test]
+    fn set_canvas_pane_frame_adds_missing_panel_and_rejects_blank_ids() {
+        let mut workspace = fresh_terminal_workspace("a");
+        assert!(!set_canvas_pane_frame(&mut workspace, " ", 0, 0, 1, 1));
+        assert!(set_canvas_pane_frame(&mut workspace, "new", 1, 2, -3, 0));
+        let pane = workspace.canvas_panes.as_ref().unwrap().last().unwrap();
+        assert_eq!(pane.panel_id, "new");
+        assert_eq!((pane.width, pane.height), (1, 1));
+    }
+
+    #[test]
+    fn apply_canvas_action_rejects_split_mode_and_unknown_actions() {
+        let mut workspace = fresh_terminal_workspace("a");
+        workspace.canvas_panes = Some(vec![
+            SessionCanvasPaneSnapshot {
+                panel_id: "a".to_string(),
+                x: 20,
+                y: 30,
+                width: 100,
+                height: 80,
+                panel_ids: None,
+                selected_panel_id: Some("a".to_string()),
+            },
+            SessionCanvasPaneSnapshot {
+                panel_id: "b".to_string(),
+                x: 80,
+                y: 90,
+                width: 200,
+                height: 120,
+                panel_ids: None,
+                selected_panel_id: Some("b".to_string()),
+            },
+        ]);
+        assert!(!apply_canvas_action(&mut workspace, "alignLeft"));
+        workspace.layout_mode = Some("canvas".to_string());
+        assert!(!apply_canvas_action(&mut workspace, "mystery"));
+    }
+
+    #[test]
+    fn apply_canvas_action_aligns_and_equalizes_persisted_frames() {
+        let mut workspace = fresh_terminal_workspace("a");
+        workspace.layout_mode = Some("canvas".to_string());
+        workspace.canvas_panes = Some(vec![
+            SessionCanvasPaneSnapshot {
+                panel_id: "a".to_string(),
+                x: 20,
+                y: 30,
+                width: 100,
+                height: 80,
+                panel_ids: None,
+                selected_panel_id: Some("a".to_string()),
+            },
+            SessionCanvasPaneSnapshot {
+                panel_id: "b".to_string(),
+                x: 80,
+                y: 90,
+                width: 200,
+                height: 120,
+                panel_ids: None,
+                selected_panel_id: Some("b".to_string()),
+            },
+        ]);
+
+        assert!(apply_canvas_action(&mut workspace, "canvas.alignLeft"));
+        let panes = workspace.canvas_panes.as_ref().unwrap();
+        assert_eq!(
+            panes.iter().map(|pane| pane.x).collect::<Vec<_>>(),
+            vec![20, 20]
+        );
+
+        assert!(apply_canvas_action(&mut workspace, "equalizeHeights"));
+        let panes = workspace.canvas_panes.as_ref().unwrap();
+        assert_eq!(
+            panes.iter().map(|pane| pane.height).collect::<Vec<_>>(),
+            vec![120, 120]
+        );
+    }
+
+    #[test]
+    fn apply_canvas_action_distributes_and_tidies_frames() {
+        let mut workspace = fresh_terminal_workspace("a");
+        workspace.layout_mode = Some("canvas".to_string());
+        workspace.canvas_panes = Some(vec![
+            SessionCanvasPaneSnapshot {
+                panel_id: "c".to_string(),
+                x: 320,
+                y: 210,
+                width: 50,
+                height: 50,
+                panel_ids: None,
+                selected_panel_id: Some("c".to_string()),
+            },
+            SessionCanvasPaneSnapshot {
+                panel_id: "a".to_string(),
+                x: 10,
+                y: 20,
+                width: 100,
+                height: 80,
+                panel_ids: None,
+                selected_panel_id: Some("a".to_string()),
+            },
+            SessionCanvasPaneSnapshot {
+                panel_id: "b".to_string(),
+                x: 240,
+                y: 50,
+                width: 75,
+                height: 60,
+                panel_ids: None,
+                selected_panel_id: Some("b".to_string()),
+            },
+        ]);
+
+        assert!(apply_canvas_action(
+            &mut workspace,
+            "distributeHorizontally"
+        ));
+        let panes = workspace.canvas_panes.as_ref().unwrap();
+        assert_eq!(panes[1].x, 10);
+        assert_eq!(panes[2].x, 126);
+        assert_eq!(panes[0].x, 217);
+
+        assert!(apply_canvas_action(&mut workspace, "tidy"));
+        let panes = workspace.canvas_panes.as_ref().unwrap();
+        assert_eq!(
+            panes
+                .iter()
+                .map(|pane| (pane.panel_id.as_str(), pane.x, pane.y))
+                .collect::<Vec<_>>(),
+            vec![("c", 10, 116), ("a", 10, 20), ("b", 126, 20)]
+        );
+    }
+
+    #[test]
+    fn apply_canvas_action_with_gap_uses_configured_spacing() {
+        let mut workspace = fresh_terminal_workspace("a");
+        workspace.layout_mode = Some("canvas".to_string());
+        workspace.canvas_panes = Some(vec![
+            SessionCanvasPaneSnapshot {
+                panel_id: "a".to_string(),
+                x: 10,
+                y: 20,
+                width: 100,
+                height: 80,
+                panel_ids: None,
+                selected_panel_id: Some("a".to_string()),
+            },
+            SessionCanvasPaneSnapshot {
+                panel_id: "b".to_string(),
+                x: 240,
+                y: 50,
+                width: 75,
+                height: 60,
+                panel_ids: None,
+                selected_panel_id: Some("b".to_string()),
+            },
+            SessionCanvasPaneSnapshot {
+                panel_id: "c".to_string(),
+                x: 320,
+                y: 210,
+                width: 50,
+                height: 50,
+                panel_ids: None,
+                selected_panel_id: Some("c".to_string()),
+            },
+        ]);
+
+        assert!(apply_canvas_action_with_gap(
+            &mut workspace,
+            "distributeHorizontally",
+            Some(24)
+        ));
+        let panes = workspace.canvas_panes.as_ref().unwrap();
+        assert_eq!(panes[0].x, 10);
+        assert_eq!(panes[1].x, 134);
+        assert_eq!(panes[2].x, 233);
+
+        assert!(apply_canvas_action_with_gap(
+            &mut workspace,
+            "tidy",
+            Some(24)
+        ));
+        let panes = workspace.canvas_panes.as_ref().unwrap();
+        assert_eq!(
+            panes
+                .iter()
+                .map(|pane| (pane.panel_id.as_str(), pane.x, pane.y))
+                .collect::<Vec<_>>(),
+            vec![("a", 10, 20), ("b", 134, 20), ("c", 10, 124)]
+        );
+    }
+
+    #[test]
+    fn apply_canvas_action_seeds_from_layout_when_needed() {
+        let mut workspace = fresh_terminal_workspace("a");
+        workspace.layout = Some(split(
+            SessionSplitOrientation::Horizontal,
+            0.5,
+            pane("a"),
+            pane("b"),
+        ));
+        workspace.layout_mode = Some("canvas".to_string());
+
+        assert!(apply_canvas_action(&mut workspace, "distributeVertically"));
+        let panes = workspace.canvas_panes.as_ref().unwrap();
+        assert_eq!(panes.len(), 2);
+        assert_eq!(panes[0].y, 0);
+        assert_eq!(panes[1].y, 816);
     }
 
     #[test]
@@ -1101,7 +3310,13 @@ mod tests {
     #[test]
     fn split_pane_insert_first_puts_the_new_pane_first() {
         let mut tree = pane("a");
-        assert!(split_pane(&mut tree, "a", SessionSplitOrientation::Vertical, "b", true));
+        assert!(split_pane(
+            &mut tree,
+            "a",
+            SessionSplitOrientation::Vertical,
+            "b",
+            true
+        ));
         if let Layout::Split(s) = &tree {
             assert_eq!(panel_ids(&s.first), vec!["b"]);
             assert_eq!(panel_ids(&s.second), vec!["a"]);
@@ -1112,8 +3327,19 @@ mod tests {
 
     #[test]
     fn split_pane_targets_a_nested_pane() {
-        let mut tree = split(SessionSplitOrientation::Horizontal, 0.5, pane("a"), pane("b"));
-        assert!(split_pane(&mut tree, "b", SessionSplitOrientation::Vertical, "c", false));
+        let mut tree = split(
+            SessionSplitOrientation::Horizontal,
+            0.5,
+            pane("a"),
+            pane("b"),
+        );
+        assert!(split_pane(
+            &mut tree,
+            "b",
+            SessionSplitOrientation::Vertical,
+            "c",
+            false
+        ));
         // The right child became a vertical split of b|c; the root is untouched.
         if let Layout::Split(root) = &tree {
             assert_eq!(count_leaves(&root.second), 2);
@@ -1127,7 +3353,13 @@ mod tests {
     #[test]
     fn split_pane_returns_false_for_unknown_target() {
         let mut tree = pane("a");
-        assert!(!split_pane(&mut tree, "zzz", SessionSplitOrientation::Horizontal, "b", false));
+        assert!(!split_pane(
+            &mut tree,
+            "zzz",
+            SessionSplitOrientation::Horizontal,
+            "b",
+            false
+        ));
         assert_eq!(tree, pane("a"));
     }
 
@@ -1154,7 +3386,12 @@ mod tests {
             split(SessionSplitOrientation::Vertical, 0.5, pane("b"), pane("c")),
         ));
         assert_eq!(close_panel(&mut layout, "b"), CloseOutcome::Removed);
-        let expected = split(SessionSplitOrientation::Horizontal, 0.5, pane("a"), pane("c"));
+        let expected = split(
+            SessionSplitOrientation::Horizontal,
+            0.5,
+            pane("a"),
+            pane("c"),
+        );
         assert_eq!(layout, Some(expected));
     }
 
@@ -1168,9 +3405,23 @@ mod tests {
     #[test]
     fn close_panel_removes_one_of_several_tabs_without_collapsing() {
         let mut layout = Some(Layout::Pane(SessionPaneLayoutSnapshot {
+            pane_id: None,
             panel_ids: vec!["a".into(), "b".into()],
             selected_panel_id: Some("a".into()),
             surface_kind: None,
+            markdown_file_path: None,
+            file_path: None,
+            diff_viewer_token: None,
+            diff_viewer_request_path: None,
+            browser_url: None,
+            browser_proxy_url: None,
+            browser_back_history: None,
+            browser_forward_history: None,
+            browser_omnibar_visible: None,
+            browser_focus_mode_active: None,
+            browser_developer_tools_visible: None,
+            browser_developer_tools_panel: None,
+            browser_page_zoom: None,
         }));
         assert_eq!(close_panel(&mut layout, "a"), CloseOutcome::Removed);
         // Pane survives with `b`, and selection moved off the closed panel.
@@ -1179,6 +3430,135 @@ mod tests {
             assert_eq!(p.selected_panel_id.as_deref(), Some("b"));
         } else {
             panic!("expected a surviving pane");
+        }
+    }
+
+    #[test]
+    fn select_adjacent_panel_wraps_within_a_multi_panel_pane() {
+        let mut tree = Layout::Pane(SessionPaneLayoutSnapshot {
+            pane_id: None,
+            panel_ids: vec!["a".into(), "b".into(), "c".into()],
+            selected_panel_id: Some("c".into()),
+            surface_kind: None,
+            markdown_file_path: None,
+            file_path: None,
+            diff_viewer_token: None,
+            diff_viewer_request_path: None,
+            browser_url: None,
+            browser_proxy_url: None,
+            browser_back_history: None,
+            browser_forward_history: None,
+            browser_omnibar_visible: None,
+            browser_focus_mode_active: None,
+            browser_developer_tools_visible: None,
+            browser_developer_tools_panel: None,
+            browser_page_zoom: None,
+        });
+        assert!(select_adjacent_panel(&mut tree, "b", true));
+        if let Layout::Pane(pane) = &tree {
+            assert_eq!(pane.selected_panel_id.as_deref(), Some("a"));
+        } else {
+            panic!("expected pane");
+        }
+    }
+
+    #[test]
+    fn select_adjacent_panel_previous_wraps_backward() {
+        let mut tree = Layout::Pane(SessionPaneLayoutSnapshot {
+            pane_id: None,
+            panel_ids: vec!["a".into(), "b".into(), "c".into()],
+            selected_panel_id: Some("a".into()),
+            surface_kind: None,
+            markdown_file_path: None,
+            file_path: None,
+            diff_viewer_token: None,
+            diff_viewer_request_path: None,
+            browser_url: None,
+            browser_proxy_url: None,
+            browser_back_history: None,
+            browser_forward_history: None,
+            browser_omnibar_visible: None,
+            browser_focus_mode_active: None,
+            browser_developer_tools_visible: None,
+            browser_developer_tools_panel: None,
+            browser_page_zoom: None,
+        });
+        assert!(select_adjacent_panel(&mut tree, "a", false));
+        if let Layout::Pane(pane) = &tree {
+            assert_eq!(pane.selected_panel_id.as_deref(), Some("c"));
+        } else {
+            panic!("expected pane");
+        }
+    }
+
+    #[test]
+    fn select_adjacent_panel_is_noop_for_single_panel_or_unknown_panel() {
+        let mut tree = pane("a");
+        assert!(!select_adjacent_panel(&mut tree, "a", true));
+        assert_eq!(tree, pane("a"));
+        assert!(!select_adjacent_panel(&mut tree, "missing", true));
+        assert_eq!(tree, pane("a"));
+    }
+
+    #[test]
+    fn select_panel_sets_the_requested_panel_in_its_pane() {
+        let mut tree = Layout::Pane(SessionPaneLayoutSnapshot {
+            pane_id: None,
+            panel_ids: vec!["a".into(), "b".into(), "c".into()],
+            selected_panel_id: Some("a".into()),
+            surface_kind: None,
+            markdown_file_path: None,
+            file_path: None,
+            diff_viewer_token: None,
+            diff_viewer_request_path: None,
+            browser_url: None,
+            browser_proxy_url: None,
+            browser_back_history: None,
+            browser_forward_history: None,
+            browser_omnibar_visible: None,
+            browser_focus_mode_active: None,
+            browser_developer_tools_visible: None,
+            browser_developer_tools_panel: None,
+            browser_page_zoom: None,
+        });
+
+        assert!(select_panel(&mut tree, "c"));
+        if let Layout::Pane(pane) = &tree {
+            assert_eq!(pane.selected_panel_id.as_deref(), Some("c"));
+        } else {
+            panic!("expected pane");
+        }
+        assert!(!select_panel(&mut tree, "c"));
+        assert!(!select_panel(&mut tree, "missing"));
+    }
+
+    #[test]
+    fn add_panel_to_pane_inserts_after_anchor_and_selects_new_panel() {
+        let mut tree = Layout::Pane(SessionPaneLayoutSnapshot {
+            pane_id: Some("pane-1".into()),
+            panel_ids: vec!["a".into(), "c".into()],
+            selected_panel_id: Some("a".into()),
+            surface_kind: None,
+            markdown_file_path: None,
+            file_path: None,
+            diff_viewer_token: None,
+            diff_viewer_request_path: None,
+            browser_url: None,
+            browser_proxy_url: None,
+            browser_back_history: None,
+            browser_forward_history: None,
+            browser_omnibar_visible: None,
+            browser_focus_mode_active: None,
+            browser_developer_tools_visible: None,
+            browser_developer_tools_panel: None,
+            browser_page_zoom: None,
+        });
+        assert!(add_panel_to_pane(&mut tree, "a", "b"));
+        if let Layout::Pane(pane) = tree {
+            assert_eq!(pane.panel_ids, ["a", "b", "c"]);
+            assert_eq!(pane.selected_panel_id.as_deref(), Some("b"));
+        } else {
+            panic!("expected pane");
         }
     }
 
@@ -1237,7 +3617,13 @@ mod tests {
             panic!("expected a pane");
         }
         // Splitting keeps `a`'s agent kind on its side; the new pane defaults off.
-        assert!(split_pane(&mut tree, "a", SessionSplitOrientation::Horizontal, "b", false));
+        assert!(split_pane(
+            &mut tree,
+            "a",
+            SessionSplitOrientation::Horizontal,
+            "b",
+            false
+        ));
         if let Layout::Split(s) = &tree {
             if let Layout::Pane(first) = s.first.as_ref() {
                 assert_eq!(first.surface_kind.as_deref(), Some("agent"));
@@ -1262,9 +3648,373 @@ mod tests {
     }
 
     #[test]
+    fn set_markdown_file_path_marks_the_pane_and_survives_a_split() {
+        let mut tree = pane("a");
+        assert!(set_markdown_file_path(
+            &mut tree,
+            "a",
+            Some("C:/docs/readme.md".into())
+        ));
+        if let Layout::Pane(p) = &tree {
+            assert_eq!(p.markdown_file_path.as_deref(), Some("C:/docs/readme.md"));
+        } else {
+            panic!("expected a pane");
+        }
+        assert!(split_pane(
+            &mut tree,
+            "a",
+            SessionSplitOrientation::Horizontal,
+            "b",
+            false
+        ));
+        if let Layout::Split(s) = &tree {
+            if let Layout::Pane(first) = s.first.as_ref() {
+                assert_eq!(
+                    first.markdown_file_path.as_deref(),
+                    Some("C:/docs/readme.md")
+                );
+            } else {
+                panic!("expected the existing pane to survive as first");
+            }
+            if let Layout::Pane(second) = s.second.as_ref() {
+                assert_eq!(second.markdown_file_path, None);
+            } else {
+                panic!("expected the new pane as second");
+            }
+        } else {
+            panic!("expected a split");
+        }
+    }
+
+    #[test]
+    fn set_file_path_marks_the_pane_and_survives_a_split() {
+        let mut tree = pane("a");
+        assert!(set_file_path(
+            &mut tree,
+            "a",
+            Some("C:/docs/notes.txt".into())
+        ));
+        if let Layout::Pane(p) = &tree {
+            assert_eq!(p.file_path.as_deref(), Some("C:/docs/notes.txt"));
+        } else {
+            panic!("expected a pane");
+        }
+        assert!(split_pane(
+            &mut tree,
+            "a",
+            SessionSplitOrientation::Horizontal,
+            "b",
+            false
+        ));
+        if let Layout::Split(s) = &tree {
+            if let Layout::Pane(first) = s.first.as_ref() {
+                assert_eq!(first.file_path.as_deref(), Some("C:/docs/notes.txt"));
+            } else {
+                panic!("expected the existing pane to survive as first");
+            }
+            if let Layout::Pane(second) = s.second.as_ref() {
+                assert_eq!(second.file_path, None);
+            } else {
+                panic!("expected the new pane as second");
+            }
+        } else {
+            panic!("expected a split");
+        }
+    }
+
+    #[test]
+    fn set_diff_viewer_session_marks_the_pane_and_survives_a_split() {
+        let mut tree = pane("a");
+        assert!(set_diff_viewer_session(
+            &mut tree,
+            "a",
+            Some("tok-abcdef0123456789".into()),
+            Some("/index.html".into())
+        ));
+        if let Layout::Pane(p) = &tree {
+            assert_eq!(p.diff_viewer_token.as_deref(), Some("tok-abcdef0123456789"));
+            assert_eq!(p.diff_viewer_request_path.as_deref(), Some("/index.html"));
+        } else {
+            panic!("expected a pane");
+        }
+        assert!(split_pane(
+            &mut tree,
+            "a",
+            SessionSplitOrientation::Horizontal,
+            "b",
+            false
+        ));
+        if let Layout::Split(s) = &tree {
+            if let Layout::Pane(first) = s.first.as_ref() {
+                assert_eq!(
+                    first.diff_viewer_token.as_deref(),
+                    Some("tok-abcdef0123456789")
+                );
+                assert_eq!(
+                    first.diff_viewer_request_path.as_deref(),
+                    Some("/index.html")
+                );
+            } else {
+                panic!("expected the existing pane to survive as first");
+            }
+            if let Layout::Pane(second) = s.second.as_ref() {
+                assert_eq!(second.diff_viewer_token, None);
+                assert_eq!(second.diff_viewer_request_path, None);
+            } else {
+                panic!("expected the new pane as second");
+            }
+        } else {
+            panic!("expected a split");
+        }
+    }
+
+    #[test]
+    fn set_browser_state_marks_the_pane_and_survives_a_split() {
+        let mut tree = pane("a");
+        assert!(set_browser_url(
+            &mut tree,
+            "a",
+            Some("https://example.com".into())
+        ));
+        assert!(set_browser_page_zoom(&mut tree, "a", Some(1.25)));
+        if let Layout::Pane(p) = &tree {
+            assert_eq!(p.browser_url.as_deref(), Some("https://example.com"));
+            assert_eq!(p.browser_page_zoom, Some(1.25));
+        } else {
+            panic!("expected a pane");
+        }
+        assert!(split_pane(
+            &mut tree,
+            "a",
+            SessionSplitOrientation::Horizontal,
+            "b",
+            false
+        ));
+        if let Layout::Split(s) = &tree {
+            if let Layout::Pane(first) = s.first.as_ref() {
+                assert_eq!(first.browser_url.as_deref(), Some("https://example.com"));
+                assert_eq!(first.browser_page_zoom, Some(1.25));
+            } else {
+                panic!("expected the existing pane to survive as first");
+            }
+            if let Layout::Pane(second) = s.second.as_ref() {
+                assert_eq!(second.browser_url, None);
+                assert_eq!(second.browser_back_history, None);
+                assert_eq!(second.browser_forward_history, None);
+                assert_eq!(second.browser_omnibar_visible, None);
+                assert_eq!(second.browser_focus_mode_active, None);
+                assert_eq!(second.browser_developer_tools_visible, None);
+                assert_eq!(second.browser_developer_tools_panel, None);
+                assert_eq!(second.browser_page_zoom, None);
+            } else {
+                panic!("expected the new pane as second");
+            }
+        } else {
+            panic!("expected a split");
+        }
+    }
+
+    #[test]
+    fn browser_history_can_be_cleared_without_losing_the_current_url() {
+        let mut tree = pane("a");
+        assert!(navigate_browser(
+            &mut tree,
+            "a",
+            "https://one.example".into()
+        ));
+        assert!(navigate_browser(
+            &mut tree,
+            "a",
+            "https://two.example".into()
+        ));
+        assert!(browser_go_back(&mut tree, "a"));
+
+        assert!(clear_browser_history(&mut tree, "a"));
+        if let Layout::Pane(p) = &tree {
+            assert_eq!(p.browser_url.as_deref(), Some("https://one.example/"));
+            assert_eq!(p.browser_back_history, None);
+            assert_eq!(p.browser_forward_history, None);
+        } else {
+            panic!("expected a pane");
+        }
+        assert!(!clear_browser_history(&mut tree, "a"));
+    }
+
+    #[test]
+    fn browser_omnibar_visibility_toggles_from_visible_default() {
+        let mut tree = pane("a");
+        assert!(toggle_browser_omnibar_visible(&mut tree, "a"));
+        if let Layout::Pane(p) = &tree {
+            assert_eq!(p.browser_omnibar_visible, Some(false));
+        } else {
+            panic!("expected a pane");
+        }
+        assert!(toggle_browser_omnibar_visible(&mut tree, "a"));
+        if let Layout::Pane(p) = &tree {
+            assert_eq!(p.browser_omnibar_visible, Some(true));
+        } else {
+            panic!("expected a pane");
+        }
+    }
+
+    #[test]
+    fn browser_focus_mode_toggles_from_inactive_default() {
+        let mut tree = pane("a");
+        assert!(toggle_browser_focus_mode(&mut tree, "a"));
+        if let Layout::Pane(p) = &tree {
+            assert_eq!(p.browser_focus_mode_active, Some(true));
+        } else {
+            panic!("expected a pane");
+        }
+        assert!(toggle_browser_focus_mode(&mut tree, "a"));
+        if let Layout::Pane(p) = &tree {
+            assert_eq!(p.browser_focus_mode_active, Some(false));
+        } else {
+            panic!("expected a pane");
+        }
+    }
+
+    #[test]
+    fn browser_developer_tools_toggle_and_panel_selection_persist() {
+        let mut tree = pane("a");
+        assert!(toggle_browser_developer_tools(&mut tree, "a"));
+        if let Layout::Pane(p) = &tree {
+            assert_eq!(p.browser_developer_tools_visible, Some(true));
+            assert_eq!(
+                p.browser_developer_tools_panel.as_deref(),
+                Some("inspector")
+            );
+        } else {
+            panic!("expected a pane");
+        }
+
+        assert!(show_browser_developer_tools(&mut tree, "a", "console"));
+        if let Layout::Pane(p) = &tree {
+            assert_eq!(p.browser_developer_tools_visible, Some(true));
+            assert_eq!(p.browser_developer_tools_panel.as_deref(), Some("console"));
+        } else {
+            panic!("expected a pane");
+        }
+
+        assert!(toggle_browser_developer_tools(&mut tree, "a"));
+        if let Layout::Pane(p) = &tree {
+            assert_eq!(p.browser_developer_tools_visible, Some(false));
+            assert_eq!(p.browser_developer_tools_panel.as_deref(), Some("console"));
+        } else {
+            panic!("expected a pane");
+        }
+    }
+
+    #[test]
+    fn browser_navigation_history_round_trips_back_and_forward() {
+        let mut tree = pane("a");
+        assert!(navigate_browser(
+            &mut tree,
+            "a",
+            "https://one.example".into()
+        ));
+        assert!(navigate_browser(
+            &mut tree,
+            "a",
+            "https://two.example".into()
+        ));
+        if let Layout::Pane(p) = &tree {
+            assert_eq!(p.browser_url.as_deref(), Some("https://two.example"));
+            assert_eq!(
+                p.browser_back_history.as_deref(),
+                Some(["https://one.example/".to_string()].as_slice())
+            );
+            assert_eq!(p.browser_forward_history, None);
+        } else {
+            panic!("expected a pane");
+        }
+
+        assert!(browser_go_back(&mut tree, "a"));
+        if let Layout::Pane(p) = &tree {
+            assert_eq!(p.browser_url.as_deref(), Some("https://one.example/"));
+            assert_eq!(p.browser_back_history, None);
+            assert_eq!(
+                p.browser_forward_history.as_deref(),
+                Some(["https://two.example/".to_string()].as_slice())
+            );
+        } else {
+            panic!("expected a pane");
+        }
+
+        assert!(browser_go_forward(&mut tree, "a"));
+        if let Layout::Pane(p) = &tree {
+            assert_eq!(p.browser_url.as_deref(), Some("https://two.example/"));
+            assert_eq!(
+                p.browser_back_history.as_deref(),
+                Some(["https://one.example/".to_string()].as_slice())
+            );
+            assert_eq!(p.browser_forward_history, None);
+        } else {
+            panic!("expected a pane");
+        }
+    }
+
+    #[test]
+    fn browser_navigation_history_uses_session_history_sanitizer() {
+        let mut tree = pane("a");
+        assert!(navigate_browser(
+            &mut tree,
+            "a",
+            "cmux-diff-viewer://tok-abcdef0123456789/index.html".into()
+        ));
+        assert!(navigate_browser(
+            &mut tree,
+            "a",
+            "https://two.example/path".into()
+        ));
+        assert!(navigate_browser(&mut tree, "a", "about:blank".into()));
+        if let Layout::Pane(p) = &mut tree {
+            assert_eq!(
+                p.browser_back_history.as_deref(),
+                Some(["https://two.example/path".to_string()].as_slice())
+            );
+            p.browser_back_history = Some(vec![
+                "about:blank".to_string(),
+                "http://cmux-diff-viewer.localhost/tok-abcdef0123456789/index.html".to_string(),
+                "https://valid.example".to_string(),
+            ]);
+            p.browser_forward_history = Some(vec![
+                "cmux-remote-image://img?url=https://x.test/a.png".to_string(),
+            ]);
+        } else {
+            panic!("expected a pane");
+        }
+
+        let Layout::Pane(p) = &tree else {
+            panic!("expected a pane");
+        };
+        assert_eq!(
+            browser_navigation_availability(
+                p.browser_back_history.as_deref(),
+                p.browser_forward_history.as_deref(),
+            ),
+            NavigationAvailability::new(true, false)
+        );
+
+        assert!(browser_go_back(&mut tree, "a"));
+        if let Layout::Pane(p) = &tree {
+            assert_eq!(p.browser_url.as_deref(), Some("https://valid.example/"));
+            assert_eq!(p.browser_back_history, None);
+        } else {
+            panic!("expected a pane");
+        }
+    }
+
+    #[test]
     fn split_child_serializes_lowercase_matching_the_web_path() {
-        assert_eq!(serde_json::to_string(&SplitChild::First).unwrap(), "\"first\"");
-        assert_eq!(serde_json::to_string(&SplitChild::Second).unwrap(), "\"second\"");
+        assert_eq!(
+            serde_json::to_string(&SplitChild::First).unwrap(),
+            "\"first\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SplitChild::Second).unwrap(),
+            "\"second\""
+        );
         let path: Vec<SplitChild> = serde_json::from_str("[\"first\",\"second\"]").unwrap();
         assert_eq!(path, vec![SplitChild::First, SplitChild::Second]);
     }
@@ -1357,7 +4107,10 @@ mod tests {
         new_workspace_with_placement(&mut tabs, "new", NewWorkspacePlacement::AfterCurrent);
         assert_eq!(tabs.workspaces.len(), 5);
         // Lands between old index-1 and old index-2.
-        assert_eq!(panel_ids(tabs.workspaces[2].layout.as_ref().unwrap()), ["new"]);
+        assert_eq!(
+            panel_ids(tabs.workspaces[2].layout.as_ref().unwrap()),
+            ["new"]
+        );
         assert_eq!(tabs.selected_workspace_index, Some(2));
     }
 
@@ -1367,7 +4120,10 @@ mod tests {
         let mut tabs = tabs_with(4, 0, 1);
         new_workspace_with_placement(&mut tabs, "new", NewWorkspacePlacement::End);
         assert_eq!(tabs.workspaces.len(), 5);
-        assert_eq!(panel_ids(tabs.workspaces[4].layout.as_ref().unwrap()), ["new"]);
+        assert_eq!(
+            panel_ids(tabs.workspaces[4].layout.as_ref().unwrap()),
+            ["new"]
+        );
         assert_eq!(tabs.selected_workspace_index, Some(4));
     }
 
@@ -1379,7 +4135,10 @@ mod tests {
         new_workspace_with_placement(&mut tabs, "new", NewWorkspacePlacement::Top);
         assert_eq!(tabs.workspaces.len(), 6);
         // At index 2: just after the pinned prefix, ahead of the unpinned tabs.
-        assert_eq!(panel_ids(tabs.workspaces[2].layout.as_ref().unwrap()), ["new"]);
+        assert_eq!(
+            panel_ids(tabs.workspaces[2].layout.as_ref().unwrap()),
+            ["new"]
+        );
         assert_eq!(tabs.selected_workspace_index, Some(2));
         // Not at the end, and not inside the pinned prefix.
         assert!(tabs.workspaces[0].is_pinned == Some(true));
@@ -1395,30 +4154,39 @@ mod tests {
         new_workspace_with_placement(&mut tabs, "new", NewWorkspacePlacement::AfterCurrent);
         assert_eq!(tabs.workspaces.len(), 6);
         // Inserts at the pinned boundary (2), not after itself (index 1).
-        assert_eq!(panel_ids(tabs.workspaces[2].layout.as_ref().unwrap()), ["new"]);
+        assert_eq!(
+            panel_ids(tabs.workspaces[2].layout.as_ref().unwrap()),
+            ["new"]
+        );
         assert_eq!(tabs.selected_workspace_index, Some(2));
     }
 
-    // Case F: into-selected-group — flat placement index lands the new ws adjacent
-    // to the selected group member. Documents the contiguity gap: the new ws
-    // inherits no group_id and no snapshot-level contiguity pass runs here.
+    // Case F: into-selected-group — flat placement first lands the new ws
+    // adjacent to the selected group member, then canonical contiguity moves the
+    // ungrouped workspace out of the middle of the group run.
     #[test]
-    fn new_workspace_into_selected_group_places_by_flat_index_only() {
+    fn new_workspace_into_selected_group_normalizes_contiguity() {
+        let group_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
         let mut tabs = tabs_with(4, 0, 1);
         // Mark the selected ws (index 1) and its neighbour (index 2) as a group.
-        tabs.workspaces[1].group_id = Some("g".to_string());
-        tabs.workspaces[2].group_id = Some("g".to_string());
+        tabs.workspaces[1].group_id = Some(group_id.to_string());
+        tabs.workspaces[2].group_id = Some(group_id.to_string());
         tabs.workspace_groups = Some(vec![crate::session::SessionWorkspaceGroupSnapshot {
-            id: "g".to_string(),
+            id: group_id.to_string(),
             name: "G".to_string(),
             ..Default::default()
         }]);
         new_workspace_with_placement(&mut tabs, "new", NewWorkspacePlacement::AfterCurrent);
-        // Flat index parity: lands at index 2, adjacent to the selected member.
-        assert_eq!(panel_ids(tabs.workspaces[2].layout.as_ref().unwrap()), ["new"]);
-        assert_eq!(tabs.selected_workspace_index, Some(2));
-        // Documented gap: the new ws stays ungrouped (no contiguity fix-up here).
-        assert_eq!(tabs.workspaces[2].group_id, None);
+        // The fresh workspace is ungrouped. Normalization moves it after the
+        // contiguous group run and remaps selection to keep following it.
+        assert_eq!(
+            panel_ids(tabs.workspaces[3].layout.as_ref().unwrap()),
+            ["new"]
+        );
+        assert_eq!(tabs.selected_workspace_index, Some(3));
+        assert_eq!(tabs.workspaces[3].group_id, None);
+        assert_eq!(tabs.workspaces[1].group_id.as_deref(), Some(group_id));
+        assert_eq!(tabs.workspaces[2].group_id.as_deref(), Some(group_id));
     }
 
     // The default two-arg wrapper resolves to AfterCurrent.
@@ -1426,8 +4194,90 @@ mod tests {
     fn new_workspace_defaults_to_after_current() {
         let mut tabs = tabs_with(4, 0, 1);
         new_workspace(&mut tabs, "new");
-        assert_eq!(panel_ids(tabs.workspaces[2].layout.as_ref().unwrap()), ["new"]);
+        assert_eq!(
+            panel_ids(tabs.workspaces[2].layout.as_ref().unwrap()),
+            ["new"]
+        );
         assert_eq!(tabs.selected_workspace_index, Some(2));
+    }
+
+    #[test]
+    fn move_panel_to_new_workspace_extracts_panel_and_selects_destination() {
+        let mut tabs = one_workspace_tabs("surface-1");
+        tabs.workspaces[0].layout = Some(split(
+            SessionSplitOrientation::Horizontal,
+            0.5,
+            pane("surface-1"),
+            pane("surface-2"),
+        ));
+        tabs.workspaces[0].current_directory = Some("C:/repo".to_string());
+        assert!(set_panel_title(&mut tabs.workspaces[0], "surface-2", "api"));
+        assert!(set_panel_pinned(&mut tabs.workspaces[0], "surface-2", true));
+        assert!(set_panel_unread(&mut tabs.workspaces[0], "surface-2", true));
+        tabs.workspaces[0].agent_listening_ports = Some(vec![9000]);
+        tabs.workspaces[0].listening_ports = Some(vec![3000, 5173, 9000]);
+        tabs.workspaces[0].panel_listening_ports = Some(vec![SessionPanelListeningPortsSnapshot {
+            panel_id: "surface-2".to_string(),
+            ports: vec![3000, 5173],
+        }]);
+        tabs.workspaces[0].panel_shell_activity = Some(vec![SessionPanelShellActivitySnapshot {
+            panel_id: "surface-2".to_string(),
+            state: SessionPanelShellActivityStateSnapshot::CommandRunning,
+            updated_at: 12,
+        }]);
+
+        assert!(move_panel_to_new_workspace(&mut tabs, "surface-2"));
+
+        assert_eq!(tabs.workspaces.len(), 2);
+        assert_eq!(tabs.selected_workspace_index, Some(1));
+        assert_eq!(tabs.workspaces[1].process_title, "api");
+        assert_eq!(
+            tabs.workspaces[1].current_directory.as_deref(),
+            Some("C:/repo")
+        );
+        assert!(contains_panel(
+            tabs.workspaces[0].layout.as_ref().unwrap(),
+            "surface-1"
+        ));
+        assert!(!contains_panel(
+            tabs.workspaces[0].layout.as_ref().unwrap(),
+            "surface-2"
+        ));
+        assert!(contains_panel(
+            tabs.workspaces[1].layout.as_ref().unwrap(),
+            "surface-2"
+        ));
+        assert_eq!(
+            tabs.workspaces[1].panel_titles.as_ref().unwrap()[0]
+                .custom_title
+                .as_deref(),
+            Some("api")
+        );
+        assert_eq!(tabs.workspaces[0].panel_titles, None);
+        assert!(tabs.workspaces[1].panel_pins.as_ref().unwrap()[0].is_pinned);
+        assert!(tabs.workspaces[1].panel_unreads.as_ref().unwrap()[0].is_unread);
+        assert_eq!(tabs.workspaces[0].listening_ports, Some(vec![9000]));
+        assert_eq!(tabs.workspaces[0].agent_listening_ports, Some(vec![9000]));
+        assert_eq!(tabs.workspaces[0].panel_listening_ports, None);
+        assert_eq!(tabs.workspaces[1].listening_ports, Some(vec![3000, 5173]));
+        assert_eq!(tabs.workspaces[1].agent_listening_ports, None);
+        assert_eq!(
+            tabs.workspaces[1].panel_listening_ports.as_ref().unwrap()[0].ports,
+            vec![3000, 5173]
+        );
+        assert_eq!(tabs.workspaces[0].panel_shell_activity, None);
+        assert_eq!(
+            tabs.workspaces[1].panel_shell_activity.as_ref().unwrap()[0].state,
+            SessionPanelShellActivityStateSnapshot::CommandRunning
+        );
+    }
+
+    #[test]
+    fn move_panel_to_new_workspace_rejects_the_only_panel() {
+        let mut tabs = one_workspace_tabs("surface-1");
+        let before = tabs.clone();
+        assert!(!move_panel_to_new_workspace(&mut tabs, "surface-1"));
+        assert_eq!(tabs, before);
     }
 
     #[test]
@@ -1475,6 +4325,119 @@ mod tests {
         new_workspace(&mut tabs, "surface-2");
         assert!(!close_workspace(&mut tabs, 5));
         assert_eq!(tabs.workspaces.len(), 2);
+    }
+
+    #[test]
+    fn close_anchor_workspace_dissolves_its_group() {
+        let mut tabs = SessionTabManagerSnapshot {
+            selected_workspace_index: Some(0),
+            workspaces: vec![
+                SessionWorkspaceSnapshot {
+                    workspace_id: Some("ws-anchor".to_string()),
+                    group_id: Some("g".to_string()),
+                    ..fresh_terminal_workspace("surface-1")
+                },
+                SessionWorkspaceSnapshot {
+                    workspace_id: Some("ws-member".to_string()),
+                    group_id: Some("g".to_string()),
+                    ..fresh_terminal_workspace("surface-2")
+                },
+                SessionWorkspaceSnapshot {
+                    workspace_id: Some("ws-solo".to_string()),
+                    ..fresh_terminal_workspace("surface-3")
+                },
+            ],
+            workspace_groups: Some(vec![crate::session::SessionWorkspaceGroupSnapshot {
+                id: "g".to_string(),
+                name: "Group".to_string(),
+                anchor_workspace_id: Some("ws-anchor".to_string()),
+                anchor_member_index: Some(0),
+                ..Default::default()
+            }]),
+        };
+
+        assert!(close_workspace(&mut tabs, 0));
+        assert_eq!(tabs.workspaces.len(), 2);
+        assert_eq!(
+            tabs.workspaces[0].workspace_id.as_deref(),
+            Some("ws-member")
+        );
+        assert_eq!(tabs.workspaces[0].group_id, None);
+        assert_eq!(tabs.workspace_groups, None);
+        assert_eq!(tabs.selected_workspace_index, Some(0));
+    }
+
+    #[test]
+    fn close_group_member_preserves_group_and_reanchors_member_index() {
+        let mut tabs = SessionTabManagerSnapshot {
+            selected_workspace_index: Some(2),
+            workspaces: vec![
+                SessionWorkspaceSnapshot {
+                    workspace_id: Some("ws-anchor".to_string()),
+                    group_id: Some("g".to_string()),
+                    ..fresh_terminal_workspace("surface-1")
+                },
+                SessionWorkspaceSnapshot {
+                    workspace_id: Some("ws-member".to_string()),
+                    group_id: Some("g".to_string()),
+                    ..fresh_terminal_workspace("surface-2")
+                },
+                SessionWorkspaceSnapshot {
+                    workspace_id: Some("ws-solo".to_string()),
+                    ..fresh_terminal_workspace("surface-3")
+                },
+            ],
+            workspace_groups: Some(vec![crate::session::SessionWorkspaceGroupSnapshot {
+                id: "g".to_string(),
+                name: "Group".to_string(),
+                anchor_workspace_id: Some("ws-anchor".to_string()),
+                anchor_member_index: Some(1),
+                ..Default::default()
+            }]),
+        };
+
+        assert!(close_workspace(&mut tabs, 1));
+        let group = tabs.workspace_groups.as_ref().expect("group survives");
+        assert_eq!(group.len(), 1);
+        assert_eq!(group[0].anchor_workspace_id.as_deref(), Some("ws-anchor"));
+        assert_eq!(group[0].anchor_member_index, Some(0));
+        assert_eq!(tabs.selected_workspace_index, Some(1));
+    }
+
+    #[test]
+    fn close_workspaces_targets_original_indices_in_tab_order() {
+        let mut tabs = SessionTabManagerSnapshot {
+            selected_workspace_index: Some(2),
+            workspaces: vec![
+                SessionWorkspaceSnapshot {
+                    workspace_id: Some("ws-0".to_string()),
+                    ..fresh_terminal_workspace("surface-0")
+                },
+                SessionWorkspaceSnapshot {
+                    workspace_id: Some("ws-1".to_string()),
+                    ..fresh_terminal_workspace("surface-1")
+                },
+                SessionWorkspaceSnapshot {
+                    workspace_id: Some("ws-2".to_string()),
+                    ..fresh_terminal_workspace("surface-2")
+                },
+                SessionWorkspaceSnapshot {
+                    workspace_id: Some("ws-3".to_string()),
+                    ..fresh_terminal_workspace("surface-3")
+                },
+            ],
+            workspace_groups: None,
+        };
+
+        assert!(close_workspaces(&mut tabs, &[3, 1, 1, 99, -1]));
+        assert_eq!(
+            tabs.workspaces
+                .iter()
+                .map(|workspace| workspace.workspace_id.as_deref().unwrap_or(""))
+                .collect::<Vec<_>>(),
+            ["ws-0", "ws-2"]
+        );
+        assert_eq!(tabs.selected_workspace_index, Some(1));
     }
 
     // --- Workspace rename (custom title) ---
@@ -1540,7 +4503,10 @@ mod tests {
         tabs.workspaces[0].custom_title_source = Some("auto".to_string());
         assert!(rename_workspace(&mut tabs, 0, "Fix auth"));
         assert_eq!(tabs.workspaces[0].custom_title.as_deref(), Some("Fix auth"));
-        assert_eq!(tabs.workspaces[0].custom_title_source.as_deref(), Some("user"));
+        assert_eq!(
+            tabs.workspaces[0].custom_title_source.as_deref(),
+            Some("user")
+        );
     }
 
     #[test]
@@ -1550,6 +4516,212 @@ mod tests {
         assert!(!rename_workspace(&mut tabs, 2, "nope"));
         assert!(!rename_workspace(&mut tabs, -1, "nope"));
         assert_eq!(tabs, before);
+    }
+
+    #[test]
+    fn set_workspace_description_normalizes_line_endings() {
+        let mut tabs = tabs_with(1, 0, 0);
+        assert!(set_workspace_description(
+            &mut tabs,
+            0,
+            "alpha\r\nbeta\rgamma"
+        ));
+        assert_eq!(
+            tabs.workspaces[0].custom_description.as_deref(),
+            Some("alpha\nbeta\ngamma")
+        );
+    }
+
+    #[test]
+    fn set_workspace_description_preserves_nonempty_edge_whitespace() {
+        let mut tabs = tabs_with(1, 0, 0);
+        assert!(set_workspace_description(&mut tabs, 0, "  notes  "));
+        assert_eq!(
+            tabs.workspaces[0].custom_description.as_deref(),
+            Some("  notes  ")
+        );
+    }
+
+    #[test]
+    fn set_workspace_description_empty_or_whitespace_clears() {
+        let mut tabs = tabs_with(1, 0, 0);
+        tabs.workspaces[0].custom_description = Some("Named".to_string());
+        assert!(set_workspace_description(&mut tabs, 0, " \r\n\t "));
+        assert_eq!(tabs.workspaces[0].custom_description, None);
+    }
+
+    #[test]
+    fn set_workspace_description_identical_value_is_no_change() {
+        let mut tabs = tabs_with(1, 0, 0);
+        assert!(set_workspace_description(&mut tabs, 0, "alpha\nbeta"));
+        assert!(!set_workspace_description(&mut tabs, 0, "alpha\nbeta"));
+    }
+
+    #[test]
+    fn set_workspace_description_out_of_range_and_negative_index_are_no_ops() {
+        let mut tabs = tabs_with(1, 0, 0);
+        let before = tabs.clone();
+        assert!(!set_workspace_description(&mut tabs, 2, "nope"));
+        assert!(!set_workspace_description(&mut tabs, -1, "nope"));
+        assert_eq!(tabs, before);
+    }
+
+    #[test]
+    fn reset_workspace_color_clears_custom_color() {
+        let mut tabs = tabs_with(1, 0, 0);
+        tabs.workspaces[0].custom_color = Some("#C0392B".to_string());
+        assert!(reset_workspace_color(&mut tabs, 0));
+        assert_eq!(tabs.workspaces[0].custom_color, None);
+    }
+
+    #[test]
+    fn reset_workspace_color_no_ops_when_clear_or_out_of_range() {
+        let mut tabs = tabs_with(1, 0, 0);
+        let before = tabs.clone();
+        assert!(!reset_workspace_color(&mut tabs, 0));
+        assert!(!reset_workspace_color(&mut tabs, 2));
+        assert!(!reset_workspace_color(&mut tabs, -1));
+        assert_eq!(tabs, before);
+    }
+
+    #[test]
+    fn set_panel_title_sets_trims_and_clears_custom_title() {
+        let mut workspace = fresh_terminal_workspace("surface-1");
+        assert!(set_panel_title(&mut workspace, "surface-1", "  api logs  "));
+        let titles = workspace.panel_titles.as_ref().expect("title metadata");
+        assert_eq!(titles.len(), 1);
+        assert_eq!(titles[0].panel_id, "surface-1");
+        assert_eq!(titles[0].custom_title.as_deref(), Some("api logs"));
+
+        assert!(!set_panel_title(&mut workspace, "surface-1", "api logs"));
+        assert!(set_panel_title(&mut workspace, "surface-1", ""));
+        assert_eq!(workspace.panel_titles, None);
+    }
+
+    #[test]
+    fn set_panel_title_rejects_missing_layout_or_panel() {
+        let mut workspace = fresh_terminal_workspace("surface-1");
+        let before = workspace.clone();
+        assert!(!set_panel_title(&mut workspace, "missing", "api logs"));
+        assert_eq!(workspace, before);
+
+        workspace.layout = None;
+        assert!(!set_panel_title(&mut workspace, "surface-1", "api logs"));
+        assert_eq!(workspace.panel_titles, None);
+    }
+
+    #[test]
+    fn set_panel_pinned_sets_and_clears_panel_pin() {
+        let mut workspace = fresh_terminal_workspace("surface-1");
+
+        assert!(set_panel_pinned(&mut workspace, "surface-1", true));
+        let pins = workspace.panel_pins.as_ref().expect("pin metadata");
+        assert_eq!(pins.len(), 1);
+        assert_eq!(pins[0].panel_id, "surface-1");
+        assert!(pins[0].is_pinned);
+
+        assert!(!set_panel_pinned(&mut workspace, "surface-1", true));
+        assert!(set_panel_pinned(&mut workspace, "surface-1", false));
+        assert_eq!(workspace.panel_pins, None);
+        assert!(!set_panel_pinned(&mut workspace, "surface-1", false));
+    }
+
+    #[test]
+    fn set_panel_pinned_rejects_missing_layout_or_panel() {
+        let mut workspace = fresh_terminal_workspace("surface-1");
+        let before = workspace.clone();
+        assert!(!set_panel_pinned(&mut workspace, "missing", true));
+        assert_eq!(workspace, before);
+
+        workspace.layout = None;
+        assert!(!set_panel_pinned(&mut workspace, "surface-1", true));
+        assert_eq!(workspace.panel_pins, None);
+    }
+
+    #[test]
+    fn set_panel_unread_sets_and_clears_panel_unread() {
+        let mut workspace = fresh_terminal_workspace("surface-1");
+
+        assert!(set_panel_unread_at(
+            &mut workspace,
+            "surface-1",
+            true,
+            Some(123)
+        ));
+        let unreads = workspace.panel_unreads.as_ref().expect("unread metadata");
+        assert_eq!(unreads.len(), 1);
+        assert_eq!(unreads[0].panel_id, "surface-1");
+        assert!(unreads[0].is_unread);
+        assert_eq!(unreads[0].unread_at, Some(123));
+
+        assert!(!set_panel_unread(&mut workspace, "surface-1", true));
+        assert!(set_panel_unread(&mut workspace, "surface-1", false));
+        assert_eq!(workspace.panel_unreads, None);
+        assert!(!set_panel_unread(&mut workspace, "surface-1", false));
+    }
+
+    #[test]
+    fn set_panel_unread_rejects_missing_layout_or_panel() {
+        let mut workspace = fresh_terminal_workspace("surface-1");
+        let before = workspace.clone();
+        assert!(!set_panel_unread(&mut workspace, "missing", true));
+        assert_eq!(workspace, before);
+
+        workspace.layout = None;
+        assert!(!set_panel_unread(&mut workspace, "surface-1", true));
+        assert_eq!(workspace.panel_unreads, None);
+    }
+
+    #[test]
+    fn set_workspace_unread_sets_preferred_or_first_panel_and_clears_all() {
+        let mut tabs = tabs_with(2, 0, 0);
+        tabs.workspaces[0].layout = Some(SessionWorkspaceLayoutSnapshot::Split(
+            SessionSplitLayoutSnapshot {
+                orientation: SessionSplitOrientation::Horizontal,
+                divider_position: 0.5,
+                first: Box::new(single_pane("surface-1")),
+                second: Box::new(single_pane("surface-2")),
+            },
+        ));
+
+        assert!(set_workspace_unread_at(
+            &mut tabs,
+            0,
+            Some("surface-2"),
+            true,
+            Some(456)
+        ));
+        let unreads = tabs.workspaces[0]
+            .panel_unreads
+            .as_ref()
+            .expect("unread metadata");
+        assert_eq!(unreads.len(), 1);
+        assert_eq!(unreads[0].panel_id, "surface-2");
+        assert!(unreads[0].is_unread);
+        assert_eq!(unreads[0].unread_at, Some(456));
+
+        assert!(!set_workspace_unread(&mut tabs, 0, Some("surface-1"), true));
+        assert!(set_workspace_unread(&mut tabs, 0, None, false));
+        assert_eq!(tabs.workspaces[0].panel_unreads, None);
+
+        assert!(set_workspace_unread(&mut tabs, 0, Some("missing"), true));
+        assert_eq!(
+            tabs.workspaces[0].panel_unreads.as_ref().unwrap()[0].panel_id,
+            "surface-1"
+        );
+    }
+
+    #[test]
+    fn set_workspace_unread_rejects_invalid_workspace_or_empty_layout() {
+        let mut tabs = tabs_with(1, 0, 0);
+        let before = tabs.clone();
+        assert!(!set_workspace_unread(&mut tabs, -1, None, true));
+        assert!(!set_workspace_unread(&mut tabs, 2, None, true));
+        assert_eq!(tabs, before);
+
+        tabs.workspaces[0].layout = None;
+        assert!(!set_workspace_unread(&mut tabs, 0, None, true));
+        assert_eq!(tabs.workspaces[0].panel_unreads, None);
     }
 
     // --- Workspace pin/unpin ---
@@ -1663,17 +4835,22 @@ mod tests {
     }
 
     #[test]
-    fn grouped_workspace_pin_flips_flag_without_reorder() {
-        let mut tabs = tabs_with(3, 0, 0);
-        tabs.workspaces[1].group_id = Some("g".to_string());
-        tabs.workspace_groups = Some(vec![group("g", false)]);
-        assert!(set_workspace_pinned(&mut tabs, 1, true));
-        // Flag-only change (documented contiguity gap): no global move, group
-        // membership preserved.
-        assert_eq!(order_of(&tabs), ["surface-0", "surface-1", "surface-2"]);
+    fn grouped_workspace_pin_preserves_membership_and_normalizes_contiguity() {
+        let group_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let mut tabs = tabs_with(4, 0, 1);
+        tabs.workspaces[0].group_id = Some(group_id.to_string());
+        tabs.workspaces[2].group_id = Some(group_id.to_string());
+        tabs.workspace_groups = Some(vec![group(group_id, false)]);
+        assert!(set_workspace_pinned(&mut tabs, 2, true));
+        // Group membership is preserved, but the canonical normalization tail
+        // repairs the broken group run and selection follows the shifted row.
+        assert_eq!(
+            order_of(&tabs),
+            ["surface-0", "surface-2", "surface-1", "surface-3"]
+        );
         assert_eq!(tabs.workspaces[1].is_pinned, Some(true));
-        assert_eq!(tabs.workspaces[1].group_id.as_deref(), Some("g"));
-        assert_eq!(tabs.selected_workspace_index, Some(0));
+        assert_eq!(tabs.workspaces[1].group_id.as_deref(), Some(group_id));
+        assert_eq!(tabs.selected_workspace_index, Some(2));
     }
 
     #[test]
@@ -1905,10 +5082,38 @@ mod tests {
     }
 
     #[test]
+    fn reorder_grouped_child_with_top_level_rows_promotes_it_out_of_the_group() {
+        let mut tabs = reorder_tabs(
+            &[
+                (R_W1, Some(R_G1), false), // anchor
+                (R_W2, Some(R_G1), false), // grouped child
+                (R_W3, None, false),       // ungrouped
+            ],
+            Some(1),
+        );
+        tabs.workspace_groups = Some(vec![reorder_group(R_G1, R_W1, false)]);
+
+        // Top-level drag lane: the grouped child is promoted to top-level row
+        // space, then moved after the ungrouped row.
+        assert!(reorder_workspaces_with_mode(&mut tabs, 1, 2, true));
+        assert_eq!(ws_id_order(&tabs), [R_W1, R_W3, R_W2]);
+        assert_eq!(tabs.workspaces[2].group_id, None);
+        assert_eq!(tabs.selected_workspace_index, Some(2));
+        // The surviving group keeps its anchor and order.
+        let groups = tabs.workspace_groups.as_ref().unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].anchor_workspace_id.as_deref(), Some(R_W1));
+    }
+
+    #[test]
     fn reorder_selection_follows_mover_and_displaced_rows() {
         // Selection on the mover follows it to its landing index.
         let mut tabs = reorder_tabs(
-            &[(R_W1, None, false), (R_W2, None, false), (R_W3, None, false)],
+            &[
+                (R_W1, None, false),
+                (R_W2, None, false),
+                (R_W3, None, false),
+            ],
             Some(2),
         );
         assert!(reorder_workspaces(&mut tabs, 2, 0));
@@ -1918,7 +5123,11 @@ mod tests {
         // Selection on a displaced neighbor keeps pointing at the same
         // workspace after it shifts.
         let mut tabs = reorder_tabs(
-            &[(R_W1, None, false), (R_W2, None, false), (R_W3, None, false)],
+            &[
+                (R_W1, None, false),
+                (R_W2, None, false),
+                (R_W3, None, false),
+            ],
             Some(0),
         );
         assert!(reorder_workspaces(&mut tabs, 2, 0));
@@ -1935,11 +5144,8 @@ mod tests {
 
     #[test]
     fn reorder_no_op_cases_return_false_and_snapshot_is_byte_identical() {
-        let specs: &[(&str, Option<&str>, bool)] = &[
-            (R_W1, None, true),
-            (R_W2, None, false),
-            (R_W3, None, false),
-        ];
+        let specs: &[(&str, Option<&str>, bool)] =
+            &[(R_W1, None, true), (R_W2, None, false), (R_W3, None, false)];
         let mut tabs = reorder_tabs(specs, Some(1));
         let before = serde_json::to_string(&tabs).unwrap();
         // Same index (clamps to itself).
@@ -2002,7 +5208,10 @@ mod tests {
             .iter()
             .map(|w| serde_json::to_string(w).unwrap())
             .collect();
-        assert_eq!(after, [before[2].clone(), before[0].clone(), before[1].clone()]);
+        assert_eq!(
+            after,
+            [before[2].clone(), before[0].clone(), before[1].clone()]
+        );
         assert!(tabs.workspaces.iter().all(|w| w.workspace_id.is_none()));
     }
 

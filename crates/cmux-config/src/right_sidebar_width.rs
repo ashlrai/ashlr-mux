@@ -249,10 +249,8 @@ mod tests {
     /// back to the remembered value. (Swift lines 75-78.)
     #[test]
     fn editor_maximum_width_falls_back_to_remembered_when_active_disabled() {
-        let editor_value = SETTINGS.editor_maximum_width(
-            RightSidebarWidthSettings::NO_OVERRIDE_VALUE,
-            900.0,
-        );
+        let editor_value =
+            SETTINGS.editor_maximum_width(RightSidebarWidthSettings::NO_OVERRIDE_VALUE, 900.0);
         assert_eq!(editor_value, 900.0);
     }
 

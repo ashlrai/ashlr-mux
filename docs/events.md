@@ -54,6 +54,23 @@ Parameters:
 The request line takes over the socket connection. Do not send additional
 commands on that connection after `events.stream`.
 
+Windows/Tauri status: the port now advertises `events.stream`, supports the
+same ack/event/heartbeat frame shapes, retains a bounded in-memory replay ring
+for session-derived events (`session.changed`, workspace lifecycle/selection
+events, pane lifecycle/focus events, surface lifecycle/selection events, and
+sidebar progress/metadata/log events), and appends those events to
+`~/.cmuxterm/events.jsonl` with one rotated archive at `events.jsonl.1`. The
+current Windows stream returns the ack, matching retained events, an optional
+initial heartbeat, then stays open for matching live events and periodic
+heartbeats. Open Windows/Tauri authored sidebars also receive each recorded
+event through the in-process `cmux://events-changed` bridge so their `events.*`
+context updates without polling. Swift custom sidebars can attach
+`.onEvent("event.name") { ... }` or `.onEvent(category: "...") { ... }`
+handlers for subsequent live bridge events; the supported handler body is
+limited to local `@State` assignments plus safe-scoped `cmux(...)` calls. The
+remaining macOS event-name catalog and arbitrary Swift handler semantics remain
+follow-up parity work.
+
 ## Frames
 
 The server writes one JSON object per line. The first frame is always `ack`.
@@ -205,7 +222,7 @@ Options:
 | `--reconnect` | Reconnect forever and resume from the last received event. |
 | `--limit <n>` | Exit after printing `n` event frames. |
 | `--no-ack` | Hide the initial ack frame. |
-| `--no-heartbeat` | Hide heartbeat frames. |
+| `--no-heartbeat`, `--no-heartbeats` | Hide heartbeat frames. |
 
 ## Event catalog
 
@@ -254,6 +271,13 @@ description, pinned state, root/project paths, branch summary, remote status,
 latest submitted prompt preview/time, listening ports, pull request URLs,
 panel directories, and git branch summaries.
 
+On Windows/Tauri today, custom sidebars can subscribe to
+`cmux events --category session --category workspace --category pane --category surface
+--category sidebar --reconnect`: `session.changed` remains the safe
+full-refresh signal, while `workspace.*`, `pane.*`, `surface.*`, and
+`sidebar.*` events now provide more precise reduce triggers for selection,
+lifecycle, rename, reorder, progress, metadata, and log updates.
+
 Socket `workspace.reorder` and `workspace.reorder_many` command results include
 `plan` and `events` arrays that use short refs and final indexes. Those response
 fields describe the command result; they are not separate event-stream payloads:
@@ -294,6 +318,10 @@ Workspace selection payloads include `previous_workspace_id`, `index`, and
 `tab_count`. Surface selection payloads include `previous_surface_id`, `pane_id`,
 `kind`, and `focused`. Pane focus payloads include `selected_surface_id`.
 
+On Windows/Tauri, `pane.created`, `pane.closed`, and `pane.focused` are derived
+from the authoritative workspace layout diff. They include `pane_id` when known,
+`pane_ref`, `surface_ids`, and `selected_surface_id`.
+
 Sidebar metadata:
 
 | Name | Trigger |
@@ -305,6 +333,11 @@ Sidebar metadata:
 | `sidebar.log.appended` | Sidebar log entry appended. |
 | `sidebar.log.cleared` | Sidebar log cleared. |
 | `sidebar.reset` | Sidebar context reset. |
+
+On Windows/Tauri these events are derived from the authoritative session model
+diff. `sidebar.metadata.*` payloads include `kind` (`status`, `metadata`, or
+`metadata_block`) plus `key`; progress and log payloads include counts and the
+current/previous values where available.
 
 Notifications:
 

@@ -353,7 +353,10 @@ mod tests {
         let obj = v.as_object().unwrap();
         // Absent optionals MUST be omitted, not serialized as null.
         assert!(!obj.contains_key("detail"), "detail must be omitted");
-        assert!(!obj.contains_key("outputDelta"), "outputDelta must be omitted");
+        assert!(
+            !obj.contains_key("outputDelta"),
+            "outputDelta must be omitted"
+        );
         // Present keys are still emitted.
         assert_eq!(v["action"], json!("run"));
     }

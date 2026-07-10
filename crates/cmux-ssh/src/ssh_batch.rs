@@ -157,6 +157,46 @@ impl SshBatchConfiguration {
         args
     }
 
+    /// `ssh` argv that reads the relay-specific daemon path mapping installed
+    /// by the bootstrap (`~/.cmux/relay/<port>.daemon_path`) and execs that
+    /// daemon with `serve --stdio`.
+    pub fn daemon_transport_arguments_from_relay_map(
+        &self,
+        relay_port: i64,
+    ) -> Option<Vec<String>> {
+        if relay_port <= 0 || relay_port > u16::MAX as i64 {
+            return None;
+        }
+        let mut serve_arguments = vec!["serve".to_string(), "--stdio".to_string()];
+        if let Some(slot) = &self.persistent_daemon_slot {
+            let slot = slot.trim();
+            if !slot.is_empty() {
+                serve_arguments.push("--persistent".to_string());
+                serve_arguments.push("--slot".to_string());
+                serve_arguments.push(slot.to_string());
+            }
+        }
+        let serve_arguments = serve_arguments
+            .into_iter()
+            .map(|token| shell_single_quoted(&token))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let script = format!(
+            "map=\"$HOME/.cmux/relay/{relay_port}.daemon_path\" && \
+             daemon=\"$(cat \"$map\" 2>/dev/null || true)\" && \
+             test -n \"$daemon\" && exec \"$daemon\" {serve_arguments}"
+        );
+        let command = format!("sh -c {}", shell_single_quoted(&script));
+
+        let mut args = vec!["-T".to_string()];
+        args.extend(self.batch_ssh_arguments());
+        args.push("-o".to_string());
+        args.push("RequestTTY=no".to_string());
+        args.push(self.destination.clone());
+        args.push(command);
+        Some(args)
+    }
+
     /// `ssh` argv that forwards `127.0.0.1:<local_port>` to the baked VM
     /// daemon's Unix socket (`-N`, no remote command).
     ///
@@ -415,7 +455,10 @@ mod tests {
     /// (WorkspaceRemoteConfigurationTests.swift:46-51).
     #[test]
     fn normalized_optional_value_behavior() {
-        assert_eq!(normalized_optional_value(Some("  x  ")).as_deref(), Some("x"));
+        assert_eq!(
+            normalized_optional_value(Some("  x  ")).as_deref(),
+            Some("x")
+        );
         assert_eq!(normalized_optional_value(Some("   ")), None);
         assert_eq!(normalized_optional_value(None), None);
     }
@@ -425,7 +468,10 @@ mod tests {
 
     /// Swift test fixture `configuration(...)`
     /// (SSHBatchCommandsTests.swift:6-30).
-    fn configuration(ssh_options: &[&str], persistent_daemon_slot: Option<&str>) -> SshBatchConfiguration {
+    fn configuration(
+        ssh_options: &[&str],
+        persistent_daemon_slot: Option<&str>,
+    ) -> SshBatchConfiguration {
         SshBatchConfiguration {
             destination: "cmux-macmini".to_string(),
             port: Some(2222),
@@ -451,15 +497,24 @@ mod tests {
     /// Swift: `expectedBatchArguments` (SSHBatchCommandsTests.swift:36-46).
     fn expected_batch_arguments() -> Vec<String> {
         strings(&[
-            "-o", "ConnectTimeout=6",
-            "-o", "ServerAliveInterval=20",
-            "-o", "ServerAliveCountMax=2",
-            "-o", "BatchMode=yes",
-            "-o", "ControlMaster=no",
-            "-p", "2222",
-            "-i", "/Users/test/.ssh/id_ed25519",
-            "-o", "ControlPath=/tmp/cmux-ssh-%C",
-            "-o", "StrictHostKeyChecking=accept-new",
+            "-o",
+            "ConnectTimeout=6",
+            "-o",
+            "ServerAliveInterval=20",
+            "-o",
+            "ServerAliveCountMax=2",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ControlMaster=no",
+            "-p",
+            "2222",
+            "-i",
+            "/Users/test/.ssh/id_ed25519",
+            "-o",
+            "ControlPath=/tmp/cmux-ssh-%C",
+            "-o",
+            "StrictHostKeyChecking=accept-new",
         ])
     }
 
@@ -499,6 +554,44 @@ mod tests {
         assert_eq!(arguments, expected);
     }
 
+    #[test]
+    fn daemon_transport_arguments_from_relay_map_reads_bootstrap_mapping() {
+        let arguments = configuration(
+            &[
+                "ControlMaster=auto",
+                "ControlPersist=600",
+                "ControlPath=/tmp/cmux-ssh-%C",
+                "StrictHostKeyChecking=accept-new",
+            ],
+            Some("ws-1"),
+        )
+        .daemon_transport_arguments_from_relay_map(64007)
+        .expect("valid relay port");
+
+        assert_eq!(arguments[0], "-T");
+        assert!(arguments.iter().any(|arg| arg == "cmux-macmini"));
+        let command = arguments.last().expect("remote command");
+        assert!(command.contains("$HOME/.cmux/relay/64007.daemon_path"));
+        assert!(command.contains("exec \"$daemon\""));
+        assert!(command.contains("'serve'"));
+        assert!(command.contains("'--stdio'"));
+        assert!(command.contains("'--persistent'"));
+        assert!(command.contains("'--slot'"));
+        assert!(command.contains("'ws-1'"));
+    }
+
+    #[test]
+    fn daemon_transport_arguments_from_relay_map_rejects_invalid_ports() {
+        assert_eq!(
+            default_config().daemon_transport_arguments_from_relay_map(0),
+            None
+        );
+        assert_eq!(
+            default_config().daemon_transport_arguments_from_relay_map(65_536),
+            None
+        );
+    }
+
     /// Swift: `daemonTransportArgumentsInjectsStrictHostKeyChecking`
     /// (SSHBatchCommandsTests.swift:73-100). Space-separated control options,
     /// no StrictHostKeyChecking configured → `accept-new` injected, and
@@ -521,16 +614,26 @@ mod tests {
             arguments,
             strings(&[
                 "-T",
-                "-o", "ConnectTimeout=6",
-                "-o", "ServerAliveInterval=20",
-                "-o", "ServerAliveCountMax=2",
-                "-o", "StrictHostKeyChecking=accept-new",
-                "-o", "BatchMode=yes",
-                "-o", "ControlMaster=no",
-                "-p", "2222",
-                "-i", "/Users/test/.ssh/id_ed25519",
-                "-o", "ControlPath /tmp/cmux-ssh-%C",
-                "-o", "RequestTTY=no",
+                "-o",
+                "ConnectTimeout=6",
+                "-o",
+                "ServerAliveInterval=20",
+                "-o",
+                "ServerAliveCountMax=2",
+                "-o",
+                "StrictHostKeyChecking=accept-new",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ControlMaster=no",
+                "-p",
+                "2222",
+                "-i",
+                "/Users/test/.ssh/id_ed25519",
+                "-o",
+                "ControlPath /tmp/cmux-ssh-%C",
+                "-o",
+                "RequestTTY=no",
                 "cmux-macmini",
                 expected_command,
             ])
@@ -583,7 +686,13 @@ mod tests {
             .reverse_relay_control_master_cancel_arguments(64007)
             .expect("arguments");
         let mut expected = expected_batch_arguments();
-        expected.extend(strings(&["-O", "cancel", "-R", "127.0.0.1:64007", "cmux-macmini"]));
+        expected.extend(strings(&[
+            "-O",
+            "cancel",
+            "-R",
+            "127.0.0.1:64007",
+            "cmux-macmini",
+        ]));
         assert_eq!(arguments, expected);
     }
 
@@ -640,13 +749,19 @@ mod tests {
             ssh_options: strings(&["ControlPath=", "ControlPath=/tmp/second"]),
             ..default_config()
         };
-        assert_eq!(config.first_ssh_option_value("ControlPath").as_deref(), Some("/tmp/second"));
+        assert_eq!(
+            config.first_ssh_option_value("ControlPath").as_deref(),
+            Some("/tmp/second")
+        );
         // Forward order: the FIRST non-empty wins.
         let config = SshBatchConfiguration {
             ssh_options: strings(&["ControlPath=/tmp/first", "ControlPath=/tmp/second"]),
             ..default_config()
         };
-        assert_eq!(config.first_ssh_option_value("ControlPath").as_deref(), Some("/tmp/first"));
+        assert_eq!(
+            config.first_ssh_option_value("ControlPath").as_deref(),
+            Some("/tmp/first")
+        );
     }
 
     /// `shellSingleQuoted` wraps in single quotes and escapes embedded quotes
@@ -662,16 +777,28 @@ mod tests {
     /// omittingEmptySubsequences: true)` on the `=`/whitespace separator set.
     #[test]
     fn split_first_option_token_cases() {
-        assert_eq!(split_first_option_token("Key=value"), Some(("Key", "value")));
-        assert_eq!(split_first_option_token("Key value"), Some(("Key", "value")));
+        assert_eq!(
+            split_first_option_token("Key=value"),
+            Some(("Key", "value"))
+        );
+        assert_eq!(
+            split_first_option_token("Key value"),
+            Some(("Key", "value"))
+        );
         // maxSplits: 1 → only the first separator splits; the rest is raw.
         assert_eq!(split_first_option_token("Key=a=b"), Some(("Key", "a=b")));
-        assert_eq!(split_first_option_token("Key  value"), Some(("Key", " value")));
+        assert_eq!(
+            split_first_option_token("Key  value"),
+            Some(("Key", " value"))
+        );
         // Empty remainder → one subsequence → None.
         assert_eq!(split_first_option_token("Key="), None);
         assert_eq!(split_first_option_token("Key"), None);
         // Leading separators are omitted and do not consume the split budget.
-        assert_eq!(split_first_option_token("=Key=value"), Some(("Key", "value")));
+        assert_eq!(
+            split_first_option_token("=Key=value"),
+            Some(("Key", "value"))
+        );
         assert_eq!(split_first_option_token("==="), None);
     }
 

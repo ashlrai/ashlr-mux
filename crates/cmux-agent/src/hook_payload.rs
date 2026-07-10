@@ -208,7 +208,9 @@ impl<'de> Deserialize<'de> for WorkstreamPayload {
         let map = inner.as_object();
 
         let get_str = |m: Option<&Map<String, Value>>, k: &str| -> Option<String> {
-            m.and_then(|m| m.get(k)).and_then(Value::as_str).map(str::to_string)
+            m.and_then(|m| m.get(k))
+                .and_then(Value::as_str)
+                .map(str::to_string)
         };
         let req = |m: Option<&Map<String, Value>>, k: &'static str| -> Result<String, D::Error> {
             get_str(m, k).ok_or_else(|| D::Error::missing_field(k))
@@ -264,7 +266,8 @@ impl<'de> Deserialize<'de> for WorkstreamPayload {
                             ))
                         }
                     };
-                    let options = match map.and_then(|m| m.get("options")).filter(|v| !v.is_null()) {
+                    let options = match map.and_then(|m| m.get("options")).filter(|v| !v.is_null())
+                    {
                         Some(v) => payload_field(v)?,
                         None => Vec::new(),
                     };
@@ -550,17 +553,24 @@ pub fn decode_event(
         .tool_input_json
         .clone()
         .unwrap_or_else(|| "{}".to_string());
-    let request_id = || event.request_id.clone().unwrap_or_else(|| event.session_id.clone());
-    let titled = || {
-        title_provider(event).unwrap_or_else(|| event.hook_event_name.wire_name().to_string())
+    let request_id = || {
+        event
+            .request_id
+            .clone()
+            .unwrap_or_else(|| event.session_id.clone())
     };
+    let titled =
+        || title_provider(event).unwrap_or_else(|| event.hook_event_name.wire_name().to_string());
 
     match event.hook_event_name {
         HookEventName::PermissionRequest => (
             WorkstreamKind::PermissionRequest,
             WorkstreamPayload::PermissionRequest {
                 request_id: request_id(),
-                tool_name: event.tool_name.clone().unwrap_or_else(|| "unknown".to_string()),
+                tool_name: event
+                    .tool_name
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
                 tool_input_json: tool_input,
                 pattern: None,
             },
@@ -636,14 +646,16 @@ pub fn decode_event(
             } else {
                 prompt
             };
-            (WorkstreamKind::UserPrompt, WorkstreamPayload::UserPrompt { text })
+            (
+                WorkstreamKind::UserPrompt,
+                WorkstreamPayload::UserPrompt { text },
+            )
         }
-        HookEventName::SessionStart => {
-            (WorkstreamKind::SessionStart, WorkstreamPayload::SessionStart {})
-        }
-        HookEventName::SessionEnd => {
-            (WorkstreamKind::SessionEnd, WorkstreamPayload::SessionEnd {})
-        }
+        HookEventName::SessionStart => (
+            WorkstreamKind::SessionStart,
+            WorkstreamPayload::SessionStart {},
+        ),
+        HookEventName::SessionEnd => (WorkstreamKind::SessionEnd, WorkstreamPayload::SessionEnd {}),
         HookEventName::Stop => (
             WorkstreamKind::Stop,
             WorkstreamPayload::Stop {
@@ -668,7 +680,10 @@ pub fn decode_event(
 }
 
 /// Swift `defaultTitle(for:)` (`WorkstreamStore.swift:350-355`).
-pub fn default_title(event: &WorkstreamEvent, title_provider: &TitleProvider<'_>) -> Option<String> {
+pub fn default_title(
+    event: &WorkstreamEvent,
+    title_provider: &TitleProvider<'_>,
+) -> Option<String> {
     if let Some(tool) = &event.tool_name {
         if !tool.is_empty() {
             return Some(tool.clone());
@@ -697,7 +712,9 @@ pub fn parse_questions(json: Option<&str>) -> Vec<WorkstreamQuestionPrompt> {
 /// Swift `makeQuestion(from:fallbackId:)` (`WorkstreamStore.swift:376-406`).
 fn make_question(dict: &Map<String, Value>, fallback_id: &str) -> WorkstreamQuestionPrompt {
     let str_of = |k: &str| dict.get(k).and_then(Value::as_str);
-    let header = str_of("header").or_else(|| str_of("title")).map(str::to_string);
+    let header = str_of("header")
+        .or_else(|| str_of("title"))
+        .map(str::to_string);
     let prompt = str_of("question")
         .or_else(|| str_of("prompt"))
         .unwrap_or("")
@@ -734,7 +751,11 @@ fn make_question(dict: &Map<String, Value>, fallback_id: &str) -> WorkstreamQues
                     .and_then(Value::as_str)
                     .or_else(|| d.get("detail").and_then(Value::as_str))
                     .map(str::to_string);
-                options.push(WorkstreamQuestionOption { id, label, description });
+                options.push(WorkstreamQuestionOption {
+                    id,
+                    label,
+                    description,
+                });
             }
         }
     }
@@ -1032,14 +1053,24 @@ mod tests {
         }
         "#;
         let decoded: WorkstreamPayload = serde_json::from_str(json).unwrap();
-        let WorkstreamPayload::Question { request_id, questions } = decoded else {
+        let WorkstreamPayload::Question {
+            request_id,
+            questions,
+        } = decoded
+        else {
             panic!("expected question payload");
         };
         assert_eq!(request_id, "req-q");
         assert_eq!(questions.len(), 1);
-        assert_eq!(questions.first().map(|q| q.prompt.as_str()), Some("Pick one"));
         assert_eq!(
-            questions.first().and_then(|q| q.options.first()).map(|o| o.label.as_str()),
+            questions.first().map(|q| q.prompt.as_str()),
+            Some("Pick one")
+        );
+        assert_eq!(
+            questions
+                .first()
+                .and_then(|q| q.options.first())
+                .map(|o| o.label.as_str()),
             Some("A")
         );
     }
@@ -1079,7 +1110,11 @@ mod tests {
     fn legacy_question_accepts_missing_and_null_scalars() {
         let json = r#"{"question":{"requestId":"req-q","prompt":null,"multiSelect":null}}"#;
         let decoded: WorkstreamPayload = serde_json::from_str(json).unwrap();
-        let WorkstreamPayload::Question { request_id, questions } = decoded else {
+        let WorkstreamPayload::Question {
+            request_id,
+            questions,
+        } = decoded
+        else {
             panic!("expected question payload");
         };
         assert_eq!(request_id, "req-q");
@@ -1139,8 +1174,8 @@ mod tests {
     /// `telemetryNeverPending` mapping half (WorkstreamStoreTests.swift:109-121).
     #[test]
     fn telemetry_never_pending() {
-        let event = WorkstreamEvent::new("s1", HookEventName::PreToolUse, "claude")
-            .with_tool_name("Read");
+        let event =
+            WorkstreamEvent::new("s1", HookEventName::PreToolUse, "claude").with_tool_name("Read");
         let item = make_item(&event, None, &no_titles);
         assert_eq!(item.kind, WorkstreamKind::ToolUse);
         assert_eq!(item.status, WorkstreamStatus::Telemetry {});
@@ -1150,7 +1185,9 @@ mod tests {
     #[test]
     fn codex_lifecycle_feed_events_stay_telemetry() {
         let titles = |event: &WorkstreamEvent| match event.hook_event_name {
-            HookEventName::PreCompact | HookEventName::PostCompact => Some("Compaction".to_string()),
+            HookEventName::PreCompact | HookEventName::PostCompact => {
+                Some("Compaction".to_string())
+            }
             HookEventName::SubagentStart | HookEventName::SubagentStop => {
                 Some("Subagent".to_string())
             }
@@ -1172,7 +1209,9 @@ mod tests {
             .collect();
 
         assert_eq!(items.len(), events.len());
-        assert!(items.iter().all(|i| i.status == WorkstreamStatus::Telemetry {}));
+        assert!(items
+            .iter()
+            .all(|i| i.status == WorkstreamStatus::Telemetry {}));
         let titles_present: Vec<Option<&str>> = items.iter().map(|i| i.title.as_deref()).collect();
         assert!(titles_present.contains(&Some("Compaction")));
         assert!(titles_present.contains(&Some("Subagent")));
@@ -1192,7 +1231,9 @@ mod tests {
 
         let subagent_stop = items
             .iter()
-            .find(|i| i.title.as_deref() == Some("Subagent") && i.kind == WorkstreamKind::ToolResult)
+            .find(|i| {
+                i.title.as_deref() == Some("Subagent") && i.kind == WorkstreamKind::ToolResult
+            })
             .expect("SubagentStop item");
         let WorkstreamPayload::ToolResult { tool_name, .. } = &subagent_stop.payload else {
             panic!("expected toolResult");
@@ -1226,8 +1267,9 @@ mod tests {
         assert_eq!(reason.as_deref(), Some("done"));
 
         let todos_item = make_item(
-            &WorkstreamEvent::new("s1", HookEventName::TodoWrite, "claude")
-                .with_tool_input_json(r#"{"todos":[{"id":"t1","content":"test","status":"in_progress"}]}"#),
+            &WorkstreamEvent::new("s1", HookEventName::TodoWrite, "claude").with_tool_input_json(
+                r#"{"todos":[{"id":"t1","content":"test","status":"in_progress"}]}"#,
+            ),
             None,
             &no_titles,
         );
@@ -1235,7 +1277,10 @@ mod tests {
             panic!("expected todos");
         };
         assert_eq!(todos.first().map(|t| t.content.as_str()), Some("test"));
-        assert_eq!(todos.first().map(|t| t.state), Some(WorkstreamTaskTodoState::InProgress));
+        assert_eq!(
+            todos.first().map(|t| t.state),
+            Some(WorkstreamTaskTodoState::InProgress)
+        );
     }
 
     /// `promptContextCarriesIntoPermission` (WorkstreamStoreTests.swift:241-262).
@@ -1244,7 +1289,14 @@ mod tests {
     fn prompt_context_carries_into_permission() {
         let event1 = WorkstreamEvent::new("s1", HookEventName::UserPromptSubmit, "claude")
             .with_tool_input_json(r#"{"prompt":"demo the permission UI"}"#)
-            .with_context(WorkstreamContext::new(None, None, None, vec![], None, Some("plan".into())));
+            .with_context(WorkstreamContext::new(
+                None,
+                None,
+                None,
+                vec![],
+                None,
+                Some("plan".into()),
+            ));
         let item1 = make_item(&event1, None, &no_titles);
         let index = next_context(&item1, None);
 
@@ -1255,7 +1307,10 @@ mod tests {
         let item2 = make_item(&event2, index.as_ref(), &no_titles);
 
         let ctx = item2.context.expect("carried context");
-        assert_eq!(ctx.last_user_message.as_deref(), Some("demo the permission UI"));
+        assert_eq!(
+            ctx.last_user_message.as_deref(),
+            Some("demo the permission UI")
+        );
         assert_eq!(ctx.permission_mode.as_deref(), Some("plan"));
     }
 
@@ -1287,7 +1342,10 @@ mod tests {
         let ctx = item.context.expect("context");
         assert_eq!(ctx.last_user_message.as_deref(), Some("make a plan"));
         assert_eq!(ctx.plan_summary.as_deref(), Some("Show the new feed UI."));
-        assert_eq!(ctx.allowed_prompts.first().map(|p| p.tool.as_str()), Some("Bash"));
+        assert_eq!(
+            ctx.allowed_prompts.first().map(|p| p.tool.as_str()),
+            Some("Bash")
+        );
         assert_eq!(
             ctx.allowed_prompts.first().map(|p| p.prompt.as_str()),
             Some("run reload.sh --tag feedctx")

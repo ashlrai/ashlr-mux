@@ -1,0 +1,20 @@
+[package]
+name = "cmux-notify"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+cmux-core = { path = "../cmux-core" }
+sha2 = "0.10"
+thiserror.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+  "Data_Xml_Dom",
+  "UI_Notifications",
+  "Win32_UI_Shell",
+] }

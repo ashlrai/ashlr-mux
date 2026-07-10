@@ -492,7 +492,10 @@ impl NotificationDeliveryCore {
         identifiers: TerminalNotificationDeliveryIdentifiers,
         titles: NotificationDeliveryActionTitles,
     ) -> Self {
-        Self { identifiers, titles }
+        Self {
+            identifiers,
+            titles,
+        }
     }
 
     /// The feed permission category identifiers.
@@ -532,8 +535,10 @@ impl NotificationDeliveryCore {
             custom_dismiss_action: true,
         };
 
-        let permission_once =
-            NotificationActionData::plain("feed.permission.once", &titles.feed_permission_allow_once);
+        let permission_once = NotificationActionData::plain(
+            "feed.permission.once",
+            &titles.feed_permission_allow_once,
+        );
         let permission_always =
             NotificationActionData::plain("feed.permission.always", &titles.feed_permission_always);
         let permission_all =
@@ -545,27 +550,26 @@ impl NotificationDeliveryCore {
             foreground: false,
         };
 
-        let permission_categories =
-            Self::feed_permission_notification_category_ids()
-                .into_iter()
-                .map(|category_id| {
-                    let mut actions: Vec<NotificationActionData> = Vec::new();
-                    if category_id.contains("Once") || category_id == "CMUXFeedPermission" {
-                        actions.push(permission_once.clone());
-                    }
-                    if category_id.contains("Always") || category_id == "CMUXFeedPermission" {
-                        actions.push(permission_always.clone());
-                    }
-                    if category_id.contains("All") {
-                        actions.push(permission_all.clone());
-                    }
-                    actions.push(permission_deny.clone());
-                    NotificationCategoryData {
-                        identifier: category_id.to_string(),
-                        actions,
-                        custom_dismiss_action: false,
-                    }
-                });
+        let permission_categories = Self::feed_permission_notification_category_ids()
+            .into_iter()
+            .map(|category_id| {
+                let mut actions: Vec<NotificationActionData> = Vec::new();
+                if category_id.contains("Once") || category_id == "CMUXFeedPermission" {
+                    actions.push(permission_once.clone());
+                }
+                if category_id.contains("Always") || category_id == "CMUXFeedPermission" {
+                    actions.push(permission_always.clone());
+                }
+                if category_id.contains("All") {
+                    actions.push(permission_all.clone());
+                }
+                actions.push(permission_deny.clone());
+                NotificationCategoryData {
+                    identifier: category_id.to_string(),
+                    actions,
+                    custom_dismiss_action: false,
+                }
+            });
 
         let exit_plan_category = NotificationCategoryData {
             identifier: "CMUXFeedExitPlan".to_string(),
@@ -574,7 +578,10 @@ impl NotificationDeliveryCore {
                     "feed.exit_plan.ultraplan",
                     &titles.feed_exit_plan_ultraplan,
                 ),
-                NotificationActionData::plain("feed.exit_plan.manual", &titles.feed_exit_plan_manual),
+                NotificationActionData::plain(
+                    "feed.exit_plan.manual",
+                    &titles.feed_exit_plan_manual,
+                ),
                 NotificationActionData::plain(
                     "feed.exit_plan.autoAccept",
                     &titles.feed_exit_plan_auto_accept,
@@ -624,8 +631,7 @@ impl NotificationDeliveryCore {
     /// (`NotificationDeliveryCoordinator.swift:254-283`).
     fn handle_terminal(&self, response: &NotificationDeliveryResponse) -> Outcome {
         let action = response.action_identifier.as_str();
-        if action == DEFAULT_ACTION_IDENTIFIER
-            || action == self.identifiers.show_action_identifier
+        if action == DEFAULT_ACTION_IDENTIFIER || action == self.identifiers.show_action_identifier
         {
             // `guard let tabId ...` — bail before the click-action check.
             let Some(tab_id) = response
@@ -669,7 +675,10 @@ impl NotificationDeliveryCore {
 /// response is not a feed response (Swift `return false`, fall through to
 /// terminal routing); `Some(Outcome::None)` when the feed path consumes the
 /// response without an effect (Swift `return true` with no seam call).
-fn handle_feed<F>(response: &NotificationDeliveryResponse, permission_capabilities: &F) -> Option<Outcome>
+fn handle_feed<F>(
+    response: &NotificationDeliveryResponse,
+    permission_capabilities: &F,
+) -> Option<Outcome>
 where
     F: Fn(&str) -> Option<NotificationFeedPermissionCapabilities>,
 {
@@ -689,15 +698,11 @@ where
     use NotificationFeedExitPlanMode as Exit;
     use NotificationFeedPermissionMode as Perm;
     let outcome = match response.action_identifier.as_str() {
-        "feed.permission.once" => {
-            permission_reply(request_id, Perm::Once, permission_capabilities)
-        }
+        "feed.permission.once" => permission_reply(request_id, Perm::Once, permission_capabilities),
         "feed.permission.always" => {
             permission_reply(request_id, Perm::Always, permission_capabilities)
         }
-        "feed.permission.all" => {
-            permission_reply(request_id, Perm::All, permission_capabilities)
-        }
+        "feed.permission.all" => permission_reply(request_id, Perm::All, permission_capabilities),
         "feed.permission.deny" => Outcome::DeliverReply {
             request_id,
             decision: NotificationFeedDecision::Permission(Perm::Deny),
@@ -821,7 +826,11 @@ mod tests {
     }
 
     fn action_ids(category: &NotificationCategoryData) -> Vec<&str> {
-        category.actions.iter().map(|a| a.identifier.as_str()).collect()
+        category
+            .actions
+            .iter()
+            .map(|a| a.identifier.as_str())
+            .collect()
     }
 
     // --- configure installs terminal and Feed categories (oracle, :82-119) ---
@@ -835,7 +844,11 @@ mod tests {
         let terminal = &categories["terminal.category"];
         assert_eq!(action_ids(terminal), ["terminal.show"]);
         assert_eq!(
-            terminal.actions.iter().map(|a| a.title.as_str()).collect::<Vec<_>>(),
+            terminal
+                .actions
+                .iter()
+                .map(|a| a.title.as_str())
+                .collect::<Vec<_>>(),
             ["Show"]
         );
         assert!(terminal.custom_dismiss_action);
@@ -876,15 +889,60 @@ mod tests {
         let core = core();
         let categories = categories_by_id(&core);
         let cases: [(&str, &[&str]); 9] = [
-            ("CMUXFeedPermission", &["feed.permission.once", "feed.permission.always", "feed.permission.deny"]),
+            (
+                "CMUXFeedPermission",
+                &[
+                    "feed.permission.once",
+                    "feed.permission.always",
+                    "feed.permission.deny",
+                ],
+            ),
             ("CMUXFeedPermissionDeny", &["feed.permission.deny"]),
-            ("CMUXFeedPermissionOnce", &["feed.permission.once", "feed.permission.deny"]),
-            ("CMUXFeedPermissionAlways", &["feed.permission.always", "feed.permission.deny"]),
-            ("CMUXFeedPermissionAll", &["feed.permission.all", "feed.permission.deny"]),
-            ("CMUXFeedPermissionOnceAlways", &["feed.permission.once", "feed.permission.always", "feed.permission.deny"]),
-            ("CMUXFeedPermissionOnceAll", &["feed.permission.once", "feed.permission.all", "feed.permission.deny"]),
-            ("CMUXFeedPermissionAlwaysAll", &["feed.permission.always", "feed.permission.all", "feed.permission.deny"]),
-            ("CMUXFeedPermissionOnceAlwaysAll", &["feed.permission.once", "feed.permission.always", "feed.permission.all", "feed.permission.deny"]),
+            (
+                "CMUXFeedPermissionOnce",
+                &["feed.permission.once", "feed.permission.deny"],
+            ),
+            (
+                "CMUXFeedPermissionAlways",
+                &["feed.permission.always", "feed.permission.deny"],
+            ),
+            (
+                "CMUXFeedPermissionAll",
+                &["feed.permission.all", "feed.permission.deny"],
+            ),
+            (
+                "CMUXFeedPermissionOnceAlways",
+                &[
+                    "feed.permission.once",
+                    "feed.permission.always",
+                    "feed.permission.deny",
+                ],
+            ),
+            (
+                "CMUXFeedPermissionOnceAll",
+                &[
+                    "feed.permission.once",
+                    "feed.permission.all",
+                    "feed.permission.deny",
+                ],
+            ),
+            (
+                "CMUXFeedPermissionAlwaysAll",
+                &[
+                    "feed.permission.always",
+                    "feed.permission.all",
+                    "feed.permission.deny",
+                ],
+            ),
+            (
+                "CMUXFeedPermissionOnceAlwaysAll",
+                &[
+                    "feed.permission.once",
+                    "feed.permission.always",
+                    "feed.permission.all",
+                    "feed.permission.deny",
+                ],
+            ),
         ];
         for (id, expected) in cases {
             assert_eq!(action_ids(&categories[id]), expected, "category {id}");
@@ -992,7 +1050,9 @@ mod tests {
             outcome,
             Outcome::DeliverReply {
                 request_id: "req-1".to_string(),
-                decision: NotificationFeedDecision::Permission(NotificationFeedPermissionMode::Once),
+                decision: NotificationFeedDecision::Permission(
+                    NotificationFeedPermissionMode::Once
+                ),
             }
         );
     }
@@ -1058,10 +1118,22 @@ mod tests {
     fn feed_exit_plan_actions_deliver_replies() {
         let core = core();
         let cases = [
-            ("feed.exit_plan.ultraplan", NotificationFeedExitPlanMode::Ultraplan),
-            ("feed.exit_plan.bypassPermissions", NotificationFeedExitPlanMode::BypassPermissions),
-            ("feed.exit_plan.autoAccept", NotificationFeedExitPlanMode::AutoAccept),
-            ("feed.exit_plan.manual", NotificationFeedExitPlanMode::Manual),
+            (
+                "feed.exit_plan.ultraplan",
+                NotificationFeedExitPlanMode::Ultraplan,
+            ),
+            (
+                "feed.exit_plan.bypassPermissions",
+                NotificationFeedExitPlanMode::BypassPermissions,
+            ),
+            (
+                "feed.exit_plan.autoAccept",
+                NotificationFeedExitPlanMode::AutoAccept,
+            ),
+            (
+                "feed.exit_plan.manual",
+                NotificationFeedExitPlanMode::Manual,
+            ),
         ];
         for (action, mode) in cases {
             let outcome = core.handle(
@@ -1101,7 +1173,9 @@ mod tests {
             outcome,
             Outcome::DeliverReply {
                 request_id: "req-4".to_string(),
-                decision: NotificationFeedDecision::Permission(NotificationFeedPermissionMode::Deny),
+                decision: NotificationFeedDecision::Permission(
+                    NotificationFeedPermissionMode::Deny
+                ),
             }
         );
     }

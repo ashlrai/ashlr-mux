@@ -80,7 +80,11 @@ impl<'a> WorkspaceHermesAgentCommandBootstrapper<'a> {
             .apply_default_codex_base_url(environment);
         let base_url = match normalized_surface_resume_value(
             environment
-                .get(&self.hermes_codex_environment.custom_base_url_environment_key)
+                .get(
+                    &self
+                        .hermes_codex_environment
+                        .custom_base_url_environment_key,
+                )
                 .map(String::as_str),
         ) {
             Some(base_url) => base_url,
@@ -146,7 +150,10 @@ impl<'a> WorkspaceHermesAgentCommandBootstrapper<'a> {
     /// Returns a restorable tmux start command when the command launches an OMX
     /// HUD. Mirrors Swift `restorableTmuxStartCommand(_:)`
     /// (`WorkspaceHermesAgentCommandBootstrapper.swift:50-57`).
-    pub(super) fn restorable_tmux_start_command(&self, raw_command: Option<&str>) -> Option<String> {
+    pub(super) fn restorable_tmux_start_command(
+        &self,
+        raw_command: Option<&str>,
+    ) -> Option<String> {
         let command = trim_whitespace_and_newlines(raw_command?);
         if command.is_empty() || !terminal_command_looks_like_omx_hud(command) {
             return None;
@@ -267,7 +274,9 @@ fn bootstrap_command_end_index(words: &[ShellWord], start_index: usize) -> Optio
 /// Mirrors Swift `commandSetsModelAPIMode(_:)`
 /// (`WorkspaceHermesAgentCommandBootstrapper.swift:150-152`).
 fn command_sets_model_api_mode(words: &[ShellWord]) -> bool {
-    words.iter().any(|word| word.value.contains("model.api_mode"))
+    words
+        .iter()
+        .any(|word| word.value.contains("model.api_mode"))
 }
 
 /// Mirrors Swift `providerArgument(_:)`
@@ -564,10 +573,7 @@ mod tests {
     fn single_quoted_value_is_unquoted_but_range_is_raw() {
         // 'ab' occupies bytes 0..4, cleaned value "ab".
         let got = words("'ab' c");
-        assert_eq!(
-            got,
-            vec![("ab".to_string(), 0..4), ("c".to_string(), 5..6)]
-        );
+        assert_eq!(got, vec![("ab".to_string(), 0..4), ("c".to_string(), 5..6)]);
     }
 
     #[test]
@@ -791,8 +797,7 @@ mod tests {
         let bootstrapper = WorkspaceHermesAgentCommandBootstrapper::new(&env);
 
         let once = bootstrapper.binding_for_startup(hermes_binding("hermes run"));
-        let twice =
-            bootstrapper.binding_for_startup(hermes_binding(&once.command));
+        let twice = bootstrapper.binding_for_startup(hermes_binding(&once.command));
         assert_eq!(
             once.command, twice.command,
             "bootstrap prefix must be removed before re-insertion so the command is stable"
@@ -806,7 +811,9 @@ mod tests {
         let bootstrapper = WorkspaceHermesAgentCommandBootstrapper::new(&env);
         let result = bootstrapper.binding_for_startup(hermes_binding("cd /repo && hermes run"));
         // The cwd guard stays before the bootstrap; bootstrap sits before hermes.
-        assert!(result.command.starts_with("cd /repo && 'hermes' config set model.provider"));
+        assert!(result
+            .command
+            .starts_with("cd /repo && 'hermes' config set model.provider"));
         assert!(result.command.ends_with("&& hermes run"));
     }
 
@@ -844,8 +851,8 @@ mod tests {
         // appended. (A `config set model.api_mode` prefix would instead be
         // stripped as a stale bootstrap and re-inserted — see
         // `bootstrap_insertion_is_idempotent`.)
-        let result =
-            bootstrapper.binding_for_startup(hermes_binding("hermes --set model.api_mode=responses run"));
+        let result = bootstrapper
+            .binding_for_startup(hermes_binding("hermes --set model.api_mode=responses run"));
         assert!(!result.command.contains("config set model.provider"));
         assert_eq!(result.command, "hermes --set model.api_mode=responses run");
     }

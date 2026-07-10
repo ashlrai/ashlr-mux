@@ -20,8 +20,8 @@ use url::Url;
 pub mod session_history;
 
 pub use session_history::{
-    NavigationAvailability, RealignOutcome, RestoredSessionHistory, SessionHistoryTraversalDecision,
-    SessionHistoryURLSanitizer, SessionNavigationHistorySnapshot,
+    NavigationAvailability, RealignOutcome, RestoredSessionHistory,
+    SessionHistoryTraversalDecision, SessionHistoryURLSanitizer, SessionNavigationHistorySnapshot,
 };
 
 /// One persisted browser-history record: a visited URL with its display title
@@ -144,12 +144,7 @@ impl BrowserHistorySuggestionEngine {
             format!("{path}?{query}")
         };
 
-        let title_lower = entry
-            .title
-            .as_deref()
-            .unwrap_or("")
-            .trim()
-            .to_lowercase();
+        let title_lower = entry.title.as_deref().unwrap_or("").trim().to_lowercase();
 
         BrowserHistorySuggestionCandidate {
             entry,
@@ -387,7 +382,12 @@ mod tests {
 
     const NOW: i64 = 1_000_000;
 
-    fn entry(url: &str, title: Option<&str>, visit_count: i64, typed_count: i64) -> BrowserHistoryEntry {
+    fn entry(
+        url: &str,
+        title: Option<&str>,
+        visit_count: i64,
+        typed_count: i64,
+    ) -> BrowserHistoryEntry {
         BrowserHistoryEntry::new(
             "id",
             url,
@@ -429,7 +429,8 @@ mod tests {
     fn single_character_query_requires_prefix_match() {
         let engine = BrowserHistorySuggestionEngine::new();
         let prefix = engine.candidate(entry("https://github.com/", Some("GitHub"), 1, 0));
-        let substring_only = engine.candidate(entry("https://example.com/g", Some("Example"), 1, 0));
+        let substring_only =
+            engine.candidate(entry("https://example.com/g", Some("Example"), 1, 0));
         let tokens = vec!["g".to_string()];
         assert!(engine.score(&prefix, "g", &tokens, NOW).is_some());
         assert!(engine.score(&substring_only, "g", &tokens, NOW).is_none());
@@ -448,7 +449,10 @@ mod tests {
     #[test]
     fn tokenize_dedupes_and_splits_on_punctuation() {
         let engine = BrowserHistorySuggestionEngine::new();
-        assert_eq!(engine.tokenize("foo bar foo, baz"), vec!["foo", "bar", "baz"]);
+        assert_eq!(
+            engine.tokenize("foo bar foo, baz"),
+            vec!["foo", "bar", "baz"]
+        );
     }
 
     // Port of `normalizedKeyDropsWWWDefaultPortAndTrailingSlash`.

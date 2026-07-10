@@ -281,7 +281,8 @@ mod tests {
     #[test]
     fn rejects_untrusted_frame() {
         let ts = TempStore::new();
-        let reply = dispatch_comment_rpc(&ts.store, false, &json!({ "method": "comments.list" }), NOW);
+        let reply =
+            dispatch_comment_rpc(&ts.store, false, &json!({ "method": "comments.list" }), NOW);
         assert_eq!(reply["ok"], json!(false));
         assert_eq!(reply["error"]["code"], json!("not_allowed"));
         assert_eq!(reply["error"]["userMessage"], json!(MSG_NOT_ALLOWED));
@@ -292,9 +293,13 @@ mod tests {
         let ts = TempStore::new();
         let no_method = dispatch_comment_rpc(&ts.store, true, &json!({ "params": {} }), NOW);
         assert_eq!(no_method["error"]["code"], json!("invalid_request"));
-        assert_eq!(no_method["error"]["userMessage"], json!("Malformed bridge request"));
+        assert_eq!(
+            no_method["error"]["userMessage"],
+            json!("Malformed bridge request")
+        );
 
-        let no_repo = dispatch_comment_rpc(&ts.store, true, &json!({ "method": "comments.list" }), NOW);
+        let no_repo =
+            dispatch_comment_rpc(&ts.store, true, &json!({ "method": "comments.list" }), NOW);
         assert_eq!(no_repo["error"]["userMessage"], json!("Missing repoRoot"));
 
         let blank_repo = dispatch_comment_rpc(
@@ -303,7 +308,10 @@ mod tests {
             &json!({ "method": "comments.list", "params": { "repoRoot": "   " } }),
             NOW,
         );
-        assert_eq!(blank_repo["error"]["userMessage"], json!("Missing repoRoot"));
+        assert_eq!(
+            blank_repo["error"]["userMessage"],
+            json!("Missing repoRoot")
+        );
     }
 
     #[test]
@@ -316,7 +324,10 @@ mod tests {
             NOW,
         );
         assert_eq!(reply["error"]["code"], json!("invalid_request"));
-        assert_eq!(reply["error"]["userMessage"], json!("Unsupported method 'comments.frobnicate'"));
+        assert_eq!(
+            reply["error"]["userMessage"],
+            json!("Unsupported method 'comments.frobnicate'")
+        );
     }
 
     #[test]
@@ -401,7 +412,10 @@ mod tests {
         comment["id"] = json!("not-a-uuid");
         let reply = dispatch_comment_rpc(&ts.store, true, &save_request(comment), NOW);
         let id = reply["value"]["comment"]["id"].as_str().unwrap();
-        assert!(Uuid::parse_str(id).is_ok(), "generated a valid uuid, got {id:?}");
+        assert!(
+            Uuid::parse_str(id).is_ok(),
+            "generated a valid uuid, got {id:?}"
+        );
         assert_ne!(id, "not-a-uuid");
     }
 
@@ -448,8 +462,8 @@ mod tests {
     // Swift's `UUID(uuidString:)` rejects. Each encodes the same UUID value as
     // `valid_comment()`'s id (`550e8400-...440000`).
     const NONCANONICAL_IDS: [&str; 3] = [
-        "550e8400e29b41d4a716446655440000",              // 32-char hyphenless
-        "{550e8400-e29b-41d4-a716-446655440000}",        // braced
+        "550e8400e29b41d4a716446655440000",       // 32-char hyphenless
+        "{550e8400-e29b-41d4-a716-446655440000}", // braced
         "urn:uuid:550e8400-e29b-41d4-a716-446655440000", // urn:uuid:
     ];
 
@@ -500,7 +514,10 @@ mod tests {
             let reply = dispatch_comment_rpc(&ts.store, true, &save_request(comment), NOW);
             let id = reply["value"]["comment"]["id"].as_str().unwrap();
             assert_ne!(id, bad, "non-canonical id must be replaced, not preserved");
-            assert!(is_canonical_uuid(id), "minted id must be canonical, got {id:?}");
+            assert!(
+                is_canonical_uuid(id),
+                "minted id must be canonical, got {id:?}"
+            );
         }
     }
 

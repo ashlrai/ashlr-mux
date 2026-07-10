@@ -198,9 +198,11 @@ mod tests {
     #[test]
     fn keeps_raw_signal_and_non_socket_messages() {
         let filter = SentryNoiseFilter::new();
-        assert!(!SentryNoiseFilter::is_expected_cli_socket_transport_message(
-            "SIGPIPE: Signal 13, Code 0"
-        ));
+        assert!(
+            !SentryNoiseFilter::is_expected_cli_socket_transport_message(
+                "SIGPIPE: Signal 13, Code 0"
+            )
+        );
         assert!(!filter.is_expected_cli_socket_transport_failure(
             "codex-monitor-start",
             "Failed to write to socket (Broken pipe, errno 32)",
@@ -258,9 +260,11 @@ mod tests {
     fn errno_lookbehind_rejects_digit_supersequence() {
         // "errno 329" must not satisfy the errno-32 check; the trailing
         // `(?![0-9])` guards it. Message otherwise looks like a write failure.
-        assert!(!SentryNoiseFilter::is_expected_cli_socket_transport_message(
-            "Failed to write to socket (errno 329)"
-        ));
+        assert!(
+            !SentryNoiseFilter::is_expected_cli_socket_transport_message(
+                "Failed to write to socket (errno 329)"
+            )
+        );
         // The bare, exact code does match.
         assert!(SentryNoiseFilter::is_expected_cli_socket_transport_message(
             "Failed to write to socket (errno 32)"

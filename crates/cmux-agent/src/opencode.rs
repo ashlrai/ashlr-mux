@@ -42,8 +42,7 @@ impl OpenCodeServerAuth {
 /// Standard Base64 (RFC 4648, `+/` alphabet, `=` padding). Small, dependency-free
 /// encoder — the only input is a short `user:pass` token.
 fn base64_encode(input: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
         let b0 = chunk[0] as u32;
@@ -131,7 +130,8 @@ mod tests {
     fn no_password_yields_none() {
         assert!(OpenCodeServerAuth::from_environment(&env(&[])).is_none());
         assert!(
-            OpenCodeServerAuth::from_environment(&env(&[("OPENCODE_SERVER_PASSWORD", "")])).is_none()
+            OpenCodeServerAuth::from_environment(&env(&[("OPENCODE_SERVER_PASSWORD", "")]))
+                .is_none()
         );
     }
 }

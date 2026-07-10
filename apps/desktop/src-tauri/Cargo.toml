@@ -17,18 +17,23 @@ tauri-build = { version = "2", features = [] }
 cmux-agent = { path = "../../../crates/cmux-agent" }
 cmux-agent-chat = { path = "../../../crates/cmux-agent-chat" }
 cmux-command-palette = { path = "../../../crates/cmux-command-palette" }
+cmux-config = { path = "../../../crates/cmux-config" }
 cmux-core = { path = "../../../crates/cmux-core" }
+cmux-git = { path = "../../../crates/cmux-git" }
 cmux-mentions = { path = "../../../crates/cmux-mentions" }
 cmux-diff = { path = "../../../crates/cmux-diff" }
 cmux-ipc = { path = "../../../crates/cmux-ipc" }
 cmux-markdown = { path = "../../../crates/cmux-markdown" }
+cmux-notify = { path = "../../../crates/cmux-notify" }
 cmux-process = { path = "../../../crates/cmux-process" }
+cmux-ssh = { path = "../../../crates/cmux-ssh" }
 cmux-terminal = { path = "../../../crates/cmux-terminal" }
+cmux-window-title = { path = "../../../crates/cmux-window-title" }
 cmux-workspaces = { path = "../../../crates/cmux-workspaces" }
 serde = { workspace = true }
 uuid = { workspace = true }
 serde_json = { workspace = true }
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["unstable", "devtools"] }
 # OpenCode's loopback control API is plain HTTP (no TLS). `ureq` is a pure
 # blocking client with no tokio dependency (honoring the no-async-runtime rule);
 # default-features disabled drops the TLS/json/gzip features we do not need.
@@ -42,7 +47,21 @@ base64 = "0.22"
 # `ISO8601DateFormatter`: `YYYY-MM-DDTHH:MM:SSZ`). Default features only — we
 # format from `OffsetDateTime::now_utc()` components, no macro/parsing feature.
 time = "0.3"
+tauri-plugin-deep-link = "2.0.0"
+native-tls = "0.2"
+url = "2"
 
 [dev-dependencies]
 # Temp fixtures for the diff-store / markdown-asset / scheme unit tests.
 tempfile = "3"
+
+[target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
+tauri-plugin-single-instance = { version = "2.0.0", features = ["deep-link"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Networking_WinSock",
+  "Win32_NetworkManagement_IpHelper",
+  "Win32_System_Diagnostics_ToolHelp",
+] }

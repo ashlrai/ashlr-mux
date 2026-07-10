@@ -33,13 +33,21 @@ impl CanvasSnapEngine {
     }
 
     /// Snaps a frame being moved (both edges of each axis translate together).
-    pub fn snap_for_move(&self, proposed: CanvasRect, neighbors: &[CanvasRect]) -> CanvasSnapResult {
+    pub fn snap_for_move(
+        &self,
+        proposed: CanvasRect,
+        neighbors: &[CanvasRect],
+    ) -> CanvasSnapResult {
         let mut frame = proposed;
         let mut guides: Vec<CanvasGuide> = Vec::new();
 
         if let Some(best) = self.best_candidate(self.move_candidates_x(&proposed, neighbors)) {
             frame.x += best.delta;
-            guides.push(Self::vertical_guide(best.guide_position, &frame, &best.neighbor));
+            guides.push(Self::vertical_guide(
+                best.guide_position,
+                &frame,
+                &best.neighbor,
+            ));
         }
         if let Some(best) = self.best_candidate(self.move_candidates_y(&proposed, neighbors)) {
             frame.y += best.delta;
@@ -67,8 +75,7 @@ impl CanvasSnapEngine {
         let gap = self.metrics.gap;
 
         if edges.contains(CanvasResizeEdges::LEFT) {
-            let align: Vec<(f64, CanvasRect)> =
-                neighbors.iter().map(|n| (n.min_x(), *n)).collect();
+            let align: Vec<(f64, CanvasRect)> = neighbors.iter().map(|n| (n.min_x(), *n)).collect();
             let gaps: Vec<(f64, CanvasRect)> =
                 neighbors.iter().map(|n| (n.max_x() + gap, *n)).collect();
             if let Some(best) =
@@ -76,7 +83,11 @@ impl CanvasSnapEngine {
             {
                 frame.x = proposed.min_x() + best.delta;
                 frame.width = proposed.max_x() - frame.x;
-                guides.push(Self::vertical_guide(best.guide_position, &frame, &best.neighbor));
+                guides.push(Self::vertical_guide(
+                    best.guide_position,
+                    &frame,
+                    &best.neighbor,
+                ));
             }
             if frame.width < self.metrics.min_pane_size.width {
                 frame.x = frame.max_x() - self.metrics.min_pane_size.width;
@@ -84,15 +95,18 @@ impl CanvasSnapEngine {
                 guides.retain(|g| g.axis != CanvasGuideAxis::Vertical);
             }
         } else if edges.contains(CanvasResizeEdges::RIGHT) {
-            let align: Vec<(f64, CanvasRect)> =
-                neighbors.iter().map(|n| (n.max_x(), *n)).collect();
+            let align: Vec<(f64, CanvasRect)> = neighbors.iter().map(|n| (n.max_x(), *n)).collect();
             let gaps: Vec<(f64, CanvasRect)> =
                 neighbors.iter().map(|n| (n.min_x() - gap, *n)).collect();
             if let Some(best) =
                 self.best_candidate(Self::edge_candidates(proposed.max_x(), &align, &gaps))
             {
                 frame.width = proposed.max_x() + best.delta - frame.x;
-                guides.push(Self::vertical_guide(best.guide_position, &frame, &best.neighbor));
+                guides.push(Self::vertical_guide(
+                    best.guide_position,
+                    &frame,
+                    &best.neighbor,
+                ));
             }
             if frame.width < self.metrics.min_pane_size.width {
                 frame.width = self.metrics.min_pane_size.width;
@@ -101,8 +115,7 @@ impl CanvasSnapEngine {
         }
 
         if edges.contains(CanvasResizeEdges::TOP) {
-            let align: Vec<(f64, CanvasRect)> =
-                neighbors.iter().map(|n| (n.min_y(), *n)).collect();
+            let align: Vec<(f64, CanvasRect)> = neighbors.iter().map(|n| (n.min_y(), *n)).collect();
             let gaps: Vec<(f64, CanvasRect)> =
                 neighbors.iter().map(|n| (n.max_y() + gap, *n)).collect();
             if let Some(best) =
@@ -122,8 +135,7 @@ impl CanvasSnapEngine {
                 guides.retain(|g| g.axis != CanvasGuideAxis::Horizontal);
             }
         } else if edges.contains(CanvasResizeEdges::BOTTOM) {
-            let align: Vec<(f64, CanvasRect)> =
-                neighbors.iter().map(|n| (n.max_y(), *n)).collect();
+            let align: Vec<(f64, CanvasRect)> = neighbors.iter().map(|n| (n.max_y(), *n)).collect();
             let gaps: Vec<(f64, CanvasRect)> =
                 neighbors.iter().map(|n| (n.min_y() - gap, *n)).collect();
             if let Some(best) =
@@ -267,7 +279,11 @@ impl CanvasSnapEngine {
     fn vertical_guide(position: f64, snapped: &CanvasRect, neighbor: &CanvasRect) -> CanvasGuide {
         let lower = snapped.min_y().min(neighbor.min_y());
         let upper = snapped.max_y().max(neighbor.max_y());
-        CanvasGuide::new(CanvasGuideAxis::Vertical, position, lower..=lower.max(upper))
+        CanvasGuide::new(
+            CanvasGuideAxis::Vertical,
+            position,
+            lower..=lower.max(upper),
+        )
     }
 
     fn horizontal_guide(position: f64, snapped: &CanvasRect, neighbor: &CanvasRect) -> CanvasGuide {
@@ -369,7 +385,10 @@ mod tests {
         assert_eq!(result.frame.x, 316.0);
         assert_eq!(result.frame.y, 0.0);
         assert_eq!(result.guides.len(), 2);
-        assert!(result.guides.iter().any(|g| g.axis == CanvasGuideAxis::Vertical));
+        assert!(result
+            .guides
+            .iter()
+            .any(|g| g.axis == CanvasGuideAxis::Vertical));
         assert!(result
             .guides
             .iter()

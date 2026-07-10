@@ -56,7 +56,6 @@ class FakeCmuxState:
                     {
                         "id": WORKSPACE_ID,
                         "ref": "workspace:1",
-                        "index": 1,
                         "title": "omo",
                     }
                 ]
@@ -134,7 +133,6 @@ class FakeCmuxState:
                 {
                     "id": PANE_ID,
                     "ref": "pane:1",
-                    "index": 1,
                     "focused": not self.split_created,
                 }
             ]
@@ -143,7 +141,6 @@ class FakeCmuxState:
                     {
                         "id": SUBAGENT_PANE_ID,
                         "ref": "pane:2",
-                        "index": 2,
                         "focused": True,
                     }
                 )

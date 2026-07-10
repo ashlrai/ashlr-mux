@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -59,16 +60,18 @@ def test_tauri_config_matches_m0_bundle_shape() -> None:
 
 
 def test_desktop_web_build_emits_referenced_assets() -> None:
-    result = run("bun", "run", "desktop:web:build")
-    assert "Built desktop web shell into" in result.stdout
+    run("bun", "run", "desktop:web:build")
 
     index_html = (DESKTOP_WEB_DIST / "index.html").read_text(encoding="utf-8")
     assert "cmux for Windows" in index_html
-    assert "./assets/styles.css" in index_html
-    assert "./assets/main.js" in index_html
-    assert "Milestone M1" in (DESKTOP_WEB_DIST / "assets" / "main.js").read_text(encoding="utf-8")
-    assert (DESKTOP_WEB_DIST / "assets" / "styles.css").exists()
-    assert (DESKTOP_WEB_DIST / "assets" / "main.js").exists()
+
+    asset_refs = re.findall(r'(?:src|href)="(/assets/[^"]+)"', index_html)
+    assert any(ref.endswith(".js") for ref in asset_refs), "index.html should reference a JS bundle"
+    assert any(ref.endswith(".css") for ref in asset_refs), "index.html should reference a CSS bundle"
+    for ref in asset_refs:
+        asset = DESKTOP_WEB_DIST / ref.lstrip("/")
+        assert asset.exists(), f"missing referenced asset: {ref}"
+        assert asset.stat().st_size > 0, f"referenced asset is empty: {ref}"
     assert not (DESKTOP_WEB_DIST / "assets" / "src").exists()
 
 

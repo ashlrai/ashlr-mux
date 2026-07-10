@@ -29,7 +29,11 @@ pub struct ChatTranscriptParseState {
 
     /// Timestamp of the last line that carried one, the fallback for
     /// subsequent lines that omit a timestamp.
-    #[serde(rename = "last_timestamp", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "last_timestamp",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub last_timestamp: Option<Timestamp>,
 }
 

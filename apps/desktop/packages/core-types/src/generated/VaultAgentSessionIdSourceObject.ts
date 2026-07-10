@@ -5,7 +5,7 @@
  * The object arm of `vault.agents[].sessionIdSource`
  * (`{ "type": ..., "argvOption"?: ... }`, `web/data/cmux.schema.json:96-130`).
  */
-export type VaultAgentSessionIdSourceObject = { 
+export type VaultAgentSessionIdSourceObject = {
 /**
  * Schema restricts this to the enum `["argvOption", "piSessionFile"]`.
  * DIVERGENCE: kept as a lenient `String` (not a closed enum) because the

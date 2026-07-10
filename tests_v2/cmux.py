@@ -13,8 +13,8 @@ Protocol:
 
 Notes:
 - v2 uses stable UUID handles for workspaces/panes/surfaces.
-- For test convenience, this client accepts integer indexes for many methods and
-  resolves them to IDs using list calls.
+- For test convenience, this client accepts numeric convenience handles for many
+  methods and resolves them through short refs returned by list calls.
 """
 
 import base64
@@ -99,6 +99,30 @@ def _looks_like_ref(s: str, kind: Optional[str] = None) -> bool:
     if ref_kind not in {"window", "workspace", "pane", "surface"}:
         return False
     return ordinal.isdigit()
+
+
+def _ref_ordinal(value: Any, kind: str) -> Optional[int]:
+    if not isinstance(value, str) or not _looks_like_ref(value, kind):
+        return None
+    ordinal = int(value.split(":", 1)[1])
+    return ordinal - 1 if ordinal > 0 else None
+
+
+def _row_ref_ordinal(row: dict, kind: str) -> int:
+    for key in ("ref", f"{kind}_ref"):
+        ordinal = _ref_ordinal(row.get(key), kind)
+        if ordinal is not None:
+            return ordinal
+    raise cmuxError(f"{kind}.list row missing {kind}:N ref: {row}")
+
+
+def _put_ref_or_id(params: Dict[str, Any], prefix: str, kind: str, value: Optional[str]) -> None:
+    if not value:
+        return
+    if _looks_like_ref(value, kind):
+        params[f"{prefix}_ref"] = value
+    else:
+        params[f"{prefix}_id"] = value
 
 
 def _unescape_backslash_controls(s: str) -> str:
@@ -270,7 +294,7 @@ class cmux:
         raise cmuxError(f"{code}: {msg}")
 
     # ---------------------------------------------------------------------
-    # ID resolution helpers (index -> id)
+    # ID resolution helpers (numeric convenience -> short refs / ids)
     # ---------------------------------------------------------------------
 
     def _resolve_workspace_id(self, workspace: Union[str, int, None]) -> Optional[str]:
@@ -284,9 +308,9 @@ class cmux:
         if isinstance(workspace, int):
             items = (self._call("workspace.list") or {}).get("workspaces") or []
             for row in items:
-                if int(row.get("index", -1)) == workspace:
+                if _row_ref_ordinal(row, "workspace") == workspace:
                     return str(row.get("id"))
-            raise cmuxError(f"Workspace index not found: {workspace}")
+            raise cmuxError(f"Workspace ref ordinal not found: {workspace}")
 
         s = str(workspace).strip()
         if not s:
@@ -313,9 +337,9 @@ class cmux:
                 params["workspace_id"] = workspace_id
             items = (self._call("surface.list", params) or {}).get("surfaces") or []
             for row in items:
-                if int(row.get("index", -1)) == surface:
+                if _row_ref_ordinal(row, "surface") == surface:
                     return str(row.get("id"))
-            raise cmuxError(f"Surface index not found: {surface}")
+            raise cmuxError(f"Surface ref ordinal not found: {surface}")
 
         s = str(surface).strip()
         if not s:
@@ -341,9 +365,9 @@ class cmux:
                 params["workspace_id"] = workspace_id
             items = (self._call("pane.list", params) or {}).get("panes") or []
             for row in items:
-                if int(row.get("index", -1)) == pane:
+                if _row_ref_ordinal(row, "pane") == pane:
                     return str(row.get("id"))
-            raise cmuxError(f"Pane index not found: {pane}")
+            raise cmuxError(f"Pane ref ordinal not found: {pane}")
 
         s = str(pane).strip()
         if not s:
@@ -413,7 +437,7 @@ class cmux:
         out: List[Tuple[int, str, str, bool]] = []
         for row in res.get("workspaces") or []:
             out.append((
-                int(row.get("index", 0)),
+                _row_ref_ordinal(row, "workspace"),
                 str(row.get("id")),
                 str(row.get("title", "")),
                 bool(row.get("selected", False)),
@@ -492,13 +516,23 @@ class cmux:
 
         targets = 0
         if index is not None:
-            params["index"] = int(index)
+            params["before_workspace_ref"] = f"workspace:{int(index) + 1}"
             targets += 1
         if before_workspace is not None:
-            params["before_workspace_id"] = self._resolve_workspace_id(before_workspace)
+            _put_ref_or_id(
+                params,
+                "before_workspace",
+                "workspace",
+                self._resolve_workspace_id(before_workspace),
+            )
             targets += 1
         if after_workspace is not None:
-            params["after_workspace_id"] = self._resolve_workspace_id(after_workspace)
+            _put_ref_or_id(
+                params,
+                "after_workspace",
+                "workspace",
+                self._resolve_workspace_id(after_workspace),
+            )
             targets += 1
         if targets != 1:
             raise cmuxError("reorder_workspace requires exactly one target: index|before_workspace|after_workspace")
@@ -541,7 +575,7 @@ class cmux:
         out: List[Tuple[int, str, bool]] = []
         for row in res.get("surfaces") or []:
             out.append((
-                int(row.get("index", 0)),
+                _row_ref_ordinal(row, "surface"),
                 str(row.get("id")),
                 bool(row.get("focused", False)),
             ))
@@ -637,14 +671,14 @@ class cmux:
             before_id = self._resolve_surface_id(before_surface)
             if not before_id:
                 raise cmuxError(f"Invalid before_surface: {before_surface!r}")
-            params["before_surface_id"] = before_id
+            _put_ref_or_id(params, "before_surface", "surface", before_id)
         if after_surface is not None:
             after_id = self._resolve_surface_id(after_surface)
             if not after_id:
                 raise cmuxError(f"Invalid after_surface: {after_surface!r}")
-            params["after_surface_id"] = after_id
+            _put_ref_or_id(params, "after_surface", "surface", after_id)
         if index is not None:
-            params["index"] = int(index)
+            params["before_surface_ref"] = f"surface:{int(index) + 1}"
 
         self._call("surface.move", params)
 
@@ -663,19 +697,19 @@ class cmux:
         params: Dict[str, Any] = {"surface_id": sid}
         targets = 0
         if index is not None:
-            params["index"] = int(index)
+            params["before_surface_ref"] = f"surface:{int(index) + 1}"
             targets += 1
         if before_surface is not None:
             before_id = self._resolve_surface_id(before_surface)
             if not before_id:
                 raise cmuxError(f"Invalid before_surface: {before_surface!r}")
-            params["before_surface_id"] = before_id
+            _put_ref_or_id(params, "before_surface", "surface", before_id)
             targets += 1
         if after_surface is not None:
             after_id = self._resolve_surface_id(after_surface)
             if not after_id:
                 raise cmuxError(f"Invalid after_surface: {after_surface!r}")
-            params["after_surface_id"] = after_id
+            _put_ref_or_id(params, "after_surface", "surface", after_id)
             targets += 1
         if targets != 1:
             raise cmuxError("reorder_surface requires exactly one target: index|before_surface|after_surface")
@@ -727,7 +761,7 @@ class cmux:
         out: List[Tuple[int, str, int, bool]] = []
         for row in res.get("panes") or []:
             out.append((
-                int(row.get("index", 0)),
+                _row_ref_ordinal(row, "pane"),
                 str(row.get("id")),
                 int(row.get("surface_count", 0)),
                 bool(row.get("focused", False)),
@@ -749,7 +783,7 @@ class cmux:
         out: List[Tuple[int, str, str, bool]] = []
         for row in res.get("surfaces") or []:
             out.append((
-                int(row.get("index", 0)),
+                _row_ref_ordinal(row, "surface"),
                 str(row.get("id")),
                 str(row.get("title", "")),
                 bool(row.get("selected", False)),
@@ -919,6 +953,31 @@ class cmux:
         sid = self._resolve_surface_id(panel_id)
         res = self._call("browser.url.get", {"surface_id": sid}) or {}
         return str(res.get("url") or "")
+
+    def browser_network_requests(
+        self,
+        panel_id: str,
+        *,
+        url_contains: str = None,
+        method: str = None,
+        since_id: str = None,
+        limit: int = None,
+    ) -> Dict[str, Any]:
+        sid = self._resolve_surface_id(panel_id)
+        params: Dict[str, Any] = {"surface_id": sid}
+        if url_contains is not None:
+            params["urlContains"] = url_contains
+        if method is not None:
+            params["method"] = method
+        if since_id is not None:
+            params["sinceId"] = since_id
+        if limit is not None:
+            params["limit"] = limit
+        return dict(self._call("browser.network.requests", params) or {})
+
+    def browser_network_clear(self, panel_id: str) -> Dict[str, Any]:
+        sid = self._resolve_surface_id(panel_id)
+        return dict(self._call("browser.network.clear", {"surface_id": sid}) or {})
 
     def focus_webview(self, panel_id: str) -> None:
         sid = self._resolve_surface_id(panel_id)

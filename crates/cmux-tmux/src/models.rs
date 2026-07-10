@@ -78,9 +78,10 @@ impl RemoteTmuxLayoutNode {
         match &self.content {
             RemoteTmuxLayoutContent::Pane(id) => vec![*id],
             RemoteTmuxLayoutContent::Horizontal(children)
-            | RemoteTmuxLayoutContent::Vertical(children) => {
-                children.iter().flat_map(|c| c.pane_ids_in_order()).collect()
-            }
+            | RemoteTmuxLayoutContent::Vertical(children) => children
+                .iter()
+                .flat_map(|c| c.pane_ids_in_order())
+                .collect(),
         }
     }
 }

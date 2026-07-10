@@ -41,9 +41,7 @@ fn path_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     // Drive-letter path (C:\ or C:/), UNC (\\host\share), or POSIX absolute
     // (/usr/...). Stops at whitespace and shell/quoting metacharacters.
-    RE.get_or_init(|| {
-        Regex::new(r#"(?:[A-Za-z]:[\\/]|\\\\|/)[^\s<>"'`|*?]+"#).unwrap()
-    })
+    RE.get_or_init(|| Regex::new(r#"(?:[A-Za-z]:[\\/]|\\\\|/)[^\s<>"'`|*?]+"#).unwrap())
 }
 
 /// Trailing characters trimmed from a match — sentence/markup punctuation that
@@ -118,14 +116,20 @@ mod tests {
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].kind, LinkKind::Url);
         assert_eq!(links[0].text, "https://example.com/a/b");
-        assert_eq!(&"see https://example.com/a/b for more"[links[0].range.clone()], "https://example.com/a/b");
+        assert_eq!(
+            &"see https://example.com/a/b for more"[links[0].range.clone()],
+            "https://example.com/a/b"
+        );
     }
 
     #[test]
     fn trims_trailing_sentence_punctuation() {
         assert_eq!(find_links("visit https://a.com.")[0].text, "https://a.com");
         assert_eq!(find_links("(https://a.com)")[0].text, "https://a.com");
-        assert_eq!(find_links("ok: https://a.com/x?y=1!")[0].text, "https://a.com/x?y=1");
+        assert_eq!(
+            find_links("ok: https://a.com/x?y=1!")[0].text,
+            "https://a.com/x?y=1"
+        );
     }
 
     #[test]

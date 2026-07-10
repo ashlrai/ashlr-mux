@@ -241,8 +241,7 @@ fn git_config_unquoted_value(value: &str) -> String {
     let trimmed = trim_config_whitespace(value);
     let chars: Vec<char> = trimmed.chars().collect();
 
-    let is_quoted =
-        chars.len() >= 2 && chars.first() == Some(&'"') && chars.last() == Some(&'"');
+    let is_quoted = chars.len() >= 2 && chars.first() == Some(&'"') && chars.last() == Some(&'"');
     if !is_quoted {
         return trimmed.to_string();
     }

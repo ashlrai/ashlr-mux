@@ -91,9 +91,7 @@ impl TranscriptBatchAssembler {
 
     /// Caps carried pending tool uses to the most-recent [`MAX_PENDING_TOOL_USES`]
     /// by their newest message seq, evicting the oldest unresolved calls.
-    fn bounded(
-        pending: HashMap<String, Vec<ChatMessage>>,
-    ) -> HashMap<String, Vec<ChatMessage>> {
+    fn bounded(pending: HashMap<String, Vec<ChatMessage>>) -> HashMap<String, Vec<ChatMessage>> {
         if pending.len() <= MAX_PENDING_TOOL_USES {
             return pending;
         }
@@ -128,22 +126,28 @@ mod tests {
 
     #[test]
     fn pending_tool_uses_bounded_to_newest() {
-        let mut assembler =
-            TranscriptBatchAssembler::new(ChatTranscriptParseState::new(), TranscriptTextBudget::new());
+        let mut assembler = TranscriptBatchAssembler::new(
+            ChatTranscriptParseState::new(),
+            TranscriptTextBudget::new(),
+        );
         let total = MAX_PENDING_TOOL_USES + 50;
         for i in 0..total {
             assembler.append(tool_use(i as i64), Some(&format!("call-{i}")));
         }
         let state = assembler.result(None).state;
         assert_eq!(state.pending_tool_uses.len(), MAX_PENDING_TOOL_USES);
-        assert!(state.pending_tool_uses.contains_key(&format!("call-{}", total - 1)));
+        assert!(state
+            .pending_tool_uses
+            .contains_key(&format!("call-{}", total - 1)));
         assert!(!state.pending_tool_uses.contains_key("call-0"));
     }
 
     #[test]
     fn pending_under_cap_all_retained() {
-        let mut assembler =
-            TranscriptBatchAssembler::new(ChatTranscriptParseState::new(), TranscriptTextBudget::new());
+        let mut assembler = TranscriptBatchAssembler::new(
+            ChatTranscriptParseState::new(),
+            TranscriptTextBudget::new(),
+        );
         for i in 0..10 {
             assembler.append(tool_use(i), Some(&format!("call-{i}")));
         }

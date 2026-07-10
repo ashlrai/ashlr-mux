@@ -8,14 +8,14 @@ import type { NewWorkspacePlacement } from "./NewWorkspacePlacement";
  * `CmuxConfigWorkspaceGroupEntry`, `Sources/CmuxConfig.swift:166-178`). Schema
  * is `additionalProperties:false`.
  */
-export type WorkspaceGroupEntry = { color?: string, icon?: string, 
+export type WorkspaceGroupEntry = { color?: string, icon?: string,
 /**
  * Right-click menu items on the group's `+` button. Schema items are
  * `oneOf(string, object)` (`web/data/cmux.schema.json:201-206`); kept opaque
  * as raw JSON values (matching the untyped action objects) rather than
  * modeling each action shape.
  */
-context_menu?: Array<unknown>, 
+context_menu?: Array<unknown>,
 /**
  * Per-cwd override for new-workspace placement; falls back to the group's
  * global default when omitted. Reuses the existing [`NewWorkspacePlacement`]

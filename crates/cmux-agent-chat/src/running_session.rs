@@ -363,12 +363,20 @@ impl RunningSession {
         };
 
         // (1) initialize → `initialized`, then `thread/start`.
-        if !was_initialized && self.codex_ref().is_some_and(CodexAccumulator::did_initialize) {
+        if !was_initialized
+            && self
+                .codex_ref()
+                .is_some_and(CodexAccumulator::did_initialize)
+        {
             if let Some(initialized) = self.codex_ref().map(CodexAccumulator::initialized) {
                 self.pending_outbound.push(encode_line(&initialized));
             }
             if let Some(thread_start) = self.codex_mut().and_then(CodexAccumulator::thread_start) {
                 self.pending_outbound.push(encode_line(&thread_start));
+            }
+            if let Some(rate_limits_read) = self.codex_mut().map(CodexAccumulator::rate_limits_read)
+            {
+                self.pending_outbound.push(encode_line(&rate_limits_read));
             }
         }
 
@@ -387,6 +395,18 @@ impl RunningSession {
                 None => unsupported_server_request_error(id, &method),
             };
             self.pending_outbound.push(encode_line(&reply));
+        }
+
+        // Sparse rate-limit updates are followed by a full snapshot read so the
+        // footer keeps both primary and secondary rows fresh.
+        if self
+            .codex_mut()
+            .is_some_and(CodexAccumulator::take_rate_limits_refetch_requested)
+        {
+            if let Some(rate_limits_read) = self.codex_mut().map(CodexAccumulator::rate_limits_read)
+            {
+                self.pending_outbound.push(encode_line(&rate_limits_read));
+            }
         }
 
         // (4) startup-failure edge → fail the queue + flag teardown (once).
@@ -469,7 +489,10 @@ impl RunningSession {
                 Ok(())
             }
             Err(SubmitRejection::ThreadNotReady) => {
-                if !self.codex_ref().is_some_and(|codex| codex.can_queue_input(text)) {
+                if !self
+                    .codex_ref()
+                    .is_some_and(|codex| codex.can_queue_input(text))
+                {
                     return Err(SubmitRejection::ThreadNotReady);
                 }
                 self.codex_queue
@@ -479,7 +502,10 @@ impl RunningSession {
                 }
                 // Swift: if already initialized when a prompt is queued, kick a
                 // (re)`thread/start` so the queue can eventually drain.
-                if self.codex_ref().is_some_and(CodexAccumulator::did_initialize) {
+                if self
+                    .codex_ref()
+                    .is_some_and(CodexAccumulator::did_initialize)
+                {
                     if let Some(frame) = self.codex_mut().and_then(CodexAccumulator::thread_start) {
                         self.pending_outbound.push(encode_line(&frame));
                     }
@@ -648,7 +674,10 @@ mod ansi_strip_tests {
 
     #[test]
     fn plain_text_is_untouched() {
-        assert_eq!(strip_ansi_escape_sequences("no escapes here"), "no escapes here");
+        assert_eq!(
+            strip_ansi_escape_sequences("no escapes here"),
+            "no escapes here"
+        );
     }
 
     #[test]

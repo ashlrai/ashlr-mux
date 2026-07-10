@@ -307,7 +307,8 @@ impl OpenCodeEventTextAccumulator {
         };
 
         self.remember_message_id(&message_id);
-        self.message_role_by_id.insert(message_id.clone(), role.clone());
+        self.message_role_by_id
+            .insert(message_id.clone(), role.clone());
         if role != "assistant" {
             return Vec::new();
         }
@@ -348,7 +349,8 @@ impl OpenCodeEventTextAccumulator {
         let part_id = part_id.to_string();
         let message_id = message_id.to_string();
 
-        self.message_id_by_part_id.insert(part_id.clone(), message_id.clone());
+        self.message_id_by_part_id
+            .insert(part_id.clone(), message_id.clone());
         self.remember_message_id(&message_id);
         if part.get("type").and_then(Value::as_str) != Some("text")
             || part.get("ignored").and_then(Value::as_bool) == Some(true)
@@ -358,11 +360,9 @@ impl OpenCodeEventTextAccumulator {
         }
 
         self.is_text_part_by_id.insert(part_id.clone(), true);
-        let Some(text) = first_content_string(&[
-            part.get("text"),
-            part.get("textDelta"),
-            part.get("content"),
-        ]) else {
+        let Some(text) =
+            first_content_string(&[part.get("text"), part.get("textDelta"), part.get("content")])
+        else {
             return Vec::new();
         };
 
@@ -391,16 +391,23 @@ impl OpenCodeEventTextAccumulator {
         let part_id = part_id.to_string();
         let message_id = message_id.to_string();
 
-        self.message_id_by_part_id.insert(part_id.clone(), message_id.clone());
+        self.message_id_by_part_id
+            .insert(part_id.clone(), message_id.clone());
         self.remember_message_id(&message_id);
         if self.is_text_part_by_id.get(&part_id) == Some(&true)
             && self.message_role_by_id.get(&message_id).map(String::as_str) == Some("assistant")
         {
-            *self.emitted_character_count_by_part_id.entry(part_id).or_insert(0) +=
-                char_count(delta);
+            *self
+                .emitted_character_count_by_part_id
+                .entry(part_id)
+                .or_insert(0) += char_count(delta);
             return vec![delta.to_string()];
         }
-        let existing = self.text_by_part_id.get(&part_id).cloned().unwrap_or_default();
+        let existing = self
+            .text_by_part_id
+            .get(&part_id)
+            .cloned()
+            .unwrap_or_default();
         let combined = format!("{existing}{delta}");
         let start_offset = self
             .stored_text_start_offset_by_part_id
@@ -724,7 +731,10 @@ fn opencode_server_url(text: &str) -> Option<String> {
 
 /// Swift `agentSessionIsLoopbackURL`: true when the URL host is a loopback host.
 fn is_loopback_url(url: &str) -> bool {
-    matches!(url_host(url).as_deref(), Some("localhost" | "127.0.0.1" | "::1"))
+    matches!(
+        url_host(url).as_deref(),
+        Some("localhost" | "127.0.0.1" | "::1")
+    )
 }
 
 /// Extract the lowercased host from an absolute `scheme://` URL string.
@@ -733,9 +743,7 @@ fn is_loopback_url(url: &str) -> bool {
 /// `URL(string:)` producing a `nil` `host`).
 fn url_host(url: &str) -> Option<String> {
     let (_scheme, rest) = url.split_once("://")?;
-    let authority_end = rest
-        .find(['/', '?', '#'])
-        .unwrap_or(rest.len());
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let authority = &rest[..authority_end];
     let host_port = authority.rsplit_once('@').map_or(authority, |(_, hp)| hp);
     if let Some(after_bracket) = host_port.strip_prefix('[') {
@@ -825,7 +833,9 @@ mod tests {
     fn partial_event_completes_across_chunks() {
         // Simulate three separate reader chunks before the dispatch blank line.
         let mut p = OpenCodeEventStreamParser::new();
-        assert!(p.consume_line(r#"data: {"type":"message.part.delta","#).is_empty());
+        assert!(p
+            .consume_line(r#"data: {"type":"message.part.delta","#)
+            .is_empty());
         assert!(p
             .consume_line(r#"data: "properties":{"field":"text","#)
             .is_empty());
@@ -923,7 +933,12 @@ mod tests {
         }))
     }
 
-    fn part_updated_text(session: &str, part_id: &str, message_id: &str, text: &str) -> OpenCodeEvent {
+    fn part_updated_text(
+        session: &str,
+        part_id: &str,
+        message_id: &str,
+        text: &str,
+    ) -> OpenCodeEvent {
         obj(json!({
             "type": "message.part.updated",
             "properties": {
@@ -951,8 +966,14 @@ mod tests {
         let mut acc = OpenCodeEventTextAccumulator::new();
         acc.consume_event(&message_updated_assistant("s", "m1"), "s");
         acc.consume_event(&part_updated_text("s", "p1", "m1", ""), "s");
-        assert_eq!(acc.consume_event(&part_delta("s", "p1", "m1", "Hel"), "s"), vec!["Hel"]);
-        assert_eq!(acc.consume_event(&part_delta("s", "p1", "m1", "lo"), "s"), vec!["lo"]);
+        assert_eq!(
+            acc.consume_event(&part_delta("s", "p1", "m1", "Hel"), "s"),
+            vec!["Hel"]
+        );
+        assert_eq!(
+            acc.consume_event(&part_delta("s", "p1", "m1", "lo"), "s"),
+            vec!["lo"]
+        );
     }
 
     #[test]
@@ -961,7 +982,9 @@ mod tests {
         // takes the buffered path; flushPart still requires the text-part/assistant
         // guards, so nothing is emitted until those are known.
         let mut acc = OpenCodeEventTextAccumulator::new();
-        assert!(acc.consume_event(&part_delta("s", "p1", "m1", "ignored"), "s").is_empty());
+        assert!(acc
+            .consume_event(&part_delta("s", "p1", "m1", "ignored"), "s")
+            .is_empty());
     }
 
     #[test]
@@ -969,7 +992,9 @@ mod tests {
         let mut acc = OpenCodeEventTextAccumulator::new();
         acc.consume_event(&message_updated_assistant("s", "m1"), "s");
         acc.consume_event(&part_updated_text("s", "p1", "m1", ""), "s");
-        assert!(acc.consume_event(&part_delta("s", "p1", "m1", ""), "s").is_empty());
+        assert!(acc
+            .consume_event(&part_delta("s", "p1", "m1", ""), "s")
+            .is_empty());
     }
 
     // ---- accumulator: full-text (part.updated) de-dup ----
@@ -1004,7 +1029,9 @@ mod tests {
         acc.consume_event(&part_delta("s", "p1", "m1", ""), "s"); // no-op empty
         acc.consume_event(&part_updated_text("s", "p1", "m1", "Hi"), "s");
         // Same text again -> nothing new.
-        assert!(acc.consume_event(&part_updated_text("s", "p1", "m1", "Hi"), "s").is_empty());
+        assert!(acc
+            .consume_event(&part_updated_text("s", "p1", "m1", "Hi"), "s")
+            .is_empty());
     }
 
     #[test]
@@ -1020,7 +1047,9 @@ mod tests {
         }));
         assert!(acc.consume_event(&tool, "s").is_empty());
         // A subsequent delta for the pruned part is not on the fast path.
-        assert!(acc.consume_event(&part_delta("s", "p1", "m1", "x"), "s").is_empty());
+        assert!(acc
+            .consume_event(&part_delta("s", "p1", "m1", "x"), "s")
+            .is_empty());
     }
 
     #[test]
@@ -1045,7 +1074,9 @@ mod tests {
         // part.updated establishes text-part but role unknown yet.
         acc.consume_event(&part_updated_text("s", "p1", "m1", ""), "s");
         // delta buffers (fast path blocked: role unknown).
-        assert!(acc.consume_event(&part_delta("s", "p1", "m1", "buffered"), "s").is_empty());
+        assert!(acc
+            .consume_event(&part_delta("s", "p1", "m1", "buffered"), "s")
+            .is_empty());
         // Now the assistant message.updated arrives and flushes.
         let out = acc.consume_event(&message_updated_assistant("s", "m1"), "s");
         assert_eq!(out, vec!["buffered"]);
@@ -1056,8 +1087,12 @@ mod tests {
     #[test]
     fn session_idle_completes_turn() {
         let event = obj(json!({"type": "session.idle", "properties": {"sessionID": "s"}}));
-        assert!(OpenCodeEventTextAccumulator::completes_assistant_turn(&event, "s"));
-        assert!(!OpenCodeEventTextAccumulator::completes_assistant_turn(&event, "other"));
+        assert!(OpenCodeEventTextAccumulator::completes_assistant_turn(
+            &event, "s"
+        ));
+        assert!(!OpenCodeEventTextAccumulator::completes_assistant_turn(
+            &event, "other"
+        ));
     }
 
     #[test]
@@ -1066,19 +1101,27 @@ mod tests {
             "type": "session.status",
             "properties": {"sessionID": "s", "status": "idle"}
         }));
-        assert!(OpenCodeEventTextAccumulator::completes_assistant_turn(&string_status, "s"));
+        assert!(OpenCodeEventTextAccumulator::completes_assistant_turn(
+            &string_status,
+            "s"
+        ));
 
         let object_status = obj(json!({
             "type": "session.status",
             "properties": {"sessionID": "s", "status": {"type": "idle"}}
         }));
-        assert!(OpenCodeEventTextAccumulator::completes_assistant_turn(&object_status, "s"));
+        assert!(OpenCodeEventTextAccumulator::completes_assistant_turn(
+            &object_status,
+            "s"
+        ));
 
         let running = obj(json!({
             "type": "session.status",
             "properties": {"sessionID": "s", "status": "running"}
         }));
-        assert!(!OpenCodeEventTextAccumulator::completes_assistant_turn(&running, "s"));
+        assert!(!OpenCodeEventTextAccumulator::completes_assistant_turn(
+            &running, "s"
+        ));
     }
 
     #[test]
@@ -1087,19 +1130,25 @@ mod tests {
             "type": "message.updated",
             "properties": {"sessionID": "s", "info": {"role": "assistant", "time": {"completed": 1}}}
         }));
-        assert!(OpenCodeEventTextAccumulator::completes_assistant_turn(&completed, "s"));
+        assert!(OpenCodeEventTextAccumulator::completes_assistant_turn(
+            &completed, "s"
+        ));
 
         let finished = obj(json!({
             "type": "message.updated",
             "properties": {"sessionID": "s", "info": {"role": "assistant", "finish": "stop"}}
         }));
-        assert!(OpenCodeEventTextAccumulator::completes_assistant_turn(&finished, "s"));
+        assert!(OpenCodeEventTextAccumulator::completes_assistant_turn(
+            &finished, "s"
+        ));
 
         let errored = obj(json!({
             "type": "message.updated",
             "properties": {"sessionID": "s", "info": {"role": "assistant", "error": {"m": 1}}}
         }));
-        assert!(OpenCodeEventTextAccumulator::completes_assistant_turn(&errored, "s"));
+        assert!(OpenCodeEventTextAccumulator::completes_assistant_turn(
+            &errored, "s"
+        ));
     }
 
     #[test]
@@ -1108,7 +1157,9 @@ mod tests {
             "type": "message.updated",
             "properties": {"sessionID": "s", "info": {"role": "user", "time": {"completed": 1}}}
         }));
-        assert!(!OpenCodeEventTextAccumulator::completes_assistant_turn(&user, "s"));
+        assert!(!OpenCodeEventTextAccumulator::completes_assistant_turn(
+            &user, "s"
+        ));
     }
 
     #[test]
@@ -1117,7 +1168,9 @@ mod tests {
             "type": "message.updated",
             "properties": {"sessionID": "s", "info": {"role": "assistant", "time": {"created": 1}}}
         }));
-        assert!(!OpenCodeEventTextAccumulator::completes_assistant_turn(&running, "s"));
+        assert!(!OpenCodeEventTextAccumulator::completes_assistant_turn(
+            &running, "s"
+        ));
     }
 
     // ---- event mapping ----
@@ -1173,7 +1226,8 @@ mod tests {
             obj(json!({"type": "session.idle", "properties": {"sessionID": "s"}})),
         ];
         for event in &events {
-            for ev in acc.consume_event_to_events(event, "s", "cmux-session", ProviderId::Opencode) {
+            for ev in acc.consume_event_to_events(event, "s", "cmux-session", ProviderId::Opencode)
+            {
                 match ev {
                     AgentEvent::ProviderOutput { text, .. } => collected.push_str(&text),
                     AgentEvent::ProviderTurnComplete { .. } => completed = true,
@@ -1209,7 +1263,10 @@ mod tests {
         assert!(acc.consume_event(&event, "s").is_empty());
         acc.consume_event(&part_updated_text("s", "p1", "m1", "hi"), "s");
         // Confirm the message role was recorded via nested session id.
-        assert_eq!(acc.message_role_by_id.get("m1").map(String::as_str), Some("assistant"));
+        assert_eq!(
+            acc.message_role_by_id.get("m1").map(String::as_str),
+            Some("assistant")
+        );
     }
 
     // ---- stdout disposition ----
@@ -1342,9 +1399,18 @@ mod tests {
 
     #[test]
     fn url_host_extraction() {
-        assert_eq!(url_host("http://127.0.0.1:4096").as_deref(), Some("127.0.0.1"));
-        assert_eq!(url_host("http://Localhost:80/path").as_deref(), Some("localhost"));
-        assert_eq!(url_host("http://user:pw@127.0.0.1:5/x").as_deref(), Some("127.0.0.1"));
+        assert_eq!(
+            url_host("http://127.0.0.1:4096").as_deref(),
+            Some("127.0.0.1")
+        );
+        assert_eq!(
+            url_host("http://Localhost:80/path").as_deref(),
+            Some("localhost")
+        );
+        assert_eq!(
+            url_host("http://user:pw@127.0.0.1:5/x").as_deref(),
+            Some("127.0.0.1")
+        );
         assert_eq!(url_host("http://[::1]:5").as_deref(), Some("::1"));
         assert_eq!(url_host("127.0.0.1:4096"), None);
         assert_eq!(url_host("http:///path"), None);

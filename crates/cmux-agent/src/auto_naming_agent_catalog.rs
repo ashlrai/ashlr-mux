@@ -32,7 +32,11 @@ pub struct AutoNamingAgentOption {
 }
 
 impl AutoNamingAgentOption {
-    const fn new(slug: &'static str, display_name: &'static str, summarizer_supported: bool) -> Self {
+    const fn new(
+        slug: &'static str,
+        display_name: &'static str,
+        summarizer_supported: bool,
+    ) -> Self {
         Self {
             slug,
             display_name,
@@ -208,7 +212,10 @@ mod tests {
         assert!(other.contains("gemini"));
         // Catalog flag and membership helper must agree for every option.
         for option in AGENTS {
-            assert_eq!(option.summarizer_supported, summarizer_supported(option.slug));
+            assert_eq!(
+                option.summarizer_supported,
+                summarizer_supported(option.slug)
+            );
         }
     }
 
@@ -217,7 +224,10 @@ mod tests {
     fn supported_plus_other_covers_catalog() {
         assert_eq!(supported_agents().len(), 6);
         assert_eq!(other_agents().len(), 11);
-        assert_eq!(supported_agents().len() + other_agents().len(), AGENTS.len());
+        assert_eq!(
+            supported_agents().len() + other_agents().len(),
+            AGENTS.len()
+        );
     }
 
     // Swift parity: `displayNameFallsBackToSlugForCustomAgents`
@@ -230,7 +240,10 @@ mod tests {
 
     #[test]
     fn option_for_slug_finds_and_misses() {
-        assert_eq!(option_for_slug("codex").map(|o| o.display_name), Some("Codex"));
+        assert_eq!(
+            option_for_slug("codex").map(|o| o.display_name),
+            Some("Codex")
+        );
         assert_eq!(option_for_slug("nope"), None);
     }
 

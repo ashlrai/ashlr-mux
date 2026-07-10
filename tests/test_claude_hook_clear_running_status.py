@@ -113,7 +113,6 @@ class HookSocketServer:
             result = {
                 "surfaces": [
                     {
-                        "index": 0,
                         "id": self.surface_id,
                         "ref": "surface:1",
                         "focused": True,
@@ -126,7 +125,6 @@ class HookSocketServer:
             result = {
                 "workspaces": [
                     {
-                        "index": 0,
                         "id": self.workspace_id,
                         "ref": "workspace:1",
                     }

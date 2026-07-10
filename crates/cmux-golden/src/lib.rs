@@ -132,10 +132,7 @@ mod tests {
     fn uppercases_uuid_strings() {
         let mut value = json!({ "id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301" });
         canonicalize(&mut value);
-        assert_eq!(
-            value["id"],
-            json!("3F2504E0-4F89-41D3-9A0C-0305E82C3301")
-        );
+        assert_eq!(value["id"], json!("3F2504E0-4F89-41D3-9A0C-0305E82C3301"));
     }
 
     #[test]

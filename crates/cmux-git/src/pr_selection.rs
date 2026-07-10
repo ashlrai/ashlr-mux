@@ -278,7 +278,8 @@ pub fn is_badge_candidate(pull_request: &GitHubPullRequestProbeItem, now: i64) -
 /// `now.timeIntervalSince(mergedAt) > mergedBadgeStaleAfter`, i.e.
 /// `now - mergedAt > MERGED_BADGE_STALE_AFTER`.
 pub fn is_stale_merged(pull_request: &GitHubPullRequestProbeItem, now: i64) -> bool {
-    if PullRequestStatus::from_github_state(&pull_request.state) != Some(PullRequestStatus::Merged) {
+    if PullRequestStatus::from_github_state(&pull_request.state) != Some(PullRequestStatus::Merged)
+    {
         return false;
     }
     let Some(merged_at) = github_timestamp_date(pull_request.merged_at.as_deref()) else {
@@ -598,8 +599,14 @@ mod tests {
 
         let by_branch = pull_request_map_by_normalized_branch(&pull_requests, now);
         assert!(!by_branch.contains_key("develop"));
-        assert_eq!(by_branch.get("feature/recent-one").map(|p| p.number), Some(2501));
-        assert_eq!(by_branch.get("feature/recent-two").map(|p| p.number), Some(2502));
+        assert_eq!(
+            by_branch.get("feature/recent-one").map(|p| p.number),
+            Some(2501)
+        );
+        assert_eq!(
+            by_branch.get("feature/recent-two").map(|p| p.number),
+            Some(2502)
+        );
     }
 
     // MARK: author-derived edge cases (flagged in the port spec)
@@ -625,7 +632,10 @@ mod tests {
         assert!(is_stale_merged(&pr, merged + MERGED_BADGE_STALE_AFTER + 1));
         // A merged PR with no mergedAt is never stale.
         let pr_no_merge = item(2, "MERGED", "https://example.com/2", None, None, None, None);
-        assert!(!is_stale_merged(&pr_no_merge, merged + 10 * MERGED_BADGE_STALE_AFTER));
+        assert!(!is_stale_merged(
+            &pr_no_merge,
+            merged + 10 * MERGED_BADGE_STALE_AFTER
+        ));
         // A non-merged PR is never stale regardless of mergedAt.
         let pr_open = item(
             3,
@@ -676,7 +686,7 @@ mod tests {
         assert_eq!(github_timestamp_date(Some("2026-04-31T00:00:00Z")), None);
         assert_eq!(github_timestamp_date(Some("2026-01-32T00:00:00Z")), None);
         assert_eq!(github_timestamp_date(Some("2026-06-00T00:00:00Z")), None); // day 0
-        // Leap second is rejected (`ISO8601DateFormatter` → nil).
+                                                                               // Leap second is rejected (`ISO8601DateFormatter` → nil).
         assert_eq!(github_timestamp_date(Some("2026-06-30T23:59:60Z")), None);
         // Year must be exactly four digits — no 2-digit, signed, or long years.
         assert_eq!(github_timestamp_date(Some("26-03-06T12:00:00Z")), None);
@@ -712,7 +722,10 @@ mod tests {
     /// `normalized_branch_name` trims and maps empty to `None`.
     #[test]
     fn normalized_branch_name_trims_and_empties() {
-        assert_eq!(normalized_branch_name(Some("main")).as_deref(), Some("main"));
+        assert_eq!(
+            normalized_branch_name(Some("main")).as_deref(),
+            Some("main")
+        );
         assert_eq!(
             normalized_branch_name(Some("  feature/x \n")).as_deref(),
             Some("feature/x")
@@ -783,7 +796,15 @@ mod tests {
     #[test]
     fn preferred_pull_request_none_when_no_candidates() {
         let candidates = [
-            item(1, "WHATEVER", "https://example.com/1", None, None, None, None),
+            item(
+                1,
+                "WHATEVER",
+                "https://example.com/1",
+                None,
+                None,
+                None,
+                None,
+            ),
             item(2, "OPEN", "", None, None, None, None),
         ];
         assert_eq!(preferred_pull_request(&candidates, NOW_2026_04_20), None);

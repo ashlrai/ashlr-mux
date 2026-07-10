@@ -264,7 +264,10 @@ impl ObservedTmuxProcess {
         // Preserve first-seen order, dropping duplicates (Swift's
         // `seen.insert().inserted` filter).
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-        names.into_iter().filter(|n| seen.insert(n.clone())).collect()
+        names
+            .into_iter()
+            .filter(|n| seen.insert(n.clone()))
+            .collect()
     }
 
     fn is_tmux_process(&self) -> bool {
@@ -314,12 +317,20 @@ fn resume_invocation(observed: &ObservedTmuxProcess) -> Option<TmuxResumeInvocat
 }
 
 fn tmux_executable(observed: &ObservedTmuxProcess) -> String {
-    if let Some(first) = observed.arguments.first().and_then(|s| normalized(Some(s.as_str()))) {
+    if let Some(first) = observed
+        .arguments
+        .first()
+        .and_then(|s| normalized(Some(s.as_str())))
+    {
         if argument_looks_like_tmux(&first) && !argument_looks_like_tmux_process_title(&first) {
             return first;
         }
     }
-    if let Some(path) = observed.process_path.as_deref().and_then(|s| normalized(Some(s))) {
+    if let Some(path) = observed
+        .process_path
+        .as_deref()
+        .and_then(|s| normalized(Some(s)))
+    {
         if argument_looks_like_tmux(&path) && !argument_looks_like_tmux_process_title(&path) {
             return path;
         }
@@ -431,7 +442,10 @@ fn append_socket_flag(
         let short = format!("-{option}");
         if argument == short {
             let value_index = *index + 1;
-            match arguments.get(value_index).and_then(|s| normalized(Some(s.as_str()))) {
+            match arguments
+                .get(value_index)
+                .and_then(|s| normalized(Some(s.as_str())))
+            {
                 Some(value) => {
                     socket_flags.push(short.clone());
                     socket_flags.push(value);
@@ -588,7 +602,9 @@ fn shell_single_quoted(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-fn tmux_resume_environment(environment: &HashMap<String, String>) -> Option<HashMap<String, String>> {
+fn tmux_resume_environment(
+    environment: &HashMap<String, String>,
+) -> Option<HashMap<String, String>> {
     let tmux_tmpdir = normalized(environment.get("TMUX_TMPDIR").map(|s| s.as_str()))?;
     let mut map = HashMap::new();
     map.insert("TMUX_TMPDIR".to_string(), tmux_tmpdir);
@@ -632,7 +648,9 @@ fn normalized_environment(
 }
 
 fn is_safe_environment_value(value: &str) -> bool {
-    !value.chars().any(|c| (c as u32) < 0x20 || (c as u32) == 0x7F)
+    !value
+        .chars()
+        .any(|c| (c as u32) < 0x20 || (c as u32) == 0x7F)
 }
 
 fn is_sensitive_environment_key(key: &str) -> bool {
@@ -706,7 +724,10 @@ mod tests {
     use super::*;
 
     fn env(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     fn args(v: &[&str]) -> Vec<String> {
@@ -748,7 +769,13 @@ mod tests {
 
     #[test]
     fn accepts_a_alias() {
-        let b = binding("tmux", None, &args(&["tmux", "a", "-t", "x"]), &env(&[]), 1.0);
+        let b = binding(
+            "tmux",
+            None,
+            &args(&["tmux", "a", "-t", "x"]),
+            &env(&[]),
+            1.0,
+        );
         assert!(b.is_some());
     }
 
@@ -849,14 +876,7 @@ mod tests {
 
     #[test]
     fn rejects_new_session_with_capital_a_but_no_name() {
-        assert!(binding(
-            "tmux",
-            None,
-            &args(&["tmux", "new", "-A"]),
-            &env(&[]),
-            1.0,
-        )
-        .is_none());
+        assert!(binding("tmux", None, &args(&["tmux", "new", "-A"]), &env(&[]), 1.0,).is_none());
     }
 
     #[test]
@@ -906,7 +926,10 @@ mod tests {
             "tmux",
             None,
             &args(&["tmux", "attach", "-t", "s"]),
-            &env(&[("PWD", "/home/pwd"), ("CMUX_AGENT_LAUNCH_CWD", "/home/agent")]),
+            &env(&[
+                ("PWD", "/home/pwd"),
+                ("CMUX_AGENT_LAUNCH_CWD", "/home/agent"),
+            ]),
             1.0,
         )
         .unwrap();
@@ -938,7 +961,10 @@ mod tests {
         .unwrap();
         let e = b.environment.unwrap();
         assert_eq!(e.len(), 1);
-        assert_eq!(e.get("TMUX_TMPDIR").map(|s| s.as_str()), Some("/tmp/tmux-1000"));
+        assert_eq!(
+            e.get("TMUX_TMPDIR").map(|s| s.as_str()),
+            Some("/tmp/tmux-1000")
+        );
     }
 
     #[test]
@@ -985,7 +1011,15 @@ mod tests {
         e.insert("BAD".to_string(), "line1\nline2".to_string());
         e.insert("GOOD".to_string(), "clean".to_string());
         let snap = SurfaceResumeBindingSnapshot::new(
-            None, None, "cmd", None, None, None, Some(e), None, 0.0,
+            None,
+            None,
+            "cmd",
+            None,
+            None,
+            None,
+            Some(e),
+            None,
+            0.0,
         );
         let env = snap.environment.unwrap();
         assert!(!env.contains_key("BAD"));
@@ -1021,9 +1055,8 @@ mod tests {
     fn snapshot_serializes_none_fields_as_absent_keys() {
         // Swift's synthesized Codable omits nil optionals (encodeIfPresent);
         // an explicit `"name": null` would be a wire-shape divergence.
-        let snap = SurfaceResumeBindingSnapshot::new(
-            None, None, "cmd", None, None, None, None, None, 1.0,
-        );
+        let snap =
+            SurfaceResumeBindingSnapshot::new(None, None, "cmd", None, None, None, None, None, 1.0);
         let json = serde_json::to_value(&snap).unwrap();
         assert!(json.get("name").is_none());
         assert!(json.get("kind").is_none());

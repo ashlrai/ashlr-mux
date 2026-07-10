@@ -196,15 +196,9 @@ mod tests {
         let c = Uuid::new_v4();
         let ordered_tab_ids = vec![a, b, c];
 
-        let next = WorkspaceMountPlan::new(
-            vec![a, b, c],
-            Some(c),
-            set(&[]),
-            ordered_tab_ids,
-            false,
-            2,
-        )
-        .mounted_workspace_ids();
+        let next =
+            WorkspaceMountPlan::new(vec![a, b, c], Some(c), set(&[]), ordered_tab_ids, false, 2)
+                .mounted_workspace_ids();
 
         assert_eq!(next, vec![c, a]);
     }
@@ -297,9 +291,8 @@ mod tests {
         let c = Uuid::new_v4();
         let ordered_tab_ids = vec![a, b, c];
 
-        let next =
-            WorkspaceMountPlan::new(vec![a], Some(c), set(&[a]), ordered_tab_ids, false, 2)
-                .mounted_workspace_ids();
+        let next = WorkspaceMountPlan::new(vec![a], Some(c), set(&[a]), ordered_tab_ids, false, 2)
+            .mounted_workspace_ids();
 
         assert_eq!(next, vec![c, a]);
     }
@@ -384,8 +377,8 @@ mod tests {
     // ordered list).
     #[test]
     fn empty_inputs_yield_empty() {
-        let next =
-            WorkspaceMountPlan::new(vec![], None, set(&[]), vec![], false, 1).mounted_workspace_ids();
+        let next = WorkspaceMountPlan::new(vec![], None, set(&[]), vec![], false, 1)
+            .mounted_workspace_ids();
         assert!(next.is_empty());
     }
 
@@ -398,15 +391,9 @@ mod tests {
         let c = Uuid::new_v4();
         let ordered_tab_ids = vec![a, b, c];
 
-        let next = WorkspaceMountPlan::new(
-            vec![c, a, b],
-            None,
-            set(&[]),
-            ordered_tab_ids,
-            false,
-            10,
-        )
-        .mounted_workspace_ids();
+        let next =
+            WorkspaceMountPlan::new(vec![c, a, b], None, set(&[]), ordered_tab_ids, false, 10)
+                .mounted_workspace_ids();
 
         assert_eq!(next, vec![c, a, b]);
     }

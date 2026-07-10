@@ -53,6 +53,11 @@ target/
 apps/desktop/src-tauri/gen/
 apps/desktop/src-tauri/binaries/
 
+# ts-rs fallback output when cmux-core's export tests run without the
+# core-types generator's TS_RS_EXPORT_DIR override.
+crates/cmux-core/apps/
+crates/cmux-core/bindings/
+
 # Generated docs search index
 web/.pagefind-site/
 web/public/pagefind/

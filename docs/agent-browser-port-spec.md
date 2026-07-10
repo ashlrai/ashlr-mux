@@ -349,9 +349,9 @@ Hard invariant:
 
 ### Phase 4: Advanced/Optional Parity (P2)
 
-- [ ] Evaluate feasibility of request interception/mocking in `WKWebView`; implement supported subset.
-- [ ] Add emulation settings that are feasible in `WKWebView`.
-- [ ] Add trace/recording equivalents where practical.
+- [x] Evaluate feasibility of request interception/mocking in `WKWebView`; supported request inspection is implemented through `browser.network.requests`, while interception/mocking (`browser.network.route|unroute`) is an explicit `not_supported` hard gap.
+- [x] Add emulation settings that are feasible in `WKWebView`; viewport, geolocation, and offline overrides do not have correct Windows/Tauri WKWebView equivalents and return explicit `not_supported`.
+- [x] Add trace/recording equivalents where practical; trace/screencast/raw-input families are explicit `not_supported` platform gaps until a correct native capture path exists.
 - [x] Add script/style injection helpers.
 - [x] Document unsupported commands with explicit error `not_supported`.
 
@@ -359,15 +359,40 @@ Hard invariant:
 
 - [x] Add v1-to-v2 shim for migrated command families.
 - [x] Keep existing v1 behavior unchanged while shim is active.
-- [ ] Document v1/v2 mapping table for all browser/topology commands.
-- [ ] Add deprecation warnings only after parity + test completion.
+- [x] Document v1/v2 mapping table for browser/topology commands in this spec and `docs/cli-contract.md`.
+- [x] Keep deprecation warnings gated until parity + test completion; no new deprecation warning is emitted by the Windows/Tauri CLI path yet.
 
 ### Phase 6: Docs + Examples
 
 - [x] Update `docs/v2-api-migration.md` with browser parity status.
-- [ ] Add dedicated browser automation doc in `docs-site`.
-- [ ] Add examples for LLM workflow: identify -> choose surface -> snapshot -> act -> verify.
-- [ ] Add explicit "surface vs pane vs workspace vs window" section to CLI docs.
+- [x] Add dedicated browser automation doc in `docs/browser-automation.md`.
+- [x] Add examples for LLM workflow: identify -> choose surface -> snapshot -> act -> verify.
+- [x] Add explicit "surface vs pane vs workspace vs window" section to browser automation docs.
+
+## Browser/Topology v1 -> v2 Mapping
+
+| User-facing/legacy spelling | v2 socket method or status |
+| --- | --- |
+| `identify` | `system.identify` |
+| `list-windows`, `window list/current/focus/create/close` | `window.list`, `window.current`, `window.focus`, `window.create`, `window.close` |
+| `list-workspaces`, `workspace list/current/new/select/close/rename/reorder/...` | `workspace.list`, `workspace.current`, `workspace.create`, `workspace.select`, `workspace.close`, `workspace.rename`, `workspace.reorder`, metadata methods |
+| `list-panes`, `list-pane-surfaces`, `list-panels` | `surface.list` |
+| `new-split`, `new-pane` | `surface.split` |
+| `new-surface`, `new-terminal-tab` | `surface.new_terminal_tab` |
+| `split-browser`, `surface split-browser` | `surface.split_browser` |
+| `close-surface`, `surface close` | `surface.close` |
+| `focus-pane`, `focus-panel` | `surface.focus` |
+| `send`, `send-panel` | `surface.send_text` |
+| `send-key`, `send-key-panel` | `surface.send_key` |
+| `open-browser`, `navigate`, `browser open` | `surface.open_browser` or `browser.navigate` depending on create-vs-current command |
+| `browser open-split` | `browser.open_split` |
+| `browser back/forward/reload/url/focus-webview/is-webview-focused` | matching `browser.*` v2 methods |
+| `browser snapshot/eval/wait/screenshot` | matching `browser.*` v2 methods |
+| `browser click/dblclick/hover/focus/type/fill/press/keydown/keyup/check/uncheck/select/scroll/scroll-into-view` | matching `browser.*` v2 methods |
+| `browser get ...`, `browser is ...`, `browser find ...` | `browser.get.*`, `browser.is.*`, `browser.find.*` |
+| `browser frame/dialog/download/cookies/storage/tab/console/errors/highlight/state/addinitscript/addscript/addstyle` | matching `browser.*` v2 methods |
+| `browser network`, `browser network clear` | `browser.network.requests`, `browser.network.clear` |
+| `browser viewport/geolocation/offline/trace/network route/screencast/input` | explicit `not_supported` WKWebView/platform-gap methods |
 
 ## Test Port Plan (Comprehensive)
 
@@ -430,7 +455,7 @@ Planned verification commands at implementation completion:
 15. Mutating browser actions can opt into post-action verification snapshots via `snapshot_after` (`--snapshot-after` in CLI), returning `post_action_snapshot` (+ refs/title/url).
 16. Legacy `new-pane`/`new-surface` plain output prefers short `surface:N` refs under default CLI ID formatting.
 
-## Remaining Open Decisions
+## Resolved Policy Decisions
 
-1. Unsupported command policy: strict `not_supported` errors vs best-effort fallback for commands that cannot be implemented on `WKWebView` with correct semantics.
-2. Whether to expose protocol-only agent-browser actions in first public release of `cmux browser` or gate them behind a second rollout phase.
+1. Unsupported command policy: commands that cannot be implemented with correct Windows/Tauri WKWebView semantics return strict `not_supported` errors instead of best-effort fallbacks.
+2. Protocol-only agent-browser actions are exposed when they have a safe, tested WKWebView-backed implementation (`addinitscript`, `addscript`, `addstyle`); platform-specific protocol actions without correct semantics remain explicit `not_supported` gaps.

@@ -16,6 +16,7 @@ use std::path::Path;
 
 use base64::Engine;
 use serde_json::{json, Value};
+use tauri::AppHandle;
 
 /// Per-image cap: an image larger than this is attached by path only (no preview).
 /// Swift `imagePreviewMaxBytes`.
@@ -90,6 +91,26 @@ where
     json!({ "files": files })
 }
 
+#[tauri::command]
+pub fn pick_textbox_files(app: AppHandle) -> Value {
+    use tauri_plugin_dialog::DialogExt;
+
+    match app
+        .dialog()
+        .file()
+        .set_title("Attach files to TextBox Input")
+        .blocking_pick_files()
+    {
+        Some(entries) => {
+            let paths = entries
+                .into_iter()
+                .filter_map(|entry| entry.into_path().ok());
+            picked_files_value(paths)
+        }
+        None => json!({ "files": [] }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,7 +149,10 @@ mod tests {
         let data_url = file["dataUrl"].as_str().expect("data url present");
         let expected = base64::engine::general_purpose::STANDARD.encode(bytes);
         assert_eq!(data_url, format!("data:image/png;base64,{expected}"));
-        assert_eq!(remaining, IMAGE_PREVIEW_TOTAL_MAX_BYTES - bytes.len() as u64);
+        assert_eq!(
+            remaining,
+            IMAGE_PREVIEW_TOTAL_MAX_BYTES - bytes.len() as u64
+        );
     }
 
     #[test]
@@ -138,7 +162,10 @@ mod tests {
         let mut remaining = IMAGE_PREVIEW_TOTAL_MAX_BYTES;
         let file = picked_local_file(&path, &mut remaining);
         assert_eq!(file["isImage"], json!(true));
-        assert!(file.get("dataUrl").is_none(), "over per-file cap → no preview");
+        assert!(
+            file.get("dataUrl").is_none(),
+            "over per-file cap → no preview"
+        );
         assert_eq!(remaining, IMAGE_PREVIEW_TOTAL_MAX_BYTES, "budget untouched");
     }
 
@@ -156,10 +183,7 @@ mod tests {
         let paths = vec![a.clone(), b.clone(), c.clone(), a.clone(), b.clone(), c];
         let value = picked_files_value(paths);
         let files = value["files"].as_array().unwrap();
-        let with_preview = files
-            .iter()
-            .filter(|f| f.get("dataUrl").is_some())
-            .count();
+        let with_preview = files.iter().filter(|f| f.get("dataUrl").is_some()).count();
         // floor(2MB / 400KB) = 5 previews; the 6th is path-only.
         assert_eq!(with_preview, 5);
         assert!(files[5].get("dataUrl").is_none());

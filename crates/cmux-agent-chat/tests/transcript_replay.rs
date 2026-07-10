@@ -61,7 +61,11 @@ fn claude_full_transcript_replays_roles_seqs_and_kinds() {
     // arriving only in the SECOND parse call.
     let first_batch = [
         claude_user("u-1", "add a test", Some("2026-06-12T10:00:00.000Z")),
-        claude_user("noise", "<system-reminder>ignore me</system-reminder>", Some("2026-06-12T10:00:01.000Z")),
+        claude_user(
+            "noise",
+            "<system-reminder>ignore me</system-reminder>",
+            Some("2026-06-12T10:00:01.000Z"),
+        ),
         // Sidechain line: dropped, but its seq is still consumed and its late
         // timestamp must NOT leak into the following no-timestamp line.
         json!({
@@ -127,7 +131,11 @@ fn claude_full_transcript_replays_roles_seqs_and_kinds() {
     // Second parse call: the result arrives, back-patching the earlier message
     // via updated_messages (not messages), preserving id + seq.
     let second = parser.parse(
-        [claude_tool_result("toolu_build", json!("Build complete\nExit code: 0"))].iter(),
+        [claude_tool_result(
+            "toolu_build",
+            json!("Build complete\nExit code: 0"),
+        )]
+        .iter(),
         4,
         first.state,
     );
@@ -141,7 +149,11 @@ fn claude_full_transcript_replays_roles_seqs_and_kinds() {
     };
     assert!(!capture.is_running);
     assert_eq!(capture.exit_code, Some(0));
-    assert!(capture.output.as_deref().unwrap().contains("Build complete"));
+    assert!(capture
+        .output
+        .as_deref()
+        .unwrap()
+        .contains("Build complete"));
     assert!(second.state.pending_tool_uses.is_empty());
 }
 
@@ -164,7 +176,10 @@ fn claude_eviction_keeps_newest_max_pending_by_seq() {
     assert_eq!(result.messages.len(), total);
     // Carried pending state is bounded to the newest (highest-seq) calls.
     assert_eq!(result.state.pending_tool_uses.len(), MAX_PENDING_TOOL_USES);
-    assert!(result.state.pending_tool_uses.contains_key(&format!("call-{}", total - 1)));
+    assert!(result
+        .state
+        .pending_tool_uses
+        .contains_key(&format!("call-{}", total - 1)));
     assert!(!result.state.pending_tool_uses.contains_key("call-0"));
 }
 
@@ -173,28 +188,41 @@ fn codex_full_transcript_replays_session_reasoning_prose_and_tool_pairing() {
     let parser = CodexTranscriptParser::new();
 
     fn codex_line(kind: &str, payload: Value) -> String {
-        json!({ "timestamp": "2026-06-11T21:38:05.381Z", "type": kind, "payload": payload }).to_string()
+        json!({ "timestamp": "2026-06-11T21:38:05.381Z", "type": kind, "payload": payload })
+            .to_string()
     }
 
     let first_batch = [
         codex_line("session_meta", json!({"id": "sess-1", "cwd": "/repo"})),
         // Injected context user block is noise-dropped.
-        codex_line("response_item", json!({
-            "type": "message", "role": "user",
-            "content": [{"type": "input_text", "text": "<environment_context>\n</environment_context>"}],
-        })),
-        codex_line("response_item", json!({
-            "type": "message", "role": "user",
-            "content": [{"type": "input_text", "text": "port the parser"}],
-        })),
-        codex_line("response_item", json!({
-            "type": "reasoning",
-            "summary": [{"type": "summary_text", "text": "look first"}, {"type": "summary_text", "text": "then edit"}],
-        })),
-        codex_line("response_item", json!({
-            "type": "function_call", "name": "exec_command",
-            "arguments": r#"{"cmd":"cargo test"}"#, "call_id": "call_run",
-        })),
+        codex_line(
+            "response_item",
+            json!({
+                "type": "message", "role": "user",
+                "content": [{"type": "input_text", "text": "<environment_context>\n</environment_context>"}],
+            }),
+        ),
+        codex_line(
+            "response_item",
+            json!({
+                "type": "message", "role": "user",
+                "content": [{"type": "input_text", "text": "port the parser"}],
+            }),
+        ),
+        codex_line(
+            "response_item",
+            json!({
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": "look first"}, {"type": "summary_text", "text": "then edit"}],
+            }),
+        ),
+        codex_line(
+            "response_item",
+            json!({
+                "type": "function_call", "name": "exec_command",
+                "arguments": r#"{"cmd":"cargo test"}"#, "call_id": "call_run",
+            }),
+        ),
     ];
     let first = parser.parse(first_batch.iter(), 0, ChatTranscriptParseState::new());
 

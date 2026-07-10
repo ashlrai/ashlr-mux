@@ -32,6 +32,13 @@ export type TranscriptEntry = {
   output?: string;
 };
 
+export type RestoredTranscript = {
+  entries: TranscriptEntry[];
+  providerId: ProviderId;
+  sessionId: string;
+  suppressAutoStart?: boolean;
+};
+
 export type SessionState = {
   context?: AppContext;
   providers: ProviderInfo[];
@@ -50,6 +57,11 @@ export type SessionState = {
   pendingProviderId?: ProviderId;
 };
 
+export type NativeCallScope = {
+  panelId?: string;
+  workspaceId?: string;
+};
+
 export type Action =
   | { type: "context"; context: AppContext }
   | { type: "providers"; providers: ProviderInfo[] }
@@ -58,6 +70,7 @@ export type Action =
   | { type: "clearPendingProviderSwitch" }
   | { type: "switchToProvider"; providerId: ProviderId }
   | { type: "setInput"; input: string }
+  | { type: "hydrateTranscript"; transcript: RestoredTranscript }
   | { type: "autoStartAttempted"; providerId: ProviderId }
   | { type: "starting" }
   | { type: "startAccepted"; sessionId: string }
@@ -83,6 +96,17 @@ const maxLogEntryChars = 8 * 1024;
 const assistantTruncationMarker = "[earlier assistant output truncated]\n";
 const activityTruncationMarker = "[earlier command output truncated]\n";
 const logTruncationMarker = "[earlier log output truncated]\n";
+
+function scopedParams(
+  scope?: NativeCallScope,
+  params: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    ...params,
+    ...(scope?.panelId ? { panelId: scope.panelId } : {}),
+    ...(scope?.workspaceId ? { workspaceId: scope.workspaceId } : {}),
+  };
+}
 
 export function initialState(_renderer: AppContext["renderer"]): SessionState {
   return {
@@ -142,6 +166,18 @@ export function reduceSession(state: SessionState, action: Action): SessionState
       };
     case "setInput":
       return { ...state, input: action.input };
+    case "hydrateTranscript": {
+      const providerAttempts = action.transcript.suppressAutoStart === true
+        ? rememberProviderId(state.autoStartAttemptedProviderIds, action.transcript.providerId)
+        : state.autoStartAttemptedProviderIds;
+      return {
+        ...state,
+        selectedProviderId: action.transcript.providerId,
+        transcript: state.transcript.length === 0 ? action.transcript.entries : state.transcript,
+        seenSessionIds: rememberSessionId(state, action.transcript.sessionId),
+        autoStartAttemptedProviderIds: providerAttempts,
+      };
+    }
     case "autoStartAttempted":
       if (state.autoStartAttemptedProviderIds.includes(action.providerId)) {
         return state;
@@ -215,25 +251,33 @@ export function reduceSession(state: SessionState, action: Action): SessionState
   }
 }
 
-export async function loadInitialData(dispatch: (action: Action) => void): Promise<void> {
+export async function loadInitialData(dispatch: (action: Action) => void, scope?: NativeCallScope): Promise<void> {
   try {
-    const [context, providers] = await Promise.all([
-      callNative<AppContext>("app.context"),
-      callNative<ProviderInfo[]>("provider.list"),
+    const [context, providers, transcript] = await Promise.all([
+      callNative<AppContext>("app.context", scopedParams(scope)),
+      callNative<ProviderInfo[]>("provider.list", scopedParams(scope)),
+      callNative<RestoredTranscript | null>("app.transcript", scopedParams(scope)).catch(() => null),
     ]);
     applyAgentTheme(context.theme);
     dispatch({ type: "context", context });
     dispatch({ type: "providers", providers });
+    if (transcript) {
+      dispatch({ type: "hydrateTranscript", transcript });
+    }
   } catch (error) {
     dispatch({ type: "failed", message: messageForError(error) });
   }
 }
 
-export async function startProvider(state: SessionState, dispatch: (action: Action) => void): Promise<void> {
+export async function startProvider(
+  state: SessionState,
+  dispatch: (action: Action) => void,
+  scope?: NativeCallScope,
+): Promise<void> {
   if (!canStartProvider(state)) {
     return;
   }
-  await startProviderSnapshot(startProviderSnapshotFromState(state), dispatch);
+  await startProviderSnapshot(startProviderSnapshotFromState(state), dispatch, scope);
 }
 
 type StartProviderSnapshot = {
@@ -253,13 +297,14 @@ function startProviderSnapshotFromState(state: SessionState): StartProviderSnaps
 async function startProviderSnapshot(
   snapshot: StartProviderSnapshot,
   dispatch: (action: Action) => void,
+  scope?: NativeCallScope,
 ): Promise<void> {
   dispatch({ type: "starting" });
   try {
-    const reply = await callNative<{ sessionId: string }>("provider.start", {
+    const reply = await callNative<{ sessionId: string }>("provider.start", scopedParams(scope, {
       providerId: snapshot.providerId,
       workingDirectory: snapshot.workingDirectory,
-    });
+    }));
     dispatch({ type: "startAccepted", sessionId: reply.sessionId });
   } catch (error) {
     dispatch({ type: "failed", message: messageForError(error, snapshot.copy) });
@@ -277,23 +322,32 @@ export function shouldAutoStartProvider(state: SessionState): boolean {
   return provider?.autoStart === true;
 }
 
-export async function autoStartProvider(state: SessionState, dispatch: (action: Action) => void): Promise<void> {
+export async function autoStartProvider(
+  state: SessionState,
+  dispatch: (action: Action) => void,
+  scope?: NativeCallScope,
+): Promise<void> {
   if (!shouldAutoStartProvider(state)) {
     return;
   }
   const providerId = state.selectedProviderId;
   const snapshot = startProviderSnapshotFromState(state);
   dispatch({ type: "autoStartAttempted", providerId });
-  await startProviderSnapshot(snapshot, dispatch);
+  await startProviderSnapshot(snapshot, dispatch, scope);
 }
 
-export function selectProvider(providerId: ProviderId, state: SessionState, dispatch: (action: Action) => void): void {
+export function selectProvider(
+  providerId: ProviderId,
+  state: SessionState,
+  dispatch: (action: Action) => void,
+  scope?: NativeCallScope,
+): void {
   if (canSelectProvider(state)) {
     if (providerId === state.selectedProviderId) {
       return;
     }
     dispatch({ type: "selectProvider", providerId });
-    void callNative("provider.select", { providerId }).catch(() => {});
+    void callNative("provider.select", scopedParams(scope, { providerId })).catch(() => {});
     return;
   }
   // A session is active or transitioning — record the request and let the
@@ -309,6 +363,7 @@ export function selectProvider(providerId: ProviderId, state: SessionState, disp
 export async function advanceProviderSwitch(
   state: SessionState,
   dispatch: (action: Action) => void,
+  scope?: NativeCallScope,
 ): Promise<void> {
   const pending = state.pendingProviderId;
   if (pending === undefined) {
@@ -321,7 +376,7 @@ export async function advanceProviderSwitch(
   }
   if (state.runningSessionId) {
     if (state.status !== "stopping") {
-      await stopProvider(state, dispatch);
+      await stopProvider(state, dispatch, scope);
     }
     return;
   }
@@ -331,7 +386,7 @@ export async function advanceProviderSwitch(
     return;
   }
   dispatch({ type: "switchToProvider", providerId: pending });
-  void callNative("provider.select", { providerId: pending }).catch(() => {});
+  void callNative("provider.select", scopedParams(scope, { providerId: pending })).catch(() => {});
 }
 
 export async function sendInput(
@@ -344,6 +399,7 @@ export async function sendInput(
     permissionMode?: ComposerPermissionMode;
     text?: string;
   } = {},
+  scope?: NativeCallScope,
 ): Promise<boolean> {
   const submittedInput = options.text ?? state.input;
   const clearInput = options.clearInput ?? submittedInput;
@@ -352,11 +408,11 @@ export async function sendInput(
   }
   const sessionId = state.runningSessionId;
   try {
-    await callNative("provider.writeLine", {
+    await callNative("provider.writeLine", scopedParams(scope, {
       permissionMode: options.permissionMode ?? "default",
       sessionId,
       text: submittedInput,
-    });
+    }));
     dispatch({
       type: "sent",
       attachments: options.attachments,
@@ -376,16 +432,20 @@ export async function sendInput(
   }
 }
 
-export async function stopProvider(state: SessionState, dispatch: (action: Action) => void): Promise<void> {
+export async function stopProvider(
+  state: SessionState,
+  dispatch: (action: Action) => void,
+  scope?: NativeCallScope,
+): Promise<void> {
   if (!state.runningSessionId || state.status === "stopping") {
     return;
   }
   const sessionId = state.runningSessionId;
   dispatch({ type: "stopping", sessionId });
   try {
-    await callNative("provider.stop", {
+    await callNative("provider.stop", scopedParams(scope, {
       sessionId,
-    });
+    }));
   } catch (error) {
     dispatch({ type: "stopFailed", sessionId, message: messageForError(error, state) });
   }
@@ -549,6 +609,13 @@ function rememberSessionId(state: SessionState, sessionId: string): string[] {
     return state.seenSessionIds;
   }
   return [...state.seenSessionIds, sessionId].slice(-50);
+}
+
+function rememberProviderId(providerIds: ProviderId[], providerId: ProviderId): ProviderId[] {
+  if (providerIds.includes(providerId)) {
+    return providerIds;
+  }
+  return [...providerIds, providerId];
 }
 
 function appendContextReadyLog(state: SessionState): SessionState {

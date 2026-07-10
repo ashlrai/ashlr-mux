@@ -36,7 +36,10 @@ mod tests {
     #[test]
     fn empty_params_is_empty_object() {
         assert_eq!(parse_rpc_params(&[]).unwrap(), serde_json::json!({}));
-        assert_eq!(parse_rpc_params(&strings(&["  "])).unwrap(), serde_json::json!({}));
+        assert_eq!(
+            parse_rpc_params(&strings(&["  "])).unwrap(),
+            serde_json::json!({})
+        );
     }
 
     #[test]

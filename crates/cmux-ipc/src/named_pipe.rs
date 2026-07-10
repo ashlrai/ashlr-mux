@@ -29,7 +29,9 @@ use std::io;
 use std::mem::size_of;
 use std::time::{Duration, Instant};
 
-use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient, NamedPipeServer, ServerOptions};
+use tokio::net::windows::named_pipe::{
+    ClientOptions, NamedPipeClient, NamedPipeServer, ServerOptions,
+};
 
 use windows::core::{PCWSTR, PWSTR};
 use windows::Win32::Foundation::{
@@ -153,7 +155,10 @@ fn current_user_sid() -> io::Result<String> {
         let mut sid_string = PWSTR::null();
         ConvertSidToStringSidW(token_user.User.Sid, &mut sid_string).map_err(win_err)?;
         let result = sid_string.to_string().map_err(|error| {
-            io::Error::new(io::ErrorKind::InvalidData, format!("invalid SID UTF-16: {error}"))
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid SID UTF-16: {error}"),
+            )
         });
         let _ = LocalFree(Some(HLOCAL(sid_string.0 as *mut c_void)));
         result
@@ -237,7 +242,11 @@ impl Drop for OwnedHandle {
 /// Create one named-pipe server instance at `addr` with the current-user DACL.
 /// `first` must be true for the very first instance so a foreign process cannot
 /// have squatted the name (`FILE_FLAG_FIRST_PIPE_INSTANCE`).
-fn create_instance(addr: &str, first: bool, security: &SecurityAttributes) -> io::Result<NamedPipeServer> {
+fn create_instance(
+    addr: &str,
+    first: bool,
+    security: &SecurityAttributes,
+) -> io::Result<NamedPipeServer> {
     let mut options = ServerOptions::new();
     options.first_pipe_instance(first);
     // SAFETY: `security` outlives this call (it lives for the whole accept loop),
@@ -475,7 +484,9 @@ mod tests {
         assert_eq!(value["error"]["code"], serde_json::json!("auth_required"));
 
         // Authenticate.
-        write_frame(&mut client, "auth s3cret").await.expect("write");
+        write_frame(&mut client, "auth s3cret")
+            .await
+            .expect("write");
         let frame = read_frame(&mut client, MAX_RPC_FRAME_BYTES)
             .await
             .expect("read")

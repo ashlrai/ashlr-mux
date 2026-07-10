@@ -1,6 +1,5 @@
 use crate::{
-    control_request::ControlRequest,
-    control_request_parse_error::ControlRequestParseError,
+    control_request::ControlRequest, control_request_parse_error::ControlRequestParseError,
     json_value::JsonValue,
 };
 
@@ -40,7 +39,12 @@ impl ControlRequestParser {
     fn request_from_object(
         object: &serde_json::Map<String, serde_json::Value>,
     ) -> Option<ControlRequest> {
-        let id = object.get("id").cloned().map(JsonValue::try_from).transpose().ok()?;
+        let id = object
+            .get("id")
+            .cloned()
+            .map(JsonValue::try_from)
+            .transpose()
+            .ok()?;
         let method = object
             .get("method")
             .and_then(serde_json::Value::as_str)

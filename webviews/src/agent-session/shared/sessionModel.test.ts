@@ -176,6 +176,78 @@ test("rate limit row event updates context", () => {
   ]);
 });
 
+test("restored transcript hydrates entries and suppresses duplicate auto start", () => {
+  const stateWithContext = reduceSession(initialState("react"), { type: "context", context });
+  const loaded = reduceSession(
+    reduceSession(stateWithContext, { type: "providers", providers }),
+    {
+      type: "hydrateTranscript",
+      transcript: {
+        providerId: "codex",
+        sessionId: "restored-session",
+        suppressAutoStart: true,
+        entries: [
+          {
+            id: "restored-user",
+            role: "user",
+            text: "previous prompt",
+            isComplete: true,
+            sessionId: "restored-session",
+          },
+          {
+            id: "restored-assistant",
+            role: "assistant",
+            text: "previous answer",
+            isComplete: true,
+            sessionId: "restored-session",
+          },
+        ],
+      },
+    },
+  );
+
+  expect(loaded.transcript.map((entry) => entry.text)).toEqual(["previous prompt", "previous answer"]);
+  expect(loaded.seenSessionIds).toContain("restored-session");
+  expect(loaded.autoStartAttemptedProviderIds).toContain("codex");
+  expect(shouldAutoStartProvider(loaded)).toBe(false);
+});
+
+test("restored transcript does not overwrite live transcript entries", () => {
+  const stateWithContext = reduceSession(initialState("react"), { type: "context", context });
+  const live = { ...stateWithContext, transcript: [{ id: "live", role: "user" as const, text: "live" }] };
+  const restored = reduceSession(live, {
+    type: "hydrateTranscript",
+    transcript: {
+      providerId: "codex",
+      sessionId: "restored-session",
+      suppressAutoStart: true,
+      entries: [{ id: "restored", role: "user", text: "old" }],
+    },
+  });
+
+  expect(restored.transcript.map((entry) => entry.text)).toEqual(["live"]);
+  expect(restored.autoStartAttemptedProviderIds).toContain("codex");
+});
+
+test("app theme event updates context theme", () => {
+  const initial = reduceSession(initialState("react"), { type: "context", context });
+  const nextTheme = {
+    ...theme,
+    isDark: false,
+    text: "#20242a",
+  };
+  const state = reduceSession(initial, {
+    type: "event",
+    event: {
+      type: "app.theme",
+      theme: nextTheme,
+    },
+  });
+
+  expect(state.context?.theme).toBe(nextTheme);
+  expect(state.selectedProviderId).toBe(initial.selectedProviderId);
+});
+
 test("provider output is appended without changing running session", () => {
   const running = {
     ...initialState("solid"),
@@ -701,7 +773,10 @@ test("auto start sends provider start from an explicit snapshot", async () => {
   };
 
   try {
-    await autoStartProvider(loaded, (action) => actions.push(action));
+    await autoStartProvider(loaded, (action) => actions.push(action), {
+      panelId: "panel-agent-9",
+      workspaceId: "workspace-9",
+    });
   } finally {
     if (originalWindow === undefined) {
       delete globalWithWindow.window;
@@ -714,6 +789,8 @@ test("auto start sends provider start from an explicit snapshot", async () => {
   expect(actions[0]).toEqual({ type: "autoStartAttempted", providerId: "codex" });
   expect(messages[0]?.method).toBe("provider.start");
   expect(messages[0]?.params.providerId).toBe("codex");
+  expect(messages[0]?.params.panelId).toBe("panel-agent-9");
+  expect(messages[0]?.params.workspaceId).toBe("workspace-9");
 });
 
 test("sent input only clears the submitted value", () => {
@@ -814,7 +891,10 @@ test("send includes selected permission mode", async () => {
   };
 
   try {
-    await sendInput(running, () => {}, { permissionMode: "full-access" });
+    await sendInput(running, () => {}, { permissionMode: "full-access" }, {
+      panelId: "panel-agent-9",
+      workspaceId: "workspace-9",
+    });
   } finally {
     if (originalWindow === undefined) {
       delete globalWithWindow.window;
@@ -825,6 +905,8 @@ test("send includes selected permission mode", async () => {
 
   expect(messages[0]?.method).toBe("provider.writeLine");
   expect(messages[0]?.params.permissionMode).toBe("full-access");
+  expect(messages[0]?.params.panelId).toBe("panel-agent-9");
+  expect(messages[0]?.params.workspaceId).toBe("workspace-9");
 });
 
 test("stop preserves running session until provider exit arrives", () => {

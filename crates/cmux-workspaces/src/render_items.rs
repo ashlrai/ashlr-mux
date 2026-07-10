@@ -84,7 +84,8 @@ pub fn render_items(
         }
     }
 
-    let mut items: Vec<SidebarWorkspaceRenderItem> = Vec::with_capacity(tabs.len() + groups_by_id.len());
+    let mut items: Vec<SidebarWorkspaceRenderItem> =
+        Vec::with_capacity(tabs.len() + groups_by_id.len());
     let mut last_emitted_group_id: Option<Uuid> = None;
     let mut emitted_headers: HashSet<Uuid> = HashSet::new();
     let mut collapsed_by_group_id: HashMap<Uuid, bool> = HashMap::new();

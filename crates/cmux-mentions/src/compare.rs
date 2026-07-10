@@ -78,18 +78,30 @@ mod tests {
 
     #[test]
     fn numeric_runs_compare_by_value() {
-        assert_eq!(localized_standard_compare("file2", "file10"), Ordering::Less);
-        assert_eq!(localized_standard_compare("file10", "file2"), Ordering::Greater);
+        assert_eq!(
+            localized_standard_compare("file2", "file10"),
+            Ordering::Less
+        );
+        assert_eq!(
+            localized_standard_compare("file10", "file2"),
+            Ordering::Greater
+        );
     }
 
     #[test]
     fn compare_is_case_insensitive_first() {
         assert_eq!(localized_standard_compare("Alpha", "beta"), Ordering::Less);
-        assert_eq!(localized_case_insensitive_compare("Alpha", "alpha"), Ordering::Equal);
+        assert_eq!(
+            localized_case_insensitive_compare("Alpha", "alpha"),
+            Ordering::Equal
+        );
     }
 
     #[test]
     fn equal_ignoring_case_falls_back_to_forced_ordering() {
-        assert_ne!(localized_standard_compare("Alpha", "alpha"), Ordering::Equal);
+        assert_ne!(
+            localized_standard_compare("Alpha", "alpha"),
+            Ordering::Equal
+        );
     }
 }

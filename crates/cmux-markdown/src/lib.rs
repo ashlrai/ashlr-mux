@@ -50,11 +50,11 @@ pub mod assets;
 pub mod file_link;
 pub mod local_image_jail;
 pub mod mention_link;
+mod path_util;
 pub mod remote_image;
 pub mod remote_image_loader;
 pub mod theme;
 pub mod typography;
-mod path_util;
 
 pub use assets::MarkdownViewerAssets;
 pub use local_image_jail::{resolve_local_image, ResolvedLocalImage, LOCAL_IMAGE_URL_SCHEME};

@@ -33,10 +33,24 @@ const USER_NOISE_PREFIXES: [&str; 6] = [
     "<turn_aborted",
     "# AGENTS.md instructions",
 ];
-const SHELL_TOOL_NAMES: [&str; 4] = ["shell", "exec_command", "local_shell_call", "container.exec"];
+const SHELL_TOOL_NAMES: [&str; 4] = [
+    "shell",
+    "exec_command",
+    "local_shell_call",
+    "container.exec",
+];
 const SHELL_WRAPPER_BINARIES: [&str; 3] = ["bash", "sh", "zsh"];
 const SUMMARY_ARGUMENT_KEYS: [&str; 10] = [
-    "path", "file_path", "pattern", "query", "url", "text", "key", "app", "session_id", "plan",
+    "path",
+    "file_path",
+    "pattern",
+    "query",
+    "url",
+    "text",
+    "key",
+    "app",
+    "session_id",
+    "plan",
 ];
 
 /// Matches an exit-code header in a tool output.
@@ -109,7 +123,9 @@ impl CodexTranscriptParser {
             let timestamp = last_timestamp.unwrap_or(Timestamp::EPOCH_ZERO);
             let payload = root.get("payload");
             match root.get("type").and_then(|v| v.string()) {
-                Some("session_meta") => self.append_session_start(payload, seq, timestamp, &mut assembler),
+                Some("session_meta") => {
+                    self.append_session_start(payload, seq, timestamp, &mut assembler)
+                }
                 Some("compacted") => assembler.append(
                     ChatMessage::new(
                         format!("line-{seq}"),
@@ -123,7 +139,9 @@ impl CodexTranscriptParser {
                     ),
                     None,
                 ),
-                Some("response_item") => self.append_response_item(payload, seq, timestamp, &mut assembler),
+                Some("response_item") => {
+                    self.append_response_item(payload, seq, timestamp, &mut assembler)
+                }
                 _ => continue,
             }
         }
@@ -146,7 +164,9 @@ impl CodexTranscriptParser {
             .map(str::to_string);
         assembler.append(
             ChatMessage::new(
-                session_id.map(|id| format!("session-{id}")).unwrap_or_else(|| format!("line-{seq}")),
+                session_id
+                    .map(|id| format!("session-{id}"))
+                    .unwrap_or_else(|| format!("line-{seq}")),
                 seq,
                 ChatRole::System,
                 timestamp,
@@ -173,7 +193,9 @@ impl CodexTranscriptParser {
             Some("message") => self.append_message(payload, seq, timestamp, assembler),
             Some("reasoning") => self.append_reasoning(payload, seq, timestamp, assembler),
             Some("function_call") => self.append_function_call(payload, seq, timestamp, assembler),
-            Some("custom_tool_call") => self.append_custom_tool_call(payload, seq, timestamp, assembler),
+            Some("custom_tool_call") => {
+                self.append_custom_tool_call(payload, seq, timestamp, assembler)
+            }
             Some("function_call_output") | Some("custom_tool_call_output") => {
                 self.resolve_output(payload, assembler)
             }
@@ -194,7 +216,10 @@ impl CodexTranscriptParser {
             Some("assistant") => ChatRole::Agent,
             _ => return, // developer / system context injections
         };
-        let blocks = payload.get("content").and_then(|v| v.array()).unwrap_or_default();
+        let blocks = payload
+            .get("content")
+            .and_then(|v| v.array())
+            .unwrap_or_default();
         let texts: Vec<&str> = blocks
             .iter()
             .filter_map(|block| {
@@ -208,7 +233,9 @@ impl CodexTranscriptParser {
                     return None;
                 }
                 if role == ChatRole::User
-                    && USER_NOISE_PREFIXES.iter().any(|prefix| trimmed.starts_with(prefix))
+                    && USER_NOISE_PREFIXES
+                        .iter()
+                        .any(|prefix| trimmed.starts_with(prefix))
                 {
                     return None;
                 }
@@ -287,7 +314,9 @@ impl CodexTranscriptParser {
         };
         assembler.append(
             ChatMessage::new(
-                call_id.map(str::to_string).unwrap_or_else(|| format!("line-{seq}")),
+                call_id
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format!("line-{seq}")),
                 seq,
                 ChatRole::Agent,
                 timestamp,
@@ -322,7 +351,9 @@ impl CodexTranscriptParser {
         };
         assembler.append(
             ChatMessage::new(
-                call_id.map(str::to_string).unwrap_or_else(|| format!("line-{seq}")),
+                call_id
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format!("line-{seq}")),
                 seq,
                 ChatRole::Agent,
                 timestamp,
@@ -366,7 +397,11 @@ impl CodexTranscriptParser {
 
     // MARK: - Tool outputs
 
-    fn resolve_output(&self, payload: TranscriptJson<'_>, assembler: &mut TranscriptBatchAssembler) {
+    fn resolve_output(
+        &self,
+        payload: TranscriptJson<'_>,
+        assembler: &mut TranscriptBatchAssembler,
+    ) {
         let Some(call_id) = payload.get("call_id").and_then(|v| v.string()) else {
             return;
         };
@@ -406,11 +441,20 @@ fn generic_tool_use_kind(
 ///
 /// Handles `{"cmd": "..."}`, `{"command": "..."}`, `{"command": ["bash",
 /// "-lc", "actual"]}`, and the `local_shell_call` `action.command` array.
-fn shell_command(arguments: Option<TranscriptJson<'_>>, payload: TranscriptJson<'_>) -> Option<String> {
-    if let Some(cmd) = arguments.and_then(|a| a.get("cmd")).and_then(|v| v.string()) {
+fn shell_command(
+    arguments: Option<TranscriptJson<'_>>,
+    payload: TranscriptJson<'_>,
+) -> Option<String> {
+    if let Some(cmd) = arguments
+        .and_then(|a| a.get("cmd"))
+        .and_then(|v| v.string())
+    {
         return Some(cmd.to_string());
     }
-    if let Some(cmd) = arguments.and_then(|a| a.get("command")).and_then(|v| v.string()) {
+    if let Some(cmd) = arguments
+        .and_then(|a| a.get("command"))
+        .and_then(|v| v.string())
+    {
         return Some(cmd.to_string());
     }
     let parts = arguments
@@ -524,9 +568,19 @@ mod tests {
     }
 
     fn message_line(role: &str, texts: &[&str]) -> String {
-        let block_type = if role == "assistant" { "output_text" } else { "input_text" };
-        let content: Vec<Value> = texts.iter().map(|t| json!({"type": block_type, "text": t})).collect();
-        line_default("response_item", json!({"type": "message", "role": role, "content": content}))
+        let block_type = if role == "assistant" {
+            "output_text"
+        } else {
+            "input_text"
+        };
+        let content: Vec<Value> = texts
+            .iter()
+            .map(|t| json!({"type": block_type, "text": t}))
+            .collect();
+        line_default(
+            "response_item",
+            json!({"type": "message", "role": role, "content": content}),
+        )
     }
 
     fn function_call_line(name: &str, arguments: &str, call_id: &str) -> String {
@@ -570,33 +624,48 @@ mod tests {
     fn prose_mapping() {
         let lines = vec![
             message_line("developer", &["<permissions instructions>\nstuff"]),
-            message_line("user", &[
-                "# AGENTS.md instructions for /repo\n<INSTRUCTIONS>...",
-                "<environment_context>\n  <cwd>/repo</cwd>\n</environment_context>",
-            ]),
+            message_line(
+                "user",
+                &[
+                    "# AGENTS.md instructions for /repo\n<INSTRUCTIONS>...",
+                    "<environment_context>\n  <cwd>/repo</cwd>\n</environment_context>",
+                ],
+            ),
             message_line("user", &["fix the parser"]),
             message_line("assistant", &["On it."]),
         ];
         let result = parse(&lines, 0);
         assert_eq!(result.messages.len(), 2);
         assert_eq!(result.messages[0].role, ChatRole::User);
-        assert_eq!(result.messages[0].kind, ChatMessageKind::Prose(ChatProse::new("fix the parser")));
+        assert_eq!(
+            result.messages[0].kind,
+            ChatMessageKind::Prose(ChatProse::new("fix the parser"))
+        );
         assert_eq!(result.messages[0].seq, 2);
         assert_eq!(result.messages[1].role, ChatRole::Agent);
-        assert_eq!(result.messages[1].kind, ChatMessageKind::Prose(ChatProse::new("On it.")));
+        assert_eq!(
+            result.messages[1].kind,
+            ChatMessageKind::Prose(ChatProse::new("On it."))
+        );
     }
 
     #[test]
     fn reasoning() {
         let lines = vec![
-            line_default("response_item", json!({"type": "reasoning", "summary": [], "encrypted_content": "gAAAA"})),
-            line_default("response_item", json!({
-                "type": "reasoning",
-                "summary": [
-                    {"type": "summary_text", "text": "Inspect the file"},
-                    {"type": "summary_text", "text": "Then run tests"},
-                ],
-            })),
+            line_default(
+                "response_item",
+                json!({"type": "reasoning", "summary": [], "encrypted_content": "gAAAA"}),
+            ),
+            line_default(
+                "response_item",
+                json!({
+                    "type": "reasoning",
+                    "summary": [
+                        {"type": "summary_text", "text": "Inspect the file"},
+                        {"type": "summary_text", "text": "Then run tests"},
+                    ],
+                }),
+            ),
         ];
         let result = parse(&lines, 0);
         assert_eq!(result.messages.len(), 1);
@@ -626,7 +695,11 @@ mod tests {
 
     #[test]
     fn shell_command_array() {
-        let call = function_call_line("shell", r#"{"command":["bash","-lc","echo hi"],"timeout_ms":5000}"#, "call_1");
+        let call = function_call_line(
+            "shell",
+            r#"{"command":["bash","-lc","echo hi"],"timeout_ms":5000}"#,
+            "call_1",
+        );
         let result = parse(&[call], 0);
         let ChatMessageKind::Terminal(capture) = &result.messages[0].kind else {
             panic!("expected terminal");
@@ -649,19 +722,32 @@ mod tests {
         assert_eq!(capture.exit_code, Some(0));
         assert_eq!(capture.duration_seconds, Some(1.5));
         assert!(!capture.is_running);
-        assert!(capture.output.as_deref().unwrap().contains("Build complete!"));
+        assert!(capture
+            .output
+            .as_deref()
+            .unwrap()
+            .contains("Build complete!"));
     }
 
     #[test]
     fn output_across_calls() {
         let first = parser().parse(
-            [function_call_line("exec_command", r#"{"cmd":"make"}"#, "call_z")].iter(),
+            [function_call_line(
+                "exec_command",
+                r#"{"cmd":"make"}"#,
+                "call_z",
+            )]
+            .iter(),
             3,
             ChatTranscriptParseState::new(),
         );
         assert_eq!(first.state.pending_tool_uses.len(), 1);
         let second = parser().parse(
-            [output_line("call_z", "Process exited with code 1\nOutput:\nerror")].iter(),
+            [output_line(
+                "call_z",
+                "Process exited with code 1\nOutput:\nerror",
+            )]
+            .iter(),
             4,
             first.state,
         );
@@ -680,8 +766,15 @@ mod tests {
     #[test]
     fn generic_function_call() {
         let lines = vec![
-            function_call_line("update_plan", r#"{"plan":[{"step":"do it","status":"pending"}]}"#, "call_p"),
-            output_line("call_p", r#"{"output":"plan rejected","metadata":{"exit_code":2,"duration_seconds":0.1}}"#),
+            function_call_line(
+                "update_plan",
+                r#"{"plan":[{"step":"do it","status":"pending"}]}"#,
+                "call_p",
+            ),
+            output_line(
+                "call_p",
+                r#"{"output":"plan rejected","metadata":{"exit_code":2,"duration_seconds":0.1}}"#,
+            ),
         ];
         let result = parse(&lines, 0);
         let ChatMessageKind::ToolUse(tool) = &result.messages[0].kind else {
@@ -697,14 +790,20 @@ mod tests {
     fn apply_patch() {
         let patch = "*** Begin Patch\n*** Update File: /repo/Sources/App.swift\n@@\n-old\n+new\n*** End Patch";
         let lines = vec![
-            line_default("response_item", json!({
-                "type": "custom_tool_call", "status": "completed",
-                "call_id": "call_ap", "name": "apply_patch", "input": patch,
-            })),
-            line_default("response_item", json!({
-                "type": "custom_tool_call_output", "call_id": "call_ap",
-                "output": "Exit code: 0\nWall time: 0 seconds\nOutput:\nSuccess.",
-            })),
+            line_default(
+                "response_item",
+                json!({
+                    "type": "custom_tool_call", "status": "completed",
+                    "call_id": "call_ap", "name": "apply_patch", "input": patch,
+                }),
+            ),
+            line_default(
+                "response_item",
+                json!({
+                    "type": "custom_tool_call_output", "call_id": "call_ap",
+                    "output": "Exit code: 0\nWall time: 0 seconds\nOutput:\nSuccess.",
+                }),
+            ),
         ];
         let result = parse(&lines, 0);
         let ChatMessageKind::ToolUse(tool) = &result.messages[0].kind else {
@@ -718,9 +817,15 @@ mod tests {
     #[test]
     fn noise_and_seq() {
         let lines = vec![
-            line_default("event_msg", json!({"type": "task_started", "turn_id": "t-1"})),
+            line_default(
+                "event_msg",
+                json!({"type": "task_started", "turn_id": "t-1"}),
+            ),
             line_default("turn_context", json!({"turn_id": "t-1", "cwd": "/repo"})),
-            line_default("event_msg", json!({"type": "token_count", "info": {"total_token_usage": {"input_tokens": 5}}})),
+            line_default(
+                "event_msg",
+                json!({"type": "token_count", "info": {"total_token_usage": {"input_tokens": 5}}}),
+            ),
             "garbage {".to_string(),
             message_line("user", &["hello"]),
         ];
@@ -732,17 +837,29 @@ mod tests {
 
     #[test]
     fn compacted() {
-        let result = parse(&[line_default("compacted", json!({"message": "history replaced"}))], 0);
+        let result = parse(
+            &[line_default(
+                "compacted",
+                json!({"message": "history replaced"}),
+            )],
+            0,
+        );
         assert_eq!(result.messages.len(), 1);
         assert_eq!(
             result.messages[0].kind,
-            ChatMessageKind::Status(ChatStatusTransition::new(ChatStatusEvent::ContextCompacted, None))
+            ChatMessageKind::Status(ChatStatusTransition::new(
+                ChatStatusEvent::ContextCompacted,
+                None
+            ))
         );
     }
 
     #[test]
     fn truncation() {
-        let huge = format!("Process exited with code 0\nOutput:\n{}", "y".repeat(40_000));
+        let huge = format!(
+            "Process exited with code 0\nOutput:\n{}",
+            "y".repeat(40_000)
+        );
         let lines = vec![
             function_call_line("exec_command", r#"{"cmd":"cat big"}"#, "call_1"),
             output_line("call_1", &huge),
@@ -751,7 +868,14 @@ mod tests {
         let ChatMessageKind::Terminal(capture) = &result.messages[0].kind else {
             panic!("expected terminal");
         };
-        assert!(capture.output.as_ref().map(|o| o.chars().count()).unwrap_or(0) <= 16_385);
+        assert!(
+            capture
+                .output
+                .as_ref()
+                .map(|o| o.chars().count())
+                .unwrap_or(0)
+                <= 16_385
+        );
         assert!(capture.output.as_deref().unwrap().ends_with('…'));
     }
 }

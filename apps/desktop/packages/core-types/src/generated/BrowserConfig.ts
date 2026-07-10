@@ -5,7 +5,7 @@ import type { Appearance } from "./Appearance";
 /**
  * `browser`: embedded browser settings.
  */
-export type BrowserConfig = { 
+export type BrowserConfig = {
 /**
  * Default search engine. Kept as a `String` because the value set is large
  * and includes the `custom` sentinel.

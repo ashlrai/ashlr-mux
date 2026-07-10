@@ -279,10 +279,7 @@ pub trait ProcessSupervisor {
     /// Like [`spawn`](Self::spawn), but redirects the child's stdin/stdout
     /// through pipes and returns an [`AgentIo`] that frames stdout as NDJSON and
     /// writes stdin. The transport seam for the stdio agents (Claude/Codex).
-    fn spawn_captured(
-        &self,
-        spec: SpawnSpec,
-    ) -> Result<(SessionHandle, AgentIo), ProcessError>;
+    fn spawn_captured(&self, spec: SpawnSpec) -> Result<(SessionHandle, AgentIo), ProcessError>;
 
     /// Terminate the session's entire descendant tree with the given force.
     /// Idempotent: terminating an already-dead session is `Ok(())`.

@@ -177,10 +177,7 @@ mod tests {
     /// Swift: `testStripsLeadingCSISequenceFromExternalCommittedText` (:946).
     #[test]
     fn strips_leading_csi_sequence() {
-        assert_eq!(
-            sanitize_external_committed_text("\u{1B}[Chello"),
-            "hello"
-        );
+        assert_eq!(sanitize_external_committed_text("\u{1B}[Chello"), "hello");
     }
 
     /// Swift: `testStripsLeadingC1CSISequenceFromExternalCommittedText` (:953).

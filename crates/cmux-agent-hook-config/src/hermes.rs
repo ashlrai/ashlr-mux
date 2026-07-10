@@ -567,10 +567,7 @@ mod tests {
 
     #[test]
     fn multiple_events_same_name_are_grouped_in_order() {
-        let out = installing(
-            &[event("PostToolUse", "a"), event("PostToolUse", "b")],
-            "",
-        );
+        let out = installing(&[event("PostToolUse", "a"), event("PostToolUse", "b")], "");
         assert_eq!(
             out,
             "# cmux hooks hermes-agent begin\n\
@@ -586,10 +583,7 @@ mod tests {
 
     #[test]
     fn multiple_distinct_events_preserve_first_seen_order() {
-        let out = installing(
-            &[event("PostToolUse", "a"), event("PreToolUse", "b")],
-            "",
-        );
+        let out = installing(&[event("PostToolUse", "a"), event("PreToolUse", "b")], "");
         assert_eq!(
             out,
             "# cmux hooks hermes-agent begin\n\

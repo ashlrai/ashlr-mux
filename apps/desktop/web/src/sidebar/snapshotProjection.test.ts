@@ -27,11 +27,13 @@ function workspace(
   id: string | undefined,
   groupId?: string,
   isPinned?: boolean,
+  customColor?: string,
 ): SessionWorkspaceSnapshot {
   return {
     workspace_id: id,
     group_id: groupId,
     is_pinned: isPinned,
+    custom_color: customColor,
     process_title: "Terminal",
     layout: null,
   };
@@ -105,6 +107,17 @@ describe("projectSidebarItems", () => {
       throw new Error("expected workspace row");
     }
     expect(item.workspace.isPinned).toBe(false);
+  });
+
+  test("workspace custom_color maps to row customColor", () => {
+    const items = projectSidebarItems({
+      workspaces: [workspace(SOLO, undefined, false, "#C0392B")],
+    });
+    const item = items[0];
+    if (item.kind !== "workspace") {
+      throw new Error("expected workspace row");
+    }
+    expect(item.workspace.customColor).toBe("#C0392B");
   });
 
   test("missing anchor falls back to first member (group still renders)", () => {

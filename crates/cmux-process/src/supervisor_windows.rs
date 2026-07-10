@@ -36,14 +36,16 @@ use std::{
 use windows::{
     core::{PCWSTR, PWSTR},
     Win32::{
-        Foundation::{CloseHandle, SetHandleInformation, HANDLE, HANDLE_FLAGS, HANDLE_FLAG_INHERIT},
+        Foundation::{
+            CloseHandle, SetHandleInformation, HANDLE, HANDLE_FLAGS, HANDLE_FLAG_INHERIT,
+        },
         Security::SECURITY_ATTRIBUTES,
         System::{
             Console::{GenerateConsoleCtrlEvent, CTRL_BREAK_EVENT},
             JobObjects::{
-                AssignProcessToJobObject, CreateJobObjectW, QueryInformationJobObject,
+                AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicAccountingInformation,
+                JobObjectExtendedLimitInformation, QueryInformationJobObject,
                 SetInformationJobObject, TerminateJobObject,
-                JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
                 JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
                 JOB_OBJECT_LIMIT, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
                 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
@@ -161,8 +163,8 @@ impl JobObjectSupervisor {
         inherit_handles: bool,
     ) -> Result<SessionHandle, ProcessError> {
         let job_name = to_wide(&crate::job_object_name(id));
-        let job =
-            CreateJobObjectW(None, PCWSTR(job_name.as_ptr())).map_err(|_| os_error("CreateJobObjectW"))?;
+        let job = CreateJobObjectW(None, PCWSTR(job_name.as_ptr()))
+            .map_err(|_| os_error("CreateJobObjectW"))?;
         if !spec.survive_disconnect {
             if let Err(error) = arm_kill_on_job_close(job) {
                 close(job);
@@ -232,15 +234,18 @@ impl JobObjectSupervisor {
         close(process_info.hThread);
 
         let root_pid = process_info.dwProcessId;
-        self.sessions.lock().expect("sessions mutex poisoned").insert(
-            id,
-            Session {
-                job: job.0 as isize,
-                process: process_info.hProcess.0 as isize,
-                root_pid,
-                survive_disconnect: spec.survive_disconnect,
-            },
-        );
+        self.sessions
+            .lock()
+            .expect("sessions mutex poisoned")
+            .insert(
+                id,
+                Session {
+                    job: job.0 as isize,
+                    process: process_info.hProcess.0 as isize,
+                    root_pid,
+                    survive_disconnect: spec.survive_disconnect,
+                },
+            );
         Ok(SessionHandle { id, root_pid })
     }
 }
@@ -256,10 +261,7 @@ impl ProcessSupervisor for JobObjectSupervisor {
         unsafe { self.launch_and_confine(id, &spec, startup_info, false) }
     }
 
-    fn spawn_captured(
-        &self,
-        spec: SpawnSpec,
-    ) -> Result<(SessionHandle, AgentIo), ProcessError> {
+    fn spawn_captured(&self, spec: SpawnSpec) -> Result<(SessionHandle, AgentIo), ProcessError> {
         let id = SessionId::new();
         unsafe {
             // Three pipes; the child gets the inheritable ends, the parent keeps
@@ -320,7 +322,11 @@ impl ProcessSupervisor for JobObjectSupervisor {
         let (job, process, root_pid) = {
             let sessions = self.sessions.lock().expect("sessions mutex poisoned");
             match sessions.get(&id) {
-                Some(session) => (handle(session.job), handle(session.process), session.root_pid),
+                Some(session) => (
+                    handle(session.job),
+                    handle(session.process),
+                    session.root_pid,
+                ),
                 None => return Err(ProcessError::UnknownSession(id)),
             }
         };
@@ -638,8 +644,14 @@ mod tests {
             }
         }
 
-        assert!(stdout_lines.contains(&"line-1".to_string()), "got {stdout_lines:?}");
-        assert!(stdout_lines.contains(&"line-2".to_string()), "got {stdout_lines:?}");
+        assert!(
+            stdout_lines.contains(&"line-1".to_string()),
+            "got {stdout_lines:?}"
+        );
+        assert!(
+            stdout_lines.contains(&"line-2".to_string()),
+            "got {stdout_lines:?}"
+        );
     }
 
     /// After a session's child exits and is drained, `reap` removes it from the

@@ -32,8 +32,8 @@ pub mod json_path;
 pub use json_path::{JsonPath, JsonPathError};
 pub mod notification_hooks;
 pub use notification_hooks::{
-    ActionTrustDescriptor, DEFAULT_TIMEOUT_SECONDS, ResolvedNotificationHook, project_root,
-    resolve_notification_hooks, resolved_hooks_for,
+    project_root, resolve_notification_hooks, resolved_hooks_for, ActionTrustDescriptor,
+    ResolvedNotificationHook, DEFAULT_TIMEOUT_SECONDS,
 };
 pub mod right_sidebar_width;
 pub use right_sidebar_width::RightSidebarWidthSettings;
@@ -340,7 +340,11 @@ pub struct ResumeCommandApproval {
     pub created_at: f64,
     #[serde(rename = "updatedAt")]
     pub updated_at: f64,
-    #[serde(rename = "lastUsedAt", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "lastUsedAt",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     #[cfg_attr(feature = "ts", ts(optional, type = "number"))]
     pub last_used_at: Option<f64>,
     pub signature: String,
@@ -519,7 +523,11 @@ pub struct SidebarConfig {
     pub show_progress: bool,
     #[serde(rename = "showCustomMetadata")]
     pub show_custom_metadata: bool,
-    #[serde(rename = "rightMaxWidth", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "rightMaxWidth",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub right_max_width: Option<f64>,
 }
@@ -663,6 +671,10 @@ pub struct AutomationConfig {
     pub socket_password: Option<String>,
     #[serde(rename = "claudeCodeIntegration")]
     pub claude_code_integration: bool,
+    #[serde(rename = "codexIntegration")]
+    pub codex_integration: bool,
+    #[serde(rename = "opencodeIntegration")]
+    pub opencode_integration: bool,
     #[serde(rename = "claudeBinaryPath")]
     pub claude_binary_path: String,
     #[serde(rename = "workspaceAutoNaming")]
@@ -697,6 +709,8 @@ impl Default for AutomationConfig {
             socket_control_mode: "cmuxOnly".to_owned(),
             socket_password: None,
             claude_code_integration: true,
+            codex_integration: true,
+            opencode_integration: true,
             claude_binary_path: String::new(),
             workspace_auto_naming: false,
             auto_naming_agent: "auto".to_owned(),
@@ -893,7 +907,10 @@ impl Default for ShortcutsConfig {
     fn default() -> Self {
         Self {
             show_modifier_hold_hints: true,
-            bindings: BTreeMap::new(),
+            bindings: BTreeMap::from([(
+                "agent.warmClaudeCode".to_owned(),
+                Some(ShortcutBinding::Single("ctrl+alt+c".to_owned())),
+            )]),
             when: BTreeMap::new(),
         }
     }
@@ -945,13 +962,25 @@ pub enum VaultAgentCwd {
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(default)]
 pub struct VaultAgentDetect {
-    #[serde(rename = "processName", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "processName",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub process_name: Option<String>,
-    #[serde(rename = "processNames", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "processNames",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub process_names: Option<StringOrStringList>,
-    #[serde(rename = "argvContains", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "argvContains",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub argv_contains: Option<StringOrStringList>,
 }
@@ -970,7 +999,11 @@ pub struct VaultAgentSessionIdSourceObject {
     /// hard-erroring, matching this crate's leniency; we stay faithful to the
     /// SCHEMA's two-arm `oneOf` wire shape (string | object).
     pub r#type: String,
-    #[serde(rename = "argvOption", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "argvOption",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub argv_option: Option<String>,
 }
@@ -1016,7 +1049,11 @@ impl Default for VaultAgentSessionIdSource {
 pub struct VaultAgent {
     pub id: String,
     pub name: String,
-    #[serde(rename = "iconAssetName", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "iconAssetName",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub icon_asset_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1026,11 +1063,19 @@ pub struct VaultAgent {
     pub session_id_source: VaultAgentSessionIdSource,
     #[serde(rename = "resumeCommand")]
     pub resume_command: String,
-    #[serde(rename = "forkCommand", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "forkCommand",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub fork_command: Option<String>,
     pub cwd: VaultAgentCwd,
-    #[serde(rename = "sessionDirectory", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "sessionDirectory",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub session_directory: Option<String>,
     /// Unknown per-agent keys (schema `additionalProperties:true`), preserved
@@ -1089,13 +1134,21 @@ pub struct WorkspaceGroupEntry {
     /// `oneOf(string, object)` (`web/data/cmux.schema.json:201-206`); kept opaque
     /// as raw JSON values (matching the untyped action objects) rather than
     /// modeling each action shape.
-    #[serde(rename = "contextMenu", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "contextMenu",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     #[cfg_attr(feature = "ts", ts(optional, type = "Array<unknown>"))]
     pub context_menu: Option<Vec<serde_json::Value>>,
     /// Per-cwd override for new-workspace placement; falls back to the group's
     /// global default when omitted. Reuses the existing [`NewWorkspacePlacement`]
     /// enum.
-    #[serde(rename = "newWorkspacePlacement", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "newWorkspacePlacement",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub new_workspace_placement: Option<NewWorkspacePlacement>,
 }
@@ -1559,8 +1612,12 @@ impl<'de> Deserialize<'de> for CmuxConfigActionDefinition {
                     .clone()
                     .or_else(|| raw.name.clone())
                     .or_else(|| raw.command.clone())
-                    .ok_or_else(|| D::Error::custom("workspaceCommand actions require commandName"))?;
-                Some(CmuxSurfaceTabBarButtonAction::WorkspaceCommand(command_name))
+                    .ok_or_else(|| {
+                        D::Error::custom("workspaceCommand actions require commandName")
+                    })?;
+                Some(CmuxSurfaceTabBarButtonAction::WorkspaceCommand(
+                    command_name,
+                ))
             }
             None => None,
             Some(other) => {
@@ -2269,7 +2326,11 @@ pub struct Config {
     #[serde(rename = "$schema", default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub schema: Option<String>,
-    #[serde(rename = "schemaVersion", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "schemaVersion",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     #[cfg_attr(feature = "ts", ts(optional, type = "number"))]
     pub schema_version: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2284,10 +2345,18 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub sidebar: Option<SidebarConfig>,
-    #[serde(rename = "workspaceColors", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "workspaceColors",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub workspace_colors: Option<WorkspaceColorsConfig>,
-    #[serde(rename = "sidebarAppearance", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "sidebarAppearance",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub sidebar_appearance: Option<SidebarAppearanceConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2302,13 +2371,25 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub canvas: Option<CanvasConfig>,
-    #[serde(rename = "fileEditor", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "fileEditor",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub file_editor: Option<FileEditorConfig>,
-    #[serde(rename = "fileExplorer", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "fileExplorer",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub file_explorer: Option<FileExplorerConfig>,
-    #[serde(rename = "diffViewer", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "diffViewer",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub diff_viewer: Option<DiffViewerConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2317,10 +2398,18 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub vault: Option<VaultConfig>,
-    #[serde(rename = "workspaceGroups", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "workspaceGroups",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub workspace_groups: Option<WorkspaceGroupsConfig>,
-    #[serde(rename = "newWorkspaceCommand", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "newWorkspaceCommand",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub new_workspace_command: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2332,7 +2421,11 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub commands: Option<Vec<CmuxCommandDefinition>>,
-    #[serde(rename = "surfaceTabBarButtons", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "surfaceTabBarButtons",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub surface_tab_bar_buttons: Option<Vec<CmuxSurfaceTabBarButton>>,
     /// Any top-level key not modeled above, preserved verbatim for lossless
@@ -2633,14 +2726,19 @@ mod tests {
             "https://www.google.com/search?q={query}"
         );
         assert_eq!(
-            browser.insecure_http_hosts_allowed_in_embedded_browser.len(),
+            browser
+                .insecure_http_hosts_allowed_in_embedded_browser
+                .len(),
             6
         );
 
         let colors = WorkspaceColorsConfig::default();
         assert_eq!(colors.indicator_style, "leftRail");
         assert_eq!(colors.colors.len(), 16);
-        assert_eq!(colors.colors.get("Blue").map(String::as_str), Some("#1565C0"));
+        assert_eq!(
+            colors.colors.get("Blue").map(String::as_str),
+            Some("#1565C0")
+        );
 
         let sidebar_appearance = SidebarAppearanceConfig::default();
         assert_eq!(sidebar_appearance.tint_color, "#000000");
@@ -2655,8 +2753,17 @@ mod tests {
             FileExplorerConfig::default().double_click_action,
             DoubleClickAction::Preview
         );
-        assert_eq!(DiffViewerConfig::default().default_layout, DiffLayout::Unified);
+        assert_eq!(
+            DiffViewerConfig::default().default_layout,
+            DiffLayout::Unified
+        );
         assert!(ShortcutsConfig::default().show_modifier_hold_hints);
+        assert_eq!(
+            ShortcutsConfig::default()
+                .bindings
+                .get("agent.warmClaudeCode"),
+            Some(&Some(ShortcutBinding::Single("ctrl+alt+c".to_owned())))
+        );
 
         // The top-level Config default is empty (all sections absent).
         let config = Config::default();
@@ -2673,7 +2780,10 @@ mod tests {
         };
         let value = serde_json::to_value(&config).expect("serialize");
 
-        let app = value.get("app").and_then(|v| v.as_object()).expect("app obj");
+        let app = value
+            .get("app")
+            .and_then(|v| v.as_object())
+            .expect("app obj");
         assert!(app.contains_key("globalFontMagnification"));
         assert!(app.contains_key("forkConversationDefaultDestination"));
         assert!(app.contains_key("appIcon"));
@@ -2690,6 +2800,8 @@ mod tests {
             .expect("automation obj");
         assert!(automation.contains_key("socketControlMode"));
         assert!(automation.contains_key("claudeCodeIntegration"));
+        assert!(automation.contains_key("codexIntegration"));
+        assert!(automation.contains_key("opencodeIntegration"));
         assert!(automation.contains_key("portBase"));
         // socketPassword is None → skipped.
         assert!(!automation.contains_key("socketPassword"));
@@ -2765,7 +2877,10 @@ mod tests {
         assert_eq!(terminal.agent_hibernation.max_live_terminals, 12);
         assert_eq!(terminal.resume_commands.len(), 1);
         assert_eq!(terminal.resume_commands[0].policy, ResumePolicy::Prompt);
-        assert_eq!(terminal.resume_commands[0].command_prefix, ["npm", "run", "dev"]);
+        assert_eq!(
+            terminal.resume_commands[0].command_prefix,
+            ["npm", "run", "dev"]
+        );
 
         let shortcuts = config.shortcuts.as_ref().unwrap();
         assert_eq!(
@@ -2938,7 +3053,9 @@ mod tests {
         );
         assert_eq!(
             map["wsCmd"].action,
-            Some(CmuxSurfaceTabBarButtonAction::WorkspaceCommand("layout1".to_owned()))
+            Some(CmuxSurfaceTabBarButtonAction::WorkspaceCommand(
+                "layout1".to_owned()
+            ))
         );
         // No discriminator keys → action is None.
         assert_eq!(map["noAction"].action, None);
@@ -3060,9 +3177,13 @@ mod tests {
         assert!(err.contains("actions keys must not be blank"), "{err}");
 
         // Two keys that collide after trimming → decode error.
-        let dup = r#"{ "actions": { "deploy": { "command": "a" }, "deploy ": { "command": "b" } } }"#;
+        let dup =
+            r#"{ "actions": { "deploy": { "command": "a" }, "deploy ": { "command": "b" } } }"#;
         let err = decode_config(dup).unwrap_err().to_string();
-        assert!(err.contains("actions must not contain duplicate ids"), "{err}");
+        assert!(
+            err.contains("actions must not contain duplicate ids"),
+            "{err}"
+        );
 
         // Two aliases of the same built-in action → decode error naming the
         // canonical id and both offending keys.
@@ -3097,7 +3218,8 @@ mod tests {
         );
 
         // ui-level duplicates are rejected the same way.
-        let ui_dup = r#"{ "ui": { "surfaceTabBar": { "buttons": ["splitRight", "splitRight"] } } }"#;
+        let ui_dup =
+            r#"{ "ui": { "surfaceTabBar": { "buttons": ["splitRight", "splitRight"] } } }"#;
         assert!(decode_config(ui_dup).is_err());
 
         // Swift validates ONLY the configured (winning) list: ui buttons take
@@ -3214,7 +3336,10 @@ mod tests {
         let err = decode_config(r#"{ "newWorkspaceCommand": "   " }"#)
             .unwrap_err()
             .to_string();
-        assert!(err.contains("newWorkspaceCommand must not be blank"), "{err}");
+        assert!(
+            err.contains("newWorkspaceCommand must not be blank"),
+            "{err}"
+        );
         assert!(decode_config(r#"{ "newWorkspaceCommand": "" }"#).is_err());
 
         // Non-blank decodes; the value is preserved VERBATIM (Swift stores it

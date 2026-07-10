@@ -108,7 +108,10 @@ mod tests {
     fn summary_argument_single_lines_and_clamps() {
         let budget = TranscriptTextBudget::new();
         assert_eq!(budget.summary_argument("  keep me  "), "keep me");
-        assert_eq!(budget.summary_argument("line one\nline two"), "line one line two");
+        assert_eq!(
+            budget.summary_argument("line one\nline two"),
+            "line one line two"
+        );
         let long = "z".repeat(200);
         let clamped = budget.summary_argument(&long);
         assert_eq!(clamped.chars().count(), 81);

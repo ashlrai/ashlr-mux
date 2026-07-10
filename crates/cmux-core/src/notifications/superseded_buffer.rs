@@ -143,7 +143,10 @@ mod tests {
         buffer.stash(&ids(&["x"]), &other);
 
         let flushed = buffer.flush_for_key(&hot);
-        assert_eq!(flushed.len(), SupersededPhoneDismissBuffer::CAPACITY_PER_KEY);
+        assert_eq!(
+            flushed.len(),
+            SupersededPhoneDismissBuffer::CAPACITY_PER_KEY
+        );
         assert_eq!(flushed.first().map(String::as_str), Some("n-6")); // oldest evicted
         assert_eq!(flushed.last().map(String::as_str), Some("n-69"));
         assert_eq!(buffer.flush_for_key(&other), ids(&["x"])); // keys independent
@@ -157,7 +160,10 @@ mod tests {
             &ids(&["a1"]),
             &SupersededPhoneDismissBuffer::key("tabA", Some("s1")),
         );
-        buffer.stash(&ids(&["a2"]), &SupersededPhoneDismissBuffer::key("tabA", None));
+        buffer.stash(
+            &ids(&["a2"]),
+            &SupersededPhoneDismissBuffer::key("tabA", None),
+        );
         buffer.stash(
             &ids(&["b1"]),
             &SupersededPhoneDismissBuffer::key("tabB", Some("s1")),

@@ -277,7 +277,14 @@ pub(crate) fn pi_policy() -> Policy {
             "-t",
         ]),
         non_restorable_commands: hset(&[
-            "config", "help", "install", "list", "login", "logout", "remove", "uninstall",
+            "config",
+            "help",
+            "install",
+            "list",
+            "login",
+            "logout",
+            "remove",
+            "uninstall",
             "update",
         ]),
         dropped_options: hset(&[
@@ -422,17 +429,16 @@ pub(crate) fn antigravity_policy() -> Policy {
         ]),
         optional_value_options: hset(&["--continue", "-c"]),
         non_restorable_commands: hset(&[
-            "changelog", "help", "install", "plugin", "plugins", "update",
+            "changelog",
+            "help",
+            "install",
+            "plugin",
+            "plugins",
+            "update",
         ]),
         dropped_options: hset(&["--continue", "-c", "--conversation"]),
         dropped_option_prefixes: vec!["--conversation="],
-        reject_options: hset(&[
-            "--prompt",
-            "-p",
-            "--prompt-interactive",
-            "-i",
-            "--print",
-        ]),
+        reject_options: hset(&["--prompt", "-p", "--prompt-interactive", "-i", "--print"]),
         ..Default::default()
     }
 }
@@ -630,7 +636,14 @@ pub(crate) fn copilot_policy() -> Policy {
             "--secret-env-vars",
         ]),
         non_restorable_commands: hset(&[
-            "completion", "help", "init", "login", "mcp", "plugin", "update", "version",
+            "completion",
+            "help",
+            "init",
+            "login",
+            "mcp",
+            "plugin",
+            "update",
+            "version",
         ]),
         dropped_options: hset(&["--connect", "--continue", "--interactive", "-i", "--resume"]),
         dropped_option_prefixes: vec!["--connect=", "--interactive=", "-i=", "--resume="],
@@ -690,7 +703,14 @@ pub(crate) fn code_buddy_policy() -> Policy {
             "-w",
             "--worktree-branch",
         ]),
-        optional_value_options: hset(&["--debug", "--resume", "-r", "--sandbox", "--worktree", "-w"]),
+        optional_value_options: hset(&[
+            "--debug",
+            "--resume",
+            "-r",
+            "--sandbox",
+            "--worktree",
+            "-w",
+        ]),
         variadic_options: hset(&[
             "--add-dir",
             "--allowedTools",
@@ -906,7 +926,13 @@ pub(crate) fn kiro_policy() -> Policy {
 
 pub(crate) fn rovo_dev_policy() -> Policy {
     Policy {
-        value_options: hset(&["--config", "--config-file", "--model", "--model-id", "--restore"]),
+        value_options: hset(&[
+            "--config",
+            "--config-file",
+            "--model",
+            "--model-id",
+            "--restore",
+        ]),
         optional_value_options: hset(&["--restore"]),
         non_restorable_commands: hset(&[
             "auth", "config", "help", "mcp", "server", "update", "upgrade", "version",
@@ -996,7 +1022,12 @@ pub(crate) fn claude_teams_policy() -> Policy {
     for key in ["--tmux", "--worktree", "-w"] {
         policy.value_options.remove(key);
     }
-    for key in ["--prompt-suggestions", "--remote-control", "--worktree", "-w"] {
+    for key in [
+        "--prompt-suggestions",
+        "--remote-control",
+        "--worktree",
+        "-w",
+    ] {
         policy.optional_value_options.insert(key);
     }
     policy

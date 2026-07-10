@@ -18,9 +18,23 @@ type ShimWindow = {
   cmuxAgentBridge?: { receive(event: unknown): void };
 };
 
+const originalWindowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+
 function installWindow(value: ShimWindow = {}): ShimWindow {
-  (globalThis as { window?: ShimWindow }).window = value;
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    writable: true,
+    value,
+  });
   return value;
+}
+
+function restoreWindow(): void {
+  if (originalWindowDescriptor) {
+    Object.defineProperty(globalThis, "window", originalWindowDescriptor);
+    return;
+  }
+  delete (globalThis as { window?: ShimWindow }).window;
 }
 
 describe("installMacHostShims", () => {
@@ -30,7 +44,7 @@ describe("installMacHostShims", () => {
 
   afterEach(() => {
     uninstallMacHostShims();
-    delete (globalThis as { window?: ShimWindow }).window;
+    restoreWindow();
   });
 
   function makeListen() {

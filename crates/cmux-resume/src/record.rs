@@ -102,7 +102,10 @@ impl SurfaceResumeApprovalRecord {
             version: 1,
             id,
             name: normalized(name),
-            command_prefix: command_prefix.into_iter().filter(|s| !s.is_empty()).collect(),
+            command_prefix: command_prefix
+                .into_iter()
+                .filter(|s| !s.is_empty())
+                .collect(),
             cwd: canonicalizer::normalized_cwd(cwd),
             environment,
             environment_keys,
@@ -143,7 +146,8 @@ impl SurfaceResumeApprovalRecord {
             return false;
         }
         if let Some(cwd) = &self.cwd {
-            if canonicalizer::normalized_cwd(binding.cwd.as_deref()).as_deref() != Some(cwd.as_str())
+            if canonicalizer::normalized_cwd(binding.cwd.as_deref()).as_deref()
+                != Some(cwd.as_str())
             {
                 return false;
             }
@@ -205,14 +209,19 @@ impl SurfaceResumeApprovalRecord {
             format!("environmentKeys={encoded_environment_keys}"),
             format!(
                 "source={}",
-                self.source.as_deref().map(base64_encode).unwrap_or_default()
+                self.source
+                    .as_deref()
+                    .map(base64_encode)
+                    .unwrap_or_default()
             ),
             format!("policy={}", self.policy.raw_value()),
             format!("createdAt={}", swift_double_string(self.created_at)),
             format!("updatedAt={}", swift_double_string(self.updated_at)),
             format!(
                 "lastUsedAt={}",
-                self.last_used_at.map(swift_double_string).unwrap_or_default()
+                self.last_used_at
+                    .map(swift_double_string)
+                    .unwrap_or_default()
             ),
         ];
         fields.join("\n").into_bytes()
@@ -234,9 +243,11 @@ impl SurfaceResumeApprovalRecord {
     pub fn has_valid_signature(&self, secret: &[u8]) -> bool {
         match &self.signature {
             None => false,
-            Some(signature) => {
-                SurfaceResumeApprovalSignature::verify(&self.signing_payload_data(), secret, signature)
-            }
+            Some(signature) => SurfaceResumeApprovalSignature::verify(
+                &self.signing_payload_data(),
+                secret,
+                signature,
+            ),
         }
     }
 }
@@ -319,7 +330,9 @@ fn normalized_environment(
 
 /// Swift `isSafeEnvironmentValue(_:)` (`:620-622`): no control chars / DEL.
 fn is_safe_environment_value(value: &str) -> bool {
-    !value.chars().any(|c| (c as u32) < 0x20 || (c as u32) == 0x7F)
+    !value
+        .chars()
+        .any(|c| (c as u32) < 0x20 || (c as u32) == 0x7F)
 }
 
 /// Swift `normalizedEnvironmentKeys(_:environment:)` (`:624-633`): sorted union
@@ -352,7 +365,10 @@ mod tests {
     use super::*;
 
     fn env(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     fn binding(
@@ -404,7 +420,10 @@ mod tests {
             "updatedAt=2000.5\n",
             "lastUsedAt=1500.0",
         );
-        assert_eq!(String::from_utf8(record.signing_payload_data()).unwrap(), expected);
+        assert_eq!(
+            String::from_utf8(record.signing_payload_data()).unwrap(),
+            expected
+        );
     }
 
     #[test]
@@ -437,7 +456,10 @@ mod tests {
             "updatedAt=0.0\n",
             "lastUsedAt=",
         );
-        assert_eq!(String::from_utf8(record.signing_payload_data()).unwrap(), expected);
+        assert_eq!(
+            String::from_utf8(record.signing_payload_data()).unwrap(),
+            expected
+        );
     }
 
     #[test]
@@ -456,7 +478,10 @@ mod tests {
             None,
             None,
         );
-        assert_eq!(record.command_prefix, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(
+            record.command_prefix,
+            vec!["a".to_string(), "b".to_string()]
+        );
     }
 
     #[test]
@@ -752,7 +777,15 @@ mod tests {
         assert!(value.get("source").is_none());
         assert!(value.get("lastUsedAt").is_none());
         assert!(value.get("signature").is_none());
-        assert_eq!(value.get("commandPrefix").unwrap().as_array().unwrap().len(), 1);
+        assert_eq!(
+            value
+                .get("commandPrefix")
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
         assert!(value.get("createdAt").is_some());
         assert!(value.get("environmentKeys").is_some());
         assert_eq!(value.get("policy").unwrap().as_str(), Some("manual"));

@@ -46,8 +46,8 @@
 //! anything change" result is consulted to decide the applier's return.
 
 use crate::codec::{SyncFrameParseError, SyncServerFrame, SyncWireRecord};
-use std::collections::{BTreeMap, HashMap, HashSet};
 use std::cmp::Ordering;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// A record as the store holds it. Mirrors Swift `StoredSyncRecord` (minus the
 /// dropped `team_id`). `updated_at` is epoch SECONDS (the wire ms divided by 1000
@@ -602,8 +602,7 @@ impl SyncFrameApplier {
             // independent axes (total retained records AND total frames) so a
             // never-completing snapshot cannot grow memory without limit.
             let queued_frames = build.queued_deltas.len();
-            let queued_records: usize =
-                build.queued_deltas.iter().map(|(_, r)| r.len()).sum();
+            let queued_records: usize = build.queued_deltas.iter().map(|(_, r)| r.len()).sum();
             if queued_frames + 1 > self.max_queued_delta_frames
                 || queued_records + records.len() > self.max_queued_delta_records
             {
@@ -692,7 +691,13 @@ mod tests {
     fn single_page_snapshot_commits() {
         let mut a = applier();
         let committed = a
-            .apply(snapshot("c", 5, 0, vec![live("a", 5, 1), live("b", 5, 2)], true))
+            .apply(snapshot(
+                "c",
+                5,
+                0,
+                vec![live("a", 5, 1), live("b", 5, 2)],
+                true,
+            ))
             .unwrap();
         assert!(committed);
         assert_eq!(a.cursor("c"), 5);
@@ -725,7 +730,13 @@ mod tests {
     fn snapshot_then_two_deltas_sequence() {
         let mut a = applier();
         assert!(a
-            .apply(snapshot("c", 5, 0, vec![live("a", 5, 1), live("b", 5, 2)], true))
+            .apply(snapshot(
+                "c",
+                5,
+                0,
+                vec![live("a", 5, 1), live("b", 5, 2)],
+                true
+            ))
             .unwrap());
         assert_eq!(a.cursor("c"), 5);
 
@@ -742,7 +753,10 @@ mod tests {
         // Final: a (updated, rev6), c present; b tombstoned (excluded from live).
         assert_eq!(live_ids(&a, "c"), vec!["a", "c"]);
         assert_eq!(a.stored_record("c", "a").unwrap().rev, 6);
-        assert_eq!(a.stored_record("c", "a").unwrap().payload_json, b"{\"n\":9}".to_vec());
+        assert_eq!(
+            a.stored_record("c", "a").unwrap().payload_json,
+            b"{\"n\":9}".to_vec()
+        );
         assert!(a.stored_record("c", "b").unwrap().deleted);
     }
 
@@ -751,7 +765,13 @@ mod tests {
         let mut a = applier();
         // First history: epoch 1, rev 10, records a & b.
         assert!(a
-            .apply(snapshot("c", 10, 1, vec![live("a", 10, 1), live("b", 10, 2)], true))
+            .apply(snapshot(
+                "c",
+                10,
+                1,
+                vec![live("a", 10, 1), live("b", 10, 2)],
+                true
+            ))
             .unwrap());
         assert_eq!(a.cursor("c"), 10);
         assert_eq!(a.epoch("c"), 1);
@@ -784,14 +804,18 @@ mod tests {
         // returns `true` UNCONDITIONALLY (SyncFrameApplier.swift line 223), even
         // though the monotone guard skips the record and the MAX cursor does not
         // advance. The RETURN is true; the STORE is a no-op.
-        let committed = a
-            .apply(delta("c", 5, vec![live("a", 5, 999)]))
-            .unwrap();
-        assert!(committed, "a non-paging delta is an unconditional true in Swift");
+        let committed = a.apply(delta("c", 5, vec![live("a", 5, 999)])).unwrap();
+        assert!(
+            committed,
+            "a non-paging delta is an unconditional true in Swift"
+        );
         // Store unchanged: cursor stays 5, record not overwritten (n stayed 1).
         assert_eq!(a.cursor("c"), 5);
         assert_eq!(a.stored_record("c", "a").unwrap().rev, 5);
-        assert_eq!(a.stored_record("c", "a").unwrap().payload_json, b"{\"n\":1}".to_vec());
+        assert_eq!(
+            a.stored_record("c", "a").unwrap().payload_json,
+            b"{\"n\":1}".to_vec()
+        );
     }
 
     #[test]
@@ -899,7 +923,10 @@ mod tests {
             .unwrap();
         assert!(committed);
         assert_eq!(live_ids(&a, "c"), vec!["b"]);
-        assert!(a.stored_record("c", "a").unwrap().deleted, "queued delete applied after commit");
+        assert!(
+            a.stored_record("c", "a").unwrap().deleted,
+            "queued delete applied after commit"
+        );
         assert_eq!(a.cursor("c"), 7, "cursor advanced by the drained delta");
     }
 
@@ -947,7 +974,10 @@ mod tests {
                 "snapshot for c exceeded 2 buffered records before completing".into()
             )
         );
-        assert!(!a.has_in_flight_snapshot("c"), "build discarded on overflow");
+        assert!(
+            !a.has_in_flight_snapshot("c"),
+            "build discarded on overflow"
+        );
     }
 
     #[test]
@@ -955,7 +985,13 @@ mod tests {
         let mut a = applier().with_caps(2, 10_000, 10_000);
         // Page 1: 2 records, incomplete (at the cap, allowed).
         assert!(!a
-            .apply(snapshot("c", 9, 0, vec![live("a", 1, 1), live("b", 2, 2)], false))
+            .apply(snapshot(
+                "c",
+                9,
+                0,
+                vec![live("a", 1, 1), live("b", 2, 2)],
+                false
+            ))
             .unwrap());
         // Page 2: 1 more record → 3 total > cap 2 → malformed.
         let err = a
@@ -1041,7 +1077,10 @@ mod tests {
             .apply(snapshot("c", 6, 0, vec![live("d", 6, 3)], true))
             .unwrap());
         assert_eq!(live_ids(&a, "c"), vec!["b", "d"]);
-        assert!(a.stored_record("c", "a").is_none(), "stale buffered record never committed");
+        assert!(
+            a.stored_record("c", "a").is_none(),
+            "stale buffered record never committed"
+        );
         assert_eq!(a.cursor("c"), 6);
     }
 
@@ -1050,7 +1089,13 @@ mod tests {
         let mut a = applier();
         // Snapshot rev 5 with a & b.
         assert!(a
-            .apply(snapshot("c", 5, 0, vec![live("a", 5, 1), live("b", 5, 2)], true))
+            .apply(snapshot(
+                "c",
+                5,
+                0,
+                vec![live("a", 5, 1), live("b", 5, 2)],
+                true
+            ))
             .unwrap());
         assert_eq!(live_ids(&a, "c"), vec!["a", "b"]);
         // Snapshot rev 6, same epoch 0, cursor 5 < 6 (NOT a reset), with only a
@@ -1060,7 +1105,11 @@ mod tests {
             .unwrap());
         assert_eq!(live_ids(&a, "c"), vec!["a"], "b reconciled away");
         assert!(a.stored_record("c", "b").unwrap().deleted);
-        assert_eq!(a.stored_record("c", "b").unwrap().rev, 6, "tombstone at snapshotRev");
+        assert_eq!(
+            a.stored_record("c", "b").unwrap().rev,
+            6,
+            "tombstone at snapshotRev"
+        );
         assert_eq!(a.stored_record("c", "a").unwrap().rev, 6);
         assert_eq!(a.cursor("c"), 6);
     }
@@ -1070,7 +1119,13 @@ mod tests {
         // Reset via the cursor-ahead branch (epoch stays 0 on both sides).
         let mut a = applier();
         assert!(a
-            .apply(snapshot("c", 10, 0, vec![live("a", 10, 1), live("b", 10, 2)], true))
+            .apply(snapshot(
+                "c",
+                10,
+                0,
+                vec![live("a", 10, 1), live("b", 10, 2)],
+                true
+            ))
             .unwrap());
         assert_eq!(a.cursor("c"), 10);
         // A snapshot at a LOWER head 4 with epoch 0: localCursor 10 > 4 → reset.

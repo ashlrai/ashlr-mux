@@ -78,6 +78,7 @@ export function projectSidebarItems(
       id,
       groupId: workspaceIdKey(ws.group_id),
       isPinned: ws.is_pinned ?? false,
+      customColor: ws.custom_color,
     });
   }
 
@@ -146,4 +147,26 @@ export function workspaceTitlesById(
     }
   }
   return titles;
+}
+
+/// Descriptions keyed by normalized workspace id (first occurrence wins).
+/// Blank/whitespace-only descriptions are omitted so the sidebar/renderers can
+/// treat absence and visually-empty content identically.
+export function workspaceDescriptionsById(
+  workspaces: readonly SessionWorkspaceSnapshot[],
+): Map<string, string> {
+  const descriptions = new Map<string, string>();
+  for (const ws of workspaces) {
+    const id = workspaceIdKey(ws.workspace_id);
+    const description = ws.custom_description;
+    if (
+      id !== undefined &&
+      !descriptions.has(id) &&
+      description !== undefined &&
+      description.trim() !== ""
+    ) {
+      descriptions.set(id, description);
+    }
+  }
+  return descriptions;
 }

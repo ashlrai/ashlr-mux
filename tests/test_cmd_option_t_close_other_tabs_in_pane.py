@@ -33,7 +33,7 @@ def _pane_state(client: cmux) -> list[dict]:
     for index, panel_id, title, selected in client.list_pane_surfaces():
         rows.append(
             {
-                "index": index,
+                "ref": f"surface:{index + 1}",
                 "panel_id": panel_id,
                 "title": title,
                 "selected": selected,

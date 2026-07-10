@@ -562,7 +562,10 @@ mod tests {
             .map(|e| e.object_id.as_str())
             .collect();
         assert_eq!(object_ids, [object_id]);
-        assert_eq!(snapshot.signature, "1415161718191a1b1c1d1e1f2021222324252627");
+        assert_eq!(
+            snapshot.signature,
+            "1415161718191a1b1c1d1e1f2021222324252627"
+        );
     }
 
     /// `contentSignatureIgnoresStatOnlyChanges` (Tests:204-216): the signature
@@ -673,10 +676,7 @@ mod tests {
         // from a snapshot of only the kept entry.
         let kept_only = GitIndexFixture::new(3, vec![FixtureEntry::new("kept.txt")]).data();
         let kept_snapshot = git_index_snapshot(&kept_only).expect("snapshot");
-        assert_ne!(
-            snapshot.content_signature,
-            kept_snapshot.content_signature
-        );
+        assert_ne!(snapshot.content_signature, kept_snapshot.content_signature);
     }
 
     /// Rejects non-`DIRC` magic, unsupported versions, and undersized buffers.
@@ -696,7 +696,10 @@ mod tests {
         let data = GitIndexFixture::with_trailer(2, vec![], trailer).data();
         let snapshot = git_index_snapshot(&data).expect("snapshot");
         assert!(snapshot.entries.is_empty());
-        assert_eq!(snapshot.signature, "1415161718191a1b1c1d1e1f2021222324252627");
+        assert_eq!(
+            snapshot.signature,
+            "1415161718191a1b1c1d1e1f2021222324252627"
+        );
     }
 
     /// [`is_valid_index_entry_path`] parity: absolute and `..`-traversal paths
@@ -718,8 +721,8 @@ mod tests {
         for value in [0usize, 1, 127, 128, 129, 200, 300, 16_383, 16_384] {
             let encoded = v4_strip_length_varint(value);
             let mut offset = 0;
-            let decoded = read_git_index_v4_path_strip_length(&encoded, &mut offset)
-                .expect("decode");
+            let decoded =
+                read_git_index_v4_path_strip_length(&encoded, &mut offset).expect("decode");
             assert_eq!(decoded, value, "value {value}");
             assert_eq!(offset, encoded.len(), "consumed all bytes for {value}");
         }

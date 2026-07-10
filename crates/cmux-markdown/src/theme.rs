@@ -110,7 +110,11 @@ fn contrast_ratio(a: (f64, f64, f64), b: (f64, f64, f64)) -> f64 {
 /// Binary-search the overlay alpha that reaches `target_contrast` against the
 /// base (port of `markdownThemeOverlay`). Returns the alpha in `0..=1`; the
 /// caller applies it to the overlay color.
-fn theme_overlay_alpha(base: (f64, f64, f64), overlay: (f64, f64, f64), target_contrast: f64) -> f64 {
+fn theme_overlay_alpha(
+    base: (f64, f64, f64),
+    overlay: (f64, f64, f64),
+    target_contrast: f64,
+) -> f64 {
     let mut low = 0.0_f64;
     let mut high = 1.0_f64;
     let mut result = 1.0_f64;
@@ -172,7 +176,10 @@ mod tests {
 
     #[test]
     fn css_color_format() {
-        assert_eq!(css_color((255, 255, 255), 0.5), "rgba(255, 255, 255, 0.500)");
+        assert_eq!(
+            css_color((255, 255, 255), 0.5),
+            "rgba(255, 255, 255, 0.500)"
+        );
         assert_eq!(css_color((0, 0, 0), 0.1234), "rgba(0, 0, 0, 0.123)");
         assert_eq!(css_color((0, 0, 0), 2.0), "rgba(0, 0, 0, 1.000)");
     }

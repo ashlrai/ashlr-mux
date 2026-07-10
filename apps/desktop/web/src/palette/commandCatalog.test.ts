@@ -16,6 +16,7 @@ import {
   type CommandContribution,
   type CommandDescriptor,
 } from "./commandCatalog";
+import { buildRightSidebarModeContributions } from "./rightSidebarModeContributions";
 
 /** A context in which every gate is false (Swift `snapshot.bool` default). */
 const EMPTY_CTX: CommandContext = {};
@@ -65,6 +66,22 @@ describe("when-gate filtering + rank compaction (ContentView.swift:6020/6048)", 
     disabled.forEach((d, index) => expect(d.rank).toBe(index));
     // Dropping rows makes the catalog strictly smaller.
     expect(disabled.length).toBeLessThan(enabled.length);
+  });
+
+  test("warm Claude Code row is workspace-scoped", () => {
+    const withoutWorkspace = ids(buildCommandCatalog({ hasWorkspace: false }));
+    const withWorkspace = buildCommandCatalog({
+      hasWorkspace: true,
+      workspaceName: "Phoenix",
+    });
+    const row = byId(withWorkspace, "palette.warmClaudeCode");
+
+    expect(withoutWorkspace).not.toContain("palette.warmClaudeCode");
+    expect(row?.title).toBe("Warm Claude Code");
+    expect(row?.subtitle).toBe("Workspace • Phoenix");
+    expect(row?.shortcutHint).toBe("⌃⌥C");
+    expect(row?.intent).toEqual({ kind: "warmClaudeCode" });
+    expect(row?.keywords).toContain("prewarm");
   });
 });
 
@@ -153,11 +170,32 @@ describe("name-interpolated subtitles (ContentView.swift:6268-6291)", () => {
 });
 
 describe("enablement gate (ContentView.swift:6774)", () => {
-  test("moveWorkspaceUp needs workspaceHasAbove", () => {
-    const present = ids(buildCommandCatalog({ hasWorkspace: true, workspaceHasAbove: true }));
+  test("moveWorkspaceUp needs workspaceCanMoveUp", () => {
+    const present = ids(buildCommandCatalog({ hasWorkspace: true, workspaceCanMoveUp: true }));
     expect(present).toContain("palette.moveWorkspaceUp");
-    const absent = ids(buildCommandCatalog({ hasWorkspace: true, workspaceHasAbove: false }));
+    const absent = ids(buildCommandCatalog({ hasWorkspace: true, workspaceCanMoveUp: false }));
     expect(absent).not.toContain("palette.moveWorkspaceUp");
+  });
+
+  test("equalizeSplits needs workspaceHasSplits", () => {
+    const present = ids(buildCommandCatalog({ hasWorkspace: true, workspaceHasSplits: true }));
+    expect(present).toContain("palette.equalizeSplits");
+    const absent = ids(buildCommandCatalog({ hasWorkspace: true, workspaceHasSplits: false }));
+    expect(absent).not.toContain("palette.equalizeSplits");
+  });
+
+  test("workspace group collapse rows reflect selected group state", () => {
+    const expanded = ids(
+      buildCommandCatalog({ hasWorkspace: true, workspaceGroupCanCollapse: true }),
+    );
+    expect(expanded).toContain("palette.collapseWorkspaceGroup");
+    expect(expanded).not.toContain("palette.expandWorkspaceGroup");
+
+    const collapsed = ids(
+      buildCommandCatalog({ hasWorkspace: true, workspaceGroupCanExpand: true }),
+    );
+    expect(collapsed).toContain("palette.expandWorkspaceGroup");
+    expect(collapsed).not.toContain("palette.collapseWorkspaceGroup");
   });
 });
 
@@ -178,6 +216,8 @@ describe("intent dispatch is single-source (HandlerRegistry parity)", () => {
       workspaceHasPeers: true,
       workspaceCanMarkRead: true,
       workspaceCanMarkUnread: true,
+      workspaceGroupCanCollapse: true,
+      workspaceGroupCanExpand: true,
       workspaceHasPullRequests: true,
       workspaceHasSplits: true,
       hasFocusedPanel: true,
@@ -221,6 +261,33 @@ describe("intent dispatch is single-source (HandlerRegistry parity)", () => {
     const catalog = buildCommandCatalog(ctx);
     const kinds = catalog.map((d) => d.intent.kind);
     expect(new Set(kinds).size).toBe(kinds.length);
+  });
+
+  test("browser Network inspector row is browser-scoped and searchable", () => {
+    const withoutBrowser = ids(buildCommandCatalog({ panelIsBrowser: false }));
+    expect(withoutBrowser).not.toContain("palette.browserNetwork");
+    expect(withoutBrowser).not.toContain("palette.browserNetworkClear");
+
+    const catalog = buildCommandCatalog({
+      panelIsBrowser: true,
+      panelName: "Research",
+    });
+    const row = byId(catalog, "palette.browserNetwork");
+    const clearRow = byId(catalog, "palette.browserNetworkClear");
+
+    expect(row?.title).toBe("Show Network Requests");
+    expect(row?.subtitle).toBe("Browser • Research");
+    expect(row?.intent).toEqual({ kind: "browserNetwork" });
+    expect(row?.keywords).toEqual(
+      expect.arrayContaining(["network", "headers", "body", "status", "proxy"]),
+    );
+
+    expect(clearRow?.title).toBe("Clear Network Records");
+    expect(clearRow?.subtitle).toBe("Browser • Research");
+    expect(clearRow?.intent).toEqual({ kind: "browserNetworkClear" });
+    expect(clearRow?.keywords).toEqual(
+      expect.arrayContaining(["network", "clear", "reset", "proxy"]),
+    );
   });
 
   test("resolveIntent returns null for an unknown id", () => {
@@ -323,8 +390,54 @@ describe("dynamic-contribution insertion points (contentsOf splice parity)", () 
 
   test("the default catalog omits the runtime sub-lists", () => {
     const catalog = ids(buildCommandCatalog({ hasWorkspace: true }));
+    expect(catalog).toContain("palette.toggleFileExplorer");
+    expect(catalog.some((id) => id.startsWith("palette.rightSidebar."))).toBe(false);
     expect(catalog.some((id) => id.startsWith("palette.canvas."))).toBe(false);
     expect(catalog.some((id) => id.startsWith("palette.toggleSetting."))).toBe(false);
+  });
+
+  test("right-sidebar mode rows splice after toggleFileExplorer and before match-background", () => {
+    const options = {
+      dynamicContributions: {
+        rightSidebarMode: buildRightSidebarModeContributions(),
+      },
+    };
+    const catalog = buildCommandCatalog({ hasWorkspace: true }, options);
+    const catalogIds = ids(catalog);
+
+    expect(catalogIds).toContain("palette.rightSidebar.files");
+    expect(catalogIds).toContain("palette.rightSidebar.find");
+    expect(catalogIds).toContain("palette.rightSidebar.sessions");
+    expect(catalogIds.indexOf("palette.rightSidebar.files")).toBeGreaterThan(
+      catalogIds.indexOf("palette.toggleFileExplorer"),
+    );
+    expect(catalogIds.indexOf("palette.rightSidebar.sessions")).toBeLessThan(
+      catalogIds.indexOf("palette.toggleMatchTerminalBackground"),
+    );
+    expect(byId(catalog, "palette.rightSidebar.sessions")?.title).toBe(
+      "Show Sidebar Vault",
+    );
+    expect(
+      dispatchCommand(
+        "palette.rightSidebar.sessions",
+        { hasWorkspace: true },
+        options,
+      )?.intent,
+    ).toEqual({ kind: "rightSidebarMode", mode: "sessions" });
+  });
+
+  test("right-sidebar mode rows are hidden without a workspace", () => {
+    const catalog = ids(
+      buildCommandCatalog(
+        { hasWorkspace: false },
+        {
+          dynamicContributions: {
+            rightSidebarMode: buildRightSidebarModeContributions(),
+          },
+        },
+      ),
+    );
+    expect(catalog.some((id) => id.startsWith("palette.rightSidebar."))).toBe(false);
   });
 });
 

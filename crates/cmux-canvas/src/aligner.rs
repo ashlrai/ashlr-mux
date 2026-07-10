@@ -83,13 +83,17 @@ impl CanvasAligner {
                 })
             }
             CanvasAlignmentCommand::EqualizeWidths => {
-                let target = Self::reference_pane(reference, &selection, true).frame.width;
+                let target = Self::reference_pane(reference, &selection, true)
+                    .frame
+                    .width;
                 Self::changed_frames(&selection, |frame| {
                     CanvasRect::new(frame.x, frame.y, target, frame.height)
                 })
             }
             CanvasAlignmentCommand::EqualizeHeights => {
-                let target = Self::reference_pane(reference, &selection, false).frame.height;
+                let target = Self::reference_pane(reference, &selection, false)
+                    .frame
+                    .height;
                 Self::changed_frames(&selection, |frame| {
                     CanvasRect::new(frame.x, frame.y, frame.width, target)
                 })
@@ -146,8 +150,16 @@ impl CanvasAligner {
         selection
             .iter()
             .max_by(|lhs, rhs| {
-                let l = if widest { lhs.frame.width } else { lhs.frame.height };
-                let r = if widest { rhs.frame.width } else { rhs.frame.height };
+                let l = if widest {
+                    lhs.frame.width
+                } else {
+                    lhs.frame.height
+                };
+                let r = if widest {
+                    rhs.frame.width
+                } else {
+                    rhs.frame.height
+                };
                 if l != r {
                     l.partial_cmp(&r).unwrap_or(Ordering::Equal)
                 } else {
@@ -333,7 +345,10 @@ mod tests {
             &layout,
             None,
         );
-        assert_eq!(frames.get(&id(1)), Some(&CanvasRect::new(200.0, 0.0, 100.0, 100.0)));
+        assert_eq!(
+            frames.get(&id(1)),
+            Some(&CanvasRect::new(200.0, 0.0, 100.0, 100.0))
+        );
         assert_eq!(frames.get(&id(2)), None);
     }
 
@@ -372,7 +387,10 @@ mod tests {
             &layout,
             Some(id(1)),
         );
-        assert_eq!(frames.get(&id(2)), Some(&CanvasRect::new(300.0, 0.0, 250.0, 100.0)));
+        assert_eq!(
+            frames.get(&id(2)),
+            Some(&CanvasRect::new(300.0, 0.0, 250.0, 100.0))
+        );
         assert_eq!(frames.get(&id(1)), None);
     }
 
@@ -406,8 +424,14 @@ mod tests {
             None,
         );
         assert_eq!(frames.get(&id(1)), None);
-        assert_eq!(frames.get(&id(3)), Some(&CanvasRect::new(116.0, 25.0, 50.0, 100.0)));
-        assert_eq!(frames.get(&id(2)), Some(&CanvasRect::new(182.0, 50.0, 100.0, 100.0)));
+        assert_eq!(
+            frames.get(&id(3)),
+            Some(&CanvasRect::new(116.0, 25.0, 50.0, 100.0))
+        );
+        assert_eq!(
+            frames.get(&id(2)),
+            Some(&CanvasRect::new(182.0, 50.0, 100.0, 100.0))
+        );
     }
 
     #[test]
@@ -422,7 +446,10 @@ mod tests {
             &layout,
             None,
         );
-        assert_eq!(frames.get(&id(2)), Some(&CanvasRect::new(50.0, 116.0, 100.0, 80.0)));
+        assert_eq!(
+            frames.get(&id(2)),
+            Some(&CanvasRect::new(50.0, 116.0, 100.0, 80.0))
+        );
     }
 
     #[test]
@@ -438,9 +465,18 @@ mod tests {
             &layout,
             None,
         );
-        assert_eq!(frames.get(&id(1)), Some(&CanvasRect::new(7.0, -12.0, 200.0, 150.0)));
-        assert_eq!(frames.get(&id(2)), Some(&CanvasRect::new(223.0, -12.0, 200.0, 150.0)));
-        assert_eq!(frames.get(&id(3)), Some(&CanvasRect::new(7.0, 154.0, 200.0, 150.0)));
+        assert_eq!(
+            frames.get(&id(1)),
+            Some(&CanvasRect::new(7.0, -12.0, 200.0, 150.0))
+        );
+        assert_eq!(
+            frames.get(&id(2)),
+            Some(&CanvasRect::new(223.0, -12.0, 200.0, 150.0))
+        );
+        assert_eq!(
+            frames.get(&id(3)),
+            Some(&CanvasRect::new(7.0, 154.0, 200.0, 150.0))
+        );
     }
 
     #[test]
@@ -458,7 +494,12 @@ mod tests {
         let sizes: Vec<_> = layout
             .panes()
             .iter()
-            .map(|p| frames.get(&p.id).map(|f| f.size()).unwrap_or(p.frame.size()))
+            .map(|p| {
+                frames
+                    .get(&p.id)
+                    .map(|f| f.size())
+                    .unwrap_or(p.frame.size())
+            })
             .collect();
         assert_eq!(
             sizes,

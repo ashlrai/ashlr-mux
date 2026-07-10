@@ -15,12 +15,15 @@ use std::{
     time::{Duration, Instant},
 };
 
-use cmux_process::{JobObjectSupervisor, ProcessError, ProcessSupervisor, SessionId, SpawnSpec, TerminateMode};
+use cmux_process::{
+    JobObjectSupervisor, ProcessError, ProcessSupervisor, SessionId, SpawnSpec, TerminateMode,
+};
 
 /// A child tree that lives long enough to observe: `cmd` waits on a `ping` that
 /// sends ~60 packets one second apart. Both processes are confined to the job.
 fn long_running_tree() -> SpawnSpec {
-    let comspec = std::env::var("ComSpec").unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".into());
+    let comspec =
+        std::env::var("ComSpec").unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".into());
     // The whole "ping ..." string is one argument; cmd /c strips the outer
     // quotes our quoter adds and runs it. No env → child inherits ours (so
     // cmd/ping can find System32).
@@ -53,7 +56,10 @@ fn force_terminate_kills_whole_tree_with_zero_orphans() {
 
     // The cmd→ping tree should grow to at least two confined processes.
     let peak = wait_for_count(&supervisor, handle.id, Duration::from_secs(8), |n| n >= 2);
-    assert!(peak >= 2, "expected the child tree to be confined, saw {peak}");
+    assert!(
+        peak >= 2,
+        "expected the child tree to be confined, saw {peak}"
+    );
 
     supervisor
         .terminate(handle.id, TerminateMode::Force)
@@ -75,7 +81,10 @@ fn graceful_terminate_also_drains_the_tree() {
         .expect("graceful terminate");
 
     let survivors = wait_for_count(&supervisor, handle.id, Duration::from_secs(8), |n| n == 0);
-    assert_eq!(survivors, 0, "graceful terminate left {survivors} orphan(s)");
+    assert_eq!(
+        survivors, 0,
+        "graceful terminate left {survivors} orphan(s)"
+    );
 }
 
 #[test]

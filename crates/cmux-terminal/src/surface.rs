@@ -300,9 +300,7 @@ mod tests {
         } else {
             "echo surface_marker_55\n"
         };
-        surface
-            .write_input(script.as_bytes())
-            .expect("write input");
+        surface.write_input(script.as_bytes()).expect("write input");
 
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {
@@ -369,7 +367,7 @@ mod tests {
     fn utf8_stream_buffers_split_multibyte_sequence() {
         let mut s = Utf8Stream::default();
         let bytes = "é├😀".as_bytes(); // 2 + 3 + 4 bytes
-        // Feed one byte at a time; the decoder must reassemble each char.
+                                       // Feed one byte at a time; the decoder must reassemble each char.
         let mut out = String::new();
         for b in bytes {
             out.push_str(&s.push(&[*b]));
@@ -397,9 +395,9 @@ mod tests {
     fn osc133_segments_command_blocks_from_output() {
         // Emit a full OSC 133 A/B/C/D cycle via bash printf and assert the
         // surface segments it. Skips if bash is unavailable on the host.
-        let cmd = ConPtyCommand::new("bash").arg("-c").arg(
-            r"printf '\033]133;A\033]133;Bmycmd\033]133;Cout\n\033]133;D;0\n'; sleep 1",
-        );
+        let cmd = ConPtyCommand::new("bash")
+            .arg("-c")
+            .arg(r"printf '\033]133;A\033]133;Bmycmd\033]133;Cout\n\033]133;D;0\n'; sleep 1");
         let surface = match TerminalSurface::spawn(&cmd, 80, 24) {
             Ok(surface) => surface,
             Err(_) => return, // no bash on this host — skip

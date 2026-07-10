@@ -80,8 +80,7 @@ impl RemoteTmuxControlStreamParser {
             } else {
                 self.buffer.push(byte);
                 if self.buffer.len() > self.max_buffered_line_bytes {
-                    let reason =
-                        format!("line exceeded {} bytes", self.max_buffered_line_bytes);
+                    let reason = format!("line exceeded {} bytes", self.max_buffered_line_bytes);
                     messages.push(self.stream_error(reason));
                     return messages;
                 }
@@ -589,7 +588,14 @@ mod tests {
     fn output_high_bytes_pass_through_unescaped() {
         // A raw high byte (0xE2) must pass through untouched, not be mangled.
         let mut p = RemoteTmuxControlStreamParser::default();
-        let msgs = p.feed(&[b"%output %9 ".to_vec(), vec![0xE2, 0x82, 0xAC], b"\n".to_vec()].concat());
+        let msgs = p.feed(
+            &[
+                b"%output %9 ".to_vec(),
+                vec![0xE2, 0x82, 0xAC],
+                b"\n".to_vec(),
+            ]
+            .concat(),
+        );
         assert_eq!(
             msgs,
             vec![RemoteTmuxControlMessage::Output {
@@ -604,7 +610,10 @@ mod tests {
         // ESC \ (ST) framing on a notification line is removed.
         let mut p = RemoteTmuxControlStreamParser::default();
         let msgs = p.feed(&[b"%window-add @4".to_vec(), vec![0x1b, 0x5c], b"\n".to_vec()].concat());
-        assert_eq!(msgs, vec![RemoteTmuxControlMessage::WindowAdd { window_id: 4 }]);
+        assert_eq!(
+            msgs,
+            vec![RemoteTmuxControlMessage::WindowAdd { window_id: 4 }]
+        );
     }
 
     #[test]
@@ -613,7 +622,15 @@ mod tests {
         // terminator) and must survive verbatim.
         let mut p = RemoteTmuxControlStreamParser::default();
         let _ = feed_str(&mut p, "%begin 10 1 0\n");
-        let msgs = p.feed(&[b"pane".to_vec(), vec![0x1b, 0x5c], b"end\n".to_vec(), b"%end 10 1 0\n".to_vec()].concat());
+        let msgs = p.feed(
+            &[
+                b"pane".to_vec(),
+                vec![0x1b, 0x5c],
+                b"end\n".to_vec(),
+                b"%end 10 1 0\n".to_vec(),
+            ]
+            .concat(),
+        );
         assert_eq!(
             msgs,
             vec![RemoteTmuxControlMessage::CommandResult {
@@ -636,7 +653,10 @@ mod tests {
         let mut p = RemoteTmuxControlStreamParser::default();
         assert!(feed_str(&mut p, "%window-").is_empty());
         let msgs = feed_str(&mut p, "add @11\n");
-        assert_eq!(msgs, vec![RemoteTmuxControlMessage::WindowAdd { window_id: 11 }]);
+        assert_eq!(
+            msgs,
+            vec![RemoteTmuxControlMessage::WindowAdd { window_id: 11 }]
+        );
     }
 
     #[test]
@@ -742,7 +762,9 @@ mod tests {
         let mut p = RemoteTmuxControlStreamParser::default();
         assert_eq!(
             feed_str(&mut p, "garbage line\n"),
-            vec![RemoteTmuxControlMessage::Unparsed("garbage line".to_string())]
+            vec![RemoteTmuxControlMessage::Unparsed(
+                "garbage line".to_string()
+            )]
         );
     }
 

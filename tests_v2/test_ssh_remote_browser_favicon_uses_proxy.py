@@ -170,6 +170,57 @@ def _wait_browser_favicon(client: cmux, surface_id: str, timeout_s: float = 20.0
     raise cmuxError(f"Timed out waiting for browser favicon state on {surface_id}: {last}")
 
 
+def _field(payload: dict, camel: str, snake: str):
+    return payload.get(camel, payload.get(snake))
+
+
+def _wait_favicon_network_record(client: cmux, surface_id: str, timeout_s: float = 20.0) -> dict:
+    deadline = time.time() + timeout_s
+    last = {}
+    while time.time() < deadline:
+        try:
+            last = client.browser_network_requests(
+                surface_id,
+                url_contains="/favicon.ico",
+                limit=20,
+            )
+        except cmuxError:
+            time.sleep(0.25)
+            continue
+
+        for record in last.get("requests") or []:
+            url = str(record.get("url") or "")
+            source = str(record.get("source") or "")
+            attribution = _field(record, "proxyAttribution", "proxy_attribution")
+            response_status = _field(record, "responseStatus", "response_status")
+            response_headers = _field(record, "responseHeaders", "response_headers") or {}
+            response_body = str(_field(record, "responseBody", "response_body") or "")
+            response_body_preview_kind = _field(record, "responseBodyPreviewKind", "response_body_preview_kind")
+            response_body_size = _field(record, "responseBodySize", "response_body_size")
+            duration_ms = _field(record, "durationMs", "duration_ms")
+            content_type = str(response_headers.get("content-type") or "")
+            note = str(record.get("note") or "")
+            if (
+                "/favicon.ico" in url
+                and source == "proxy-stream-http"
+                and attribution == "panel"
+                and response_status == 200
+                and isinstance(duration_ms, int)
+                and isinstance(response_body_size, int)
+                and response_body_size > 0
+                and "image/png" in content_type
+                and response_body_preview_kind == "binary"
+                and "HTTP request/response metadata parsed" in note
+                and ("<binary body:" in response_body or response_body_size == len(response_body))
+            ):
+                return record
+        time.sleep(0.25)
+    raise cmuxError(
+        "Timed out waiting for panel-attributed favicon proxy network record; "
+        f"last network payload={last}"
+    )
+
+
 def main() -> int:
     if not SSH_HOST:
         print("SKIP: set CMUX_SSH_TEST_HOST to run remote favicon proxy regression")
@@ -278,18 +329,40 @@ done"""
 
             browser_payload = client._call(
                 "browser.open_split",
-                {"workspace_id": remote_workspace_id, "url": url},
+                {"workspace_id": remote_workspace_id, "url": "about:blank"},
             ) or {}
             browser_surface_id = str(browser_payload.get("surface_id") or "")
             _must(browser_surface_id, f"browser.open_split returned no surface_id: {browser_payload}")
 
+            clear_reply = client.browser_network_clear(browser_surface_id)
+            _must(
+                isinstance(_field(clear_reply, "clearedCount", "cleared_count"), int),
+                f"browser network clear should report cleared count before favicon proof: {clear_reply}",
+            )
+            client._call("browser.navigate", {"surface_id": browser_surface_id, "url": url})
             _wait_browser_contains(client, browser_surface_id, page_token, timeout_s=20.0)
 
             favicon_state = _wait_browser_favicon(client, browser_surface_id, timeout_s=14.0)
             _must(bool(favicon_state.get("has_favicon")), f"browser favicon state never became ready: {favicon_state}")
             _must(bool(str(favicon_state.get('png_base64') or "")), f"browser favicon PNG payload missing: {favicon_state}")
+            favicon_record = _wait_favicon_network_record(client, browser_surface_id, timeout_s=20.0)
+            _must(
+                str(favicon_record.get("method") or "") == "GET",
+                f"favicon network record should preserve method: {favicon_record}",
+            )
+            _must(
+                bool(_field(favicon_record, "requestHeaders", "request_headers")),
+                f"favicon network record should include request headers: {favicon_record}",
+            )
+            _must(
+                "HTTP request/response metadata parsed" in str(favicon_record.get("note") or ""),
+                f"favicon network record should include cleartext proxy note: {favicon_record}",
+            )
 
-            print("PASS: remote browser favicon state loads for remote localhost pages over the SSH proxy")
+            print(
+                "PASS: remote browser favicon state loads for remote localhost pages over the SSH proxy "
+                "and records panel-attributed favicon network metadata"
+            )
             return 0
     finally:
         if remote_surface_id and remote_workspace_id:

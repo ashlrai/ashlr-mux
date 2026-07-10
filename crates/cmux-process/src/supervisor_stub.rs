@@ -28,10 +28,7 @@ impl ProcessSupervisor for JobObjectSupervisor {
         Err(ProcessError::Unsupported)
     }
 
-    fn spawn_captured(
-        &self,
-        _spec: SpawnSpec,
-    ) -> Result<(SessionHandle, AgentIo), ProcessError> {
+    fn spawn_captured(&self, _spec: SpawnSpec) -> Result<(SessionHandle, AgentIo), ProcessError> {
         Err(ProcessError::Unsupported)
     }
 

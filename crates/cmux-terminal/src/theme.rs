@@ -65,7 +65,10 @@ impl FromStr for Color {
             // #rgb shorthand: each nibble is doubled (f -> ff).
             3 => {
                 let nibble = |c: char| -> Result<u8, ColorParseError> {
-                    let v = c.to_digit(16).ok_or_else(|| ColorParseError(s.to_owned()))? as u8;
+                    let v = c
+                        .to_digit(16)
+                        .ok_or_else(|| ColorParseError(s.to_owned()))?
+                        as u8;
                     Ok(v << 4 | v)
                 };
                 let mut chars = hex.chars();
@@ -212,12 +215,18 @@ mod tests {
 
     #[test]
     fn parse_six_digit_hex() {
-        assert_eq!("#1a2b3c".parse::<Color>().unwrap(), Color::rgb(0x1a, 0x2b, 0x3c));
+        assert_eq!(
+            "#1a2b3c".parse::<Color>().unwrap(),
+            Color::rgb(0x1a, 0x2b, 0x3c)
+        );
     }
 
     #[test]
     fn parse_without_hash() {
-        assert_eq!("ffffff".parse::<Color>().unwrap(), Color::rgb(255, 255, 255));
+        assert_eq!(
+            "ffffff".parse::<Color>().unwrap(),
+            Color::rgb(255, 255, 255)
+        );
     }
 
     #[test]
@@ -230,7 +239,10 @@ mod tests {
 
     #[test]
     fn parse_three_digit_shorthand_expands() {
-        assert_eq!("#f0a".parse::<Color>().unwrap(), Color::rgb(0xff, 0x00, 0xaa));
+        assert_eq!(
+            "#f0a".parse::<Color>().unwrap(),
+            Color::rgb(0xff, 0x00, 0xaa)
+        );
     }
 
     #[test]

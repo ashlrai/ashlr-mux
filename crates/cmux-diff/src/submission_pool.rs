@@ -59,8 +59,14 @@ impl DiffCommentSubmissionPool {
     /// Upsert one entry for a workspace, deduped by comment id (replace, not
     /// append). Faithful port of Swift `setPending` (`:22`).
     pub fn set_pending(&mut self, entry: Entry, workspace_id: &str) {
-        let entries = self.entries_by_workspace.entry(workspace_id.to_string()).or_default();
-        if let Some(existing) = entries.iter_mut().find(|e| e.comment_id == entry.comment_id) {
+        let entries = self
+            .entries_by_workspace
+            .entry(workspace_id.to_string())
+            .or_default();
+        if let Some(existing) = entries
+            .iter_mut()
+            .find(|e| e.comment_id == entry.comment_id)
+        {
             *existing = entry;
         } else {
             entries.push(entry);
@@ -75,7 +81,8 @@ impl DiffCommentSubmissionPool {
         }
         // The pool never stores an empty list, so dropping empties globally is
         // equivalent to Swift's per-workspace `= nil` on the changed workspaces.
-        self.entries_by_workspace.retain(|_, entries| !entries.is_empty());
+        self.entries_by_workspace
+            .retain(|_, entries| !entries.is_empty());
     }
 
     /// The pending count for a workspace, or 0 for `None`/unknown. Faithful port
@@ -178,7 +185,11 @@ mod tests {
         let mut pool = DiffCommentSubmissionPool::new();
         pool.set_pending(entry("c1", "v1"), "ws-1");
         pool.set_pending(entry("c1", "v2"), "ws-1");
-        assert_eq!(pool.pending_count(Some("ws-1")), 1, "replaced, not appended");
+        assert_eq!(
+            pool.pending_count(Some("ws-1")),
+            1,
+            "replaced, not appended"
+        );
         let entries = pool.consume_all("ws-1");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].submission_text, "v2");
@@ -193,12 +204,19 @@ mod tests {
 
         pool.remove_pending("c1"); // empties ws-1 -> workspace key dropped
         assert_eq!(pool.pending_count(Some("ws-1")), 0);
-        assert_eq!(pool.pending_count(Some("ws-2")), 2, "unaffected workspace intact");
+        assert_eq!(
+            pool.pending_count(Some("ws-2")),
+            2,
+            "unaffected workspace intact"
+        );
 
         pool.remove_pending("c2");
         assert_eq!(pool.pending_count(Some("ws-2")), 1);
         pool.remove_pending("c3");
-        assert!(pool.is_empty(), "no empty lists linger once all entries removed");
+        assert!(
+            pool.is_empty(),
+            "no empty lists linger once all entries removed"
+        );
     }
 
     #[test]
@@ -235,7 +253,11 @@ mod tests {
         let entries = pool.consume_all("ws-1");
         assert_eq!(entries[0].comment_id, "c1");
         assert_eq!(entries[0].submission_text, "please fix");
-        assert_eq!(entries[0].repo_root, canonical_repo_root(repo), "repo root canonicalized");
+        assert_eq!(
+            entries[0].repo_root,
+            canonical_repo_root(repo),
+            "repo root canonicalized"
+        );
     }
 
     #[test]

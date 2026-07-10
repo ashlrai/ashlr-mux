@@ -4,12 +4,15 @@ import { host } from "./host";
  * Thin typed wrappers over the three markdown Tauri commands
  * (`src-tauri/src/markdown.rs`):
  *
- *  - `markdown_set_document(path)` binds the calling webview's document path
+ *  - `markdown_set_document(path, panelId)` binds the panel's document path
  *    (the local-image jail root) before any render,
- *  - `markdown_render(markdown)` pushes a document into the calling panel's
- *    markdown webview (`__cmuxRenderMarkdown`), and
- *  - `markdown_apply_theme(background)` derives + applies a theme from the
- *    panel's 8-bit sRGB background color (`__cmuxApplyTheme`).
+ *  - `markdown_render(markdown, panelId)` pushes a document into the panel's
+ *    sandboxed markdown iframe (`__cmuxRenderMarkdown`), and
+ *  - `markdown_apply_theme(background, panelId)` derives + applies a theme from the
+ *    panel's 8-bit sRGB background color (`__cmuxApplyTheme`), and
+ *  - `markdown_apply_typography(panelId)` applies persisted markdown typography
+ *    defaults (`__cmuxApplyTypography`), and
+ *  - `markdown_zoom_in|out|reset(panelId)` adjust the panel's persisted zoom.
  *
  * The render/theme pair are fire-and-forget on the Rust side; these wrappers
  * only shape the argument objects the way Tauri's camelCase→snake_case mapping
@@ -33,21 +36,19 @@ export type MarkdownInvoke = (
 export type MarkdownThemeBackground = readonly [number, number, number];
 
 /**
- * Bind the calling webview's markdown document `path` — the root the Rust-side
+ * Bind a markdown panel's document `path` — the root the Rust-side
  * local-image jail resolves `cmux-local-image://` requests against. Port of
  * `Coordinator.bind`'s `filePath` assignment (`MarkdownWebRenderer.swift:190-194`).
- * No label argument: the Rust command keys state by `webview.label()` server-side
- * (markdown.rs:317), and the sandboxed markdown iframe lives inside the main
- * window webview, so its subresource requests carry the same label this write
- * lands under. (All panes share that one label, so two simultaneously fed
- * markdown panes would share one jail path — matching the per-webview isolation
- * note at markdown.rs:12-14; today one document is fed per invoke.)
+ * `panelId` is required because the Windows port hosts several markdown iframes
+ * inside one top-level Tauri webview; the native side keys both the markdown
+ * jail state and iframe delivery by that stable panel id.
  */
 export async function setMarkdownDocument(
+  panelId: string,
   path: string,
   invoke: MarkdownInvoke = host.invoke,
 ): Promise<void> {
-  await invoke("markdown_set_document", { path });
+  await invoke("markdown_set_document", { panelId, path });
 }
 
 /** A markdown document plus the file path its relative resources resolve against. */
@@ -58,18 +59,48 @@ export interface MarkdownDocument {
 
 /** Push a markdown `document` into the calling panel's markdown webview. */
 export async function renderMarkdown(
+  panelId: string,
   document: string,
   invoke: MarkdownInvoke = host.invoke,
 ): Promise<void> {
-  await invoke("markdown_render", { markdown: document });
+  await invoke("markdown_render", { panelId, markdown: document });
 }
 
 /** Apply a markdown theme derived from the panel's `background` sRGB color. */
 export async function applyMarkdownTheme(
+  panelId: string,
   background: MarkdownThemeBackground,
   invoke: MarkdownInvoke = host.invoke,
 ): Promise<void> {
-  await invoke("markdown_apply_theme", { background });
+  await invoke("markdown_apply_theme", { panelId, background });
+}
+
+export async function applyMarkdownTypography(
+  panelId: string,
+  invoke: MarkdownInvoke = host.invoke,
+): Promise<void> {
+  await invoke("markdown_apply_typography", { panelId });
+}
+
+export async function zoomMarkdownIn(
+  panelId: string,
+  invoke: MarkdownInvoke = host.invoke,
+): Promise<void> {
+  await invoke("markdown_zoom_in", { panelId });
+}
+
+export async function zoomMarkdownOut(
+  panelId: string,
+  invoke: MarkdownInvoke = host.invoke,
+): Promise<void> {
+  await invoke("markdown_zoom_out", { panelId });
+}
+
+export async function resetMarkdownZoom(
+  panelId: string,
+  invoke: MarkdownInvoke = host.invoke,
+): Promise<void> {
+  await invoke("markdown_zoom_reset", { panelId });
 }
 
 /**
@@ -80,16 +111,12 @@ export async function applyMarkdownTheme(
  * set-then-render, even when only the markdown changed: canonical re-binds on
  * every pass, and the Rust write is field-scoped (overwrites `file_path` only,
  * `requested_libs` untouched).
- *
- * Note: `markdown_render`'s eval currently lands in the top-level webview
- * document, not the sandboxed cmux-md iframe where `__cmuxRenderMarkdown` is
- * defined — live delivery is the deferred GUI tail (markdown.rs:302-306). The
- * set→render sequencing contract here is correct independently of that.
  */
 export async function renderMarkdownDocument(
+  panelId: string,
   doc: MarkdownDocument,
   invoke: MarkdownInvoke = host.invoke,
 ): Promise<void> {
-  await setMarkdownDocument(doc.path, invoke);
-  await renderMarkdown(doc.markdown, invoke);
+  await setMarkdownDocument(panelId, doc.path, invoke);
+  await renderMarkdown(panelId, doc.markdown, invoke);
 }

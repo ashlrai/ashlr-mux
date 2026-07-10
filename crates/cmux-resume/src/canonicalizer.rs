@@ -166,7 +166,10 @@ mod tests {
 
     #[test]
     fn tokens_plain_words() {
-        assert_eq!(tokens("claude --resume main"), Some(toks(&["claude", "--resume", "main"])));
+        assert_eq!(
+            tokens("claude --resume main"),
+            Some(toks(&["claude", "--resume", "main"]))
+        );
     }
 
     #[test]
@@ -259,10 +262,22 @@ mod tests {
 
     #[test]
     fn normalized_cwd_lexical_clean() {
-        assert_eq!(normalized_cwd(Some("  /home/user/project  ")).as_deref(), Some("/home/user/project"));
-        assert_eq!(normalized_cwd(Some("/home/user/project/")).as_deref(), Some("/home/user/project"));
-        assert_eq!(normalized_cwd(Some("/home//user/./project")).as_deref(), Some("/home/user/project"));
-        assert_eq!(normalized_cwd(Some("/home/user/foo/../project")).as_deref(), Some("/home/user/project"));
+        assert_eq!(
+            normalized_cwd(Some("  /home/user/project  ")).as_deref(),
+            Some("/home/user/project")
+        );
+        assert_eq!(
+            normalized_cwd(Some("/home/user/project/")).as_deref(),
+            Some("/home/user/project")
+        );
+        assert_eq!(
+            normalized_cwd(Some("/home//user/./project")).as_deref(),
+            Some("/home/user/project")
+        );
+        assert_eq!(
+            normalized_cwd(Some("/home/user/foo/../project")).as_deref(),
+            Some("/home/user/project")
+        );
         assert_eq!(normalized_cwd(Some("/..")).as_deref(), Some("/"));
         assert_eq!(normalized_cwd(Some("/")).as_deref(), Some("/"));
     }

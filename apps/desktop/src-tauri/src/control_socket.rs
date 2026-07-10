@@ -1,0 +1,12195 @@
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::thread;
+use std::time::{Duration, SystemTime};
+
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::Engine as _;
+use cmux_core::session::{
+    AppSessionSnapshot, SessionPaneLayoutSnapshot, SessionPanelShellActivityStateSnapshot,
+    SessionPullRequestStatusSnapshot, SessionSplitOrientation, SessionWorkspaceLayoutSnapshot,
+    SessionWorkspaceSnapshot,
+};
+use cmux_ipc::{ControlCallResult, ControlRequest, ControlStream, JsonValue};
+use serde_json::{json, Value};
+use tauri::{AppHandle, Emitter, Manager, State};
+use time::OffsetDateTime;
+use uuid::Uuid;
+
+use crate::browser::{
+    browser_add_init_script_for_control, browser_attach_webview_for_control,
+    browser_clear_network_requests_for_control, browser_eval_for_control,
+    browser_network_requests_for_control, browser_webview_command_for_control,
+    BrowserNetworkRequestsQuery, BrowserWebviewState,
+};
+use crate::diff::DiffState;
+use crate::session::{
+    append_workspace_sidebar_log_for_control, browser_go_back_for_control,
+    browser_go_forward_for_control, clear_browser_history_for_control,
+    clear_workspace_agent_pid_for_control, clear_workspace_panel_pull_request_for_control,
+    clear_workspace_remote_for_control, clear_workspace_sidebar_log_for_control,
+    clear_workspace_sidebar_metadata_block_for_control,
+    clear_workspace_sidebar_metadata_for_control, clear_workspace_sidebar_progress_for_control,
+    clear_workspace_sidebar_status_for_control, close_panel_for_control,
+    close_workspace_for_control, close_workspaces_for_control,
+    configure_workspace_remote_for_control, current_session_snapshot,
+    equalize_dividers_for_control, move_panel_to_new_workspace_for_control,
+    new_browser_workspace_for_control, new_terminal_tab_for_control, new_workspace_for_control,
+    open_browser_url_in_panel, open_custom_sidebar_in_panel, open_diff_viewer_in_panel,
+    open_file_in_panel, open_markdown_file_in_panel, reconnect_workspace_remote_for_control,
+    rename_workspace_for_control, reopen_closed_browser_tab_for_control,
+    reorder_workspaces_for_control, reset_workspace_color_for_control,
+    reset_workspace_sidebar_metadata_for_control, restore_previous_launch_for_control,
+    select_adjacent_panel_for_control, select_workspace_for_control, select_workspace_surface,
+    set_browser_zoom_for_control, set_group_collapsed_for_control,
+    set_panel_listening_ports_for_control, set_panel_pinned_for_control,
+    set_panel_shell_activity_for_control, set_panel_title_for_control, set_panel_tty_for_control,
+    set_panel_unread_for_control, set_surface_kind_for_control,
+    set_workspace_agent_listening_ports_for_control, set_workspace_agent_pid_for_control,
+    set_workspace_description_for_control, set_workspace_panel_pull_request_for_control,
+    set_workspace_pinned_for_control, set_workspace_sidebar_metadata_block_for_control,
+    set_workspace_sidebar_metadata_for_control, set_workspace_sidebar_progress_for_control,
+    set_workspace_sidebar_status_for_control, set_workspace_unread_for_control,
+    show_browser_developer_tools_for_control, split_browser_for_control, split_panel_for_control,
+    start_direct_browser_proxy_for_control, toggle_browser_developer_tools_for_control,
+    toggle_browser_focus_mode_for_control, toggle_browser_omnibar_for_control,
+    toggle_split_zoom_for_control, SessionState, WorkspaceRemoteControlConfig,
+};
+use crate::terminal::{
+    scan_listening_ports_for_root_pid, scan_panel_listening_ports, terminal_runtime_snapshots,
+    terminal_write_panel, TerminalState,
+};
+
+const CONTROL_PIPE_BASE_NAME: &str = "cmux";
+const CONTROL_EVENTS_CHANGED_EVENT: &str = "cmux://events-changed";
+const CUSTOM_SIDEBAR_RELOAD_EVENT: &str = "cmux://custom-sidebar-reload";
+const CUSTOM_SIDEBAR_SELECT_EVENT: &str = "cmux://custom-sidebar-select";
+const CUSTOM_SIDEBAR_ACTION_POLICY: &str = "cmux-custom-sidebar-safe-default";
+const CUSTOM_SIDEBAR_ACTION_SCHEMA_VERSION: u32 = 1;
+const CUSTOM_SIDEBAR_ALLOWED_ACTION_METHODS: &[&str] = &[
+    "extension.sidebar.snapshot",
+    "sidebar.snapshot",
+    "sidebar.list",
+    "sidebar.validate",
+    "sidebar.reload",
+    "sidebar.select",
+    "sidebar.open",
+    "workspace.list",
+    "workspace.current",
+    "workspace.select",
+    "workspace.next",
+    "workspace.previous",
+    "workspace.sidebar_state",
+    "workspace.list_status",
+    "workspace.list_log",
+    "workspace.list_meta",
+    "workspace.list_meta_blocks",
+    "workspace.set_progress",
+    "workspace.clear_progress",
+    "workspace.set_status",
+    "workspace.clear_status",
+    "workspace.report_meta",
+    "workspace.clear_meta",
+    "workspace.report_meta_block",
+    "workspace.clear_meta_block",
+    "workspace.log",
+    "workspace.clear_log",
+    "workspace.reset_sidebar",
+    "surface.list",
+    "surface.focus",
+    "surface.next",
+    "surface.previous",
+    "set_progress",
+    "set-progress",
+    "clear_progress",
+    "clear-progress",
+    "set_status",
+    "set-status",
+    "clear_status",
+    "clear-status",
+    "list_status",
+    "list-status",
+    "report_meta",
+    "report-meta",
+    "clear_meta",
+    "clear-meta",
+    "list_meta",
+    "list-meta",
+    "report_meta_block",
+    "report-meta-block",
+    "clear_meta_block",
+    "clear-meta-block",
+    "list_meta_blocks",
+    "list-meta-blocks",
+    "log",
+    "clear_log",
+    "clear-log",
+    "reset_sidebar",
+    "reset-sidebar",
+];
+
+const CUSTOM_SIDEBAR_WORKSPACE_SELECTOR_KEYS: &[&str] =
+    &["workspace_id", "id", "workspace_ref", "ref"];
+const CUSTOM_SIDEBAR_SURFACE_SELECTOR_KEYS: &[&str] =
+    &["surface_id", "panel_id", "id", "surface_ref", "ref"];
+
+pub struct ControlSocketState {
+    listener: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+}
+
+impl Default for ControlSocketState {
+    fn default() -> Self {
+        Self {
+            listener: Mutex::new(None),
+        }
+    }
+}
+
+const EVENT_STREAM_PROTOCOL: &str = "cmux-events";
+const EVENT_STREAM_VERSION: u8 = 1;
+const EVENT_REPLAY_LIMIT: usize = 4096;
+const EVENT_LOG_MAX_BYTES: u64 = 16 * 1024 * 1024;
+const EVENT_LOG_FILE_NAME: &str = "events.jsonl";
+const EVENT_LOG_ARCHIVE_FILE_NAME: &str = "events.jsonl.1";
+
+pub struct ControlEventState {
+    inner: Mutex<ControlEventLog>,
+}
+
+struct ControlEventLog {
+    boot_id: String,
+    next_seq: u64,
+    events: VecDeque<Value>,
+    last_session_summary: Option<SessionEventSummary>,
+    subscribers: Vec<EventSubscriber>,
+}
+
+impl Default for ControlEventState {
+    fn default() -> Self {
+        Self {
+            inner: Mutex::new(ControlEventLog {
+                boot_id: Uuid::new_v4().to_string(),
+                next_seq: 1,
+                events: VecDeque::new(),
+                last_session_summary: None,
+                subscribers: Vec::new(),
+            }),
+        }
+    }
+}
+
+struct EventSubscriber {
+    sender: cmux_ipc::stream_mpsc::UnboundedSender<String>,
+    names: Vec<String>,
+    categories: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct SessionEventSummary {
+    window_id: Option<String>,
+    selected_workspace_id: Option<String>,
+    selected_workspace_index: Option<usize>,
+    workspaces: Vec<WorkspaceEventSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct WorkspaceEventSummary {
+    key: String,
+    id: Option<String>,
+    title: String,
+    index: usize,
+    panes: Vec<PaneEventSummary>,
+    surface_ids: Vec<String>,
+    selected_surface_id: Option<String>,
+    sidebar: WorkspaceSidebarEventSummary,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PaneEventSummary {
+    key: String,
+    id: Option<String>,
+    index: usize,
+    surface_ids: Vec<String>,
+    selected_surface_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+struct WorkspaceSidebarEventSummary {
+    progress: Option<Value>,
+    status_entries: BTreeMap<String, Value>,
+    metadata_entries: BTreeMap<String, Value>,
+    metadata_blocks: BTreeMap<String, Value>,
+    log_entries: Vec<Value>,
+}
+
+#[derive(Debug, Clone)]
+struct DerivedEventSpec {
+    name: &'static str,
+    category: &'static str,
+    source: &'static str,
+    window_id: Option<String>,
+    workspace_id: Option<String>,
+    surface_id: Option<String>,
+    payload: Value,
+}
+
+#[derive(Debug, serde::Serialize, PartialEq, Eq)]
+pub struct ControlSocketStatus {
+    pub pipe: String,
+    pub running: bool,
+}
+
+#[tauri::command]
+pub fn control_socket_status(state: State<'_, ControlSocketState>) -> ControlSocketStatus {
+    control_socket_status_inner(&state)
+}
+
+#[tauri::command]
+pub fn restart_control_socket_listener(
+    app: AppHandle,
+    state: State<'_, ControlSocketState>,
+) -> Result<ControlSocketStatus, String> {
+    restart_control_socket_listener_inner(&app, &state)
+}
+
+#[tauri::command]
+pub fn custom_sidebar_action_invoke(
+    app: AppHandle,
+    method: String,
+    params: Option<Value>,
+    source_path: Option<String>,
+) -> Value {
+    custom_sidebar_action_reply(handle_custom_sidebar_action_request(
+        &app,
+        method,
+        params.unwrap_or(Value::Object(serde_json::Map::new())),
+        source_path.as_deref(),
+    ))
+}
+
+fn handle_custom_sidebar_action_request(
+    app: &AppHandle,
+    method: String,
+    params: Value,
+    source_path: Option<&str>,
+) -> ControlCallResult {
+    let method = method.trim();
+    if method.is_empty() {
+        return invalid_params("Missing custom sidebar action method");
+    }
+    let Value::Object(params) = params else {
+        return invalid_params("Custom sidebar action params must be a JSON object");
+    };
+    if !custom_sidebar_action_policy_allows(method) {
+        return custom_sidebar_action_denied(
+            method,
+            custom_sidebar_manifest_for_source(source_path),
+        );
+    }
+    if let Err(error) = validate_custom_sidebar_action_schema(method, &params) {
+        return error;
+    }
+    handle_control_request(app, ControlRequest::new(None, method.to_string(), params))
+}
+
+fn custom_sidebar_action_policy_allows(method: &str) -> bool {
+    CUSTOM_SIDEBAR_ALLOWED_ACTION_METHODS.contains(&method)
+}
+
+fn custom_sidebar_action_denied(method: &str, manifest: Option<Value>) -> ControlCallResult {
+    ControlCallResult::Err {
+        code: "custom_sidebar_capability_denied".to_string(),
+        message: format!("Custom sidebar action '{method}' is outside the safe capability scope"),
+        data: JsonValue::try_from(json!({
+            "method": method,
+            "policy": CUSTOM_SIDEBAR_ACTION_POLICY,
+            "allowed_methods": CUSTOM_SIDEBAR_ALLOWED_ACTION_METHODS,
+            "manifest": manifest,
+        }))
+        .ok(),
+    }
+}
+
+fn validate_custom_sidebar_action_schema(
+    method: &str,
+    params: &serde_json::Map<String, Value>,
+) -> Result<(), ControlCallResult> {
+    match custom_sidebar_action_schema_method(method) {
+        "sidebar.select" | "sidebar.open" => {
+            require_custom_sidebar_string_param(method, params, "name", &["name", "sidebar"])
+        }
+        "workspace.select" => require_custom_sidebar_workspace_selector(method, params),
+        "workspace.set_progress" => require_custom_sidebar_finite_number_param(
+            method,
+            params,
+            "value",
+            &["value", "progress"],
+        ),
+        "workspace.set_status" => {
+            require_custom_sidebar_string_param(method, params, "key", &["key", "name"])?;
+            require_custom_sidebar_raw_string_param(
+                method,
+                params,
+                "value",
+                &["value", "status", "text"],
+            )?;
+            validate_custom_sidebar_optional_i64_param(method, params, "priority", &["priority"])
+        }
+        "workspace.clear_status" | "workspace.clear_meta" | "workspace.clear_meta_block" => {
+            require_custom_sidebar_string_param(method, params, "key", &["key", "name"])
+        }
+        "workspace.report_meta" => {
+            require_custom_sidebar_string_param(method, params, "key", &["key", "name"])?;
+            require_custom_sidebar_raw_string_param(
+                method,
+                params,
+                "value",
+                &["value", "text", "markdown"],
+            )?;
+            validate_custom_sidebar_optional_i64_param(method, params, "priority", &["priority"])
+        }
+        "workspace.report_meta_block" => {
+            require_custom_sidebar_string_param(method, params, "key", &["key", "name"])?;
+            require_custom_sidebar_raw_string_param(
+                method,
+                params,
+                "markdown",
+                &["markdown", "value", "text"],
+            )?;
+            validate_custom_sidebar_optional_i64_param(method, params, "priority", &["priority"])
+        }
+        "workspace.log" => {
+            require_custom_sidebar_raw_string_param(method, params, "message", &["message", "text"])
+        }
+        "surface.focus" => validate_custom_sidebar_optional_surface_selector(method, params),
+        "workspace.list_log" => {
+            validate_custom_sidebar_optional_usize_param(method, params, "limit", &["limit"])
+        }
+        method => validate_custom_sidebar_optional_common_params(method, params),
+    }
+}
+
+fn custom_sidebar_action_schema_method<'a>(method: &'a str) -> &'a str {
+    match method {
+        "set_progress" | "set-progress" => "workspace.set_progress",
+        "clear_progress" | "clear-progress" => "workspace.clear_progress",
+        "set_status" | "set-status" => "workspace.set_status",
+        "clear_status" | "clear-status" => "workspace.clear_status",
+        "list_status" | "list-status" => "workspace.list_status",
+        "report_meta" | "report-meta" => "workspace.report_meta",
+        "clear_meta" | "clear-meta" => "workspace.clear_meta",
+        "list_meta" | "list-meta" => "workspace.list_meta",
+        "report_meta_block" | "report-meta-block" => "workspace.report_meta_block",
+        "clear_meta_block" | "clear-meta-block" => "workspace.clear_meta_block",
+        "list_meta_blocks" | "list-meta-blocks" => "workspace.list_meta_blocks",
+        "log" => "workspace.log",
+        "clear_log" | "clear-log" => "workspace.clear_log",
+        "reset_sidebar" | "reset-sidebar" => "workspace.reset_sidebar",
+        other => match other {
+            "workspace.set_progress"
+            | "workspace.clear_progress"
+            | "workspace.set_status"
+            | "workspace.clear_status"
+            | "workspace.list_status"
+            | "workspace.report_meta"
+            | "workspace.clear_meta"
+            | "workspace.list_meta"
+            | "workspace.report_meta_block"
+            | "workspace.clear_meta_block"
+            | "workspace.list_meta_blocks"
+            | "workspace.log"
+            | "workspace.clear_log"
+            | "workspace.reset_sidebar"
+            | "workspace.select"
+            | "surface.focus"
+            | "workspace.list_log"
+            | "sidebar.select"
+            | "sidebar.open" => other,
+            _ => other,
+        },
+    }
+}
+
+fn require_custom_sidebar_workspace_selector(
+    method: &str,
+    params: &serde_json::Map<String, Value>,
+) -> Result<(), ControlCallResult> {
+    if string_param(params, &["workspace_id", "id"]).is_some()
+        || string_param(params, &["workspace_ref", "ref"]).is_some()
+    {
+        return Ok(());
+    }
+    Err(custom_sidebar_action_schema_invalid(
+        method,
+        "workspace",
+        "non-empty workspace_id/id or workspace_ref/ref string",
+        CUSTOM_SIDEBAR_WORKSPACE_SELECTOR_KEYS,
+    ))
+}
+
+fn validate_custom_sidebar_optional_surface_selector(
+    method: &str,
+    params: &serde_json::Map<String, Value>,
+) -> Result<(), ControlCallResult> {
+    if !contains_any_param(params, CUSTOM_SIDEBAR_SURFACE_SELECTOR_KEYS) {
+        return Ok(());
+    }
+    if string_param(params, &["surface_id", "panel_id", "id"]).is_some()
+        || string_param(params, &["surface_ref", "ref"]).is_some()
+    {
+        return Ok(());
+    }
+    Err(custom_sidebar_action_schema_invalid(
+        method,
+        "surface",
+        "non-empty surface_id/panel_id/id or surface_ref/ref string",
+        CUSTOM_SIDEBAR_SURFACE_SELECTOR_KEYS,
+    ))
+}
+
+fn validate_custom_sidebar_optional_common_params(
+    method: &str,
+    params: &serde_json::Map<String, Value>,
+) -> Result<(), ControlCallResult> {
+    validate_custom_sidebar_optional_i64_param(method, params, "priority", &["priority"])?;
+    validate_custom_sidebar_optional_usize_param(method, params, "limit", &["limit"])?;
+    Ok(())
+}
+
+fn require_custom_sidebar_string_param(
+    method: &str,
+    params: &serde_json::Map<String, Value>,
+    field: &str,
+    keys: &'static [&'static str],
+) -> Result<(), ControlCallResult> {
+    if string_param(params, keys).is_some() {
+        return Ok(());
+    }
+    Err(custom_sidebar_action_schema_invalid(
+        method,
+        field,
+        "non-empty string",
+        keys,
+    ))
+}
+
+fn require_custom_sidebar_raw_string_param(
+    method: &str,
+    params: &serde_json::Map<String, Value>,
+    field: &str,
+    keys: &'static [&'static str],
+) -> Result<(), ControlCallResult> {
+    if raw_string_param(params, keys).is_some() {
+        return Ok(());
+    }
+    Err(custom_sidebar_action_schema_invalid(
+        method, field, "string", keys,
+    ))
+}
+
+fn require_custom_sidebar_finite_number_param(
+    method: &str,
+    params: &serde_json::Map<String, Value>,
+    field: &str,
+    keys: &'static [&'static str],
+) -> Result<(), ControlCallResult> {
+    if f64_param(params, keys).is_some_and(f64::is_finite) {
+        return Ok(());
+    }
+    Err(custom_sidebar_action_schema_invalid(
+        method,
+        field,
+        "finite number or numeric string",
+        keys,
+    ))
+}
+
+fn validate_custom_sidebar_optional_i64_param(
+    method: &str,
+    params: &serde_json::Map<String, Value>,
+    field: &str,
+    keys: &'static [&'static str],
+) -> Result<(), ControlCallResult> {
+    if !contains_any_param(params, keys) || i64_param(params, keys).is_some() {
+        return Ok(());
+    }
+    Err(custom_sidebar_action_schema_invalid(
+        method,
+        field,
+        "integer or integer string",
+        keys,
+    ))
+}
+
+fn validate_custom_sidebar_optional_usize_param(
+    method: &str,
+    params: &serde_json::Map<String, Value>,
+    field: &str,
+    keys: &'static [&'static str],
+) -> Result<(), ControlCallResult> {
+    if !contains_any_param(params, keys) || usize_param(params, keys).is_some() {
+        return Ok(());
+    }
+    Err(custom_sidebar_action_schema_invalid(
+        method,
+        field,
+        "non-negative integer or integer string",
+        keys,
+    ))
+}
+
+fn contains_any_param(params: &serde_json::Map<String, Value>, keys: &[&str]) -> bool {
+    keys.iter().any(|key| params.contains_key(*key))
+}
+
+fn custom_sidebar_action_schema_invalid(
+    method: &str,
+    field: &str,
+    expected: &str,
+    accepted_keys: &'static [&'static str],
+) -> ControlCallResult {
+    ControlCallResult::Err {
+        code: "custom_sidebar_action_schema_invalid".to_string(),
+        message: format!(
+            "Custom sidebar action '{method}' has invalid params: {field} must be {expected}"
+        ),
+        data: JsonValue::try_from(json!({
+            "method": method,
+            "schema_method": custom_sidebar_action_schema_method(method),
+            "schema_version": CUSTOM_SIDEBAR_ACTION_SCHEMA_VERSION,
+            "field": field,
+            "expected": expected,
+            "accepted_keys": accepted_keys,
+        }))
+        .ok(),
+    }
+}
+
+fn custom_sidebar_action_schema_catalog() -> Value {
+    json!({
+        "version": CUSTOM_SIDEBAR_ACTION_SCHEMA_VERSION,
+        "selector_keys": {
+            "workspace": CUSTOM_SIDEBAR_WORKSPACE_SELECTOR_KEYS,
+            "surface": CUSTOM_SIDEBAR_SURFACE_SELECTOR_KEYS,
+        },
+        "methods": [
+            {
+                "method": "workspace.select",
+                "required": [
+                    {
+                        "field": "workspace",
+                        "accepted_keys": CUSTOM_SIDEBAR_WORKSPACE_SELECTOR_KEYS,
+                        "expected": "non-empty workspace_id/id or workspace_ref/ref string",
+                    },
+                ],
+            },
+            {
+                "method": "surface.focus",
+                "optional": [
+                    {
+                        "field": "surface",
+                        "accepted_keys": CUSTOM_SIDEBAR_SURFACE_SELECTOR_KEYS,
+                        "expected": "non-empty surface_id/panel_id/id or surface_ref/ref string",
+                    },
+                ],
+            },
+            {
+                "method": "sidebar.select",
+                "required": [
+                    {
+                        "field": "name",
+                        "accepted_keys": ["name", "sidebar"],
+                        "expected": "non-empty string",
+                    },
+                ],
+            },
+            {
+                "method": "sidebar.open",
+                "required": [
+                    {
+                        "field": "name",
+                        "accepted_keys": ["name", "sidebar"],
+                        "expected": "non-empty string",
+                    },
+                ],
+            },
+            {
+                "method": "workspace.set_progress",
+                "aliases": ["set_progress", "set-progress"],
+                "required": [
+                    {
+                        "field": "value",
+                        "accepted_keys": ["value", "progress"],
+                        "expected": "finite number or numeric string",
+                    },
+                ],
+            },
+            {
+                "method": "workspace.set_status",
+                "aliases": ["set_status", "set-status"],
+                "required": [
+                    {
+                        "field": "key",
+                        "accepted_keys": ["key", "name"],
+                        "expected": "non-empty string",
+                    },
+                    {
+                        "field": "value",
+                        "accepted_keys": ["value", "status", "text"],
+                        "expected": "string",
+                    },
+                ],
+                "optional": [
+                    {
+                        "field": "priority",
+                        "accepted_keys": ["priority"],
+                        "expected": "integer or integer string",
+                    },
+                ],
+            },
+            {
+                "method": "workspace.clear_status",
+                "aliases": ["clear_status", "clear-status"],
+                "required": [
+                    {
+                        "field": "key",
+                        "accepted_keys": ["key", "name"],
+                        "expected": "non-empty string",
+                    },
+                ],
+            },
+            {
+                "method": "workspace.report_meta",
+                "aliases": ["report_meta", "report-meta"],
+                "required": [
+                    {
+                        "field": "key",
+                        "accepted_keys": ["key", "name"],
+                        "expected": "non-empty string",
+                    },
+                    {
+                        "field": "value",
+                        "accepted_keys": ["value", "text", "markdown"],
+                        "expected": "string",
+                    },
+                ],
+            },
+            {
+                "method": "workspace.report_meta_block",
+                "aliases": ["report_meta_block", "report-meta-block"],
+                "required": [
+                    {
+                        "field": "key",
+                        "accepted_keys": ["key", "name"],
+                        "expected": "non-empty string",
+                    },
+                    {
+                        "field": "markdown",
+                        "accepted_keys": ["markdown", "value", "text"],
+                        "expected": "string",
+                    },
+                ],
+            },
+            {
+                "method": "workspace.log",
+                "aliases": ["log"],
+                "required": [
+                    {
+                        "field": "message",
+                        "accepted_keys": ["message", "text"],
+                        "expected": "string",
+                    },
+                ],
+            },
+        ],
+    })
+}
+
+fn custom_sidebar_action_reply(result: ControlCallResult) -> Value {
+    match result {
+        ControlCallResult::Ok(value) => json!({
+            "ok": true,
+            "value": Value::from(value),
+        }),
+        ControlCallResult::Err {
+            code,
+            message,
+            data,
+        } => json!({
+            "ok": false,
+            "error": {
+                "code": code,
+                "userMessage": message,
+                "data": data.map(Value::from),
+            },
+        }),
+    }
+}
+
+pub(crate) fn start_control_socket_listener(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<ControlSocketState>();
+    restart_control_socket_listener_inner(app, &state).map(|_| ())
+}
+
+fn control_socket_status_inner(state: &ControlSocketState) -> ControlSocketStatus {
+    let pipe = control_pipe_path();
+    let running = state
+        .listener
+        .lock()
+        .expect("control socket listener mutex poisoned")
+        .as_ref()
+        .is_some();
+    ControlSocketStatus { pipe, running }
+}
+
+fn restart_control_socket_listener_inner(
+    app: &AppHandle,
+    state: &ControlSocketState,
+) -> Result<ControlSocketStatus, String> {
+    let pipe = control_pipe_path();
+    let mut guard = state
+        .listener
+        .lock()
+        .expect("control socket listener mutex poisoned");
+    if let Some(handle) = guard.take() {
+        handle.abort();
+    }
+
+    let app = app.clone();
+    let server_pipe = pipe.clone();
+    let handle = tauri::async_runtime::spawn(async move {
+        let factory = move || DesktopControlHandler { app: app.clone() };
+        if let Err(error) = cmux_ipc::serve_named_pipe(&server_pipe, factory).await {
+            eprintln!("[control-socket] listener stopped: {error}");
+        }
+    });
+    *guard = Some(handle);
+    Ok(ControlSocketStatus {
+        pipe,
+        running: true,
+    })
+}
+
+fn control_pipe_path() -> String {
+    cmux_ipc::control_pipe_path(CONTROL_PIPE_BASE_NAME)
+        .expect("static control pipe base name is valid")
+}
+
+#[derive(Clone)]
+struct DesktopControlHandler {
+    app: AppHandle,
+}
+
+const CONTROL_SOCKET_METHODS: &[&str] = &[
+    "ping",
+    "system.ping",
+    "system.identify",
+    "system.capabilities",
+    "events.stream",
+    "extension.sidebar.snapshot",
+    "sidebar.snapshot",
+    "sidebar.list",
+    "sidebar.validate",
+    "sidebar.reload",
+    "sidebar.select",
+    "sidebar.open",
+    "workspace.list",
+    "workspace.current",
+    "workspace.create",
+    "workspace.create_browser",
+    "browser.new_workspace",
+    "session.restore_previous_launch",
+    "workspace.restore_previous_launch",
+    "workspace.close",
+    "workspace.close_many",
+    "workspace.close_workspaces",
+    "workspace.rename",
+    "workspace.select",
+    "workspace.reorder",
+    "workspace.move",
+    "workspace.next",
+    "workspace.previous",
+    "workspace.equalize_splits",
+    "workspace.set_description",
+    "workspace.reset_color",
+    "workspace.set_progress",
+    "workspace.clear_progress",
+    "workspace.set_status",
+    "workspace.clear_status",
+    "workspace.list_status",
+    "workspace.set_agent_pid",
+    "workspace.clear_agent_pid",
+    "workspace.report_pr",
+    "workspace.report_review",
+    "workspace.clear_pr",
+    "workspace.report_meta",
+    "workspace.clear_meta",
+    "workspace.list_meta",
+    "workspace.report_meta_block",
+    "workspace.clear_meta_block",
+    "workspace.list_meta_blocks",
+    "workspace.reset_sidebar",
+    "workspace.log",
+    "workspace.clear_log",
+    "workspace.list_log",
+    "workspace.sidebar_state",
+    "workspace.set_unread",
+    "workspace.set_pinned",
+    "workspace.remote.status",
+    "workspace.remote.configure",
+    "workspace.remote.disconnect",
+    "workspace.remote.clear",
+    "workspace.remote.reconnect",
+    "workspace.group.set_collapsed",
+    "workspace_group.set_collapsed",
+    "surface.list",
+    "surface.split",
+    "surface.new_terminal_tab",
+    "surface.new_tab",
+    "surface.split_browser",
+    "surface.close",
+    "surface.set_type",
+    "surface.set_kind",
+    "surface.rename",
+    "surface.set_title",
+    "surface.set_pinned",
+    "surface.set_unread",
+    "surface.report_ports",
+    "surface.set_ports",
+    "report_ports",
+    "surface.report_tty",
+    "report_tty",
+    "report-tty",
+    "surface.report_shell_state",
+    "report_shell_state",
+    "report-shell-state",
+    "surface.clear_ports",
+    "clear_ports",
+    "surface.ports_kick",
+    "ports_kick",
+    "surface.focus",
+    "surface.health",
+    "surface.send_text",
+    "surface.send_key",
+    "surface.move_to_new_workspace",
+    "surface.open_browser",
+    "surface.open_markdown",
+    "surface.open_file",
+    "surface.open_diff",
+    "surface.next",
+    "surface.previous",
+    "surface.toggle_split_zoom",
+    "browser.open_split",
+    "browser.navigate",
+    "browser.back",
+    "browser.forward",
+    "browser.reload",
+    "browser.url.get",
+    "browser.focus_webview",
+    "browser.is_webview_focused",
+    "browser.snapshot",
+    "browser.eval",
+    "browser.wait",
+    "browser.click",
+    "browser.dblclick",
+    "browser.hover",
+    "browser.focus",
+    "browser.type",
+    "browser.fill",
+    "browser.press",
+    "browser.keydown",
+    "browser.keyup",
+    "browser.check",
+    "browser.uncheck",
+    "browser.select",
+    "browser.scroll",
+    "browser.scroll_into_view",
+    "browser.screenshot",
+    "browser.get.text",
+    "browser.get.html",
+    "browser.get.value",
+    "browser.get.attr",
+    "browser.get.title",
+    "browser.get.count",
+    "browser.get.box",
+    "browser.get.styles",
+    "browser.is.visible",
+    "browser.is.enabled",
+    "browser.is.checked",
+    "browser.find.role",
+    "browser.find.text",
+    "browser.find.label",
+    "browser.find.placeholder",
+    "browser.find.alt",
+    "browser.find.title",
+    "browser.find.testid",
+    "browser.find.first",
+    "browser.find.last",
+    "browser.find.nth",
+    "browser.frame.select",
+    "browser.frame.main",
+    "browser.dialog.accept",
+    "browser.dialog.dismiss",
+    "browser.download.wait",
+    "browser.cookies.get",
+    "browser.cookies.set",
+    "browser.cookies.clear",
+    "browser.storage.get",
+    "browser.storage.set",
+    "browser.storage.clear",
+    "browser.tab.new",
+    "browser.tab.list",
+    "browser.tab.switch",
+    "browser.tab.close",
+    "browser.console.list",
+    "browser.console.clear",
+    "browser.errors.list",
+    "browser.highlight",
+    "browser.state.save",
+    "browser.state.load",
+    "browser.addinitscript",
+    "browser.addscript",
+    "browser.addstyle",
+    "browser.reopen_closed",
+    "browser.reopen_closed_tab",
+    "browser.clear_history",
+    "browser.toggle_omnibar",
+    "browser.toggle_focus_mode",
+    "browser.toggle_developer_tools",
+    "browser.show_developer_tools",
+    "browser.set_zoom",
+    "browser.network.requests",
+    "browser.network.clear",
+    "browser.viewport.set",
+    "browser.geolocation.set",
+    "browser.offline.set",
+    "browser.trace.start",
+    "browser.trace.stop",
+    "browser.network.route",
+    "browser.network.unroute",
+    "browser.screencast.start",
+    "browser.screencast.stop",
+    "browser.input_mouse",
+    "browser.input_keyboard",
+    "browser.input_touch",
+    "debug.browser.start_direct_proxy",
+    "debug.browser.attach_webview",
+    "debug.terminals",
+];
+
+impl cmux_ipc::ControlRequestHandler for DesktopControlHandler {
+    fn handle(&mut self, request: ControlRequest) -> ControlCallResult {
+        handle_control_request(&self.app, request)
+    }
+
+    fn handle_stream(&mut self, request: ControlRequest) -> Option<ControlStream> {
+        (request.method == "events.stream").then(|| events_live_stream(&self.app, &request.params))
+    }
+}
+
+fn handle_control_request(app: &AppHandle, request: ControlRequest) -> ControlCallResult {
+    match request.method.as_str() {
+        "ping" | "system.ping" => ok(json!("pong")),
+        "system.identify" => ok(json!({
+            "app": "cmux",
+            "platform": cmux_core::CMUX_PLATFORM,
+            "milestone": cmux_core::milestone(),
+            "control_socket": {
+                "transport": "windows-named-pipe",
+                "pipe": control_pipe_path(),
+            },
+        })),
+        "system.capabilities" => ok(json!({
+            "version": 2,
+            "methods": CONTROL_SOCKET_METHODS,
+            "transport": "windows-named-pipe",
+            "custom_sidebar_actions": {
+                "policy": CUSTOM_SIDEBAR_ACTION_POLICY,
+                "allowed_methods": CUSTOM_SIDEBAR_ALLOWED_ACTION_METHODS,
+                "schema": custom_sidebar_action_schema_catalog(),
+            },
+        })),
+        "events.stream" => ok(events_snapshot_payload(app, &request.params)),
+        "extension.sidebar.snapshot" | "sidebar.snapshot" => {
+            let snapshot = snapshot(app);
+            ok(extension_sidebar_snapshot_payload_for_app(
+                app,
+                &snapshot,
+                &request.params,
+            ))
+        }
+        "sidebar.list" | "sidebar.validate" => sidebar_validate(&request.params),
+        "sidebar.open" => sidebar_open(app, &request.params),
+        "sidebar.reload" => sidebar_reload(app, &request.params),
+        "sidebar.select" => sidebar_select(app, &request.params),
+        "workspace.list" => ok(workspace_list_payload(&snapshot(app))),
+        "workspace.current" => workspace_current_from_params(&snapshot(app), &request.params),
+        "workspace.create" => workspace_create(app, &request.params),
+        "workspace.create_browser" | "browser.new_workspace" => {
+            workspace_create_browser(app, &request.params)
+        }
+        "session.restore_previous_launch" | "workspace.restore_previous_launch" => {
+            session_restore_previous_launch(app)
+        }
+        "workspace.close" => workspace_close(app, &request.params),
+        "workspace.close_many" | "workspace.close_workspaces" => {
+            workspace_close_many(app, &request.params)
+        }
+        "workspace.rename" => workspace_rename(app, &request.params),
+        "workspace.select" => workspace_select(app, &request.params),
+        "workspace.reorder" | "workspace.move" => workspace_reorder(app, &request.params),
+        "workspace.next" => workspace_select_relative(app, 1),
+        "workspace.previous" => workspace_select_relative(app, -1),
+        "workspace.equalize_splits" => workspace_equalize_splits(app),
+        "workspace.set_description" => workspace_set_description(app, &request.params),
+        "workspace.reset_color" => workspace_reset_color(app, &request.params),
+        "workspace.set_progress" | "set_progress" | "set-progress" => {
+            workspace_set_progress(app, &request.params)
+        }
+        "workspace.clear_progress" | "clear_progress" | "clear-progress" => {
+            workspace_clear_progress(app, &request.params)
+        }
+        "workspace.set_status" | "set_status" | "set-status" => {
+            workspace_set_status(app, &request.params)
+        }
+        "workspace.clear_status" | "clear_status" | "clear-status" => {
+            workspace_clear_status(app, &request.params)
+        }
+        "workspace.list_status" | "list_status" | "list-status" => {
+            workspace_list_status(app, &request.params)
+        }
+        "workspace.set_agent_pid" | "set_agent_pid" | "set-agent-pid" => {
+            workspace_set_agent_pid(app, &request.params)
+        }
+        "workspace.clear_agent_pid" | "clear_agent_pid" | "clear-agent-pid" => {
+            workspace_clear_agent_pid(app, &request.params)
+        }
+        "workspace.report_pr" | "report_pr" | "report-pr" => {
+            workspace_report_pr(app, &request.params, "PR")
+        }
+        "workspace.report_review" | "report_review" | "report-review" => {
+            workspace_report_pr(app, &request.params, "Review")
+        }
+        "workspace.clear_pr" | "clear_pr" | "clear-pr" => workspace_clear_pr(app, &request.params),
+        "workspace.report_meta" | "report_meta" | "report-meta" => {
+            workspace_report_meta(app, &request.params)
+        }
+        "workspace.clear_meta" | "clear_meta" | "clear-meta" => {
+            workspace_clear_meta(app, &request.params)
+        }
+        "workspace.list_meta" | "list_meta" | "list-meta" => {
+            workspace_list_meta(app, &request.params)
+        }
+        "workspace.report_meta_block" | "report_meta_block" | "report-meta-block" => {
+            workspace_report_meta_block(app, &request.params)
+        }
+        "workspace.clear_meta_block" | "clear_meta_block" | "clear-meta-block" => {
+            workspace_clear_meta_block(app, &request.params)
+        }
+        "workspace.list_meta_blocks" | "list_meta_blocks" | "list-meta-blocks" => {
+            workspace_list_meta_blocks(app, &request.params)
+        }
+        "workspace.reset_sidebar" | "reset_sidebar" | "reset-sidebar" => {
+            workspace_reset_sidebar(app, &request.params)
+        }
+        "workspace.log" | "log" => workspace_log(app, &request.params),
+        "workspace.clear_log" | "clear_log" | "clear-log" => {
+            workspace_clear_log(app, &request.params)
+        }
+        "workspace.list_log" | "list_log" | "list-log" => workspace_list_log(app, &request.params),
+        "workspace.sidebar_state" | "sidebar_state" | "sidebar-state" => {
+            workspace_sidebar_state(app, &request.params)
+        }
+        "workspace.set_unread" => workspace_set_unread(app, &request.params),
+        "workspace.set_pinned" => workspace_set_pinned(app, &request.params),
+        "workspace.remote.status" => workspace_remote_status(app, &request.params),
+        "workspace.remote.configure" => workspace_remote_configure(app, &request.params),
+        "workspace.remote.disconnect" | "workspace.remote.clear" => {
+            workspace_remote_disconnect(app, &request.params)
+        }
+        "workspace.remote.reconnect" => workspace_remote_reconnect(app, &request.params),
+        "workspace.group.set_collapsed" | "workspace_group.set_collapsed" => {
+            workspace_group_set_collapsed(app, &request.params)
+        }
+        "surface.list" => surface_list_from_params(&snapshot(app), &request.params),
+        "surface.split" => surface_split(app, &request.params),
+        "surface.new_terminal_tab" | "surface.new_tab" => {
+            surface_new_terminal_tab(app, &request.params)
+        }
+        "surface.split_browser" => surface_split_browser(app, &request.params),
+        "browser.open_split" => browser_open_split(app, &request.params),
+        "surface.close" => surface_close(app, &request.params),
+        "surface.set_type" | "surface.set_kind" => surface_set_kind(app, &request.params),
+        "surface.rename" | "surface.set_title" => surface_set_title(app, &request.params),
+        "surface.set_pinned" => surface_set_pinned(app, &request.params),
+        "surface.set_unread" => surface_set_unread(app, &request.params),
+        "surface.report_ports" | "surface.set_ports" | "report_ports" => {
+            surface_report_ports(app, &request.params)
+        }
+        "surface.report_tty" | "report_tty" | "report-tty" => {
+            surface_report_tty(app, &request.params)
+        }
+        "surface.report_shell_state" | "report_shell_state" | "report-shell-state" => {
+            surface_report_shell_state(app, &request.params)
+        }
+        "surface.clear_ports" | "clear_ports" => surface_clear_ports(app, &request.params),
+        "surface.ports_kick" | "ports_kick" => surface_ports_kick(app, &request.params),
+        "surface.focus" => surface_focus(app, &request.params),
+        "surface.health" => surface_health(app, &request.params),
+        "surface.send_text" => surface_send_text(app, &request.params),
+        "surface.send_key" => surface_send_key(app, &request.params),
+        "surface.move_to_new_workspace" => surface_move_to_new_workspace(app, &request.params),
+        "surface.open_browser" => surface_open_browser(app, &request.params),
+        "surface.open_markdown" => surface_open_markdown(app, &request.params),
+        "surface.open_file" => surface_open_file(app, &request.params),
+        "surface.open_diff" => surface_open_diff(app, &request.params),
+        "surface.next" => surface_select_adjacent(app, &request.params, true),
+        "surface.previous" => surface_select_adjacent(app, &request.params, false),
+        "surface.toggle_split_zoom" => surface_toggle_split_zoom(app, &request.params),
+        "browser.navigate" => browser_navigate(app, &request.params),
+        "browser.back" => browser_back(app, &request.params),
+        "browser.forward" => browser_forward(app, &request.params),
+        "browser.reload" => browser_reload(app, &request.params),
+        "browser.url.get" => browser_url_get(app, &request.params),
+        "browser.focus_webview" => browser_focus_webview(app, &request.params),
+        "browser.is_webview_focused" => browser_is_webview_focused(app, &request.params),
+        "browser.snapshot" => browser_snapshot(app, &request.params),
+        "browser.eval" => browser_eval(app, &request.params),
+        "browser.wait" => browser_wait(app, &request.params),
+        "browser.click" => browser_action(app, &request.params, BrowserAction::Click),
+        "browser.dblclick" => browser_action(app, &request.params, BrowserAction::DblClick),
+        "browser.hover" => browser_action(app, &request.params, BrowserAction::Hover),
+        "browser.focus" => browser_action(app, &request.params, BrowserAction::Focus),
+        "browser.type" => browser_action(app, &request.params, BrowserAction::Type),
+        "browser.fill" => browser_action(app, &request.params, BrowserAction::Fill),
+        "browser.press" => browser_action(app, &request.params, BrowserAction::Press),
+        "browser.keydown" => browser_action(app, &request.params, BrowserAction::KeyDown),
+        "browser.keyup" => browser_action(app, &request.params, BrowserAction::KeyUp),
+        "browser.check" => browser_action(app, &request.params, BrowserAction::Check),
+        "browser.uncheck" => browser_action(app, &request.params, BrowserAction::Uncheck),
+        "browser.select" => browser_action(app, &request.params, BrowserAction::Select),
+        "browser.scroll" => browser_action(app, &request.params, BrowserAction::Scroll),
+        "browser.scroll_into_view" => {
+            browser_action(app, &request.params, BrowserAction::ScrollIntoView)
+        }
+        "browser.screenshot" => browser_screenshot(app, &request.params),
+        "browser.get.title" => browser_get_title(app, &request.params),
+        "browser.get.text" => browser_get_selector_value(app, &request.params, BrowserGetter::Text),
+        "browser.get.html" => browser_get_selector_value(app, &request.params, BrowserGetter::Html),
+        "browser.get.value" => {
+            browser_get_selector_value(app, &request.params, BrowserGetter::Value)
+        }
+        "browser.get.attr" => browser_get_selector_value(app, &request.params, BrowserGetter::Attr),
+        "browser.get.count" => {
+            browser_get_selector_value(app, &request.params, BrowserGetter::Count)
+        }
+        "browser.get.box" => browser_get_selector_value(app, &request.params, BrowserGetter::Box),
+        "browser.get.styles" => {
+            browser_get_selector_value(app, &request.params, BrowserGetter::Styles)
+        }
+        "browser.is.visible" => {
+            browser_get_selector_value(app, &request.params, BrowserGetter::Visible)
+        }
+        "browser.is.enabled" => {
+            browser_get_selector_value(app, &request.params, BrowserGetter::Enabled)
+        }
+        "browser.is.checked" => {
+            browser_get_selector_value(app, &request.params, BrowserGetter::Checked)
+        }
+        "browser.find.role" => browser_find(app, &request.params, BrowserLocator::Role),
+        "browser.find.text" => browser_find(app, &request.params, BrowserLocator::Text),
+        "browser.find.label" => browser_find(app, &request.params, BrowserLocator::Label),
+        "browser.find.placeholder" => {
+            browser_find(app, &request.params, BrowserLocator::Placeholder)
+        }
+        "browser.find.alt" => browser_find(app, &request.params, BrowserLocator::Alt),
+        "browser.find.title" => browser_find(app, &request.params, BrowserLocator::Title),
+        "browser.find.testid" => browser_find(app, &request.params, BrowserLocator::TestId),
+        "browser.find.first" => browser_find(app, &request.params, BrowserLocator::First),
+        "browser.find.last" => browser_find(app, &request.params, BrowserLocator::Last),
+        "browser.find.nth" => browser_find(app, &request.params, BrowserLocator::Nth),
+        "browser.frame.select" => browser_frame_select(app, &request.params),
+        "browser.frame.main" => browser_frame_main(app, &request.params),
+        "browser.dialog.accept" => {
+            browser_dialog(app, &request.params, BrowserDialogAction::Accept)
+        }
+        "browser.dialog.dismiss" => {
+            browser_dialog(app, &request.params, BrowserDialogAction::Dismiss)
+        }
+        "browser.download.wait" => browser_download_wait(app, &request.params),
+        "browser.cookies.get" => browser_cookies(app, &request.params, BrowserCookieAction::Get),
+        "browser.cookies.set" => browser_cookies(app, &request.params, BrowserCookieAction::Set),
+        "browser.cookies.clear" => {
+            browser_cookies(app, &request.params, BrowserCookieAction::Clear)
+        }
+        "browser.storage.get" => browser_storage(app, &request.params, BrowserStorageAction::Get),
+        "browser.storage.set" => browser_storage(app, &request.params, BrowserStorageAction::Set),
+        "browser.storage.clear" => {
+            browser_storage(app, &request.params, BrowserStorageAction::Clear)
+        }
+        "browser.tab.list" => browser_tab_list(app, &request.params),
+        "browser.tab.new" => browser_tab_new(app, &request.params),
+        "browser.tab.switch" => browser_tab_switch(app, &request.params),
+        "browser.tab.close" => browser_tab_close(app, &request.params),
+        "browser.console.list" => browser_console(app, &request.params, BrowserConsoleAction::List),
+        "browser.console.clear" => {
+            browser_console(app, &request.params, BrowserConsoleAction::Clear)
+        }
+        "browser.errors.list" => browser_errors_list(app, &request.params),
+        "browser.state.save" => browser_state_save(app, &request.params),
+        "browser.state.load" => browser_state_load(app, &request.params),
+        "browser.highlight" => browser_highlight(app, &request.params),
+        "browser.addinitscript" => browser_add_init_script(app, &request.params),
+        "browser.addscript" => browser_addscript(app, &request.params),
+        "browser.addstyle" => browser_addstyle(app, &request.params),
+        method if is_unported_browser_automation_method(method) => not_supported(&format!(
+            "{method} is not yet ported to the Windows/Tauri WebView backend"
+        )),
+        "browser.reopen_closed" | "browser.reopen_closed_tab" => browser_reopen_closed(app),
+        "browser.clear_history" => browser_clear_history(app, &request.params),
+        "browser.toggle_omnibar" => browser_toggle_omnibar(app, &request.params),
+        "browser.toggle_focus_mode" => browser_toggle_focus_mode(app, &request.params),
+        "browser.toggle_developer_tools" => browser_toggle_developer_tools(app, &request.params),
+        "browser.show_developer_tools" => browser_show_developer_tools(app, &request.params),
+        "browser.set_zoom" => browser_set_zoom(app, &request.params),
+        "browser.network.requests" => browser_network_requests(app, &request.params),
+        "browser.network.clear" => browser_network_clear(app, &request.params),
+        "browser.viewport.set" => {
+            not_supported("browser viewport override is not supported by WKWebView")
+        }
+        "browser.geolocation.set" => {
+            not_supported("browser geolocation override is not supported by WKWebView")
+        }
+        "browser.offline.set" => {
+            not_supported("browser offline mode override is not supported by WKWebView")
+        }
+        "browser.trace.start" | "browser.trace.stop" => {
+            not_supported("browser tracing is not supported by WKWebView")
+        }
+        "browser.network.route" | "browser.network.unroute" => {
+            not_supported("browser network request interception is not supported by WKWebView")
+        }
+        "browser.screencast.start" | "browser.screencast.stop" => {
+            not_supported("browser screencast streaming is not supported by WKWebView")
+        }
+        "browser.input_mouse" | "browser.input_keyboard" | "browser.input_touch" => {
+            not_supported("raw browser input injection is not supported by WKWebView")
+        }
+        "debug.browser.start_direct_proxy" => {
+            debug_browser_start_direct_proxy(app, &request.params)
+        }
+        "debug.browser.attach_webview" => debug_browser_attach_webview(app, &request.params),
+        "debug.terminals" => debug_terminals(app, &request.params),
+        _ => ControlCallResult::Err {
+            code: "method_not_found".to_string(),
+            message: format!("Unknown method: {}", request.method),
+            data: None,
+        },
+    }
+}
+
+pub(crate) fn record_session_changed_event(app: &AppHandle, snapshot: &AppSessionSnapshot) {
+    let Some(state) = app.try_state::<ControlEventState>() else {
+        return;
+    };
+    let current = session_event_summary(snapshot);
+    let previous = {
+        let mut guard = state
+            .inner
+            .lock()
+            .expect("control event log mutex poisoned");
+        let previous = guard.last_session_summary.clone();
+        guard.last_session_summary = Some(current.clone());
+        previous
+    };
+    for event in derived_session_event_specs(previous.as_ref(), &current) {
+        record_event(
+            app,
+            event.name,
+            event.category,
+            event.source,
+            event.window_id,
+            event.workspace_id,
+            event.surface_id,
+            event.payload,
+        );
+    }
+}
+
+fn session_event_summary(snapshot: &AppSessionSnapshot) -> SessionEventSummary {
+    let Some(window) = snapshot.windows.first() else {
+        return SessionEventSummary {
+            window_id: None,
+            selected_workspace_id: None,
+            selected_workspace_index: None,
+            workspaces: Vec::new(),
+        };
+    };
+    let selected_index = (!window.tab_manager.workspaces.is_empty())
+        .then(|| selected_workspace_index(snapshot).min(window.tab_manager.workspaces.len() - 1));
+    let workspaces: Vec<WorkspaceEventSummary> = window
+        .tab_manager
+        .workspaces
+        .iter()
+        .enumerate()
+        .map(|(index, workspace)| {
+            let panes = pane_event_summaries(workspace);
+            let surfaces = surfaces_for_workspace(workspace);
+            let surface_ids: Vec<String> = surfaces
+                .iter()
+                .filter_map(|surface| surface.get("id").and_then(Value::as_str))
+                .map(str::to_string)
+                .collect();
+            let selected_surface_id = surfaces
+                .iter()
+                .find(|surface| {
+                    surface
+                        .get("focused")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                })
+                .or_else(|| surfaces.first())
+                .and_then(|surface| surface.get("id"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            WorkspaceEventSummary {
+                key: workspace
+                    .workspace_id
+                    .clone()
+                    .unwrap_or_else(|| workspace_ref(index)),
+                id: workspace.workspace_id.clone(),
+                title: workspace_display_name(workspace),
+                index,
+                panes,
+                surface_ids,
+                selected_surface_id,
+                sidebar: sidebar_event_summary(workspace),
+            }
+        })
+        .collect();
+    let selected_workspace_id = selected_index
+        .and_then(|index| workspaces.get(index))
+        .and_then(|workspace| workspace.id.clone());
+    SessionEventSummary {
+        window_id: window.window_id.clone(),
+        selected_workspace_id,
+        selected_workspace_index: selected_index,
+        workspaces,
+    }
+}
+
+fn derived_session_event_specs(
+    previous: Option<&SessionEventSummary>,
+    current: &SessionEventSummary,
+) -> Vec<DerivedEventSpec> {
+    let mut events = vec![session_changed_event_spec(current)];
+    match previous {
+        Some(previous) => {
+            append_workspace_diff_events(&mut events, previous, current);
+            append_pane_diff_events(&mut events, previous, current);
+            append_surface_diff_events(&mut events, previous, current);
+            append_sidebar_diff_events(&mut events, previous, current);
+        }
+        None => {
+            for workspace in &current.workspaces {
+                events.push(workspace_event_spec(
+                    "workspace.created",
+                    current,
+                    workspace,
+                    None,
+                ));
+                for pane in &workspace.panes {
+                    events.push(pane_event_spec(
+                        "pane.created",
+                        current,
+                        workspace,
+                        pane,
+                        None,
+                    ));
+                    if pane.selected_surface_id.is_some() {
+                        events.push(pane_event_spec(
+                            "pane.focused",
+                            current,
+                            workspace,
+                            pane,
+                            None,
+                        ));
+                    }
+                }
+                for surface_id in &workspace.surface_ids {
+                    events.push(surface_event_spec(
+                        "surface.created",
+                        current,
+                        workspace,
+                        surface_id,
+                        None,
+                    ));
+                }
+            }
+            if let Some(workspace) = selected_workspace(current) {
+                events.push(workspace_event_spec(
+                    "workspace.selected",
+                    current,
+                    workspace,
+                    None,
+                ));
+                if let Some(surface_id) = workspace.selected_surface_id.as_deref() {
+                    events.push(surface_event_spec(
+                        "surface.selected",
+                        current,
+                        workspace,
+                        surface_id,
+                        None,
+                    ));
+                }
+            }
+        }
+    }
+    events
+}
+
+fn sidebar_event_summary(workspace: &SessionWorkspaceSnapshot) -> WorkspaceSidebarEventSummary {
+    WorkspaceSidebarEventSummary {
+        progress: workspace
+            .sidebar_progress
+            .as_ref()
+            .map(json_value_for_event),
+        status_entries: workspace
+            .sidebar_status_entries
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(|entry| (entry.key.clone(), json_value_for_event(entry)))
+            .collect(),
+        metadata_entries: workspace
+            .sidebar_metadata_entries
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(|entry| (entry.key.clone(), json_value_for_event(entry)))
+            .collect(),
+        metadata_blocks: workspace
+            .sidebar_metadata_blocks
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(|entry| (entry.key.clone(), json_value_for_event(entry)))
+            .collect(),
+        log_entries: workspace
+            .sidebar_log_entries
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(json_value_for_event)
+            .collect(),
+    }
+}
+
+fn json_value_for_event<T: serde::Serialize>(value: &T) -> Value {
+    serde_json::to_value(value).unwrap_or(Value::Null)
+}
+
+fn pane_event_summaries(workspace: &SessionWorkspaceSnapshot) -> Vec<PaneEventSummary> {
+    let mut panes = Vec::new();
+    if let Some(layout) = workspace.layout.as_ref() {
+        collect_pane_event_summaries(layout, &mut panes);
+    }
+    panes
+}
+
+fn collect_pane_event_summaries(
+    layout: &SessionWorkspaceLayoutSnapshot,
+    panes: &mut Vec<PaneEventSummary>,
+) {
+    match layout {
+        SessionWorkspaceLayoutSnapshot::Pane(pane) => {
+            let index = panes.len();
+            let selected_surface_id = pane
+                .selected_panel_id
+                .clone()
+                .or_else(|| pane.panel_ids.first().cloned());
+            panes.push(PaneEventSummary {
+                key: pane.pane_id.clone().unwrap_or_else(|| pane_ref(index)),
+                id: pane.pane_id.clone(),
+                index,
+                surface_ids: pane.panel_ids.clone(),
+                selected_surface_id,
+            });
+        }
+        SessionWorkspaceLayoutSnapshot::Split(split) => {
+            collect_pane_event_summaries(&split.first, panes);
+            collect_pane_event_summaries(&split.second, panes);
+        }
+    }
+}
+
+fn append_workspace_diff_events(
+    events: &mut Vec<DerivedEventSpec>,
+    previous: &SessionEventSummary,
+    current: &SessionEventSummary,
+) {
+    let previous_by_key: HashMap<&str, &WorkspaceEventSummary> = previous
+        .workspaces
+        .iter()
+        .map(|workspace| (workspace.key.as_str(), workspace))
+        .collect();
+    let current_by_key: HashMap<&str, &WorkspaceEventSummary> = current
+        .workspaces
+        .iter()
+        .map(|workspace| (workspace.key.as_str(), workspace))
+        .collect();
+
+    if previous.selected_workspace_id != current.selected_workspace_id
+        || previous.selected_workspace_index != current.selected_workspace_index
+    {
+        if let Some(workspace) = selected_workspace(current) {
+            events.push(workspace_event_spec(
+                "workspace.selected",
+                current,
+                workspace,
+                previous.selected_workspace_id.as_deref(),
+            ));
+        }
+    }
+
+    for workspace in &current.workspaces {
+        match previous_by_key.get(workspace.key.as_str()) {
+            Some(previous_workspace) => {
+                if previous_workspace.title != workspace.title {
+                    events.push(workspace_renamed_event_spec(
+                        current,
+                        workspace,
+                        &previous_workspace.title,
+                    ));
+                }
+            }
+            None => events.push(workspace_event_spec(
+                "workspace.created",
+                current,
+                workspace,
+                None,
+            )),
+        }
+    }
+
+    for workspace in &previous.workspaces {
+        if !current_by_key.contains_key(workspace.key.as_str()) {
+            events.push(workspace_event_spec(
+                "workspace.closed",
+                current,
+                workspace,
+                None,
+            ));
+        }
+    }
+
+    let previous_keys: Vec<&str> = previous
+        .workspaces
+        .iter()
+        .map(|workspace| workspace.key.as_str())
+        .collect();
+    let current_keys: Vec<&str> = current
+        .workspaces
+        .iter()
+        .map(|workspace| workspace.key.as_str())
+        .collect();
+    let previous_set: HashSet<&str> = previous_keys.iter().copied().collect();
+    let current_set: HashSet<&str> = current_keys.iter().copied().collect();
+    if previous_keys != current_keys && previous_set == current_set {
+        let moved_workspace_ids: Vec<String> = current
+            .workspaces
+            .iter()
+            .filter(|workspace| {
+                previous_by_key
+                    .get(workspace.key.as_str())
+                    .is_some_and(|previous_workspace| previous_workspace.index != workspace.index)
+            })
+            .map(workspace_event_identifier)
+            .collect();
+        events.push(DerivedEventSpec {
+            name: "workspace.reordered",
+            category: "workspace",
+            source: "session.model",
+            window_id: current.window_id.clone(),
+            workspace_id: current.selected_workspace_id.clone(),
+            surface_id: None,
+            payload: json!({
+                "window_id": current.window_id,
+                "workspace_id": current.selected_workspace_id,
+                "workspace_count": current.workspaces.len(),
+                "selected_workspace_index": current.selected_workspace_index,
+                "workspace_ids": current.workspaces.iter().map(workspace_event_identifier).collect::<Vec<_>>(),
+                "moved_workspace_ids": moved_workspace_ids,
+                "count": current.workspaces.len(),
+                "origin": "session.changed",
+            }),
+        });
+    }
+}
+
+fn append_surface_diff_events(
+    events: &mut Vec<DerivedEventSpec>,
+    previous: &SessionEventSummary,
+    current: &SessionEventSummary,
+) {
+    let previous_by_key: HashMap<&str, &WorkspaceEventSummary> = previous
+        .workspaces
+        .iter()
+        .map(|workspace| (workspace.key.as_str(), workspace))
+        .collect();
+    let current_by_key: HashMap<&str, &WorkspaceEventSummary> = current
+        .workspaces
+        .iter()
+        .map(|workspace| (workspace.key.as_str(), workspace))
+        .collect();
+    for workspace in &current.workspaces {
+        let Some(previous_workspace) = previous_by_key.get(workspace.key.as_str()) else {
+            for surface_id in &workspace.surface_ids {
+                events.push(surface_event_spec(
+                    "surface.created",
+                    current,
+                    workspace,
+                    surface_id,
+                    None,
+                ));
+            }
+            continue;
+        };
+        let previous_surfaces: HashSet<&str> = previous_workspace
+            .surface_ids
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let current_surfaces: HashSet<&str> =
+            workspace.surface_ids.iter().map(String::as_str).collect();
+        for surface_id in &workspace.surface_ids {
+            if !previous_surfaces.contains(surface_id.as_str()) {
+                events.push(surface_event_spec(
+                    "surface.created",
+                    current,
+                    workspace,
+                    surface_id,
+                    None,
+                ));
+            }
+        }
+        for surface_id in &previous_workspace.surface_ids {
+            if !current_surfaces.contains(surface_id.as_str()) {
+                events.push(surface_event_spec(
+                    "surface.closed",
+                    current,
+                    workspace,
+                    surface_id,
+                    None,
+                ));
+            }
+        }
+        if previous_workspace.selected_surface_id != workspace.selected_surface_id {
+            if let Some(surface_id) = workspace.selected_surface_id.as_deref() {
+                events.push(surface_event_spec(
+                    "surface.selected",
+                    current,
+                    workspace,
+                    surface_id,
+                    previous_workspace.selected_surface_id.as_deref(),
+                ));
+            }
+        }
+    }
+    for workspace in &previous.workspaces {
+        if current_by_key.contains_key(workspace.key.as_str()) {
+            continue;
+        }
+        for surface_id in &workspace.surface_ids {
+            events.push(surface_event_spec(
+                "surface.closed",
+                current,
+                workspace,
+                surface_id,
+                None,
+            ));
+        }
+    }
+}
+
+fn append_pane_diff_events(
+    events: &mut Vec<DerivedEventSpec>,
+    previous: &SessionEventSummary,
+    current: &SessionEventSummary,
+) {
+    let previous_by_key: HashMap<&str, &WorkspaceEventSummary> = previous
+        .workspaces
+        .iter()
+        .map(|workspace| (workspace.key.as_str(), workspace))
+        .collect();
+    for workspace in &current.workspaces {
+        let Some(previous_workspace) = previous_by_key.get(workspace.key.as_str()) else {
+            for pane in &workspace.panes {
+                events.push(pane_event_spec(
+                    "pane.created",
+                    current,
+                    workspace,
+                    pane,
+                    None,
+                ));
+                if pane.selected_surface_id.is_some() {
+                    events.push(pane_event_spec(
+                        "pane.focused",
+                        current,
+                        workspace,
+                        pane,
+                        None,
+                    ));
+                }
+            }
+            continue;
+        };
+        let previous_panes: HashMap<&str, &PaneEventSummary> = previous_workspace
+            .panes
+            .iter()
+            .map(|pane| (pane.key.as_str(), pane))
+            .collect();
+        let current_panes: HashMap<&str, &PaneEventSummary> = workspace
+            .panes
+            .iter()
+            .map(|pane| (pane.key.as_str(), pane))
+            .collect();
+        for pane in &workspace.panes {
+            match previous_panes.get(pane.key.as_str()) {
+                Some(previous_pane) => {
+                    if previous_pane.selected_surface_id != pane.selected_surface_id {
+                        events.push(pane_event_spec(
+                            "pane.focused",
+                            current,
+                            workspace,
+                            pane,
+                            previous_pane.selected_surface_id.as_deref(),
+                        ));
+                    }
+                }
+                None => {
+                    events.push(pane_event_spec(
+                        "pane.created",
+                        current,
+                        workspace,
+                        pane,
+                        None,
+                    ));
+                    if pane.selected_surface_id.is_some() {
+                        events.push(pane_event_spec(
+                            "pane.focused",
+                            current,
+                            workspace,
+                            pane,
+                            None,
+                        ));
+                    }
+                }
+            }
+        }
+        for pane in &previous_workspace.panes {
+            if !current_panes.contains_key(pane.key.as_str()) {
+                events.push(pane_event_spec(
+                    "pane.closed",
+                    current,
+                    workspace,
+                    pane,
+                    None,
+                ));
+            }
+        }
+    }
+    let current_by_key: HashMap<&str, &WorkspaceEventSummary> = current
+        .workspaces
+        .iter()
+        .map(|workspace| (workspace.key.as_str(), workspace))
+        .collect();
+    for workspace in &previous.workspaces {
+        if current_by_key.contains_key(workspace.key.as_str()) {
+            continue;
+        }
+        for pane in &workspace.panes {
+            events.push(pane_event_spec(
+                "pane.closed",
+                current,
+                workspace,
+                pane,
+                None,
+            ));
+        }
+    }
+}
+
+fn append_sidebar_diff_events(
+    events: &mut Vec<DerivedEventSpec>,
+    previous: &SessionEventSummary,
+    current: &SessionEventSummary,
+) {
+    let previous_by_key: HashMap<&str, &WorkspaceEventSummary> = previous
+        .workspaces
+        .iter()
+        .map(|workspace| (workspace.key.as_str(), workspace))
+        .collect();
+    for workspace in &current.workspaces {
+        let Some(previous_workspace) = previous_by_key.get(workspace.key.as_str()) else {
+            continue;
+        };
+        append_sidebar_progress_diff(events, current, previous_workspace, workspace);
+        append_sidebar_metadata_collection_diff(
+            events,
+            current,
+            previous_workspace,
+            workspace,
+            "status",
+            &previous_workspace.sidebar.status_entries,
+            &workspace.sidebar.status_entries,
+        );
+        append_sidebar_metadata_collection_diff(
+            events,
+            current,
+            previous_workspace,
+            workspace,
+            "metadata",
+            &previous_workspace.sidebar.metadata_entries,
+            &workspace.sidebar.metadata_entries,
+        );
+        append_sidebar_metadata_collection_diff(
+            events,
+            current,
+            previous_workspace,
+            workspace,
+            "metadata_block",
+            &previous_workspace.sidebar.metadata_blocks,
+            &workspace.sidebar.metadata_blocks,
+        );
+        append_sidebar_log_diff(events, current, previous_workspace, workspace);
+    }
+}
+
+fn append_sidebar_progress_diff(
+    events: &mut Vec<DerivedEventSpec>,
+    current: &SessionEventSummary,
+    previous_workspace: &WorkspaceEventSummary,
+    workspace: &WorkspaceEventSummary,
+) {
+    match (
+        previous_workspace.sidebar.progress.as_ref(),
+        workspace.sidebar.progress.as_ref(),
+    ) {
+        (previous, Some(value)) if previous != Some(value) => {
+            events.push(sidebar_event_spec(
+                "sidebar.progress.updated",
+                current,
+                workspace,
+                json!({
+                    "kind": "progress",
+                    "value": value,
+                    "previous_value": previous.cloned(),
+                }),
+            ));
+        }
+        (Some(previous), None) => {
+            events.push(sidebar_event_spec(
+                "sidebar.progress.cleared",
+                current,
+                workspace,
+                json!({
+                    "kind": "progress",
+                    "previous_value": previous,
+                }),
+            ));
+        }
+        _ => {}
+    }
+}
+
+fn append_sidebar_metadata_collection_diff(
+    events: &mut Vec<DerivedEventSpec>,
+    current: &SessionEventSummary,
+    _previous_workspace: &WorkspaceEventSummary,
+    workspace: &WorkspaceEventSummary,
+    kind: &'static str,
+    previous_entries: &BTreeMap<String, Value>,
+    current_entries: &BTreeMap<String, Value>,
+) {
+    for (key, value) in current_entries {
+        let previous_value = previous_entries.get(key);
+        if previous_value != Some(value) {
+            events.push(sidebar_event_spec(
+                "sidebar.metadata.updated",
+                current,
+                workspace,
+                json!({
+                    "kind": kind,
+                    "key": key,
+                    "value": value,
+                    "previous_value": previous_value.cloned(),
+                    "count": current_entries.len(),
+                }),
+            ));
+        }
+    }
+    for (key, previous_value) in previous_entries {
+        if !current_entries.contains_key(key) {
+            events.push(sidebar_event_spec(
+                "sidebar.metadata.cleared",
+                current,
+                workspace,
+                json!({
+                    "kind": kind,
+                    "key": key,
+                    "previous_value": previous_value,
+                    "count": current_entries.len(),
+                }),
+            ));
+        }
+    }
+}
+
+fn append_sidebar_log_diff(
+    events: &mut Vec<DerivedEventSpec>,
+    current: &SessionEventSummary,
+    previous_workspace: &WorkspaceEventSummary,
+    workspace: &WorkspaceEventSummary,
+) {
+    let previous_entries = &previous_workspace.sidebar.log_entries;
+    let current_entries = &workspace.sidebar.log_entries;
+    if previous_entries == current_entries {
+        return;
+    }
+    if current_entries.is_empty() {
+        if !previous_entries.is_empty() {
+            events.push(sidebar_event_spec(
+                "sidebar.log.cleared",
+                current,
+                workspace,
+                json!({
+                    "kind": "log",
+                    "previous_count": previous_entries.len(),
+                    "count": 0,
+                }),
+            ));
+        }
+        return;
+    }
+    let appended = if current_entries.len() >= previous_entries.len()
+        && current_entries.starts_with(previous_entries)
+    {
+        current_entries[previous_entries.len()..].to_vec()
+    } else {
+        current_entries.clone()
+    };
+    events.push(sidebar_event_spec(
+        "sidebar.log.appended",
+        current,
+        workspace,
+        json!({
+            "kind": "log",
+            "entries": appended,
+            "appended_count": current_entries.len().saturating_sub(previous_entries.len()),
+            "previous_count": previous_entries.len(),
+            "count": current_entries.len(),
+            "replaced": !current_entries.starts_with(previous_entries),
+        }),
+    ));
+}
+
+fn session_changed_event_spec(current: &SessionEventSummary) -> DerivedEventSpec {
+    DerivedEventSpec {
+        name: "session.changed",
+        category: "session",
+        source: "session.model",
+        window_id: current.window_id.clone(),
+        workspace_id: current.selected_workspace_id.clone(),
+        surface_id: selected_workspace(current)
+            .and_then(|workspace| workspace.selected_surface_id.clone()),
+        payload: json!({
+            "window_id": current.window_id,
+            "workspace_id": current.selected_workspace_id,
+            "workspace_count": current.workspaces.len(),
+            "selected_workspace_index": current.selected_workspace_index,
+            "surface_id": selected_workspace(current).and_then(|workspace| workspace.selected_surface_id.clone()),
+            "origin": "session.changed",
+        }),
+    }
+}
+
+fn workspace_event_spec(
+    name: &'static str,
+    current: &SessionEventSummary,
+    workspace: &WorkspaceEventSummary,
+    previous_workspace_id: Option<&str>,
+) -> DerivedEventSpec {
+    let mut payload = workspace_event_payload(current, workspace);
+    if let Some(previous_workspace_id) = previous_workspace_id {
+        payload["previous_workspace_id"] = json!(previous_workspace_id);
+    }
+    DerivedEventSpec {
+        name,
+        category: "workspace",
+        source: "session.model",
+        window_id: current.window_id.clone(),
+        workspace_id: workspace.id.clone(),
+        surface_id: None,
+        payload,
+    }
+}
+
+fn workspace_renamed_event_spec(
+    current: &SessionEventSummary,
+    workspace: &WorkspaceEventSummary,
+    previous_title: &str,
+) -> DerivedEventSpec {
+    let mut payload = workspace_event_payload(current, workspace);
+    payload["previous_title"] = json!(previous_title);
+    DerivedEventSpec {
+        name: "workspace.renamed",
+        category: "workspace",
+        source: "session.model",
+        window_id: current.window_id.clone(),
+        workspace_id: workspace.id.clone(),
+        surface_id: None,
+        payload,
+    }
+}
+
+fn workspace_event_payload(
+    current: &SessionEventSummary,
+    workspace: &WorkspaceEventSummary,
+) -> Value {
+    json!({
+        "window_id": current.window_id,
+        "workspace_id": workspace.id,
+        "workspace_ref": workspace_ref(workspace.index),
+        "workspace_key": workspace.key,
+        "workspace_count": current.workspaces.len(),
+        "selected_workspace_index": current.selected_workspace_index,
+        "index": workspace.index,
+        "title": workspace.title,
+        "tab_count": workspace.surface_ids.len(),
+        "origin": "session.changed",
+    })
+}
+
+fn sidebar_event_spec(
+    name: &'static str,
+    current: &SessionEventSummary,
+    workspace: &WorkspaceEventSummary,
+    detail: Value,
+) -> DerivedEventSpec {
+    let mut payload = workspace_event_payload(current, workspace);
+    if let (Some(payload), Some(detail)) = (payload.as_object_mut(), detail.as_object()) {
+        for (key, value) in detail {
+            payload.insert(key.clone(), value.clone());
+        }
+    }
+    DerivedEventSpec {
+        name,
+        category: "sidebar",
+        source: "session.model",
+        window_id: current.window_id.clone(),
+        workspace_id: workspace.id.clone(),
+        surface_id: None,
+        payload,
+    }
+}
+
+fn pane_event_spec(
+    name: &'static str,
+    current: &SessionEventSummary,
+    workspace: &WorkspaceEventSummary,
+    pane: &PaneEventSummary,
+    previous_surface_id: Option<&str>,
+) -> DerivedEventSpec {
+    let mut payload = json!({
+        "window_id": current.window_id,
+        "workspace_id": workspace.id,
+        "workspace_ref": workspace_ref(workspace.index),
+        "pane_id": pane.id,
+        "pane_ref": pane_ref(pane.index),
+        "pane_key": pane.key,
+        "index": pane.index,
+        "surface_ids": pane.surface_ids,
+        "selected_surface_id": pane.selected_surface_id,
+        "surface_id": pane.selected_surface_id,
+        "origin": "session.changed",
+    });
+    if let Some(previous_surface_id) = previous_surface_id {
+        payload["previous_surface_id"] = json!(previous_surface_id);
+    }
+    DerivedEventSpec {
+        name,
+        category: "pane",
+        source: "session.model",
+        window_id: current.window_id.clone(),
+        workspace_id: workspace.id.clone(),
+        surface_id: pane.selected_surface_id.clone(),
+        payload,
+    }
+}
+
+fn surface_event_spec(
+    name: &'static str,
+    current: &SessionEventSummary,
+    workspace: &WorkspaceEventSummary,
+    surface_id: &str,
+    previous_surface_id: Option<&str>,
+) -> DerivedEventSpec {
+    let mut payload = json!({
+        "window_id": current.window_id,
+        "workspace_id": workspace.id,
+        "workspace_ref": workspace_ref(workspace.index),
+        "surface_id": surface_id,
+        "surface_ref": surface_ref_for_summary(workspace, surface_id),
+        "selected_surface_id": workspace.selected_surface_id,
+        "index": workspace.surface_ids.iter().position(|id| id == surface_id),
+        "tab_count": workspace.surface_ids.len(),
+        "focused": workspace.selected_surface_id.as_deref() == Some(surface_id),
+        "origin": "session.changed",
+    });
+    if let Some(previous_surface_id) = previous_surface_id {
+        payload["previous_surface_id"] = json!(previous_surface_id);
+    }
+    DerivedEventSpec {
+        name,
+        category: "surface",
+        source: "session.model",
+        window_id: current.window_id.clone(),
+        workspace_id: workspace.id.clone(),
+        surface_id: Some(surface_id.to_string()),
+        payload,
+    }
+}
+
+fn selected_workspace(current: &SessionEventSummary) -> Option<&WorkspaceEventSummary> {
+    current
+        .selected_workspace_index
+        .and_then(|index| current.workspaces.get(index))
+}
+
+fn workspace_event_identifier(workspace: &WorkspaceEventSummary) -> String {
+    workspace
+        .id
+        .clone()
+        .unwrap_or_else(|| workspace.key.clone())
+}
+
+fn surface_ref_for_summary(workspace: &WorkspaceEventSummary, surface_id: &str) -> Option<String> {
+    workspace
+        .surface_ids
+        .iter()
+        .position(|id| id == surface_id)
+        .map(surface_ref)
+}
+
+fn record_event(
+    app: &AppHandle,
+    name: &str,
+    category: &str,
+    source: &str,
+    window_id: Option<String>,
+    workspace_id: Option<String>,
+    surface_id: Option<String>,
+    payload: Value,
+) {
+    let Some(state) = app.try_state::<ControlEventState>() else {
+        return;
+    };
+    let mut guard = state
+        .inner
+        .lock()
+        .expect("control event log mutex poisoned");
+    let seq = guard.next_seq;
+    guard.next_seq = guard.next_seq.saturating_add(1);
+    let boot_id = guard.boot_id.clone();
+    let event = json!({
+        "type": "event",
+        "protocol": EVENT_STREAM_PROTOCOL,
+        "version": EVENT_STREAM_VERSION,
+        "boot_id": boot_id,
+        "seq": seq,
+        "id": format!("{boot_id}-{seq}"),
+        "name": name,
+        "category": category,
+        "source": source,
+        "occurred_at": event_timestamp(),
+        "workspace_id": workspace_id,
+        "surface_id": surface_id,
+        "pane_id": Value::Null,
+        "window_id": window_id,
+        "payload": payload,
+    });
+    let frame = serde_json::to_string(&event).ok();
+    guard.events.push_back(event);
+    while guard.events.len() > EVENT_REPLAY_LIMIT {
+        guard.events.pop_front();
+    }
+    if let Some(frame) = frame {
+        let event = guard.events.back().cloned().unwrap_or(Value::Null);
+        fan_out_event_to_subscribers(&mut guard.subscribers, &event, &frame);
+    }
+    let event = guard.events.back().cloned();
+    drop(guard);
+    if let Some(event) = event {
+        let _ = app.emit(CONTROL_EVENTS_CHANGED_EVENT, event.clone());
+        append_event_to_disk(&event);
+    }
+}
+
+fn append_event_to_disk(event: &Value) {
+    let Some(home) = event_log_home_directory() else {
+        return;
+    };
+    let Ok(line) = serde_json::to_string(event) else {
+        return;
+    };
+    let dir = home.join(".cmuxterm");
+    if let Err(error) = append_event_line_to_dir(&dir, &line, EVENT_LOG_MAX_BYTES) {
+        eprintln!("[events] failed to append durable event log: {error}");
+    }
+}
+
+fn fan_out_event_to_subscribers(
+    subscribers: &mut Vec<EventSubscriber>,
+    event: &Value,
+    frame: &str,
+) {
+    subscribers.retain(|subscriber| {
+        if !event_matches_filters(event, &subscriber.names, &subscriber.categories) {
+            return true;
+        }
+        subscriber.sender.send(frame.to_string()).is_ok()
+    });
+}
+
+fn event_log_home_directory() -> Option<PathBuf> {
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+}
+
+fn append_event_line_to_dir(dir: &Path, line: &str, max_bytes: u64) -> std::io::Result<()> {
+    fs::create_dir_all(dir)?;
+    let current = dir.join(EVENT_LOG_FILE_NAME);
+    let archive = dir.join(EVENT_LOG_ARCHIVE_FILE_NAME);
+    let additional_bytes = line.len() as u64 + 1;
+    if current
+        .metadata()
+        .map(|metadata| metadata.len().saturating_add(additional_bytes) > max_bytes)
+        .unwrap_or(false)
+    {
+        match fs::remove_file(&archive) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        fs::rename(&current, &archive)?;
+    }
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(current)?;
+    file.write_all(line.as_bytes())?;
+    file.write_all(b"\n")?;
+    file.flush()
+}
+
+fn events_snapshot_payload(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Value {
+    let (ack, events, heartbeat) = events_payload_parts(app, params);
+    json!({
+        "ack": ack,
+        "events": events,
+        "heartbeat": heartbeat,
+    })
+}
+
+fn events_live_stream(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlStream {
+    let (ack, events, heartbeat, receiver) = events_live_stream_parts(app, params);
+    let mut frames = event_stream_initial_frames(ack, events, heartbeat);
+    if frames.is_empty() {
+        frames.push("{}".to_string());
+    }
+    ControlStream::Live {
+        initial_frames: frames,
+        receiver,
+    }
+}
+
+fn event_stream_initial_frames(ack: Value, events: Vec<Value>, heartbeat: Value) -> Vec<String> {
+    let mut frames = Vec::with_capacity(events.len() + 2);
+    frames.push(serde_json::to_string(&ack).unwrap_or_else(|_| "{}".to_string()));
+    frames.extend(
+        events
+            .into_iter()
+            .map(|event| serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_string())),
+    );
+    if !heartbeat.is_null() {
+        frames.push(serde_json::to_string(&heartbeat).unwrap_or_else(|_| "{}".to_string()));
+    }
+    frames
+}
+
+fn events_live_stream_parts(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> (
+    Value,
+    Vec<Value>,
+    Value,
+    cmux_ipc::stream_mpsc::UnboundedReceiver<String>,
+) {
+    let names = string_vec_param(params, &["names", "name"]).unwrap_or_default();
+    let categories = string_vec_param(params, &["categories", "category"]).unwrap_or_default();
+    let requested_after_seq = i64_param(params, &["after_seq", "after"])
+        .unwrap_or(0)
+        .max(0) as u64;
+    let limit = usize_param(params, &["limit"]).unwrap_or(EVENT_REPLAY_LIMIT);
+    let include_heartbeats = bool_param(params, &["include_heartbeats", "heartbeat"])
+        .unwrap_or_else(|| !bool_param(params, &["no_heartbeat", "no-heartbeat"]).unwrap_or(false));
+    let (sender, receiver) = cmux_ipc::stream_mpsc::unbounded_channel();
+    let heartbeat_sender = include_heartbeats.then(|| sender.clone());
+
+    let (boot_id, next_seq, retained_events) = {
+        let state = app.state::<ControlEventState>();
+        let mut guard = state
+            .inner
+            .lock()
+            .expect("control event log mutex poisoned");
+        let retained_events = guard.events.iter().cloned().collect::<Vec<_>>();
+        guard.subscribers.push(EventSubscriber {
+            sender: sender.clone(),
+            names: names.clone(),
+            categories: categories.clone(),
+        });
+        (guard.boot_id.clone(), guard.next_seq, retained_events)
+    };
+    let (ack, events, heartbeat) = events_parts_from_retained(
+        boot_id,
+        next_seq,
+        retained_events,
+        requested_after_seq,
+        limit,
+        include_heartbeats,
+        names,
+        categories,
+    );
+    if let Some(sender) = heartbeat_sender {
+        spawn_event_heartbeat_task(app.clone(), sender, ack["subscription_id"].clone());
+    }
+    (ack, events, heartbeat, receiver)
+}
+
+fn spawn_event_heartbeat_task(
+    app: AppHandle,
+    sender: cmux_ipc::stream_mpsc::UnboundedSender<String>,
+    subscription_id: Value,
+) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            cmux_ipc::stream_sleep(Duration::from_secs(15)).await;
+            let Some(state) = app.try_state::<ControlEventState>() else {
+                break;
+            };
+            let (boot_id, latest_seq) = {
+                let guard = state
+                    .inner
+                    .lock()
+                    .expect("control event log mutex poisoned");
+                (guard.boot_id.clone(), guard.next_seq.saturating_sub(1))
+            };
+            let heartbeat = json!({
+                "type": "heartbeat",
+                "protocol": EVENT_STREAM_PROTOCOL,
+                "version": EVENT_STREAM_VERSION,
+                "boot_id": boot_id,
+                "subscription_id": subscription_id,
+                "latest_seq": latest_seq,
+                "occurred_at": event_timestamp(),
+            });
+            let Ok(frame) = serde_json::to_string(&heartbeat) else {
+                continue;
+            };
+            if sender.send(frame).is_err() {
+                break;
+            }
+        }
+    });
+}
+
+fn events_payload_parts(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> (Value, Vec<Value>, Value) {
+    let names = string_vec_param(params, &["names", "name"]).unwrap_or_default();
+    let categories = string_vec_param(params, &["categories", "category"]).unwrap_or_default();
+    let requested_after_seq = i64_param(params, &["after_seq", "after"])
+        .unwrap_or(0)
+        .max(0) as u64;
+    let limit = usize_param(params, &["limit"]).unwrap_or(EVENT_REPLAY_LIMIT);
+    let include_heartbeats = bool_param(params, &["include_heartbeats", "heartbeat"])
+        .unwrap_or_else(|| !bool_param(params, &["no_heartbeat", "no-heartbeat"]).unwrap_or(false));
+
+    let (boot_id, next_seq, retained_events) = {
+        let state = app.state::<ControlEventState>();
+        let guard = state
+            .inner
+            .lock()
+            .expect("control event log mutex poisoned");
+        (
+            guard.boot_id.clone(),
+            guard.next_seq,
+            guard.events.iter().cloned().collect::<Vec<_>>(),
+        )
+    };
+    events_parts_from_retained(
+        boot_id,
+        next_seq,
+        retained_events,
+        requested_after_seq,
+        limit,
+        include_heartbeats,
+        names,
+        categories,
+    )
+}
+
+fn events_parts_from_retained(
+    boot_id: String,
+    next_seq: u64,
+    retained_events: Vec<Value>,
+    requested_after_seq: u64,
+    limit: usize,
+    include_heartbeats: bool,
+    names: Vec<String>,
+    categories: Vec<String>,
+) -> (Value, Vec<Value>, Value) {
+    let latest_seq = next_seq.saturating_sub(1);
+    let oldest_seq = retained_events
+        .first()
+        .and_then(|event| event.get("seq"))
+        .and_then(Value::as_u64)
+        .unwrap_or(next_seq);
+    let gap = (requested_after_seq > latest_seq)
+        || (!retained_events.is_empty() && requested_after_seq.saturating_add(1) < oldest_seq);
+    let events: Vec<Value> = retained_events
+        .into_iter()
+        .filter(|event| {
+            event.get("seq").and_then(Value::as_u64).unwrap_or(0) > requested_after_seq
+                && event_matches_filters(event, &names, &categories)
+        })
+        .take(limit)
+        .collect();
+    let ack = json!({
+        "type": "ack",
+        "protocol": EVENT_STREAM_PROTOCOL,
+        "version": EVENT_STREAM_VERSION,
+        "boot_id": boot_id,
+        "subscription_id": Uuid::new_v4().to_string(),
+        "heartbeat_interval_seconds": 15,
+        "replay_count": events.len(),
+        "resume": {
+            "after_seq": requested_after_seq,
+            "requested_after_seq": requested_after_seq,
+            "oldest_seq": oldest_seq,
+            "latest_seq": latest_seq,
+            "next_seq": next_seq,
+            "gap": gap,
+        },
+        "filters": {
+            "names": names,
+            "categories": categories,
+        }
+    });
+    let heartbeat = if include_heartbeats {
+        json!({
+            "type": "heartbeat",
+            "protocol": EVENT_STREAM_PROTOCOL,
+            "version": EVENT_STREAM_VERSION,
+            "boot_id": boot_id,
+            "subscription_id": ack["subscription_id"].clone(),
+            "latest_seq": latest_seq,
+            "occurred_at": event_timestamp(),
+        })
+    } else {
+        Value::Null
+    };
+    (ack, events, heartbeat)
+}
+
+fn event_matches_filters(event: &Value, names: &[String], categories: &[String]) -> bool {
+    let name_matches = names.is_empty()
+        || event
+            .get("name")
+            .and_then(Value::as_str)
+            .is_some_and(|name| names.iter().any(|filter| filter == name));
+    let category_matches = categories.is_empty()
+        || event
+            .get("category")
+            .and_then(Value::as_str)
+            .is_some_and(|category| categories.iter().any(|filter| filter == category));
+    name_matches && category_matches
+}
+
+fn event_timestamp() -> String {
+    OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
+}
+
+fn workspace_create(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let current_directory = string_param(params, &["current_directory", "cwd"]);
+    let initial_terminal_command = string_param(
+        params,
+        &["initial_terminal_command", "initialCommand", "command"],
+    );
+    let initial_terminal_input =
+        string_param(params, &["initial_terminal_input", "initialInput", "input"]);
+    let initial_terminal_environment = string_map_param(
+        params,
+        &["initial_terminal_environment", "environment", "env"],
+    );
+    let state = app.state::<SessionState>();
+    workspace_current(&new_workspace_for_control(
+        app,
+        &state,
+        current_directory.as_deref(),
+        initial_terminal_command.as_deref(),
+        initial_terminal_input.as_deref(),
+        initial_terminal_environment,
+    ))
+}
+
+fn workspace_create_browser(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let url = raw_string_param(params, &["url"]);
+    let state = app.state::<SessionState>();
+    workspace_current(&new_browser_workspace_for_control(
+        app,
+        &state,
+        url.as_deref(),
+    ))
+}
+
+fn session_restore_previous_launch(app: &AppHandle) -> ControlCallResult {
+    let state = app.state::<SessionState>();
+    workspace_current(&restore_previous_launch_for_control(app, &state))
+}
+
+fn workspace_close(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(index) = workspace_index_from_close_params(&current, params) else {
+        return invalid_params(
+            "workspace.close requires an explicit workspace target (workspace_id or workspace_ref)",
+        );
+    };
+    let state = app.state::<SessionState>();
+    workspace_current(&close_workspace_for_control(app, &state, index as i64))
+}
+
+fn workspace_close_many(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(indices) = workspace_indices_from_params(&current, params) else {
+        return invalid_params("Missing or invalid workspace selectors");
+    };
+    let state = app.state::<SessionState>();
+    workspace_current(&close_workspaces_for_control(app, &state, &indices))
+}
+
+fn workspace_rename(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let Some(title) = raw_string_param(params, &["title", "name"]) else {
+        return invalid_params("Missing workspace title");
+    };
+    let current = snapshot(app);
+    let Some(index) = workspace_index_from_params_or_selected(&current, params) else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let state = app.state::<SessionState>();
+    workspace_current(&rename_workspace_for_control(
+        app,
+        &state,
+        index as i64,
+        &title,
+    ))
+}
+
+fn workspace_select(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(index) = workspace_index_from_params(&current, params) else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let state = app.state::<SessionState>();
+    workspace_current(&select_workspace_for_control(app, &state, index as i64))
+}
+
+fn workspace_reorder(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(index) = workspace_index_from_params(&current, params) else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let Some(to_index) = workspace_reorder_destination_index(&current, params, index) else {
+        return invalid_params("Missing or invalid destination workspace selector");
+    };
+    let uses_top_level_rows =
+        bool_param(params, &["uses_top_level_rows", "top_level_rows"]).unwrap_or(false);
+    let state = app.state::<SessionState>();
+    workspace_current(&reorder_workspaces_for_control(
+        app,
+        &state,
+        index as i64,
+        to_index,
+        uses_top_level_rows,
+    ))
+}
+
+fn workspace_select_relative(app: &AppHandle, delta: i64) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(window) = current.windows.first() else {
+        return workspace_current(&current);
+    };
+    let count = window.tab_manager.workspaces.len();
+    if count == 0 {
+        return workspace_current(&current);
+    }
+    let selected = selected_workspace_index(&current).min(count - 1);
+    let next = (selected as i64 + delta).rem_euclid(count as i64);
+    let state = app.state::<SessionState>();
+    workspace_current(&select_workspace_for_control(app, &state, next))
+}
+
+fn workspace_equalize_splits(app: &AppHandle) -> ControlCallResult {
+    let state = app.state::<SessionState>();
+    workspace_current(&equalize_dividers_for_control(app, &state))
+}
+
+fn workspace_set_description(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(description) = raw_string_param(params, &["description", "text", "body"]) else {
+        return invalid_params("Missing workspace description");
+    };
+    let current = snapshot(app);
+    let Some(index) = workspace_index_from_params_or_selected(&current, params) else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let state = app.state::<SessionState>();
+    workspace_current(&set_workspace_description_for_control(
+        app,
+        &state,
+        index as i64,
+        &description,
+    ))
+}
+
+fn workspace_reset_color(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(index) = workspace_index_from_params_or_selected(&current, params) else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let state = app.state::<SessionState>();
+    workspace_current(&reset_workspace_color_for_control(
+        app,
+        &state,
+        index as i64,
+    ))
+}
+
+fn workspace_set_progress(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(value) = f64_param(params, &["value", "progress"]) else {
+        return invalid_params("Missing or invalid workspace progress value");
+    };
+    if !value.is_finite() {
+        return invalid_params("Workspace progress value must be finite");
+    }
+    let current = snapshot(app);
+    let Some(index) = workspace_index_from_params_or_selected(&current, params) else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let label = raw_string_param(params, &["label", "text"]);
+    let state = app.state::<SessionState>();
+    workspace_current(&set_workspace_sidebar_progress_for_control(
+        app,
+        &state,
+        index as i64,
+        value,
+        label.as_deref(),
+    ))
+}
+
+fn workspace_clear_progress(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(index) = workspace_index_from_params_or_selected(&current, params) else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let state = app.state::<SessionState>();
+    workspace_current(&clear_workspace_sidebar_progress_for_control(
+        app,
+        &state,
+        index as i64,
+    ))
+}
+
+fn workspace_set_status(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(key) = string_param(params, &["key", "name"]) else {
+        return invalid_params("Missing sidebar status key");
+    };
+    let Some(value) = raw_string_param(params, &["value", "status", "text"]) else {
+        return invalid_params("Missing sidebar status value");
+    };
+    let current = snapshot(app);
+    let Some(index) = workspace_index_from_params_or_selected(&current, params) else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let priority = i64_param(params, &["priority"]);
+    let state = app.state::<SessionState>();
+    workspace_current(&set_workspace_sidebar_status_for_control(
+        app,
+        &state,
+        index as i64,
+        &key,
+        &value,
+        priority,
+    ))
+}
+
+fn workspace_clear_status(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(key) = string_param(params, &["key", "name"]) else {
+        return invalid_params("Missing sidebar status key");
+    };
+    let current = snapshot(app);
+    let Some(index) = workspace_index_from_params_or_selected(&current, params) else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let state = app.state::<SessionState>();
+    workspace_current(&clear_workspace_sidebar_status_for_control(
+        app,
+        &state,
+        index as i64,
+        &key,
+    ))
+}
+
+fn workspace_list_status(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(workspace) = workspace_from_params_or_selected(&current, params) else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    ok(json!({
+        "status_entries": workspace.sidebar_status_entries.clone().unwrap_or_default(),
+        "status_count": workspace.sidebar_status_entries.as_ref().map_or(0, Vec::len),
+    }))
+}
+
+fn workspace_set_agent_pid(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(key) = string_param(params, &["key", "name"]) else {
+        return invalid_params("Missing agent PID key");
+    };
+    let Some(pid) = u32_param(params, &["pid", "process_id", "processId"]) else {
+        return invalid_params("Missing or invalid agent PID");
+    };
+    if pid == 0 {
+        return invalid_params("Agent PID must be positive");
+    }
+    let current = snapshot(app);
+    let Some(index) = workspace_index_from_params_or_selected(&current, params) else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let state = app.state::<SessionState>();
+    workspace_current(&set_workspace_agent_pid_for_control(
+        app, &state, index, &key, pid,
+    ))
+}
+
+fn workspace_clear_agent_pid(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(key) = string_param(params, &["key", "name"]) else {
+        return invalid_params("Missing agent PID key");
+    };
+    let current = snapshot(app);
+    let Some(index) = workspace_index_from_params_or_selected(&current, params) else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let state = app.state::<SessionState>();
+    let snapshot = clear_workspace_agent_pid_for_control(app, &state, index, &key);
+    let snapshot = refresh_workspace_agent_ports(app, &snapshot, index).unwrap_or(snapshot);
+    workspace_current(&snapshot)
+}
+
+fn workspace_report_pr(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+    default_label: &str,
+) -> ControlCallResult {
+    let Some(number) = i64_param(params, &["number", "pr", "id"]) else {
+        return invalid_params("Missing or invalid pull request number");
+    };
+    if number <= 0 {
+        return invalid_params("Pull request number must be positive");
+    }
+    let Some(url) = string_param(params, &["url", "href"]) else {
+        return invalid_params("Missing pull request URL");
+    };
+    let current = snapshot(app);
+    let Some(workspace_index) = workspace_index_from_workspace_scope_or_selected(&current, params)
+    else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let Some(panel_id) =
+        surface_id_from_params_or_workspace_focused(&current, workspace_index, params)
+    else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    let Some(status) = pull_request_status_param(params) else {
+        return invalid_params("Missing or invalid pull request state");
+    };
+    let label = raw_string_param(params, &["label"])
+        .and_then(|label| (!label.trim().is_empty()).then(|| label.trim().to_string()))
+        .unwrap_or_else(|| default_label.to_string());
+    let branch = raw_string_param(params, &["branch"])
+        .and_then(|branch| (!branch.trim().is_empty()).then(|| branch.trim().to_string()));
+    let is_stale = bool_param(params, &["stale", "is_stale", "isStale"]).unwrap_or(false);
+    let state = app.state::<SessionState>();
+    workspace_current(&set_workspace_panel_pull_request_for_control(
+        app,
+        &state,
+        workspace_index,
+        &panel_id,
+        number,
+        &label,
+        &url,
+        status,
+        branch,
+        is_stale,
+    ))
+}
+
+fn workspace_clear_pr(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(workspace_index) = workspace_index_from_workspace_scope_or_selected(&current, params)
+    else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let Some(panel_id) =
+        surface_id_from_params_or_workspace_focused(&current, workspace_index, params)
+    else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    let state = app.state::<SessionState>();
+    workspace_current(&clear_workspace_panel_pull_request_for_control(
+        app,
+        &state,
+        workspace_index,
+        &panel_id,
+    ))
+}
+
+fn workspace_report_meta(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(key) = string_param(params, &["key", "name"]) else {
+        return invalid_params("Missing sidebar metadata key");
+    };
+    let Some(value) = raw_string_param(params, &["value", "text", "markdown"]) else {
+        return invalid_params("Missing sidebar metadata value");
+    };
+    let current = snapshot(app);
+    let Some(index) = workspace_index_from_params_or_selected(&current, params) else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let priority = i64_param(params, &["priority"]);
+    let icon = string_param(params, &["icon"]);
+    let color = string_param(params, &["color"]);
+    let url = string_param(params, &["url", "href"]);
+    let format = string_param(params, &["format"]);
+    let state = app.state::<SessionState>();
+    workspace_current(&set_workspace_sidebar_metadata_for_control(
+        app,
+        &state,
+        index as i64,
+        &key,
+        &value,
+        icon.as_deref(),
+        color.as_deref(),
+        url.as_deref(),
+        priority,
+        format.as_deref(),
+    ))
+}
+
+fn workspace_clear_meta(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(key) = string_param(params, &["key", "name"]) else {
+        return invalid_params("Missing sidebar metadata key");
+    };
+    let current = snapshot(app);
+    let Some(index) = workspace_index_from_params_or_selected(&current, params) else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let state = app.state::<SessionState>();
+    workspace_current(&clear_workspace_sidebar_metadata_for_control(
+        app,
+        &state,
+        index as i64,
+        &key,
+    ))
+}
+
+fn workspace_list_meta(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(workspace) = workspace_from_params_or_selected(&current, params) else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    ok(json!({
+        "metadata_entries": workspace.sidebar_metadata_entries.clone().unwrap_or_default(),
+        "metadata_count": workspace.sidebar_metadata_entries.as_ref().map_or(0, Vec::len),
+    }))
+}
+
+fn workspace_report_meta_block(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(key) = string_param(params, &["key", "name"]) else {
+        return invalid_params("Missing sidebar metadata block key");
+    };
+    let Some(markdown) = raw_string_param(params, &["markdown", "value", "text"]) else {
+        return invalid_params("Missing sidebar metadata block markdown");
+    };
+    let current = snapshot(app);
+    let Some(index) = workspace_index_from_params_or_selected(&current, params) else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let priority = i64_param(params, &["priority"]);
+    let state = app.state::<SessionState>();
+    workspace_current(&set_workspace_sidebar_metadata_block_for_control(
+        app,
+        &state,
+        index as i64,
+        &key,
+        &markdown,
+        priority,
+    ))
+}
+
+fn workspace_clear_meta_block(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(key) = string_param(params, &["key", "name"]) else {
+        return invalid_params("Missing sidebar metadata block key");
+    };
+    let current = snapshot(app);
+    let Some(index) = workspace_index_from_params_or_selected(&current, params) else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let state = app.state::<SessionState>();
+    workspace_current(&clear_workspace_sidebar_metadata_block_for_control(
+        app,
+        &state,
+        index as i64,
+        &key,
+    ))
+}
+
+fn workspace_list_meta_blocks(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(workspace) = workspace_from_params_or_selected(&current, params) else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    ok(json!({
+        "metadata_blocks": workspace.sidebar_metadata_blocks.clone().unwrap_or_default(),
+        "metadata_block_count": workspace.sidebar_metadata_blocks.as_ref().map_or(0, Vec::len),
+    }))
+}
+
+fn workspace_reset_sidebar(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(index) = workspace_index_from_params_or_selected(&current, params) else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let state = app.state::<SessionState>();
+    workspace_current(&reset_workspace_sidebar_metadata_for_control(
+        app,
+        &state,
+        index as i64,
+    ))
+}
+
+fn workspace_log(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let Some(message) = raw_string_param(params, &["message", "text"]) else {
+        return invalid_params("Missing sidebar log message");
+    };
+    let current = snapshot(app);
+    let Some(index) = workspace_index_from_params_or_selected(&current, params) else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let level = string_param(params, &["level"]).unwrap_or_else(|| "info".to_string());
+    let state = app.state::<SessionState>();
+    workspace_current(&append_workspace_sidebar_log_for_control(
+        app,
+        &state,
+        index as i64,
+        &message,
+        &level,
+    ))
+}
+
+fn workspace_clear_log(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(index) = workspace_index_from_params_or_selected(&current, params) else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let state = app.state::<SessionState>();
+    workspace_current(&clear_workspace_sidebar_log_for_control(
+        app,
+        &state,
+        index as i64,
+    ))
+}
+
+fn workspace_list_log(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(workspace) = workspace_from_params_or_selected(&current, params) else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let limit = usize_param(params, &["limit"]).unwrap_or(20);
+    let entries = recent_sidebar_log_entries(workspace, limit);
+    ok(json!({
+        "log_entries": entries,
+        "log_count": workspace.sidebar_log_entries.as_ref().map_or(0, Vec::len),
+    }))
+}
+
+fn workspace_sidebar_state(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(window) = current.windows.first() else {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Workspace not found".to_string(),
+            data: None,
+        };
+    };
+    let Some(index) = workspace_index_from_params_or_selected(&current, params) else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let Some(workspace) = window.tab_manager.workspaces.get(index) else {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Workspace not found".to_string(),
+            data: None,
+        };
+    };
+    ok(json!({
+        "workspace_id": workspace.workspace_id,
+        "workspace_ref": workspace_ref(index),
+        "ports": workspace_listening_ports(workspace),
+        "agent_listening_ports": workspace.agent_listening_ports.clone().unwrap_or_default(),
+        "agent_pids": workspace.agent_pids.clone().unwrap_or_default(),
+        "agent_pid_count": workspace.agent_pids.as_ref().map_or(0, Vec::len),
+        "panel_ttys": workspace.panel_ttys.clone().unwrap_or_default(),
+        "tty_count": workspace.panel_ttys.as_ref().map_or(0, Vec::len),
+        "panel_shell_activity": workspace.panel_shell_activity.clone().unwrap_or_default(),
+        "shell_activity_count": workspace.panel_shell_activity.as_ref().map_or(0, Vec::len),
+        "progress": workspace.sidebar_progress,
+        "status_entries": workspace.sidebar_status_entries.clone().unwrap_or_default(),
+        "status_count": workspace.sidebar_status_entries.as_ref().map_or(0, Vec::len),
+        "metadata_entries": workspace.sidebar_metadata_entries.clone().unwrap_or_default(),
+        "metadata_count": workspace.sidebar_metadata_entries.as_ref().map_or(0, Vec::len),
+        "metadata_blocks": workspace.sidebar_metadata_blocks.clone().unwrap_or_default(),
+        "metadata_block_count": workspace.sidebar_metadata_blocks.as_ref().map_or(0, Vec::len),
+        "log_entries": recent_sidebar_log_entries(workspace, usize_param(params, &["limit"]).unwrap_or(20)),
+        "log_count": workspace.sidebar_log_entries.as_ref().map_or(0, Vec::len),
+    }))
+}
+
+fn workspace_set_unread(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(unread) = bool_param(params, &["unread", "is_unread"]) else {
+        return invalid_params("Missing or invalid workspace unread flag");
+    };
+    let current = snapshot(app);
+    let Some(index) = workspace_index_from_params_or_selected(&current, params) else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let preferred_panel_id =
+        string_param(params, &["preferred_panel_id", "panel_id", "surface_id"]);
+    let state = app.state::<SessionState>();
+    workspace_current(&set_workspace_unread_for_control(
+        app,
+        &state,
+        index as i64,
+        preferred_panel_id.as_deref(),
+        unread,
+    ))
+}
+
+fn workspace_set_pinned(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(pinned) = bool_param(params, &["pinned", "is_pinned"]) else {
+        return invalid_params("Missing or invalid workspace pinned flag");
+    };
+    let current = snapshot(app);
+    let Some(index) = workspace_index_from_params_or_selected(&current, params) else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let state = app.state::<SessionState>();
+    workspace_current(&set_workspace_pinned_for_control(
+        app,
+        &state,
+        index as i64,
+        pinned,
+    ))
+}
+
+fn workspace_remote_status(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(window) = current.windows.first() else {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Workspace not found".to_string(),
+            data: None,
+        };
+    };
+    let Some(index) = workspace_index_from_params_or_selected(&current, params) else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let Some(workspace) = window.tab_manager.workspaces.get(index) else {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Workspace not found".to_string(),
+            data: None,
+        };
+    };
+    ok(json!({
+        "window_id": window.window_id,
+        "window_ref": window.window_id.as_ref().map(|_| "window:1"),
+        "workspace_id": workspace.workspace_id,
+        "workspace_ref": workspace_ref(index),
+        "remote": workspace_remote_payload(workspace),
+    }))
+}
+
+fn workspace_remote_configure(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(index) = workspace_index_from_params_or_selected(&current, params) else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let Some(destination) = string_param(params, &["destination", "host"]) else {
+        return invalid_params("Missing destination");
+    };
+    let Some(port) = optional_u16_param(params, "port") else {
+        return invalid_params("port must be 1-65535");
+    };
+    let Some(local_proxy_port) = optional_u16_param(params, "local_proxy_port") else {
+        return invalid_params("local_proxy_port must be 1-65535");
+    };
+    let transport = string_param(params, &["transport"])
+        .unwrap_or_else(|| "ssh".to_string())
+        .to_ascii_lowercase();
+    if !matches!(transport.as_str(), "ssh" | "websocket") {
+        return invalid_params("transport must be ssh or websocket");
+    }
+    let auto_connect = bool_param(params, &["auto_connect"]).unwrap_or(true);
+    let persistent_daemon_slot =
+        string_param(params, &["persistent_daemon_slot", "persistentDaemonSlot"]);
+    let remote_daemon_path = string_param(params, &["remote_daemon_path", "remoteDaemonPath"]);
+    let Some(remote_daemon_relay_port) = optional_u16_param(params, "remote_daemon_relay_port")
+    else {
+        return invalid_params("remote_daemon_relay_port must be 1-65535");
+    };
+    let remote_daemon_relay_port = match remote_daemon_relay_port {
+        Some(port) => Some(port),
+        None => match optional_u16_param(params, "remoteDaemonRelayPort") {
+            Some(value) => value,
+            None => return invalid_params("remoteDaemonRelayPort must be 1-65535"),
+        },
+    };
+    let identity_file = string_param(params, &["identity_file", "identityFile"]);
+    let ssh_options = string_vec_param(params, &["ssh_options", "sshOptions"]).unwrap_or_default();
+    let config = WorkspaceRemoteControlConfig {
+        transport,
+        destination,
+        port,
+        local_proxy_port,
+        persistent_daemon_slot,
+        remote_daemon_path,
+        remote_daemon_relay_port,
+        identity_file,
+        ssh_options,
+        auto_connect,
+    };
+    let state = app.state::<SessionState>();
+    let Some(snapshot) = configure_workspace_remote_for_control(app, &state, index, config) else {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Workspace not found".to_string(),
+            data: None,
+        };
+    };
+    workspace_remote_status_from_snapshot(&snapshot, index)
+}
+
+fn workspace_remote_disconnect(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(index) = workspace_index_from_params_or_selected(&current, params) else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let state = app.state::<SessionState>();
+    let Some(snapshot) = clear_workspace_remote_for_control(app, &state, index) else {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Workspace not found".to_string(),
+            data: None,
+        };
+    };
+    workspace_remote_status_from_snapshot(&snapshot, index)
+}
+
+fn workspace_remote_reconnect(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(index) = workspace_index_from_params_or_selected(&current, params) else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let state = app.state::<SessionState>();
+    match reconnect_workspace_remote_for_control(app, &state, index) {
+        Ok(Some(snapshot)) => workspace_remote_status_from_snapshot(&snapshot, index),
+        Ok(None) => ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Workspace not found".to_string(),
+            data: None,
+        },
+        Err(message) => ControlCallResult::Err {
+            code: "invalid_state".to_string(),
+            message: format!("Remote workspace is not configured: {message}"),
+            data: None,
+        },
+    }
+}
+
+fn workspace_remote_status_from_snapshot(
+    snapshot: &AppSessionSnapshot,
+    index: usize,
+) -> ControlCallResult {
+    let Some(window) = snapshot.windows.first() else {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Workspace not found".to_string(),
+            data: None,
+        };
+    };
+    let Some(workspace) = window.tab_manager.workspaces.get(index) else {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Workspace not found".to_string(),
+            data: None,
+        };
+    };
+    ok(json!({
+        "window_id": window.window_id,
+        "window_ref": window.window_id.as_ref().map(|_| "window:1"),
+        "workspace_id": workspace.workspace_id,
+        "workspace_ref": workspace_ref(index),
+        "remote": workspace_remote_payload(workspace),
+    }))
+}
+
+fn workspace_group_set_collapsed(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(group_id) = string_param(params, &["group_id", "id"]) else {
+        return invalid_params("Missing workspace group id");
+    };
+    let Some(collapsed) = bool_param(params, &["collapsed", "is_collapsed"]) else {
+        return invalid_params("Missing or invalid collapsed flag");
+    };
+    let state = app.state::<SessionState>();
+    workspace_current(&set_group_collapsed_for_control(
+        app, &state, &group_id, collapsed,
+    ))
+}
+
+fn surface_split(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(panel_id) = surface_id_from_params_or_focused(&current, params) else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    let Some(orientation) = split_orientation_from_params(params) else {
+        return invalid_params("Invalid split orientation");
+    };
+    let insert_first = insert_first_param(params);
+    let (initial_terminal_command, initial_terminal_input, initial_terminal_environment) =
+        terminal_startup_params(params);
+    let state = app.state::<SessionState>();
+    match split_panel_for_control(
+        app,
+        &state,
+        &panel_id,
+        orientation,
+        insert_first,
+        initial_terminal_command.as_deref(),
+        initial_terminal_input.as_deref(),
+        initial_terminal_environment,
+    ) {
+        Ok(snapshot) => surface_list_from_params(&snapshot, params),
+        Err(message) => ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message,
+            data: None,
+        },
+    }
+}
+
+fn surface_new_terminal_tab(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(panel_id) = surface_id_from_params_or_focused(&current, params) else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    let (initial_terminal_command, initial_terminal_input, initial_terminal_environment) =
+        terminal_startup_params(params);
+    let state = app.state::<SessionState>();
+    match new_terminal_tab_for_control(
+        app,
+        &state,
+        &panel_id,
+        initial_terminal_command.as_deref(),
+        initial_terminal_input.as_deref(),
+        initial_terminal_environment,
+    ) {
+        Ok(snapshot) => surface_list_from_params(&snapshot, params),
+        Err(message) => ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message,
+            data: None,
+        },
+    }
+}
+
+fn surface_split_browser(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(panel_id) = surface_id_from_params_or_focused(&current, params) else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    let Some(orientation) = split_orientation_from_params(params) else {
+        return invalid_params("Invalid split orientation");
+    };
+    let url = raw_string_param(params, &["url"]);
+    let state = app.state::<SessionState>();
+    match split_browser_for_control(
+        app,
+        &state,
+        &panel_id,
+        orientation,
+        insert_first_param(params),
+        url.as_deref(),
+    ) {
+        Ok(snapshot) => surface_list_from_params(&snapshot, params),
+        Err(message) => ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message,
+            data: None,
+        },
+    }
+}
+
+fn surface_close(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(panel_id) = surface_id_from_params_or_focused(&current, params) else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    let state = app.state::<SessionState>();
+    surface_list_from_params(&close_panel_for_control(app, &state, &panel_id), params)
+}
+
+fn surface_set_kind(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(panel_id) = surface_id_from_params_or_focused(&current, params) else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    let kind = surface_kind_from_params(params);
+    if matches!(kind.as_deref(), Some("invalid")) {
+        return invalid_params("Invalid surface type");
+    }
+    let state = app.state::<SessionState>();
+    surface_list_from_params(
+        &set_surface_kind_for_control(app, &state, &panel_id, kind),
+        params,
+    )
+}
+
+fn surface_set_title(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(title) = raw_string_param(params, &["title", "name"]) else {
+        return invalid_params("Missing surface title");
+    };
+    let current = snapshot(app);
+    let Some(panel_id) = surface_id_from_params_or_focused(&current, params) else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    let state = app.state::<SessionState>();
+    surface_list_from_params(
+        &set_panel_title_for_control(app, &state, &panel_id, &title),
+        params,
+    )
+}
+
+fn surface_set_pinned(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(pinned) = bool_param(params, &["pinned", "is_pinned"]) else {
+        return invalid_params("Missing or invalid surface pinned flag");
+    };
+    let current = snapshot(app);
+    let Some(panel_id) = surface_id_from_params_or_focused(&current, params) else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    let state = app.state::<SessionState>();
+    surface_list_from_params(
+        &set_panel_pinned_for_control(app, &state, &panel_id, pinned),
+        params,
+    )
+}
+
+fn surface_set_unread(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(unread) = bool_param(params, &["unread", "is_unread"]) else {
+        return invalid_params("Missing or invalid surface unread flag");
+    };
+    let current = snapshot(app);
+    let Some(panel_id) = surface_id_from_params_or_focused(&current, params) else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    let state = app.state::<SessionState>();
+    surface_list_from_params(
+        &set_panel_unread_for_control(app, &state, &panel_id, unread),
+        params,
+    )
+}
+
+fn surface_report_ports(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(ports) = ports_param(params) else {
+        return invalid_params("Missing or invalid listening ports");
+    };
+    surface_set_ports(app, params, &ports)
+}
+
+fn surface_report_tty(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(tty) = string_param(params, &["tty", "tty_name", "ttyName", "name"]) else {
+        return invalid_params("Missing TTY name");
+    };
+    let current = snapshot(app);
+    let Some(workspace_index) = workspace_index_from_params_or_selected(&current, params) else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let Some(panel_id) =
+        surface_id_from_params_or_workspace_focused(&current, workspace_index, params)
+    else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    let state = app.state::<SessionState>();
+    surface_list_from_params(
+        &set_panel_tty_for_control(app, &state, workspace_index, &panel_id, &tty),
+        params,
+    )
+}
+
+fn surface_report_shell_state(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(shell_activity) = shell_activity_param(params) else {
+        return invalid_params("state must be prompt, running, or unknown");
+    };
+    let current = snapshot(app);
+    let Some(workspace_index) = workspace_index_from_params_or_selected(&current, params) else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let Some(panel_id) =
+        surface_id_from_params_or_workspace_focused(&current, workspace_index, params)
+    else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    let state = app.state::<SessionState>();
+    surface_list_from_params(
+        &set_panel_shell_activity_for_control(
+            app,
+            &state,
+            workspace_index,
+            &panel_id,
+            shell_activity,
+        ),
+        params,
+    )
+}
+
+fn surface_clear_ports(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    surface_set_ports(app, params, &[])
+}
+
+fn surface_set_ports(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+    ports: &[u16],
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(workspace_index) = workspace_index_from_params_or_selected(&current, params) else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let Some(panel_id) =
+        surface_id_from_params_or_workspace_focused(&current, workspace_index, params)
+    else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    let state = app.state::<SessionState>();
+    surface_list_from_params(
+        &set_panel_listening_ports_for_control(app, &state, workspace_index, &panel_id, ports),
+        params,
+    )
+}
+
+fn surface_ports_kick(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let snapshot = snapshot(app);
+    let (workspace_index, panel_id) = match surface_ports_kick_target(&snapshot, params) {
+        Ok(target) => target,
+        Err(message) => return invalid_params(message),
+    };
+    let terminal_state = app.state::<TerminalState>();
+    let session_state = app.state::<SessionState>();
+    let scan = scan_panel_listening_ports(
+        app,
+        terminal_state.inner(),
+        session_state.inner(),
+        &panel_id,
+    );
+    let (scanner, ports, error) = match scan {
+        Ok(result) => ("pid-tree", result.ports, None),
+        Err(error) => ("unavailable", Vec::new(), Some(error)),
+    };
+    let agent_refresh = refresh_workspace_agent_ports(app, &snapshot, workspace_index);
+    let (agent_ports, agent_error) = match agent_refresh {
+        Ok(snapshot) => {
+            let ports = snapshot
+                .windows
+                .first()
+                .and_then(|window| window.tab_manager.workspaces.get(workspace_index))
+                .and_then(|workspace| workspace.agent_listening_ports.clone())
+                .unwrap_or_default();
+            (ports, None)
+        }
+        Err(error) => (Vec::new(), Some(error)),
+    };
+    ok(json!({
+        "accepted": true,
+        "workspace_ref": workspace_ref(workspace_index),
+        "surface_id": panel_id,
+        "reason": string_param(params, &["reason"]).unwrap_or_else(|| "command".to_string()),
+        "scanner": scanner,
+        "listening_ports": ports,
+        "agent_listening_ports": agent_ports,
+        "error": error,
+        "agent_error": agent_error,
+    }))
+}
+
+fn refresh_workspace_agent_ports(
+    app: &AppHandle,
+    snapshot: &AppSessionSnapshot,
+    workspace_index: usize,
+) -> Result<AppSessionSnapshot, String> {
+    let workspace = snapshot
+        .windows
+        .first()
+        .and_then(|window| window.tab_manager.workspaces.get(workspace_index))
+        .ok_or_else(|| "workspace not found".to_string())?;
+    let root_pids: Vec<u32> = workspace
+        .agent_pids
+        .as_ref()
+        .into_iter()
+        .flat_map(|entries| entries.iter())
+        .map(|entry| entry.pid)
+        .collect();
+    let mut ports = Vec::new();
+    for root_pid in root_pids {
+        ports.extend(scan_listening_ports_for_root_pid(root_pid)?);
+    }
+    ports.sort_unstable();
+    ports.dedup();
+    let state = app.state::<SessionState>();
+    Ok(set_workspace_agent_listening_ports_for_control(
+        app,
+        &state,
+        workspace_index,
+        &ports,
+    ))
+}
+
+fn surface_ports_kick_target(
+    snapshot: &AppSessionSnapshot,
+    params: &serde_json::Map<String, Value>,
+) -> Result<(usize, String), &'static str> {
+    let Some(workspace_index) = workspace_index_from_workspace_scope_or_selected(snapshot, params)
+    else {
+        return Err("Missing or invalid workspace selector");
+    };
+    let Some(panel_id) =
+        surface_id_from_params_or_workspace_focused(snapshot, workspace_index, params)
+    else {
+        return Err("Missing or invalid surface selector");
+    };
+    Ok((workspace_index, panel_id))
+}
+
+fn surface_focus(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(workspace_index) = workspace_index_from_workspace_scope_or_selected(&current, params)
+    else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let Some(panel_id) =
+        surface_id_from_params_or_workspace_focused(&current, workspace_index, params)
+    else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    let Some(workspace_id) = current
+        .windows
+        .first()
+        .and_then(|window| window.tab_manager.workspaces.get(workspace_index))
+        .and_then(|workspace| workspace.workspace_id.clone())
+    else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let state = app.state::<SessionState>();
+    let (changed, _snapshot) = select_workspace_surface(app, &state, &workspace_id, &panel_id);
+    ok(json!({
+        "accepted": true,
+        "changed": changed,
+        "workspace_id": workspace_id,
+        "workspace_ref": workspace_ref(workspace_index),
+        "surface_id": panel_id,
+        "surface_ref": surface_ref_for_panel(&current, workspace_index, &panel_id),
+    }))
+}
+
+fn surface_health(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(window) = current.windows.first() else {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Workspace not found".to_string(),
+            data: None,
+        };
+    };
+    let Some(workspace_index) = workspace_index_from_workspace_scope_or_selected(&current, params)
+    else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let Some(workspace) = window.tab_manager.workspaces.get(workspace_index) else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let surfaces = surfaces_for_workspace(workspace)
+        .into_iter()
+        .map(|surface| {
+            let mut surface = surface.as_object().cloned().unwrap_or_default();
+            surface.insert("in_window".to_string(), json!(true));
+            surface.insert("healthy".to_string(), json!(true));
+            Value::Object(surface)
+        })
+        .collect::<Vec<_>>();
+    ok(json!({
+        "workspace_id": workspace.workspace_id,
+        "workspace_ref": workspace_ref(workspace_index),
+        "surfaces": surfaces,
+        "window_id": window.window_id,
+        "window_ref": window.window_id.as_ref().map(|_| "window:1"),
+    }))
+}
+
+fn surface_send_text(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(text) = raw_string_param(params, &["text"]) else {
+        return invalid_params("Missing text");
+    };
+    surface_send_input(app, params, &text)
+}
+
+fn surface_send_key(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let Some(key) = string_param(params, &["key"]) else {
+        return invalid_params("Missing key");
+    };
+    let Some(sequence) = terminal_key_sequence(&key) else {
+        return ControlCallResult::Err {
+            code: "invalid_params".to_string(),
+            message: "Unknown key".to_string(),
+            data: Some(json!({"key": key}).try_into().unwrap_or(JsonValue::Null)),
+        };
+    };
+    surface_send_input(app, params, sequence)
+}
+
+fn surface_send_input(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+    data: &str,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(workspace_index) = workspace_index_from_workspace_scope_or_selected(&current, params)
+    else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let Some(panel_id) =
+        surface_id_from_params_or_workspace_focused(&current, workspace_index, params)
+    else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    if !surface_is_terminal(&current, workspace_index, &panel_id) {
+        return ControlCallResult::Err {
+            code: "invalid_params".to_string(),
+            message: "Surface is not a terminal".to_string(),
+            data: Some(
+                json!({"surface_id": panel_id.clone()})
+                    .try_into()
+                    .unwrap_or(JsonValue::Null),
+            ),
+        };
+    }
+    let terminal_state = app.state::<TerminalState>();
+    if let Err(message) = terminal_write_panel(terminal_state.inner(), &panel_id, data) {
+        return ControlCallResult::Err {
+            code: "surface_unavailable".to_string(),
+            message,
+            data: Some(
+                json!({"surface_id": panel_id.clone()})
+                    .try_into()
+                    .unwrap_or(JsonValue::Null),
+            ),
+        };
+    }
+    ok(json!({
+        "workspace_id": current.windows[0].tab_manager.workspaces[workspace_index].workspace_id,
+        "workspace_ref": workspace_ref(workspace_index),
+        "surface_id": panel_id,
+        "surface_ref": surface_ref_for_panel(&current, workspace_index, &panel_id),
+        "queued": false,
+        "window_id": current.windows[0].window_id,
+        "window_ref": current.windows[0].window_id.as_ref().map(|_| "window:1"),
+    }))
+}
+
+fn surface_move_to_new_workspace(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(panel_id) = surface_id_from_params_or_focused(&current, params) else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    let state = app.state::<SessionState>();
+    workspace_current(&move_panel_to_new_workspace_for_control(
+        app, &state, &panel_id,
+    ))
+}
+
+fn surface_open_browser(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(panel_id) = surface_id_from_params_or_focused(&current, params) else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    let url = string_param(params, &["url"]);
+    let state = app.state::<SessionState>();
+    match open_browser_url_in_panel(app, &state, &panel_id, url.as_deref()) {
+        Some(snapshot) => surface_list_from_params(&snapshot, params),
+        None => ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: format!("unable to open browser in pane {panel_id}"),
+            data: None,
+        },
+    }
+}
+
+fn browser_open_split(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(workspace_index) = workspace_index_from_workspace_scope_or_selected(&current, params)
+    else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let Some(panel_id) =
+        surface_id_from_params_or_workspace_focused(&current, workspace_index, params)
+    else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    let Some(orientation) = split_orientation_from_params(params) else {
+        return invalid_params("Invalid split orientation");
+    };
+    let Some(workspace) = current
+        .windows
+        .first()
+        .and_then(|window| window.tab_manager.workspaces.get(workspace_index))
+    else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let before_surface_ids = surfaces_for_workspace(workspace)
+        .iter()
+        .filter_map(|surface| surface.get("id").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let url = raw_string_param(params, &["url"]);
+    let state = app.state::<SessionState>();
+    match split_browser_for_control(
+        app,
+        &state,
+        &panel_id,
+        orientation,
+        insert_first_param(params),
+        url.as_deref(),
+    ) {
+        Ok(snapshot) => {
+            let Some(new_panel_id) =
+                new_browser_surface_id(&snapshot, workspace_index, &before_surface_ids)
+            else {
+                return surface_list_from_params(&snapshot, params);
+            };
+            match browser_surface_payload(&snapshot, workspace_index, &new_panel_id) {
+                Some(payload) => ok(payload),
+                None => surface_list_from_params(&snapshot, params),
+            }
+        }
+        Err(message) => ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message,
+            data: None,
+        },
+    }
+}
+
+fn browser_navigate(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let Some(url) = raw_string_param(params, &["url"]) else {
+        return invalid_params("Missing browser URL");
+    };
+    let current = snapshot(app);
+    let Some(workspace_index) = workspace_index_from_workspace_scope_or_selected(&current, params)
+    else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let Some(panel_id) =
+        surface_id_from_params_or_workspace_focused(&current, workspace_index, params)
+    else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    if !surface_is_browser(&current, workspace_index, &panel_id) {
+        return invalid_params("browser.navigate requires a browser surface");
+    }
+    let state = app.state::<SessionState>();
+    match open_browser_url_in_panel(app, &state, &panel_id, Some(&url)) {
+        Some(snapshot) => match browser_surface_payload(&snapshot, workspace_index, &panel_id) {
+            Some(payload) => ok(payload),
+            None => invalid_params("Missing or invalid surface selector"),
+        },
+        None => ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: format!("unable to navigate browser surface {panel_id}"),
+            data: None,
+        },
+    }
+}
+
+fn surface_open_markdown(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(file_path) = string_param(params, &["file_path", "path"]) else {
+        return invalid_params("Missing markdown file path");
+    };
+    let current = snapshot(app);
+    let Some(panel_id) = surface_id_from_params_or_focused(&current, params) else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    let state = app.state::<SessionState>();
+    match open_markdown_file_in_panel(app, &state, &panel_id, &file_path) {
+        Some(snapshot) => surface_list_from_params(&snapshot, params),
+        None => ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: format!("unable to open markdown file in pane {panel_id}"),
+            data: None,
+        },
+    }
+}
+
+fn surface_open_file(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(file_path) = string_param(params, &["file_path", "path"]) else {
+        return invalid_params("Missing file path");
+    };
+    let current = snapshot(app);
+    let Some(panel_id) = surface_id_from_params_or_focused(&current, params) else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    let state = app.state::<SessionState>();
+    match open_file_in_panel(app, &state, &panel_id, &file_path) {
+        Some(snapshot) => surface_list_from_params(&snapshot, params),
+        None => ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: format!("unable to open file in pane {panel_id}"),
+            data: None,
+        },
+    }
+}
+
+fn surface_open_diff(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(panel_id) = surface_id_from_params_or_focused(&current, params) else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    let diff_state = app.state::<DiffState>();
+    let (token, request_path) = match string_param(params, &["token", "diff_token"]) {
+        Some(token) => (
+            token,
+            string_param(params, &["request_path", "path"])
+                .unwrap_or_else(|| "/index.html".to_string()),
+        ),
+        None => match diff_state.create_starter_session(SystemTime::now()) {
+            Ok(created) => (created.token, created.request_path),
+            Err(message) => {
+                return ControlCallResult::Err {
+                    code: "internal_error".to_string(),
+                    message,
+                    data: None,
+                }
+            }
+        },
+    };
+    let state = app.state::<SessionState>();
+    match open_diff_viewer_in_panel(app, &state, &diff_state, &panel_id, &token, &request_path) {
+        Some(snapshot) => surface_list_from_params(&snapshot, params),
+        None => ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: format!("unable to open diff viewer in pane {panel_id}"),
+            data: None,
+        },
+    }
+}
+
+fn surface_select_adjacent(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+    next: bool,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(panel_id) = surface_id_from_params_or_focused(&current, params) else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    let state = app.state::<SessionState>();
+    surface_list_from_params(
+        &select_adjacent_panel_for_control(app, &state, &panel_id, next),
+        params,
+    )
+}
+
+fn surface_toggle_split_zoom(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(panel_id) = surface_id_from_params_or_focused(&current, params) else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    let state = app.state::<SessionState>();
+    surface_list_from_params(
+        &toggle_split_zoom_for_control(app, &state, &panel_id),
+        params,
+    )
+}
+
+fn browser_back(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(panel_id) = surface_id_from_params_or_focused(&current, params) else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    let state = app.state::<SessionState>();
+    surface_list_from_params(&browser_go_back_for_control(app, &state, &panel_id), params)
+}
+
+fn browser_forward(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(panel_id) = surface_id_from_params_or_focused(&current, params) else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    let state = app.state::<SessionState>();
+    surface_list_from_params(
+        &browser_go_forward_for_control(app, &state, &panel_id),
+        params,
+    )
+}
+
+fn browser_reload(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(workspace_index) = workspace_index_from_workspace_scope_or_selected(&current, params)
+    else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let Some(panel_id) =
+        surface_id_from_params_or_workspace_focused(&current, workspace_index, params)
+    else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    if !surface_is_browser(&current, workspace_index, &panel_id) {
+        return invalid_params("browser.reload requires a browser surface");
+    }
+    let state = app.state::<BrowserWebviewState>();
+    let reply = match browser_webview_command_for_control(state.inner(), &panel_id, "reload") {
+        Ok(reply) => reply,
+        Err(message) => {
+            return ControlCallResult::Err {
+                code: "surface_unavailable".to_string(),
+                message,
+                data: None,
+            }
+        }
+    };
+    let Some(mut payload) = browser_surface_payload(&current, workspace_index, &panel_id)
+        .and_then(|value| value.as_object().cloned())
+    else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    payload.insert("reloaded".to_string(), json!(true));
+    payload.insert("webview_attached".to_string(), json!(reply.attached));
+    ok(Value::Object(payload))
+}
+
+fn browser_url_get(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(workspace_index) = workspace_index_from_workspace_scope_or_selected(&current, params)
+    else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let Some(panel_id) =
+        surface_id_from_params_or_workspace_focused(&current, workspace_index, params)
+    else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    if !surface_is_browser(&current, workspace_index, &panel_id) {
+        return invalid_params("browser.url.get requires a browser surface");
+    }
+    match browser_surface_payload(&current, workspace_index, &panel_id) {
+        Some(payload) => ok(payload),
+        None => invalid_params("Missing or invalid surface selector"),
+    }
+}
+
+fn browser_focus_webview(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(workspace_index) = workspace_index_from_workspace_scope_or_selected(&current, params)
+    else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let Some(panel_id) =
+        surface_id_from_params_or_workspace_focused(&current, workspace_index, params)
+    else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    if !surface_is_browser(&current, workspace_index, &panel_id) {
+        return invalid_params("browser.focus_webview requires a browser surface");
+    }
+    let Some(workspace_id) = current
+        .windows
+        .first()
+        .and_then(|window| window.tab_manager.workspaces.get(workspace_index))
+        .and_then(|workspace| workspace.workspace_id.clone())
+    else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let session_state = app.state::<SessionState>();
+    let (_changed, snapshot) =
+        select_workspace_surface(app, &session_state, &workspace_id, &panel_id);
+    let browser_state = app.state::<BrowserWebviewState>();
+    let reply = match browser_webview_command_for_control(browser_state.inner(), &panel_id, "focus")
+    {
+        Ok(reply) => reply,
+        Err(message) => {
+            return ControlCallResult::Err {
+                code: "surface_unavailable".to_string(),
+                message,
+                data: None,
+            }
+        }
+    };
+    let Some(mut payload) = browser_surface_payload(&snapshot, workspace_index, &panel_id)
+        .and_then(|value| value.as_object().cloned())
+    else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    payload.insert("focused".to_string(), json!(true));
+    payload.insert("webview_attached".to_string(), json!(reply.attached));
+    payload.insert("focus_scope".to_string(), json!("webview"));
+    ok(Value::Object(payload))
+}
+
+fn browser_is_webview_focused(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(workspace_index) = workspace_index_from_workspace_scope_or_selected(&current, params)
+    else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let Some(panel_id) =
+        surface_id_from_params_or_workspace_focused(&current, workspace_index, params)
+    else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    if !surface_is_browser(&current, workspace_index, &panel_id) {
+        return invalid_params("browser.is_webview_focused requires a browser surface");
+    }
+    let Some(mut payload) = browser_surface_payload(&current, workspace_index, &panel_id)
+        .and_then(|value| value.as_object().cloned())
+    else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    let focused = payload
+        .get("surface")
+        .and_then(Value::as_object)
+        .and_then(|surface| surface.get("focused"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    payload.insert("focused".to_string(), json!(focused));
+    payload.insert("focus_scope".to_string(), json!("surface"));
+    payload.insert("webview_focus_verified".to_string(), json!(false));
+    ok(Value::Object(payload))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowserGetter {
+    Text,
+    Html,
+    Value,
+    Attr,
+    Title,
+    Count,
+    Box,
+    Styles,
+    Visible,
+    Enabled,
+    Checked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowserAction {
+    Click,
+    DblClick,
+    Hover,
+    Focus,
+    Type,
+    Fill,
+    Press,
+    KeyDown,
+    KeyUp,
+    Check,
+    Uncheck,
+    Select,
+    Scroll,
+    ScrollIntoView,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowserLocator {
+    Role,
+    Text,
+    Label,
+    Placeholder,
+    Alt,
+    Title,
+    TestId,
+    First,
+    Last,
+    Nth,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowserCookieAction {
+    Get,
+    Set,
+    Clear,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowserStorageAction {
+    Get,
+    Set,
+    Clear,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowserConsoleAction {
+    List,
+    Clear,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowserDialogAction {
+    Accept,
+    Dismiss,
+}
+
+fn browser_snapshot(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let Some(panel_id) = browser_automation_panel_id(app, params, "browser.snapshot") else {
+        return invalid_params("browser.snapshot requires a browser surface");
+    };
+    match run_browser_eval_script(app, &panel_id, browser_snapshot_script()) {
+        Ok(value) => match unwrap_browser_eval_result(value) {
+            Ok(value) => {
+                let snapshot = value
+                    .get("snapshot")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let refs = value.get("refs").cloned().unwrap_or_else(|| json!({}));
+                ok(json!({
+                    "surface_id": panel_id,
+                    "panel_id": panel_id,
+                    "snapshot": snapshot,
+                    "refs": refs,
+                }))
+            }
+            Err(message) => ControlCallResult::Err {
+                code: "javascript_error".to_string(),
+                message,
+                data: None,
+            },
+        },
+        Err(message) => ControlCallResult::Err {
+            code: "surface_unavailable".to_string(),
+            message,
+            data: None,
+        },
+    }
+}
+
+fn browser_screenshot(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(panel_id) = browser_automation_panel_id(app, params, "browser.screenshot") else {
+        return invalid_params("browser.screenshot requires a browser surface");
+    };
+    let value = match run_browser_eval_script(app, &panel_id, browser_screenshot_probe_script()) {
+        Ok(value) => match unwrap_browser_eval_result(value) {
+            Ok(value) => value,
+            Err(message) => {
+                return ControlCallResult::Err {
+                    code: "javascript_error".to_string(),
+                    message,
+                    data: None,
+                }
+            }
+        },
+        Err(message) => {
+            return ControlCallResult::Err {
+                code: "surface_unavailable".to_string(),
+                message,
+                data: None,
+            }
+        }
+    };
+    let width = value
+        .get("width")
+        .and_then(Value::as_u64)
+        .unwrap_or(1024)
+        .clamp(1, 2048) as u32;
+    let height = value
+        .get("height")
+        .and_then(Value::as_u64)
+        .unwrap_or(768)
+        .clamp(1, 2048) as u32;
+    let rgb = [
+        value
+            .get("r")
+            .and_then(Value::as_u64)
+            .unwrap_or(255)
+            .min(255) as u8,
+        value
+            .get("g")
+            .and_then(Value::as_u64)
+            .unwrap_or(255)
+            .min(255) as u8,
+        value
+            .get("b")
+            .and_then(Value::as_u64)
+            .unwrap_or(255)
+            .min(255) as u8,
+    ];
+    let png = solid_png(width, height, rgb);
+    let png_base64 = BASE64_STANDARD.encode(&png);
+    let mut payload = serde_json::Map::new();
+    payload.insert("surface_id".to_string(), json!(panel_id));
+    payload.insert("panel_id".to_string(), json!(panel_id));
+    payload.insert("png_base64".to_string(), json!(png_base64));
+    payload.insert("mime".to_string(), json!("image/png"));
+    payload.insert("width".to_string(), json!(width));
+    payload.insert("height".to_string(), json!(height));
+    payload.insert("captureMode".to_string(), json!("dom-background-raster"));
+    if let Some(path) = raw_string_param(params, &["path", "out", "file_path", "filePath"]) {
+        if let Err(error) = fs::write(&path, &png) {
+            return ControlCallResult::Err {
+                code: "io_error".to_string(),
+                message: format!("Could not write browser screenshot to {path}: {error}"),
+                data: None,
+            };
+        }
+        payload.insert("path".to_string(), json!(path));
+    }
+    ok(Value::Object(payload))
+}
+
+fn browser_eval(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let Some(script) = raw_string_param(params, &["script", "expression"]) else {
+        return invalid_params("browser.eval requires a script");
+    };
+    let Some(panel_id) = browser_automation_panel_id(app, params, "browser.eval") else {
+        return invalid_params("browser.eval requires a browser surface");
+    };
+    let wrapped_script = browser_eval_wrapper_script(&script);
+    match run_browser_eval_script(app, &panel_id, &wrapped_script) {
+        Ok(value) => match unwrap_browser_eval_result(value) {
+            Ok(value) => ok(json!({
+                "surface_id": panel_id,
+                "panel_id": panel_id,
+                "value": value,
+            })),
+            Err(message) => ControlCallResult::Err {
+                code: "javascript_error".to_string(),
+                message,
+                data: None,
+            },
+        },
+        Err(message) => ControlCallResult::Err {
+            code: "surface_unavailable".to_string(),
+            message,
+            data: None,
+        },
+    }
+}
+
+fn browser_add_init_script(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(script) = raw_string_param(params, &["script"]) else {
+        return invalid_params("browser.addinitscript requires a script");
+    };
+    let Some(panel_id) = browser_automation_panel_id(app, params, "browser.addinitscript") else {
+        return invalid_params("browser.addinitscript requires a browser surface");
+    };
+    let browser_state = app.state::<BrowserWebviewState>();
+    match browser_add_init_script_for_control(app, browser_state.inner(), &panel_id, &script) {
+        Ok(reply) => ok(json!({
+            "surface_id": panel_id,
+            "panel_id": panel_id,
+            "added": true,
+            "webview": reply,
+        })),
+        Err(message) => ControlCallResult::Err {
+            code: "surface_unavailable".to_string(),
+            message,
+            data: None,
+        },
+    }
+}
+
+fn browser_wait(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let Some(panel_id) = browser_automation_panel_id(app, params, "browser.wait") else {
+        return invalid_params("browser.wait requires a browser surface");
+    };
+    let timeout_ms = usize_param(params, &["timeout_ms", "timeoutMs"])
+        .unwrap_or(5_000)
+        .clamp(1, 60_000) as u64;
+    let condition = if let Some(selector) = raw_string_param(params, &["selector"]) {
+        browser_wait_selector_script(&selector)
+    } else if let Some(text) = raw_string_param(params, &["text_contains", "textContains", "text"])
+    {
+        browser_wait_text_script(&text)
+    } else if let Some(expression) = raw_string_param(params, &["function", "expression"]) {
+        browser_wait_function_script(&expression)
+    } else if let Some(load_state) = string_param(params, &["load_state", "loadState"]) {
+        browser_wait_load_state_script(&load_state)
+    } else if let Some(url_contains) = raw_string_param(params, &["url_contains", "urlContains"]) {
+        browser_wait_url_script(&url_contains)
+    } else {
+        return invalid_params(
+            "browser.wait requires selector, text_contains, function, load_state, or url_contains",
+        );
+    };
+    let deadline = SystemTime::now() + Duration::from_millis(timeout_ms);
+    let mut last_error = String::new();
+    while SystemTime::now() < deadline {
+        match run_browser_eval_script(app, &panel_id, &condition) {
+            Ok(value) => match unwrap_browser_eval_result(value) {
+                Ok(value) if value.as_bool().unwrap_or(false) => {
+                    return ok(json!({
+                        "surface_id": panel_id,
+                        "panel_id": panel_id,
+                        "value": true,
+                    }));
+                }
+                Ok(_) => {}
+                Err(message) => last_error = message,
+            },
+            Err(message) => {
+                return ControlCallResult::Err {
+                    code: "surface_unavailable".to_string(),
+                    message,
+                    data: None,
+                }
+            }
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    ControlCallResult::Err {
+        code: "timeout".to_string(),
+        message: if last_error.is_empty() {
+            format!("browser.wait timed out after {timeout_ms}ms")
+        } else {
+            format!("browser.wait timed out after {timeout_ms}ms: {last_error}")
+        },
+        data: None,
+    }
+}
+
+fn browser_action(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+    action: BrowserAction,
+) -> ControlCallResult {
+    let Some(panel_id) = browser_automation_panel_id(app, params, browser_action_method(action))
+    else {
+        return invalid_params(&format!(
+            "{} requires a browser surface",
+            browser_action_method(action)
+        ));
+    };
+    let selector = raw_string_param(params, &["selector"]);
+    if browser_action_requires_selector(action) && selector.as_deref().is_none_or(str::is_empty) {
+        return invalid_params(&format!(
+            "{} requires a selector",
+            browser_action_method(action)
+        ));
+    }
+    let text = raw_string_param(params, &["text", "value"]).unwrap_or_default();
+    let value = raw_string_param(params, &["value"]).unwrap_or_default();
+    let key = raw_string_param(params, &["key"]).unwrap_or_default();
+    let dx = f64_param(params, &["dx"]).unwrap_or(0.0);
+    let dy = f64_param(params, &["dy"]).unwrap_or(0.0);
+    let script = browser_action_script(action, selector.as_deref(), &text, &value, &key, dx, dy);
+    match run_browser_eval_script(app, &panel_id, &script) {
+        Ok(value) => match unwrap_browser_eval_result(value) {
+            Ok(value) => {
+                let mut payload = serde_json::Map::new();
+                payload.insert("surface_id".to_string(), json!(panel_id));
+                payload.insert("panel_id".to_string(), json!(panel_id));
+                payload.insert("value".to_string(), value);
+                if bool_param(params, &["snapshot_after", "snapshotAfter"]).unwrap_or(false) {
+                    if let Ok(snapshot) =
+                        run_browser_eval_script(app, &panel_id, browser_snapshot_script())
+                            .and_then(unwrap_browser_eval_result)
+                    {
+                        payload.insert("post_action_snapshot".to_string(), snapshot);
+                    }
+                }
+                ok(Value::Object(payload))
+            }
+            Err(message) => ControlCallResult::Err {
+                code: if message.contains("No element matches selector") {
+                    "not_found".to_string()
+                } else {
+                    "javascript_error".to_string()
+                },
+                message: browser_not_found_message(&message),
+                data: None,
+            },
+        },
+        Err(message) => ControlCallResult::Err {
+            code: "surface_unavailable".to_string(),
+            message,
+            data: None,
+        },
+    }
+}
+
+fn browser_find(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+    locator: BrowserLocator,
+) -> ControlCallResult {
+    let panel_id = if locator == BrowserLocator::Nth {
+        let mut surface_params = params.clone();
+        surface_params.remove("index");
+        browser_automation_panel_id(app, &surface_params, browser_locator_method(locator))
+    } else {
+        browser_automation_panel_id(app, params, browser_locator_method(locator))
+    };
+    let Some(panel_id) = panel_id else {
+        return invalid_params(&format!(
+            "{} requires a browser surface",
+            browser_locator_method(locator)
+        ));
+    };
+    let script = match browser_locator_script(locator, params) {
+        Ok(script) => script,
+        Err(message) => return invalid_params(&message),
+    };
+    match run_browser_eval_script(app, &panel_id, &script) {
+        Ok(value) => match unwrap_browser_eval_result(value) {
+            Ok(value) => ok(browser_locator_payload(&panel_id, value)),
+            Err(message) => ControlCallResult::Err {
+                code: "not_found".to_string(),
+                message: browser_not_found_message(&message),
+                data: None,
+            },
+        },
+        Err(message) => ControlCallResult::Err {
+            code: "surface_unavailable".to_string(),
+            message,
+            data: None,
+        },
+    }
+}
+
+fn browser_frame_select(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(selector) = raw_string_param(params, &["selector"]) else {
+        return invalid_params("browser.frame.select requires a selector");
+    };
+    let Some(panel_id) = browser_automation_panel_id(app, params, "browser.frame.select") else {
+        return invalid_params("browser.frame.select requires a browser surface");
+    };
+    match run_browser_eval_script(app, &panel_id, &browser_frame_select_script(&selector)) {
+        Ok(value) => match unwrap_browser_eval_result(value) {
+            Ok(value) => ok(json!({
+                "surface_id": panel_id,
+                "panel_id": panel_id,
+                "selected": true,
+                "frame": value,
+            })),
+            Err(message) => ControlCallResult::Err {
+                code: "not_found".to_string(),
+                message: browser_not_found_message(&message),
+                data: None,
+            },
+        },
+        Err(message) => ControlCallResult::Err {
+            code: "surface_unavailable".to_string(),
+            message,
+            data: None,
+        },
+    }
+}
+
+fn browser_frame_main(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(panel_id) = browser_automation_panel_id(app, params, "browser.frame.main") else {
+        return invalid_params("browser.frame.main requires a browser surface");
+    };
+    match run_browser_eval_script(app, &panel_id, browser_frame_main_script()) {
+        Ok(value) => match unwrap_browser_eval_result(value) {
+            Ok(_) => ok(json!({
+                "surface_id": panel_id,
+                "panel_id": panel_id,
+                "selected": false,
+            })),
+            Err(message) => ControlCallResult::Err {
+                code: "javascript_error".to_string(),
+                message,
+                data: None,
+            },
+        },
+        Err(message) => ControlCallResult::Err {
+            code: "surface_unavailable".to_string(),
+            message,
+            data: None,
+        },
+    }
+}
+
+fn browser_dialog(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+    action: BrowserDialogAction,
+) -> ControlCallResult {
+    let Some(panel_id) = browser_automation_panel_id(app, params, browser_dialog_method(action))
+    else {
+        return invalid_params(&format!(
+            "{} requires a browser surface",
+            browser_dialog_method(action)
+        ));
+    };
+    let text = raw_string_param(params, &["text"]);
+    match run_browser_eval_script(
+        app,
+        &panel_id,
+        &browser_dialog_script(action, text.as_deref()),
+    ) {
+        Ok(value) => match unwrap_browser_eval_result(value) {
+            Ok(value) => ok(browser_dialog_payload(&panel_id, action, value)),
+            Err(message) => ControlCallResult::Err {
+                code: "not_found".to_string(),
+                message,
+                data: None,
+            },
+        },
+        Err(message) => ControlCallResult::Err {
+            code: "surface_unavailable".to_string(),
+            message,
+            data: None,
+        },
+    }
+}
+
+fn browser_download_wait(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(path) = raw_string_param(params, &["path", "file_path", "filePath"]) else {
+        return invalid_params("browser.download.wait requires a path");
+    };
+    let Some(panel_id) = browser_automation_panel_id(app, params, "browser.download.wait") else {
+        return invalid_params("browser.download.wait requires a browser surface");
+    };
+    let timeout_ms = usize_param(params, &["timeout_ms", "timeoutMs"])
+        .unwrap_or(30_000)
+        .clamp(1, 300_000) as u64;
+    let deadline = SystemTime::now() + Duration::from_millis(timeout_ms);
+    while SystemTime::now() < deadline {
+        if fs::metadata(&path).is_ok_and(|metadata| metadata.is_file()) {
+            return ok(json!({
+                "surface_id": panel_id,
+                "panel_id": panel_id,
+                "path": path,
+                "downloaded": true,
+            }));
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    ControlCallResult::Err {
+        code: "timeout".to_string(),
+        message: format!("browser.download.wait timed out after {timeout_ms}ms for {path}"),
+        data: None,
+    }
+}
+
+fn browser_addscript(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(script) = raw_string_param(params, &["script"]) else {
+        return invalid_params("browser.addscript requires a script");
+    };
+    let Some(panel_id) = browser_automation_panel_id(app, params, "browser.addscript") else {
+        return invalid_params("browser.addscript requires a browser surface");
+    };
+    match run_browser_eval_script(app, &panel_id, &browser_eval_wrapper_script(&script)) {
+        Ok(value) => match unwrap_browser_eval_result(value) {
+            Ok(value) => ok(json!({
+                "surface_id": panel_id,
+                "panel_id": panel_id,
+                "value": value,
+            })),
+            Err(message) => ControlCallResult::Err {
+                code: "javascript_error".to_string(),
+                message,
+                data: None,
+            },
+        },
+        Err(message) => ControlCallResult::Err {
+            code: "surface_unavailable".to_string(),
+            message,
+            data: None,
+        },
+    }
+}
+
+fn browser_addstyle(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let Some(css) = raw_string_param(params, &["css", "style"]) else {
+        return invalid_params("browser.addstyle requires css");
+    };
+    let Some(panel_id) = browser_automation_panel_id(app, params, "browser.addstyle") else {
+        return invalid_params("browser.addstyle requires a browser surface");
+    };
+    match run_browser_eval_script(app, &panel_id, &browser_addstyle_script(&css)) {
+        Ok(value) => match unwrap_browser_eval_result(value) {
+            Ok(value) => ok(json!({
+                "surface_id": panel_id,
+                "panel_id": panel_id,
+                "value": value,
+                "added": value.as_bool().unwrap_or(true),
+            })),
+            Err(message) => ControlCallResult::Err {
+                code: "javascript_error".to_string(),
+                message,
+                data: None,
+            },
+        },
+        Err(message) => ControlCallResult::Err {
+            code: "surface_unavailable".to_string(),
+            message,
+            data: None,
+        },
+    }
+}
+
+fn browser_cookies(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+    action: BrowserCookieAction,
+) -> ControlCallResult {
+    let Some(panel_id) = browser_automation_panel_id(app, params, browser_cookie_method(action))
+    else {
+        return invalid_params(&format!(
+            "{} requires a browser surface",
+            browser_cookie_method(action)
+        ));
+    };
+    let name = string_param(params, &["name"]);
+    let value = raw_string_param(params, &["value"]);
+    if matches!(
+        action,
+        BrowserCookieAction::Set | BrowserCookieAction::Clear
+    ) && name.is_none()
+    {
+        return invalid_params(&format!(
+            "{} requires a cookie name",
+            browser_cookie_method(action)
+        ));
+    }
+    if action == BrowserCookieAction::Set && value.is_none() {
+        return invalid_params("browser.cookies.set requires a cookie value");
+    }
+    let script = browser_cookie_script(action, name.as_deref(), value.as_deref());
+    match run_browser_eval_script(app, &panel_id, &script) {
+        Ok(value) => match unwrap_browser_eval_result(value) {
+            Ok(value) => ok(browser_cookie_payload(&panel_id, action, value)),
+            Err(message) => ControlCallResult::Err {
+                code: "javascript_error".to_string(),
+                message,
+                data: None,
+            },
+        },
+        Err(message) => ControlCallResult::Err {
+            code: "surface_unavailable".to_string(),
+            message,
+            data: None,
+        },
+    }
+}
+
+fn browser_storage(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+    action: BrowserStorageAction,
+) -> ControlCallResult {
+    let Some(panel_id) = browser_automation_panel_id(app, params, browser_storage_method(action))
+    else {
+        return invalid_params(&format!(
+            "{} requires a browser surface",
+            browser_storage_method(action)
+        ));
+    };
+    let storage_type = string_param(params, &["type", "storage"])
+        .unwrap_or_else(|| "local".to_string())
+        .to_ascii_lowercase();
+    if !matches!(storage_type.as_str(), "local" | "session") {
+        return invalid_params("browser.storage type must be local or session");
+    }
+    let key = raw_string_param(params, &["key"]);
+    let value = params.get("value").cloned().unwrap_or(Value::Null);
+    if matches!(
+        action,
+        BrowserStorageAction::Get | BrowserStorageAction::Set
+    ) && key.is_none()
+    {
+        return invalid_params(&format!(
+            "{} requires a key",
+            browser_storage_method(action)
+        ));
+    }
+    if action == BrowserStorageAction::Set && value.is_null() {
+        return invalid_params("browser.storage.set requires a value");
+    }
+    let script = browser_storage_script(action, &storage_type, key.as_deref(), &value);
+    match run_browser_eval_script(app, &panel_id, &script) {
+        Ok(value) => match unwrap_browser_eval_result(value) {
+            Ok(value) => ok(browser_storage_payload(&panel_id, action, value)),
+            Err(message) => ControlCallResult::Err {
+                code: "javascript_error".to_string(),
+                message,
+                data: None,
+            },
+        },
+        Err(message) => ControlCallResult::Err {
+            code: "surface_unavailable".to_string(),
+            message,
+            data: None,
+        },
+    }
+}
+
+fn browser_tab_list(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(workspace_index) = workspace_index_from_workspace_scope_or_selected(&current, params)
+    else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let tabs = current
+        .windows
+        .first()
+        .and_then(|window| window.tab_manager.workspaces.get(workspace_index))
+        .map(surfaces_for_workspace)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|surface| {
+            surface
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| kind == "browser")
+        })
+        .map(|surface| {
+            json!({
+                "id": surface.get("id").cloned().unwrap_or(Value::Null),
+                "surface_id": surface.get("id").cloned().unwrap_or(Value::Null),
+                "title": surface.get("title").cloned().unwrap_or(Value::Null),
+                "url": surface.get("browser_url").cloned().unwrap_or(Value::Null),
+                "focused": surface.get("focused").cloned().unwrap_or(json!(false)),
+            })
+        })
+        .collect::<Vec<_>>();
+    ok(json!({
+        "tabs": tabs,
+        "count": tabs.len(),
+    }))
+}
+
+fn browser_tab_new(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let mut open_params = params.clone();
+    if !open_params.contains_key("url") {
+        open_params.insert("url".to_string(), json!("about:blank"));
+    }
+    browser_open_split(app, &open_params)
+}
+
+fn browser_tab_switch(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(target_surface_id) = string_param(
+        params,
+        &[
+            "target_surface_id",
+            "targetSurfaceId",
+            "target",
+            "tab_id",
+            "tabId",
+        ],
+    ) else {
+        return invalid_params("browser.tab.switch requires a target surface id");
+    };
+    let mut focus_params = params.clone();
+    focus_params.insert("surface_id".to_string(), json!(target_surface_id));
+    surface_focus(app, &focus_params)
+}
+
+fn browser_tab_close(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(target_surface_id) = string_param(
+        params,
+        &[
+            "target_surface_id",
+            "targetSurfaceId",
+            "target",
+            "tab_id",
+            "tabId",
+        ],
+    )
+    .or_else(|| string_param(params, &["surface_id", "panel_id", "id"])) else {
+        return invalid_params("browser.tab.close requires a target surface id");
+    };
+    let mut close_params = params.clone();
+    close_params.insert("surface_id".to_string(), json!(target_surface_id));
+    surface_close(app, &close_params)
+}
+
+fn browser_console(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+    action: BrowserConsoleAction,
+) -> ControlCallResult {
+    let Some(panel_id) = browser_automation_panel_id(app, params, browser_console_method(action))
+    else {
+        return invalid_params(&format!(
+            "{} requires a browser surface",
+            browser_console_method(action)
+        ));
+    };
+    let script = match action {
+        BrowserConsoleAction::List => browser_console_list_script(),
+        BrowserConsoleAction::Clear => browser_console_clear_script(),
+    };
+    match run_browser_eval_script(app, &panel_id, &script) {
+        Ok(value) => match unwrap_browser_eval_result(value) {
+            Ok(value) => ok(browser_console_payload(&panel_id, action, value)),
+            Err(message) => ControlCallResult::Err {
+                code: "javascript_error".to_string(),
+                message,
+                data: None,
+            },
+        },
+        Err(message) => ControlCallResult::Err {
+            code: "surface_unavailable".to_string(),
+            message,
+            data: None,
+        },
+    }
+}
+
+fn browser_errors_list(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(panel_id) = browser_automation_panel_id(app, params, "browser.errors.list") else {
+        return invalid_params("browser.errors.list requires a browser surface");
+    };
+    match run_browser_eval_script(app, &panel_id, &browser_errors_list_script()) {
+        Ok(value) => match unwrap_browser_eval_result(value) {
+            Ok(value) => ok(browser_errors_payload(&panel_id, value)),
+            Err(message) => ControlCallResult::Err {
+                code: "javascript_error".to_string(),
+                message,
+                data: None,
+            },
+        },
+        Err(message) => ControlCallResult::Err {
+            code: "surface_unavailable".to_string(),
+            message,
+            data: None,
+        },
+    }
+}
+
+fn browser_state_save(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(path) = raw_string_param(params, &["path", "file_path", "filePath"]) else {
+        return invalid_params("browser.state.save requires a path");
+    };
+    let Some(panel_id) = browser_automation_panel_id(app, params, "browser.state.save") else {
+        return invalid_params("browser.state.save requires a browser surface");
+    };
+    let state = match run_browser_eval_script(app, &panel_id, browser_state_capture_script()) {
+        Ok(value) => match unwrap_browser_eval_result(value) {
+            Ok(value) => value,
+            Err(message) => {
+                return ControlCallResult::Err {
+                    code: "javascript_error".to_string(),
+                    message,
+                    data: None,
+                }
+            }
+        },
+        Err(message) => {
+            return ControlCallResult::Err {
+                code: "surface_unavailable".to_string(),
+                message,
+                data: None,
+            }
+        }
+    };
+    let encoded = match serde_json::to_string_pretty(&state) {
+        Ok(encoded) => encoded,
+        Err(error) => {
+            return ControlCallResult::Err {
+                code: "internal_error".to_string(),
+                message: format!("Could not serialize browser state: {error}"),
+                data: None,
+            }
+        }
+    };
+    if let Err(error) = fs::write(&path, encoded) {
+        return ControlCallResult::Err {
+            code: "io_error".to_string(),
+            message: format!("Could not write browser state to {path}: {error}"),
+            data: None,
+        };
+    }
+    ok(browser_state_payload(&panel_id, &path, "saved", state))
+}
+
+fn browser_state_load(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(path) = raw_string_param(params, &["path", "file_path", "filePath"]) else {
+        return invalid_params("browser.state.load requires a path");
+    };
+    let Some(panel_id) = browser_automation_panel_id(app, params, "browser.state.load") else {
+        return invalid_params("browser.state.load requires a browser surface");
+    };
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(error) => {
+            return ControlCallResult::Err {
+                code: "io_error".to_string(),
+                message: format!("Could not read browser state from {path}: {error}"),
+                data: None,
+            }
+        }
+    };
+    let state: Value = match serde_json::from_str(&raw) {
+        Ok(state) => state,
+        Err(error) => {
+            return ControlCallResult::Err {
+                code: "invalid_params".to_string(),
+                message: format!("Browser state file is not valid JSON: {error}"),
+                data: None,
+            }
+        }
+    };
+    match run_browser_eval_script(app, &panel_id, &browser_state_restore_script(&state)) {
+        Ok(value) => match unwrap_browser_eval_result(value) {
+            Ok(value) => ok(browser_state_payload(&panel_id, &path, "loaded", value)),
+            Err(message) => ControlCallResult::Err {
+                code: "javascript_error".to_string(),
+                message,
+                data: None,
+            },
+        },
+        Err(message) => ControlCallResult::Err {
+            code: "surface_unavailable".to_string(),
+            message,
+            data: None,
+        },
+    }
+}
+
+fn browser_highlight(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(selector) = raw_string_param(params, &["selector"]) else {
+        return invalid_params("browser.highlight requires a selector");
+    };
+    let Some(panel_id) = browser_automation_panel_id(app, params, "browser.highlight") else {
+        return invalid_params("browser.highlight requires a browser surface");
+    };
+    match run_browser_eval_script(app, &panel_id, &browser_highlight_script(&selector)) {
+        Ok(value) => match unwrap_browser_eval_result(value) {
+            Ok(value) => ok(json!({
+                "surface_id": panel_id,
+                "panel_id": panel_id,
+                "highlighted": value.as_bool().unwrap_or(true),
+                "value": value,
+            })),
+            Err(message) => ControlCallResult::Err {
+                code: "not_found".to_string(),
+                message: browser_not_found_message(&message),
+                data: None,
+            },
+        },
+        Err(message) => ControlCallResult::Err {
+            code: "surface_unavailable".to_string(),
+            message,
+            data: None,
+        },
+    }
+}
+
+fn browser_get_title(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    browser_get_selector_value(app, params, BrowserGetter::Title)
+}
+
+fn browser_get_selector_value(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+    getter: BrowserGetter,
+) -> ControlCallResult {
+    let Some(panel_id) = browser_automation_panel_id(app, params, browser_getter_method(getter))
+    else {
+        return invalid_params(&format!(
+            "{} requires a browser surface",
+            browser_getter_method(getter)
+        ));
+    };
+    let selector = raw_string_param(params, &["selector"]);
+    if matches!(
+        getter,
+        BrowserGetter::Text
+            | BrowserGetter::Html
+            | BrowserGetter::Value
+            | BrowserGetter::Attr
+            | BrowserGetter::Box
+            | BrowserGetter::Styles
+            | BrowserGetter::Visible
+            | BrowserGetter::Enabled
+            | BrowserGetter::Checked
+    ) && selector.as_deref().is_none_or(str::is_empty)
+    {
+        return invalid_params(&format!(
+            "{} requires a selector",
+            browser_getter_method(getter)
+        ));
+    }
+    if getter == BrowserGetter::Count && selector.as_deref().is_none_or(str::is_empty) {
+        return invalid_params("browser.get.count requires a selector");
+    }
+    let attr = if getter == BrowserGetter::Attr {
+        match string_param(params, &["attribute", "attr", "name"]) {
+            Some(attr) => Some(attr),
+            None => return invalid_params("browser.get.attr requires an attribute name"),
+        }
+    } else if getter == BrowserGetter::Styles {
+        string_param(params, &["property", "name"])
+    } else {
+        None
+    };
+    let script = browser_getter_script(getter, selector.as_deref(), attr.as_deref());
+    match run_browser_eval_script(app, &panel_id, &script) {
+        Ok(value) => match unwrap_browser_eval_result(value) {
+            Ok(value) => ok(browser_getter_payload(&panel_id, getter, value)),
+            Err(message) => ControlCallResult::Err {
+                code: if message.contains("No element matches selector") {
+                    "not_found".to_string()
+                } else {
+                    "javascript_error".to_string()
+                },
+                message,
+                data: None,
+            },
+        },
+        Err(message) => ControlCallResult::Err {
+            code: "surface_unavailable".to_string(),
+            message,
+            data: None,
+        },
+    }
+}
+
+fn browser_automation_panel_id(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+    _method: &str,
+) -> Option<String> {
+    let current = snapshot(app);
+    let workspace_index = workspace_index_from_workspace_scope_or_selected(&current, params)?;
+    let panel_id = surface_id_from_params_or_workspace_focused(&current, workspace_index, params)?;
+    surface_is_browser(&current, workspace_index, &panel_id).then_some(panel_id)
+}
+
+fn run_browser_eval_script(app: &AppHandle, panel_id: &str, script: &str) -> Result<Value, String> {
+    let state = app.state::<BrowserWebviewState>();
+    browser_eval_for_control(state.inner(), panel_id, script)
+}
+
+fn browser_eval_wrapper_script(script: &str) -> String {
+    let encoded = serde_json::to_string(script).expect("serializing JS source cannot fail");
+    let dialog_hook =
+        serde_json::to_string(browser_dialog_hook_script()).expect("dialog hook JSON");
+    format!(
+        r#"(() => {{
+  {context}
+  (0, eval)({dialog_hook});
+  const __cmuxScript = {encoded};
+  try {{
+    const value = Function('window', 'document', `return (function() {{ return eval(${{JSON.stringify(__cmuxScript)}}); }}).call(window);`)(window, document);
+    return {{ ok: true, value }};
+  }} catch (error) {{
+    return {{
+      ok: false,
+      error: String((error && (error.stack || error.message)) || error)
+    }};
+  }}
+}})()"#,
+        context = browser_js_context_prelude(),
+    )
+}
+
+fn browser_js_context_prelude() -> &'static str {
+    r#"const __cmuxTopWindow = globalThis;
+  const __cmuxFrameSelector = __cmuxTopWindow.__cmuxSelectedFrameSelector || '';
+  const __cmuxFrameElement = __cmuxFrameSelector ? __cmuxTopWindow.document.querySelector(__cmuxFrameSelector) : null;
+  const window = (__cmuxFrameElement && __cmuxFrameElement.contentWindow) || __cmuxTopWindow;
+  const document = window.document;"#
+}
+
+fn browser_dialog_hook_script() -> &'static str {
+    r#"(() => {
+  if (!globalThis.__cmuxDialogCapture) {
+    const state = { queue: [] };
+    const push = (type, message, defaultValue) => {
+      state.queue.push({ type, message: String(message || ''), defaultValue: defaultValue == null ? null : String(defaultValue), timestamp: Date.now() });
+    };
+    globalThis.alert = (message) => { push('alert', message, null); };
+    globalThis.confirm = (message) => { push('confirm', message, null); return true; };
+    globalThis.prompt = (message, defaultValue) => { push('prompt', message, defaultValue); return defaultValue == null ? '' : String(defaultValue); };
+    globalThis.__cmuxDialogCapture = state;
+  }
+  return globalThis.__cmuxDialogCapture;
+})()"#
+}
+
+fn browser_screenshot_probe_script() -> &'static str {
+    r#"(() => {
+  const __cmuxTopWindow = globalThis;
+  const __cmuxFrameSelector = __cmuxTopWindow.__cmuxSelectedFrameSelector || '';
+  const __cmuxFrameElement = __cmuxFrameSelector ? __cmuxTopWindow.document.querySelector(__cmuxFrameSelector) : null;
+  const window = (__cmuxFrameElement && __cmuxFrameElement.contentWindow) || __cmuxTopWindow;
+  const document = window.document;
+  try {
+    const parseColor = (value) => {
+      const match = String(value || '').match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
+      if (!match) { return null; }
+      return { r: Number(match[1]), g: Number(match[2]), b: Number(match[3]) };
+    };
+    let element = document.body || document.documentElement;
+    let color = null;
+    while (element && !color) {
+      color = parseColor(window.getComputedStyle(element).backgroundColor);
+      if (color && (color.r !== 0 || color.g !== 0 || color.b !== 0)) { break; }
+      element = element.parentElement;
+    }
+    color = color || { r: 255, g: 255, b: 255 };
+    return {
+      ok: true,
+      value: {
+        width: Math.max(1, Math.round(window.innerWidth || document.documentElement.clientWidth || 1024)),
+        height: Math.max(1, Math.round(window.innerHeight || document.documentElement.clientHeight || 768)),
+        r: color.r,
+        g: color.g,
+        b: color.b
+      }
+    };
+  } catch (error) {
+    return { ok: false, error: String((error && (error.stack || error.message)) || error) };
+  }
+})()"#
+}
+
+fn browser_frame_select_script(selector: &str) -> String {
+    let encoded = serde_json::to_string(selector).expect("frame selector JSON is infallible");
+    format!(
+        r#"(() => {{
+  const selector = {encoded};
+  try {{
+    const frame = document.querySelector(selector);
+    if (!frame || !frame.contentWindow || !frame.contentWindow.document) {{
+      throw new Error(`No accessible frame matches selector: ${{selector}}`);
+    }}
+    window.__cmuxSelectedFrameSelector = selector;
+    return {{ ok: true, value: {{ selector, url: String(frame.contentWindow.location.href || '') }} }};
+  }} catch (error) {{
+    return {{ ok: false, error: String((error && (error.stack || error.message)) || error) }};
+  }}
+}})()"#
+    )
+}
+
+fn browser_frame_main_script() -> &'static str {
+    r#"(() => {
+  try {
+    delete window.__cmuxSelectedFrameSelector;
+    return { ok: true, value: true };
+  } catch (error) {
+    return { ok: false, error: String((error && (error.stack || error.message)) || error) };
+  }
+})()"#
+}
+
+fn browser_dialog_script(action: BrowserDialogAction, text: Option<&str>) -> String {
+    let hook = serde_json::to_string(browser_dialog_hook_script()).expect("dialog hook JSON");
+    let encoded_text = serde_json::to_string(text.unwrap_or_default()).expect("dialog text JSON");
+    let accepted = action == BrowserDialogAction::Accept;
+    format!(
+        r#"(() => {{
+  try {{
+    (0, eval)({hook});
+    const text = {encoded_text};
+    const queue = globalThis.__cmuxDialogCapture.queue;
+    const dialog = queue.shift();
+    if (!dialog) {{ throw new Error('No pending browser dialog'); }}
+    return {{ ok: true, value: {{ ...dialog, accepted: {accepted}, text }} }};
+  }} catch (error) {{
+    return {{ ok: false, error: String((error && (error.stack || error.message)) || error) }};
+  }}
+}})()"#
+    )
+}
+
+fn browser_snapshot_script() -> &'static str {
+    r#"(() => {
+  try {
+    const refs = {};
+    const lines = ['- document ' + JSON.stringify(document.title || '')];
+    const cssPath = (element) => {
+      if (!element || element.nodeType !== 1) { return ''; }
+      if (element.id) { return '#' + CSS.escape(element.id); }
+      const parts = [];
+      let current = element;
+      while (current && current.nodeType === 1 && current !== document.documentElement) {
+        let part = current.tagName.toLowerCase();
+        if (current.classList && current.classList.length) {
+          part += '.' + Array.from(current.classList).slice(0, 2).map((name) => CSS.escape(name)).join('.');
+        }
+        const parent = current.parentElement;
+        if (parent) {
+          const siblings = Array.from(parent.children).filter((child) => child.tagName === current.tagName);
+          if (siblings.length > 1) {
+            part += `:nth-of-type(${siblings.indexOf(current) + 1})`;
+          }
+        }
+        parts.unshift(part);
+        current = parent;
+      }
+      return parts.join(' > ');
+    };
+    const describe = (element) => {
+      const tag = element.tagName.toLowerCase();
+      const id = element.id ? `#${element.id}` : '';
+      const label = element.getAttribute('aria-label') || element.getAttribute('title') || element.getAttribute('placeholder') || (element.innerText || element.value || '').trim();
+      return `${tag}${id}${label ? ' ' + JSON.stringify(label.slice(0, 80)) : ''}`;
+    };
+    let index = 1;
+    for (const element of Array.from(document.querySelectorAll('a,button,input,select,textarea,label,[role],[data-testid],h1,h2,h3,p,div,span')).slice(0, 120)) {
+      const ref = `e${index++}`;
+      const selector = cssPath(element);
+      refs[ref] = { selector, tag: element.tagName.toLowerCase(), text: (element.innerText || element.value || '').trim().slice(0, 200) };
+      lines.push(`  - ${ref} ${describe(element)}`);
+    }
+    window.__cmuxSnapshotRefs = refs;
+    return { ok: true, value: { snapshot: lines.join('\n'), refs } };
+  } catch (error) {
+    return { ok: false, error: String((error && (error.stack || error.message)) || error) };
+  }
+})()"#
+}
+
+fn browser_locator_script(
+    locator: BrowserLocator,
+    params: &serde_json::Map<String, Value>,
+) -> Result<String, String> {
+    let (kind, primary, secondary, index) = match locator {
+        BrowserLocator::Role => (
+            "role",
+            string_param(params, &["role"])
+                .ok_or_else(|| "browser.find.role requires a role".to_string())?,
+            raw_string_param(params, &["name"]).unwrap_or_default(),
+            0usize,
+        ),
+        BrowserLocator::Text => (
+            "text",
+            raw_string_param(params, &["text"])
+                .ok_or_else(|| "browser.find.text requires text".to_string())?,
+            String::new(),
+            0usize,
+        ),
+        BrowserLocator::Label => (
+            "label",
+            raw_string_param(params, &["label", "text"])
+                .ok_or_else(|| "browser.find.label requires a label".to_string())?,
+            String::new(),
+            0usize,
+        ),
+        BrowserLocator::Placeholder => (
+            "placeholder",
+            raw_string_param(params, &["placeholder"])
+                .ok_or_else(|| "browser.find.placeholder requires a placeholder".to_string())?,
+            String::new(),
+            0usize,
+        ),
+        BrowserLocator::Alt => (
+            "alt",
+            raw_string_param(params, &["alt", "text"])
+                .ok_or_else(|| "browser.find.alt requires alt text".to_string())?,
+            String::new(),
+            0usize,
+        ),
+        BrowserLocator::Title => (
+            "title",
+            raw_string_param(params, &["title"])
+                .ok_or_else(|| "browser.find.title requires a title".to_string())?,
+            String::new(),
+            0usize,
+        ),
+        BrowserLocator::TestId => (
+            "testid",
+            raw_string_param(params, &["testid", "test_id", "testId"])
+                .ok_or_else(|| "browser.find.testid requires a testid".to_string())?,
+            String::new(),
+            0usize,
+        ),
+        BrowserLocator::First => (
+            "first",
+            raw_string_param(params, &["selector"])
+                .ok_or_else(|| "browser.find.first requires a selector".to_string())?,
+            String::new(),
+            0usize,
+        ),
+        BrowserLocator::Last => (
+            "last",
+            raw_string_param(params, &["selector"])
+                .ok_or_else(|| "browser.find.last requires a selector".to_string())?,
+            String::new(),
+            0usize,
+        ),
+        BrowserLocator::Nth => (
+            "nth",
+            raw_string_param(params, &["selector"])
+                .ok_or_else(|| "browser.find.nth requires a selector".to_string())?,
+            String::new(),
+            usize_param(params, &["index", "nth"]).unwrap_or(0),
+        ),
+    };
+    let encoded_kind = serde_json::to_string(kind).expect("locator kind JSON is infallible");
+    let encoded_primary =
+        serde_json::to_string(&primary).expect("locator value JSON is infallible");
+    let encoded_secondary =
+        serde_json::to_string(&secondary).expect("locator secondary JSON is infallible");
+    Ok(format!(
+        r#"(() => {{
+  {context}
+  const kind = {encoded_kind};
+  const primary = {encoded_primary};
+  const secondary = {encoded_secondary};
+  const nthIndex = {index};
+  try {{
+    const normalize = (value) => String(value || '').trim().toLowerCase();
+    const includes = (value, needle) => normalize(value).includes(normalize(needle));
+    const cssPath = (element) => {{
+      if (!element || element.nodeType !== 1) {{ return ''; }}
+      if (element.id) {{ return '#' + CSS.escape(element.id); }}
+      const parts = [];
+      let current = element;
+      while (current && current.nodeType === 1 && current !== document.documentElement) {{
+        let part = current.tagName.toLowerCase();
+        const parent = current.parentElement;
+        if (parent) {{
+          const siblings = Array.from(parent.children).filter((child) => child.tagName === current.tagName);
+          if (siblings.length > 1) {{
+            part += `:nth-of-type(${{siblings.indexOf(current) + 1}})`;
+          }}
+        }}
+        parts.unshift(part);
+        current = parent;
+      }}
+      return parts.join(' > ');
+    }};
+    const implicitRole = (element) => {{
+      const tag = element.tagName.toLowerCase();
+      const type = normalize(element.getAttribute('type'));
+      if (element.getAttribute('role')) {{ return normalize(element.getAttribute('role')); }}
+      if (tag === 'button') {{ return 'button'; }}
+      if (tag === 'a' && element.hasAttribute('href')) {{ return 'link'; }}
+      if (tag === 'select') {{ return 'combobox'; }}
+      if (tag === 'textarea') {{ return 'textbox'; }}
+      if (tag === 'input') {{
+        if (type === 'checkbox') {{ return 'checkbox'; }}
+        if (type === 'radio') {{ return 'radio'; }}
+        if (type === 'submit' || type === 'button') {{ return 'button'; }}
+        return 'textbox';
+      }}
+      return '';
+    }};
+    const accessibleName = (element) => {{
+      const aria = element.getAttribute('aria-label');
+      if (aria) {{ return aria; }}
+      const labelledBy = element.getAttribute('aria-labelledby');
+      if (labelledBy) {{
+        return labelledBy.split(/\s+/).map((id) => document.getElementById(id)?.innerText || '').join(' ').trim();
+      }}
+      if (element.id) {{
+        const label = document.querySelector(`label[for="${{CSS.escape(element.id)}}"]`);
+        if (label) {{ return label.innerText || label.textContent || ''; }}
+      }}
+      return element.innerText || element.value || element.getAttribute('title') || element.getAttribute('alt') || '';
+    }};
+    let candidates = [];
+    if (kind === 'role') {{
+      candidates = Array.from(document.querySelectorAll('*')).filter((element) => {{
+        if (implicitRole(element) !== normalize(primary)) {{ return false; }}
+        return !secondary || includes(accessibleName(element), secondary);
+      }});
+    }} else if (kind === 'text') {{
+      candidates = Array.from(document.querySelectorAll('body *')).filter((element) => includes(element.innerText || element.textContent || '', primary));
+    }} else if (kind === 'label') {{
+      const labels = Array.from(document.querySelectorAll('label')).filter((label) => includes(label.innerText || label.textContent || '', primary));
+      candidates = labels.map((label) => label.htmlFor ? document.getElementById(label.htmlFor) : label.querySelector('input,textarea,select,button')).filter(Boolean);
+    }} else if (kind === 'placeholder') {{
+      candidates = Array.from(document.querySelectorAll('[placeholder]')).filter((element) => includes(element.getAttribute('placeholder'), primary));
+    }} else if (kind === 'alt') {{
+      candidates = Array.from(document.querySelectorAll('[alt]')).filter((element) => includes(element.getAttribute('alt'), primary));
+    }} else if (kind === 'title') {{
+      candidates = Array.from(document.querySelectorAll('[title]')).filter((element) => includes(element.getAttribute('title'), primary));
+    }} else if (kind === 'testid') {{
+      candidates = Array.from(document.querySelectorAll('[data-testid], [data-test-id], [data-test]')).filter((element) => [element.getAttribute('data-testid'), element.getAttribute('data-test-id'), element.getAttribute('data-test')].some((value) => normalize(value) === normalize(primary)));
+    }} else if (kind === 'first' || kind === 'last' || kind === 'nth') {{
+      candidates = Array.from(document.querySelectorAll(primary));
+    }}
+    const element = kind === 'last' ? candidates[candidates.length - 1] : candidates[kind === 'nth' ? nthIndex : 0];
+    if (!element) {{ throw new Error(`No element matches locator: ${{kind}} ${{primary}}`); }}
+    window.__cmuxSnapshotRefs = window.__cmuxSnapshotRefs || {{}};
+    const ref = `e${{Object.keys(window.__cmuxSnapshotRefs).length + 1}}`;
+    const selector = cssPath(element);
+    window.__cmuxSnapshotRefs[ref] = {{ selector, tag: element.tagName.toLowerCase(), text: (element.innerText || element.value || '').trim().slice(0, 200) }};
+    return {{ ok: true, value: {{ element_ref: '@' + ref, selector, ref, tag: element.tagName.toLowerCase(), text: (element.innerText || element.value || '').trim() }} }};
+  }} catch (error) {{
+    return {{ ok: false, error: String((error && (error.stack || error.message)) || error) }};
+  }}
+}})()"#,
+        context = browser_js_context_prelude(),
+    ))
+}
+
+fn browser_addstyle_script(css: &str) -> String {
+    let encoded_css = serde_json::to_string(css).expect("CSS JSON is infallible");
+    format!(
+        r#"(() => {{
+  const css = {encoded_css};
+  try {{
+    const style = document.createElement('style');
+    style.setAttribute('data-cmux-added-style', 'true');
+    style.textContent = css;
+    (document.head || document.documentElement).appendChild(style);
+    return {{ ok: true, value: true }};
+  }} catch (error) {{
+    return {{ ok: false, error: String((error && (error.stack || error.message)) || error) }};
+  }}
+}})()"#
+    )
+}
+
+fn browser_cookie_script(
+    action: BrowserCookieAction,
+    name: Option<&str>,
+    value: Option<&str>,
+) -> String {
+    let encoded_name = serde_json::to_string(name.unwrap_or_default()).expect("cookie name JSON");
+    let encoded_value =
+        serde_json::to_string(value.unwrap_or_default()).expect("cookie value JSON");
+    let action_name = match action {
+        BrowserCookieAction::Get => "get",
+        BrowserCookieAction::Set => "set",
+        BrowserCookieAction::Clear => "clear",
+    };
+    let encoded_action = serde_json::to_string(action_name).expect("cookie action JSON");
+    format!(
+        r#"(() => {{
+  const action = {encoded_action};
+  const name = {encoded_name};
+  const value = {encoded_value};
+  try {{
+    const parseCookies = () => String(document.cookie || '').split(';').map((part) => part.trim()).filter(Boolean).map((part) => {{
+      const split = part.indexOf('=');
+      const rawName = split >= 0 ? part.slice(0, split) : part;
+      const rawValue = split >= 0 ? part.slice(split + 1) : '';
+      return {{ name: decodeURIComponent(rawName), value: decodeURIComponent(rawValue) }};
+    }});
+    if (action === 'set') {{
+      document.cookie = `${{encodeURIComponent(name)}}=${{encodeURIComponent(value)}}; path=/`;
+      return {{ ok: true, value: {{ cookies: parseCookies().filter((cookie) => !name || cookie.name === name), set: true }} }};
+    }}
+    if (action === 'clear') {{
+      document.cookie = `${{encodeURIComponent(name)}}=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT`;
+      return {{ ok: true, value: {{ cookies: parseCookies().filter((cookie) => !name || cookie.name === name), cleared: true }} }};
+    }}
+    const cookies = parseCookies().filter((cookie) => !name || cookie.name === name);
+    return {{ ok: true, value: {{ cookies }} }};
+  }} catch (error) {{
+    return {{ ok: false, error: String((error && (error.stack || error.message)) || error) }};
+  }}
+}})()"#
+    )
+}
+
+fn browser_storage_script(
+    action: BrowserStorageAction,
+    storage_type: &str,
+    key: Option<&str>,
+    value: &Value,
+) -> String {
+    let encoded_type = serde_json::to_string(storage_type).expect("storage type JSON");
+    let encoded_key = serde_json::to_string(key.unwrap_or_default()).expect("storage key JSON");
+    let encoded_value = serde_json::to_string(value).expect("storage value JSON");
+    let action_name = match action {
+        BrowserStorageAction::Get => "get",
+        BrowserStorageAction::Set => "set",
+        BrowserStorageAction::Clear => "clear",
+    };
+    let encoded_action = serde_json::to_string(action_name).expect("storage action JSON");
+    format!(
+        r#"(() => {{
+  const action = {encoded_action};
+  const storageType = {encoded_type};
+  const key = {encoded_key};
+  const encodedValue = {encoded_value};
+  try {{
+    const store = storageType === 'session' ? window.sessionStorage : window.localStorage;
+    const decode = (raw) => {{
+      if (raw === null || raw === undefined) {{ return null; }}
+      try {{ return JSON.parse(raw); }} catch (_error) {{ return raw; }}
+    }};
+    if (action === 'set') {{
+      store.setItem(key, JSON.stringify(encodedValue));
+      return {{ ok: true, value: {{ type: storageType, key, value: encodedValue, set: true }} }};
+    }}
+    if (action === 'clear') {{
+      if (key) {{ store.removeItem(key); }} else {{ store.clear(); }}
+      return {{ ok: true, value: {{ type: storageType, key: key || null, cleared: true }} }};
+    }}
+    return {{ ok: true, value: {{ type: storageType, key, value: decode(store.getItem(key)) }} }};
+  }} catch (error) {{
+    return {{ ok: false, error: String((error && (error.stack || error.message)) || error) }};
+  }}
+}})()"#
+    )
+}
+
+fn browser_console_hook_script() -> &'static str {
+    r#"(() => {
+  try {
+    if (!window.__cmuxConsoleCapture) {
+      const state = {
+        entries: [],
+        errors: [],
+        originals: {
+          log: console.log.bind(console),
+          info: console.info.bind(console),
+          warn: console.warn.bind(console),
+          error: console.error.bind(console),
+          debug: console.debug.bind(console),
+        },
+      };
+      const stringify = (value) => {
+        try {
+          if (typeof value === 'string') { return value; }
+          if (value instanceof Error) { return value.stack || value.message || String(value); }
+          return JSON.stringify(value);
+        } catch (_error) {
+          return String(value);
+        }
+      };
+      const pushEntry = (level, args) => {
+        state.entries.push({
+          level,
+          text: Array.from(args).map(stringify).join(' '),
+          args: Array.from(args).map(stringify),
+          timestamp: Date.now(),
+        });
+      };
+      for (const level of ['log', 'info', 'warn', 'error', 'debug']) {
+        console[level] = function (...args) {
+          pushEntry(level, args);
+          return state.originals[level](...args);
+        };
+      }
+      window.addEventListener('error', (event) => {
+        state.errors.push({
+          message: String(event.message || ''),
+          source: event.filename || null,
+          line: event.lineno || null,
+          column: event.colno || null,
+          stack: event.error && event.error.stack ? String(event.error.stack) : null,
+          timestamp: Date.now(),
+        });
+      });
+      window.addEventListener('unhandledrejection', (event) => {
+        state.errors.push({
+          message: stringify(event.reason),
+          source: 'unhandledrejection',
+          line: null,
+          column: null,
+          stack: event.reason && event.reason.stack ? String(event.reason.stack) : null,
+          timestamp: Date.now(),
+        });
+      });
+      window.__cmuxConsoleCapture = state;
+    }
+    return window.__cmuxConsoleCapture;
+  } catch (error) {
+    return null;
+  }
+})()"#
+}
+
+fn browser_console_list_script() -> String {
+    let hook = serde_json::to_string(browser_console_hook_script()).expect("console hook JSON");
+    r#"(() => {
+  try {
+    (0, eval)(__CMUX_CONSOLE_HOOK__);
+    const entries = (window.__cmuxConsoleCapture && window.__cmuxConsoleCapture.entries) || [];
+    return { ok: true, value: { entries, count: entries.length } };
+  } catch (error) {
+    return { ok: false, error: String((error && (error.stack || error.message)) || error) };
+  }
+})()"#
+        .replace("__CMUX_CONSOLE_HOOK__", &hook)
+}
+
+fn browser_console_clear_script() -> String {
+    let hook = serde_json::to_string(browser_console_hook_script()).expect("console hook JSON");
+    r#"(() => {
+  try {
+    (0, eval)(__CMUX_CONSOLE_HOOK__);
+    const capture = window.__cmuxConsoleCapture;
+    const cleared = capture ? capture.entries.length : 0;
+    if (capture) { capture.entries = []; }
+    return { ok: true, value: { entries: [], count: 0, cleared } };
+  } catch (error) {
+    return { ok: false, error: String((error && (error.stack || error.message)) || error) };
+  }
+})()"#
+        .replace("__CMUX_CONSOLE_HOOK__", &hook)
+}
+
+fn browser_errors_list_script() -> String {
+    let hook = serde_json::to_string(browser_console_hook_script()).expect("console hook JSON");
+    r#"(() => {
+  try {
+    (0, eval)(__CMUX_CONSOLE_HOOK__);
+    const errors = (window.__cmuxConsoleCapture && window.__cmuxConsoleCapture.errors) || [];
+    return { ok: true, value: { errors, count: errors.length } };
+  } catch (error) {
+    return { ok: false, error: String((error && (error.stack || error.message)) || error) };
+  }
+})()"#
+        .replace("__CMUX_CONSOLE_HOOK__", &hook)
+}
+
+fn browser_state_capture_script() -> &'static str {
+    r#"(() => {
+  try {
+    const entries = (store) => {
+      const values = {};
+      for (let index = 0; index < store.length; index += 1) {
+        const key = store.key(index);
+        values[key] = store.getItem(key);
+      }
+      return values;
+    };
+    const cookies = String(document.cookie || '').split(';').map((part) => part.trim()).filter(Boolean).map((part) => {
+      const split = part.indexOf('=');
+      const rawName = split >= 0 ? part.slice(0, split) : part;
+      const rawValue = split >= 0 ? part.slice(split + 1) : '';
+      return { name: decodeURIComponent(rawName), value: decodeURIComponent(rawValue) };
+    });
+    const value = {
+      version: 1,
+      url: String(window.location.href || ''),
+      savedAt: Date.now(),
+      localStorage: entries(window.localStorage),
+      sessionStorage: entries(window.sessionStorage),
+      cookies,
+    };
+    return { ok: true, value };
+  } catch (error) {
+    return { ok: false, error: String((error && (error.stack || error.message)) || error) };
+  }
+})()"#
+}
+
+fn browser_state_restore_script(state: &Value) -> String {
+    let encoded_state = serde_json::to_string(state).expect("browser state JSON is infallible");
+    format!(
+        r#"(() => {{
+  const state = {encoded_state};
+  try {{
+    const restoreStore = (store, values) => {{
+      store.clear();
+      for (const [key, value] of Object.entries(values || {{}})) {{
+        store.setItem(key, String(value));
+      }}
+    }};
+    restoreStore(window.localStorage, state.localStorage);
+    restoreStore(window.sessionStorage, state.sessionStorage);
+    for (const cookie of Array.from(String(document.cookie || '').split(';')).map((part) => part.trim()).filter(Boolean)) {{
+      const split = cookie.indexOf('=');
+      const rawName = split >= 0 ? cookie.slice(0, split) : cookie;
+      document.cookie = `${{rawName}}=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT`;
+    }}
+    for (const cookie of state.cookies || []) {{
+      if (!cookie || !cookie.name) {{ continue; }}
+      document.cookie = `${{encodeURIComponent(cookie.name)}}=${{encodeURIComponent(cookie.value || '')}}; path=/`;
+    }}
+    return {{
+      ok: true,
+      value: {{
+        version: state.version || 1,
+        localStorageCount: Object.keys(state.localStorage || {{}}).length,
+        sessionStorageCount: Object.keys(state.sessionStorage || {{}}).length,
+        cookieCount: Array.isArray(state.cookies) ? state.cookies.length : 0
+      }}
+    }};
+  }} catch (error) {{
+    return {{ ok: false, error: String((error && (error.stack || error.message)) || error) }};
+  }}
+}})()"#
+    )
+}
+
+fn browser_highlight_script(selector: &str) -> String {
+    let encoded = serde_json::to_string(selector).expect("highlight selector JSON is infallible");
+    format!(
+        r#"(() => {{
+  {context}
+  const raw = {encoded};
+  const ref = String(raw || '').startsWith('@') ? String(raw).slice(1) : raw;
+  const selector = (window.__cmuxSnapshotRefs && window.__cmuxSnapshotRefs[ref] && window.__cmuxSnapshotRefs[ref].selector) || raw;
+  try {{
+    const element = document.querySelector(selector);
+    if (!element) {{ throw new Error(`No element matches selector: ${{selector}}`); }}
+    const previous = document.querySelector('[data-cmux-highlight-overlay="true"]');
+    if (previous) {{ previous.remove(); }}
+    const rect = element.getBoundingClientRect();
+    const overlay = document.createElement('div');
+    overlay.setAttribute('data-cmux-highlight-overlay', 'true');
+    Object.assign(overlay.style, {{
+      position: 'fixed',
+      pointerEvents: 'none',
+      zIndex: '2147483647',
+      left: `${{rect.left}}px`,
+      top: `${{rect.top}}px`,
+      width: `${{rect.width}}px`,
+      height: `${{rect.height}}px`,
+      border: '3px solid #00A3FF',
+      boxShadow: '0 0 0 9999px rgba(0, 163, 255, 0.10)',
+      borderRadius: '6px'
+    }});
+    document.documentElement.appendChild(overlay);
+    return {{ ok: true, value: true }};
+  }} catch (error) {{
+    return {{ ok: false, error: String((error && (error.stack || error.message)) || error) }};
+  }}
+}})()"#,
+        context = browser_js_context_prelude(),
+    )
+}
+
+fn browser_wait_selector_script(selector: &str) -> String {
+    let encoded = serde_json::to_string(selector).expect("selector JSON is infallible");
+    format!(
+        r#"(() => {{
+  {context}
+  const raw = {encoded};
+  const ref = String(raw || '').startsWith('@') ? String(raw).slice(1) : raw;
+  const selector = (window.__cmuxSnapshotRefs && window.__cmuxSnapshotRefs[ref] && window.__cmuxSnapshotRefs[ref].selector) || raw;
+  return {{ ok: true, value: Boolean(document.querySelector(selector)) }};
+}})()"#,
+        context = browser_js_context_prelude(),
+    )
+}
+
+fn browser_wait_text_script(text: &str) -> String {
+    let encoded = serde_json::to_string(text).expect("text JSON is infallible");
+    format!(
+        r#"(() => {{
+  {context}
+  const needle = {encoded};
+  return {{ ok: true, value: String(document.body ? (document.body.innerText || document.body.textContent || '') : '').includes(needle) }};
+}})()"#,
+        context = browser_js_context_prelude(),
+    )
+}
+
+fn browser_wait_function_script(expression: &str) -> String {
+    let encoded = serde_json::to_string(expression).expect("expression JSON is infallible");
+    format!(
+        r#"(() => {{
+  {context}
+  const expression = {encoded};
+  try {{
+    return {{ ok: true, value: Boolean((0, eval)(expression)) }};
+  }} catch (error) {{
+    return {{ ok: false, error: String((error && (error.stack || error.message)) || error) }};
+  }}
+}})()"#,
+        context = browser_js_context_prelude(),
+    )
+}
+
+fn browser_wait_load_state_script(load_state: &str) -> String {
+    let normalized = load_state.trim().to_ascii_lowercase();
+    let target = match normalized.as_str() {
+        "domcontentloaded" | "interactive" => "interactive",
+        "complete" | "load" | "loaded" => "complete",
+        _ => "complete",
+    };
+    let encoded = serde_json::to_string(target).expect("load state JSON is infallible");
+    format!(
+        r#"(() => {{
+  {context}
+  const target = {encoded};
+  const state = document.readyState;
+  const value = target === 'interactive' ? (state === 'interactive' || state === 'complete') : state === 'complete';
+  return {{ ok: true, value }};
+}})()"#,
+        context = browser_js_context_prelude(),
+    )
+}
+
+fn browser_wait_url_script(url_contains: &str) -> String {
+    let encoded = serde_json::to_string(url_contains).expect("URL token JSON is infallible");
+    format!(
+        r#"(() => {{
+  {context}
+  const needle = {encoded};
+  return {{ ok: true, value: String(window.location.href || '').includes(needle) }};
+}})()"#,
+        context = browser_js_context_prelude(),
+    )
+}
+
+fn browser_action_script(
+    action: BrowserAction,
+    selector: Option<&str>,
+    text: &str,
+    value: &str,
+    key: &str,
+    dx: f64,
+    dy: f64,
+) -> String {
+    let encoded_selector =
+        serde_json::to_string(selector.unwrap_or_default()).expect("selector JSON is infallible");
+    let encoded_text = serde_json::to_string(text).expect("text JSON is infallible");
+    let encoded_value = serde_json::to_string(value).expect("value JSON is infallible");
+    let encoded_key = serde_json::to_string(key).expect("key JSON is infallible");
+    let body = match action {
+        BrowserAction::Click => "element.click(); return { ok: true, value: true };",
+        BrowserAction::DblClick => "element.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, view: window })); return { ok: true, value: true };",
+        BrowserAction::Hover => "for (const type of ['mouseover', 'mouseenter', 'mousemove']) { element.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window })); } return { ok: true, value: true };",
+        BrowserAction::Focus => "element.focus(); return { ok: true, value: true };",
+        BrowserAction::Type => "element.focus(); element.value = String(element.value || '') + __cmuxText; for (const type of ['input', 'change']) { element.dispatchEvent(new Event(type, { bubbles: true })); } return { ok: true, value: element.value ?? true };",
+        BrowserAction::Fill => "element.focus(); element.value = __cmuxText; for (const type of ['input', 'change']) { element.dispatchEvent(new Event(type, { bubbles: true })); } return { ok: true, value: element.value ?? true };",
+        BrowserAction::Press => "const pressTarget = document.activeElement || document.body; for (const type of ['keydown', 'keypress', 'keyup']) { pressTarget.dispatchEvent(new KeyboardEvent(type, { key: __cmuxKey, bubbles: true, cancelable: true })); } return { ok: true, value: true };",
+        BrowserAction::KeyDown => "const downTarget = document.activeElement || document.body; downTarget.dispatchEvent(new KeyboardEvent('keydown', { key: __cmuxKey, bubbles: true, cancelable: true })); return { ok: true, value: true };",
+        BrowserAction::KeyUp => "const upTarget = document.activeElement || document.body; upTarget.dispatchEvent(new KeyboardEvent('keyup', { key: __cmuxKey, bubbles: true, cancelable: true })); return { ok: true, value: true };",
+        BrowserAction::Check => "element.checked = true; for (const type of ['input', 'change']) { element.dispatchEvent(new Event(type, { bubbles: true })); } return { ok: true, value: Boolean(element.checked) };",
+        BrowserAction::Uncheck => "element.checked = false; for (const type of ['input', 'change']) { element.dispatchEvent(new Event(type, { bubbles: true })); } return { ok: true, value: Boolean(element.checked) };",
+        BrowserAction::Select => "element.value = __cmuxValue; for (const type of ['input', 'change']) { element.dispatchEvent(new Event(type, { bubbles: true })); } return { ok: true, value: element.value };",
+        BrowserAction::Scroll => "const target = element || window; if (target === window) { window.scrollBy(__cmuxDx, __cmuxDy); } else { target.scrollBy(__cmuxDx, __cmuxDy); } return { ok: true, value: true };",
+        BrowserAction::ScrollIntoView => "element.scrollIntoView({ block: 'center', inline: 'nearest' }); return { ok: true, value: true };",
+    };
+    let needs_element = browser_action_requires_selector(action);
+    let element_lookup = if needs_element {
+        "const element = document.querySelector(__cmuxSelector); if (!element) { throw new Error(`No element matches selector: ${__cmuxSelector}`); }"
+    } else if action == BrowserAction::Scroll {
+        "const element = __cmuxSelector ? document.querySelector(__cmuxSelector) : null; if (__cmuxSelector && !element) { throw new Error(`No element matches selector: ${__cmuxSelector}`); }"
+    } else {
+        "const element = null;"
+    };
+    format!(
+        r#"(() => {{
+  {context}
+  const __cmuxRawSelector = {encoded_selector};
+  const __cmuxRef = String(__cmuxRawSelector || '').startsWith('@') ? String(__cmuxRawSelector).slice(1) : __cmuxRawSelector;
+  const __cmuxSelector = (window.__cmuxSnapshotRefs && window.__cmuxSnapshotRefs[__cmuxRef] && window.__cmuxSnapshotRefs[__cmuxRef].selector) || __cmuxRawSelector;
+  const __cmuxText = {encoded_text};
+  const __cmuxValue = {encoded_value};
+  const __cmuxKey = {encoded_key};
+  const __cmuxDx = {dx};
+  const __cmuxDy = {dy};
+  try {{
+    {element_lookup}
+    {body}
+  }} catch (error) {{
+    return {{ ok: false, error: String((error && (error.stack || error.message)) || error) }};
+  }}
+}})()"#,
+        context = browser_js_context_prelude(),
+    )
+}
+
+fn browser_action_requires_selector(action: BrowserAction) -> bool {
+    matches!(
+        action,
+        BrowserAction::Click
+            | BrowserAction::DblClick
+            | BrowserAction::Hover
+            | BrowserAction::Focus
+            | BrowserAction::Type
+            | BrowserAction::Fill
+            | BrowserAction::Check
+            | BrowserAction::Uncheck
+            | BrowserAction::Select
+            | BrowserAction::ScrollIntoView
+    )
+}
+
+fn browser_action_method(action: BrowserAction) -> &'static str {
+    match action {
+        BrowserAction::Click => "browser.click",
+        BrowserAction::DblClick => "browser.dblclick",
+        BrowserAction::Hover => "browser.hover",
+        BrowserAction::Focus => "browser.focus",
+        BrowserAction::Type => "browser.type",
+        BrowserAction::Fill => "browser.fill",
+        BrowserAction::Press => "browser.press",
+        BrowserAction::KeyDown => "browser.keydown",
+        BrowserAction::KeyUp => "browser.keyup",
+        BrowserAction::Check => "browser.check",
+        BrowserAction::Uncheck => "browser.uncheck",
+        BrowserAction::Select => "browser.select",
+        BrowserAction::Scroll => "browser.scroll",
+        BrowserAction::ScrollIntoView => "browser.scroll_into_view",
+    }
+}
+
+fn browser_locator_method(locator: BrowserLocator) -> &'static str {
+    match locator {
+        BrowserLocator::Role => "browser.find.role",
+        BrowserLocator::Text => "browser.find.text",
+        BrowserLocator::Label => "browser.find.label",
+        BrowserLocator::Placeholder => "browser.find.placeholder",
+        BrowserLocator::Alt => "browser.find.alt",
+        BrowserLocator::Title => "browser.find.title",
+        BrowserLocator::TestId => "browser.find.testid",
+        BrowserLocator::First => "browser.find.first",
+        BrowserLocator::Last => "browser.find.last",
+        BrowserLocator::Nth => "browser.find.nth",
+    }
+}
+
+fn browser_locator_payload(panel_id: &str, value: Value) -> Value {
+    let mut payload = serde_json::Map::new();
+    payload.insert("surface_id".to_string(), json!(panel_id));
+    payload.insert("panel_id".to_string(), json!(panel_id));
+    if let Some(object) = value.as_object() {
+        for (key, value) in object {
+            payload.insert(key.clone(), value.clone());
+        }
+        if let Some(element_ref) = object
+            .get("element_ref")
+            .or_else(|| object.get("elementRef"))
+        {
+            payload.insert("elementRef".to_string(), element_ref.clone());
+        }
+    } else {
+        payload.insert("value".to_string(), value);
+    }
+    Value::Object(payload)
+}
+
+fn browser_cookie_method(action: BrowserCookieAction) -> &'static str {
+    match action {
+        BrowserCookieAction::Get => "browser.cookies.get",
+        BrowserCookieAction::Set => "browser.cookies.set",
+        BrowserCookieAction::Clear => "browser.cookies.clear",
+    }
+}
+
+fn browser_storage_method(action: BrowserStorageAction) -> &'static str {
+    match action {
+        BrowserStorageAction::Get => "browser.storage.get",
+        BrowserStorageAction::Set => "browser.storage.set",
+        BrowserStorageAction::Clear => "browser.storage.clear",
+    }
+}
+
+fn browser_console_method(action: BrowserConsoleAction) -> &'static str {
+    match action {
+        BrowserConsoleAction::List => "browser.console.list",
+        BrowserConsoleAction::Clear => "browser.console.clear",
+    }
+}
+
+fn browser_dialog_method(action: BrowserDialogAction) -> &'static str {
+    match action {
+        BrowserDialogAction::Accept => "browser.dialog.accept",
+        BrowserDialogAction::Dismiss => "browser.dialog.dismiss",
+    }
+}
+
+fn browser_cookie_payload(panel_id: &str, action: BrowserCookieAction, value: Value) -> Value {
+    let mut payload = serde_json::Map::new();
+    payload.insert("surface_id".to_string(), json!(panel_id));
+    payload.insert("panel_id".to_string(), json!(panel_id));
+    if let Some(cookies) = value.get("cookies") {
+        payload.insert("cookies".to_string(), cookies.clone());
+    } else {
+        payload.insert("cookies".to_string(), json!([]));
+    }
+    match action {
+        BrowserCookieAction::Set => {
+            payload.insert("set".to_string(), json!(true));
+        }
+        BrowserCookieAction::Clear => {
+            payload.insert("cleared".to_string(), json!(true));
+        }
+        BrowserCookieAction::Get => {}
+    }
+    Value::Object(payload)
+}
+
+fn browser_dialog_payload(panel_id: &str, action: BrowserDialogAction, value: Value) -> Value {
+    let mut payload = serde_json::Map::new();
+    payload.insert("surface_id".to_string(), json!(panel_id));
+    payload.insert("panel_id".to_string(), json!(panel_id));
+    if let Some(object) = value.as_object() {
+        for (key, value) in object {
+            payload.insert(key.clone(), value.clone());
+        }
+    }
+    payload.insert(
+        "accepted".to_string(),
+        json!(action == BrowserDialogAction::Accept),
+    );
+    Value::Object(payload)
+}
+
+fn browser_console_payload(panel_id: &str, action: BrowserConsoleAction, value: Value) -> Value {
+    let mut payload = serde_json::Map::new();
+    payload.insert("surface_id".to_string(), json!(panel_id));
+    payload.insert("panel_id".to_string(), json!(panel_id));
+    let entries = value.get("entries").cloned().unwrap_or_else(|| json!([]));
+    let count = value
+        .get("count")
+        .cloned()
+        .unwrap_or_else(|| json!(entries.as_array().map_or(0, Vec::len)));
+    payload.insert("entries".to_string(), entries);
+    payload.insert("count".to_string(), count);
+    if action == BrowserConsoleAction::Clear {
+        payload.insert(
+            "cleared".to_string(),
+            value.get("cleared").cloned().unwrap_or_else(|| json!(true)),
+        );
+    }
+    Value::Object(payload)
+}
+
+fn browser_errors_payload(panel_id: &str, value: Value) -> Value {
+    let mut payload = serde_json::Map::new();
+    payload.insert("surface_id".to_string(), json!(panel_id));
+    payload.insert("panel_id".to_string(), json!(panel_id));
+    let errors = value.get("errors").cloned().unwrap_or_else(|| json!([]));
+    let count = value
+        .get("count")
+        .cloned()
+        .unwrap_or_else(|| json!(errors.as_array().map_or(0, Vec::len)));
+    payload.insert("errors".to_string(), errors);
+    payload.insert("count".to_string(), count);
+    Value::Object(payload)
+}
+
+fn browser_state_payload(panel_id: &str, path: &str, verb: &str, state: Value) -> Value {
+    let local_storage_count = state
+        .get("localStorage")
+        .and_then(Value::as_object)
+        .map_or_else(
+            || {
+                state
+                    .get("localStorageCount")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize
+            },
+            serde_json::Map::len,
+        );
+    let session_storage_count = state
+        .get("sessionStorage")
+        .and_then(Value::as_object)
+        .map_or_else(
+            || {
+                state
+                    .get("sessionStorageCount")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize
+            },
+            serde_json::Map::len,
+        );
+    let cookie_count = state.get("cookies").and_then(Value::as_array).map_or_else(
+        || {
+            state
+                .get("cookieCount")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize
+        },
+        Vec::len,
+    );
+    let mut payload = serde_json::Map::new();
+    payload.insert("surface_id".to_string(), json!(panel_id));
+    payload.insert("panel_id".to_string(), json!(panel_id));
+    payload.insert("path".to_string(), json!(path));
+    payload.insert(verb.to_string(), json!(true));
+    payload.insert("localStorageCount".to_string(), json!(local_storage_count));
+    payload.insert(
+        "sessionStorageCount".to_string(),
+        json!(session_storage_count),
+    );
+    payload.insert("cookieCount".to_string(), json!(cookie_count));
+    Value::Object(payload)
+}
+
+fn solid_png(width: u32, height: u32, rgb: [u8; 3]) -> Vec<u8> {
+    let width = width.max(1);
+    let height = height.max(1);
+    let row_len = 1usize + width as usize * 3;
+    let mut raw = Vec::with_capacity(row_len * height as usize);
+    for _ in 0..height {
+        raw.push(0);
+        for _ in 0..width {
+            raw.extend_from_slice(&rgb);
+        }
+    }
+
+    let mut png = Vec::new();
+    png.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+    let mut ihdr = Vec::with_capacity(13);
+    ihdr.extend_from_slice(&width.to_be_bytes());
+    ihdr.extend_from_slice(&height.to_be_bytes());
+    ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
+    png_chunk(&mut png, b"IHDR", &ihdr);
+    png_chunk(&mut png, b"IDAT", &zlib_store(&raw));
+    png_chunk(&mut png, b"IEND", &[]);
+    png
+}
+
+fn zlib_store(raw: &[u8]) -> Vec<u8> {
+    let mut out = vec![0x78, 0x01];
+    let mut offset = 0usize;
+    while offset < raw.len() {
+        let remaining = raw.len() - offset;
+        let len = remaining.min(u16::MAX as usize);
+        let final_block = offset + len >= raw.len();
+        out.push(if final_block { 0x01 } else { 0x00 });
+        let len_u16 = len as u16;
+        out.extend_from_slice(&len_u16.to_le_bytes());
+        out.extend_from_slice(&(!len_u16).to_le_bytes());
+        out.extend_from_slice(&raw[offset..offset + len]);
+        offset += len;
+    }
+    out.extend_from_slice(&adler32(raw).to_be_bytes());
+    out
+}
+
+fn png_chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+    out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    out.extend_from_slice(kind);
+    out.extend_from_slice(data);
+    let mut crc_input = Vec::with_capacity(kind.len() + data.len());
+    crc_input.extend_from_slice(kind);
+    crc_input.extend_from_slice(data);
+    out.extend_from_slice(&crc32(&crc_input).to_be_bytes());
+}
+
+fn adler32(data: &[u8]) -> u32 {
+    const MOD: u32 = 65_521;
+    let mut a = 1u32;
+    let mut b = 0u32;
+    for byte in data {
+        a = (a + u32::from(*byte)) % MOD;
+        b = (b + a) % MOD;
+    }
+    (b << 16) | a
+}
+
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffffu32;
+    for byte in data {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            let mask = 0u32.wrapping_sub(crc & 1);
+            crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+        }
+    }
+    !crc
+}
+
+fn browser_storage_payload(panel_id: &str, action: BrowserStorageAction, value: Value) -> Value {
+    let mut payload = serde_json::Map::new();
+    payload.insert("surface_id".to_string(), json!(panel_id));
+    payload.insert("panel_id".to_string(), json!(panel_id));
+    if let Some(object) = value.as_object() {
+        for (key, value) in object {
+            payload.insert(key.clone(), value.clone());
+        }
+    } else {
+        payload.insert("value".to_string(), value);
+    }
+    match action {
+        BrowserStorageAction::Set => {
+            payload.insert("set".to_string(), json!(true));
+        }
+        BrowserStorageAction::Clear => {
+            payload.insert("cleared".to_string(), json!(true));
+        }
+        BrowserStorageAction::Get => {}
+    }
+    Value::Object(payload)
+}
+
+fn browser_not_found_message(message: &str) -> String {
+    if message.contains("No element matches selector") {
+        format!("{message}; hint: verify the selector or refresh browser.snapshot refs; snapshot unavailable in this error path")
+    } else {
+        message.to_string()
+    }
+}
+
+fn browser_getter_script(
+    getter: BrowserGetter,
+    selector: Option<&str>,
+    attr: Option<&str>,
+) -> String {
+    let encoded_selector =
+        serde_json::to_string(selector.unwrap_or_default()).expect("selector JSON is infallible");
+    let encoded_attr =
+        serde_json::to_string(attr.unwrap_or_default()).expect("attribute JSON is infallible");
+    let body = match getter {
+        BrowserGetter::Text => {
+            "const value = element.innerText ?? element.textContent ?? ''; return { ok: true, value };"
+        }
+        BrowserGetter::Html => {
+            "const value = element.outerHTML ?? element.innerHTML ?? ''; return { ok: true, value };"
+        }
+        BrowserGetter::Value => {
+            "const value = element.value ?? element.getAttribute('value') ?? ''; return { ok: true, value };"
+        }
+        BrowserGetter::Attr => {
+            "const attr = __cmuxAttr; const value = element.getAttribute(attr); return { ok: true, value };"
+        }
+        BrowserGetter::Title => "return { ok: true, value: document.title || '' };",
+        BrowserGetter::Count => {
+            "return { ok: true, value: document.querySelectorAll(__cmuxSelector).length };"
+        }
+        BrowserGetter::Box => {
+            "const rect = element.getBoundingClientRect(); const value = { x: rect.x, y: rect.y, top: rect.top, right: rect.right, bottom: rect.bottom, left: rect.left, width: rect.width, height: rect.height }; return { ok: true, value };"
+        }
+        BrowserGetter::Styles => {
+            "const style = window.getComputedStyle(element); if (__cmuxAttr) { return { ok: true, value: style.getPropertyValue(__cmuxAttr) || style[__cmuxAttr] || '' }; } const value = {}; for (const name of style) { value[name] = style.getPropertyValue(name); } return { ok: true, value };"
+        }
+        BrowserGetter::Visible => {
+            "const style = window.getComputedStyle(element); const rect = element.getBoundingClientRect(); const value = style.visibility !== 'hidden' && style.display !== 'none' && Number(style.opacity || '1') !== 0 && rect.width > 0 && rect.height > 0; return { ok: true, value };"
+        }
+        BrowserGetter::Enabled => {
+            "const ariaDisabled = String(element.getAttribute('aria-disabled') || '').toLowerCase(); const value = !element.disabled && ariaDisabled !== 'true'; return { ok: true, value };"
+        }
+        BrowserGetter::Checked => {
+            "const value = Boolean(element.checked); return { ok: true, value };"
+        }
+    };
+    let needs_element = !matches!(getter, BrowserGetter::Title | BrowserGetter::Count);
+    let element_lookup = if needs_element {
+        "const element = document.querySelector(__cmuxSelector); if (!element) { throw new Error(`No element matches selector: ${__cmuxSelector}`); }"
+    } else {
+        ""
+    };
+    format!(
+        r#"(() => {{
+  {context}
+  const __cmuxRawSelector = {encoded_selector};
+  const __cmuxRef = String(__cmuxRawSelector || '').startsWith('@') ? String(__cmuxRawSelector).slice(1) : __cmuxRawSelector;
+  const __cmuxSelector = (window.__cmuxSnapshotRefs && window.__cmuxSnapshotRefs[__cmuxRef] && window.__cmuxSnapshotRefs[__cmuxRef].selector) || __cmuxRawSelector;
+  const __cmuxAttr = {encoded_attr};
+  try {{
+    {element_lookup}
+    {body}
+  }} catch (error) {{
+    return {{
+      ok: false,
+      error: String((error && (error.stack || error.message)) || error)
+    }};
+  }}
+}})()"#,
+        context = browser_js_context_prelude(),
+    )
+}
+
+fn unwrap_browser_eval_result(value: Value) -> Result<Value, String> {
+    let Some(object) = value.as_object() else {
+        return Ok(value);
+    };
+    match object.get("ok").and_then(Value::as_bool) {
+        Some(true) => Ok(object.get("value").cloned().unwrap_or(Value::Null)),
+        Some(false) => Err(object
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("browser JavaScript execution failed")
+            .to_string()),
+        None => Ok(value),
+    }
+}
+
+fn browser_getter_method(getter: BrowserGetter) -> &'static str {
+    match getter {
+        BrowserGetter::Text => "browser.get.text",
+        BrowserGetter::Html => "browser.get.html",
+        BrowserGetter::Value => "browser.get.value",
+        BrowserGetter::Attr => "browser.get.attr",
+        BrowserGetter::Title => "browser.get.title",
+        BrowserGetter::Count => "browser.get.count",
+        BrowserGetter::Box => "browser.get.box",
+        BrowserGetter::Styles => "browser.get.styles",
+        BrowserGetter::Visible => "browser.is.visible",
+        BrowserGetter::Enabled => "browser.is.enabled",
+        BrowserGetter::Checked => "browser.is.checked",
+    }
+}
+
+fn browser_getter_payload(panel_id: &str, getter: BrowserGetter, value: Value) -> Value {
+    let mut payload = serde_json::Map::new();
+    payload.insert("surface_id".to_string(), json!(panel_id));
+    payload.insert("panel_id".to_string(), json!(panel_id));
+    payload.insert("value".to_string(), value.clone());
+    match getter {
+        BrowserGetter::Text => {
+            payload.insert("text".to_string(), value);
+        }
+        BrowserGetter::Html => {
+            payload.insert("html".to_string(), value);
+        }
+        BrowserGetter::Title => {
+            payload.insert("title".to_string(), value);
+        }
+        BrowserGetter::Count => {
+            payload.insert("count".to_string(), value);
+        }
+        BrowserGetter::Box => {
+            payload.insert("box".to_string(), value);
+        }
+        BrowserGetter::Styles => {
+            payload.insert("styles".to_string(), value);
+        }
+        BrowserGetter::Attr
+        | BrowserGetter::Value
+        | BrowserGetter::Visible
+        | BrowserGetter::Enabled
+        | BrowserGetter::Checked => {}
+    }
+    Value::Object(payload)
+}
+
+fn debug_terminals(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let current = snapshot(app);
+    let selected_workspace = selected_workspace_index(&current);
+    let workspace_filter = workspace_index_from_params(&current, params)
+        .or_else(|| params.contains_key("workspace_id").then_some(usize::MAX));
+    let terminal_state = app.state::<TerminalState>();
+    let runtime_by_panel: BTreeMap<String, Value> =
+        terminal_runtime_snapshots(terminal_state.inner())
+            .into_iter()
+            .filter_map(|runtime| {
+                let panel_id = runtime.panel_id.clone()?;
+                Some((
+                    panel_id,
+                    json!({
+                        "terminal_id": runtime.id,
+                        "root_pid": runtime.root_pid,
+                        "process_root_pid": runtime.root_pid,
+                        "descendant_pids": runtime.descendant_pids,
+                        "child_pids": runtime.child_pids,
+                        "process_count": runtime.process_count,
+                        "foreground_pid": runtime.foreground_pid,
+                        "foreground_process_name": runtime.foreground_process_name,
+                        "foreground_process_source": runtime.foreground_process_source,
+                        "process_error": runtime.process_error,
+                    }),
+                ))
+            })
+            .collect();
+    let mut terminals = Vec::new();
+    let Some(window) = current.windows.first() else {
+        return ok(json!({"terminals": terminals}));
+    };
+    for (workspace_index, workspace) in window.tab_manager.workspaces.iter().enumerate() {
+        if workspace_filter.is_some_and(|filter| filter != workspace_index) {
+            continue;
+        }
+        for (surface_index, surface) in surfaces_for_workspace(workspace).into_iter().enumerate() {
+            let surface_type = surface
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("terminal");
+            if surface_type != "terminal" {
+                continue;
+            }
+            let panel_id = surface
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let runtime = runtime_by_panel.get(&panel_id);
+            terminals.push(json!({
+                "workspace_id": workspace.workspace_id,
+                "workspace_ref": workspace_ref(workspace_index),
+                "workspace_selected": workspace_index == selected_workspace,
+                "surface_id": panel_id,
+                "panel_id": panel_id,
+                "surface_ref": surface_ref(surface_index),
+                "type": surface_type,
+                "title": surface.get("title").cloned().unwrap_or(Value::Null),
+                "tty": surface.get("tty").cloned().unwrap_or(Value::Null),
+                "tty_name": surface.get("tty_name").cloned().unwrap_or(Value::Null),
+                "runtime_surface_ready": runtime.is_some(),
+                "terminal_id": runtime.and_then(|value| value.get("terminal_id")).cloned().unwrap_or(Value::Null),
+                "root_pid": runtime.and_then(|value| value.get("root_pid")).cloned().unwrap_or(Value::Null),
+                "process_root_pid": runtime.and_then(|value| value.get("process_root_pid")).cloned().unwrap_or(Value::Null),
+                "descendant_pids": runtime.and_then(|value| value.get("descendant_pids")).cloned().unwrap_or_else(|| json!([])),
+                "child_pids": runtime.and_then(|value| value.get("child_pids")).cloned().unwrap_or_else(|| json!([])),
+                "process_count": runtime.and_then(|value| value.get("process_count")).cloned().unwrap_or(Value::Null),
+                "foreground_pid": runtime.and_then(|value| value.get("foreground_pid")).cloned().unwrap_or(Value::Null),
+                "foreground_process_name": runtime.and_then(|value| value.get("foreground_process_name")).cloned().unwrap_or(Value::Null),
+                "foreground_process_source": runtime.and_then(|value| value.get("foreground_process_source")).cloned().unwrap_or(Value::Null),
+                "process_error": runtime.and_then(|value| value.get("process_error")).cloned().unwrap_or(Value::Null),
+                "running": runtime.is_some() || !surface.get("tty").unwrap_or(&Value::Null).is_null(),
+            }));
+        }
+    }
+    ok(json!({"terminals": terminals}))
+}
+
+fn debug_browser_start_direct_proxy(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(workspace_index) = workspace_index_from_workspace_scope_or_selected(&current, params)
+    else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let Some(panel_id) =
+        surface_id_from_params_or_workspace_focused(&current, workspace_index, params)
+    else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    if !surface_is_browser(&current, workspace_index, &panel_id) {
+        return invalid_params("debug.browser.start_direct_proxy requires a browser surface");
+    }
+
+    let target_host = raw_string_param(params, &["target_host", "targetHost"])
+        .map(|host| host.trim().to_string())
+        .filter(|host| !host.is_empty());
+    let target_port = optional_u16_param(params, "target_port")
+        .flatten()
+        .or_else(|| optional_u16_param(params, "targetPort").flatten());
+    let target_override = match (target_host, target_port) {
+        (Some(host), Some(port)) => Some(crate::remote_proxy::ProxyTarget { host, port }),
+        (None, None) => None,
+        _ => return invalid_params(
+            "debug.browser.start_direct_proxy target override requires targetHost and targetPort",
+        ),
+    };
+
+    let state = app.state::<SessionState>();
+    match start_direct_browser_proxy_for_control(app, &state, &current, &panel_id, target_override)
+    {
+        Ok((_snapshot, proxy_url)) => ok(json!({
+            "surface_id": panel_id,
+            "panel_id": panel_id,
+            "proxy_url": proxy_url,
+            "proxyUrl": proxy_url,
+        })),
+        Err(message) => ControlCallResult::Err {
+            code: "surface_unavailable".to_string(),
+            message,
+            data: None,
+        },
+    }
+}
+
+fn debug_browser_attach_webview(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(workspace_index) = workspace_index_from_workspace_scope_or_selected(&current, params)
+    else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let Some(panel_id) =
+        surface_id_from_params_or_workspace_focused(&current, workspace_index, params)
+    else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    if !surface_is_browser(&current, workspace_index, &panel_id) {
+        return invalid_params("debug.browser.attach_webview requires a browser surface");
+    }
+
+    let Some(surface) = browser_surface_payload(&current, workspace_index, &panel_id) else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    let current_url = surface
+        .get("surface")
+        .and_then(Value::as_object)
+        .and_then(|surface| surface.get("browser_url"))
+        .and_then(Value::as_str)
+        .or_else(|| surface.get("url").and_then(Value::as_str))
+        .unwrap_or("about:blank");
+    let current_proxy_url = surface
+        .get("surface")
+        .and_then(Value::as_object)
+        .and_then(|surface| surface.get("browser_proxy_url"))
+        .and_then(Value::as_str);
+    let url = raw_string_param(params, &["url"]).unwrap_or_else(|| current_url.to_string());
+    let proxy_url = raw_string_param(params, &["proxy_url", "proxyUrl"])
+        .or_else(|| current_proxy_url.map(str::to_string));
+    let visible = bool_param(params, &["visible"]).unwrap_or(true);
+
+    let browser_state = app.state::<BrowserWebviewState>();
+    match browser_attach_webview_for_control(
+        app,
+        browser_state.inner(),
+        &panel_id,
+        Some(&url),
+        proxy_url.as_deref(),
+        visible,
+    ) {
+        Ok(reply) => ok(json!(reply)),
+        Err(message) => ControlCallResult::Err {
+            code: "surface_unavailable".to_string(),
+            message,
+            data: None,
+        },
+    }
+}
+
+fn browser_reopen_closed(app: &AppHandle) -> ControlCallResult {
+    let state = app.state::<SessionState>();
+    workspace_current(&reopen_closed_browser_tab_for_control(app, &state))
+}
+
+fn browser_clear_history(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(panel_id) = surface_id_from_params_or_focused(&current, params) else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    let state = app.state::<SessionState>();
+    surface_list_from_params(
+        &clear_browser_history_for_control(app, &state, &panel_id),
+        params,
+    )
+}
+
+fn browser_toggle_omnibar(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(panel_id) = surface_id_from_params_or_focused(&current, params) else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    let state = app.state::<SessionState>();
+    surface_list_from_params(
+        &toggle_browser_omnibar_for_control(app, &state, &panel_id),
+        params,
+    )
+}
+
+fn browser_toggle_focus_mode(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(panel_id) = surface_id_from_params_or_focused(&current, params) else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    let state = app.state::<SessionState>();
+    surface_list_from_params(
+        &toggle_browser_focus_mode_for_control(app, &state, &panel_id),
+        params,
+    )
+}
+
+fn browser_toggle_developer_tools(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(panel_id) = surface_id_from_params_or_focused(&current, params) else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    let state = app.state::<SessionState>();
+    surface_list_from_params(
+        &toggle_browser_developer_tools_for_control(app, &state, &panel_id),
+        params,
+    )
+}
+
+fn browser_show_developer_tools(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(panel_id) = surface_id_from_params_or_focused(&current, params) else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    let panel = string_param(params, &["panel"]).unwrap_or_else(|| "inspector".to_string());
+    let state = app.state::<SessionState>();
+    surface_list_from_params(
+        &show_browser_developer_tools_for_control(app, &state, &panel_id, &panel),
+        params,
+    )
+}
+
+fn browser_set_zoom(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(panel_id) = surface_id_from_params_or_focused(&current, params) else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    let Some(zoom) = f64_param(params, &["zoom", "scale"]) else {
+        return invalid_params("Missing or invalid browser zoom");
+    };
+    let state = app.state::<SessionState>();
+    surface_list_from_params(
+        &set_browser_zoom_for_control(app, &state, &panel_id, zoom),
+        params,
+    )
+}
+
+fn browser_network_requests(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(workspace_index) = workspace_index_from_workspace_scope_or_selected(&current, params)
+    else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let Some(panel_id) =
+        surface_id_from_params_or_workspace_focused(&current, workspace_index, params)
+    else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    if !surface_is_browser(&current, workspace_index, &panel_id) {
+        return invalid_params("browser.network.requests requires a browser surface");
+    }
+    let query = BrowserNetworkRequestsQuery {
+        url_contains: raw_string_param(params, &["url_contains", "urlContains", "url"]),
+        method: raw_string_param(params, &["method"]),
+        since_id: raw_string_param(params, &["since_id", "sinceId", "after_id", "afterId"]),
+        limit: usize_param(params, &["limit"]).map(|value| value.min(200)),
+    };
+    let state = app.state::<BrowserWebviewState>();
+    match browser_network_requests_for_control(state.inner(), &panel_id, query) {
+        Ok(reply) => ok(json!(reply)),
+        Err(message) => ControlCallResult::Err {
+            code: "internal_error".to_string(),
+            message,
+            data: None,
+        },
+    }
+}
+
+fn browser_network_clear(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(workspace_index) = workspace_index_from_workspace_scope_or_selected(&current, params)
+    else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let Some(panel_id) =
+        surface_id_from_params_or_workspace_focused(&current, workspace_index, params)
+    else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    if !surface_is_browser(&current, workspace_index, &panel_id) {
+        return invalid_params("browser.network.clear requires a browser surface");
+    }
+    let state = app.state::<BrowserWebviewState>();
+    match browser_clear_network_requests_for_control(state.inner(), &panel_id) {
+        Ok(reply) => ok(json!(reply)),
+        Err(message) => ControlCallResult::Err {
+            code: "internal_error".to_string(),
+            message,
+            data: None,
+        },
+    }
+}
+
+fn snapshot(app: &AppHandle) -> AppSessionSnapshot {
+    let state = app.state::<SessionState>();
+    current_session_snapshot(&state)
+}
+
+fn invalid_params(message: &str) -> ControlCallResult {
+    ControlCallResult::Err {
+        code: "invalid_params".to_string(),
+        message: message.to_string(),
+        data: None,
+    }
+}
+
+fn not_supported(message: &str) -> ControlCallResult {
+    ControlCallResult::Err {
+        code: "not_supported".to_string(),
+        message: message.to_string(),
+        data: None,
+    }
+}
+
+fn is_unported_browser_automation_method(_method: &str) -> bool {
+    false
+}
+
+fn ok(value: Value) -> ControlCallResult {
+    match JsonValue::try_from(value) {
+        Ok(value) => ControlCallResult::Ok(value),
+        Err(error) => ControlCallResult::Err {
+            code: "internal_error".to_string(),
+            message: format!("Could not encode control response: {error}"),
+            data: None,
+        },
+    }
+}
+
+fn workspace_list_payload(snapshot: &AppSessionSnapshot) -> Value {
+    let Some(window) = snapshot.windows.first() else {
+        return json!({
+            "window_id": Value::Null,
+            "window_ref": Value::Null,
+            "workspaces": [],
+            "workspace_groups": [],
+        });
+    };
+    let selected = selected_workspace_index(snapshot);
+    json!({
+        "window_id": window.window_id,
+        "window_ref": window.window_id.as_ref().map(|_| "window:1"),
+        "workspaces": window
+            .tab_manager
+            .workspaces
+            .iter()
+            .enumerate()
+            .map(|(index, workspace)| workspace_summary(workspace, index, index == selected))
+            .collect::<Vec<_>>(),
+        "workspace_groups": workspace_group_summaries(&window.tab_manager.workspaces, &window.tab_manager.workspace_groups),
+    })
+}
+
+fn extension_sidebar_snapshot_payload_for_app(
+    app: &AppHandle,
+    snapshot: &AppSessionSnapshot,
+    params: &serde_json::Map<String, Value>,
+) -> Value {
+    extension_sidebar_snapshot_payload_with_events(
+        snapshot,
+        extension_sidebar_events_context(app),
+        custom_sidebar_asset_map_from_params(params),
+    )
+}
+
+#[allow(dead_code)]
+fn extension_sidebar_snapshot_payload(snapshot: &AppSessionSnapshot) -> Value {
+    extension_sidebar_snapshot_payload_with_events(
+        snapshot,
+        extension_sidebar_empty_events_context(),
+        json!({}),
+    )
+}
+
+fn extension_sidebar_snapshot_payload_with_events(
+    snapshot: &AppSessionSnapshot,
+    events: Value,
+    assets: Value,
+) -> Value {
+    let latest_seq = events
+        .get("latest_seq")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let Some(window) = snapshot.windows.first() else {
+        let data = extension_sidebar_data_context(Vec::new(), None, None, 0, events.clone());
+        return json!({
+            "protocol": "cmux-extension-sidebar-snapshot",
+            "version": 1,
+            "window_id": Value::Null,
+            "window_ref": Value::Null,
+            "selected_workspace_id": Value::Null,
+            "selected_workspace_ref": Value::Null,
+            "selectedId": Value::Null,
+            "selectedTitle": Value::Null,
+            "workspace_count": 0,
+            "workspaceCount": 0,
+            "unread_total": 0,
+            "unreadTotal": 0,
+            "seq": latest_seq,
+            "latest_seq": latest_seq,
+            "events": events,
+            "assets": assets,
+            "data": data,
+            "workspaces": [],
+            "workspace_groups": [],
+        });
+    };
+
+    let selected = selected_workspace_index(snapshot);
+    let workspaces: Vec<Value> = window
+        .tab_manager
+        .workspaces
+        .iter()
+        .enumerate()
+        .map(|(index, workspace)| extension_sidebar_workspace(workspace, index, index == selected))
+        .collect();
+    let selected_workspace = window.tab_manager.workspaces.get(selected);
+
+    let selected_workspace_id =
+        selected_workspace.and_then(|workspace| workspace.workspace_id.clone());
+    let selected_title = selected_workspace.map(workspace_display_name);
+    let unread_total = workspaces
+        .iter()
+        .filter_map(|workspace| workspace.get("unread").and_then(Value::as_u64))
+        .sum::<u64>();
+    let data = extension_sidebar_data_context(
+        window
+            .tab_manager
+            .workspaces
+            .iter()
+            .enumerate()
+            .map(|(index, workspace)| {
+                extension_sidebar_data_workspace(workspace, index, index == selected)
+            })
+            .collect(),
+        selected_workspace_id.as_deref(),
+        selected_title.as_deref(),
+        unread_total,
+        events.clone(),
+    );
+
+    json!({
+        "protocol": "cmux-extension-sidebar-snapshot",
+        "version": 1,
+        "window_id": window.window_id,
+        "window_ref": window.window_id.as_ref().map(|_| "window:1"),
+        "selected_workspace_id": selected_workspace_id.clone(),
+        "selected_workspace_ref": selected_workspace.map(|_| workspace_ref(selected)),
+        "selectedId": selected_workspace_id,
+        "selected_title": selected_title.clone(),
+        "selectedTitle": selected_title,
+        "workspace_count": window.tab_manager.workspaces.len(),
+        "workspaceCount": window.tab_manager.workspaces.len(),
+        "unread_total": unread_total,
+        "unreadTotal": unread_total,
+        "seq": latest_seq,
+        "latest_seq": latest_seq,
+        "events": events,
+        "assets": assets,
+        "data": data,
+        "workspaces": workspaces,
+        "workspace_groups": workspace_group_summaries(&window.tab_manager.workspaces, &window.tab_manager.workspace_groups),
+    })
+}
+
+fn extension_sidebar_events_context(app: &AppHandle) -> Value {
+    let Some(state) = app.try_state::<ControlEventState>() else {
+        return extension_sidebar_empty_events_context();
+    };
+    let (boot_id, next_seq, retained_events) = {
+        let guard = state
+            .inner
+            .lock()
+            .expect("control event log mutex poisoned");
+        (
+            guard.boot_id.clone(),
+            guard.next_seq,
+            guard.events.iter().cloned().collect::<Vec<_>>(),
+        )
+    };
+    extension_sidebar_events_context_from_retained(boot_id, next_seq, retained_events)
+}
+
+fn extension_sidebar_empty_events_context() -> Value {
+    extension_sidebar_events_context_from_retained(String::new(), 1, Vec::new())
+}
+
+fn extension_sidebar_events_context_from_retained(
+    boot_id: String,
+    next_seq: u64,
+    retained_events: Vec<Value>,
+) -> Value {
+    let latest_seq = next_seq.saturating_sub(1);
+    let oldest_seq = retained_events
+        .first()
+        .and_then(|event| event.get("seq"))
+        .and_then(Value::as_u64)
+        .unwrap_or(next_seq);
+    let latest = retained_events.last().cloned().unwrap_or(Value::Null);
+    let mut category_counts: BTreeMap<String, u64> = BTreeMap::new();
+    let mut name_counts: BTreeMap<String, u64> = BTreeMap::new();
+    for event in &retained_events {
+        if let Some(category) = event.get("category").and_then(Value::as_str) {
+            *category_counts.entry(category.to_string()).or_default() += 1;
+        }
+        if let Some(name) = event.get("name").and_then(Value::as_str) {
+            *name_counts.entry(name.to_string()).or_default() += 1;
+        }
+    }
+    let retained_count = retained_events.len();
+    let recent_start = retained_events.len().saturating_sub(50);
+    let recent: Vec<Value> = retained_events.into_iter().skip(recent_start).collect();
+    json!({
+        "protocol": EVENT_STREAM_PROTOCOL,
+        "version": EVENT_STREAM_VERSION,
+        "boot_id": if boot_id.is_empty() { Value::Null } else { json!(boot_id) },
+        "latest_seq": latest_seq,
+        "seq": latest_seq,
+        "next_seq": next_seq,
+        "oldest_seq": oldest_seq,
+        "retained_count": retained_count,
+        "latest": latest,
+        "recent": recent,
+        "counts": category_counts,
+        "category_counts": category_counts,
+        "name_counts": name_counts,
+    })
+}
+
+fn sidebar_validate(params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let name = sidebar_name_param(params);
+    validate_custom_sidebars_in_dir(&custom_sidebar_directory(), name.as_deref())
+}
+
+fn sidebar_open(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let Some(name) = sidebar_name_param(params) else {
+        return invalid_params("Missing custom sidebar name");
+    };
+    let dir = custom_sidebar_directory();
+    let candidate = match custom_sidebar_candidate_for_name(&dir, &name) {
+        Ok(Some(candidate)) => candidate,
+        Ok(None) => {
+            return ControlCallResult::Err {
+                code: "not_found".to_string(),
+                message: format!("Custom sidebar '{name}' was not found in {}", dir.display()),
+                data: Some(
+                    json!({ "sidebar_dir": dir })
+                        .try_into()
+                        .unwrap_or(JsonValue::Null),
+                ),
+            }
+        }
+        Err(error) => {
+            return ControlCallResult::Err {
+                code: "io_error".to_string(),
+                message: format!("Failed to inspect custom sidebars: {error}"),
+                data: Some(
+                    json!({ "sidebar_dir": dir })
+                        .try_into()
+                        .unwrap_or(JsonValue::Null),
+                ),
+            }
+        }
+    };
+    let validation = validate_custom_sidebar_candidate(&candidate);
+    if !validation
+        .get("valid")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return ControlCallResult::Err {
+            code: "invalid_sidebar".to_string(),
+            message: format!("Custom sidebar '{name}' did not validate"),
+            data: Some(validation.try_into().unwrap_or(JsonValue::Null)),
+        };
+    }
+    let current = snapshot(app);
+    let Some(panel_id) = surface_id_from_params_or_focused(&current, params) else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    let state = app.state::<SessionState>();
+    let path = candidate.path.to_string_lossy().to_string();
+    match open_custom_sidebar_in_panel(app, &state, &panel_id, &path) {
+        Some(snapshot) => {
+            let surface = surface_list_from_params(&snapshot, params);
+            ok(json!({
+                "accepted": true,
+                "name": candidate.name,
+                "kind": candidate.kind,
+                "path": path,
+                "surface_id": panel_id,
+                "surface": match surface {
+                    ControlCallResult::Ok(value) => Value::from(value),
+                    _ => Value::Null,
+                },
+                "warnings": validation.get("warnings").cloned().unwrap_or_else(|| json!([])),
+            }))
+        }
+        None => ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: format!("unable to open custom sidebar in pane {panel_id}"),
+            data: None,
+        },
+    }
+}
+
+fn sidebar_reload(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let name = sidebar_name_param(params);
+    let validation =
+        match validate_custom_sidebars_in_dir(&custom_sidebar_directory(), name.as_deref()) {
+            ControlCallResult::Ok(value) => Value::from(value),
+            error => return error,
+        };
+
+    if name.is_some()
+        && !validation
+            .get("ok")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        return ControlCallResult::Err {
+            code: "invalid_sidebar".to_string(),
+            message: format!(
+                "Custom sidebar '{}' did not validate",
+                name.as_deref().unwrap_or_default()
+            ),
+            data: Some(validation.try_into().unwrap_or(JsonValue::Null)),
+        };
+    }
+
+    let payload = custom_sidebar_reload_payload(name.as_deref(), &validation);
+    if let Err(error) = app.emit(CUSTOM_SIDEBAR_RELOAD_EVENT, payload.clone()) {
+        return ControlCallResult::Err {
+            code: "internal_error".to_string(),
+            message: format!("Failed to emit custom sidebar reload event: {error}"),
+            data: None,
+        };
+    }
+
+    ok(json!({
+        "accepted": true,
+        "event": CUSTOM_SIDEBAR_RELOAD_EVENT,
+        "name": name,
+        "all": payload.get("all").cloned().unwrap_or(Value::Bool(false)),
+        "paths": payload.get("paths").cloned().unwrap_or_else(|| json!([])),
+        "sidebars": payload.get("sidebars").cloned().unwrap_or_else(|| json!([])),
+        "validation": validation,
+    }))
+}
+
+fn custom_sidebar_reload_payload(name: Option<&str>, validation: &Value) -> Value {
+    let sidebars: Vec<Value> = validation
+        .get("sidebars")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|sidebar| {
+            sidebar
+                .get("valid")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect();
+    let paths: Vec<Value> = sidebars
+        .iter()
+        .filter_map(|sidebar| sidebar.get("path").and_then(Value::as_str))
+        .map(|path| json!(path))
+        .collect();
+    json!({
+        "protocol": "cmux-custom-sidebar-reload",
+        "version": 1,
+        "event": CUSTOM_SIDEBAR_RELOAD_EVENT,
+        "name": name,
+        "all": name.is_none(),
+        "paths": paths,
+        "sidebars": sidebars,
+    })
+}
+
+fn sidebar_select(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let Some(name) = sidebar_name_param(params) else {
+        return invalid_params("Missing custom sidebar name");
+    };
+    let dir = custom_sidebar_directory();
+    let candidate = match custom_sidebar_candidate_for_name(&dir, &name) {
+        Ok(Some(candidate)) => candidate,
+        Ok(None) => {
+            return ControlCallResult::Err {
+                code: "not_found".to_string(),
+                message: format!("Custom sidebar '{name}' was not found in {}", dir.display()),
+                data: Some(
+                    json!({ "sidebar_dir": dir })
+                        .try_into()
+                        .unwrap_or(JsonValue::Null),
+                ),
+            };
+        }
+        Err(error) => {
+            return ControlCallResult::Err {
+                code: "io_error".to_string(),
+                message: format!("Failed to inspect custom sidebars: {error}"),
+                data: Some(
+                    json!({ "sidebar_dir": dir })
+                        .try_into()
+                        .unwrap_or(JsonValue::Null),
+                ),
+            };
+        }
+    };
+    let validation = validate_custom_sidebar_candidate(&candidate);
+    if !validation
+        .get("valid")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return ControlCallResult::Err {
+            code: "invalid_sidebar".to_string(),
+            message: format!("Custom sidebar '{name}' did not validate"),
+            data: Some(validation.try_into().unwrap_or(JsonValue::Null)),
+        };
+    }
+
+    let payload = custom_sidebar_select_payload(&candidate, &validation);
+    if let Err(error) = app.emit(CUSTOM_SIDEBAR_SELECT_EVENT, payload.clone()) {
+        return ControlCallResult::Err {
+            code: "internal_error".to_string(),
+            message: format!("Failed to emit custom sidebar select event: {error}"),
+            data: None,
+        };
+    }
+
+    ok(payload)
+}
+
+fn custom_sidebar_select_payload(candidate: &CustomSidebarCandidate, validation: &Value) -> Value {
+    let path = candidate.path.to_string_lossy().to_string();
+    json!({
+        "accepted": true,
+        "protocol": "cmux-custom-sidebar-select",
+        "version": 1,
+        "event": CUSTOM_SIDEBAR_SELECT_EVENT,
+        "name": candidate.name,
+        "kind": candidate.kind,
+        "path": path,
+        "sidebar": validation,
+        "warnings": validation.get("warnings").cloned().unwrap_or_else(|| json!([])),
+    })
+}
+
+fn sidebar_name_param(params: &serde_json::Map<String, Value>) -> Option<String> {
+    string_param(params, &["name", "sidebar", "id"])
+        .map(|name| {
+            Path::new(name.trim())
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or_else(|| name.trim())
+                .to_string()
+        })
+        .filter(|name| !name.is_empty())
+}
+
+pub(crate) fn custom_sidebar_directory() -> PathBuf {
+    std::env::var_os("CMUX_SIDEBARS_DIR")
+        .map(PathBuf::from)
+        .or_else(|| {
+            event_log_home_directory()
+                .map(|home| home.join(".config").join("cmux").join("sidebars"))
+        })
+        .unwrap_or_else(|| {
+            PathBuf::from(".")
+                .join(".config")
+                .join("cmux")
+                .join("sidebars")
+        })
+}
+
+fn custom_sidebar_asset_map_from_params(params: &serde_json::Map<String, Value>) -> Value {
+    let source_path = string_param(params, &["source_path", "sourcePath", "path"]);
+    custom_sidebar_asset_map_for_source(source_path.as_deref())
+}
+
+fn custom_sidebar_asset_map_for_source(source_path: Option<&str>) -> Value {
+    let Some(source_path) = canonical_custom_sidebar_source(source_path) else {
+        return json!({});
+    };
+    let Some(asset_root) = custom_sidebar_asset_root_for_source(&source_path) else {
+        return json!({});
+    };
+    let sidebar_name = source_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("sidebar");
+    let mut assets = serde_json::Map::new();
+    collect_custom_sidebar_assets(
+        &source_path,
+        &asset_root,
+        &asset_root,
+        sidebar_name,
+        &mut assets,
+        0,
+    );
+    Value::Object(assets)
+}
+
+fn canonical_custom_sidebar_source(source_path: Option<&str>) -> Option<PathBuf> {
+    let source_path = PathBuf::from(source_path?.trim());
+    let source_path = fs::canonicalize(source_path).ok()?;
+    if !source_path.is_file() {
+        return None;
+    }
+    let sidebar_dir = fs::canonicalize(custom_sidebar_directory()).ok()?;
+    source_path.starts_with(sidebar_dir).then_some(source_path)
+}
+
+fn custom_sidebar_asset_root_for_source(source_path: &Path) -> Option<PathBuf> {
+    let dir = source_path.parent()?;
+    let stem = source_path.file_stem()?.to_str()?;
+    let asset_root = dir.join(format!("{stem}.assets"));
+    let asset_root = fs::canonicalize(asset_root).ok()?;
+    asset_root.is_dir().then_some(asset_root)
+}
+
+fn collect_custom_sidebar_assets(
+    source_path: &Path,
+    asset_root: &Path,
+    current_dir: &Path,
+    sidebar_name: &str,
+    assets: &mut serde_json::Map<String, Value>,
+    depth: usize,
+) {
+    if depth > 4 || assets.len() >= 256 {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(current_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if assets.len() >= 256 {
+            return;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            collect_custom_sidebar_assets(
+                source_path,
+                asset_root,
+                &path,
+                sidebar_name,
+                assets,
+                depth + 1,
+            );
+            continue;
+        }
+        if !path.is_file() || custom_sidebar_asset_mime(&path).is_none() {
+            continue;
+        }
+        let Ok(relative) = path.strip_prefix(asset_root) else {
+            continue;
+        };
+        let relative_name = relative.to_string_lossy().replace('\\', "/");
+        if relative_name.is_empty() || relative_name.contains("..") {
+            continue;
+        }
+        let url = custom_sidebar_asset_url(source_path, sidebar_name, &relative_name);
+        assets.insert(relative_name.clone(), json!(url));
+        if let Some(stem) = relative_name.rsplit_once('.').map(|(stem, _)| stem) {
+            assets.entry(stem.to_string()).or_insert_with(|| json!(url));
+        }
+    }
+}
+
+fn custom_sidebar_asset_url(source_path: &Path, sidebar_name: &str, relative_name: &str) -> String {
+    format!(
+        "cmux-sidebar-asset://{}/{}?source={}",
+        percent_encode_component(sidebar_name),
+        relative_name
+            .split('/')
+            .map(percent_encode_component)
+            .collect::<Vec<_>>()
+            .join("/"),
+        percent_encode_component(&source_path.to_string_lossy()),
+    )
+}
+
+pub(crate) fn resolve_custom_sidebar_asset_request(uri: &str) -> Option<(PathBuf, String)> {
+    let rest = strip_custom_sidebar_asset_scheme(uri)?;
+    let (path_part, query) = rest.split_once('?')?;
+    if path_part.contains('#') || query.contains('#') {
+        return None;
+    }
+    let source_path = query.split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+        (key == "source").then(|| percent_decode_component(value))
+    })?;
+    let source_path = canonical_custom_sidebar_source(Some(&source_path))?;
+    let asset_root = custom_sidebar_asset_root_for_source(&source_path)?;
+    let relative = path_part
+        .split_once('/')
+        .map(|(_, relative)| relative)
+        .unwrap_or_default();
+    if relative.is_empty() || relative.contains("..") || relative.contains('\\') {
+        return None;
+    }
+    let decoded_segments: Vec<String> = relative
+        .split('/')
+        .map(percent_decode_component)
+        .filter(|segment| !segment.is_empty() && segment != "." && segment != "..")
+        .collect();
+    if decoded_segments.is_empty() {
+        return None;
+    }
+    let mut candidate = asset_root.clone();
+    for segment in decoded_segments {
+        candidate.push(segment);
+    }
+    let candidate = fs::canonicalize(candidate).ok()?;
+    if !candidate.starts_with(&asset_root) || !candidate.is_file() {
+        return None;
+    }
+    let mime = custom_sidebar_asset_mime(&candidate)?;
+    Some((candidate, mime.to_string()))
+}
+
+fn strip_custom_sidebar_asset_scheme(uri: &str) -> Option<&str> {
+    if let Some(rest) = uri.strip_prefix("cmux-sidebar-asset://") {
+        return Some(rest);
+    }
+    let after = uri
+        .strip_prefix("http://")
+        .or_else(|| uri.strip_prefix("https://"))?;
+    after.strip_prefix("cmux-sidebar-asset.localhost/")
+}
+
+fn custom_sidebar_asset_mime(path: &Path) -> Option<&'static str> {
+    match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "svg" => Some("image/svg+xml"),
+        "avif" => Some("image/avif"),
+        "ico" => Some("image/x-icon"),
+        _ => None,
+    }
+}
+
+fn percent_encode_component(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.as_bytes() {
+        let b = *byte;
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(char::from(b));
+        } else {
+            encoded.push_str(&format!("%{b:02X}"));
+        }
+    }
+    encoded
+}
+
+fn percent_decode_component(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            if let Ok(hex) = u8::from_str_radix(&value[index + 1..index + 3], 16) {
+                decoded.push(hex);
+                index += 3;
+                continue;
+            }
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&decoded).to_string()
+}
+
+fn validate_custom_sidebars_in_dir(dir: &Path, name: Option<&str>) -> ControlCallResult {
+    let normalized_name = name.map(str::trim).filter(|name| !name.is_empty());
+    let candidates = match discover_custom_sidebars(dir, normalized_name) {
+        Ok(candidates) => candidates,
+        Err(error) => {
+            return ControlCallResult::Err {
+                code: "io_error".to_string(),
+                message: format!("Failed to inspect custom sidebars: {error}"),
+                data: Some(
+                    json!({ "sidebar_dir": dir })
+                        .try_into()
+                        .unwrap_or(JsonValue::Null),
+                ),
+            };
+        }
+    };
+
+    if normalized_name.is_some() && candidates.is_empty() {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: format!(
+                "Custom sidebar '{}' was not found in {}",
+                normalized_name.unwrap_or_default(),
+                dir.display()
+            ),
+            data: Some(
+                json!({ "sidebar_dir": dir })
+                    .try_into()
+                    .unwrap_or(JsonValue::Null),
+            ),
+        };
+    }
+
+    let sidebars: Vec<Value> = candidates
+        .iter()
+        .map(|candidate| validate_custom_sidebar_candidate(candidate))
+        .collect();
+    let valid_count = sidebars
+        .iter()
+        .filter(|sidebar| {
+            sidebar
+                .get("valid")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .count();
+    let invalid_count = sidebars.len().saturating_sub(valid_count);
+    ok(json!({
+        "protocol": "cmux-custom-sidebar-validation",
+        "version": 1,
+        "sidebar_dir": dir,
+        "exists": dir.is_dir(),
+        "name": normalized_name,
+        "ok": invalid_count == 0,
+        "valid_count": valid_count,
+        "invalid_count": invalid_count,
+        "sidebars": sidebars,
+    }))
+}
+
+#[derive(Debug, Clone)]
+struct CustomSidebarCandidate {
+    name: String,
+    path: PathBuf,
+    kind: String,
+    shadowed_json_path: Option<PathBuf>,
+    manifest_path: Option<PathBuf>,
+}
+
+fn discover_custom_sidebars(
+    dir: &Path,
+    name: Option<&str>,
+) -> std::io::Result<Vec<CustomSidebarCandidate>> {
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut by_name: BTreeMap<String, CustomSidebarCandidate> = BTreeMap::new();
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(extension) = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| extension.to_ascii_lowercase())
+        else {
+            continue;
+        };
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(".manifest.json"))
+        {
+            continue;
+        }
+        if extension != "swift" && extension != "json" {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        if name.is_some_and(|name| name != stem) {
+            continue;
+        }
+        let candidate = CustomSidebarCandidate {
+            name: stem.to_string(),
+            kind: extension.clone(),
+            path: path.clone(),
+            shadowed_json_path: None,
+            manifest_path: custom_sidebar_manifest_path(dir, stem),
+        };
+        match by_name.get_mut(stem) {
+            Some(existing) if existing.kind == "swift" && extension == "json" => {
+                existing.shadowed_json_path = Some(path);
+            }
+            Some(existing) if existing.kind == "json" && extension == "swift" => {
+                let shadowed_json_path = Some(existing.path.clone());
+                *existing = CustomSidebarCandidate {
+                    shadowed_json_path,
+                    ..candidate
+                };
+            }
+            Some(_) => {}
+            None => {
+                by_name.insert(stem.to_string(), candidate);
+            }
+        }
+    }
+    Ok(by_name.into_values().collect())
+}
+
+fn custom_sidebar_candidate_for_name(
+    dir: &Path,
+    name: &str,
+) -> std::io::Result<Option<CustomSidebarCandidate>> {
+    Ok(discover_custom_sidebars(dir, Some(name))?
+        .into_iter()
+        .next())
+}
+
+fn validate_custom_sidebar_candidate(candidate: &CustomSidebarCandidate) -> Value {
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+    let manifest = candidate
+        .manifest_path
+        .as_ref()
+        .map(|path| custom_sidebar_manifest_summary(path));
+    if manifest
+        .as_ref()
+        .and_then(|manifest| manifest.get("valid"))
+        .and_then(Value::as_bool)
+        == Some(false)
+    {
+        warnings.push("custom sidebar capability manifest is invalid".to_string());
+    }
+    match fs::read_to_string(&candidate.path) {
+        Ok(source) if source.trim().is_empty() => {
+            errors.push("sidebar file is empty".to_string());
+        }
+        Ok(source) if candidate.kind == "json" => {
+            if let Err(error) = serde_json::from_str::<Value>(&source) {
+                errors.push(format!("invalid JSON: {error}"));
+            }
+        }
+        Ok(_) if candidate.kind == "swift" => {
+            warnings.push(
+                "SwiftUI syntax interpretation is not yet available on Windows/Tauri".to_string(),
+            );
+        }
+        Ok(_) => {}
+        Err(error) => {
+            errors.push(format!("failed to read sidebar file: {error}"));
+        }
+    }
+    json!({
+        "name": candidate.name,
+        "kind": candidate.kind,
+        "path": candidate.path,
+        "valid": errors.is_empty(),
+        "errors": errors,
+        "warnings": warnings,
+        "shadowed_json_path": candidate.shadowed_json_path,
+        "manifest_path": candidate.manifest_path,
+        "manifest": manifest,
+    })
+}
+
+fn custom_sidebar_manifest_path(dir: &Path, name: &str) -> Option<PathBuf> {
+    let path = dir.join(format!("{name}.manifest.json"));
+    path.is_file().then_some(path)
+}
+
+fn custom_sidebar_manifest_for_source(source_path: Option<&str>) -> Option<Value> {
+    let source_path = PathBuf::from(source_path?.trim());
+    let dir = source_path.parent()?;
+    let stem = source_path.file_stem()?.to_str()?;
+    let manifest_path = custom_sidebar_manifest_path(dir, stem)?;
+    Some(custom_sidebar_manifest_summary(&manifest_path))
+}
+
+fn custom_sidebar_manifest_summary(path: &Path) -> Value {
+    let mut errors = Vec::new();
+    let mut requested_methods = Vec::new();
+    let mut trusted = false;
+
+    match fs::read_to_string(path) {
+        Ok(source) => match serde_json::from_str::<Value>(&source) {
+            Ok(Value::Object(manifest)) => {
+                trusted = manifest
+                    .get("trusted")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                for key in ["capabilities", "allowed_methods", "methods"] {
+                    if let Some(Value::Array(values)) = manifest.get(key) {
+                        requested_methods.extend(values.iter().filter_map(|value| {
+                            value
+                                .as_str()
+                                .map(str::trim)
+                                .filter(|method| !method.is_empty())
+                                .map(str::to_string)
+                        }));
+                    }
+                }
+            }
+            Ok(_) => errors.push("manifest must be a JSON object".to_string()),
+            Err(error) => errors.push(format!("invalid manifest JSON: {error}")),
+        },
+        Err(error) => errors.push(format!("failed to read manifest: {error}")),
+    }
+
+    requested_methods.sort();
+    requested_methods.dedup();
+    let allowed_requested_methods: Vec<String> = requested_methods
+        .iter()
+        .filter(|method| custom_sidebar_action_policy_allows(method))
+        .cloned()
+        .collect();
+    let denied_requested_methods: Vec<String> = requested_methods
+        .iter()
+        .filter(|method| !custom_sidebar_action_policy_allows(method))
+        .cloned()
+        .collect();
+
+    json!({
+        "path": path,
+        "valid": errors.is_empty(),
+        "errors": errors,
+        "trusted": trusted,
+        "requested_methods": requested_methods,
+        "allowed_requested_methods": allowed_requested_methods,
+        "denied_requested_methods": denied_requested_methods,
+        "policy": CUSTOM_SIDEBAR_ACTION_POLICY,
+        "enforced": true,
+    })
+}
+
+fn extension_sidebar_data_context(
+    workspaces: Vec<Value>,
+    selected_workspace_id: Option<&str>,
+    selected_title: Option<&str>,
+    unread_total: u64,
+    events: Value,
+) -> Value {
+    json!({
+        "workspaces": workspaces,
+        "workspaceCount": workspaces.len(),
+        "selectedTitle": selected_title.unwrap_or(""),
+        "selectedId": selected_workspace_id.unwrap_or(""),
+        "unreadTotal": unread_total,
+        "clock": extension_sidebar_clock_context(),
+        "events": events,
+    })
+}
+
+fn extension_sidebar_clock_context() -> Value {
+    let now = OffsetDateTime::now_utc();
+    json!({
+        "time": format!("{:02}:{:02}:{:02}", now.hour(), now.minute(), now.second()),
+        "hour": now.hour(),
+        "minute": now.minute(),
+        "second": now.second(),
+        "weekday": now.weekday().number_from_sunday(),
+        "epoch": now.unix_timestamp(),
+    })
+}
+
+fn extension_sidebar_data_workspace(
+    workspace: &SessionWorkspaceSnapshot,
+    index: usize,
+    selected: bool,
+) -> Value {
+    let tabs = extension_sidebar_data_tabs(workspace);
+    let ports = workspace_listening_ports(workspace);
+    let unread = tabs
+        .iter()
+        .filter(|tab| tab.get("unread").and_then(Value::as_bool).unwrap_or(false))
+        .count();
+    let pull_requests = extension_sidebar_pull_requests(workspace);
+    let (branch, dirty) = extension_sidebar_branch_summary(workspace);
+    let mut object = serde_json::Map::new();
+
+    if let Some(id) = workspace.workspace_id.as_deref() {
+        object.insert("id".to_string(), json!(id));
+    }
+    object.insert(
+        "title".to_string(),
+        json!(workspace_display_name(workspace)),
+    );
+    object.insert("selected".to_string(), json!(selected));
+    object.insert(
+        "pinned".to_string(),
+        json!(workspace.is_pinned.unwrap_or(false)),
+    );
+    object.insert("index".to_string(), json!(index));
+    object.insert(
+        "directory".to_string(),
+        json!(workspace.current_directory.clone().unwrap_or_default()),
+    );
+    object.insert("ports".to_string(), json!(ports));
+    object.insert("portCount".to_string(), json!(ports.len()));
+    object.insert("unread".to_string(), json!(unread));
+    object.insert("tabs".to_string(), json!(tabs));
+    object.insert(
+        "tabCount".to_string(),
+        json!(surfaces_for_workspace(workspace).len()),
+    );
+
+    insert_non_empty_string(
+        &mut object,
+        "description",
+        workspace.custom_description.as_deref(),
+    );
+    insert_non_empty_string(&mut object, "color", workspace.custom_color.as_deref());
+    if let Some(branch) = branch {
+        object.insert("branch".to_string(), json!(branch));
+        object.insert("dirty".to_string(), json!(dirty));
+    }
+    if let Some(first_pull_request) = pull_requests.first() {
+        object.insert("pr".to_string(), first_pull_request.clone());
+        object.insert("prs".to_string(), json!(pull_requests));
+    }
+    if let Some(progress) = workspace.sidebar_progress.as_ref() {
+        let mut progress_object = serde_json::Map::new();
+        progress_object.insert("value".to_string(), json!(progress.value));
+        insert_non_empty_string(&mut progress_object, "label", progress.label.as_deref());
+        object.insert("progress".to_string(), Value::Object(progress_object));
+    }
+    if let Some(remote) = workspace.remote.as_ref() {
+        let target = remote
+            .destination
+            .as_deref()
+            .or(remote.detail.as_deref())
+            .unwrap_or("");
+        object.insert(
+            "remote".to_string(),
+            json!({
+                "target": target,
+                "state": remote.state,
+                "connected": remote.connected,
+            }),
+        );
+    }
+
+    Value::Object(object)
+}
+
+fn extension_sidebar_data_tabs(workspace: &SessionWorkspaceSnapshot) -> Vec<Value> {
+    surfaces_for_workspace(workspace)
+        .into_iter()
+        .map(|surface| {
+            let panel_id = surface.get("id").and_then(Value::as_str);
+            let mut object = serde_json::Map::new();
+            if let Some(panel_id) = panel_id {
+                object.insert("id".to_string(), json!(panel_id));
+            }
+            object.insert(
+                "title".to_string(),
+                surface
+                    .get("title")
+                    .cloned()
+                    .unwrap_or_else(|| json!("terminal")),
+            );
+            object.insert(
+                "focused".to_string(),
+                json!(surface
+                    .get("focused")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)),
+            );
+            object.insert(
+                "pinned".to_string(),
+                json!(surface
+                    .get("pinned")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)),
+            );
+            insert_non_empty_string(
+                &mut object,
+                "directory",
+                workspace.current_directory.as_deref(),
+            );
+            if let Some(panel_id) = panel_id {
+                if let Some((branch, dirty)) = extension_sidebar_panel_branch(workspace, panel_id) {
+                    object.insert("branch".to_string(), json!(branch));
+                    object.insert("dirty".to_string(), json!(dirty));
+                }
+                let ports = panel_listening_ports(workspace, panel_id);
+                if !ports.is_empty() {
+                    object.insert("ports".to_string(), json!(ports));
+                }
+            }
+            object.insert(
+                "unread".to_string(),
+                json!(surface
+                    .get("unread")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)),
+            );
+            Value::Object(object)
+        })
+        .collect()
+}
+
+fn insert_non_empty_string(
+    object: &mut serde_json::Map<String, Value>,
+    key: &str,
+    value: Option<&str>,
+) {
+    if let Some(value) = value.filter(|value| !value.is_empty()) {
+        object.insert(key.to_string(), json!(value));
+    }
+}
+
+fn extension_sidebar_workspace(
+    workspace: &SessionWorkspaceSnapshot,
+    index: usize,
+    selected: bool,
+) -> Value {
+    let mut summary = workspace_summary(workspace, index, selected);
+    let tabs = extension_sidebar_tabs(workspace);
+    let ports = workspace_listening_ports(workspace);
+    let unread = tabs
+        .iter()
+        .filter(|tab| tab.get("unread").and_then(Value::as_bool).unwrap_or(false))
+        .count();
+    let pull_requests = extension_sidebar_pull_requests(workspace);
+    let first_pull_request = pull_requests.first().cloned();
+    let (branch, dirty) = extension_sidebar_branch_summary(workspace);
+
+    if let Some(object) = summary.as_object_mut() {
+        object.insert("directory".to_string(), json!(workspace.current_directory));
+        object.insert("root_path".to_string(), json!(workspace.current_directory));
+        object.insert(
+            "project_root_path".to_string(),
+            json!(workspace.current_directory),
+        );
+        object.insert("ports".to_string(), json!(ports));
+        object.insert("port_count".to_string(), json!(ports.len()));
+        object.insert("portCount".to_string(), json!(ports.len()));
+        object.insert("tabs".to_string(), json!(tabs));
+        object.insert(
+            "tab_count".to_string(),
+            json!(surfaces_for_workspace(workspace).len()),
+        );
+        object.insert(
+            "tabCount".to_string(),
+            json!(surfaces_for_workspace(workspace).len()),
+        );
+        object.insert("unread".to_string(), json!(unread));
+        object.insert("branch".to_string(), json!(branch));
+        object.insert("dirty".to_string(), json!(dirty));
+        object.insert(
+            "branch_summary".to_string(),
+            json!(branch.map(|branch| {
+                if dirty {
+                    format!("{branch}*")
+                } else {
+                    branch
+                }
+            })),
+        );
+        object.insert("pr".to_string(), first_pull_request.unwrap_or(Value::Null));
+        object.insert("prs".to_string(), json!(pull_requests));
+        object.insert(
+            "pull_request_urls".to_string(),
+            json!(extension_sidebar_pull_request_urls(workspace)),
+        );
+        object.insert(
+            "panel_directories".to_string(),
+            json!(extension_sidebar_panel_directories(workspace)),
+        );
+        object.insert(
+            "git_branches".to_string(),
+            json!(workspace.panel_git_branches.clone().unwrap_or_default()),
+        );
+        object.insert("progress".to_string(), json!(workspace.sidebar_progress));
+        object.insert("latestMessage".to_string(), Value::Null);
+        object.insert("latestPrompt".to_string(), Value::Null);
+        object.insert("latestAt".to_string(), Value::Null);
+    }
+
+    summary
+}
+
+fn extension_sidebar_tabs(workspace: &SessionWorkspaceSnapshot) -> Vec<Value> {
+    surfaces_for_workspace(workspace)
+        .into_iter()
+        .map(|mut surface| {
+            let panel_id = surface
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            if let Some(object) = surface.as_object_mut() {
+                object.insert(
+                    "directory".to_string(),
+                    json!(workspace.current_directory.clone()),
+                );
+                object.insert(
+                    "ports".to_string(),
+                    panel_id
+                        .as_deref()
+                        .map(|panel_id| json!(panel_listening_ports(workspace, panel_id)))
+                        .unwrap_or_else(|| json!([])),
+                );
+                object.insert(
+                    "branch".to_string(),
+                    panel_id
+                        .as_deref()
+                        .and_then(|panel_id| extension_sidebar_panel_branch(workspace, panel_id))
+                        .map(|(branch, _dirty)| branch)
+                        .map(Value::String)
+                        .unwrap_or(Value::Null),
+                );
+                object.insert(
+                    "dirty".to_string(),
+                    json!(panel_id.as_deref().is_some_and(|panel_id| {
+                        extension_sidebar_panel_branch(workspace, panel_id)
+                            .map(|(_branch, dirty)| dirty)
+                            .unwrap_or(false)
+                    })),
+                );
+            }
+            surface
+        })
+        .collect()
+}
+
+fn extension_sidebar_branch_summary(
+    workspace: &SessionWorkspaceSnapshot,
+) -> (Option<String>, bool) {
+    if let Some(entry) = workspace
+        .panel_git_branches
+        .as_ref()
+        .and_then(|branches| branches.first())
+    {
+        return (Some(entry.branch.clone()), entry.is_dirty);
+    }
+    workspace
+        .git_branch
+        .as_ref()
+        .map(|branch| (Some(branch.branch.clone()), branch.is_dirty))
+        .unwrap_or((None, false))
+}
+
+fn extension_sidebar_panel_branch(
+    workspace: &SessionWorkspaceSnapshot,
+    panel_id: &str,
+) -> Option<(String, bool)> {
+    workspace
+        .panel_git_branches
+        .as_ref()
+        .and_then(|branches| {
+            branches
+                .iter()
+                .find(|entry| entry.panel_id == panel_id)
+                .map(|entry| (entry.branch.clone(), entry.is_dirty))
+        })
+        .or_else(|| {
+            workspace
+                .git_branch
+                .as_ref()
+                .map(|entry| (entry.branch.clone(), entry.is_dirty))
+        })
+}
+
+fn extension_sidebar_pull_requests(workspace: &SessionWorkspaceSnapshot) -> Vec<Value> {
+    workspace
+        .panel_pull_requests
+        .as_ref()
+        .map(|entries| {
+            entries
+                .iter()
+                .map(|entry| {
+                    json!({
+                        "panel_id": entry.panel_id,
+                        "number": entry.number,
+                        "label": entry.label,
+                        "url": entry.url,
+                        "status": entry.status,
+                        "stale": entry.is_stale,
+                        "is_stale": entry.is_stale,
+                        "branch": entry.branch,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn extension_sidebar_pull_request_urls(workspace: &SessionWorkspaceSnapshot) -> Vec<String> {
+    workspace
+        .panel_pull_requests
+        .as_ref()
+        .map(|entries| entries.iter().map(|entry| entry.url.clone()).collect())
+        .unwrap_or_default()
+}
+
+fn extension_sidebar_panel_directories(
+    workspace: &SessionWorkspaceSnapshot,
+) -> BTreeMap<String, String> {
+    workspace
+        .current_directory
+        .as_ref()
+        .map(|directory| {
+            surfaces_for_workspace(workspace)
+                .into_iter()
+                .filter_map(|surface| {
+                    surface
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(|panel_id| (panel_id.to_string(), directory.clone()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn workspace_current(snapshot: &AppSessionSnapshot) -> ControlCallResult {
+    let params = serde_json::Map::new();
+    workspace_current_from_params(snapshot, &params)
+}
+
+fn workspace_current_from_params(
+    snapshot: &AppSessionSnapshot,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(window) = snapshot.windows.first() else {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "No workspace selected".to_string(),
+            data: None,
+        };
+    };
+    let Some(index) = workspace_index_from_params_or_selected(snapshot, params) else {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "No workspace selected".to_string(),
+            data: None,
+        };
+    };
+    let Some(workspace) = window.tab_manager.workspaces.get(index) else {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "No workspace selected".to_string(),
+            data: None,
+        };
+    };
+    ok(json!({
+        "window_id": window.window_id,
+        "window_ref": window.window_id.as_ref().map(|_| "window:1"),
+        "workspace_id": workspace.workspace_id,
+        "workspace_ref": workspace_ref(index),
+        "workspace": workspace_summary(workspace, index, index == selected_workspace_index(snapshot)),
+    }))
+}
+
+fn workspace_from_params_or_selected<'a>(
+    snapshot: &'a AppSessionSnapshot,
+    params: &serde_json::Map<String, Value>,
+) -> Option<&'a SessionWorkspaceSnapshot> {
+    let index = workspace_index_from_params_or_selected(snapshot, params)?;
+    snapshot
+        .windows
+        .first()
+        .and_then(|window| window.tab_manager.workspaces.get(index))
+}
+
+fn recent_sidebar_log_entries(workspace: &SessionWorkspaceSnapshot, limit: usize) -> Vec<Value> {
+    let entries = workspace.sidebar_log_entries.as_deref().unwrap_or_default();
+    let start = entries.len().saturating_sub(limit);
+    entries[start..]
+        .iter()
+        .rev()
+        .map(|entry| json!(entry))
+        .collect()
+}
+
+#[allow(dead_code)]
+fn surface_list(snapshot: &AppSessionSnapshot) -> ControlCallResult {
+    let params = serde_json::Map::new();
+    surface_list_from_params(snapshot, &params)
+}
+
+fn surface_list_from_params(
+    snapshot: &AppSessionSnapshot,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(window) = snapshot.windows.first() else {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Workspace not found".to_string(),
+            data: None,
+        };
+    };
+    let Some(index) = workspace_index_from_workspace_scope_or_selected(snapshot, params) else {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Workspace not found".to_string(),
+            data: None,
+        };
+    };
+    let Some(workspace) = window.tab_manager.workspaces.get(index) else {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Workspace not found".to_string(),
+            data: None,
+        };
+    };
+    ok(json!({
+        "workspace_id": workspace.workspace_id,
+        "workspace_ref": workspace_ref(index),
+        "surfaces": surfaces_for_workspace(workspace),
+        "window_id": window.window_id,
+        "window_ref": window.window_id.as_ref().map(|_| "window:1"),
+    }))
+}
+
+fn selected_workspace_index(snapshot: &AppSessionSnapshot) -> usize {
+    snapshot
+        .windows
+        .first()
+        .and_then(|window| window.tab_manager.selected_workspace_index)
+        .and_then(|index| usize::try_from(index).ok())
+        .unwrap_or(0)
+}
+
+fn workspace_index_from_params(
+    snapshot: &AppSessionSnapshot,
+    params: &serde_json::Map<String, Value>,
+) -> Option<usize> {
+    if let Some(workspace_ref) = string_param(params, &["workspace_ref", "ref"]) {
+        if let Some(index) = one_based_ref_index(&workspace_ref, "workspace") {
+            if snapshot
+                .windows
+                .first()
+                .is_some_and(|window| index < window.tab_manager.workspaces.len())
+            {
+                return Some(index);
+            }
+            return None;
+        }
+    }
+
+    let workspace_id = params
+        .get("workspace_id")
+        .or_else(|| params.get("id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    snapshot
+        .windows
+        .first()?
+        .tab_manager
+        .workspaces
+        .iter()
+        .position(|workspace| workspace.workspace_id.as_deref() == Some(workspace_id))
+}
+
+fn workspace_index_from_close_params(
+    snapshot: &AppSessionSnapshot,
+    params: &serde_json::Map<String, Value>,
+) -> Option<usize> {
+    if let Some(workspace_ref) = string_param(params, &["workspace_ref", "ref"]) {
+        let index = one_based_ref_index(&workspace_ref, "workspace")?;
+        if snapshot
+            .windows
+            .first()
+            .is_some_and(|window| index < window.tab_manager.workspaces.len())
+        {
+            return Some(index);
+        }
+        return None;
+    }
+
+    let workspace_id = params
+        .get("workspace_id")
+        .or_else(|| params.get("id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    snapshot
+        .windows
+        .first()?
+        .tab_manager
+        .workspaces
+        .iter()
+        .position(|workspace| workspace.workspace_id.as_deref() == Some(workspace_id))
+}
+
+fn workspace_reorder_destination_index(
+    snapshot: &AppSessionSnapshot,
+    params: &serde_json::Map<String, Value>,
+    from_index: usize,
+) -> Option<i64> {
+    if params.contains_key("to_index")
+        || params.contains_key("to")
+        || params.contains_key("target_index")
+    {
+        return None;
+    }
+
+    let before = workspace_index_from_selector_keys(
+        snapshot,
+        params,
+        &["before_workspace_ref", "before_ref"],
+        &["before_workspace_id", "before_workspace"],
+    );
+    let after = workspace_index_from_selector_keys(
+        snapshot,
+        params,
+        &["after_workspace_ref", "after_ref"],
+        &["after_workspace_id", "after_workspace"],
+    );
+    match (before, after) {
+        (Some(target), None) => {
+            let destination = if from_index < target {
+                target.saturating_sub(1)
+            } else {
+                target
+            };
+            Some(destination as i64)
+        }
+        (None, Some(target)) => {
+            let destination = if from_index < target {
+                target
+            } else {
+                target.saturating_add(1)
+            };
+            Some(destination as i64)
+        }
+        _ => None,
+    }
+}
+
+fn workspace_index_from_selector_keys(
+    snapshot: &AppSessionSnapshot,
+    params: &serde_json::Map<String, Value>,
+    ref_keys: &[&str],
+    id_keys: &[&str],
+) -> Option<usize> {
+    if let Some(workspace_ref) = string_param(params, ref_keys) {
+        let index = one_based_ref_index(&workspace_ref, "workspace")?;
+        if snapshot
+            .windows
+            .first()
+            .is_some_and(|window| index < window.tab_manager.workspaces.len())
+        {
+            return Some(index);
+        }
+        return None;
+    }
+
+    let workspace_id = string_param(params, id_keys)?;
+    snapshot
+        .windows
+        .first()?
+        .tab_manager
+        .workspaces
+        .iter()
+        .position(|workspace| workspace.workspace_id.as_deref() == Some(workspace_id.as_str()))
+}
+
+fn workspace_indices_from_params(
+    snapshot: &AppSessionSnapshot,
+    params: &serde_json::Map<String, Value>,
+) -> Option<Vec<i64>> {
+    let mut indices = Vec::new();
+
+    if let Some(values) = params
+        .get("workspace_refs")
+        .or_else(|| params.get("refs"))
+        .and_then(Value::as_array)
+    {
+        let parsed: Option<Vec<i64>> = values
+            .iter()
+            .map(|value| {
+                let workspace_ref = value.as_str()?.trim();
+                let index = one_based_ref_index(workspace_ref, "workspace")?;
+                if !snapshot
+                    .windows
+                    .first()
+                    .is_some_and(|window| index < window.tab_manager.workspaces.len())
+                {
+                    return None;
+                }
+                Some(index as i64)
+            })
+            .collect();
+        indices.extend(parsed?);
+    }
+
+    if let Some(values) = params
+        .get("workspace_ids")
+        .or_else(|| params.get("ids"))
+        .and_then(Value::as_array)
+    {
+        let window = snapshot.windows.first()?;
+        let parsed: Option<Vec<i64>> = values
+            .iter()
+            .map(|value| {
+                let workspace_id = value.as_str()?.trim();
+                window
+                    .tab_manager
+                    .workspaces
+                    .iter()
+                    .position(|workspace| workspace.workspace_id.as_deref() == Some(workspace_id))
+                    .map(|index| index as i64)
+            })
+            .collect();
+        indices.extend(parsed?);
+    }
+
+    if !indices.is_empty() {
+        return Some(indices);
+    }
+
+    workspace_index_from_params(snapshot, params).map(|index| vec![index as i64])
+}
+
+fn workspace_index_from_params_or_selected(
+    snapshot: &AppSessionSnapshot,
+    params: &serde_json::Map<String, Value>,
+) -> Option<usize> {
+    if params.is_empty()
+        || !params.contains_key("workspace_id")
+            && !params.contains_key("id")
+            && !params.contains_key("workspace_ref")
+            && !params.contains_key("ref")
+    {
+        let selected = selected_workspace_index(snapshot);
+        if snapshot
+            .windows
+            .first()
+            .is_some_and(|window| selected < window.tab_manager.workspaces.len())
+        {
+            return Some(selected);
+        }
+        return None;
+    }
+    workspace_index_from_params(snapshot, params)
+}
+
+fn workspace_index_from_workspace_scope_or_selected(
+    snapshot: &AppSessionSnapshot,
+    params: &serde_json::Map<String, Value>,
+) -> Option<usize> {
+    if let Some(workspace_ref) = string_param(params, &["workspace_ref"]) {
+        if let Some(index) = one_based_ref_index(&workspace_ref, "workspace") {
+            if snapshot
+                .windows
+                .first()
+                .is_some_and(|window| index < window.tab_manager.workspaces.len())
+            {
+                return Some(index);
+            }
+        }
+        return None;
+    }
+    if let Some(workspace_id) = string_param(params, &["workspace_id"]) {
+        return snapshot
+            .windows
+            .first()?
+            .tab_manager
+            .workspaces
+            .iter()
+            .position(|workspace| {
+                workspace.workspace_id.as_deref() == Some(workspace_id.as_str())
+            });
+    }
+    let selected = selected_workspace_index(snapshot);
+    if snapshot
+        .windows
+        .first()
+        .is_some_and(|window| selected < window.tab_manager.workspaces.len())
+    {
+        return Some(selected);
+    }
+    None
+}
+
+fn string_param(params: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        params
+            .get(*key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    })
+}
+
+fn raw_string_param(params: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| params.get(*key).and_then(Value::as_str).map(str::to_owned))
+}
+
+fn string_vec_param(params: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<Vec<String>> {
+    keys.iter().find_map(|key| {
+        let value = params.get(*key)?;
+        match value {
+            Value::Array(values) => {
+                let entries: Vec<String> = values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .collect();
+                Some(entries)
+            }
+            Value::String(raw) => Some(
+                raw.lines()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .collect(),
+            ),
+            _ => None,
+        }
+    })
+}
+
+fn string_map_param(
+    params: &serde_json::Map<String, Value>,
+    keys: &[&str],
+) -> Option<BTreeMap<String, String>> {
+    for key in keys {
+        let Some(object) = params.get(*key).and_then(Value::as_object) else {
+            continue;
+        };
+        let map: BTreeMap<String, String> = object
+            .iter()
+            .filter_map(|(key, value)| {
+                let key = key.trim();
+                if key.is_empty() {
+                    return None;
+                }
+                value
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|value| (key.to_string(), value.to_string()))
+            })
+            .collect();
+        if !map.is_empty() {
+            return Some(map);
+        }
+    }
+    None
+}
+
+fn bool_param(params: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<bool> {
+    keys.iter().find_map(|key| {
+        params.get(*key).and_then(|value| {
+            value.as_bool().or_else(|| {
+                let normalized = value.as_str()?.trim().to_ascii_lowercase();
+                match normalized.as_str() {
+                    "1" | "true" | "yes" | "on" => Some(true),
+                    "0" | "false" | "no" | "off" => Some(false),
+                    _ => None,
+                }
+            })
+        })
+    })
+}
+
+fn usize_param(params: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<usize> {
+    keys.iter().find_map(|key| {
+        params.get(*key).and_then(|value| match value {
+            Value::Number(number) => number
+                .as_u64()
+                .and_then(|value| usize::try_from(value).ok()),
+            Value::String(raw) => raw.trim().parse::<usize>().ok(),
+            _ => None,
+        })
+    })
+}
+
+fn u32_param(params: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<u32> {
+    keys.iter().find_map(|key| {
+        params.get(*key).and_then(|value| match value {
+            Value::Number(number) => number.as_u64().and_then(|value| u32::try_from(value).ok()),
+            Value::String(raw) => raw.trim().parse::<u32>().ok(),
+            _ => None,
+        })
+    })
+}
+
+fn i64_param(params: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<i64> {
+    keys.iter().find_map(|key| {
+        params.get(*key).and_then(|value| match value {
+            Value::Number(number) => number.as_i64(),
+            Value::String(raw) => raw.trim().parse::<i64>().ok(),
+            _ => None,
+        })
+    })
+}
+
+fn optional_u16_param(params: &serde_json::Map<String, Value>, key: &str) -> Option<Option<u16>> {
+    let Some(value) = params.get(key) else {
+        return Some(None);
+    };
+    if value.is_null() {
+        return Some(None);
+    }
+    let parsed = match value {
+        Value::Number(number) => number.as_u64(),
+        Value::String(raw) => raw.trim().parse::<u64>().ok(),
+        _ => None,
+    }?;
+    if (1..=u16::MAX as u64).contains(&parsed) {
+        Some(Some(parsed as u16))
+    } else {
+        None
+    }
+}
+
+fn pull_request_status_param(
+    params: &serde_json::Map<String, Value>,
+) -> Option<SessionPullRequestStatusSnapshot> {
+    let raw = string_param(params, &["status", "state"]).unwrap_or_else(|| "open".to_string());
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "open" | "opened" => Some(SessionPullRequestStatusSnapshot::Open),
+        "merged" | "merge" => Some(SessionPullRequestStatusSnapshot::Merged),
+        "closed" | "close" => Some(SessionPullRequestStatusSnapshot::Closed),
+        _ => None,
+    }
+}
+
+fn shell_activity_param(
+    params: &serde_json::Map<String, Value>,
+) -> Option<SessionPanelShellActivityStateSnapshot> {
+    let raw = string_param(params, &["state", "shell_state", "shellState", "activity"])?;
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "prompt" | "idle" | "promptidle" | "prompt_idle" | "prompt-idle" => {
+            Some(SessionPanelShellActivityStateSnapshot::PromptIdle)
+        }
+        "running" | "busy" | "command" | "commandrunning" | "command_running"
+        | "command-running" => Some(SessionPanelShellActivityStateSnapshot::CommandRunning),
+        "unknown" | "clear" => Some(SessionPanelShellActivityStateSnapshot::Unknown),
+        _ => None,
+    }
+}
+
+fn insert_first_param(params: &serde_json::Map<String, Value>) -> bool {
+    bool_param(params, &["insert_first", "before"]).unwrap_or(false)
+}
+
+fn terminal_startup_params(
+    params: &serde_json::Map<String, Value>,
+) -> (
+    Option<String>,
+    Option<String>,
+    Option<BTreeMap<String, String>>,
+) {
+    (
+        string_param(
+            params,
+            &["initial_terminal_command", "initialCommand", "command"],
+        ),
+        string_param(params, &["initial_terminal_input", "initialInput", "input"]),
+        string_map_param(
+            params,
+            &["initial_terminal_environment", "environment", "env"],
+        ),
+    )
+}
+
+fn f64_param(params: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<f64> {
+    keys.iter().find_map(|key| {
+        params.get(*key).and_then(|value| {
+            value.as_f64().or_else(|| {
+                value
+                    .as_str()
+                    .map(str::trim)
+                    .and_then(|value| value.parse::<f64>().ok())
+            })
+        })
+    })
+}
+
+fn ports_param(params: &serde_json::Map<String, Value>) -> Option<Vec<u16>> {
+    let value = params
+        .get("ports")
+        .or_else(|| params.get("listening_ports"))
+        .or_else(|| params.get("listeningPorts"))
+        .or_else(|| params.get("port"))?;
+    let raw_ports: Vec<i64> = if let Some(values) = value.as_array() {
+        values
+            .iter()
+            .map(|value| {
+                value.as_i64().or_else(|| {
+                    value
+                        .as_str()
+                        .map(str::trim)
+                        .and_then(|raw| raw.parse::<i64>().ok())
+                })
+            })
+            .collect::<Option<Vec<_>>>()?
+    } else if let Some(port) = value.as_i64() {
+        vec![port]
+    } else {
+        value
+            .as_str()?
+            .split(|ch: char| ch == ',' || ch.is_ascii_whitespace())
+            .filter(|part| !part.trim().is_empty())
+            .map(|part| part.trim().parse::<i64>().ok())
+            .collect::<Option<Vec<_>>>()?
+    };
+    let mut ports = Vec::new();
+    for port in raw_ports {
+        if !(1..=65535).contains(&port) {
+            return None;
+        }
+        let port = port as u16;
+        if !ports.contains(&port) {
+            ports.push(port);
+        }
+    }
+    ports.sort_unstable();
+    Some(ports)
+}
+
+fn one_based_ref_index(value: &str, prefix: &str) -> Option<usize> {
+    let (actual_prefix, raw_index) = value.trim().split_once(':')?;
+    if actual_prefix != prefix {
+        return None;
+    }
+    let index = raw_index.trim().parse::<usize>().ok()?;
+    index.checked_sub(1)
+}
+
+fn split_orientation_from_params(
+    params: &serde_json::Map<String, Value>,
+) -> Option<SessionSplitOrientation> {
+    match string_param(params, &["orientation", "direction"])
+        .unwrap_or_else(|| "horizontal".to_string())
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "horizontal" | "h" | "right" | "left" => Some(SessionSplitOrientation::Horizontal),
+        "vertical" | "v" | "down" | "up" => Some(SessionSplitOrientation::Vertical),
+        _ => None,
+    }
+}
+
+fn surface_kind_from_params(params: &serde_json::Map<String, Value>) -> Option<String> {
+    let Some(kind) = string_param(params, &["type", "kind"]) else {
+        return Some("invalid".to_string());
+    };
+    match kind.to_ascii_lowercase().as_str() {
+        "terminal" | "shell" => None,
+        "agent" | "browser" | "markdown" | "file" | "diff" | "custom-sidebar" => {
+            Some(kind.to_ascii_lowercase())
+        }
+        _ => Some("invalid".to_string()),
+    }
+}
+
+fn surface_id_from_params_or_focused(
+    snapshot: &AppSessionSnapshot,
+    params: &serde_json::Map<String, Value>,
+) -> Option<String> {
+    let workspace_index = workspace_index_from_workspace_scope_or_selected(snapshot, params)?;
+    surface_id_from_params_or_workspace_focused(snapshot, workspace_index, params)
+}
+
+fn surface_id_from_params_or_workspace_focused(
+    snapshot: &AppSessionSnapshot,
+    workspace_index: usize,
+    params: &serde_json::Map<String, Value>,
+) -> Option<String> {
+    if params.contains_key("index") {
+        return None;
+    }
+
+    let workspace = snapshot
+        .windows
+        .first()?
+        .tab_manager
+        .workspaces
+        .get(workspace_index)?;
+    let surfaces = surfaces_for_workspace(workspace);
+
+    if let Some(surface_ref) = string_param(params, &["surface_ref", "ref"]) {
+        if let Some(index) = one_based_ref_index(&surface_ref, "surface") {
+            return surfaces
+                .get(index)
+                .and_then(|surface| surface.get("id"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+        }
+    }
+
+    if let Some(surface_id) = string_param(params, &["surface_id", "panel_id", "id"]) {
+        if surfaces.iter().any(|surface| {
+            surface
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id == surface_id)
+        }) {
+            return Some(surface_id);
+        }
+        return None;
+    }
+
+    surfaces
+        .iter()
+        .find(|surface| {
+            surface
+                .get("focused")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .or_else(|| surfaces.first())
+        .and_then(|surface| surface.get("id"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn surface_ref_for_panel(
+    snapshot: &AppSessionSnapshot,
+    workspace_index: usize,
+    panel_id: &str,
+) -> Option<String> {
+    let workspace = snapshot
+        .windows
+        .first()?
+        .tab_manager
+        .workspaces
+        .get(workspace_index)?;
+    surfaces_for_workspace(workspace)
+        .iter()
+        .position(|surface| {
+            surface
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id == panel_id)
+        })
+        .map(surface_ref)
+}
+
+fn surface_is_terminal(
+    snapshot: &AppSessionSnapshot,
+    workspace_index: usize,
+    panel_id: &str,
+) -> bool {
+    let Some(workspace) = snapshot
+        .windows
+        .first()
+        .and_then(|window| window.tab_manager.workspaces.get(workspace_index))
+    else {
+        return false;
+    };
+    surfaces_for_workspace(workspace).iter().any(|surface| {
+        surface
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| id == panel_id)
+            && surface
+                .get("type")
+                .and_then(Value::as_str)
+                .is_none_or(|surface_type| surface_type == "terminal")
+    })
+}
+
+fn surface_is_browser(
+    snapshot: &AppSessionSnapshot,
+    workspace_index: usize,
+    panel_id: &str,
+) -> bool {
+    let Some(workspace) = snapshot
+        .windows
+        .first()
+        .and_then(|window| window.tab_manager.workspaces.get(workspace_index))
+    else {
+        return false;
+    };
+    surfaces_for_workspace(workspace).iter().any(|surface| {
+        surface
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| id == panel_id)
+            && surface
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|surface_type| surface_type == "browser")
+    })
+}
+
+fn terminal_key_sequence(key: &str) -> Option<&'static str> {
+    let normalized = key.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "enter" | "return" => Some("\r"),
+        "tab" => Some("\t"),
+        "escape" | "esc" => Some("\x1b"),
+        "backspace" | "bs" => Some("\x7f"),
+        "delete" | "del" => Some("\x1b[3~"),
+        "up" | "arrow-up" | "arrowup" => Some("\x1b[A"),
+        "down" | "arrow-down" | "arrowdown" => Some("\x1b[B"),
+        "right" | "arrow-right" | "arrowright" => Some("\x1b[C"),
+        "left" | "arrow-left" | "arrowleft" => Some("\x1b[D"),
+        "home" => Some("\x1b[H"),
+        "end" => Some("\x1b[F"),
+        "pageup" | "page-up" => Some("\x1b[5~"),
+        "pagedown" | "page-down" => Some("\x1b[6~"),
+        "ctrl-c" | "ctrl+c" | "sigint" => Some("\x03"),
+        "ctrl-d" | "ctrl+d" | "eof" => Some("\x04"),
+        "ctrl-l" | "ctrl+l" => Some("\x0c"),
+        "ctrl-z" | "ctrl+z" => Some("\x1a"),
+        _ => None,
+    }
+}
+
+fn workspace_summary(workspace: &SessionWorkspaceSnapshot, index: usize, selected: bool) -> Value {
+    json!({
+        "id": workspace.workspace_id,
+        "ref": workspace_ref(index),
+        "title": workspace_display_name(workspace),
+        "custom_title": workspace.custom_title,
+        "has_custom_title": workspace.custom_title.as_ref().is_some_and(|title| !title.trim().is_empty()),
+        "description": workspace.custom_description,
+        "selected": selected,
+        "pinned": workspace.is_pinned.unwrap_or(false),
+        "listening_ports": workspace_listening_ports(workspace),
+        "agent_listening_ports": workspace.agent_listening_ports.clone().unwrap_or_default(),
+        "agent_pids": workspace.agent_pids.clone().unwrap_or_default(),
+        "panel_ttys": workspace.panel_ttys.clone().unwrap_or_default(),
+        "panel_shell_activity": workspace.panel_shell_activity.clone().unwrap_or_default(),
+        "remote": workspace_remote_payload(workspace),
+        "current_directory": workspace.current_directory,
+        "initial_terminal_command": workspace.initial_terminal_command,
+        "initial_terminal_input": workspace.initial_terminal_input,
+        "initial_terminal_environment": workspace.initial_terminal_environment,
+        "zoomed_panel_id": workspace.zoomed_panel_id,
+        "restorable_agent_panels": restorable_agent_panel_summaries(workspace),
+        "custom_color": workspace.custom_color,
+        "group_id": workspace.group_id,
+        "git_branch": workspace.git_branch,
+        "panel_git_branches": workspace.panel_git_branches,
+        "panel_pull_requests": workspace.panel_pull_requests,
+        "sidebar_progress": workspace.sidebar_progress,
+        "sidebar_status_entries": workspace.sidebar_status_entries,
+        "sidebar_metadata_entries": workspace.sidebar_metadata_entries,
+        "sidebar_metadata_blocks": workspace.sidebar_metadata_blocks,
+        "sidebar_log_entries": workspace.sidebar_log_entries,
+        "latest_conversation_message": Value::Null,
+        "latest_submitted_message": Value::Null,
+        "latest_submitted_at": Value::Null,
+    })
+}
+
+fn workspace_remote_payload(workspace: &SessionWorkspaceSnapshot) -> Value {
+    workspace.remote.as_ref().map_or_else(
+        || {
+            json!({
+                "enabled": false,
+                "state": "disconnected",
+                "connected": false,
+                "active_terminal_sessions": 0,
+                "daemon": {
+                    "state": "unavailable",
+                    "capabilities": [],
+                },
+                "detected_ports": [],
+                "forwarded_ports": [],
+                "conflicted_ports": [],
+                "detail": Value::Null,
+                "transport": Value::Null,
+                "destination": Value::Null,
+                "port": Value::Null,
+                "local_proxy_port": Value::Null,
+                "persistent_daemon_slot": Value::Null,
+                "proxy": {
+                    "state": "unavailable",
+                    "host": Value::Null,
+                    "port": Value::Null,
+                    "schemes": ["socks5", "http_connect"],
+                    "url": Value::Null,
+                    "error_code": Value::Null,
+                },
+            })
+        },
+        |remote| json!(remote),
+    )
+}
+
+fn restorable_agent_panel_summaries(workspace: &SessionWorkspaceSnapshot) -> Vec<Value> {
+    workspace
+        .restorable_agent_snapshots
+        .as_ref()
+        .map(|entries| {
+            entries
+                .iter()
+                .map(|entry| {
+                    json!({
+                        "panel_id": entry.panel_id,
+                        "kind": entry.snapshot.kind,
+                        "session_id": entry.snapshot.session_id,
+                        "working_directory": entry.snapshot.working_directory,
+                        "resume_command": entry.snapshot.resume_command,
+                        "fork_command": entry.snapshot.fork_command,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn workspace_group_summaries(
+    workspaces: &[SessionWorkspaceSnapshot],
+    groups: &Option<Vec<cmux_core::session::SessionWorkspaceGroupSnapshot>>,
+) -> Vec<Value> {
+    let Some(groups) = groups.as_ref() else {
+        return Vec::new();
+    };
+    groups
+        .iter()
+        .map(|group| {
+            let members: Vec<_> = workspaces
+                .iter()
+                .enumerate()
+                .filter(|(_index, workspace)| {
+                    workspace.group_id.as_deref() == Some(group.id.as_str())
+                })
+                .map(|(index, workspace)| {
+                    json!({
+                        "workspace_id": workspace.workspace_id,
+                        "workspace_ref": workspace_ref(index),
+                    })
+                })
+                .collect();
+            json!({
+                "id": group.id.clone(),
+                "name": group.name.clone(),
+                "collapsed": group.is_collapsed,
+                "pinned": group.is_pinned.unwrap_or(false),
+                "anchor_workspace_id": group.anchor_workspace_id.clone(),
+                "anchor_member_index": group.anchor_member_index,
+                "custom_color": group.custom_color.clone(),
+                "icon_symbol": group.icon_symbol.clone(),
+                "members": members,
+            })
+        })
+        .collect()
+}
+
+fn workspace_display_name(workspace: &SessionWorkspaceSnapshot) -> String {
+    workspace
+        .custom_title
+        .as_deref()
+        .filter(|title| !title.trim().is_empty())
+        .or_else(|| {
+            workspace
+                .process_title
+                .trim()
+                .is_empty()
+                .then_some("Workspace")
+                .or(Some(workspace.process_title.as_str()))
+        })
+        .unwrap_or("Workspace")
+        .to_string()
+}
+
+fn surfaces_for_workspace(workspace: &SessionWorkspaceSnapshot) -> Vec<Value> {
+    let mut rows = Vec::new();
+    if let Some(layout) = workspace.layout.as_ref() {
+        collect_surfaces(layout, workspace, &mut rows);
+    }
+    rows
+}
+
+fn collect_surfaces(
+    layout: &SessionWorkspaceLayoutSnapshot,
+    workspace: &SessionWorkspaceSnapshot,
+    rows: &mut Vec<Value>,
+) {
+    match layout {
+        SessionWorkspaceLayoutSnapshot::Pane(pane) => collect_pane_surfaces(pane, workspace, rows),
+        SessionWorkspaceLayoutSnapshot::Split(split) => {
+            collect_surfaces(&split.first, workspace, rows);
+            collect_surfaces(&split.second, workspace, rows);
+        }
+    }
+}
+
+fn collect_pane_surfaces(
+    pane: &SessionPaneLayoutSnapshot,
+    workspace: &SessionWorkspaceSnapshot,
+    rows: &mut Vec<Value>,
+) {
+    for (index_in_pane, panel_id) in pane.panel_ids.iter().enumerate() {
+        let index = rows.len();
+        let selected = pane
+            .selected_panel_id
+            .as_deref()
+            .map(|selected| selected == panel_id)
+            .unwrap_or(index_in_pane == 0);
+        let surface_type = pane.surface_kind.as_deref().unwrap_or("terminal");
+        let browser_back_count = pane
+            .browser_back_history
+            .as_ref()
+            .map(Vec::len)
+            .unwrap_or(0);
+        let browser_forward_count = pane
+            .browser_forward_history
+            .as_ref()
+            .map(Vec::len)
+            .unwrap_or(0);
+        let browser_availability = cmux_core::session_ops::browser_navigation_availability(
+            pane.browser_back_history.as_deref(),
+            pane.browser_forward_history.as_deref(),
+        );
+        let terminal_startup = panel_terminal_startup(&workspace.panel_terminal_startups, panel_id);
+        let restorable_agent =
+            panel_restorable_agent(&workspace.restorable_agent_snapshots, panel_id);
+        let (initial_command, initial_input, initial_environment) = match terminal_startup {
+            Some(startup) => (
+                startup.initial_terminal_command.clone(),
+                startup.initial_terminal_input.clone(),
+                startup.initial_terminal_environment.clone(),
+            ),
+            None => (
+                workspace.initial_terminal_command.clone(),
+                workspace.initial_terminal_input.clone(),
+                workspace.initial_terminal_environment.clone(),
+            ),
+        };
+        rows.push(json!({
+            "id": panel_id,
+            "ref": surface_ref(index),
+            "type": surface_type,
+            "title": panel_title(&workspace.panel_titles, panel_id).unwrap_or_else(|| surface_type.to_string()),
+            "focused": selected,
+            "pane_id": pane.pane_id,
+            "pane_ref": pane.pane_id.as_ref().map(|_| format!("pane:{}", index + 1)),
+            "selected_in_pane": selected,
+            "custom_title": panel_title(&workspace.panel_titles, panel_id),
+            "pinned": panel_pinned(&workspace.panel_pins, panel_id),
+            "unread": panel_unread(&workspace.panel_unreads, panel_id),
+            "requested_working_directory": workspace.current_directory.clone(),
+            "initial_command": initial_command,
+            "initial_input": initial_input,
+            "initial_environment": initial_environment,
+            "listening_ports": panel_listening_ports(workspace, panel_id),
+            "tty": panel_tty(workspace, panel_id),
+            "tty_name": panel_tty(workspace, panel_id),
+            "shell_activity": panel_shell_activity(workspace, panel_id),
+            "shell_activity_state": panel_shell_activity(workspace, panel_id),
+            "tmux_start_command": Value::Null,
+            "resume_binding": restorable_agent.map(restorable_agent_binding_payload),
+            "markdown_file_path": pane.markdown_file_path.clone(),
+            "file_path": pane.file_path.clone(),
+            "diff_viewer_token": pane.diff_viewer_token.clone(),
+            "diff_viewer_request_path": pane.diff_viewer_request_path.clone(),
+            "browser_url": pane.browser_url.clone(),
+            "browser_proxy_url": pane.browser_proxy_url.clone(),
+            "browser_can_go_back": browser_availability.can_go_back,
+            "browser_can_go_forward": browser_availability.can_go_forward,
+            "browser_back_history_count": browser_back_count,
+            "browser_forward_history_count": browser_forward_count,
+            "browser_omnibar_visible": pane.browser_omnibar_visible.unwrap_or(true),
+            "browser_focus_mode_active": pane.browser_focus_mode_active.unwrap_or(false),
+            "browser_developer_tools_visible": pane.browser_developer_tools_visible.unwrap_or(false),
+            "browser_developer_tools_panel": pane.browser_developer_tools_panel.clone(),
+            "browser_page_zoom": pane.browser_page_zoom,
+        }));
+    }
+}
+
+fn workspace_listening_ports(workspace: &SessionWorkspaceSnapshot) -> Vec<u16> {
+    let mut ports: Vec<u16> = workspace
+        .listening_ports
+        .as_ref()
+        .into_iter()
+        .flat_map(|ports| ports.iter().copied())
+        .chain(
+            workspace
+                .panel_listening_ports
+                .as_ref()
+                .into_iter()
+                .flat_map(|entries| entries.iter())
+                .flat_map(|entry| entry.ports.iter().copied()),
+        )
+        .chain(
+            workspace
+                .agent_listening_ports
+                .as_ref()
+                .into_iter()
+                .flat_map(|ports| ports.iter().copied()),
+        )
+        .collect();
+    ports.sort_unstable();
+    ports.dedup();
+    ports
+}
+
+fn panel_listening_ports(workspace: &SessionWorkspaceSnapshot, panel_id: &str) -> Vec<u16> {
+    workspace
+        .panel_listening_ports
+        .as_ref()
+        .and_then(|entries| entries.iter().find(|entry| entry.panel_id == panel_id))
+        .map(|entry| {
+            let mut ports = entry.ports.clone();
+            ports.sort_unstable();
+            ports.dedup();
+            ports
+        })
+        .unwrap_or_default()
+}
+
+fn panel_tty(workspace: &SessionWorkspaceSnapshot, panel_id: &str) -> Option<String> {
+    workspace.panel_ttys.as_ref().and_then(|entries| {
+        entries
+            .iter()
+            .find(|entry| entry.panel_id == panel_id)
+            .map(|entry| entry.tty.clone())
+    })
+}
+
+fn panel_shell_activity(workspace: &SessionWorkspaceSnapshot, panel_id: &str) -> Option<String> {
+    workspace.panel_shell_activity.as_ref().and_then(|entries| {
+        entries
+            .iter()
+            .find(|entry| entry.panel_id == panel_id)
+            .map(|entry| match entry.state {
+                SessionPanelShellActivityStateSnapshot::Unknown => "unknown",
+                SessionPanelShellActivityStateSnapshot::PromptIdle => "promptIdle",
+                SessionPanelShellActivityStateSnapshot::CommandRunning => "commandRunning",
+            })
+            .map(str::to_string)
+    })
+}
+
+fn panel_title(
+    panel_titles: &Option<Vec<cmux_core::session::SessionPanelTitleSnapshot>>,
+    panel_id: &str,
+) -> Option<String> {
+    panel_titles.as_ref()?.iter().find_map(|entry| {
+        (entry.panel_id == panel_id)
+            .then(|| entry.custom_title.clone())
+            .flatten()
+    })
+}
+
+fn panel_pinned(
+    panel_pins: &Option<Vec<cmux_core::session::SessionPanelPinSnapshot>>,
+    panel_id: &str,
+) -> bool {
+    panel_pins
+        .as_ref()
+        .and_then(|entries| {
+            entries
+                .iter()
+                .find(|entry| entry.panel_id == panel_id)
+                .map(|entry| entry.is_pinned)
+        })
+        .unwrap_or(false)
+}
+
+fn panel_unread(
+    panel_unreads: &Option<Vec<cmux_core::session::SessionPanelUnreadSnapshot>>,
+    panel_id: &str,
+) -> bool {
+    panel_unreads
+        .as_ref()
+        .and_then(|entries| {
+            entries
+                .iter()
+                .find(|entry| entry.panel_id == panel_id)
+                .map(|entry| entry.is_unread)
+        })
+        .unwrap_or(false)
+}
+
+fn panel_terminal_startup<'a>(
+    panel_terminal_startups: &'a Option<
+        Vec<cmux_core::session::SessionPanelTerminalStartupSnapshot>,
+    >,
+    panel_id: &str,
+) -> Option<&'a cmux_core::session::SessionPanelTerminalStartupSnapshot> {
+    panel_terminal_startups
+        .as_ref()?
+        .iter()
+        .find(|entry| entry.panel_id == panel_id)
+}
+
+fn panel_restorable_agent<'a>(
+    restorable_agent_snapshots: &'a Option<
+        Vec<cmux_core::session::SessionPanelRestorableAgentSnapshot>,
+    >,
+    panel_id: &str,
+) -> Option<&'a cmux_core::session::SessionRestorableAgentSnapshot> {
+    restorable_agent_snapshots
+        .as_ref()?
+        .iter()
+        .find(|entry| entry.panel_id == panel_id)
+        .map(|entry| &entry.snapshot)
+}
+
+fn restorable_agent_binding_payload(
+    snapshot: &cmux_core::session::SessionRestorableAgentSnapshot,
+) -> Value {
+    json!({
+        "kind": snapshot.kind,
+        "session_id": snapshot.session_id,
+        "working_directory": snapshot.working_directory,
+        "launch_command": snapshot.launch_command,
+        "resume_command": snapshot.resume_command,
+        "fork_command": snapshot.fork_command,
+    })
+}
+
+fn new_browser_surface_id(
+    snapshot: &AppSessionSnapshot,
+    workspace_index: usize,
+    before_surface_ids: &[String],
+) -> Option<String> {
+    let workspace = snapshot
+        .windows
+        .first()?
+        .tab_manager
+        .workspaces
+        .get(workspace_index)?;
+    surfaces_for_workspace(workspace)
+        .iter()
+        .find(|surface| {
+            surface
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|surface_type| surface_type == "browser")
+                && surface
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| !before_surface_ids.iter().any(|before| before == id))
+        })
+        .and_then(|surface| surface.get("id"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            surfaces_for_workspace(workspace)
+                .iter()
+                .find(|surface| {
+                    surface
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .is_some_and(|surface_type| surface_type == "browser")
+                        && surface
+                            .get("focused")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false)
+                })
+                .and_then(|surface| surface.get("id"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+}
+
+fn browser_surface_payload(
+    snapshot: &AppSessionSnapshot,
+    workspace_index: usize,
+    panel_id: &str,
+) -> Option<Value> {
+    let window = snapshot.windows.first()?;
+    let workspace = window.tab_manager.workspaces.get(workspace_index)?;
+    let surfaces = surfaces_for_workspace(workspace);
+    let surface_index = surfaces.iter().position(|surface| {
+        surface
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| id == panel_id)
+    })?;
+    let surface = surfaces.get(surface_index)?.clone();
+    let url = surface
+        .get("browser_url")
+        .cloned()
+        .filter(|value| !value.is_null())
+        .unwrap_or_else(|| json!("about:blank"));
+    Some(json!({
+        "id": panel_id,
+        "surface_id": panel_id,
+        "panel_id": panel_id,
+        "surface_ref": surface_ref(surface_index),
+        "workspace_id": workspace.workspace_id,
+        "workspace_ref": workspace_ref(workspace_index),
+        "window_id": window.window_id,
+        "window_ref": window.window_id.as_ref().map(|_| "window:1"),
+        "url": url,
+        "browser_url": surface.get("browser_url").cloned().unwrap_or(Value::Null),
+        "surface": surface,
+    }))
+}
+
+fn workspace_ref(index: usize) -> String {
+    format!("workspace:{}", index + 1)
+}
+
+fn surface_ref(index: usize) -> String {
+    format!("surface:{}", index + 1)
+}
+
+fn pane_ref(index: usize) -> String {
+    format!("pane:{}", index + 1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    use cmux_core::session::SessionPanelShellActivitySnapshot;
+    use cmux_core::session::{
+        AgentLaunchCommandSnapshot, AppSessionSnapshot, SessionGitBranchSnapshot,
+        SessionPaneLayoutSnapshot, SessionPanelGitBranchSnapshot,
+        SessionPanelListeningPortsSnapshot, SessionPanelPinSnapshot,
+        SessionPanelPullRequestSnapshot, SessionPanelRestorableAgentSnapshot,
+        SessionPanelTerminalStartupSnapshot, SessionPanelTitleSnapshot, SessionPanelTtySnapshot,
+        SessionPanelUnreadSnapshot, SessionPullRequestStatusSnapshot,
+        SessionRestorableAgentSnapshot, SessionTabManagerSnapshot, SessionWindowSnapshot,
+        SessionWorkspaceAgentPidSnapshot, SessionWorkspaceGroupSnapshot,
+        SessionWorkspaceRemoteDaemonSnapshot, SessionWorkspaceRemoteProxySnapshot,
+        SessionWorkspaceRemoteSnapshot, SessionWorkspaceSidebarLogEntrySnapshot,
+        SessionWorkspaceSidebarMetadataBlockSnapshot, SessionWorkspaceSidebarMetadataSnapshot,
+        SessionWorkspaceSidebarProgressSnapshot, SessionWorkspaceSidebarStatusSnapshot,
+        SESSION_SNAPSHOT_SCHEMA_VERSION,
+    };
+
+    fn test_snapshot() -> AppSessionSnapshot {
+        AppSessionSnapshot {
+            version: SESSION_SNAPSHOT_SCHEMA_VERSION,
+            created_at: 0,
+            windows: vec![SessionWindowSnapshot {
+                window_id: Some("window-1".to_string()),
+                tab_manager: SessionTabManagerSnapshot {
+                    selected_workspace_index: Some(0),
+                    workspaces: vec![SessionWorkspaceSnapshot {
+                        workspace_id: Some("workspace-1".to_string()),
+                        process_title: "shell".to_string(),
+                        custom_title: Some("Phoenix".to_string()),
+                        current_directory: Some("C:/repo".to_string()),
+                        layout: Some(SessionWorkspaceLayoutSnapshot::Pane(
+                            SessionPaneLayoutSnapshot {
+                                pane_id: Some("pane-1".to_string()),
+                                panel_ids: vec!["surface-1".to_string()],
+                                selected_panel_id: Some("surface-1".to_string()),
+                                surface_kind: None,
+                                markdown_file_path: None,
+                                file_path: None,
+                                diff_viewer_token: None,
+                                diff_viewer_request_path: None,
+                                browser_url: None,
+                                browser_proxy_url: None,
+                                browser_back_history: None,
+                                browser_forward_history: None,
+                                browser_omnibar_visible: None,
+                                browser_focus_mode_active: None,
+                                browser_developer_tools_visible: None,
+                                browser_developer_tools_panel: None,
+                                browser_page_zoom: None,
+                            },
+                        )),
+                        ..Default::default()
+                    }],
+                    workspace_groups: None,
+                },
+            }],
+        }
+    }
+
+    #[test]
+    fn custom_sidebar_action_reply_uses_native_bridge_envelope() {
+        let ok_reply = custom_sidebar_action_reply(ControlCallResult::Ok(
+            JsonValue::try_from(json!({ "accepted": true })).expect("json value"),
+        ));
+        assert_eq!(ok_reply["ok"], json!(true));
+        assert_eq!(ok_reply["value"]["accepted"], json!(true));
+
+        let err_reply = custom_sidebar_action_reply(ControlCallResult::Err {
+            code: "invalid_params".to_string(),
+            message: "bad action".to_string(),
+            data: Some(JsonValue::try_from(json!({ "field": "method" })).expect("json value")),
+        });
+        assert_eq!(err_reply["ok"], json!(false));
+        assert_eq!(err_reply["error"]["code"], json!("invalid_params"));
+        assert_eq!(err_reply["error"]["userMessage"], json!("bad action"));
+        assert_eq!(err_reply["error"]["data"]["field"], json!("method"));
+    }
+
+    #[test]
+    fn custom_sidebar_action_policy_allows_safe_sidebar_methods() {
+        for method in [
+            "sidebar.list",
+            "sidebar.select",
+            "workspace.select",
+            "workspace.set_status",
+            "workspace.report_meta",
+            "surface.focus",
+            "extension.sidebar.snapshot",
+        ] {
+            assert!(
+                custom_sidebar_action_policy_allows(method),
+                "expected custom sidebar policy to allow {method}"
+            );
+        }
+    }
+
+    #[test]
+    fn custom_sidebar_action_policy_denies_dangerous_methods_with_data() {
+        for method in [
+            "workspace.close",
+            "surface.close",
+            "browser.eval",
+            "browser.addscript",
+            "debug.terminals",
+            "workspace.remote.configure",
+        ] {
+            assert!(
+                !custom_sidebar_action_policy_allows(method),
+                "expected custom sidebar policy to deny {method}"
+            );
+            let reply = custom_sidebar_action_reply(custom_sidebar_action_denied(method, None));
+            assert_eq!(reply["ok"], json!(false));
+            assert_eq!(
+                reply["error"]["code"],
+                json!("custom_sidebar_capability_denied")
+            );
+            assert_eq!(reply["error"]["data"]["method"], json!(method));
+            assert_eq!(
+                reply["error"]["data"]["policy"],
+                json!(CUSTOM_SIDEBAR_ACTION_POLICY)
+            );
+            assert!(reply["error"]["data"]["allowed_methods"]
+                .as_array()
+                .is_some_and(|methods| methods.contains(&json!("workspace.select"))));
+        }
+    }
+
+    #[test]
+    fn custom_sidebar_action_schema_validates_required_method_params() {
+        let empty = serde_json::Map::new();
+        let reply = custom_sidebar_action_reply(
+            validate_custom_sidebar_action_schema("workspace.select", &empty)
+                .expect_err("workspace.select should require a selector"),
+        );
+        assert_eq!(reply["ok"], json!(false));
+        assert_eq!(
+            reply["error"]["code"],
+            json!("custom_sidebar_action_schema_invalid")
+        );
+        assert_eq!(reply["error"]["data"]["field"], json!("workspace"));
+        assert_eq!(
+            reply["error"]["data"]["accepted_keys"],
+            json!(["workspace_id", "id", "workspace_ref", "ref"])
+        );
+
+        let params = json!({ "workspace_id": "workspace-1" })
+            .as_object()
+            .expect("object")
+            .clone();
+        assert!(validate_custom_sidebar_action_schema("workspace.select", &params).is_ok());
+
+        let params = json!({ "key": "deploy", "value": "running", "priority": "10" })
+            .as_object()
+            .expect("object")
+            .clone();
+        assert!(validate_custom_sidebar_action_schema("workspace.set_status", &params).is_ok());
+
+        let params = json!({ "key": "deploy", "value": "running", "priority": "high" })
+            .as_object()
+            .expect("object")
+            .clone();
+        let reply = custom_sidebar_action_reply(
+            validate_custom_sidebar_action_schema("workspace.set_status", &params)
+                .expect_err("priority should be an integer"),
+        );
+        assert_eq!(reply["error"]["data"]["field"], json!("priority"));
+        assert_eq!(
+            reply["error"]["data"]["expected"],
+            json!("integer or integer string")
+        );
+    }
+
+    #[test]
+    fn custom_sidebar_action_schema_advertises_authoring_contract() {
+        let catalog = custom_sidebar_action_schema_catalog();
+        assert_eq!(
+            catalog["version"],
+            json!(CUSTOM_SIDEBAR_ACTION_SCHEMA_VERSION)
+        );
+        assert!(catalog["methods"].as_array().is_some_and(|methods| methods
+            .iter()
+            .any(|method| method["method"] == json!("workspace.set_status"))));
+        assert_eq!(
+            catalog["selector_keys"]["surface"],
+            json!(["surface_id", "panel_id", "id", "surface_ref", "ref"])
+        );
+    }
+
+    #[test]
+    fn workspace_list_payload_matches_control_shape() {
+        let payload = workspace_list_payload(&test_snapshot());
+        assert_eq!(payload["window_id"], json!("window-1"));
+        assert_eq!(payload["workspaces"][0]["id"], json!("workspace-1"));
+        assert_eq!(payload["workspaces"][0]["ref"], json!("workspace:1"));
+        assert_eq!(payload["workspaces"][0]["title"], json!("Phoenix"));
+        assert_eq!(payload["workspaces"][0]["selected"], json!(true));
+        assert_eq!(
+            payload["workspaces"][0]["current_directory"],
+            json!("C:/repo")
+        );
+        assert_eq!(
+            payload["workspaces"][0]["initial_terminal_command"],
+            Value::Null
+        );
+        assert_eq!(
+            payload["workspaces"][0]["initial_terminal_input"],
+            Value::Null
+        );
+        assert_eq!(
+            payload["workspaces"][0]["initial_terminal_environment"],
+            Value::Null
+        );
+        assert_eq!(payload["workspaces"][0]["zoomed_panel_id"], Value::Null);
+        assert_eq!(
+            payload["workspaces"][0]["restorable_agent_panels"],
+            json!([])
+        );
+        assert_eq!(payload["workspaces"][0]["git_branch"], Value::Null);
+        assert_eq!(payload["workspaces"][0]["panel_git_branches"], Value::Null);
+        assert_eq!(payload["workspaces"][0]["panel_pull_requests"], Value::Null);
+        assert_eq!(payload["workspaces"][0]["sidebar_progress"], Value::Null);
+        assert_eq!(
+            payload["workspaces"][0]["sidebar_status_entries"],
+            Value::Null
+        );
+        assert_eq!(
+            payload["workspaces"][0]["sidebar_metadata_entries"],
+            Value::Null
+        );
+        assert_eq!(
+            payload["workspaces"][0]["sidebar_metadata_blocks"],
+            Value::Null
+        );
+        assert_eq!(payload["workspaces"][0]["sidebar_log_entries"], Value::Null);
+        assert_eq!(payload["workspace_groups"], json!([]));
+    }
+
+    #[test]
+    fn extension_sidebar_snapshot_projects_documented_authoring_data() {
+        let mut snapshot = test_snapshot();
+        let workspace = &mut snapshot.windows[0].tab_manager.workspaces[0];
+        workspace.custom_description = Some("Ship parity".to_string());
+        workspace.listening_ports = Some(vec![3000]);
+        workspace.panel_listening_ports = Some(vec![SessionPanelListeningPortsSnapshot {
+            panel_id: "surface-1".to_string(),
+            ports: vec![5173],
+        }]);
+        workspace.git_branch = Some(SessionGitBranchSnapshot {
+            branch: "main".to_string(),
+            is_dirty: false,
+        });
+        workspace.panel_git_branches = Some(vec![SessionPanelGitBranchSnapshot {
+            panel_id: "surface-1".to_string(),
+            branch: "feature/sidebar".to_string(),
+            is_dirty: true,
+        }]);
+        workspace.panel_unreads = Some(vec![SessionPanelUnreadSnapshot {
+            panel_id: "surface-1".to_string(),
+            is_unread: true,
+            unread_at: Some(10),
+        }]);
+        workspace.panel_pull_requests = Some(vec![SessionPanelPullRequestSnapshot {
+            panel_id: "surface-1".to_string(),
+            number: 42,
+            label: "Review".to_string(),
+            url: "https://github.com/example/repo/pull/42".to_string(),
+            status: SessionPullRequestStatusSnapshot::Open,
+            branch: Some("feature/sidebar".to_string()),
+            is_stale: false,
+        }]);
+        workspace.sidebar_progress = Some(SessionWorkspaceSidebarProgressSnapshot {
+            value: 0.5,
+            label: Some("halfway".to_string()),
+        });
+
+        let payload = extension_sidebar_snapshot_payload(&snapshot);
+        assert_eq!(
+            payload["protocol"],
+            json!("cmux-extension-sidebar-snapshot")
+        );
+        assert_eq!(payload["selected_workspace_id"], json!("workspace-1"));
+        assert_eq!(payload["selectedId"], json!("workspace-1"));
+        assert_eq!(payload["selectedTitle"], json!("Phoenix"));
+        assert_eq!(payload["workspaceCount"], json!(1));
+        assert_eq!(payload["unreadTotal"], json!(1));
+
+        let workspace = &payload["workspaces"][0];
+        assert_eq!(workspace["id"], json!("workspace-1"));
+        assert_eq!(workspace["directory"], json!("C:/repo"));
+        assert_eq!(workspace["root_path"], json!("C:/repo"));
+        assert_eq!(workspace["ports"], json!([3000, 5173]));
+        assert_eq!(workspace["portCount"], json!(2));
+        assert_eq!(workspace["tabCount"], json!(1));
+        assert_eq!(workspace["unread"], json!(1));
+        assert_eq!(workspace["branch"], json!("feature/sidebar"));
+        assert_eq!(workspace["dirty"], json!(true));
+        assert_eq!(workspace["branch_summary"], json!("feature/sidebar*"));
+        assert_eq!(workspace["pr"]["number"], json!(42));
+        assert_eq!(workspace["pr"]["status"], json!("open"));
+        assert_eq!(
+            workspace["pull_request_urls"],
+            json!(["https://github.com/example/repo/pull/42"])
+        );
+        assert_eq!(workspace["progress"]["label"], json!("halfway"));
+        assert_eq!(workspace["tabs"][0]["id"], json!("surface-1"));
+        assert_eq!(workspace["tabs"][0]["directory"], json!("C:/repo"));
+        assert_eq!(workspace["tabs"][0]["ports"], json!([5173]));
+        assert_eq!(workspace["tabs"][0]["branch"], json!("feature/sidebar"));
+        assert_eq!(workspace["tabs"][0]["dirty"], json!(true));
+        assert_eq!(
+            workspace["panel_directories"]["surface-1"],
+            json!("C:/repo")
+        );
+        let data = &payload["data"];
+        assert_eq!(data["workspaceCount"], json!(1));
+        assert_eq!(data["selectedId"], json!("workspace-1"));
+        assert_eq!(data["selectedTitle"], json!("Phoenix"));
+        assert_eq!(data["unreadTotal"], json!(1));
+        assert_eq!(data["events"]["latest"], Value::Null);
+        assert!(data["clock"]["time"].as_str().is_some());
+        assert!(data["clock"]["epoch"].as_i64().is_some());
+        let data_workspace = &data["workspaces"][0];
+        assert_eq!(data_workspace["id"], json!("workspace-1"));
+        assert_eq!(data_workspace["title"], json!("Phoenix"));
+        assert_eq!(data_workspace["selected"], json!(true));
+        assert_eq!(data_workspace["pinned"], json!(false));
+        assert_eq!(data_workspace["index"], json!(0));
+        assert_eq!(data_workspace["directory"], json!("C:/repo"));
+        assert_eq!(data_workspace["ports"], json!([3000, 5173]));
+        assert_eq!(data_workspace["portCount"], json!(2));
+        assert_eq!(data_workspace["unread"], json!(1));
+        assert_eq!(data_workspace["tabCount"], json!(1));
+        assert_eq!(data_workspace["description"], json!("Ship parity"));
+        assert_eq!(data_workspace["branch"], json!("feature/sidebar"));
+        assert_eq!(data_workspace["dirty"], json!(true));
+        assert_eq!(data_workspace["pr"]["number"], json!(42));
+        assert_eq!(data_workspace["progress"]["label"], json!("halfway"));
+        assert_eq!(data_workspace["latestMessage"], Value::Null);
+        assert_eq!(data_workspace["latestPrompt"], Value::Null);
+        assert_eq!(data_workspace["latestAt"], Value::Null);
+        assert_eq!(data_workspace["tabs"][0]["id"], json!("surface-1"));
+        assert_eq!(data_workspace["tabs"][0]["title"], json!("terminal"));
+        assert_eq!(data_workspace["tabs"][0]["focused"], json!(true));
+        assert_eq!(data_workspace["tabs"][0]["ports"], json!([5173]));
+        assert_eq!(
+            data_workspace["tabs"][0]["branch"],
+            json!("feature/sidebar")
+        );
+        assert_eq!(data_workspace["tabs"][0]["dirty"], json!(true));
+        assert_eq!(payload["events"]["latest"], Value::Null);
+        assert_eq!(payload["events"]["recent"], json!([]));
+    }
+
+    #[test]
+    fn extension_sidebar_snapshot_includes_event_context_for_eventbridge_bootstrap() {
+        let events = extension_sidebar_events_context_from_retained(
+            "boot-1".to_string(),
+            4,
+            vec![
+                json!({
+                    "type": "event",
+                    "seq": 1,
+                    "name": "session.changed",
+                    "category": "session",
+                }),
+                json!({
+                    "type": "event",
+                    "seq": 2,
+                    "name": "workspace.selected",
+                    "category": "workspace",
+                }),
+                json!({
+                    "type": "event",
+                    "seq": 3,
+                    "name": "surface.selected",
+                    "category": "surface",
+                }),
+            ],
+        );
+
+        let payload =
+            extension_sidebar_snapshot_payload_with_events(&test_snapshot(), events, json!({}));
+
+        assert_eq!(payload["seq"], json!(3));
+        assert_eq!(payload["latest_seq"], json!(3));
+        assert_eq!(payload["events"]["protocol"], json!("cmux-events"));
+        assert_eq!(payload["events"]["boot_id"], json!("boot-1"));
+        assert_eq!(payload["events"]["oldest_seq"], json!(1));
+        assert_eq!(payload["events"]["next_seq"], json!(4));
+        assert_eq!(payload["events"]["retained_count"], json!(3));
+        assert_eq!(
+            payload["events"]["latest"]["name"],
+            json!("surface.selected")
+        );
+        assert_eq!(
+            payload["events"]["category_counts"],
+            json!({
+                "session": 1,
+                "surface": 1,
+                "workspace": 1,
+            })
+        );
+        assert_eq!(
+            payload["events"]["name_counts"]["workspace.selected"],
+            json!(1)
+        );
+        assert_eq!(payload["events"]["recent"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn custom_sidebar_validation_prefers_swift_and_reports_invalid_json() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("status-board.json"), "{}").expect("write json");
+        fs::write(dir.path().join("status-board.swift"), "Text(\"Status\")").expect("write swift");
+        fs::write(dir.path().join("broken.json"), "{").expect("write broken");
+        fs::write(
+            dir.path().join("status-board.manifest.json"),
+            r#"{"trusted":true,"capabilities":["workspace.select","browser.eval"]}"#,
+        )
+        .expect("write manifest");
+
+        let payload = match validate_custom_sidebars_in_dir(dir.path(), None) {
+            ControlCallResult::Ok(value) => Value::from(value),
+            other => panic!("expected validation payload, got {other:?}"),
+        };
+
+        assert_eq!(payload["protocol"], json!("cmux-custom-sidebar-validation"));
+        assert_eq!(payload["valid_count"], json!(1));
+        assert_eq!(payload["invalid_count"], json!(1));
+        assert_eq!(payload["ok"], json!(false));
+        assert_eq!(payload["sidebars"][0]["name"], json!("broken"));
+        assert_eq!(payload["sidebars"][0]["kind"], json!("json"));
+        assert_eq!(payload["sidebars"][0]["valid"], json!(false));
+        assert!(payload["sidebars"][0]["errors"][0]
+            .as_str()
+            .is_some_and(|error| error.contains("invalid JSON")));
+        assert_eq!(payload["sidebars"][1]["name"], json!("status-board"));
+        assert_eq!(payload["sidebars"][1]["kind"], json!("swift"));
+        assert_eq!(payload["sidebars"][1]["valid"], json!(true));
+        assert_eq!(payload["sidebars"][1]["manifest"]["trusted"], json!(true));
+        assert_eq!(
+            payload["sidebars"][1]["manifest"]["requested_methods"],
+            json!(["browser.eval", "workspace.select"])
+        );
+        assert_eq!(
+            payload["sidebars"][1]["manifest"]["allowed_requested_methods"],
+            json!(["workspace.select"])
+        );
+        assert_eq!(
+            payload["sidebars"][1]["manifest"]["denied_requested_methods"],
+            json!(["browser.eval"])
+        );
+        assert!(payload["sidebars"][1]["shadowed_json_path"]
+            .as_str()
+            .is_some_and(|path| path.ends_with("status-board.json")));
+
+        let named = match validate_custom_sidebars_in_dir(dir.path(), Some("status-board")) {
+            ControlCallResult::Ok(value) => Value::from(value),
+            other => panic!("expected named validation payload, got {other:?}"),
+        };
+        assert_eq!(named["name"], json!("status-board"));
+        assert_eq!(named["sidebars"].as_array().map(Vec::len), Some(1));
+    }
+
+    #[test]
+    fn custom_sidebar_assets_are_minted_and_resolved_from_adjacent_asset_dir() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let previous_dir = std::env::var_os("CMUX_SIDEBARS_DIR");
+        let dir = tempfile::tempdir().expect("tempdir");
+        unsafe {
+            std::env::set_var("CMUX_SIDEBARS_DIR", dir.path());
+        }
+
+        let source_path = dir.path().join("ops.swift");
+        let asset_dir = dir.path().join("ops.assets");
+        fs::create_dir_all(asset_dir.join("icons")).expect("asset dir");
+        fs::write(&source_path, "Image(\"logo\")").expect("write swift");
+        fs::write(asset_dir.join("logo.png"), [137, 80, 78, 71]).expect("write png");
+        fs::write(asset_dir.join("icons").join("badge.svg"), "<svg />").expect("write svg");
+        fs::write(asset_dir.join("secret.txt"), "nope").expect("write text");
+
+        let params = serde_json::Map::from_iter([(
+            "source_path".to_string(),
+            json!(source_path.to_string_lossy()),
+        )]);
+        let assets = custom_sidebar_asset_map_from_params(&params);
+        assert!(assets["logo"]
+            .as_str()
+            .is_some_and(|url| url.starts_with("cmux-sidebar-asset://ops/logo.png?source=")));
+        assert!(assets["logo.png"].as_str().is_some());
+        assert!(assets["icons/badge"].as_str().is_some());
+        assert!(assets.get("secret").is_none());
+
+        let logo_url = assets["logo"].as_str().expect("logo url");
+        let (resolved_path, mime) =
+            resolve_custom_sidebar_asset_request(logo_url).expect("resolve logo");
+        assert_eq!(
+            resolved_path,
+            fs::canonicalize(asset_dir.join("logo.png")).unwrap()
+        );
+        assert_eq!(mime, "image/png");
+        assert!(resolve_custom_sidebar_asset_request(
+            &logo_url.replace("logo.png", "../ops.swift")
+        )
+        .is_none());
+
+        match previous_dir {
+            Some(value) => unsafe {
+                std::env::set_var("CMUX_SIDEBARS_DIR", value);
+            },
+            None => unsafe {
+                std::env::remove_var("CMUX_SIDEBARS_DIR");
+            },
+        }
+    }
+
+    #[test]
+    fn custom_sidebar_action_denial_can_include_manifest_context() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source_path = dir.path().join("ops.swift");
+        fs::write(&source_path, "Text(\"Ops\")").expect("write swift");
+        fs::write(
+            dir.path().join("ops.manifest.json"),
+            r#"{"trusted":false,"allowed_methods":["workspace.select","browser.eval"]}"#,
+        )
+        .expect("write manifest");
+
+        let manifest =
+            custom_sidebar_manifest_for_source(source_path.to_str()).expect("manifest summary");
+        let reply = custom_sidebar_action_reply(custom_sidebar_action_denied(
+            "browser.eval",
+            Some(manifest),
+        ));
+
+        assert_eq!(reply["ok"], json!(false));
+        assert_eq!(
+            reply["error"]["code"],
+            json!("custom_sidebar_capability_denied")
+        );
+        assert_eq!(
+            reply["error"]["data"]["manifest"]["requested_methods"],
+            json!(["browser.eval", "workspace.select"])
+        );
+        assert_eq!(
+            reply["error"]["data"]["manifest"]["denied_requested_methods"],
+            json!(["browser.eval"])
+        );
+    }
+
+    #[test]
+    fn custom_sidebar_reload_payload_targets_only_valid_sidebars() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("ops.json"), "{}").expect("write valid json");
+        fs::write(dir.path().join("broken.json"), "{").expect("write broken json");
+
+        let validation = match validate_custom_sidebars_in_dir(dir.path(), None) {
+            ControlCallResult::Ok(value) => Value::from(value),
+            other => panic!("expected validation payload, got {other:?}"),
+        };
+        let payload = custom_sidebar_reload_payload(None, &validation);
+
+        assert_eq!(payload["protocol"], json!("cmux-custom-sidebar-reload"));
+        assert_eq!(payload["event"], json!(CUSTOM_SIDEBAR_RELOAD_EVENT));
+        assert_eq!(payload["all"], json!(true));
+        assert_eq!(payload["name"], Value::Null);
+        assert_eq!(payload["sidebars"].as_array().map(Vec::len), Some(1));
+        assert_eq!(payload["sidebars"][0]["name"], json!("ops"));
+        assert!(payload["paths"][0]
+            .as_str()
+            .is_some_and(|path| path.ends_with("ops.json")));
+
+        let named_payload = custom_sidebar_reload_payload(Some("ops"), &validation);
+        assert_eq!(named_payload["all"], json!(false));
+        assert_eq!(named_payload["name"], json!("ops"));
+    }
+
+    #[test]
+    fn custom_sidebar_select_payload_describes_selected_sidebar() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("ops.json");
+        fs::write(&path, "{}").expect("write valid json");
+        let candidate = custom_sidebar_candidate_for_name(dir.path(), "ops")
+            .expect("discover")
+            .expect("candidate");
+        let validation = validate_custom_sidebar_candidate(&candidate);
+
+        let payload = custom_sidebar_select_payload(&candidate, &validation);
+
+        assert_eq!(payload["accepted"], json!(true));
+        assert_eq!(payload["protocol"], json!("cmux-custom-sidebar-select"));
+        assert_eq!(payload["event"], json!(CUSTOM_SIDEBAR_SELECT_EVENT));
+        assert_eq!(payload["name"], json!("ops"));
+        assert_eq!(payload["kind"], json!("json"));
+        assert!(payload["path"]
+            .as_str()
+            .is_some_and(|path| path.ends_with("ops.json")));
+        assert_eq!(payload["sidebar"]["valid"], json!(true));
+    }
+
+    #[test]
+    fn workspace_list_payload_includes_sidebar_progress() {
+        let mut snapshot = test_snapshot();
+        snapshot.windows[0].tab_manager.workspaces[0].sidebar_progress =
+            Some(SessionWorkspaceSidebarProgressSnapshot {
+                value: 0.5,
+                label: Some("Building".to_string()),
+            });
+
+        let payload = workspace_list_payload(&snapshot);
+
+        assert_eq!(
+            payload["workspaces"][0]["sidebar_progress"],
+            json!({"value": 0.5, "label": "Building"})
+        );
+    }
+
+    #[test]
+    fn workspace_list_payload_includes_sidebar_status_and_log() {
+        let mut snapshot = test_snapshot();
+        snapshot.windows[0].tab_manager.workspaces[0].sidebar_status_entries =
+            Some(vec![SessionWorkspaceSidebarStatusSnapshot {
+                key: "build".to_string(),
+                value: "green".to_string(),
+                priority: Some(80),
+                updated_at: 10,
+            }]);
+        snapshot.windows[0].tab_manager.workspaces[0].sidebar_log_entries =
+            Some(vec![SessionWorkspaceSidebarLogEntrySnapshot {
+                level: "info".to_string(),
+                message: "ship it".to_string(),
+                created_at: 11,
+            }]);
+
+        let payload = workspace_list_payload(&snapshot);
+
+        assert_eq!(
+            payload["workspaces"][0]["sidebar_status_entries"],
+            json!([{"key": "build", "value": "green", "priority": 80, "updated_at": 10}])
+        );
+        assert_eq!(
+            payload["workspaces"][0]["sidebar_log_entries"],
+            json!([{"level": "info", "message": "ship it", "created_at": 11}])
+        );
+    }
+
+    #[test]
+    fn workspace_list_payload_includes_sidebar_metadata_entries_and_blocks() {
+        let mut snapshot = test_snapshot();
+        snapshot.windows[0].tab_manager.workspaces[0].sidebar_metadata_entries =
+            Some(vec![SessionWorkspaceSidebarMetadataSnapshot {
+                key: "task".to_string(),
+                value: "review".to_string(),
+                icon: Some("text:CTX".to_string()),
+                color: Some("blue".to_string()),
+                url: Some("https://example.test/pr".to_string()),
+                priority: Some(50),
+                format: Some("markdown".to_string()),
+                updated_at: 12,
+            }]);
+        snapshot.windows[0].tab_manager.workspaces[0].sidebar_metadata_blocks =
+            Some(vec![SessionWorkspaceSidebarMetadataBlockSnapshot {
+                key: "notes".to_string(),
+                markdown: "**Ready**".to_string(),
+                priority: Some(10),
+                updated_at: 13,
+            }]);
+
+        let payload = workspace_list_payload(&snapshot);
+
+        assert_eq!(
+            payload["workspaces"][0]["sidebar_metadata_entries"],
+            json!([{
+                "key": "task",
+                "value": "review",
+                "icon": "text:CTX",
+                "color": "blue",
+                "url": "https://example.test/pr",
+                "priority": 50,
+                "format": "markdown",
+                "updated_at": 12
+            }])
+        );
+        assert_eq!(
+            payload["workspaces"][0]["sidebar_metadata_blocks"],
+            json!([{
+                "key": "notes",
+                "markdown": "**Ready**",
+                "priority": 10,
+                "updated_at": 13
+            }])
+        );
+    }
+
+    #[test]
+    fn workspace_list_payload_includes_panel_pull_requests() {
+        let mut snapshot = test_snapshot();
+        snapshot.windows[0].tab_manager.workspaces[0].panel_pull_requests =
+            Some(vec![SessionPanelPullRequestSnapshot {
+                panel_id: "surface-1".to_string(),
+                number: 42,
+                label: "MR".to_string(),
+                url: "https://gitlab.example/project/-/merge_requests/42".to_string(),
+                status: SessionPullRequestStatusSnapshot::Open,
+                branch: Some("feature/api".to_string()),
+                is_stale: false,
+            }]);
+
+        let payload = workspace_list_payload(&snapshot);
+        assert_eq!(
+            payload["workspaces"][0]["panel_pull_requests"],
+            json!([{
+                "panel_id": "surface-1",
+                "number": 42,
+                "label": "MR",
+                "url": "https://gitlab.example/project/-/merge_requests/42",
+                "status": "open",
+                "branch": "feature/api",
+                "is_stale": false,
+            }])
+        );
+    }
+
+    #[test]
+    fn not_supported_errors_use_socket_contract_shape() {
+        let result = not_supported("browser viewport override is not supported by WKWebView");
+        match result {
+            ControlCallResult::Err {
+                code,
+                message,
+                data,
+            } => {
+                assert_eq!(code, "not_supported");
+                assert!(message.contains("WKWebView"));
+                assert_eq!(data, None);
+            }
+            other => panic!("expected not_supported error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn event_filters_match_name_and_category() {
+        let event = json!({
+            "name": "session.changed",
+            "category": "session",
+        });
+        assert!(event_matches_filters(&event, &[], &[]));
+        assert!(event_matches_filters(
+            &event,
+            &["session.changed".to_string()],
+            &["session".to_string()]
+        ));
+        assert!(!event_matches_filters(
+            &event,
+            &["workspace.selected".to_string()],
+            &[]
+        ));
+        assert!(!event_matches_filters(
+            &event,
+            &[],
+            &["notification".to_string()]
+        ));
+    }
+
+    #[test]
+    fn live_event_subscribers_receive_matching_frames_and_prune_closed_receivers() {
+        let (workspace_sender, mut workspace_receiver) = cmux_ipc::stream_mpsc::unbounded_channel();
+        let (surface_sender, mut surface_receiver) = cmux_ipc::stream_mpsc::unbounded_channel();
+        let (closed_sender, closed_receiver) = cmux_ipc::stream_mpsc::unbounded_channel::<String>();
+        drop(closed_receiver);
+        let mut subscribers = vec![
+            EventSubscriber {
+                sender: workspace_sender,
+                names: Vec::new(),
+                categories: vec!["workspace".to_string()],
+            },
+            EventSubscriber {
+                sender: surface_sender,
+                names: Vec::new(),
+                categories: vec!["surface".to_string()],
+            },
+            EventSubscriber {
+                sender: closed_sender,
+                names: Vec::new(),
+                categories: vec!["workspace".to_string()],
+            },
+        ];
+        let event = json!({
+            "name": "workspace.selected",
+            "category": "workspace",
+        });
+
+        fan_out_event_to_subscribers(&mut subscribers, &event, r#"{"seq":1}"#);
+
+        assert_eq!(workspace_receiver.try_recv().unwrap(), r#"{"seq":1}"#);
+        assert!(surface_receiver.try_recv().is_err());
+        assert_eq!(subscribers.len(), 2);
+    }
+
+    fn event_summary(
+        workspaces: Vec<WorkspaceEventSummary>,
+        selected_index: usize,
+    ) -> SessionEventSummary {
+        SessionEventSummary {
+            window_id: Some("window-1".to_string()),
+            selected_workspace_id: workspaces
+                .get(selected_index)
+                .and_then(|workspace| workspace.id.clone()),
+            selected_workspace_index: Some(selected_index),
+            workspaces,
+        }
+    }
+
+    fn event_workspace(
+        id: &str,
+        title: &str,
+        index: usize,
+        surfaces: &[&str],
+        selected_surface_id: Option<&str>,
+    ) -> WorkspaceEventSummary {
+        WorkspaceEventSummary {
+            key: id.to_string(),
+            id: Some(id.to_string()),
+            title: title.to_string(),
+            index,
+            panes: vec![event_pane("pane-1", 0, surfaces, selected_surface_id)],
+            surface_ids: surfaces.iter().map(|surface| surface.to_string()).collect(),
+            selected_surface_id: selected_surface_id.map(str::to_string),
+            sidebar: WorkspaceSidebarEventSummary::default(),
+        }
+    }
+
+    fn event_pane(
+        id: &str,
+        index: usize,
+        surfaces: &[&str],
+        selected_surface_id: Option<&str>,
+    ) -> PaneEventSummary {
+        PaneEventSummary {
+            key: id.to_string(),
+            id: Some(id.to_string()),
+            index,
+            surface_ids: surfaces.iter().map(|surface| surface.to_string()).collect(),
+            selected_surface_id: selected_surface_id.map(str::to_string),
+        }
+    }
+
+    fn sidebar_map(entries: &[(&str, Value)]) -> BTreeMap<String, Value> {
+        entries
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), value.clone()))
+            .collect()
+    }
+
+    fn event_names(events: &[DerivedEventSpec]) -> Vec<&'static str> {
+        events.iter().map(|event| event.name).collect()
+    }
+
+    #[test]
+    fn derived_session_events_bootstrap_current_workspace_and_surface_state() {
+        let current = event_summary(
+            vec![event_workspace(
+                "workspace-1",
+                "Phoenix",
+                0,
+                &["surface-1"],
+                Some("surface-1"),
+            )],
+            0,
+        );
+
+        let events = derived_session_event_specs(None, &current);
+
+        assert_eq!(
+            event_names(&events),
+            vec![
+                "session.changed",
+                "workspace.created",
+                "pane.created",
+                "pane.focused",
+                "surface.created",
+                "workspace.selected",
+                "surface.selected",
+            ]
+        );
+        assert_eq!(events[1].payload["workspace_ref"], json!("workspace:1"));
+        assert_eq!(events[2].payload["pane_ref"], json!("pane:1"));
+        assert_eq!(events[4].payload["surface_ref"], json!("surface:1"));
+    }
+
+    #[test]
+    fn derived_session_events_capture_workspace_and_surface_diffs() {
+        let previous = event_summary(
+            vec![
+                event_workspace("workspace-a", "Alpha", 0, &["surface-a"], Some("surface-a")),
+                event_workspace("workspace-b", "Beta", 1, &["surface-b"], Some("surface-b")),
+            ],
+            0,
+        );
+        let current = event_summary(
+            vec![
+                event_workspace(
+                    "workspace-b",
+                    "Beta Prime",
+                    0,
+                    &["surface-b", "surface-c"],
+                    Some("surface-c"),
+                ),
+                event_workspace("workspace-a", "Alpha", 1, &[], None),
+            ],
+            0,
+        );
+
+        let events = derived_session_event_specs(Some(&previous), &current);
+        let names = event_names(&events);
+
+        assert!(names.contains(&"session.changed"));
+        assert!(names.contains(&"workspace.selected"));
+        assert!(names.contains(&"workspace.renamed"));
+        assert!(names.contains(&"workspace.reordered"));
+        assert!(names.contains(&"surface.created"));
+        assert!(names.contains(&"surface.closed"));
+        assert!(names.contains(&"surface.selected"));
+        let selected = events
+            .iter()
+            .find(|event| event.name == "workspace.selected")
+            .expect("workspace selected event");
+        assert_eq!(
+            selected.payload["previous_workspace_id"],
+            json!("workspace-a")
+        );
+        let renamed = events
+            .iter()
+            .find(|event| event.name == "workspace.renamed")
+            .expect("workspace renamed event");
+        assert_eq!(renamed.payload["previous_title"], json!("Beta"));
+        let reordered = events
+            .iter()
+            .find(|event| event.name == "workspace.reordered")
+            .expect("workspace reordered event");
+        assert_eq!(
+            reordered.payload["workspace_ids"],
+            json!(["workspace-b", "workspace-a"])
+        );
+    }
+
+    #[test]
+    fn derived_session_events_close_surfaces_when_workspace_closes() {
+        let previous = event_summary(
+            vec![event_workspace(
+                "workspace-a",
+                "Alpha",
+                0,
+                &["surface-a"],
+                Some("surface-a"),
+            )],
+            0,
+        );
+        let current = event_summary(
+            vec![event_workspace(
+                "workspace-b",
+                "Beta",
+                0,
+                &["surface-b"],
+                Some("surface-b"),
+            )],
+            0,
+        );
+
+        let events = derived_session_event_specs(Some(&previous), &current);
+        let names = event_names(&events);
+
+        assert!(names.contains(&"workspace.created"));
+        assert!(names.contains(&"workspace.closed"));
+        assert!(names.contains(&"surface.created"));
+        assert!(names.contains(&"surface.closed"));
+        let closed_surface = events
+            .iter()
+            .find(|event| event.name == "surface.closed")
+            .expect("surface closed event");
+        assert_eq!(closed_surface.surface_id, Some("surface-a".to_string()));
+    }
+
+    #[test]
+    fn derived_session_events_capture_pane_lifecycle_and_focus() {
+        let mut previous_workspace = event_workspace(
+            "workspace-a",
+            "Alpha",
+            0,
+            &["surface-a", "surface-b"],
+            Some("surface-a"),
+        );
+        previous_workspace.panes = vec![event_pane(
+            "pane-a",
+            0,
+            &["surface-a", "surface-b"],
+            Some("surface-a"),
+        )];
+        let previous = event_summary(vec![previous_workspace], 0);
+
+        let mut current_workspace = event_workspace(
+            "workspace-a",
+            "Alpha",
+            0,
+            &["surface-a", "surface-b", "surface-c"],
+            Some("surface-b"),
+        );
+        current_workspace.panes = vec![
+            event_pane("pane-a", 0, &["surface-a", "surface-b"], Some("surface-b")),
+            event_pane("pane-b", 1, &["surface-c"], Some("surface-c")),
+        ];
+        let current = event_summary(vec![current_workspace], 0);
+
+        let events = derived_session_event_specs(Some(&previous), &current);
+        let names = event_names(&events);
+
+        assert!(names.contains(&"pane.focused"));
+        assert!(names.contains(&"pane.created"));
+        let focused = events
+            .iter()
+            .find(|event| {
+                event.name == "pane.focused" && event.payload["pane_id"] == json!("pane-a")
+            })
+            .expect("pane focused");
+        assert_eq!(focused.category, "pane");
+        assert_eq!(focused.payload["previous_surface_id"], json!("surface-a"));
+        assert_eq!(focused.payload["selected_surface_id"], json!("surface-b"));
+        let created = events
+            .iter()
+            .find(|event| {
+                event.name == "pane.created" && event.payload["pane_id"] == json!("pane-b")
+            })
+            .expect("pane created");
+        assert_eq!(created.payload["pane_ref"], json!("pane:2"));
+    }
+
+    #[test]
+    fn derived_session_events_close_panes_when_removed() {
+        let mut previous_workspace = event_workspace(
+            "workspace-a",
+            "Alpha",
+            0,
+            &["surface-a", "surface-b"],
+            Some("surface-a"),
+        );
+        previous_workspace.panes = vec![
+            event_pane("pane-a", 0, &["surface-a"], Some("surface-a")),
+            event_pane("pane-b", 1, &["surface-b"], Some("surface-b")),
+        ];
+        let previous = event_summary(vec![previous_workspace], 0);
+
+        let mut current_workspace =
+            event_workspace("workspace-a", "Alpha", 0, &["surface-a"], Some("surface-a"));
+        current_workspace.panes = vec![event_pane("pane-a", 0, &["surface-a"], Some("surface-a"))];
+        let current = event_summary(vec![current_workspace], 0);
+
+        let events = derived_session_event_specs(Some(&previous), &current);
+
+        let closed = events
+            .iter()
+            .find(|event| event.name == "pane.closed")
+            .expect("pane closed");
+        assert_eq!(closed.payload["pane_id"], json!("pane-b"));
+        assert_eq!(closed.payload["pane_ref"], json!("pane:2"));
+    }
+
+    #[test]
+    fn derived_session_events_capture_sidebar_metadata_updates() {
+        let previous = event_summary(
+            vec![event_workspace(
+                "workspace-a",
+                "Alpha",
+                0,
+                &["surface-a"],
+                Some("surface-a"),
+            )],
+            0,
+        );
+        let mut workspace =
+            event_workspace("workspace-a", "Alpha", 0, &["surface-a"], Some("surface-a"));
+        workspace.sidebar.progress = Some(json!({"value": 0.5, "label": "Half"}));
+        workspace.sidebar.status_entries =
+            sidebar_map(&[("build", json!({"key": "build", "value": "green"}))]);
+        workspace.sidebar.metadata_entries =
+            sidebar_map(&[("task", json!({"key": "task", "value": "review"}))]);
+        workspace.sidebar.metadata_blocks =
+            sidebar_map(&[("notes", json!({"key": "notes", "markdown": "Ready"}))]);
+        workspace.sidebar.log_entries = vec![json!({"level": "info", "message": "ship it"})];
+        let current = event_summary(vec![workspace], 0);
+
+        let events = derived_session_event_specs(Some(&previous), &current);
+        let names = event_names(&events);
+
+        assert!(names.contains(&"sidebar.progress.updated"));
+        assert_eq!(
+            names
+                .iter()
+                .filter(|name| **name == "sidebar.metadata.updated")
+                .count(),
+            3
+        );
+        assert!(names.contains(&"sidebar.log.appended"));
+        let progress = events
+            .iter()
+            .find(|event| event.name == "sidebar.progress.updated")
+            .expect("progress event");
+        assert_eq!(progress.category, "sidebar");
+        assert_eq!(progress.payload["kind"], json!("progress"));
+        let status = events
+            .iter()
+            .find(|event| {
+                event.name == "sidebar.metadata.updated" && event.payload["kind"] == json!("status")
+            })
+            .expect("status event");
+        assert_eq!(status.payload["key"], json!("build"));
+    }
+
+    #[test]
+    fn derived_session_events_capture_sidebar_clears() {
+        let mut workspace =
+            event_workspace("workspace-a", "Alpha", 0, &["surface-a"], Some("surface-a"));
+        workspace.sidebar.progress = Some(json!({"value": 0.5}));
+        workspace.sidebar.status_entries =
+            sidebar_map(&[("build", json!({"key": "build", "value": "green"}))]);
+        workspace.sidebar.metadata_entries =
+            sidebar_map(&[("task", json!({"key": "task", "value": "review"}))]);
+        workspace.sidebar.metadata_blocks =
+            sidebar_map(&[("notes", json!({"key": "notes", "markdown": "Ready"}))]);
+        workspace.sidebar.log_entries = vec![json!({"level": "info", "message": "ship it"})];
+        let previous = event_summary(vec![workspace], 0);
+        let current = event_summary(
+            vec![event_workspace(
+                "workspace-a",
+                "Alpha",
+                0,
+                &["surface-a"],
+                Some("surface-a"),
+            )],
+            0,
+        );
+
+        let events = derived_session_event_specs(Some(&previous), &current);
+        let names = event_names(&events);
+
+        assert!(names.contains(&"sidebar.progress.cleared"));
+        assert_eq!(
+            names
+                .iter()
+                .filter(|name| **name == "sidebar.metadata.cleared")
+                .count(),
+            3
+        );
+        assert!(names.contains(&"sidebar.log.cleared"));
+        let cleared = events
+            .iter()
+            .find(|event| {
+                event.name == "sidebar.metadata.cleared"
+                    && event.payload["kind"] == json!("metadata_block")
+            })
+            .expect("metadata block cleared event");
+        assert_eq!(cleared.payload["key"], json!("notes"));
+    }
+
+    #[test]
+    fn event_log_append_writes_jsonl_and_rotates_one_archive() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        append_event_line_to_dir(dir.path(), r#"{"seq":1}"#, 64).expect("append first");
+        append_event_line_to_dir(dir.path(), r#"{"seq":2}"#, 64).expect("append second");
+        assert_eq!(
+            fs::read_to_string(dir.path().join(EVENT_LOG_FILE_NAME)).expect("current log"),
+            "{\"seq\":1}\n{\"seq\":2}\n"
+        );
+
+        append_event_line_to_dir(dir.path(), r#"{"seq":3}"#, 24).expect("rotate append");
+        assert_eq!(
+            fs::read_to_string(dir.path().join(EVENT_LOG_ARCHIVE_FILE_NAME)).expect("archive log"),
+            "{\"seq\":1}\n{\"seq\":2}\n"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join(EVENT_LOG_FILE_NAME)).expect("rotated current log"),
+            "{\"seq\":3}\n"
+        );
+    }
+
+    #[test]
+    fn control_socket_methods_advertise_browser_network_and_platform_gaps() {
+        for method in [
+            "system.capabilities",
+            "events.stream",
+            "extension.sidebar.snapshot",
+            "sidebar.snapshot",
+            "workspace.set_agent_pid",
+            "workspace.clear_agent_pid",
+            "surface.report_tty",
+            "surface.report_shell_state",
+            "workspace.report_pr",
+            "workspace.report_review",
+            "workspace.clear_pr",
+            "workspace.report_meta",
+            "workspace.clear_meta",
+            "workspace.list_meta",
+            "workspace.report_meta_block",
+            "workspace.clear_meta_block",
+            "workspace.list_meta_blocks",
+            "workspace.reset_sidebar",
+            "browser.open_split",
+            "browser.navigate",
+            "browser.reload",
+            "browser.url.get",
+            "browser.focus_webview",
+            "browser.is_webview_focused",
+            "browser.snapshot",
+            "browser.eval",
+            "browser.click",
+            "browser.fill",
+            "browser.get.text",
+            "browser.is.visible",
+            "browser.find.role",
+            "browser.cookies.get",
+            "browser.storage.get",
+            "browser.tab.list",
+            "browser.console.list",
+            "browser.state.save",
+            "browser.network.requests",
+            "browser.network.clear",
+            "browser.viewport.set",
+            "browser.geolocation.set",
+            "browser.offline.set",
+            "browser.trace.start",
+            "browser.trace.stop",
+            "browser.network.route",
+            "browser.network.unroute",
+            "browser.screencast.start",
+            "browser.screencast.stop",
+            "browser.input_mouse",
+            "browser.input_keyboard",
+            "browser.input_touch",
+            "debug.browser.start_direct_proxy",
+            "debug.browser.attach_webview",
+            "debug.terminals",
+        ] {
+            assert!(
+                CONTROL_SOCKET_METHODS.contains(&method),
+                "missing advertised method {method}"
+            );
+        }
+    }
+
+    #[test]
+    fn unported_browser_automation_methods_are_explicit_not_supported_contract() {
+        assert!(!is_unported_browser_automation_method(
+            "browser.network.requests"
+        ));
+        for method in [
+            "browser.snapshot",
+            "browser.eval",
+            "browser.wait",
+            "browser.click",
+            "browser.dblclick",
+            "browser.hover",
+            "browser.focus",
+            "browser.type",
+            "browser.fill",
+            "browser.press",
+            "browser.keydown",
+            "browser.keyup",
+            "browser.check",
+            "browser.uncheck",
+            "browser.select",
+            "browser.scroll",
+            "browser.scroll_into_view",
+            "browser.screenshot",
+            "browser.get.text",
+            "browser.get.html",
+            "browser.get.value",
+            "browser.get.attr",
+            "browser.get.title",
+            "browser.get.count",
+            "browser.get.box",
+            "browser.get.styles",
+            "browser.is.visible",
+            "browser.is.enabled",
+            "browser.is.checked",
+            "browser.find.role",
+            "browser.find.text",
+            "browser.find.label",
+            "browser.find.placeholder",
+            "browser.find.alt",
+            "browser.find.title",
+            "browser.find.testid",
+            "browser.find.first",
+            "browser.find.last",
+            "browser.find.nth",
+            "browser.frame.select",
+            "browser.frame.main",
+            "browser.dialog.accept",
+            "browser.dialog.dismiss",
+            "browser.download.wait",
+            "browser.cookies.get",
+            "browser.cookies.set",
+            "browser.cookies.clear",
+            "browser.storage.get",
+            "browser.storage.set",
+            "browser.storage.clear",
+            "browser.tab.new",
+            "browser.tab.list",
+            "browser.tab.switch",
+            "browser.tab.close",
+            "browser.console.list",
+            "browser.console.clear",
+            "browser.errors.list",
+            "browser.state.save",
+            "browser.state.load",
+            "browser.highlight",
+            "browser.addinitscript",
+            "browser.addscript",
+            "browser.addstyle",
+        ] {
+            assert!(
+                CONTROL_SOCKET_METHODS.contains(&method),
+                "missing implemented browser automation method {method}"
+            );
+            assert!(
+                !is_unported_browser_automation_method(method),
+                "implemented browser automation method should not route to not_supported: {method}"
+            );
+        }
+        assert!(!is_unported_browser_automation_method(
+            "browser.viewport.set"
+        ));
+    }
+
+    #[test]
+    fn browser_surface_payload_returns_agent_browser_shape() {
+        let mut snapshot = test_snapshot();
+        let workspace = snapshot.windows[0]
+            .tab_manager
+            .workspaces
+            .first_mut()
+            .unwrap();
+        workspace.layout = Some(SessionWorkspaceLayoutSnapshot::Pane(
+            SessionPaneLayoutSnapshot {
+                pane_id: Some("pane-1".to_string()),
+                panel_ids: vec!["surface-1".to_string()],
+                selected_panel_id: Some("surface-1".to_string()),
+                surface_kind: Some("browser".to_string()),
+                markdown_file_path: None,
+                file_path: None,
+                diff_viewer_token: None,
+                diff_viewer_request_path: None,
+                browser_url: Some("https://example.com/path".to_string()),
+                browser_proxy_url: None,
+                browser_back_history: None,
+                browser_forward_history: None,
+                browser_omnibar_visible: None,
+                browser_focus_mode_active: None,
+                browser_developer_tools_visible: None,
+                browser_developer_tools_panel: None,
+                browser_page_zoom: None,
+            },
+        ));
+
+        let payload = browser_surface_payload(&snapshot, 0, "surface-1")
+            .expect("browser surface payload should exist");
+
+        assert_eq!(payload["surface_id"], json!("surface-1"));
+        assert_eq!(payload["panel_id"], json!("surface-1"));
+        assert_eq!(payload["surface_ref"], json!("surface:1"));
+        assert_eq!(payload["workspace_ref"], json!("workspace:1"));
+        assert_eq!(payload["url"], json!("https://example.com/path"));
+        assert_eq!(payload["surface"]["type"], json!("browser"));
+    }
+
+    #[test]
+    fn new_browser_surface_id_prefers_new_browser_surface() {
+        let mut snapshot = test_snapshot();
+        let workspace = snapshot.windows[0]
+            .tab_manager
+            .workspaces
+            .first_mut()
+            .unwrap();
+        workspace.layout = Some(SessionWorkspaceLayoutSnapshot::Split(
+            cmux_core::session::SessionSplitLayoutSnapshot {
+                orientation: SessionSplitOrientation::Horizontal,
+                first: Box::new(SessionWorkspaceLayoutSnapshot::Pane(
+                    SessionPaneLayoutSnapshot {
+                        pane_id: Some("pane-1".to_string()),
+                        panel_ids: vec!["surface-1".to_string()],
+                        selected_panel_id: Some("surface-1".to_string()),
+                        surface_kind: None,
+                        markdown_file_path: None,
+                        file_path: None,
+                        diff_viewer_token: None,
+                        diff_viewer_request_path: None,
+                        browser_url: None,
+                        browser_proxy_url: None,
+                        browser_back_history: None,
+                        browser_forward_history: None,
+                        browser_omnibar_visible: None,
+                        browser_focus_mode_active: None,
+                        browser_developer_tools_visible: None,
+                        browser_developer_tools_panel: None,
+                        browser_page_zoom: None,
+                    },
+                )),
+                second: Box::new(SessionWorkspaceLayoutSnapshot::Pane(
+                    SessionPaneLayoutSnapshot {
+                        pane_id: Some("pane-2".to_string()),
+                        panel_ids: vec!["surface-2".to_string()],
+                        selected_panel_id: Some("surface-2".to_string()),
+                        surface_kind: Some("browser".to_string()),
+                        markdown_file_path: None,
+                        file_path: None,
+                        diff_viewer_token: None,
+                        diff_viewer_request_path: None,
+                        browser_url: Some("about:blank".to_string()),
+                        browser_proxy_url: None,
+                        browser_back_history: None,
+                        browser_forward_history: None,
+                        browser_omnibar_visible: None,
+                        browser_focus_mode_active: None,
+                        browser_developer_tools_visible: None,
+                        browser_developer_tools_panel: None,
+                        browser_page_zoom: None,
+                    },
+                )),
+                divider_position: 0.5,
+            },
+        ));
+
+        assert_eq!(
+            new_browser_surface_id(&snapshot, 0, &["surface-1".to_string()]).as_deref(),
+            Some("surface-2")
+        );
+    }
+
+    #[test]
+    fn workspace_list_payload_includes_disconnected_remote_default() {
+        let payload = workspace_list_payload(&test_snapshot());
+        let remote = &payload["workspaces"][0]["remote"];
+        assert_eq!(remote["enabled"], json!(false));
+        assert_eq!(remote["state"], json!("disconnected"));
+        assert_eq!(remote["connected"], json!(false));
+        assert_eq!(remote["active_terminal_sessions"], json!(0));
+        assert_eq!(remote["proxy"]["state"], json!("unavailable"));
+        assert_eq!(remote["proxy"]["url"], Value::Null);
+        assert_eq!(remote["daemon"]["state"], json!("unavailable"));
+    }
+
+    #[test]
+    fn workspace_list_payload_includes_remote_proxy_endpoint() {
+        let mut snapshot = test_snapshot();
+        let workspace = snapshot.windows[0]
+            .tab_manager
+            .workspaces
+            .first_mut()
+            .unwrap();
+        workspace.remote = Some(SessionWorkspaceRemoteSnapshot {
+            enabled: true,
+            state: "connected".to_string(),
+            connected: true,
+            transport: Some("ssh".to_string()),
+            destination: Some("dev.example.com".to_string()),
+            port: Some(22),
+            local_proxy_port: Some(31337),
+            persistent_daemon_slot: Some("ssh-workspace-1".to_string()),
+            has_ssh_options: true,
+            detail: None,
+            daemon: Some(SessionWorkspaceRemoteDaemonSnapshot {
+                state: "ready".to_string(),
+                capabilities: vec!["proxy.stream.push".to_string()],
+            }),
+            proxy: Some(SessionWorkspaceRemoteProxySnapshot {
+                state: "ready".to_string(),
+                host: Some("127.0.0.1".to_string()),
+                port: Some(31337),
+                schemes: vec!["socks5".to_string(), "http_connect".to_string()],
+                url: Some("socks5://127.0.0.1:31337".to_string()),
+                error_code: None,
+            }),
+            detected_ports: Vec::new(),
+            forwarded_ports: Vec::new(),
+            conflicted_ports: Vec::new(),
+            active_terminal_sessions: Some(1),
+        });
+
+        let payload = workspace_list_payload(&snapshot);
+        let remote = &payload["workspaces"][0]["remote"];
+        assert_eq!(remote["enabled"], json!(true));
+        assert_eq!(remote["state"], json!("connected"));
+        assert_eq!(remote["destination"], json!("dev.example.com"));
+        assert_eq!(remote["local_proxy_port"], json!(31337));
+        assert_eq!(remote["proxy"]["url"], json!("socks5://127.0.0.1:31337"));
+        assert_eq!(
+            remote["daemon"]["capabilities"],
+            json!(["proxy.stream.push"])
+        );
+    }
+
+    #[test]
+    fn workspace_list_payload_includes_workspace_runtime_metadata() {
+        let mut snapshot = test_snapshot();
+        let workspace = snapshot.windows[0]
+            .tab_manager
+            .workspaces
+            .first_mut()
+            .unwrap();
+        workspace.initial_terminal_command = Some("npm run dev".to_string());
+        workspace.initial_terminal_input = Some("ready".to_string());
+        workspace.initial_terminal_environment = Some(BTreeMap::from_iter([(
+            "NODE_ENV".to_string(),
+            "development".to_string(),
+        )]));
+        workspace.zoomed_panel_id = Some("surface-1".to_string());
+        workspace.restorable_agent_snapshots = Some(vec![SessionPanelRestorableAgentSnapshot {
+            panel_id: "surface-1".to_string(),
+            snapshot: SessionRestorableAgentSnapshot {
+                kind: "codex".to_string(),
+                session_id: "session-1".to_string(),
+                working_directory: Some("C:/repo".to_string()),
+                launch_command: None,
+                resume_command: Some("codex resume session-1".to_string()),
+                fork_command: Some("codex fork session-1".to_string()),
+            },
+        }]);
+        workspace.listening_ports = Some(vec![5173]);
+        workspace.agent_listening_ports = Some(vec![4173]);
+        workspace.agent_pids = Some(vec![SessionWorkspaceAgentPidSnapshot {
+            key: "codex.session-1".to_string(),
+            pid: 1234,
+            updated_at: 20,
+        }]);
+        workspace.panel_listening_ports = Some(vec![SessionPanelListeningPortsSnapshot {
+            panel_id: "surface-1".to_string(),
+            ports: vec![3000, 5173],
+        }]);
+        workspace.panel_ttys = Some(vec![SessionPanelTtySnapshot {
+            panel_id: "surface-1".to_string(),
+            tty: "ttys004".to_string(),
+            updated_at: 21,
+        }]);
+        workspace.panel_shell_activity = Some(vec![SessionPanelShellActivitySnapshot {
+            panel_id: "surface-1".to_string(),
+            state: SessionPanelShellActivityStateSnapshot::CommandRunning,
+            updated_at: 22,
+        }]);
+
+        let payload = workspace_list_payload(&snapshot);
+        let summary = &payload["workspaces"][0];
+        assert_eq!(summary["initial_terminal_command"], json!("npm run dev"));
+        assert_eq!(summary["initial_terminal_input"], json!("ready"));
+        assert_eq!(
+            summary["initial_terminal_environment"],
+            json!({"NODE_ENV": "development"})
+        );
+        assert_eq!(summary["zoomed_panel_id"], json!("surface-1"));
+        assert_eq!(
+            summary["restorable_agent_panels"],
+            json!([{
+                "panel_id": "surface-1",
+                "kind": "codex",
+                "session_id": "session-1",
+                "working_directory": "C:/repo",
+                "resume_command": "codex resume session-1",
+                "fork_command": "codex fork session-1",
+            }])
+        );
+        assert_eq!(summary["listening_ports"], json!([3000, 4173, 5173]));
+        assert_eq!(summary["agent_listening_ports"], json!([4173]));
+        assert_eq!(
+            summary["agent_pids"],
+            json!([{"key": "codex.session-1", "pid": 1234, "updated_at": 20}])
+        );
+        assert_eq!(
+            summary["panel_ttys"],
+            json!([{"panel_id": "surface-1", "tty": "ttys004", "updated_at": 21}])
+        );
+        assert_eq!(
+            summary["panel_shell_activity"],
+            json!([{"panel_id": "surface-1", "state": "commandRunning", "updated_at": 22}])
+        );
+    }
+
+    #[test]
+    fn workspace_list_payload_includes_workspace_group_metadata() {
+        let mut snapshot = test_snapshot();
+        let mut second = snapshot.windows[0].tab_manager.workspaces[0].clone();
+        second.workspace_id = Some("workspace-2".to_string());
+        second.group_id = Some("group-1".to_string());
+        snapshot.windows[0].tab_manager.workspaces[0].group_id = Some("group-1".to_string());
+        snapshot.windows[0].tab_manager.workspace_groups =
+            Some(vec![SessionWorkspaceGroupSnapshot {
+                id: "group-1".to_string(),
+                name: "Backend".to_string(),
+                is_collapsed: true,
+                anchor_workspace_id: Some("workspace-1".to_string()),
+                anchor_member_index: Some(0),
+                is_pinned: Some(true),
+                custom_color: Some("#123456".to_string()),
+                icon_symbol: Some("folder".to_string()),
+            }]);
+        snapshot.windows[0].tab_manager.workspaces.push(second);
+
+        let payload = workspace_list_payload(&snapshot);
+        assert_eq!(payload["workspaces"][0]["group_id"], json!("group-1"));
+        assert_eq!(payload["workspace_groups"][0]["id"], json!("group-1"));
+        assert_eq!(payload["workspace_groups"][0]["name"], json!("Backend"));
+        assert_eq!(payload["workspace_groups"][0]["collapsed"], json!(true));
+        assert_eq!(payload["workspace_groups"][0]["pinned"], json!(true));
+        assert_eq!(
+            payload["workspace_groups"][0]["anchor_workspace_id"],
+            json!("workspace-1")
+        );
+        assert_eq!(
+            payload["workspace_groups"][0]["members"],
+            json!([
+                {"workspace_id": "workspace-1", "workspace_ref": "workspace:1"},
+                {"workspace_id": "workspace-2", "workspace_ref": "workspace:2"},
+            ])
+        );
+        assert!(payload["workspaces"][0].get("index").is_none());
+        assert!(payload["workspace_groups"][0]["members"][0]
+            .get("index")
+            .is_none());
+    }
+
+    #[test]
+    fn surface_list_payload_projects_pane_surfaces() {
+        let result = surface_list(&test_snapshot());
+        let ControlCallResult::Ok(value) = result else {
+            panic!("surface list should succeed");
+        };
+        let payload: Value = value.into();
+        assert_eq!(payload["workspace_id"], json!("workspace-1"));
+        assert_eq!(payload["surfaces"][0]["id"], json!("surface-1"));
+        assert_eq!(payload["surfaces"][0]["ref"], json!("surface:1"));
+        assert!(payload["surfaces"][0].get("index").is_none());
+        assert!(payload["surfaces"][0].get("index_in_pane").is_none());
+        assert_eq!(payload["surfaces"][0]["type"], json!("terminal"));
+        assert_eq!(payload["surfaces"][0]["pane_id"], json!("pane-1"));
+        assert_eq!(payload["surfaces"][0]["custom_title"], Value::Null);
+        assert_eq!(payload["surfaces"][0]["pinned"], json!(false));
+        assert_eq!(payload["surfaces"][0]["unread"], json!(false));
+        assert_eq!(
+            payload["surfaces"][0]["requested_working_directory"],
+            json!("C:/repo")
+        );
+        assert_eq!(payload["surfaces"][0]["initial_command"], Value::Null);
+        assert_eq!(payload["surfaces"][0]["initial_input"], Value::Null);
+        assert_eq!(payload["surfaces"][0]["initial_environment"], Value::Null);
+        assert_eq!(payload["surfaces"][0]["listening_ports"], json!([]));
+        assert_eq!(payload["surfaces"][0]["markdown_file_path"], Value::Null);
+        assert_eq!(payload["surfaces"][0]["diff_viewer_token"], Value::Null);
+        assert_eq!(
+            payload["surfaces"][0]["diff_viewer_request_path"],
+            Value::Null
+        );
+        assert_eq!(payload["surfaces"][0]["browser_url"], Value::Null);
+        assert_eq!(payload["surfaces"][0]["browser_can_go_back"], json!(false));
+        assert_eq!(
+            payload["surfaces"][0]["browser_omnibar_visible"],
+            json!(true)
+        );
+        assert_eq!(
+            payload["surfaces"][0]["browser_developer_tools_visible"],
+            json!(false)
+        );
+    }
+
+    #[test]
+    fn workspace_current_can_be_scoped_to_background_workspace() {
+        let mut snapshot = test_snapshot();
+        let mut second = snapshot.windows[0].tab_manager.workspaces[0].clone();
+        second.workspace_id = Some("workspace-2".to_string());
+        second.custom_title = Some("Background".to_string());
+        snapshot.windows[0].tab_manager.workspaces.push(second);
+        snapshot.windows[0].tab_manager.selected_workspace_index = Some(0);
+
+        let ControlCallResult::Ok(value) = workspace_current_from_params(
+            &snapshot,
+            &serde_json::Map::from_iter([("workspace_id".to_string(), json!("workspace-2"))]),
+        ) else {
+            panic!("workspace current should succeed");
+        };
+        let payload: Value = value.into();
+        assert_eq!(payload["workspace_id"], json!("workspace-2"));
+        assert_eq!(payload["workspace_ref"], json!("workspace:2"));
+        assert_eq!(payload["workspace"]["selected"], json!(false));
+    }
+
+    #[test]
+    fn surface_list_can_be_scoped_to_background_workspace() {
+        let mut snapshot = test_snapshot();
+        let mut second = snapshot.windows[0].tab_manager.workspaces[0].clone();
+        second.workspace_id = Some("workspace-2".to_string());
+        second.layout = Some(SessionWorkspaceLayoutSnapshot::Pane(
+            SessionPaneLayoutSnapshot {
+                pane_id: Some("pane-2".to_string()),
+                panel_ids: vec!["surface-2".to_string()],
+                selected_panel_id: Some("surface-2".to_string()),
+                surface_kind: Some("browser".to_string()),
+                markdown_file_path: None,
+                file_path: None,
+                diff_viewer_token: None,
+                diff_viewer_request_path: None,
+                browser_url: Some("https://background.test".to_string()),
+                browser_proxy_url: None,
+                browser_back_history: None,
+                browser_forward_history: None,
+                browser_omnibar_visible: None,
+                browser_focus_mode_active: None,
+                browser_developer_tools_visible: None,
+                browser_developer_tools_panel: None,
+                browser_page_zoom: None,
+            },
+        ));
+        snapshot.windows[0].tab_manager.workspaces.push(second);
+        snapshot.windows[0].tab_manager.selected_workspace_index = Some(0);
+
+        let ControlCallResult::Ok(value) = surface_list_from_params(
+            &snapshot,
+            &serde_json::Map::from_iter([("workspace_id".to_string(), json!("workspace-2"))]),
+        ) else {
+            panic!("surface list should succeed");
+        };
+        let payload: Value = value.into();
+        assert_eq!(payload["workspace_id"], json!("workspace-2"));
+        assert_eq!(payload["workspace_ref"], json!("workspace:2"));
+        assert_eq!(payload["surfaces"][0]["id"], json!("surface-2"));
+        assert_eq!(
+            payload["surfaces"][0]["browser_url"],
+            json!("https://background.test")
+        );
+    }
+
+    #[test]
+    fn surface_list_payload_inherits_workspace_terminal_startup() {
+        let mut snapshot = test_snapshot();
+        let workspace = snapshot.windows[0]
+            .tab_manager
+            .workspaces
+            .first_mut()
+            .unwrap();
+        workspace.initial_terminal_command = Some("cargo test".to_string());
+        workspace.initial_terminal_input = Some("echo ready".to_string());
+        workspace.initial_terminal_environment = Some(BTreeMap::from_iter([(
+            "RUST_LOG".to_string(),
+            "debug".to_string(),
+        )]));
+
+        let ControlCallResult::Ok(value) = surface_list(&snapshot) else {
+            panic!("surface list should succeed");
+        };
+        let payload: Value = value.into();
+        let surface = &payload["surfaces"][0];
+        assert_eq!(surface["requested_working_directory"], json!("C:/repo"));
+        assert_eq!(surface["initial_command"], json!("cargo test"));
+        assert_eq!(surface["initial_input"], json!("echo ready"));
+        assert_eq!(surface["initial_environment"], json!({"RUST_LOG": "debug"}));
+    }
+
+    #[test]
+    fn surface_list_payload_includes_surface_metadata() {
+        let mut snapshot = test_snapshot();
+        let workspace = snapshot.windows[0]
+            .tab_manager
+            .workspaces
+            .first_mut()
+            .unwrap();
+        workspace.initial_terminal_command = Some("cargo test".to_string());
+        workspace.initial_terminal_input = Some("workspace input".to_string());
+        workspace.initial_terminal_environment = Some(BTreeMap::from_iter([(
+            "WORKSPACE".to_string(),
+            "1".to_string(),
+        )]));
+        workspace.panel_titles = Some(vec![SessionPanelTitleSnapshot {
+            panel_id: "surface-1".to_string(),
+            custom_title: Some("API logs".to_string()),
+        }]);
+        workspace.panel_pins = Some(vec![SessionPanelPinSnapshot {
+            panel_id: "surface-1".to_string(),
+            is_pinned: true,
+        }]);
+        workspace.panel_unreads = Some(vec![SessionPanelUnreadSnapshot {
+            panel_id: "surface-1".to_string(),
+            is_unread: true,
+            unread_at: None,
+        }]);
+        workspace.panel_terminal_startups = Some(vec![SessionPanelTerminalStartupSnapshot {
+            panel_id: "surface-1".to_string(),
+            initial_terminal_command: Some("npm test".to_string()),
+            initial_terminal_input: Some("hello".to_string()),
+            initial_terminal_environment: Some(BTreeMap::from_iter([(
+                "CI".to_string(),
+                "1".to_string(),
+            )])),
+        }]);
+        workspace.panel_listening_ports = Some(vec![SessionPanelListeningPortsSnapshot {
+            panel_id: "surface-1".to_string(),
+            ports: vec![8080, 3000],
+        }]);
+        workspace.panel_ttys = Some(vec![SessionPanelTtySnapshot {
+            panel_id: "surface-1".to_string(),
+            tty: "/dev/pts/7".to_string(),
+            updated_at: 22,
+        }]);
+        workspace.panel_shell_activity = Some(vec![SessionPanelShellActivitySnapshot {
+            panel_id: "surface-1".to_string(),
+            state: SessionPanelShellActivityStateSnapshot::PromptIdle,
+            updated_at: 23,
+        }]);
+
+        let ControlCallResult::Ok(value) = surface_list(&snapshot) else {
+            panic!("surface list should succeed");
+        };
+        let payload: Value = value.into();
+        let surface = &payload["surfaces"][0];
+        assert_eq!(surface["title"], json!("API logs"));
+        assert_eq!(surface["custom_title"], json!("API logs"));
+        assert_eq!(surface["pinned"], json!(true));
+        assert_eq!(surface["unread"], json!(true));
+        assert_eq!(surface["requested_working_directory"], json!("C:/repo"));
+        assert_eq!(surface["initial_command"], json!("npm test"));
+        assert_eq!(surface["initial_input"], json!("hello"));
+        assert_eq!(surface["initial_environment"], json!({"CI": "1"}));
+        assert_eq!(surface["listening_ports"], json!([3000, 8080]));
+        assert_eq!(surface["tty"], json!("/dev/pts/7"));
+        assert_eq!(surface["tty_name"], json!("/dev/pts/7"));
+        assert_eq!(surface["shell_activity"], json!("promptIdle"));
+        assert_eq!(surface["shell_activity_state"], json!("promptIdle"));
+    }
+
+    #[test]
+    fn debug_terminals_payload_includes_reported_tty() {
+        let mut snapshot = test_snapshot();
+        snapshot.windows[0].tab_manager.workspaces[0].panel_ttys =
+            Some(vec![SessionPanelTtySnapshot {
+                panel_id: "surface-1".to_string(),
+                tty: "ttys004".to_string(),
+                updated_at: 23,
+            }]);
+
+        let mut terminals = Vec::new();
+        let workspace = &snapshot.windows[0].tab_manager.workspaces[0];
+        for (surface_index, surface) in surfaces_for_workspace(workspace).into_iter().enumerate() {
+            terminals.push(json!({
+                "workspace_id": workspace.workspace_id,
+                "workspace_ref": workspace_ref(0),
+                "surface_id": surface.get("id").cloned().unwrap_or(Value::Null),
+                "surface_ref": surface_ref(surface_index),
+                "tty": surface.get("tty").cloned().unwrap_or(Value::Null),
+            }));
+        }
+
+        assert_eq!(
+            terminals[0],
+            json!({
+                "workspace_id": "workspace-1",
+                "workspace_ref": "workspace:1",
+                "surface_id": "surface-1",
+                "surface_ref": "surface:1",
+                "tty": "ttys004",
+            })
+        );
+    }
+
+    #[test]
+    fn surface_list_payload_includes_restorable_agent_binding() {
+        let mut snapshot = test_snapshot();
+        let workspace = snapshot.windows[0]
+            .tab_manager
+            .workspaces
+            .first_mut()
+            .unwrap();
+        workspace.restorable_agent_snapshots = Some(vec![SessionPanelRestorableAgentSnapshot {
+            panel_id: "surface-1".to_string(),
+            snapshot: SessionRestorableAgentSnapshot {
+                kind: "codex".to_string(),
+                session_id: "session-1".to_string(),
+                working_directory: Some("C:/repo".to_string()),
+                launch_command: Some(AgentLaunchCommandSnapshot {
+                    launcher: None,
+                    executable_path: Some("codex".to_string()),
+                    arguments: vec!["resume".to_string(), "session-1".to_string()],
+                    working_directory: Some("C:/repo".to_string()),
+                    environment: Some(BTreeMap::from_iter([(
+                        "CODEX_HOME".to_string(),
+                        "C:/codex".to_string(),
+                    )])),
+                    source: Some("provider.start".to_string()),
+                }),
+                resume_command: Some("codex resume session-1".to_string()),
+                fork_command: Some("codex fork session-1".to_string()),
+            },
+        }]);
+
+        let ControlCallResult::Ok(value) = surface_list(&snapshot) else {
+            panic!("surface list should succeed");
+        };
+        let payload: Value = value.into();
+        let binding = &payload["surfaces"][0]["resume_binding"];
+        assert_eq!(binding["kind"], json!("codex"));
+        assert_eq!(binding["session_id"], json!("session-1"));
+        assert_eq!(binding["working_directory"], json!("C:/repo"));
+        assert_eq!(binding["resume_command"], json!("codex resume session-1"));
+        assert_eq!(binding["fork_command"], json!("codex fork session-1"));
+        assert_eq!(binding["launch_command"]["executable_path"], json!("codex"));
+        assert_eq!(
+            binding["launch_command"]["environment"],
+            json!({"CODEX_HOME": "C:/codex"})
+        );
+    }
+
+    #[test]
+    fn surface_list_payload_includes_markdown_file_and_diff_state() {
+        let mut snapshot = test_snapshot();
+        let workspace = snapshot.windows[0]
+            .tab_manager
+            .workspaces
+            .first_mut()
+            .unwrap();
+        workspace.layout = Some(SessionWorkspaceLayoutSnapshot::Pane(
+            SessionPaneLayoutSnapshot {
+                pane_id: Some("pane-1".to_string()),
+                panel_ids: vec!["surface-1".to_string()],
+                selected_panel_id: Some("surface-1".to_string()),
+                surface_kind: Some("diff".to_string()),
+                markdown_file_path: Some("C:/repo/README.md".to_string()),
+                file_path: Some("C:/repo/notes.txt".to_string()),
+                diff_viewer_token: Some("tok-abcdef0123456789".to_string()),
+                diff_viewer_request_path: Some("/review/index.html".to_string()),
+                browser_url: None,
+                browser_proxy_url: None,
+                browser_back_history: None,
+                browser_forward_history: None,
+                browser_omnibar_visible: None,
+                browser_focus_mode_active: None,
+                browser_developer_tools_visible: None,
+                browser_developer_tools_panel: None,
+                browser_page_zoom: None,
+            },
+        ));
+        let ControlCallResult::Ok(value) = surface_list(&snapshot) else {
+            panic!("surface list should succeed");
+        };
+        let payload: Value = value.into();
+        let surface = &payload["surfaces"][0];
+        assert_eq!(surface["type"], json!("diff"));
+        assert_eq!(surface["markdown_file_path"], json!("C:/repo/README.md"));
+        assert_eq!(surface["file_path"], json!("C:/repo/notes.txt"));
+        assert_eq!(surface["diff_viewer_token"], json!("tok-abcdef0123456789"));
+        assert_eq!(
+            surface["diff_viewer_request_path"],
+            json!("/review/index.html")
+        );
+    }
+
+    #[test]
+    fn surface_list_payload_includes_browser_state() {
+        let mut snapshot = test_snapshot();
+        let workspace = snapshot.windows[0]
+            .tab_manager
+            .workspaces
+            .first_mut()
+            .unwrap();
+        workspace.layout = Some(SessionWorkspaceLayoutSnapshot::Pane(
+            SessionPaneLayoutSnapshot {
+                pane_id: Some("pane-1".to_string()),
+                panel_ids: vec!["surface-1".to_string()],
+                selected_panel_id: Some("surface-1".to_string()),
+                surface_kind: Some("browser".to_string()),
+                markdown_file_path: None,
+                file_path: None,
+                diff_viewer_token: None,
+                diff_viewer_request_path: None,
+                browser_url: Some("https://example.com".to_string()),
+                browser_proxy_url: Some("socks5://127.0.0.1:31337".to_string()),
+                browser_back_history: Some(vec!["https://previous.test".to_string()]),
+                browser_forward_history: Some(vec!["https://forward.test".to_string()]),
+                browser_omnibar_visible: Some(false),
+                browser_focus_mode_active: Some(true),
+                browser_developer_tools_visible: Some(true),
+                browser_developer_tools_panel: Some("console".to_string()),
+                browser_page_zoom: Some(1.25),
+            },
+        ));
+        let ControlCallResult::Ok(value) = surface_list(&snapshot) else {
+            panic!("surface list should succeed");
+        };
+        let payload: Value = value.into();
+        let surface = &payload["surfaces"][0];
+        assert_eq!(surface["type"], json!("browser"));
+        assert_eq!(surface["browser_url"], json!("https://example.com"));
+        assert_eq!(
+            surface["browser_proxy_url"],
+            json!("socks5://127.0.0.1:31337")
+        );
+        assert_eq!(surface["browser_can_go_back"], json!(true));
+        assert_eq!(surface["browser_can_go_forward"], json!(true));
+        assert_eq!(surface["browser_back_history_count"], json!(1));
+        assert_eq!(surface["browser_forward_history_count"], json!(1));
+        assert_eq!(surface["browser_omnibar_visible"], json!(false));
+        assert_eq!(surface["browser_focus_mode_active"], json!(true));
+        assert_eq!(surface["browser_developer_tools_visible"], json!(true));
+        assert_eq!(surface["browser_developer_tools_panel"], json!("console"));
+        assert_eq!(surface["browser_page_zoom"], json!(1.25));
+    }
+
+    #[test]
+    fn ports_param_accepts_array_string_and_single_port() {
+        assert_eq!(
+            ports_param(&serde_json::Map::from_iter([(
+                "ports".to_string(),
+                json!([3000, "5173", 3000]),
+            )])),
+            Some(vec![3000, 5173])
+        );
+        assert_eq!(
+            ports_param(&serde_json::Map::from_iter([(
+                "listening_ports".to_string(),
+                json!("8080, 9000 8080"),
+            )])),
+            Some(vec![8080, 9000])
+        );
+        assert_eq!(
+            ports_param(&serde_json::Map::from_iter([(
+                "port".to_string(),
+                json!(1)
+            )])),
+            Some(vec![1])
+        );
+    }
+
+    #[test]
+    fn ports_param_rejects_out_of_range_or_non_integer_ports() {
+        assert_eq!(
+            ports_param(&serde_json::Map::from_iter([(
+                "ports".to_string(),
+                json!([0])
+            )])),
+            None
+        );
+        assert_eq!(
+            ports_param(&serde_json::Map::from_iter([(
+                "ports".to_string(),
+                json!([65536]),
+            )])),
+            None
+        );
+        assert_eq!(
+            ports_param(&serde_json::Map::from_iter([(
+                "ports".to_string(),
+                json!(["abc"]),
+            )])),
+            None
+        );
+    }
+
+    #[test]
+    fn optional_u16_param_accepts_numbers_strings_and_null_clear() {
+        assert_eq!(
+            optional_u16_param(
+                &serde_json::Map::from_iter([("local_proxy_port".to_string(), json!(31337))]),
+                "local_proxy_port",
+            ),
+            Some(Some(31337))
+        );
+        assert_eq!(
+            optional_u16_param(
+                &serde_json::Map::from_iter([("local_proxy_port".to_string(), json!("31338"))]),
+                "local_proxy_port",
+            ),
+            Some(Some(31338))
+        );
+        assert_eq!(
+            optional_u16_param(
+                &serde_json::Map::from_iter([("local_proxy_port".to_string(), Value::Null)]),
+                "local_proxy_port",
+            ),
+            Some(None)
+        );
+        assert_eq!(
+            optional_u16_param(&serde_json::Map::new(), "local_proxy_port"),
+            Some(None)
+        );
+    }
+
+    #[test]
+    fn optional_u16_param_rejects_invalid_ports() {
+        for value in [json!(0), json!(65536), json!("abc"), json!([31337])] {
+            assert_eq!(
+                optional_u16_param(
+                    &serde_json::Map::from_iter([("local_proxy_port".to_string(), value)]),
+                    "local_proxy_port",
+                ),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn string_vec_param_accepts_arrays_and_newline_strings() {
+        assert_eq!(
+            string_vec_param(
+                &serde_json::Map::from_iter([(
+                    "ssh_options".to_string(),
+                    json!([
+                        "StrictHostKeyChecking=no",
+                        " ",
+                        42,
+                        "UserKnownHostsFile=/dev/null"
+                    ]),
+                )]),
+                &["ssh_options"],
+            ),
+            Some(vec![
+                "StrictHostKeyChecking=no".to_string(),
+                "UserKnownHostsFile=/dev/null".to_string(),
+            ])
+        );
+        assert_eq!(
+            string_vec_param(
+                &serde_json::Map::from_iter([(
+                    "sshOptions".to_string(),
+                    json!("ControlMaster=auto\n\nControlPersist=600"),
+                )]),
+                &["ssh_options", "sshOptions"],
+            ),
+            Some(vec![
+                "ControlMaster=auto".to_string(),
+                "ControlPersist=600".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn surface_ports_kick_target_accepts_known_surface() {
+        let target = surface_ports_kick_target(
+            &test_snapshot(),
+            &serde_json::Map::from_iter([("surface_id".to_string(), json!("surface-1"))]),
+        )
+        .expect("ports kick should target a known surface");
+        assert_eq!(target, (0, "surface-1".to_string()));
+    }
+
+    #[test]
+    fn surface_ports_kick_target_uses_workspace_scope_with_surface_index() {
+        let mut snapshot = test_snapshot();
+        let mut second = snapshot.windows[0].tab_manager.workspaces[0].clone();
+        second.workspace_id = Some("workspace-2".to_string());
+        second.layout = Some(SessionWorkspaceLayoutSnapshot::Pane(
+            SessionPaneLayoutSnapshot {
+                pane_id: Some("pane-2".to_string()),
+                panel_ids: vec!["surface-2".to_string(), "surface-3".to_string()],
+                selected_panel_id: Some("surface-3".to_string()),
+                surface_kind: None,
+                markdown_file_path: None,
+                file_path: None,
+                diff_viewer_token: None,
+                diff_viewer_request_path: None,
+                browser_url: None,
+                browser_proxy_url: None,
+                browser_back_history: None,
+                browser_forward_history: None,
+                browser_omnibar_visible: None,
+                browser_focus_mode_active: None,
+                browser_developer_tools_visible: None,
+                browser_developer_tools_panel: None,
+                browser_page_zoom: None,
+            },
+        ));
+        snapshot.windows[0].tab_manager.workspaces.push(second);
+        snapshot.windows[0].tab_manager.selected_workspace_index = Some(0);
+
+        let target = surface_ports_kick_target(
+            &snapshot,
+            &serde_json::Map::from_iter([
+                ("workspace_id".to_string(), json!("workspace-2")),
+                ("surface_ref".to_string(), json!("surface:1")),
+            ]),
+        )
+        .expect("ports kick should target scoped surface ref");
+        assert_eq!(target, (1, "surface-2".to_string()));
+    }
+
+    #[test]
+    fn workspace_index_from_params_accepts_refs_or_workspace_id_not_index() {
+        let snapshot = test_snapshot();
+        assert_eq!(
+            workspace_index_from_params(
+                &snapshot,
+                &serde_json::Map::from_iter([("index".to_string(), json!(0),)])
+            ),
+            None
+        );
+        assert_eq!(
+            workspace_index_from_params(
+                &snapshot,
+                &serde_json::Map::from_iter([("workspace_id".to_string(), json!("workspace-1"),)])
+            ),
+            Some(0)
+        );
+        assert_eq!(
+            workspace_index_from_params(
+                &snapshot,
+                &serde_json::Map::from_iter([("workspace_ref".to_string(), json!("workspace:1"),)])
+            ),
+            Some(0)
+        );
+        assert_eq!(
+            workspace_index_from_params(
+                &snapshot,
+                &serde_json::Map::from_iter([("index".to_string(), json!(99),)])
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn workspace_indices_from_params_accepts_bulk_refs_and_ids_not_indices() {
+        let mut snapshot = test_snapshot();
+        let mut second = snapshot.windows[0].tab_manager.workspaces[0].clone();
+        second.workspace_id = Some("workspace-2".to_string());
+        snapshot.windows[0].tab_manager.workspaces.push(second);
+
+        assert_eq!(
+            workspace_indices_from_params(
+                &snapshot,
+                &serde_json::Map::from_iter([("indices".to_string(), json!([0, "1"]),)])
+            ),
+            None
+        );
+        assert_eq!(
+            workspace_indices_from_params(
+                &snapshot,
+                &serde_json::Map::from_iter([
+                    ("workspace_refs".to_string(), json!(["workspace:2"])),
+                    ("workspace_ids".to_string(), json!(["workspace-1"])),
+                ])
+            ),
+            Some(vec![1, 0])
+        );
+        assert_eq!(
+            workspace_indices_from_params(
+                &snapshot,
+                &serde_json::Map::from_iter([(
+                    "workspace_refs".to_string(),
+                    json!(["workspace:3"]),
+                )])
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn workspace_reorder_destination_uses_refs_not_indices() {
+        let mut snapshot = test_snapshot();
+        let mut second = snapshot.windows[0].tab_manager.workspaces[0].clone();
+        second.workspace_id = Some("workspace-2".to_string());
+        let mut third = snapshot.windows[0].tab_manager.workspaces[0].clone();
+        third.workspace_id = Some("workspace-3".to_string());
+        snapshot.windows[0].tab_manager.workspaces.push(second);
+        snapshot.windows[0].tab_manager.workspaces.push(third);
+
+        assert_eq!(
+            workspace_reorder_destination_index(
+                &snapshot,
+                &serde_json::Map::from_iter([(
+                    "before_workspace_ref".to_string(),
+                    json!("workspace:3"),
+                )]),
+                0,
+            ),
+            Some(1)
+        );
+        assert_eq!(
+            workspace_reorder_destination_index(
+                &snapshot,
+                &serde_json::Map::from_iter([(
+                    "after_workspace_ref".to_string(),
+                    json!("workspace:3"),
+                )]),
+                0,
+            ),
+            Some(2)
+        );
+        assert_eq!(
+            workspace_reorder_destination_index(
+                &snapshot,
+                &serde_json::Map::from_iter([(
+                    "before_workspace_id".to_string(),
+                    json!("workspace-1"),
+                )]),
+                2,
+            ),
+            Some(0)
+        );
+        assert_eq!(
+            workspace_reorder_destination_index(
+                &snapshot,
+                &serde_json::Map::from_iter([(
+                    "after_workspace_id".to_string(),
+                    json!("workspace-1"),
+                )]),
+                2,
+            ),
+            Some(1)
+        );
+        assert_eq!(
+            workspace_reorder_destination_index(
+                &snapshot,
+                &serde_json::Map::from_iter([("to_index".to_string(), json!(0))]),
+                2,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn workspace_index_defaults_to_selected_for_current_commands() {
+        let snapshot = test_snapshot();
+        assert_eq!(
+            workspace_index_from_params_or_selected(&snapshot, &serde_json::Map::new()),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn workspace_index_from_params_requires_explicit_selector_for_close_commands() {
+        let snapshot = test_snapshot();
+        assert_eq!(
+            workspace_index_from_close_params(&snapshot, &serde_json::Map::new()),
+            None
+        );
+        assert_eq!(
+            workspace_index_from_close_params(
+                &snapshot,
+                &serde_json::Map::from_iter([("index".to_string(), json!(0),)])
+            ),
+            None
+        );
+        assert_eq!(
+            workspace_index_from_close_params(
+                &snapshot,
+                &serde_json::Map::from_iter([("workspace_id".to_string(), json!("workspace-1"),)])
+            ),
+            Some(0)
+        );
+        assert_eq!(
+            workspace_index_from_close_params(
+                &snapshot,
+                &serde_json::Map::from_iter([("workspace_ref".to_string(), json!("workspace:1"),)])
+            ),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn string_map_param_accepts_string_environment_aliases() {
+        let params = serde_json::Map::from_iter([(
+            "env".to_string(),
+            json!({
+                "CMUX_FORK": "1",
+                "EMPTY": "   ",
+                "NUMBER": 7,
+                "  TRIMMED_KEY  ": " value ",
+            }),
+        )]);
+        let map = string_map_param(&params, &["environment", "env"]).expect("env map");
+        assert_eq!(map.get("CMUX_FORK").map(String::as_str), Some("1"));
+        assert_eq!(map.get("TRIMMED_KEY").map(String::as_str), Some("value"));
+        assert!(!map.contains_key("EMPTY"));
+        assert!(!map.contains_key("NUMBER"));
+    }
+
+    #[test]
+    fn raw_string_param_preserves_empty_strings_for_clearing_metadata() {
+        let params = serde_json::Map::from_iter([("title".to_string(), json!(""))]);
+        assert_eq!(raw_string_param(&params, &["title"]).as_deref(), Some(""));
+        assert_eq!(string_param(&params, &["title"]), None);
+    }
+
+    #[test]
+    fn surface_id_from_params_accepts_ref_id_or_focused_default_not_index() {
+        let mut snapshot = test_snapshot();
+        let workspace = snapshot.windows[0]
+            .tab_manager
+            .workspaces
+            .first_mut()
+            .unwrap();
+        workspace.layout = Some(SessionWorkspaceLayoutSnapshot::Pane(
+            SessionPaneLayoutSnapshot {
+                pane_id: Some("pane-1".to_string()),
+                panel_ids: vec!["surface-1".to_string(), "surface-2".to_string()],
+                selected_panel_id: Some("surface-2".to_string()),
+                surface_kind: None,
+                markdown_file_path: None,
+                file_path: None,
+                diff_viewer_token: None,
+                diff_viewer_request_path: None,
+                browser_url: None,
+                browser_proxy_url: None,
+                browser_back_history: None,
+                browser_forward_history: None,
+                browser_omnibar_visible: None,
+                browser_focus_mode_active: None,
+                browser_developer_tools_visible: None,
+                browser_developer_tools_panel: None,
+                browser_page_zoom: None,
+            },
+        ));
+
+        assert_eq!(
+            surface_id_from_params_or_focused(
+                &snapshot,
+                &serde_json::Map::from_iter([("index".to_string(), json!(0),)])
+            ),
+            None
+        );
+        assert_eq!(
+            surface_id_from_params_or_focused(
+                &snapshot,
+                &serde_json::Map::from_iter([("surface_ref".to_string(), json!("surface:2"),)])
+            ),
+            Some("surface-2".to_string())
+        );
+        assert_eq!(
+            surface_id_from_params_or_focused(
+                &snapshot,
+                &serde_json::Map::from_iter([("panel_id".to_string(), json!("surface-1"),)])
+            ),
+            Some("surface-1".to_string())
+        );
+        assert_eq!(
+            surface_id_from_params_or_focused(&snapshot, &serde_json::Map::new()),
+            Some("surface-2".to_string())
+        );
+    }
+
+    #[test]
+    fn surface_id_from_params_uses_ambient_workspace_scope_for_default_surface() {
+        let mut snapshot = test_snapshot();
+        let mut second = snapshot.windows[0].tab_manager.workspaces[0].clone();
+        second.workspace_id = Some("workspace-2".to_string());
+        second.layout = Some(SessionWorkspaceLayoutSnapshot::Pane(
+            SessionPaneLayoutSnapshot {
+                pane_id: Some("pane-2".to_string()),
+                panel_ids: vec!["surface-2".to_string(), "surface-3".to_string()],
+                selected_panel_id: Some("surface-3".to_string()),
+                surface_kind: None,
+                markdown_file_path: None,
+                file_path: None,
+                diff_viewer_token: None,
+                diff_viewer_request_path: None,
+                browser_url: None,
+                browser_proxy_url: None,
+                browser_back_history: None,
+                browser_forward_history: None,
+                browser_omnibar_visible: None,
+                browser_focus_mode_active: None,
+                browser_developer_tools_visible: None,
+                browser_developer_tools_panel: None,
+                browser_page_zoom: None,
+            },
+        ));
+        snapshot.windows[0].tab_manager.workspaces.push(second);
+        snapshot.windows[0].tab_manager.selected_workspace_index = Some(0);
+
+        assert_eq!(
+            surface_id_from_params_or_focused(&snapshot, &serde_json::Map::new()),
+            Some("surface-1".to_string())
+        );
+        assert_eq!(
+            surface_id_from_params_or_focused(
+                &snapshot,
+                &serde_json::Map::from_iter([("workspace_id".to_string(), json!("workspace-2"),)])
+            ),
+            Some("surface-3".to_string())
+        );
+        assert_eq!(
+            surface_id_from_params_or_focused(
+                &snapshot,
+                &serde_json::Map::from_iter([
+                    ("workspace_id".to_string(), json!("workspace-2")),
+                    ("surface_ref".to_string(), json!("surface:1")),
+                ])
+            ),
+            Some("surface-2".to_string())
+        );
+    }
+
+    #[test]
+    fn surface_ref_and_terminal_type_helpers_use_scoped_workspace() {
+        let mut snapshot = test_snapshot();
+        let workspace = snapshot.windows[0]
+            .tab_manager
+            .workspaces
+            .first_mut()
+            .unwrap();
+        workspace.layout = Some(SessionWorkspaceLayoutSnapshot::Pane(
+            SessionPaneLayoutSnapshot {
+                pane_id: Some("pane-1".to_string()),
+                panel_ids: vec!["surface-1".to_string()],
+                selected_panel_id: Some("surface-1".to_string()),
+                surface_kind: Some("browser".to_string()),
+                markdown_file_path: None,
+                file_path: None,
+                diff_viewer_token: None,
+                diff_viewer_request_path: None,
+                browser_url: Some("https://example.com".to_string()),
+                browser_proxy_url: None,
+                browser_back_history: None,
+                browser_forward_history: None,
+                browser_omnibar_visible: None,
+                browser_focus_mode_active: None,
+                browser_developer_tools_visible: None,
+                browser_developer_tools_panel: None,
+                browser_page_zoom: None,
+            },
+        ));
+
+        assert_eq!(
+            surface_ref_for_panel(&snapshot, 0, "surface-1").as_deref(),
+            Some("surface:1")
+        );
+        assert!(!surface_is_terminal(&snapshot, 0, "surface-1"));
+
+        let workspace = snapshot.windows[0]
+            .tab_manager
+            .workspaces
+            .first_mut()
+            .unwrap();
+        if let Some(SessionWorkspaceLayoutSnapshot::Pane(pane)) = workspace.layout.as_mut() {
+            pane.surface_kind = None;
+        }
+        assert!(surface_is_terminal(&snapshot, 0, "surface-1"));
+    }
+
+    #[test]
+    fn terminal_key_sequence_maps_common_terminal_keys() {
+        assert_eq!(terminal_key_sequence("enter"), Some("\r"));
+        assert_eq!(terminal_key_sequence("ctrl+c"), Some("\x03"));
+        assert_eq!(terminal_key_sequence("escape"), Some("\x1b"));
+        assert_eq!(terminal_key_sequence("page-down"), Some("\x1b[6~"));
+        assert_eq!(terminal_key_sequence("definitely-not-a-key"), None);
+    }
+
+    #[test]
+    fn split_orientation_from_params_accepts_cmux_aliases() {
+        assert_eq!(
+            split_orientation_from_params(&serde_json::Map::new()),
+            Some(SessionSplitOrientation::Horizontal)
+        );
+        assert_eq!(
+            split_orientation_from_params(&serde_json::Map::from_iter([(
+                "orientation".to_string(),
+                json!("vertical"),
+            )])),
+            Some(SessionSplitOrientation::Vertical)
+        );
+        assert_eq!(
+            split_orientation_from_params(&serde_json::Map::from_iter([(
+                "direction".to_string(),
+                json!("right"),
+            )])),
+            Some(SessionSplitOrientation::Horizontal)
+        );
+        assert_eq!(
+            split_orientation_from_params(&serde_json::Map::from_iter([(
+                "orientation".to_string(),
+                json!("diagonal"),
+            )])),
+            None
+        );
+    }
+
+    #[test]
+    fn surface_kind_from_params_normalizes_terminal_and_known_surfaces() {
+        assert_eq!(
+            surface_kind_from_params(&serde_json::Map::from_iter([(
+                "type".to_string(),
+                json!("terminal"),
+            )])),
+            None
+        );
+        assert_eq!(
+            surface_kind_from_params(&serde_json::Map::from_iter([(
+                "kind".to_string(),
+                json!("Browser"),
+            )])),
+            Some("browser".to_string())
+        );
+        assert_eq!(
+            surface_kind_from_params(&serde_json::Map::from_iter([(
+                "type".to_string(),
+                json!("not-a-surface"),
+            )])),
+            Some("invalid".to_string())
+        );
+        assert_eq!(
+            surface_kind_from_params(&serde_json::Map::new()),
+            Some("invalid".to_string())
+        );
+    }
+
+    #[test]
+    fn f64_param_accepts_numbers_and_numeric_strings() {
+        assert_eq!(
+            f64_param(
+                &serde_json::Map::from_iter([("zoom".to_string(), json!(1.25),)]),
+                &["zoom"]
+            ),
+            Some(1.25)
+        );
+        assert_eq!(
+            f64_param(
+                &serde_json::Map::from_iter([("scale".to_string(), json!("1.5"),)]),
+                &["zoom", "scale"]
+            ),
+            Some(1.5)
+        );
+        assert_eq!(
+            f64_param(
+                &serde_json::Map::from_iter([("zoom".to_string(), json!("nope"),)]),
+                &["zoom"]
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn bool_param_accepts_booleans_and_common_strings() {
+        assert_eq!(
+            bool_param(
+                &serde_json::Map::from_iter([("pinned".to_string(), json!(true),)]),
+                &["pinned"]
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            bool_param(
+                &serde_json::Map::from_iter([("unread".to_string(), json!("off"),)]),
+                &["unread"]
+            ),
+            Some(false)
+        );
+        assert_eq!(
+            bool_param(
+                &serde_json::Map::from_iter([("pinned".to_string(), json!("maybe"),)]),
+                &["pinned"]
+            ),
+            None
+        );
+    }
+}

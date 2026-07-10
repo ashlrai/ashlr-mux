@@ -92,6 +92,7 @@ EXPECTED_BROWSER_METHODS = {
     "browser.network.route",
     "browser.network.unroute",
     "browser.network.requests",
+    "browser.network.clear",
     "browser.screencast.start",
     "browser.screencast.stop",
     "browser.input_mouse",
@@ -108,7 +109,6 @@ WKWEBVIEW_NOT_SUPPORTED = {
     "browser.trace.stop": {},
     "browser.network.route": {"url": "**/*"},
     "browser.network.unroute": {"url": "**/*"},
-    "browser.network.requests": {},
     "browser.screencast.start": {},
     "browser.screencast.stop": {},
     "browser.input_mouse": {"args": ["move", "10", "10"]},
@@ -150,7 +150,45 @@ def main() -> int:
             payload.update(extra)
             _expect_not_supported(c, method, payload)
 
-    print("PASS: browser method matrix is explicit (capabilities + WKWebView not_supported contract)")
+        network = c._call("browser.network.requests", {"surface_id": sid}) or {}
+        _must(network.get("panelId") == sid or network.get("panel_id") == sid, f"network requests returned wrong surface: {network}")
+        _must(isinstance(network.get("requests"), list), f"network requests should return a request list: {network}")
+        _must(isinstance(network.get("totalCount", network.get("total_count")), int), f"network requests should return total count: {network}")
+        _must(isinstance(network.get("returnedCount", network.get("returned_count")), int), f"network requests should return returned count: {network}")
+        _must(isinstance(network.get("filteredCount", network.get("filtered_count")), int), f"network requests should return filtered count: {network}")
+        observer = network.get("observer") or {}
+        _must(observer.get("capturesUrl") is True or observer.get("captures_url") is True, f"network observer should capture URLs: {network}")
+        _must(observer.get("supportsFilters") is True or observer.get("supports_filters") is True, f"network observer should support request-list filters: {network}")
+        _must(isinstance(observer.get("maxRecordsPerPanel", observer.get("max_records_per_panel")), int), f"network observer should report retention bound: {network}")
+        _must(isinstance(observer.get("bodyCaptureLimitBytes", observer.get("body_capture_limit_bytes")), int), f"network observer should report body preview capture limit: {network}")
+        _must(isinstance(observer.get("proxyAttributionMode", observer.get("proxy_attribution_mode")), str), f"network observer should report proxy attribution mode: {network}")
+        for record in network.get("requests") or []:
+            _must(isinstance(record.get("requestHeaders", record.get("request_headers")), dict), f"network record should include request headers: {record}")
+            _must("requestBody" in record or "request_body" in record, f"network record should include request body field: {record}")
+            _must(isinstance(record.get("requestBodyPreviewKind", record.get("request_body_preview_kind")), str), f"network record should include request body preview kind: {record}")
+            _must(isinstance(record.get("requestBodySize", record.get("request_body_size")), int), f"network record should include request body size: {record}")
+            _must(isinstance(record.get("requestBodyTruncated", record.get("request_body_truncated")), bool), f"network record should include request body truncation flag: {record}")
+            _must("responseStatus" in record or "response_status" in record, f"network record should include response status field: {record}")
+            _must(isinstance(record.get("responseHeaders", record.get("response_headers")), dict), f"network record should include response headers: {record}")
+            _must("responseBody" in record or "response_body" in record, f"network record should include response body field: {record}")
+            _must(isinstance(record.get("responseBodyPreviewKind", record.get("response_body_preview_kind")), str), f"network record should include response body preview kind: {record}")
+            _must(isinstance(record.get("responseBodySize", record.get("response_body_size")), int), f"network record should include response body size: {record}")
+            _must(isinstance(record.get("responseBodyTruncated", record.get("response_body_truncated")), bool), f"network record should include response body truncation flag: {record}")
+            _must("proxyAttribution" in record or "proxy_attribution" in record, f"network record should include proxy attribution field: {record}")
+            _must("note" in record, f"network record should include backend note field: {record}")
+            _must(
+                record.get("note") is None or isinstance(record.get("note"), str),
+                f"network record note should be null or string: {record}",
+            )
+
+        filtered = c._call("browser.network.requests", {"surface_id": sid, "limit": 1, "urlContains": "about:"}) or {}
+        _must(isinstance(filtered.get("requests"), list), f"filtered network requests should return a request list: {filtered}")
+        _must(int(filtered.get("returnedCount", filtered.get("returned_count", 0))) <= 1, f"filtered network requests should honor limit: {filtered}")
+        cleared = c._call("browser.network.clear", {"surface_id": sid}) or {}
+        _must(cleared.get("panelId") == sid or cleared.get("panel_id") == sid, f"network clear returned wrong surface: {cleared}")
+        _must(isinstance(cleared.get("clearedCount", cleared.get("cleared_count")), int), f"network clear should return cleared count: {cleared}")
+
+    print("PASS: browser method matrix is explicit (capabilities + WKWebView not_supported contract + network request inspection/clear)")
     return 0
 
 

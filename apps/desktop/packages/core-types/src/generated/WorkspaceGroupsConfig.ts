@@ -7,12 +7,12 @@ import type { WorkspaceGroupEntry } from "./WorkspaceGroupEntry";
  * `workspaceGroups`: per-cwd customization for sidebar workspace groups
  * (`web/data/cmux.schema.json:170-218`). `additionalProperties:false`.
  */
-export type WorkspaceGroupsConfig = { 
+export type WorkspaceGroupsConfig = {
 /**
  * Global default for where new workspaces land within a group. Reuses the
  * existing [`NewWorkspacePlacement`] enum; schema default `afterCurrent`.
  */
-newWorkspacePlacement: NewWorkspacePlacement, 
+newWorkspacePlacement: NewWorkspacePlacement,
 /**
  * Map of cwd pattern → group customization. Empty when omitted.
  */

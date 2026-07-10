@@ -60,8 +60,7 @@ impl AgentResumeArgv {
     /// any command containing it must reach those shells wrapped via
     /// [`portable_claude_resume_shell_command`](Self::portable_claude_resume_shell_command).
     /// See <https://github.com/manaflow-ai/cmux/issues/5639>.
-    pub const CLAUDE_WRAPPER_SHELL_EXECUTABLE_TOKEN: &'static str =
-        r#""$([ -x "${CMUX_CLAUDE_WRAPPER_SHIM:-}" ] && printf '%s' "$CMUX_CLAUDE_WRAPPER_SHIM" || printf claude)""#;
+    pub const CLAUDE_WRAPPER_SHELL_EXECUTABLE_TOKEN: &'static str = r#""$([ -x "${CMUX_CLAUDE_WRAPPER_SHIM:-}" ] && printf '%s' "$CMUX_CLAUDE_WRAPPER_SHIM" || printf claude)""#;
 
     /// Creates a resume-argv builder. The type holds no state.
     #[must_use]
@@ -152,43 +151,55 @@ impl AgentResumeArgv {
     ) -> LauncherResolution {
         match launcher {
             Some("claudeTeams") => {
-                let (executable, mut tail) =
-                    command_parts(executable_path, arguments, "cmux");
+                let (executable, mut tail) = command_parts(executable_path, arguments, "cmux");
                 if tail.first().map(String::as_str) == Some("claude-teams") {
                     tail.remove(0);
                 }
                 match sanitizer.preserved_claude_teams_launch_arguments(&tail) {
                     None => LauncherResolution::Resolved(None),
                     Some(preserved) => LauncherResolution::Resolved(Some(join_argv(
-                        &[executable, "claude-teams".to_owned(), "--resume".to_owned(), session_id.to_owned()],
+                        &[
+                            executable,
+                            "claude-teams".to_owned(),
+                            "--resume".to_owned(),
+                            session_id.to_owned(),
+                        ],
                         preserved,
                     ))),
                 }
             }
             Some("codexTeams") => {
-                let (executable, mut tail) =
-                    command_parts(executable_path, arguments, "cmux");
+                let (executable, mut tail) = command_parts(executable_path, arguments, "cmux");
                 if tail.first().map(String::as_str) == Some("codex-teams") {
                     tail.remove(0);
                 }
                 match sanitizer.preserved_codex_fork_arguments(&tail) {
                     None => LauncherResolution::Resolved(None),
                     Some(preserved) => LauncherResolution::Resolved(Some(join_argv(
-                        &[executable, "codex-teams".to_owned(), "resume".to_owned(), session_id.to_owned()],
+                        &[
+                            executable,
+                            "codex-teams".to_owned(),
+                            "resume".to_owned(),
+                            session_id.to_owned(),
+                        ],
                         preserved,
                     ))),
                 }
             }
             Some("omo") => {
-                let (executable, mut tail) =
-                    command_parts(executable_path, arguments, "cmux");
+                let (executable, mut tail) = command_parts(executable_path, arguments, "cmux");
                 if tail.first().map(String::as_str) == Some("omo") {
                     tail.remove(0);
                 }
                 match sanitizer.preserved_arguments("opencode", &tail) {
                     None => LauncherResolution::Resolved(None),
                     Some(preserved) => LauncherResolution::Resolved(Some(join_argv(
-                        &[executable, "omo".to_owned(), "--session".to_owned(), session_id.to_owned()],
+                        &[
+                            executable,
+                            "omo".to_owned(),
+                            "--session".to_owned(),
+                            session_id.to_owned(),
+                        ],
                         preserved,
                     ))),
                 }
@@ -225,20 +236,37 @@ impl AgentResumeArgv {
                 ))
             }
             "grok" => self.with_option(
-                sanitizer, "grok", "grok", "-r", session_id, executable_path, arguments,
+                sanitizer,
+                "grok",
+                "grok",
+                "-r",
+                session_id,
+                executable_path,
+                arguments,
             ),
             "pi" => self.with_option(
-                sanitizer, "pi", "pi", "--session", session_id, executable_path, arguments,
+                sanitizer,
+                "pi",
+                "pi",
+                "--session",
+                session_id,
+                executable_path,
+                arguments,
             ),
             "omp" => self.with_option(
-                sanitizer, "omp", "omp", "--session", session_id, executable_path, arguments,
+                sanitizer,
+                "omp",
+                "omp",
+                "--session",
+                session_id,
+                executable_path,
+                arguments,
             ),
             "amp" => {
                 let (executable, tail) = command_parts(executable_path, arguments, "amp");
                 let preserved = sanitizer.preserved_arguments("amp", &tail)?;
                 // [executable, "threads", "continue"] + preserved + [sessionId]
-                let mut result =
-                    vec![executable, "threads".to_owned(), "continue".to_owned()];
+                let mut result = vec![executable, "threads".to_owned(), "continue".to_owned()];
                 result.extend(preserved);
                 result.push(session_id.to_owned());
                 Some(result)
@@ -253,7 +281,13 @@ impl AgentResumeArgv {
                 arguments,
             ),
             "gemini" => self.with_option(
-                sanitizer, "gemini", "gemini", "--resume", session_id, executable_path, arguments,
+                sanitizer,
+                "gemini",
+                "gemini",
+                "--resume",
+                session_id,
+                executable_path,
+                arguments,
             ),
             "kiro" => {
                 let (executable, tail) = command_parts(executable_path, arguments, "kiro-cli");
@@ -310,7 +344,13 @@ impl AgentResumeArgv {
                 Some(result)
             }
             "copilot" => self.with_option(
-                sanitizer, "copilot", "copilot", "--resume", session_id, executable_path, arguments,
+                sanitizer,
+                "copilot",
+                "copilot",
+                "--resume",
+                session_id,
+                executable_path,
+                arguments,
             ),
             "codebuddy" => self.with_option(
                 sanitizer,
@@ -322,10 +362,22 @@ impl AgentResumeArgv {
                 arguments,
             ),
             "factory" => self.with_option(
-                sanitizer, "factory", "droid", "--resume", session_id, executable_path, arguments,
+                sanitizer,
+                "factory",
+                "droid",
+                "--resume",
+                session_id,
+                executable_path,
+                arguments,
             ),
             "qoder" => self.with_option(
-                sanitizer, "qoder", "qodercli", "--resume", session_id, executable_path, arguments,
+                sanitizer,
+                "qoder",
+                "qodercli",
+                "--resume",
+                session_id,
+                executable_path,
+                arguments,
             ),
             _ => None,
         }
@@ -350,7 +402,11 @@ impl AgentResumeArgv {
         let (_executable, tail) = command_parts(executable_path, arguments, "claude");
         let preserved = sanitizer.preserved_arguments("claude", &tail)?;
         Some(join_argv(
-            &["claude".to_owned(), "--resume".to_owned(), session_id.to_owned()],
+            &[
+                "claude".to_owned(),
+                "--resume".to_owned(),
+                session_id.to_owned(),
+            ],
             preserved,
         ))
     }
@@ -469,7 +525,10 @@ mod tests {
     }
     impl RecordingSanitizer {
         fn new(result: Option<Vec<String>>) -> Self {
-            Self { result, calls: RefCell::new(Vec::new()) }
+            Self {
+                result,
+                calls: RefCell::new(Vec::new()),
+            }
         }
         fn record(&self, func: &'static str, kind: Option<&str>, args: &[String]) {
             self.calls.borrow_mut().push(SanitizerCall {
@@ -507,7 +566,10 @@ mod tests {
             Some("/opt/homebrew/bin/claude"),
             &v(&["claude", "--flag", "value"]),
         );
-        assert_eq!(got, Some(v(&["claude", "--resume", "SID", "--flag", "value"])));
+        assert_eq!(
+            got,
+            Some(v(&["claude", "--resume", "SID", "--flag", "value"]))
+        );
     }
 
     #[test]
@@ -536,7 +598,8 @@ mod tests {
 
     #[test]
     fn built_in_pi_and_omp_use_session_option() {
-        let a = AgentResumeArgv::new().built_in_kind(&EchoSanitizer, "pi", "SID", None, &v(&["pi"]));
+        let a =
+            AgentResumeArgv::new().built_in_kind(&EchoSanitizer, "pi", "SID", None, &v(&["pi"]));
         assert_eq!(a, Some(v(&["pi", "--session", "SID"])));
         let b =
             AgentResumeArgv::new().built_in_kind(&EchoSanitizer, "omp", "SID", None, &v(&["omp"]));
@@ -561,8 +624,7 @@ mod tests {
     #[test]
     fn built_in_cursor_uses_cursor_agent_fallback_and_resume_option() {
         // Empty argv + no executable path => fallback executable `cursor-agent`.
-        let got =
-            AgentResumeArgv::new().built_in_kind(&EchoSanitizer, "cursor", "SID", None, &[]);
+        let got = AgentResumeArgv::new().built_in_kind(&EchoSanitizer, "cursor", "SID", None, &[]);
         assert_eq!(got, Some(v(&["cursor-agent", "--resume", "SID"])));
     }
 
@@ -587,7 +649,10 @@ mod tests {
             None,
             &v(&["kiro-cli", "--flag"]),
         );
-        assert_eq!(got, Some(v(&["kiro-cli", "chat", "--resume-id", "SID", "--flag"])));
+        assert_eq!(
+            got,
+            Some(v(&["kiro-cli", "chat", "--resume-id", "SID", "--flag"]))
+        );
     }
 
     #[test]
@@ -611,9 +676,11 @@ mod tests {
 
     #[test]
     fn built_in_rovodev_uses_acli_fallback_and_restore() {
-        let got =
-            AgentResumeArgv::new().built_in_kind(&EchoSanitizer, "rovodev", "SID", None, &[]);
-        assert_eq!(got, Some(v(&["acli", "rovodev", "run", "--restore", "SID"])));
+        let got = AgentResumeArgv::new().built_in_kind(&EchoSanitizer, "rovodev", "SID", None, &[]);
+        assert_eq!(
+            got,
+            Some(v(&["acli", "rovodev", "run", "--restore", "SID"]))
+        );
     }
 
     #[test]
@@ -647,8 +714,7 @@ mod tests {
         assert_eq!(factory, Some(v(&["droid", "--resume", "SID"])));
 
         // qoder falls back to the `qodercli` executable.
-        let qoder =
-            AgentResumeArgv::new().built_in_kind(&EchoSanitizer, "qoder", "SID", None, &[]);
+        let qoder = AgentResumeArgv::new().built_in_kind(&EchoSanitizer, "qoder", "SID", None, &[]);
         assert_eq!(qoder, Some(v(&["qodercli", "--resume", "SID"])));
     }
 
@@ -711,7 +777,10 @@ mod tests {
             Some("  /bin/codex-real  "),
             &v(&["codex", "--flag"]),
         );
-        assert_eq!(got, Some(v(&["/bin/codex-real", "resume", "SID", "--flag"])));
+        assert_eq!(
+            got,
+            Some(v(&["/bin/codex-real", "resume", "SID", "--flag"]))
+        );
 
         // Blank captured path falls through to argv[0].
         let got = AgentResumeArgv::new().built_in_kind(
@@ -770,7 +839,11 @@ mod tests {
         );
         assert_eq!(
             *sanitizer.calls.borrow(),
-            vec![SanitizerCall { func: "claude_teams", kind: None, args: v(&["--flag"]) }]
+            vec![SanitizerCall {
+                func: "claude_teams",
+                kind: None,
+                args: v(&["--flag"])
+            }]
         );
     }
 
@@ -787,12 +860,20 @@ mod tests {
         );
         assert_eq!(
             *sanitizer.calls.borrow(),
-            vec![SanitizerCall { func: "claude_teams", kind: None, args: v(&["--flag"]) }]
+            vec![SanitizerCall {
+                func: "claude_teams",
+                kind: None,
+                args: v(&["--flag"])
+            }]
         );
         assert_eq!(
             got,
             LauncherResolution::Resolved(Some(v(&[
-                "cmux", "claude-teams", "--resume", "SID", "--flag",
+                "cmux",
+                "claude-teams",
+                "--resume",
+                "SID",
+                "--flag",
             ])))
         );
     }
@@ -809,12 +890,20 @@ mod tests {
         );
         assert_eq!(
             *sanitizer.calls.borrow(),
-            vec![SanitizerCall { func: "codex_fork", kind: None, args: v(&["--flag"]) }]
+            vec![SanitizerCall {
+                func: "codex_fork",
+                kind: None,
+                args: v(&["--flag"])
+            }]
         );
         assert_eq!(
             got,
             LauncherResolution::Resolved(Some(v(&[
-                "cmux", "codex-teams", "resume", "SID", "--flag",
+                "cmux",
+                "codex-teams",
+                "resume",
+                "SID",
+                "--flag",
             ])))
         );
     }
@@ -839,9 +928,7 @@ mod tests {
         );
         assert_eq!(
             got,
-            LauncherResolution::Resolved(Some(v(&[
-                "cmux", "omo", "--session", "SID", "--flag",
-            ])))
+            LauncherResolution::Resolved(Some(v(&["cmux", "omo", "--session", "SID", "--flag",])))
         );
     }
 
@@ -962,7 +1049,10 @@ mod tests {
             "{} --resume SID",
             AgentResumeArgv::CLAUDE_WRAPPER_SHELL_EXECUTABLE_TOKEN
         );
-        assert_eq!(got, AgentResumeArgv::portable_claude_resume_shell_command(&joined));
+        assert_eq!(
+            got,
+            AgentResumeArgv::portable_claude_resume_shell_command(&joined)
+        );
         // And it really is the /bin/sh -c form.
         assert!(got.starts_with("/bin/sh -c '"));
         assert!(got.ends_with('\''));

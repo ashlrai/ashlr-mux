@@ -358,11 +358,17 @@ mod tests {
     fn hex_string_clamps_and_truncates() {
         // Opaque alpha -> FF; 0.25 * 255 = 63.75 -> 63 -> 0x3F.
         assert_eq!(Srgba::new(1.0, 1.0, 1.0, 1.0).hex_string(true), "#FFFFFFFF");
-        assert_eq!(Srgba::new(0.0, 0.0, 0.0, 0.25).hex_string(true), "#0000003F");
+        assert_eq!(
+            Srgba::new(0.0, 0.0, 0.0, 0.25).hex_string(true),
+            "#0000003F"
+        );
         // Out-of-range components clamp to the byte bounds.
         assert_eq!(Srgba::new(1.5, -0.5, 0.0, 1.0).hex_string(false), "#FF0000");
         // 0.999 * 255 = 254.745 -> 254 -> 0xFE (truncation, not rounding).
-        assert_eq!(Srgba::new(0.999, 0.0, 0.0, 1.0).hex_string(false), "#FE0000");
+        assert_eq!(
+            Srgba::new(0.999, 0.0, 0.0, 1.0).hex_string(false),
+            "#FE0000"
+        );
     }
 
     // -- WCAG relative luminance + contrast (WindowChromeColorResolver) ------

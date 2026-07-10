@@ -33,6 +33,9 @@
 // spliced at the exact Swift `contentsOf:` positions so absolute-rank parity is
 // reachable once D4 supplies the runtime rows. The default catalog omits them.
 
+import type { ConfigAction } from "../settings/configReducer";
+import type { RightSidebarMode } from "../rightSidebarModes";
+
 /**
  * The `when` / `enablement` gate inputs referenced by the ported contribution
  * rows — a port of the `CommandPaletteContextKeys` booleans the host evaluates
@@ -58,6 +61,7 @@ export interface CommandContext {
   // Layout / sidebar
   workspaceMinimalModeEnabled?: boolean;
   sidebarMatchTerminalBackground?: boolean;
+  workspaceCanvasLayout?: boolean;
 
   // Workspace scope
   hasWorkspace?: boolean;
@@ -67,8 +71,12 @@ export interface CommandContext {
   workspaceHasAbove?: boolean;
   workspaceHasBelow?: boolean;
   workspaceHasPeers?: boolean;
+  workspaceCanMoveUp?: boolean;
+  workspaceCanMoveDown?: boolean;
   workspaceCanMarkRead?: boolean;
   workspaceCanMarkUnread?: boolean;
+  workspaceGroupCanCollapse?: boolean;
+  workspaceGroupCanExpand?: boolean;
   workspaceHasPullRequests?: boolean;
   workspaceHasSplits?: boolean;
 
@@ -160,11 +168,13 @@ const INTENT_KIND_BY_COMMAND_ID = {
   "palette.toggleFullScreen": "toggleFullScreen",
   "palette.reopenClosedBrowserTab": "reopenClosedBrowserTab",
   "palette.toggleSidebar": "toggleSidebar",
+  "palette.toggleFileExplorer": "toggleFileExplorer",
   "palette.toggleMatchTerminalBackground": "toggleMatchTerminalBackground",
   "palette.enableMinimalMode": "enableMinimalMode",
   "palette.disableMinimalMode": "disableMinimalMode",
   "palette.triggerFlash": "triggerFlash",
   "palette.openTaskManager": "openTaskManager",
+  "palette.canvas.toggleLayout": "toggleCanvasLayout",
   "palette.showNotifications": "showNotifications",
   "palette.jumpUnread": "jumpUnread",
   "palette.toggleUnread": "toggleUnread",
@@ -196,6 +206,8 @@ const INTENT_KIND_BY_COMMAND_ID = {
   "palette.closeOtherWorkspaces": "closeOtherWorkspaces",
   "palette.closeWorkspacesBelow": "closeWorkspacesBelow",
   "palette.closeWorkspacesAbove": "closeWorkspacesAbove",
+  "palette.collapseWorkspaceGroup": "collapseWorkspaceGroup",
+  "palette.expandWorkspaceGroup": "expandWorkspaceGroup",
   "palette.markWorkspaceRead": "markWorkspaceRead",
   "palette.markWorkspaceUnread": "markWorkspaceUnread",
   "palette.copyWorkspaceID": "copyWorkspaceID",
@@ -226,6 +238,8 @@ const INTENT_KIND_BY_COMMAND_ID = {
   "palette.browserToggleDevTools": "browserToggleDevTools",
   "palette.browserConsole": "browserConsole",
   "palette.browserReactGrab": "browserReactGrab",
+  "palette.browserNetwork": "browserNetwork",
+  "palette.browserNetworkClear": "browserNetworkClear",
   "palette.browserZoomIn": "browserZoomIn",
   "palette.browserZoomOut": "browserZoomOut",
   "palette.browserZoomReset": "browserZoomReset",
@@ -249,7 +263,12 @@ const INTENT_KIND_BY_COMMAND_ID = {
   "palette.terminalAttachTextBoxFile": "terminalAttachTextBoxFile",
   "palette.terminalSendCtrlF": "terminalSendCtrlF",
   "palette.terminalClearScreenKeepScrollback": "terminalClearScreenKeepScrollback",
+  "palette.focusLeft": "focusLeft",
+  "palette.focusRight": "focusRight",
+  "palette.focusUp": "focusUp",
+  "palette.focusDown": "focusDown",
   "palette.terminalSplitRight": "terminalSplitRight",
+  "palette.warmClaudeCode": "warmClaudeCode",
   "palette.forkAgentConversationRight": "forkAgentConversationRight",
   "palette.forkAgentConversationLeft": "forkAgentConversationLeft",
   "palette.forkAgentConversationTop": "forkAgentConversationTop",
@@ -267,13 +286,28 @@ const INTENT_KIND_BY_COMMAND_ID = {
 export type CommandIntentKind =
   (typeof INTENT_KIND_BY_COMMAND_ID)[keyof typeof INTENT_KIND_BY_COMMAND_ID];
 
+export type CanvasCommandAction =
+  | "tidy"
+  | "alignLeft"
+  | "alignRight"
+  | "alignTop"
+  | "alignBottom"
+  | "equalizeWidths"
+  | "equalizeHeights"
+  | "distributeHorizontally"
+  | "distributeVertically";
+
 /**
- * What activating a command does. Discriminated by a stable `kind`. The host
- * (D4) maps each kind to its side effect; the pure catalog never runs one.
+ * What activating a command does. Static rows resolve to a stable `kind`;
+ * runtime-injected rows may carry extra payload (for example a concrete
+ * settings toggle action). The host maps each case to its side effect; the pure
+ * catalog never runs one.
  */
-export interface CommandIntent {
-  kind: CommandIntentKind;
-}
+export type CommandIntent =
+  | { kind: CommandIntentKind }
+  | { kind: "toggleSetting"; action: ConfigAction }
+  | { kind: "canvasAction"; action: CanvasCommandAction }
+  | { kind: "rightSidebarMode"; mode: RightSidebarMode };
 
 /**
  * The single id → intent mapping (parity of the handler registry). Returns
@@ -579,6 +613,15 @@ function buildContributions(dynamic: DynamicContributions): CommandContribution[
       keywords: ["toggle", "sidebar", "left", "layout"],
     }),
   );
+  push(
+    row({
+      commandId: "palette.toggleFileExplorer",
+      title: constant("Toggle File Explorer"),
+      subtitle: constant("Layout"),
+      keywords: ["toggle", "sidebar", "right", "files", "file", "explorer", "layout"],
+      when: (c) => c.hasWorkspace === true,
+    }),
+  );
   splice("extensionSidebar"); // 6473
   splice("rightSidebarMode"); // 6485
   splice("rightSidebarToolPane"); // 6486
@@ -862,7 +905,7 @@ function buildContributions(dynamic: DynamicContributions): CommandContribution[
       subtitle: workspaceSubtitle,
       keywords: ["workspace", "move", "up", "reorder"],
       when: (c) => c.hasWorkspace === true,
-      enablement: (c) => c.workspaceHasAbove === true,
+      enablement: (c) => c.workspaceCanMoveUp === true,
     }),
   );
   push(
@@ -872,7 +915,7 @@ function buildContributions(dynamic: DynamicContributions): CommandContribution[
       subtitle: workspaceSubtitle,
       keywords: ["workspace", "move", "down", "reorder"],
       when: (c) => c.hasWorkspace === true,
-      enablement: (c) => c.workspaceHasBelow === true,
+      enablement: (c) => c.workspaceCanMoveDown === true,
     }),
   );
   push(
@@ -882,7 +925,7 @@ function buildContributions(dynamic: DynamicContributions): CommandContribution[
       subtitle: workspaceSubtitle,
       keywords: ["workspace", "move", "top", "reorder"],
       when: (c) => c.hasWorkspace === true,
-      enablement: (c) => c.workspaceHasAbove === true,
+      enablement: (c) => c.workspaceCanMoveUp === true,
     }),
   );
   push(
@@ -913,6 +956,26 @@ function buildContributions(dynamic: DynamicContributions): CommandContribution[
       keywords: ["close", "above", "workspaces", "workspace"],
       when: (c) => c.hasWorkspace === true,
       enablement: (c) => c.workspaceHasAbove === true,
+    }),
+  );
+  push(
+    row({
+      commandId: "palette.collapseWorkspaceGroup",
+      title: constant("Collapse Workspace Group"),
+      subtitle: workspaceSubtitle,
+      keywords: ["workspace", "group", "collapse", "sidebar", "folder"],
+      when: (c) => c.hasWorkspace === true,
+      enablement: (c) => c.workspaceGroupCanCollapse === true,
+    }),
+  );
+  push(
+    row({
+      commandId: "palette.expandWorkspaceGroup",
+      title: constant("Expand Workspace Group"),
+      subtitle: workspaceSubtitle,
+      keywords: ["workspace", "group", "expand", "sidebar", "folder"],
+      when: (c) => c.hasWorkspace === true,
+      enablement: (c) => c.workspaceGroupCanExpand === true,
     }),
   );
   push(
@@ -1002,7 +1065,7 @@ function buildContributions(dynamic: DynamicContributions): CommandContribution[
   push(
     row({
       commandId: "palette.copyIdentifiers",
-      title: constant("Copy IDs"),
+      title: constant("Copy IDs and Refs"),
       subtitle: panelSubtitle,
       keywords: ["copy", "ids", "identifiers", "workspace", "pane", "surface", "ref", "reference"],
       when: (c) => c.hasFocusedPanel === true,
@@ -1194,6 +1257,41 @@ function buildContributions(dynamic: DynamicContributions): CommandContribution[
       title: constant("Toggle React Grab"),
       subtitle: browserPanelSubtitle,
       keywords: ["browser", "react", "grab", "inspect", "element"],
+      when: (c) => c.panelIsBrowser === true,
+    }),
+  );
+  push(
+    row({
+      commandId: "palette.browserNetwork",
+      title: constant("Show Network Requests"),
+      subtitle: browserPanelSubtitle,
+      keywords: [
+        "browser",
+        "network",
+        "requests",
+        "headers",
+        "body",
+        "status",
+        "proxy",
+        "webview",
+      ],
+      when: (c) => c.panelIsBrowser === true,
+    }),
+  );
+  push(
+    row({
+      commandId: "palette.browserNetworkClear",
+      title: constant("Clear Network Records"),
+      subtitle: browserPanelSubtitle,
+      keywords: [
+        "browser",
+        "network",
+        "requests",
+        "clear",
+        "reset",
+        "proxy",
+        "webview",
+      ],
       when: (c) => c.panelIsBrowser === true,
     }),
   );
@@ -1416,11 +1514,66 @@ function buildContributions(dynamic: DynamicContributions): CommandContribution[
   );
   push(
     row({
+      commandId: "palette.focusLeft",
+      title: constant("Focus Pane Left"),
+      subtitle: constant("Pane Focus"),
+      keywords: ["focus", "pane", "left", "keyboard", "navigation"],
+      when: (c) => c.hasFocusedPanel === true,
+    }),
+  );
+  push(
+    row({
+      commandId: "palette.focusRight",
+      title: constant("Focus Pane Right"),
+      subtitle: constant("Pane Focus"),
+      keywords: ["focus", "pane", "right", "keyboard", "navigation"],
+      when: (c) => c.hasFocusedPanel === true,
+    }),
+  );
+  push(
+    row({
+      commandId: "palette.focusUp",
+      title: constant("Focus Pane Up"),
+      subtitle: constant("Pane Focus"),
+      keywords: ["focus", "pane", "up", "above", "keyboard", "navigation"],
+      when: (c) => c.hasFocusedPanel === true,
+    }),
+  );
+  push(
+    row({
+      commandId: "palette.focusDown",
+      title: constant("Focus Pane Down"),
+      subtitle: constant("Pane Focus"),
+      keywords: ["focus", "pane", "down", "below", "keyboard", "navigation"],
+      when: (c) => c.hasFocusedPanel === true,
+    }),
+  );
+  push(
+    row({
       commandId: "palette.terminalSplitRight",
       title: constant("Split Right"),
       subtitle: constant("Terminal Layout"),
       keywords: ["terminal", "split", "right"],
       when: (c) => c.panelIsTerminal === true,
+    }),
+  );
+  push(
+    row({
+      commandId: "palette.warmClaudeCode",
+      title: constant("Warm Claude Code"),
+      subtitle: workspaceSubtitle,
+      shortcutHint: "⌃⌥C",
+      keywords: [
+        "agent",
+        "claude",
+        "code",
+        "warm",
+        "pool",
+        "prewarm",
+        "shortcut",
+        "start",
+      ],
+      when: (c) => c.hasWorkspace === true,
     }),
   );
   push(

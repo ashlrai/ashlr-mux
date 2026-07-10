@@ -197,7 +197,10 @@ impl SentryScrubber {
 
     /// Recursively scrubs every value inside a dictionary, treating sensitive keys
     /// as a redaction boundary.
-    pub fn scrub_dictionary(&self, dictionary: &[(String, ScrubValue)]) -> Vec<(String, ScrubValue)> {
+    pub fn scrub_dictionary(
+        &self,
+        dictionary: &[(String, ScrubValue)],
+    ) -> Vec<(String, ScrubValue)> {
         dictionary
             .iter()
             .map(|(key, value)| {
@@ -287,10 +290,12 @@ impl SentryScrubber {
     /// Replaces `user:password@` URL credentials with [`REDACTED_SECRET`],
     /// preserving the `scheme://` and the host. Runs FIRST.
     fn redact_url_credentials(&self, text: &str) -> String {
-        compiled().url_userinfo.replace_all(text, |m| match m.group1 {
-            Some(scheme) => format!("{scheme}{REDACTED_SECRET}@"),
-            None => format!("{REDACTED_SECRET}@"),
-        })
+        compiled()
+            .url_userinfo
+            .replace_all(text, |m| match m.group1 {
+                Some(scheme) => format!("{scheme}{REDACTED_SECRET}@"),
+                None => format!("{REDACTED_SECRET}@"),
+            })
     }
 
     // MARK: - Secrets

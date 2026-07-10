@@ -20,7 +20,15 @@
  */
 
 /** The surface a pane hosts. Absent/unknown `surface_kind` ⇒ a terminal shell. */
-export type SurfaceKind = "terminal" | "agent" | "markdown" | "diff";
+export type SurfaceKind =
+  | "terminal"
+  | "agent"
+  | "markdown"
+  | "file"
+  | "diff"
+  | "browser"
+  | "custom-sidebar";
+export type SwitchableSurfaceKind = Exclude<SurfaceKind, "terminal">;
 
 /**
  * Normalize a raw `surface_kind` (the Rust model stores an arbitrary
@@ -35,8 +43,14 @@ export function normalizeSurfaceKind(raw?: string | null): SurfaceKind {
       return "agent";
     case "markdown":
       return "markdown";
+    case "file":
+      return "file";
     case "diff":
       return "diff";
+    case "browser":
+      return "browser";
+    case "custom-sidebar":
+      return "custom-sidebar";
     default:
       return "terminal";
   }
@@ -44,18 +58,23 @@ export function normalizeSurfaceKind(raw?: string | null): SurfaceKind {
 
 /**
  * Custom-scheme URL for the markdown viewer shell — the navigation target the
- * markdown iframe loads. Matches `resolve_md_request`'s `/shell.html` arm.
+ * markdown iframe loads. Matches `resolve_md_request`'s `/shell.html` arm. When
+ * `panelId` is provided it is threaded through the query string so the native
+ * markdown bridge and local-image jail can route messages back to the owning
+ * iframe.
  */
-export function markdownSurfaceUrl(): string {
-  return "cmux-md://localhost/shell.html";
+export function markdownSurfaceUrl(panelId?: string): string {
+  const query = panelId ? `?panelId=${encodeURIComponent(panelId)}` : "";
+  return `cmux-md://localhost/shell.html${query}`;
 }
 
 /**
  * The WebView2 rewrite variant of {@link markdownSurfaceUrl} — the form the
  * Rust `cmux-md` scheme handler actually receives (`http://cmux-md.localhost/…`).
  */
-export function markdownSurfaceHttpUrl(): string {
-  return "http://cmux-md.localhost/shell.html";
+export function markdownSurfaceHttpUrl(panelId?: string): string {
+  const query = panelId ? `?panelId=${encodeURIComponent(panelId)}` : "";
+  return `http://cmux-md.localhost/shell.html${query}`;
 }
 
 /** Thrown when a diff surface URL is requested without a session token. */
@@ -66,6 +85,14 @@ export class EmptyDiffTokenError extends Error {
   }
 }
 
+function normalizeDiffRequestPath(requestPath?: string | null): string {
+  if (requestPath == null || requestPath.trim() === "") {
+    return "/index.html";
+  }
+  const trimmed = requestPath.trim();
+  return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+}
+
 /**
  * Custom-scheme URL for the diff viewer index of session `token` — the
  * navigation target the diff iframe loads. Byte-aligned with
@@ -73,11 +100,11 @@ export class EmptyDiffTokenError extends Error {
  * token=`<token>`, path=`/index.html`). An empty token has no live session and
  * would parse to `None` on the Rust side, so it is rejected up front.
  */
-export function diffSurfaceUrl(token: string): string {
+export function diffSurfaceUrl(token: string, requestPath?: string | null): string {
   if (token === "") {
     throw new EmptyDiffTokenError();
   }
-  return `cmux-diff-viewer://${token}/index.html`;
+  return `cmux-diff-viewer://${token}${normalizeDiffRequestPath(requestPath)}`;
 }
 
 /**
@@ -85,9 +112,9 @@ export function diffSurfaceUrl(token: string): string {
  * `cmux-diff-viewer` scheme handler actually receives
  * (`http://cmux-diff-viewer.localhost/<token>/index.html`).
  */
-export function diffSurfaceHttpUrl(token: string): string {
+export function diffSurfaceHttpUrl(token: string, requestPath?: string | null): string {
   if (token === "") {
     throw new EmptyDiffTokenError();
   }
-  return `http://cmux-diff-viewer.localhost/${token}/index.html`;
+  return `http://cmux-diff-viewer.localhost/${token}${normalizeDiffRequestPath(requestPath)}`;
 }

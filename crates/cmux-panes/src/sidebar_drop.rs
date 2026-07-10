@@ -271,8 +271,8 @@ impl SidebarDropPlanner {
     ) -> Option<i64> {
         let from_index = first_index(tab_ids, dragged_tab_id)?;
 
-        let insertion_position: i64 = if let Some(indicator_insertion) = indicator
-            .and_then(|indicator| insertion_position_for_indicator(&indicator, tab_ids))
+        let insertion_position: i64 = if let Some(indicator_insertion) =
+            indicator.and_then(|indicator| insertion_position_for_indicator(&indicator, tab_ids))
         {
             indicator_insertion
         } else if let Some(target_tab_id) = target_tab_id {
@@ -329,12 +329,11 @@ impl SidebarDropPlanner {
         pointer_y: Option<f64>,
         target_height: Option<f64>,
     ) -> (i64, SidebarDropIndicator) {
-        let proposed: i64 = if let Some(indicator_insertion) = indicator
-            .and_then(|indicator| insertion_position_for_indicator(&indicator, tab_ids))
+        let proposed: i64 = if let Some(indicator_insertion) =
+            indicator.and_then(|indicator| insertion_position_for_indicator(&indicator, tab_ids))
         {
             indicator_insertion
-        } else if let Some(target_tab_index) =
-            target_tab_id.and_then(|id| first_index(tab_ids, id))
+        } else if let Some(target_tab_index) = target_tab_id.and_then(|id| first_index(tab_ids, id))
         {
             let edge = match (pointer_y, target_height) {
                 (Some(y), Some(h)) => self.edge_for_pointer(y, h),
@@ -538,12 +537,18 @@ fn workspace_indicator(
 ///
 /// Port of the private `indicatorForInsertionPosition(_:tabIds:)`
 /// (`SidebarDropPlanner.swift:262-268`).
-fn indicator_for_insertion_position(insertion_position: i64, tab_ids: &[Uuid]) -> SidebarDropIndicator {
+fn indicator_for_insertion_position(
+    insertion_position: i64,
+    tab_ids: &[Uuid],
+) -> SidebarDropIndicator {
     let clamped_insertion = insertion_position.clamp(0, tab_ids.len() as i64);
     if clamped_insertion >= tab_ids.len() as i64 {
         return SidebarDropIndicator::new(None, SidebarDropEdge::Bottom);
     }
-    SidebarDropIndicator::new(Some(tab_ids[clamped_insertion as usize]), SidebarDropEdge::Top)
+    SidebarDropIndicator::new(
+        Some(tab_ids[clamped_insertion as usize]),
+        SidebarDropEdge::Top,
+    )
 }
 
 /// Recover the insertion position an indicator represents, or `None` when its
@@ -630,7 +635,10 @@ fn resolved_target_index(source_index: i64, insertion_position: i64, total_count
 /// pinned segment invariant the clamps enforce (Swift counts over `tabIds`, not
 /// the set, `SidebarDropPlanner.swift:155-159`).
 fn pinned_count(tab_ids: &[Uuid], pinned_tab_ids: &HashSet<Uuid>) -> i64 {
-    tab_ids.iter().filter(|t| pinned_tab_ids.contains(*t)).count() as i64
+    tab_ids
+        .iter()
+        .filter(|t| pinned_tab_ids.contains(*t))
+        .count() as i64
 }
 
 #[cfg(test)]
@@ -739,15 +747,7 @@ mod tests {
         let tab_ids = [first, second, third];
 
         let indicator = SidebarDropPlanner::new()
-            .indicator(
-                Some(second),
-                None,
-                &tab_ids,
-                &pinned(&[]),
-                None,
-                None,
-                None,
-            )
+            .indicator(Some(second), None, &tab_ids, &pinned(&[]), None, None, None)
             .expect("expected an indicator for a real move to end");
         assert_eq!(indicator.tab_id, None);
         assert_eq!(indicator.edge, SidebarDropEdge::Bottom);
@@ -938,7 +938,10 @@ mod tests {
         let target_index = SidebarDropPlanner::new().target_index(
             unpinned_b,
             Some(pinned_a),
-            Some(SidebarDropIndicator::new(Some(pinned_a), SidebarDropEdge::Top)),
+            Some(SidebarDropIndicator::new(
+                Some(pinned_a),
+                SidebarDropEdge::Top,
+            )),
             &tab_ids,
             &pinned_ids,
             None,
@@ -988,7 +991,10 @@ mod tests {
         );
 
         assert_eq!(result.0, 1);
-        assert_eq!(result.1, SidebarDropIndicator::new(Some(b), SidebarDropEdge::Top));
+        assert_eq!(
+            result.1,
+            SidebarDropIndicator::new(Some(b), SidebarDropEdge::Top)
+        );
     }
 
     /// Ported from `testCrossWindowInsertionBottomEdgeInsertsAfterTarget`
@@ -1007,7 +1013,10 @@ mod tests {
         );
 
         assert_eq!(result.0, 2);
-        assert_eq!(result.1, SidebarDropIndicator::new(Some(c), SidebarDropEdge::Top));
+        assert_eq!(
+            result.1,
+            SidebarDropIndicator::new(Some(c), SidebarDropEdge::Top)
+        );
     }
 
     /// Ported from `testCrossWindowInsertionClampsUnpinnedWorkspaceBelowPinnedRegion`
@@ -1018,7 +1027,10 @@ mod tests {
         let result = SidebarDropPlanner::new().cross_window_insertion(
             Some(pinned_a),
             false,
-            Some(SidebarDropIndicator::new(Some(pinned_a), SidebarDropEdge::Top)),
+            Some(SidebarDropIndicator::new(
+                Some(pinned_a),
+                SidebarDropEdge::Top,
+            )),
             &[pinned_a, pinned_b, unpinned],
             &pinned(&[pinned_a, pinned_b]),
             None,
@@ -1050,7 +1062,10 @@ mod tests {
 
         // It cannot sit below the unpinned rows — clamp to the front.
         assert_eq!(result.0, 0);
-        assert_eq!(result.1, SidebarDropIndicator::new(Some(a), SidebarDropEdge::Top));
+        assert_eq!(
+            result.1,
+            SidebarDropIndicator::new(Some(a), SidebarDropEdge::Top)
+        );
     }
 
     /// Ported from `testCrossWindowInsertionClampsPinnedWorkspaceIntoPinnedRegion`
@@ -1092,7 +1107,10 @@ mod tests {
         );
 
         assert_eq!(result.0, 2);
-        assert_eq!(result.1, SidebarDropIndicator::new(Some(c), SidebarDropEdge::Top));
+        assert_eq!(
+            result.1,
+            SidebarDropIndicator::new(Some(c), SidebarDropEdge::Top)
+        );
     }
 
     // MARK: - shouldCollect / workspaceAction
@@ -1109,7 +1127,9 @@ mod tests {
     /// (`SidebarWorkspaceDropPlannerTests.swift:18-20`).
     #[test]
     fn workspace_drop_target_collection_turns_on_during_drag() {
-        assert!(SidebarDropPlanner::new().should_collect_workspace_drop_targets(Some(uid(1)), false));
+        assert!(
+            SidebarDropPlanner::new().should_collect_workspace_drop_targets(Some(uid(1)), false)
+        );
     }
 
     /// Ported from `testWorkspaceDropTargetCollectionTurnsOnDuringBonsplitWorkspaceDrop`
@@ -1242,9 +1262,15 @@ mod tests {
         let planner = SidebarDropPlanner::new();
         assert_eq!(planner.edge_for_pointer(5.0, 0.0), SidebarDropEdge::Top);
         assert_eq!(planner.edge_for_pointer(-100.0, 40.0), SidebarDropEdge::Top);
-        assert_eq!(planner.edge_for_pointer(1000.0, 40.0), SidebarDropEdge::Bottom);
+        assert_eq!(
+            planner.edge_for_pointer(1000.0, 40.0),
+            SidebarDropEdge::Bottom
+        );
         // Exactly half → not `< half` → `.bottom`.
-        assert_eq!(planner.edge_for_pointer(20.0, 40.0), SidebarDropEdge::Bottom);
+        assert_eq!(
+            planner.edge_for_pointer(20.0, 40.0),
+            SidebarDropEdge::Bottom
+        );
         assert_eq!(planner.edge_for_pointer(19.9, 40.0), SidebarDropEdge::Top);
     }
 
@@ -1262,14 +1288,8 @@ mod tests {
 
         // Without a range: move `first` to end → insertion 3, resolved index 2.
         assert_eq!(
-            SidebarDropPlanner::new().target_index(
-                first,
-                None,
-                None,
-                &tab_ids,
-                &pinned(&[]),
-                None,
-            ),
+            SidebarDropPlanner::new()
+                .target_index(first, None, None, &tab_ids, &pinned(&[]), None,),
             Some(2)
         );
         // With range 1..=1: insertion clamps to 1, then the removal shift → 0.
@@ -1314,7 +1334,10 @@ mod tests {
         let index = SidebarDropPlanner::new().target_index(
             first,
             Some(second),
-            Some(SidebarDropIndicator::new(Some(stranger), SidebarDropEdge::Top)),
+            Some(SidebarDropIndicator::new(
+                Some(stranger),
+                SidebarDropEdge::Top,
+            )),
             &tab_ids,
             &pinned(&[]),
             None,

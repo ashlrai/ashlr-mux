@@ -132,8 +132,9 @@ pub fn decode_chunked_body(bytes: &[u8], maximum_bytes: usize) -> Option<Vec<u8>
         // Swift `Int(_:radix:16)` over the whitespace-trimmed token. `.whitespaces`
         // is the Unicode space set + tab (no newlines); the size line is ASCII, so
         // trimming space/tab is equivalent.
-        let size = i64::from_str_radix(size_token.trim_matches(|c: char| c == ' ' || c == '\t'), 16)
-            .ok()?;
+        let size =
+            i64::from_str_radix(size_token.trim_matches(|c: char| c == ' ' || c == '\t'), 16)
+                .ok()?;
         offset = line_end + 2;
         if size == 0 {
             return Some(decoded);
@@ -467,7 +468,9 @@ fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || haystack.len() < needle.len() {
         return None;
     }
-    haystack.windows(needle.len()).position(|window| window == needle)
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 // --- 4. redirect-follow decision predicate -----------------------------------
@@ -550,10 +553,7 @@ mod tests {
         body.extend_from_slice(b"1A\r\n");
         body.extend_from_slice(&[b'x'; 26]);
         body.extend_from_slice(b"\r\n0\r\n\r\n");
-        assert_eq!(
-            decode_chunked_body(&body, 1024).unwrap(),
-            vec![b'x'; 26]
-        );
+        assert_eq!(decode_chunked_body(&body, 1024).unwrap(), vec![b'x'; 26]);
     }
 
     #[test]
@@ -690,7 +690,10 @@ mod tests {
         // maximum_bytes == 0: any non-empty chunk is rejected (1 > 0), but the
         // bare terminal chunk still decodes to an empty body.
         assert_eq!(decode_chunked_body(b"1\r\na\r\n0\r\n\r\n", 0), None);
-        assert_eq!(decode_chunked_body(b"0\r\n\r\n", 0).as_deref(), Some(&b""[..]));
+        assert_eq!(
+            decode_chunked_body(b"0\r\n\r\n", 0).as_deref(),
+            Some(&b""[..])
+        );
     }
 
     #[test]
@@ -833,7 +836,10 @@ mod tests {
 
     #[test]
     fn header_parse_malformed_status_fails() {
-        assert_eq!(parse_headers(b"GARBAGE\r\n", &req(), 1024), HeaderOutcome::Fail);
+        assert_eq!(
+            parse_headers(b"GARBAGE\r\n", &req(), 1024),
+            HeaderOutcome::Fail
+        );
         assert_eq!(
             parse_headers(b"HTTP/1.1 notanumber OK\r\n", &req(), 1024),
             HeaderOutcome::Fail
@@ -918,7 +924,8 @@ mod tests {
     #[test]
     fn accumulator_non_chunked_exact_content_length() {
         let mut acc = RemoteImageAccumulator::with_maximum_bytes(req(), 1024);
-        let response = b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 4\r\n\r\nabcd";
+        let response =
+            b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 4\r\n\r\nabcd";
         assert_eq!(
             acc.process(response),
             ProcessResult::Finish(Outcome::Image {
@@ -950,7 +957,10 @@ mod tests {
             acc.process(b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\n"),
             ProcessResult::Continue
         );
-        assert_eq!(acc.process(b"Content-Length: 4\r\n\r\nab"), ProcessResult::Continue);
+        assert_eq!(
+            acc.process(b"Content-Length: 4\r\n\r\nab"),
+            ProcessResult::Continue
+        );
         assert_eq!(
             acc.process(b"cd"),
             ProcessResult::Finish(Outcome::Image {
@@ -965,7 +975,9 @@ mod tests {
         let mut acc = RemoteImageAccumulator::with_maximum_bytes(req(), 1024);
         // Content-Length says 5 but the stream ends after 4 bytes.
         assert_eq!(
-            acc.process(b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 5\r\n\r\nabcd"),
+            acc.process(
+                b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 5\r\n\r\nabcd"
+            ),
             ProcessResult::Continue
         );
         assert_eq!(acc.final_outcome(), None);
@@ -1042,8 +1054,7 @@ mod tests {
     fn accumulator_non_chunked_over_cap_fails() {
         let mut acc = RemoteImageAccumulator::with_maximum_bytes(req(), 10);
         // No content-length; non-chunked body exceeds the cap.
-        let mut response =
-            b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\n\r\n".to_vec();
+        let mut response = b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\n\r\n".to_vec();
         response.extend_from_slice(&[b'x'; 11]);
         assert_eq!(acc.process(&response), ProcessResult::Fail);
     }
@@ -1087,7 +1098,10 @@ mod tests {
             redirect_decision(&redirect, &request, "example.com", 3),
             Some(url("https://example.com/b.png"))
         );
-        assert_eq!(redirect_decision(&redirect, &request, "example.com", 4), None);
+        assert_eq!(
+            redirect_decision(&redirect, &request, "example.com", 4),
+            None
+        );
     }
 
     #[test]

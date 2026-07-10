@@ -122,7 +122,10 @@ mod tests {
                 (some("WS-B"), some("B")),
             ),
             // Falls back to the focused pane only when no own identity.
-            ((None, None, Some("WS-A"), Some("A")), (some("WS-A"), some("A"))),
+            (
+                (None, None, Some("WS-A"), Some("A")),
+                (some("WS-A"), some("A")),
+            ),
             // Blank own identity is treated as absent.
             (
                 (Some("   "), Some(""), Some("WS-A"), Some("A")),
@@ -130,12 +133,21 @@ mod tests {
             ),
             // Own workspace + focused surface in a DIFFERENT workspace yields a
             // nil surface, never an impossible cross-workspace pair.
-            ((Some("WS-B"), None, Some("WS-A"), Some("A")), (some("WS-B"), None)),
+            (
+                (Some("WS-B"), None, Some("WS-A"), Some("A")),
+                (some("WS-B"), None),
+            ),
             // Own workspace + focused surface in the SAME workspace borrows it.
-            ((Some("WS-A"), None, Some("WS-A"), Some("A")), (some("WS-A"), some("A"))),
+            (
+                (Some("WS-A"), None, Some("WS-A"), Some("A")),
+                (some("WS-A"), some("A")),
+            ),
             // Orphan own surface (no own workspace) is distrusted; the coherent
             // focused pair wins.
-            ((None, Some("B"), Some("WS-A"), Some("A")), (some("WS-A"), some("A"))),
+            (
+                (None, Some("B"), Some("WS-A"), Some("A")),
+                (some("WS-A"), some("A")),
+            ),
             // Orphan own surface with no focused context yields nil for
             // PID/TTY recovery.
             ((None, Some("B"), None, None), (None, None)),
@@ -148,11 +160,19 @@ mod tests {
             // Trimming oracles: tab/newline/NBSP padding is stripped
             // (.whitespacesAndNewlines includes U+00A0), values kept trimmed.
             (
-                (Some("\tWS-B\n"), Some("\u{00A0}B\u{00A0}"), Some(" WS-A "), Some(" A ")),
+                (
+                    Some("\tWS-B\n"),
+                    Some("\u{00A0}B\u{00A0}"),
+                    Some(" WS-A "),
+                    Some(" A "),
+                ),
                 (some("WS-B"), some("B")),
             ),
             // Whitespace-only focused surface is absent, not borrowed.
-            ((Some("WS-A"), None, Some("WS-A"), Some(" \n ")), (some("WS-A"), None)),
+            (
+                (Some("WS-A"), None, Some("WS-A"), Some(" \n ")),
+                (some("WS-A"), None),
+            ),
         ];
         for (inputs, expected) in cases {
             let (ow, os, fw, fs) = *inputs;

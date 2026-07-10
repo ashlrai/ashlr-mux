@@ -36,7 +36,11 @@ pub struct TerminalNotificationPolicyPayload {
 pub struct TerminalNotificationPolicyContext {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
-    #[serde(rename = "configPath", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "configPath",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub config_path: Option<String>,
     #[serde(rename = "hookId", default, skip_serializing_if = "Option::is_none")]
     pub hook_id: Option<String>,
@@ -433,8 +437,7 @@ mod tests {
         };
 
         // absent → unchanged
-        let absent: TerminalNotificationPolicyPayloadPatch =
-            serde_json::from_str(r#"{}"#).unwrap();
+        let absent: TerminalNotificationPolicyPayloadPatch = serde_json::from_str(r#"{}"#).unwrap();
         assert_eq!(
             absent.merged_into(payload.clone()).surface_id,
             Some("s".into())
@@ -448,10 +451,7 @@ mod tests {
         // value → overwritten
         let value: TerminalNotificationPolicyPayloadPatch =
             serde_json::from_str(r#"{"surfaceId": "next"}"#).unwrap();
-        assert_eq!(
-            value.merged_into(payload).surface_id,
-            Some("next".into())
-        );
+        assert_eq!(value.merged_into(payload).surface_id, Some("next".into()));
     }
 
     #[test]
@@ -497,7 +497,10 @@ mod tests {
     #[test]
     fn delivery_decision_branches() {
         let mut effects = TerminalNotificationPolicyEffects::default();
-        assert_eq!(delivery_decision(&effects, false), DeliveryDecision::Desktop);
+        assert_eq!(
+            delivery_decision(&effects, false),
+            DeliveryDecision::Desktop
+        );
         assert_eq!(
             delivery_decision(&effects, true),
             DeliveryDecision::Suppressed

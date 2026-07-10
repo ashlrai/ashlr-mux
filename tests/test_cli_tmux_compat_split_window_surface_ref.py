@@ -33,7 +33,6 @@ class FakeCmuxState:
                     {
                         "id": WORKSPACE_ID,
                         "ref": "workspace:1",
-                        "index": 1,
                         "title": "demo",
                     }
                 ]
@@ -75,7 +74,6 @@ class FakeCmuxState:
                 {
                     "id": PANE_ID,
                     "ref": "pane:1",
-                    "index": 1,
                 }
             ]
             if self.split_created:
@@ -83,7 +81,6 @@ class FakeCmuxState:
                     {
                         "id": NEW_PANE_ID,
                         "ref": "pane:2",
-                        "index": 2,
                     }
                 )
             return {"panes": panes}

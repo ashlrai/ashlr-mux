@@ -69,9 +69,7 @@ pub struct DisplaySnapshot {
 impl DisplaySnapshot {
     /// The best available reference rectangle (visible frame preferred).
     fn reference_rect(&self) -> Option<Rect> {
-        self.visible_frame
-            .or(self.frame)
-            .map(RectSnapshot::to_rect)
+        self.visible_frame.or(self.frame).map(RectSnapshot::to_rect)
     }
 }
 
@@ -112,7 +110,11 @@ pub fn resolved_window_frame(
         if should_preserve_exact_frame(frame, display_snapshot, target) {
             return Some(frame);
         }
-        return Some(resolved_window_frame_for_target(frame, display_snapshot, target));
+        return Some(resolved_window_frame_for_target(
+            frame,
+            display_snapshot,
+            target,
+        ));
     }
 
     if let Some(intersecting) = available_displays
@@ -124,7 +126,11 @@ pub fn resolved_window_frame(
 
     let fallback_display = fallback_display?;
     if let Some(source) = display_snapshot.and_then(DisplaySnapshot::reference_rect) {
-        Some(remapped_frame(frame, source, fallback_display.visible_frame))
+        Some(remapped_frame(
+            frame,
+            source,
+            fallback_display.visible_frame,
+        ))
     } else {
         Some(centered_frame(frame, fallback_display.visible_frame))
     }
@@ -179,13 +185,21 @@ fn resolved_window_frame_for_target(
 /// that its titlebar remains grabbable (so the exact frame can be preserved).
 fn should_preserve_accessible_frame(frame: Rect, target: &DisplayGeometry) -> bool {
     let frame = frame.standardized();
-    if !frame.is_finite() || frame.width <= 0.0 || frame.height <= 0.0 || !frame.intersects(&target.frame)
+    if !frame.is_finite()
+        || frame.width <= 0.0
+        || frame.height <= 0.0
+        || !frame.intersects(&target.frame)
     {
         return false;
     }
 
     let strip_height = TOP_STRIP_HEIGHT.min(frame.height);
-    let top_strip = Rect::new(frame.min_x(), frame.max_y() - strip_height, frame.width, strip_height);
+    let top_strip = Rect::new(
+        frame.min_x(),
+        frame.max_y() - strip_height,
+        frame.width,
+        strip_height,
+    );
     let visible_top_strip = top_strip.intersection(&target.visible_frame);
     if visible_top_strip.width <= 0.0 || visible_top_strip.height <= 0.0 {
         return false;
@@ -204,7 +218,10 @@ fn display_for<'a>(
 ) -> Option<&'a DisplayGeometry> {
     let snapshot = snapshot?;
     if let Some(display_id) = snapshot.display_id {
-        if let Some(exact) = displays.iter().find(|display| display.display_id == Some(display_id)) {
+        if let Some(exact) = displays
+            .iter()
+            .find(|display| display.display_id == Some(display_id))
+        {
             return Some(exact);
         }
     }
@@ -213,7 +230,12 @@ fn display_for<'a>(
 
     let best_overlap = displays
         .iter()
-        .map(|display| (display, reference_rect.intersection_area(&display.visible_frame)))
+        .map(|display| {
+            (
+                display,
+                reference_rect.intersection_area(&display.visible_frame),
+            )
+        })
         .filter(|(_, area)| *area > 0.0)
         .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     if let Some((display, _)) = best_overlap {
@@ -445,8 +467,16 @@ mod tests {
 
     #[test]
     fn picks_target_by_largest_overlap_when_id_absent() {
-        let left = display(1, Rect::new(0.0, 0.0, 1000.0, 1000.0), Rect::new(0.0, 0.0, 1000.0, 1000.0));
-        let right = display(2, Rect::new(1000.0, 0.0, 1000.0, 1000.0), Rect::new(1000.0, 0.0, 1000.0, 1000.0));
+        let left = display(
+            1,
+            Rect::new(0.0, 0.0, 1000.0, 1000.0),
+            Rect::new(0.0, 0.0, 1000.0, 1000.0),
+        );
+        let right = display(
+            2,
+            Rect::new(1000.0, 0.0, 1000.0, 1000.0),
+            Rect::new(1000.0, 0.0, 1000.0, 1000.0),
+        );
         // Saved reference overlaps the right display far more.
         let snapshot = DisplaySnapshot {
             display_id: None,
@@ -454,8 +484,8 @@ mod tests {
             visible_frame: Some(snap(1200.0, 100.0, 600.0, 600.0)),
         };
         let frame = snap(1200.0, 100.0, 600.0, 600.0);
-        let resolved =
-            resolved_window_frame(Some(frame), Some(&snapshot), &[left, right], None).expect("resolved");
+        let resolved = resolved_window_frame(Some(frame), Some(&snapshot), &[left, right], None)
+            .expect("resolved");
         // It should land on the right display.
         assert!(resolved.min_x() >= right.visible_frame.min_x());
     }
@@ -497,15 +527,26 @@ mod tests {
 
     #[test]
     fn falls_back_to_centered_when_stranded_without_reference() {
-        let fallback = display(9, Rect::new(0.0, 0.0, 1920.0, 1080.0), Rect::new(0.0, 0.0, 1920.0, 1048.0));
+        let fallback = display(
+            9,
+            Rect::new(0.0, 0.0, 1920.0, 1080.0),
+            Rect::new(0.0, 0.0, 1920.0, 1048.0),
+        );
         // No available display intersects, no snapshot reference → center on fallback.
-        let far = display(2, Rect::new(9000.0, 9000.0, 800.0, 600.0), Rect::new(9000.0, 9000.0, 800.0, 600.0));
+        let far = display(
+            2,
+            Rect::new(9000.0, 9000.0, 800.0, 600.0),
+            Rect::new(9000.0, 9000.0, 800.0, 600.0),
+        );
         let frame = snap(-5000.0, -5000.0, 800.0, 600.0);
-        let resolved = resolved_window_frame(Some(frame), None, &[far], Some(&fallback))
-            .expect("resolved");
+        let resolved =
+            resolved_window_frame(Some(frame), None, &[far], Some(&fallback)).expect("resolved");
         // Centered on the fallback's visible area.
         let expected_x = fallback.visible_frame.mid_x() - 400.0;
-        assert!((resolved.min_x() - expected_x).abs() < 1.0, "got {resolved:?}");
+        assert!(
+            (resolved.min_x() - expected_x).abs() < 1.0,
+            "got {resolved:?}"
+        );
     }
 
     #[test]

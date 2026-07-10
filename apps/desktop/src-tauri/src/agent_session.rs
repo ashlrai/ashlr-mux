@@ -28,14 +28,15 @@
 //!
 //! The concrete [`AgentTransport`] resolves the executable through `cmux-agent`
 //! (`AgentExecutableResolver` → `to_spawn_spec`), spawns it Job-Object-supervised
-//! via `cmux-process`, and pumps its framed output back into the store. This
-//! slice wires **Claude** end-to-end (its stream-json write path needs no
-//! handshake); Codex (app-server JSON-RPC handshake) and OpenCode (HTTP-loopback
-//! plus SSE) reuse this same plumbing in follow-on slices and error clearly
-//! until then.
+//! via `cmux-process`, and pumps its framed output back into the store. Claude's
+//! stream-json prompts write through the transport directly; Codex and OpenCode
+//! route their reactive stdin / HTTP writes through drained [`TransportAction`]s
+//! so the store stays pure while the actor owns the side effects.
 
 use std::collections::HashMap;
-use std::io::Write;
+use std::fs::File;
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -46,20 +47,21 @@ use cmux_agent::{
     AgentExecutableResolver, AgentSessionProviderId, ClaudeConfigContext, OpenCodeServerAuth,
 };
 use cmux_agent_chat::process_store::{SpawnRequest, SpawnedSession, TransportError};
-use cmux_process::SpawnSpec;
 use cmux_agent_chat::{
-    handle, write_claude_stream_json, AgentEvent, AgentTransport, BridgeRequest, DispatchContext,
-    PermissionMode, ProcessStore, ProviderId, ProviderStream, TransportAction,
+    handle, write_claude_stream_json, AgentEvent, AgentTransport, BridgeRequest,
+    ChatFileEditOperation, ChatMessage, ChatMessageKind, ChatRole, ChatStatusEvent,
+    ChatToolUseStatus, ChatTranscriptParseState, ClaudeTranscriptParser, CodexTranscriptParser,
+    DispatchContext, PermissionMode, ProcessStore, ProviderId, ProviderStream, TransportAction,
 };
-use cmux_process::{
-    AgentStream, JobObjectSupervisor, ProcessSupervisor, SessionId, TerminateMode,
-};
+use cmux_process::SpawnSpec;
+use cmux_process::{AgentStream, JobObjectSupervisor, ProcessSupervisor, SessionId, TerminateMode};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 /// The push-seam event name the `host.ts` shim forwards to
 /// `window.cmuxAgentBridge.receive`.
 const AGENT_EVENT: &str = "cmux://agent-event";
+const DEFAULT_CLAUDE_WARM_POOL_SIZE: usize = 2;
 
 // ---------------------------------------------------------------------------
 // Actor plumbing
@@ -103,6 +105,7 @@ enum ActorMsg {
 #[derive(Default)]
 pub struct AgentSessionState {
     sender: Mutex<Option<Sender<ActorMsg>>>,
+    sessions: LiveChildren,
 }
 
 impl AgentSessionState {
@@ -117,7 +120,7 @@ impl AgentSessionState {
         // spawns + registers children and writes the Claude path) and the actor
         // (which executes TransportActions: raw Codex stdin frames + teardown).
         let supervisor = Arc::new(JobObjectSupervisor::new());
-        let sessions: LiveChildren = Arc::new(Mutex::new(HashMap::new()));
+        let sessions = self.sessions.clone();
         let opencode: OpenCodeContexts = Arc::new(Mutex::new(HashMap::new()));
         let transport = ClaudeAgentTransport::new(
             supervisor.clone(),
@@ -146,14 +149,23 @@ impl AgentSessionState {
         *guard = Some(tx.clone());
         tx
     }
+
+    fn live_root_pids_by_session(&self) -> HashMap<String, u32> {
+        self.sessions
+            .lock()
+            .expect("agent sessions mutex poisoned")
+            .iter()
+            .map(|(session_id, child)| (session_id.clone(), child.root_pid))
+            .collect()
+    }
 }
 
 /// The actor loop: owns the [`ProcessStore`] and drains [`ActorMsg`]s serially.
 ///
 /// After every message it drains the store's [`TransportAction`]s and performs
-/// them against the shared `sessions` / `supervisor` handles: raw Codex stdin
-/// frames ([`TransportAction::WriteStdin`]) and startup-failure teardown
-/// ([`TransportAction::Terminate`]). OpenCode HTTP actions are wired in slice 2.
+/// them against the shared process / HTTP handles: raw Codex stdin frames
+/// ([`TransportAction::WriteStdin`]), OpenCode loopback calls, and teardown
+/// ([`TransportAction::Terminate`]).
 fn run_actor(
     rx: Receiver<ActorMsg>,
     transport: ClaudeAgentTransport,
@@ -191,7 +203,13 @@ fn run_actor(
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string();
-                let envelope = dispatch_message(&mut store, message, &ctx, initial_provider);
+                let copy_locale = if method == "app.context" {
+                    current_agent_copy_locale()
+                } else {
+                    AgentCopyLocale::En
+                };
+                let envelope =
+                    dispatch_message(&mut store, message, &ctx, initial_provider, copy_locale);
                 // Canonical sets initialProviderID on BOTH provider.select and
                 // provider.start (coordinator :569/:585); an err envelope (e.g.
                 // select-while-running) persists nothing.
@@ -265,8 +283,8 @@ fn run_actor(
 /// Perform the store's queued [`TransportAction`]s against the live children.
 ///
 /// `WriteStdin` writes the already-`encode_line`-framed bytes RAW to the child's
-/// stdin (no re-newline). `Terminate` tree-kills + reaps the session. The OpenCode
-/// HTTP variants are handled in the OpenCode slice.
+/// stdin (no re-newline). `Terminate` tree-kills + reaps the session. OpenCode
+/// variants run the loopback HTTP calls on worker threads.
 fn execute_actions(actions: Vec<TransportAction>, host: &ActorHost) {
     for action in actions {
         match action {
@@ -518,6 +536,7 @@ fn dispatch_message(
     message: Value,
     ctx: &DispatchContext,
     initial_provider: ProviderId,
+    copy_locale: AgentCopyLocale,
 ) -> Value {
     let method = message
         .get("method")
@@ -526,7 +545,36 @@ fn dispatch_message(
         .to_string();
 
     match method.as_str() {
-        "app.context" => ok_envelope(app_context_value(ctx, initial_provider)),
+        "app.context" => ok_envelope(app_context_value(
+            ctx,
+            initial_provider,
+            copy_locale,
+            message_param_string(&message, "panelId").as_deref(),
+            message_param_string(&message, "workspaceId").as_deref(),
+        )),
+        "provider.warmClaude" | "provider.warmPool.prepareClaude" => {
+            let working_directory = message_param_string(&message, "workingDirectory")
+                .or_else(|| ctx.working_directory.clone());
+            let max_warm_sessions = message_param_usize(&message, "maxWarmSessions")
+                .unwrap_or(DEFAULT_CLAUDE_WARM_POOL_SIZE);
+            match store.warm_claude_session(working_directory, max_warm_sessions) {
+                Ok(session) => ok_envelope(json!({
+                    "prepared": session.to_value(),
+                    "warmSessions": warm_sessions_value(store),
+                })),
+                Err(error) => err_envelope(error.code(), &error.user_message()),
+            }
+        }
+        "provider.warmPool.status" => ok_envelope(json!({
+            "warmSessions": warm_sessions_value(store),
+            "defaultMaxWarmSessions": DEFAULT_CLAUDE_WARM_POOL_SIZE,
+        })),
+        "provider.warmPool.clear" => {
+            store.clear_warm_sessions();
+            ok_envelope(json!({
+                "warmSessions": warm_sessions_value(store),
+            }))
+        }
         // `app.pickFiles` is normally intercepted in `agent_session_rpc` (it needs
         // the AppHandle for the native dialog + must not block the actor). This arm
         // is only a defensive fallback if it ever reaches the actor: no selection.
@@ -539,6 +587,38 @@ fn dispatch_message(
             Err(error) => err_envelope(error.code(), &error.user_message()),
         },
     }
+}
+
+fn message_param_string(message: &Value, key: &str) -> Option<String> {
+    let value = message.get("params")?.get(key)?.as_str()?.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn message_param_usize(message: &Value, key: &str) -> Option<usize> {
+    let value = message.get("params")?.get(key)?;
+    if let Some(raw) = value.as_u64() {
+        usize::try_from(raw).ok()
+    } else {
+        value
+            .as_str()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+    }
+}
+
+fn warm_sessions_value(
+    store: &ProcessStore<ClaudeAgentTransport, impl FnMut(AgentEvent)>,
+) -> Value {
+    Value::Array(
+        store
+            .warm_sessions()
+            .iter()
+            .map(|session| session.to_value())
+            .collect(),
+    )
 }
 
 /// `{ ok: true, value }` — the `NativeReply` success envelope the reused
@@ -571,8 +651,13 @@ fn err_envelope(code: &str, user_message: &str) -> Value {
 pub async fn agent_session_rpc(
     app: AppHandle,
     state: State<'_, AgentSessionState>,
+    session_state: State<'_, crate::session::SessionState>,
     message: Value,
 ) -> Result<Value, ()> {
+    if message.get("method").and_then(Value::as_str) == Some("app.transcript") {
+        return Ok(ok_envelope(app_transcript_reply(&session_state, &message)));
+    }
+
     // `app.pickFiles` opens a native modal file dialog. It MUST NOT run on the
     // command's own thread: Tauri drives sync commands on the main/UI thread, so a
     // blocking dialog there freezes the whole window ("not responding"). Make the
@@ -586,6 +671,7 @@ pub async fn agent_session_rpc(
         return Ok(ok_envelope(reply));
     }
 
+    let start_scope = started_agent_scope(&message);
     let sender = state.ensure(&app);
     let (reply_tx, reply_rx) = channel::<Value>();
     if sender
@@ -600,9 +686,136 @@ pub async fn agent_session_rpc(
             "Agent session host is not running.",
         ));
     }
-    Ok(reply_rx
+    let reply = reply_rx
         .recv()
-        .unwrap_or_else(|_| err_envelope("actorUnavailable", "Agent session host stopped.")))
+        .unwrap_or_else(|_| err_envelope("actorUnavailable", "Agent session host stopped."));
+    if let Some(started) = start_scope.and_then(|scope| started_agent_snapshot(&scope, &reply)) {
+        crate::session::record_started_agent_session(&app, &session_state, started);
+    }
+    Ok(reply)
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AgentListeningPortsWorkspace {
+    pub workspace_index: usize,
+    pub workspace_id: Option<String>,
+    pub root_pids: Vec<u32>,
+    pub ports: Vec<u16>,
+}
+
+#[tauri::command]
+pub fn agent_scan_listening_ports(
+    app: AppHandle,
+    state: State<'_, AgentSessionState>,
+    session_state: State<'_, crate::session::SessionState>,
+) -> Result<Vec<AgentListeningPortsWorkspace>, String> {
+    scan_agent_listening_ports(&app, &state, &session_state)
+}
+
+fn scan_agent_listening_ports(
+    app: &AppHandle,
+    state: &AgentSessionState,
+    session_state: &crate::session::SessionState,
+) -> Result<Vec<AgentListeningPortsWorkspace>, String> {
+    let live_roots = state.live_root_pids_by_session();
+    let snapshot = crate::session::current_session_snapshot(session_state);
+    let Some(window) = snapshot.windows.first() else {
+        return Ok(Vec::new());
+    };
+
+    let mut updates = Vec::new();
+    for (workspace_index, workspace) in window.tab_manager.workspaces.iter().enumerate() {
+        let mut root_pids: Vec<u32> = workspace
+            .restorable_agent_snapshots
+            .as_ref()
+            .into_iter()
+            .flat_map(|entries| entries.iter())
+            .filter_map(|entry| live_roots.get(&entry.snapshot.session_id).copied())
+            .collect();
+        root_pids.extend(
+            workspace
+                .agent_pids
+                .as_ref()
+                .into_iter()
+                .flat_map(|entries| entries.iter())
+                .map(|entry| entry.pid),
+        );
+        root_pids.sort_unstable();
+        root_pids.dedup();
+
+        let mut ports = Vec::new();
+        for root_pid in &root_pids {
+            ports.extend(crate::terminal::scan_listening_ports_for_root_pid(
+                *root_pid,
+            )?);
+        }
+        ports.sort_unstable();
+        ports.dedup();
+
+        crate::session::set_workspace_agent_listening_ports_for_control(
+            app,
+            session_state,
+            workspace_index,
+            &ports,
+        );
+        updates.push(AgentListeningPortsWorkspace {
+            workspace_index,
+            workspace_id: workspace.workspace_id.clone(),
+            root_pids,
+            ports,
+        });
+    }
+    Ok(updates)
+}
+
+struct StartedAgentScope {
+    panel_id: String,
+    workspace_id: Option<String>,
+    working_directory: Option<String>,
+}
+
+fn started_agent_scope(message: &Value) -> Option<StartedAgentScope> {
+    if message.get("method").and_then(Value::as_str) != Some("provider.start") {
+        return None;
+    }
+    Some(StartedAgentScope {
+        panel_id: message_param_string(message, "panelId")?,
+        workspace_id: message_param_string(message, "workspaceId"),
+        working_directory: message_param_string(message, "workingDirectory"),
+    })
+}
+
+fn started_agent_snapshot(
+    scope: &StartedAgentScope,
+    reply: &Value,
+) -> Option<crate::session::StartedAgentSessionSnapshot> {
+    if reply.get("ok").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let value = reply.get("value")?;
+    Some(crate::session::StartedAgentSessionSnapshot {
+        panel_id: scope.panel_id.clone(),
+        workspace_id: scope.workspace_id.clone(),
+        provider_id: value.get("providerId")?.as_str()?.to_string(),
+        session_id: value.get("sessionId")?.as_str()?.to_string(),
+        executable_path: value
+            .get("executablePath")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        arguments: value
+            .get("arguments")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        working_directory: scope.working_directory.clone(),
+    })
 }
 
 /// Open the native "Add photos & files" picker and map the selection to the
@@ -633,14 +846,357 @@ fn pick_local_files_reply(app: &AppHandle) -> Value {
     }
 }
 
+fn app_transcript_reply(state: &crate::session::SessionState, message: &Value) -> Value {
+    let Some(panel_id) = message_param_string(message, "panelId") else {
+        return Value::Null;
+    };
+    let workspace_id = message_param_string(message, "workspaceId");
+    let snapshot = crate::session::current_session_snapshot(state);
+    app_transcript_reply_for_snapshot(
+        &snapshot,
+        &panel_id,
+        workspace_id.as_deref(),
+        &home_directory(),
+    )
+}
+
+fn app_transcript_reply_for_snapshot(
+    snapshot: &cmux_core::session::AppSessionSnapshot,
+    panel_id: &str,
+    workspace_id: Option<&str>,
+    home: &Path,
+) -> Value {
+    let Some(restorable) = restorable_agent_for_panel(snapshot, panel_id, workspace_id) else {
+        return Value::Null;
+    };
+    let Some(provider_id) = ProviderId::from_raw(&restorable.kind) else {
+        return Value::Null;
+    };
+    let entries = transcript_entries_for_restorable(&restorable, home);
+    json!({
+        "providerId": provider_id.as_str(),
+        "sessionId": restorable.session_id,
+        "suppressAutoStart": true,
+        "entries": entries,
+    })
+}
+
+fn restorable_agent_for_panel(
+    snapshot: &cmux_core::session::AppSessionSnapshot,
+    panel_id: &str,
+    workspace_id: Option<&str>,
+) -> Option<cmux_core::session::SessionRestorableAgentSnapshot> {
+    for window in &snapshot.windows {
+        for workspace in &window.tab_manager.workspaces {
+            if let Some(workspace_id) = workspace_id {
+                if workspace.workspace_id.as_deref() != Some(workspace_id) {
+                    continue;
+                }
+            }
+            let Some(entries) = &workspace.restorable_agent_snapshots else {
+                continue;
+            };
+            if let Some(entry) = entries.iter().find(|entry| entry.panel_id == panel_id) {
+                return Some(entry.snapshot.clone());
+            }
+        }
+    }
+    None
+}
+
+fn transcript_entries_for_restorable(
+    restorable: &cmux_core::session::SessionRestorableAgentSnapshot,
+    home: &Path,
+) -> Vec<Value> {
+    let Some(path) = transcript_path_for_restorable(restorable, home) else {
+        return Vec::new();
+    };
+    let messages = parse_transcript_messages(&restorable.kind, &path);
+    messages
+        .iter()
+        .filter_map(|message| transcript_entry_value(message, &restorable.session_id))
+        .rev()
+        .take(200)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
+}
+
+fn parse_transcript_messages(kind: &str, path: &Path) -> Vec<ChatMessage> {
+    let Ok(file) = File::open(path) else {
+        return Vec::new();
+    };
+    let lines = BufReader::new(file).lines().map_while(Result::ok);
+    match kind {
+        "codex" => {
+            CodexTranscriptParser::new()
+                .parse(lines, 0, ChatTranscriptParseState::default())
+                .messages
+        }
+        "claude" => {
+            ClaudeTranscriptParser::new()
+                .parse(lines, 0, ChatTranscriptParseState::default())
+                .messages
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn transcript_path_for_restorable(
+    restorable: &cmux_core::session::SessionRestorableAgentSnapshot,
+    home: &Path,
+) -> Option<PathBuf> {
+    match restorable.kind.as_str() {
+        "codex" => codex_transcript_path(home, &restorable.session_id),
+        "claude" => restorable
+            .working_directory
+            .as_deref()
+            .and_then(|cwd| claude_transcript_path(home, cwd, &restorable.session_id)),
+        _ => None,
+    }
+}
+
+fn codex_transcript_path(home: &Path, session_id: &str) -> Option<PathBuf> {
+    let root = home.join(".codex").join("sessions");
+    let needle = session_id.to_ascii_lowercase();
+    let mut stack = vec![root];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if name.to_ascii_lowercase().contains(&needle) {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+fn claude_transcript_path(
+    home: &Path,
+    working_directory: &str,
+    session_id: &str,
+) -> Option<PathBuf> {
+    if session_id.is_empty() || session_id == "." || session_id == ".." {
+        return None;
+    }
+    if session_id.contains('/') || session_id.contains('\\') {
+        return None;
+    }
+    for cwd in claude_cwd_candidates(working_directory) {
+        let path = home
+            .join(".claude")
+            .join("projects")
+            .join(encode_claude_project_dir(&cwd))
+            .join(format!("{session_id}.jsonl"));
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn claude_cwd_candidates(working_directory: &str) -> Vec<String> {
+    let mut candidates = Vec::new();
+    push_unique(&mut candidates, working_directory.to_string());
+    if let Ok(normalized) = PathBuf::from(working_directory).canonicalize() {
+        push_unique(&mut candidates, normalized.to_string_lossy().to_string());
+    }
+    candidates
+}
+
+fn push_unique(values: &mut Vec<String>, value: String) {
+    if !value.is_empty() && !values.iter().any(|existing| existing == &value) {
+        values.push(value);
+    }
+}
+
+fn encode_claude_project_dir(path: &str) -> String {
+    path.replace(['/', '\\', '.', ':'], "-")
+}
+
+fn transcript_entry_value(message: &ChatMessage, session_id: &str) -> Option<Value> {
+    let id = format!("restored-{}", message.id);
+    let sent_at_ms = message.timestamp.millis;
+    let with_time = |mut value: Value| {
+        if sent_at_ms > 0 {
+            value["sentAtMs"] = json!(sent_at_ms);
+        }
+        value
+    };
+    match &message.kind {
+        ChatMessageKind::Prose(prose) => match message.role {
+            ChatRole::User => Some(with_time(json!({
+                "id": id,
+                "role": "user",
+                "text": prose.text,
+                "sessionId": session_id,
+                "isComplete": true,
+            }))),
+            ChatRole::Agent => Some(with_time(json!({
+                "id": id,
+                "role": "assistant",
+                "text": prose.text,
+                "sessionId": session_id,
+                "isComplete": true,
+            }))),
+            ChatRole::System => Some(with_time(json!({
+                "id": id,
+                "role": "notice",
+                "text": prose.text,
+                "sessionId": session_id,
+            }))),
+        },
+        ChatMessageKind::Thought(thought) => Some(with_time(json!({
+            "id": id,
+            "role": "assistant",
+            "text": format!("Thinking\n\n{}", thought.text),
+            "sessionId": session_id,
+            "isComplete": true,
+        }))),
+        ChatMessageKind::ToolUse(tool) => {
+            let mut value = json!({
+                "id": id,
+                "role": "activity",
+                "text": tool.summary,
+                "sessionId": session_id,
+                "activityId": message.id,
+                "activityKind": "other",
+                "activityStatus": tool_status(tool.status),
+            });
+            if let Some(detail) = &tool.input_detail {
+                value["detail"] = json!(detail);
+            }
+            if let Some(output) = &tool.output {
+                value["output"] = json!(output);
+            }
+            Some(with_time(value))
+        }
+        ChatMessageKind::Terminal(terminal) => {
+            let mut value = json!({
+                "id": id,
+                "role": "activity",
+                "text": terminal.command,
+                "sessionId": session_id,
+                "activityId": message.id,
+                "activityKind": "command",
+                "activityStatus": terminal_status(terminal.is_running, terminal.exit_code),
+            });
+            if let Some(output) = &terminal.output {
+                value["output"] = json!(output);
+            }
+            Some(with_time(value))
+        }
+        ChatMessageKind::FileEdit(edit) => {
+            let mut value = json!({
+                "id": id,
+                "role": "activity",
+                "text": file_edit_action(edit.operation),
+                "detail": edit.file_path,
+                "sessionId": session_id,
+                "activityId": message.id,
+                "activityKind": "fileChange",
+                "activityStatus": "completed",
+            });
+            if let Some(output) = &edit.unified_diff {
+                value["output"] = json!(output);
+            }
+            Some(with_time(value))
+        }
+        ChatMessageKind::Question(question) => Some(with_time(json!({
+            "id": id,
+            "role": "assistant",
+            "text": question.prompt,
+            "sessionId": session_id,
+            "isComplete": question.selected_option_label.is_some(),
+        }))),
+        ChatMessageKind::Status(status) => Some(with_time(json!({
+            "id": id,
+            "role": "notice",
+            "text": status_text(status.event, status.detail.as_deref()),
+            "sessionId": session_id,
+        }))),
+        ChatMessageKind::PermissionRequest(permission) => Some(with_time(json!({
+            "id": id,
+            "role": "notice",
+            "text": format!("{} {}", permission.title, permission.subject).trim(),
+            "sessionId": session_id,
+        }))),
+        ChatMessageKind::Attachment(_) | ChatMessageKind::Unsupported(_) => None,
+    }
+}
+
+fn tool_status(status: ChatToolUseStatus) -> &'static str {
+    match status {
+        ChatToolUseStatus::Running => "inProgress",
+        ChatToolUseStatus::Succeeded => "completed",
+        ChatToolUseStatus::Failed => "failed",
+    }
+}
+
+fn terminal_status(is_running: bool, exit_code: Option<i64>) -> &'static str {
+    if is_running {
+        "inProgress"
+    } else if exit_code.unwrap_or(0) == 0 {
+        "completed"
+    } else {
+        "failed"
+    }
+}
+
+fn file_edit_action(operation: ChatFileEditOperation) -> &'static str {
+    match operation {
+        ChatFileEditOperation::Edit => "Edited",
+        ChatFileEditOperation::Write => "Wrote",
+        ChatFileEditOperation::Delete => "Deleted",
+    }
+}
+
+fn status_text(event: ChatStatusEvent, detail: Option<&str>) -> String {
+    let label = match event {
+        ChatStatusEvent::SessionStarted => "Session started",
+        ChatStatusEvent::SessionEnded => "Session ended",
+        ChatStatusEvent::Interrupted => "Interrupted",
+        ChatStatusEvent::ContextCompacted => "Context compacted",
+    };
+    match detail.filter(|detail| !detail.is_empty()) {
+        Some(detail) => format!("{label}: {detail}"),
+        None => label.to_string(),
+    }
+}
+
+fn home_directory() -> PathBuf {
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
 // ---------------------------------------------------------------------------
-// Concrete transport (Claude wired; Codex/OpenCode reserved)
+// Concrete transport (spawn + Claude direct writes; Codex/OpenCode use actions)
 // ---------------------------------------------------------------------------
 
 /// A live child: the supervisor session id (for termination), its provider (for
 /// framing writes), and its stdin writer.
 struct LiveChild {
     handle_id: SessionId,
+    root_pid: u32,
     provider: ProviderId,
     stdin: Box<dyn Write + Send>,
 }
@@ -727,8 +1283,7 @@ impl AgentTransport for ClaudeAgentTransport {
         // (`OPENCODE_SERVER_*`, minted by `cmux-agent`) BEFORE `spec` is moved
         // into `spawn_captured`. The secret stays host-side (out of the store).
         let opencode_auth = if provider == ProviderId::Opencode {
-            OpenCodeServerAuth::from_environment(&spec.env)
-                .map(|auth| auth.authorization_header)
+            OpenCodeServerAuth::from_environment(&spec.env).map(|auth| auth.authorization_header)
         } else {
             None
         };
@@ -747,14 +1302,18 @@ impl AgentTransport for ClaudeAgentTransport {
 
         // Register the live child (holds stdin) before starting its reader, so a
         // reader-spawn failure has a tracked entry to roll back.
-        self.sessions.lock().expect("agent sessions mutex poisoned").insert(
-            request.session_id.clone(),
-            LiveChild {
-                handle_id: handle.id,
-                provider,
-                stdin,
-            },
-        );
+        self.sessions
+            .lock()
+            .expect("agent sessions mutex poisoned")
+            .insert(
+                request.session_id.clone(),
+                LiveChild {
+                    handle_id: handle.id,
+                    root_pid: handle.root_pid,
+                    provider,
+                    stdin,
+                },
+            );
 
         // OpenCode: register the HTTP context (auth header + working dir + the
         // liveness flags the event-stream failure rule needs). `process_running`
@@ -791,7 +1350,14 @@ impl AgentTransport for ClaudeAgentTransport {
         let spawned = std::thread::Builder::new()
             .name(format!("cmux-agent-reader-{session_id}"))
             .spawn(move || {
-                reader_loop(chunks, session_id, feedback, supervisor, sessions, process_running)
+                reader_loop(
+                    chunks,
+                    session_id,
+                    feedback,
+                    supervisor,
+                    sessions,
+                    process_running,
+                )
             });
         if let Err(error) = spawned {
             // Roll back the just-confined child: no reader means no drain/exit
@@ -819,16 +1385,19 @@ impl AgentTransport for ClaudeAgentTransport {
         text: &str,
     ) -> Result<(), TransportError> {
         let mut sessions = self.sessions.lock().expect("agent sessions mutex poisoned");
-        let child = sessions.get_mut(session_id).ok_or(TransportError::NotReady)?;
+        let child = sessions
+            .get_mut(session_id)
+            .ok_or(TransportError::NotReady)?;
         let framed = match child.provider {
             // Claude stream-json: one `{"type":"user",...}` line (already
             // newline-terminated) per prompt. No handshake, no permission mode.
             ProviderId::Claude => write_claude_stream_json(text),
-            // Codex needs the app-server turn/start framing + handshake; OpenCode
-            // writes over HTTP. Both are follow-on slices.
+            // The store bypasses AgentTransport::write_line for these providers:
+            // Codex frames stdin via TransportAction::WriteStdin and OpenCode
+            // submits prompts via TransportAction::OpenCodePostPrompt.
             ProviderId::Codex | ProviderId::Opencode => {
                 return Err(TransportError::Failed(
-                    "provider write path not yet ported".to_string(),
+                    "provider write path is handled by transport actions".to_string(),
                 ))
             }
         };
@@ -865,7 +1434,9 @@ impl AgentTransport for ClaudeAgentTransport {
             .get(session_id)
             .map(|child| child.handle_id);
         if let Some(handle_id) = handle_id {
-            let _ = self.supervisor.terminate(handle_id, TerminateMode::Graceful);
+            let _ = self
+                .supervisor
+                .terminate(handle_id, TerminateMode::Graceful);
         }
         reap_session(&self.supervisor, &self.sessions, session_id);
         self.opencode
@@ -1008,8 +1579,7 @@ fn wrap_windows_shim(spec: SpawnSpec) -> SpawnSpec {
             }
         }
         Some("ps1") => {
-            let powershell =
-                system32_path(&spec.env, r"WindowsPowerShell\v1.0\powershell.exe");
+            let powershell = system32_path(&spec.env, r"WindowsPowerShell\v1.0\powershell.exe");
             let mut args = vec![
                 "-NoProfile".to_string(),
                 "-ExecutionPolicy".to_string(),
@@ -1046,10 +1616,16 @@ fn system32_path(env: &std::collections::BTreeMap<String, String>, tail: &str) -
 /// The `app.context` reply the reused app requests on boot: renderer kind,
 /// initial provider, working directory, the localized `copy` dictionary, and the
 /// theme. `provider.list` is a separate call (serviced by the dispatcher).
-fn app_context_value(ctx: &DispatchContext, initial_provider: ProviderId) -> Value {
+fn app_context_value(
+    ctx: &DispatchContext,
+    initial_provider: ProviderId,
+    copy_locale: AgentCopyLocale,
+    panel_id: Option<&str>,
+    workspace_id: Option<&str>,
+) -> Value {
     json!({
-        "panelId": "agent-session",
-        "workspaceId": "workspace-1",
+        "panelId": panel_id.unwrap_or("agent-session"),
+        "workspaceId": workspace_id.unwrap_or("workspace-1"),
         "renderer": "react",
         // The persisted last selection (default: claude — auto-start=false, so
         // the user clicks Start; a deliberate divergence from canonical .codex
@@ -1058,7 +1634,7 @@ fn app_context_value(ctx: &DispatchContext, initial_provider: ProviderId) -> Val
         // auto-start effect re-arms, exactly as canonical.
         "initialProviderId": initial_provider.as_str(),
         "workingDirectory": ctx.working_directory,
-        "copy": copy_value(),
+        "copy": copy_value(copy_locale),
         "theme": theme_value(),
     })
 }
@@ -1084,89 +1660,203 @@ fn theme_value() -> Value {
     })
 }
 
-/// The English [`AgentSessionCopy`] dictionary (all 67 keys). Sourced from the
-/// reused app's own copy fixture. Localization (JA etc.) is a Phase 5 concern —
-/// the i18n source of truth is `Resources/Localizable.xcstrings`, not
-/// `web/messages`. Format specifiers (`%@`, `%d`) are consumed verbatim by the
-/// renderer's `formatTemplate`, so they are preserved.
-///
-/// Built from a `(key, value)` table into a `serde_json::Map` rather than one
-/// large `json!` literal (68 entries overflows the macro's recursion limit).
-fn copy_value() -> Value {
-    const COPY: [(&str, &str); 67] = [
-        ("start", "Start"),
-        ("stop", "Stop"),
-        ("send", "Send"),
-        ("provider", "Provider"),
-        ("rateLimits", "Rate limits"),
-        ("rateLimitUsageRemaining", "Usage remaining"),
-        ("rateLimitPrimary", "Primary"),
-        ("rateLimitSecondary", "Secondary"),
-        ("rateLimitWeekly", "Weekly"),
-        ("rateLimitMonthly", "Monthly"),
-        ("rateLimitDaysFormat", "%@d"),
-        ("rateLimitHoursFormat", "%@h"),
-        ("rateLimitMinutesFormat", "%@m"),
-        ("rateLimitResets", "resets"),
-        ("voiceInput", "Voice input"),
-        ("promptPlaceholder", "Ask anything"),
-        ("attachFile", "Attach file"),
-        ("addFilesAndMore", "Add files and more"),
-        ("addPhotosAndFiles", "Add photos & files"),
-        ("removeAttachment", "Remove attachment"),
-        ("copyOutput", "Copy output"),
-        ("copyAssistantMessage", "Copy"),
-        ("copiedAssistantMessage", "Copied"),
-        ("copyUserMessage", "Copy message"),
-        ("copiedUserMessage", "Copied"),
-        ("shellLabel", "Shell"),
-        ("copyShellContents", "Copy shell contents"),
-        ("copiedShellContents", "Copied shell contents"),
-        ("collapseShell", "Collapse shell"),
-        ("shellSuccess", "Success"),
-        ("showMore", "Show more"),
-        ("showLess", "Show less"),
-        ("browseWeb", "Browse web"),
-        ("autoContext", "Context"),
-        ("includeIdeContext", "Include IDE context"),
-        ("ideContext", "IDE context"),
-        ("tools", "Tools"),
-        ("changePermissions", "Change permissions"),
-        ("permissionsDefault", "Default permissions"),
-        ("permissionsFullAccess", "Full access"),
-        ("permissionsAutoReview", "Auto-review"),
-        ("permissionsCustom", "Custom (config.toml)"),
-        ("reasoningEffortHigh", "High"),
-        ("mentionMenuTitle", "Mention"),
-        ("mentionCurrentWorkspace", "Current workspace"),
-        ("skillMenuTitle", "Skills"),
-        ("composerNoResults", "No results"),
-        ("planMode", "Plan mode"),
-        ("planSuggestionAction", "Use plan mode"),
-        ("planSuggestionDismiss", "Dismiss suggestion"),
-        ("planSuggestionShortcut", "Shift + Tab"),
-        ("planSuggestionTitle", "Create a plan"),
-        ("skillPlan", "Plan"),
-        ("skillCodeReview", "Code review"),
-        ("skillResearch", "Research"),
-        ("loadingStatus", "Loading"),
-        ("idleStatus", "Idle"),
-        ("startingStatus", "Starting"),
-        ("runningStatus", "Running"),
-        ("stoppingStatus", "Stopping"),
-        ("failedStatus", "Failed"),
-        ("rendererReadyFormat", "%@ ready"),
-        ("stopped", "Stopped"),
-        ("sentCharsFormat", "Sent %d chars"),
-        ("providerStarted", "Provider started"),
-        ("providerExitedFormat", "Provider exited %d"),
-        ("requestFailed", "Native bridge request failed."),
-    ];
-    let map: serde_json::Map<String, Value> = COPY
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentCopyLocale {
+    En,
+    Ja,
+}
+
+type CopyTable = [(&'static str, &'static str); 67];
+
+const EN_COPY: CopyTable = [
+    ("start", "Start"),
+    ("stop", "Stop"),
+    ("send", "Send"),
+    ("provider", "Provider"),
+    ("rateLimits", "Rate limits"),
+    ("rateLimitUsageRemaining", "Usage remaining"),
+    ("rateLimitPrimary", "Primary"),
+    ("rateLimitSecondary", "Secondary"),
+    ("rateLimitWeekly", "Weekly"),
+    ("rateLimitMonthly", "Monthly"),
+    ("rateLimitDaysFormat", "%@d"),
+    ("rateLimitHoursFormat", "%@h"),
+    ("rateLimitMinutesFormat", "%@m"),
+    ("rateLimitResets", "resets"),
+    ("voiceInput", "Voice input"),
+    ("promptPlaceholder", "Ask anything"),
+    ("attachFile", "Attach file"),
+    ("addFilesAndMore", "Add files and more"),
+    ("addPhotosAndFiles", "Add photos & files"),
+    ("removeAttachment", "Remove attachment"),
+    ("copyOutput", "Copy output"),
+    ("copyAssistantMessage", "Copy"),
+    ("copiedAssistantMessage", "Copied"),
+    ("copyUserMessage", "Copy message"),
+    ("copiedUserMessage", "Copied"),
+    ("shellLabel", "Shell"),
+    ("copyShellContents", "Copy shell contents"),
+    ("copiedShellContents", "Copied shell contents"),
+    ("collapseShell", "Collapse shell"),
+    ("shellSuccess", "Success"),
+    ("showMore", "Show more"),
+    ("showLess", "Show less"),
+    ("browseWeb", "Browse web"),
+    ("autoContext", "Context"),
+    ("includeIdeContext", "Include IDE context"),
+    ("ideContext", "IDE context"),
+    ("tools", "Tools"),
+    ("changePermissions", "Change permissions"),
+    ("permissionsDefault", "Default permissions"),
+    ("permissionsFullAccess", "Full access"),
+    ("permissionsAutoReview", "Auto-review"),
+    ("permissionsCustom", "Custom (config.toml)"),
+    ("reasoningEffortHigh", "High"),
+    ("mentionMenuTitle", "Mention"),
+    ("mentionCurrentWorkspace", "Current workspace"),
+    ("skillMenuTitle", "Skills"),
+    ("composerNoResults", "No results"),
+    ("planMode", "Plan mode"),
+    ("planSuggestionAction", "Use plan mode"),
+    ("planSuggestionDismiss", "Dismiss suggestion"),
+    ("planSuggestionShortcut", "Shift + Tab"),
+    ("planSuggestionTitle", "Create a plan"),
+    ("skillPlan", "Plan"),
+    ("skillCodeReview", "Code review"),
+    ("skillResearch", "Research"),
+    ("loadingStatus", "Loading"),
+    ("idleStatus", "Idle"),
+    ("startingStatus", "Starting"),
+    ("runningStatus", "Running"),
+    ("stoppingStatus", "Stopping"),
+    ("failedStatus", "Failed"),
+    ("rendererReadyFormat", "%@ ready"),
+    ("stopped", "Stopped"),
+    ("sentCharsFormat", "Sent %d chars"),
+    ("providerStarted", "Provider started"),
+    ("providerExitedFormat", "Provider exited %d"),
+    ("requestFailed", "Native bridge request failed."),
+];
+
+const JA_COPY: CopyTable = [
+    ("start", "開始"),
+    ("stop", "停止"),
+    ("send", "送信"),
+    ("provider", "プロバイダー"),
+    ("rateLimits", "レート制限"),
+    ("rateLimitUsageRemaining", "残り使用量"),
+    ("rateLimitPrimary", "プライマリ"),
+    ("rateLimitSecondary", "セカンダリ"),
+    ("rateLimitWeekly", "週間"),
+    ("rateLimitMonthly", "月間"),
+    ("rateLimitDaysFormat", "%@日"),
+    ("rateLimitHoursFormat", "%@時間"),
+    ("rateLimitMinutesFormat", "%@分"),
+    ("rateLimitResets", "リセット"),
+    ("voiceInput", "音声入力"),
+    ("promptPlaceholder", "何でも聞いてください"),
+    ("attachFile", "ファイルを添付"),
+    ("addFilesAndMore", "ファイルなどを追加"),
+    ("addPhotosAndFiles", "写真とファイルを追加"),
+    ("removeAttachment", "添付ファイルを削除"),
+    ("copyOutput", "出力をコピー"),
+    ("copyAssistantMessage", "コピー"),
+    ("copiedAssistantMessage", "コピーしました"),
+    ("copyUserMessage", "メッセージをコピー"),
+    ("copiedUserMessage", "コピーしました"),
+    ("shellLabel", "シェル"),
+    ("copyShellContents", "シェルの内容をコピー"),
+    ("copiedShellContents", "シェルの内容をコピーしました"),
+    ("collapseShell", "シェルを折りたたむ"),
+    ("shellSuccess", "成功"),
+    ("showMore", "もっと表示"),
+    ("showLess", "表示を減らす"),
+    ("browseWeb", "ウェブを閲覧"),
+    ("autoContext", "コンテキスト"),
+    ("includeIdeContext", "IDE コンテキストを含める"),
+    ("ideContext", "IDE コンテキスト"),
+    ("tools", "ツール"),
+    ("changePermissions", "権限を変更"),
+    ("permissionsDefault", "デフォルト権限"),
+    ("permissionsFullAccess", "フルアクセス"),
+    ("permissionsAutoReview", "自動レビュー"),
+    ("permissionsCustom", "カスタム (config.toml)"),
+    ("reasoningEffortHigh", "高"),
+    ("mentionMenuTitle", "メンション"),
+    ("mentionCurrentWorkspace", "現在のワークスペース"),
+    ("skillMenuTitle", "スキル"),
+    ("composerNoResults", "結果がありません"),
+    ("planMode", "計画モード"),
+    ("planSuggestionAction", "計画モードを使用"),
+    ("planSuggestionDismiss", "提案を閉じる"),
+    ("planSuggestionShortcut", "Shift + Tab"),
+    ("planSuggestionTitle", "計画を作成"),
+    ("skillPlan", "計画"),
+    ("skillCodeReview", "コードレビュー"),
+    ("skillResearch", "リサーチ"),
+    ("loadingStatus", "読み込み中"),
+    ("idleStatus", "待機中"),
+    ("startingStatus", "開始中"),
+    ("runningStatus", "実行中"),
+    ("stoppingStatus", "停止中"),
+    ("failedStatus", "失敗"),
+    ("rendererReadyFormat", "%@ の準備ができました"),
+    ("stopped", "停止しました"),
+    ("sentCharsFormat", "%d 文字を送信しました"),
+    ("providerStarted", "プロバイダーを開始しました"),
+    ("providerExitedFormat", "プロバイダーが終了しました %d"),
+    (
+        "requestFailed",
+        "ネイティブブリッジリクエストに失敗しました。",
+    ),
+];
+
+/// The localized [`AgentSessionCopy`] dictionary (all 67 keys). The English
+/// table is sourced from the reused web copy fixture; the Japanese table mirrors
+/// the canonical AgentChat wording where the Swift string catalog overlaps and
+/// covers the remaining host-only keys in the same key order. Format specifiers
+/// (`%@`, `%d`) are consumed verbatim by the renderer's `formatTemplate`, so
+/// they are preserved.
+fn copy_value(locale: AgentCopyLocale) -> Value {
+    let copy = match locale {
+        AgentCopyLocale::En => &EN_COPY,
+        AgentCopyLocale::Ja => &JA_COPY,
+    };
+    let map: serde_json::Map<String, Value> = copy
         .iter()
         .map(|(key, value)| ((*key).to_string(), Value::String((*value).to_string())))
         .collect();
     Value::Object(map)
+}
+
+fn current_agent_copy_locale() -> AgentCopyLocale {
+    let configured = crate::config::current_app_language();
+    agent_copy_locale_for_language(&configured, system_language_hint().as_deref())
+}
+
+fn agent_copy_locale_for_language(configured: &str, system_hint: Option<&str>) -> AgentCopyLocale {
+    let configured = configured.trim();
+    if locale_tag_is_ja(configured) {
+        return AgentCopyLocale::Ja;
+    }
+    if configured.eq_ignore_ascii_case("system") || configured.is_empty() {
+        if system_hint.is_some_and(locale_tag_is_ja) {
+            return AgentCopyLocale::Ja;
+        }
+    }
+    AgentCopyLocale::En
+}
+
+fn locale_tag_is_ja(value: &str) -> bool {
+    let normalized = value.trim().replace('_', "-").to_ascii_lowercase();
+    normalized == "ja" || normalized.starts_with("ja-")
+}
+
+fn system_language_hint() -> Option<String> {
+    ["LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG"]
+        .iter()
+        .find_map(|key| std::env::var(key).ok())
+        .filter(|value| !value.trim().is_empty())
 }
 
 #[cfg(test)]
@@ -1192,12 +1882,18 @@ mod tests {
     #[test]
     fn wrap_shim_wraps_cmd_with_comspec_and_preserves_args() {
         let mut env = std::collections::BTreeMap::new();
-        env.insert("ComSpec".to_string(), r"C:\Windows\System32\cmd.exe".to_string());
+        env.insert(
+            "ComSpec".to_string(),
+            r"C:\Windows\System32\cmd.exe".to_string(),
+        );
         let spec = SpawnSpec::new(r"C:\npm\claude.cmd")
             .args(["-p", "--output-format", "stream-json"])
             .env(env);
         let wrapped = wrap_windows_shim(spec);
-        assert_eq!(wrapped.program.to_string_lossy(), r"C:\Windows\System32\cmd.exe");
+        assert_eq!(
+            wrapped.program.to_string_lossy(),
+            r"C:\Windows\System32\cmd.exe"
+        );
         assert_eq!(
             wrapped.args,
             vec![
@@ -1214,7 +1910,9 @@ mod tests {
     fn wrap_shim_wraps_ps1_with_absolute_powershell() {
         let mut env = std::collections::BTreeMap::new();
         env.insert("SystemRoot".to_string(), r"C:\Windows".to_string());
-        let spec = SpawnSpec::new(r"C:\npm\opencode.ps1").args(["serve"]).env(env);
+        let spec = SpawnSpec::new(r"C:\npm\opencode.ps1")
+            .args(["serve"])
+            .env(env);
         let wrapped = wrap_windows_shim(spec);
         // Absolute path — CreateProcessW's lpApplicationName is not PATH-searched.
         assert_eq!(
@@ -1248,7 +1946,10 @@ mod tests {
         // (still absolute, so CreateProcessW can resolve it).
         let spec = SpawnSpec::new(r"C:\npm\claude.cmd");
         let wrapped = wrap_windows_shim(spec);
-        assert_eq!(wrapped.program.to_string_lossy(), r"C:\Windows\System32\cmd.exe");
+        assert_eq!(
+            wrapped.program.to_string_lossy(),
+            r"C:\Windows\System32\cmd.exe"
+        );
         assert_eq!(wrapped.args[0], "/C");
         assert_eq!(wrapped.args[1], r"C:\npm\claude.cmd");
     }
@@ -1262,7 +1963,10 @@ mod tests {
         let err = err_envelope("providerNotReady", "Claude Code is not ready.");
         assert_eq!(err["ok"], json!(false));
         assert_eq!(err["error"]["code"], json!("providerNotReady"));
-        assert_eq!(err["error"]["userMessage"], json!("Claude Code is not ready."));
+        assert_eq!(
+            err["error"]["userMessage"],
+            json!("Claude Code is not ready.")
+        );
     }
 
     #[test]
@@ -1270,8 +1974,10 @@ mod tests {
         let ctx = DispatchContext {
             working_directory: Some("C:/work".to_string()),
         };
-        let value = app_context_value(&ctx, ProviderId::Claude);
+        let value = app_context_value(&ctx, ProviderId::Claude, AgentCopyLocale::En, None, None);
         assert_eq!(value["renderer"], json!("react"));
+        assert_eq!(value["panelId"], json!("agent-session"));
+        assert_eq!(value["workspaceId"], json!("workspace-1"));
         assert_eq!(value["initialProviderId"], json!("claude"));
         assert_eq!(value["workingDirectory"], json!("C:/work"));
         // Theme: every one of the 14 fields present, isDark true.
@@ -1283,7 +1989,53 @@ mod tests {
         assert_eq!(copy.len(), 67);
         assert_eq!(copy["start"], json!("Start"));
         assert_eq!(copy["sentCharsFormat"], json!("Sent %d chars"));
-        assert_eq!(copy["requestFailed"], json!("Native bridge request failed."));
+        assert_eq!(
+            copy["requestFailed"],
+            json!("Native bridge request failed.")
+        );
+    }
+
+    #[test]
+    fn app_context_can_emit_full_japanese_copy() {
+        let ctx = DispatchContext {
+            working_directory: Some("C:/work".to_string()),
+        };
+        let value = app_context_value(&ctx, ProviderId::Claude, AgentCopyLocale::Ja, None, None);
+        let copy = value["copy"].as_object().expect("copy object");
+        assert_eq!(copy.len(), 67);
+        assert_eq!(copy["start"], json!("開始"));
+        assert_eq!(copy["send"], json!("送信"));
+        assert_eq!(copy["copyAssistantMessage"], json!("コピー"));
+        assert_eq!(copy["rateLimitDaysFormat"], json!("%@日"));
+        assert_eq!(copy["sentCharsFormat"], json!("%d 文字を送信しました"));
+        assert_eq!(
+            copy["requestFailed"],
+            json!("ネイティブブリッジリクエストに失敗しました。")
+        );
+    }
+
+    #[test]
+    fn agent_copy_locale_respects_explicit_and_system_japanese() {
+        assert_eq!(
+            agent_copy_locale_for_language("ja", Some("en-US")),
+            AgentCopyLocale::Ja
+        );
+        assert_eq!(
+            agent_copy_locale_for_language("ja-JP", Some("en-US")),
+            AgentCopyLocale::Ja
+        );
+        assert_eq!(
+            agent_copy_locale_for_language("system", Some("ja_JP.UTF-8")),
+            AgentCopyLocale::Ja
+        );
+        assert_eq!(
+            agent_copy_locale_for_language("en", Some("ja-JP")),
+            AgentCopyLocale::En
+        );
+        assert_eq!(
+            agent_copy_locale_for_language("system", Some("fr-FR")),
+            AgentCopyLocale::En
+        );
     }
 
     #[test]
@@ -1303,13 +2055,36 @@ mod tests {
             json!({ "method": "app.context" }),
             &ctx,
             ProviderId::Claude,
+            AgentCopyLocale::En,
         );
         assert_eq!(reply["ok"], json!(true));
         assert_eq!(reply["value"]["renderer"], json!("react"));
     }
 
     #[test]
-    fn pick_files_stub_returns_empty_selection() {
+    fn app_context_uses_message_scope_panel_and_workspace() {
+        let mut store = make_store();
+        let ctx = DispatchContext::default();
+        let reply = dispatch_message(
+            &mut store,
+            json!({
+                "method": "app.context",
+                "params": {
+                    "panelId": "panel-agent-9",
+                    "workspaceId": "workspace-9"
+                }
+            }),
+            &ctx,
+            ProviderId::Claude,
+            AgentCopyLocale::En,
+        );
+        assert_eq!(reply["ok"], json!(true));
+        assert_eq!(reply["value"]["panelId"], json!("panel-agent-9"));
+        assert_eq!(reply["value"]["workspaceId"], json!("workspace-9"));
+    }
+
+    #[test]
+    fn pick_files_actor_fallback_returns_empty_selection() {
         let (tx, _rx) = channel::<ActorMsg>();
         let transport = ClaudeAgentTransport::new(
             Arc::new(JobObjectSupervisor::new()),
@@ -1324,6 +2099,7 @@ mod tests {
             json!({ "method": "app.pickFiles" }),
             &ctx,
             ProviderId::Claude,
+            AgentCopyLocale::En,
         );
         assert_eq!(reply["ok"], json!(true));
         assert_eq!(reply["value"]["files"], json!([]));
@@ -1345,6 +2121,7 @@ mod tests {
             json!({ "id": "1", "method": "provider.list", "params": {} }),
             &ctx,
             ProviderId::Claude,
+            AgentCopyLocale::En,
         );
         assert_eq!(reply["ok"], json!(true));
         let list = reply["value"].as_array().expect("provider list array");
@@ -1369,6 +2146,7 @@ mod tests {
             json!({ "id": "1", "method": "provider.bogus", "params": {} }),
             &ctx,
             ProviderId::Claude,
+            AgentCopyLocale::En,
         );
         assert_eq!(reply["ok"], json!(false));
         assert_eq!(reply["error"]["code"], json!("unsupportedMethod"));
@@ -1415,9 +2193,194 @@ mod tests {
     }
 
     #[test]
+    fn codex_transcript_path_finds_nested_session_jsonl() {
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = dir
+            .path()
+            .join(".codex")
+            .join("sessions")
+            .join("2026")
+            .join("07")
+            .join("08")
+            .join("rollout-2026-07-08-codex-session-abc.jsonl");
+        std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+        std::fs::write(&transcript, b"").unwrap();
+
+        assert_eq!(
+            codex_transcript_path(dir.path(), "codex-session"),
+            Some(transcript)
+        );
+    }
+
+    #[test]
+    fn claude_transcript_path_uses_encoded_cwd_and_rejects_unsafe_session_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = r"C:\work\project.one";
+        let transcript = dir
+            .path()
+            .join(".claude")
+            .join("projects")
+            .join(encode_claude_project_dir(cwd))
+            .join("claude-session.jsonl");
+        std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+        std::fs::write(&transcript, b"").unwrap();
+
+        assert_eq!(
+            claude_transcript_path(dir.path(), cwd, "claude-session"),
+            Some(transcript)
+        );
+        assert_eq!(claude_transcript_path(dir.path(), cwd, "../escape"), None);
+        assert_eq!(claude_transcript_path(dir.path(), cwd, r"..\escape"), None);
+    }
+
+    #[test]
+    fn transcript_reply_for_snapshot_suppresses_autostart_even_without_file() {
+        use cmux_core::session::{
+            AppSessionSnapshot, SessionPanelRestorableAgentSnapshot,
+            SessionRestorableAgentSnapshot, SessionTabManagerSnapshot, SessionWindowSnapshot,
+            SessionWorkspaceSnapshot,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let snapshot = AppSessionSnapshot {
+            version: 1,
+            created_at: 0,
+            windows: vec![SessionWindowSnapshot {
+                window_id: Some("window-1".to_string()),
+                tab_manager: SessionTabManagerSnapshot {
+                    selected_workspace_index: Some(0),
+                    workspaces: vec![SessionWorkspaceSnapshot {
+                        workspace_id: Some("workspace-1".to_string()),
+                        process_title: "agent".to_string(),
+                        restorable_agent_snapshots: Some(vec![
+                            SessionPanelRestorableAgentSnapshot {
+                                panel_id: "panel-1".to_string(),
+                                snapshot: SessionRestorableAgentSnapshot {
+                                    kind: "codex".to_string(),
+                                    session_id: "codex-session".to_string(),
+                                    working_directory: None,
+                                    launch_command: None,
+                                    resume_command: None,
+                                    fork_command: None,
+                                },
+                            },
+                        ]),
+                        ..Default::default()
+                    }],
+                    workspace_groups: None,
+                },
+            }],
+        };
+
+        let reply = app_transcript_reply_for_snapshot(
+            &snapshot,
+            "panel-1",
+            Some("workspace-1"),
+            dir.path(),
+        );
+
+        assert_eq!(reply["providerId"], json!("codex"));
+        assert_eq!(reply["sessionId"], json!("codex-session"));
+        assert_eq!(reply["suppressAutoStart"], json!(true));
+        assert_eq!(reply["entries"], json!([]));
+        assert_eq!(
+            app_transcript_reply_for_snapshot(
+                &snapshot,
+                "panel-2",
+                Some("workspace-1"),
+                dir.path()
+            ),
+            Value::Null
+        );
+        assert_eq!(
+            app_transcript_reply_for_snapshot(
+                &snapshot,
+                "panel-1",
+                Some("workspace-2"),
+                dir.path()
+            ),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn transcript_entry_value_maps_core_chat_shapes() {
+        let timestamp = cmux_agent_chat::Timestamp::from_millis(1_785_000_000_123);
+        let user = ChatMessage::new(
+            "user-1",
+            1,
+            ChatRole::User,
+            timestamp,
+            ChatMessageKind::Prose(cmux_agent_chat::ChatProse::new("hello")),
+        );
+        let user_value = transcript_entry_value(&user, "session-1").unwrap();
+        assert_eq!(user_value["id"], json!("restored-user-1"));
+        assert_eq!(user_value["role"], json!("user"));
+        assert_eq!(user_value["text"], json!("hello"));
+        assert_eq!(user_value["sessionId"], json!("session-1"));
+        assert_eq!(user_value["isComplete"], json!(true));
+        assert_eq!(user_value["sentAtMs"], json!(1_785_000_000_123i64));
+
+        let terminal = ChatMessage::new(
+            "terminal-1",
+            2,
+            ChatRole::Agent,
+            timestamp,
+            ChatMessageKind::Terminal(cmux_agent_chat::ChatTerminalCapture {
+                command: "cargo test".to_string(),
+                output: None,
+                exit_code: None,
+                duration_seconds: None,
+                is_running: true,
+            }),
+        );
+        let terminal_value = transcript_entry_value(&terminal, "session-1").unwrap();
+        assert_eq!(terminal_value["role"], json!("activity"));
+        assert_eq!(terminal_value["activityKind"], json!("command"));
+        assert_eq!(terminal_value["activityStatus"], json!("inProgress"));
+        assert!(!terminal_value.as_object().unwrap().contains_key("output"));
+
+        let edit = ChatMessage::new(
+            "edit-1",
+            3,
+            ChatRole::Agent,
+            timestamp,
+            ChatMessageKind::FileEdit(cmux_agent_chat::ChatFileEdit {
+                file_path: "src/main.rs".to_string(),
+                operation: ChatFileEditOperation::Edit,
+                additions: Some(2),
+                deletions: Some(1),
+                unified_diff: Some("@@ diff".to_string()),
+            }),
+        );
+        let edit_value = transcript_entry_value(&edit, "session-1").unwrap();
+        assert_eq!(edit_value["activityKind"], json!("fileChange"));
+        assert_eq!(edit_value["text"], json!("Edited"));
+        assert_eq!(edit_value["detail"], json!("src/main.rs"));
+        assert_eq!(edit_value["output"], json!("@@ diff"));
+
+        let status = ChatMessage::new(
+            "status-1",
+            4,
+            ChatRole::System,
+            timestamp,
+            ChatMessageKind::Status(cmux_agent_chat::ChatStatusTransition::new(
+                ChatStatusEvent::ContextCompacted,
+                Some("summary written".to_string()),
+            )),
+        );
+        let status_value = transcript_entry_value(&status, "session-1").unwrap();
+        assert_eq!(status_value["role"], json!("notice"));
+        assert_eq!(
+            status_value["text"],
+            json!("Context compacted: summary written")
+        );
+    }
+
+    #[test]
     fn app_context_reflects_non_default_provider() {
         let ctx = DispatchContext::default();
-        let value = app_context_value(&ctx, ProviderId::Opencode);
+        let value = app_context_value(&ctx, ProviderId::Opencode, AgentCopyLocale::En, None, None);
         assert_eq!(value["initialProviderId"], json!("opencode"));
     }
 
@@ -1434,6 +2397,7 @@ mod tests {
             json!({ "id": "1", "method": "provider.select", "params": { "providerId": "opencode" } }),
             &ctx,
             ProviderId::Claude,
+            AgentCopyLocale::En,
         );
         let selected = provider_update("provider.select", &envelope).expect("selection committed");
         SettingsStore::new(path.clone()).set_string(SELECTED_PROVIDER_KEY, selected.as_str());
@@ -1441,7 +2405,7 @@ mod tests {
         // Session 2 (restart): a fresh store over the same path restores it.
         let restored = load_initial_provider(Some(&SettingsStore::new(path)));
         assert_eq!(restored, ProviderId::Opencode);
-        let value = app_context_value(&ctx, restored);
+        let value = app_context_value(&ctx, restored, AgentCopyLocale::En, None, None);
         assert_eq!(value["initialProviderId"], json!("opencode"));
     }
 

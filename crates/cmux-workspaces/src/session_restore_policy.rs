@@ -83,10 +83,7 @@ pub trait WorkspaceSurfaceResumeBinding {
 
     /// Returns a launcher command used when the restored terminal should run a
     /// command. This method is the injected fs seam.
-    fn startup_command_with_launcher_script(
-        &self,
-        temporary_directory: &Path,
-    ) -> Option<String>;
+    fn startup_command_with_launcher_script(&self, temporary_directory: &Path) -> Option<String>;
 }
 
 /// Launch action produced for a restored surface resume binding.
@@ -282,7 +279,9 @@ impl<Binding: WorkspaceSurfaceResumeBinding> WorkspaceSessionRestorePolicyServic
         has_resume_startup_work: bool,
     ) -> bool {
         !has_restorable_agent
-            && self.restorable_tmux_start_command(tmux_start_command).is_none()
+            && self
+                .restorable_tmux_start_command(tmux_start_command)
+                .is_none()
             && !has_resume_startup_work
     }
 
@@ -417,10 +416,9 @@ impl<Binding: WorkspaceSurfaceResumeBinding> WorkspaceSessionRestorePolicyServic
             approval_store_url,
             approval_signing_secret,
         );
-        effective_binding = WorkspaceHermesAgentCommandBootstrapper::new(
-            &self.hermes_codex_environment,
-        )
-        .binding_for_startup(effective_binding);
+        effective_binding =
+            WorkspaceHermesAgentCommandBootstrapper::new(&self.hermes_codex_environment)
+                .binding_for_startup(effective_binding);
         if effective_binding.source() == Some("agent-hook") && !auto_resume_agent_sessions {
             return None;
         }
@@ -838,10 +836,14 @@ mod tests {
             WorkspaceSurfaceResumeStartupLaunch::Input(_) => panic!("expected command launch"),
         };
 
-        assert!(command.starts_with("command:cd /repo && "), "got: {command}");
+        assert!(
+            command.starts_with("command:cd /repo && "),
+            "got: {command}"
+        );
         assert!(command.contains("'hermes' config set model.provider 'codex' >/dev/null"));
-        assert!(command
-            .contains("'hermes' config set model.base_url 'https://codex.example.test' >/dev/null"));
+        assert!(command.contains(
+            "'hermes' config set model.base_url 'https://codex.example.test' >/dev/null"
+        ));
         assert!(command.contains("'hermes' config set model.api_mode 'responses' >/dev/null"));
         assert!(command.contains("'hermes' config set model.default 'gpt-5' >/dev/null"));
         assert!(command.contains("hermes --provider 'codex' run"));
@@ -948,9 +950,14 @@ mod tests {
             Some("oh-my-codex hud")
         );
         assert_eq!(service.restorable_tmux_start_command(Some("omx run")), None);
-        assert_eq!(service.restorable_tmux_start_command(Some("hudson omx")), None);
         assert_eq!(
-            service.restorable_tmux_start_command(Some("omx hud")).as_deref(),
+            service.restorable_tmux_start_command(Some("hudson omx")),
+            None
+        );
+        assert_eq!(
+            service
+                .restorable_tmux_start_command(Some("omx hud"))
+                .as_deref(),
             Some("omx hud")
         );
     }

@@ -4,12 +4,18 @@ import { installDiffCommentsRelay } from "../host/diffCommentsRelay";
 import { diffSurfaceUrl } from "../session/surfaceUrl";
 
 export interface DiffSurfaceProps {
+  /** The pane id hosting this diff surface; used by the comments relay. */
+  panelId: string;
   /**
    * The diff session token that keys the live `cmux-diff-viewer` registry entry.
-   * Absent until the diff-session mint flow is ported (needs live WebView2), so
-   * the surface renders a placeholder instead of an iframe.
+   * Absent only for malformed/restored panes that lack a registered session, in
+   * which case the surface renders a guarded placeholder instead of an iframe.
    */
   token?: string | null;
+  /** The registered request path within the diff session, usually `/index.html`. */
+  requestPath?: string | null;
+  /** Recovery path for restored/malformed diff panes that have no live token. */
+  onCreateSession?: () => void;
 }
 
 /**
@@ -18,14 +24,18 @@ export interface DiffSurfaceProps {
  * The viewer document is a per-session sandbox: its files are only served while
  * `token` names a live registry entry.
  *
- * There is no live token source in this headless slice (minting a session needs
- * WebView2), so with no `token` the surface shows a neutral placeholder rather
- * than navigating an iframe to a URL that would resolve to `None`. Given a token
- * it renders a sandboxed `<iframe>` (`allow-scripts` for the viewer's JS,
+ * With no `token` the surface shows a neutral placeholder rather than
+ * navigating an iframe to a URL that would resolve to `None`. Given a token it
+ * renders a sandboxed `<iframe>` (`allow-scripts` for the viewer's JS,
  * `allow-same-origin` for its own `cmux-diff-viewer` asset fetches). Mounted on
  * demand — the workspace tears it down when the pane switches away.
  */
-export function DiffSurface({ token }: DiffSurfaceProps): React.JSX.Element {
+export function DiffSurface({
+  panelId,
+  token,
+  requestPath,
+  onCreateSession,
+}: DiffSurfaceProps): React.JSX.Element {
   // The iframe branch needs the parent-side diff-comments relay listening on
   // this (main) window; the placeholder installs nothing. The relay is a
   // window-level singleton (a reinstall tears down the prior listener), so
@@ -36,25 +46,22 @@ export function DiffSurface({ token }: DiffSurfaceProps): React.JSX.Element {
     if (!token) {
       return;
     }
-    return installDiffCommentsRelay();
-  }, [token]);
+    return installDiffCommentsRelay({ token, panelId });
+  }, [panelId, token]);
 
   if (!token) {
     return (
-      <div
-        className="cmux-diff-surface-placeholder"
-        style={{
-          display: "flex",
-          width: "100%",
-          height: "100%",
-          alignItems: "center",
-          justifyContent: "center",
-          fontSize: 12,
-          color: "#6b7280",
-          userSelect: "none",
-        }}
-      >
-        No diff session.
+      <div className="cmux-diff-surface-placeholder">
+        <div className="cmux-diff-surface-placeholder-title">No diff session.</div>
+        {onCreateSession ? (
+          <button
+            type="button"
+            className="cmux-diff-surface-placeholder-action"
+            onClick={onCreateSession}
+          >
+            Start diff session
+          </button>
+        ) : null}
       </div>
     );
   }
@@ -62,7 +69,7 @@ export function DiffSurface({ token }: DiffSurfaceProps): React.JSX.Element {
     <iframe
       title="Diff viewer"
       className="cmux-diff-surface"
-      src={diffSurfaceUrl(token)}
+      src={diffSurfaceUrl(token, requestPath)}
       sandbox="allow-scripts allow-same-origin"
       style={{ width: "100%", height: "100%", border: "none" }}
     />

@@ -41,7 +41,9 @@ pub(crate) fn percent_decode(s: &str) -> String {
 /// On Windows a `file:///C:/x` path decodes to `/C:/x`; the leading slash before
 /// a drive letter is dropped so it becomes a valid `C:/x` filesystem path.
 pub(crate) fn parse_file_url(s: &str) -> Option<String> {
-    let rest = s.strip_prefix("file:").or_else(|| s.strip_prefix("FILE:"))?;
+    let rest = s
+        .strip_prefix("file:")
+        .or_else(|| s.strip_prefix("FILE:"))?;
     let path = if let Some(after_slashes) = rest.strip_prefix("//") {
         match after_slashes.find('/') {
             Some(idx) => &after_slashes[idx..],
@@ -110,7 +112,10 @@ mod tests {
 
     #[test]
     fn parse_file_url_posix_and_windows() {
-        assert_eq!(parse_file_url("file:///tmp/a.png").as_deref(), Some("/tmp/a.png"));
+        assert_eq!(
+            parse_file_url("file:///tmp/a.png").as_deref(),
+            Some("/tmp/a.png")
+        );
         assert_eq!(
             parse_file_url("file:///C:/img/a.png").as_deref(),
             Some("C:/img/a.png")
@@ -125,7 +130,10 @@ mod tests {
     #[test]
     fn normalize_strips_verbatim_and_lowercases_drive() {
         assert_eq!(normalize_windows_path(r"\\?\C:\foo"), r"c:\foo");
-        assert_eq!(normalize_windows_path(r"\\?\UNC\server\share"), r"\\server\share");
+        assert_eq!(
+            normalize_windows_path(r"\\?\UNC\server\share"),
+            r"\\server\share"
+        );
         assert_eq!(normalize_windows_path("/plain/posix"), "/plain/posix");
     }
 }

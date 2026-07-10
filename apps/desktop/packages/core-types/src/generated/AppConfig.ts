@@ -9,7 +9,7 @@ import type { NewWorkspacePlacement } from "./NewWorkspacePlacement";
 /**
  * `app`: general app preferences from Settings > App.
  */
-export type AppConfig = { 
+export type AppConfig = {
 /**
  * Preferred app language. Kept as a `String` (not an enum) because the
  * value set is large and locale-tagged (`zh-Hans`, `pt-BR`, …); staying

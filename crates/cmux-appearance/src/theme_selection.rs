@@ -156,7 +156,10 @@ fn scan_theme_buckets(raw: &str) -> (Option<String>, Option<String>, Option<Stri
 pub fn parse_theme_selection(raw: Option<&str>) -> ThemeSelection {
     let trimmed = raw.map(str::trim).filter(|value| !value.is_empty());
     let Some(raw) = trimmed else {
-        return ThemeSelection { light: None, dark: None };
+        return ThemeSelection {
+            light: None,
+            dark: None,
+        };
     };
 
     let (fallback, light, dark) = scan_theme_buckets(raw);
@@ -322,27 +325,41 @@ mod tests {
     #[test]
     fn stored_and_system_modes_drive_split_theme_selection() {
         // stored dark, stale-light system -> dark theme
-        let pref = ColorSchemePreference::resolve(Some("dark"), &SystemAppearance { interface_style: None });
+        let pref = ColorSchemePreference::resolve(
+            Some("dark"),
+            &SystemAppearance {
+                interface_style: None,
+            },
+        );
         assert_eq!(pref, ColorSchemePreference::Dark);
         assert_eq!(resolve_theme_name(CATPPUCCIN, pref), "Apple System Colors");
 
         // stored light, stale-dark system -> light theme
         let pref = ColorSchemePreference::resolve(
             Some("light"),
-            &SystemAppearance { interface_style: Some("Dark".into()) },
+            &SystemAppearance {
+                interface_style: Some("Dark".into()),
+            },
         );
         assert_eq!(pref, ColorSchemePreference::Light);
         assert_eq!(resolve_theme_name(CATPPUCCIN, pref), "Catppuccin Latte");
 
         // system mode, light system -> light theme
-        let pref = ColorSchemePreference::resolve(Some("system"), &SystemAppearance { interface_style: None });
+        let pref = ColorSchemePreference::resolve(
+            Some("system"),
+            &SystemAppearance {
+                interface_style: None,
+            },
+        );
         assert_eq!(pref, ColorSchemePreference::Light);
         assert_eq!(resolve_theme_name(MONOKAI, pref), "Monokai Pro Light");
 
         // system mode, dark system -> dark theme
         let pref = ColorSchemePreference::resolve(
             Some("system"),
-            &SystemAppearance { interface_style: Some("Dark".into()) },
+            &SystemAppearance {
+                interface_style: Some("Dark".into()),
+            },
         );
         assert_eq!(pref, ColorSchemePreference::Dark);
         assert_eq!(resolve_theme_name(MONOKAI, pref), "Monokai Pro Machine");
@@ -369,7 +386,10 @@ mod tests {
     #[test]
     fn missing_side_falls_back_to_bare_token() {
         let raw = "Zenburn,dark:Nord";
-        assert_eq!(resolve_theme_name(raw, ColorSchemePreference::Light), "Zenburn");
+        assert_eq!(
+            resolve_theme_name(raw, ColorSchemePreference::Light),
+            "Zenburn"
+        );
         assert_eq!(resolve_theme_name(raw, ColorSchemePreference::Dark), "Nord");
 
         let selection = parse_theme_selection(Some(raw));
@@ -381,7 +401,10 @@ mod tests {
     #[test]
     fn first_wins_per_key() {
         let raw = "light:First,light:Second,dark:D1,dark:D2";
-        assert_eq!(resolve_theme_name(raw, ColorSchemePreference::Light), "First");
+        assert_eq!(
+            resolve_theme_name(raw, ColorSchemePreference::Light),
+            "First"
+        );
         assert_eq!(resolve_theme_name(raw, ColorSchemePreference::Dark), "D1");
 
         let selection = parse_theme_selection(Some(raw));
@@ -408,24 +431,48 @@ mod tests {
     #[test]
     fn trailing_colon_is_a_bare_token() {
         // "light:" -> ["light"] (len 1) -> bare fallback token "light:".
-        assert_eq!(resolve_theme_name("light:", ColorSchemePreference::Light), "light:");
+        assert_eq!(
+            resolve_theme_name("light:", ColorSchemePreference::Light),
+            "light:"
+        );
         // ":dark" -> ["dark"] (len 1) -> bare fallback token ":dark".
-        assert_eq!(resolve_theme_name(":dark", ColorSchemePreference::Dark), ":dark");
+        assert_eq!(
+            resolve_theme_name(":dark", ColorSchemePreference::Dark),
+            ":dark"
+        );
     }
 
     // Whitespace around keys/values and between tokens is trimmed.
     #[test]
     fn whitespace_around_tokens_is_trimmed() {
         let raw = "  light : Rose Pine Dawn , dark : Rose Pine  ";
-        assert_eq!(resolve_theme_name(raw, ColorSchemePreference::Light), "Rose Pine Dawn");
-        assert_eq!(resolve_theme_name(raw, ColorSchemePreference::Dark), "Rose Pine");
+        assert_eq!(
+            resolve_theme_name(raw, ColorSchemePreference::Light),
+            "Rose Pine Dawn"
+        );
+        assert_eq!(
+            resolve_theme_name(raw, ColorSchemePreference::Dark),
+            "Rose Pine"
+        );
     }
 
     // None / empty raw -> both sides None.
     #[test]
     fn parse_empty_yields_no_sides() {
-        assert_eq!(parse_theme_selection(None), ThemeSelection { light: None, dark: None });
-        assert_eq!(parse_theme_selection(Some("   ")), ThemeSelection { light: None, dark: None });
+        assert_eq!(
+            parse_theme_selection(None),
+            ThemeSelection {
+                light: None,
+                dark: None
+            }
+        );
+        assert_eq!(
+            parse_theme_selection(Some("   ")),
+            ThemeSelection {
+                light: None,
+                dark: None
+            }
+        );
     }
 
     // Mirrors CLI encodedThemeValue's four cases.
@@ -435,11 +482,20 @@ mod tests {
             encode_theme_value(Some("Latte"), Some("Frappe")),
             Some("light:Latte,dark:Frappe".to_string())
         );
-        assert_eq!(encode_theme_value(Some("Latte"), None), Some("light:Latte".to_string()));
-        assert_eq!(encode_theme_value(None, Some("Frappe")), Some("dark:Frappe".to_string()));
+        assert_eq!(
+            encode_theme_value(Some("Latte"), None),
+            Some("light:Latte".to_string())
+        );
+        assert_eq!(
+            encode_theme_value(None, Some("Frappe")),
+            Some("dark:Frappe".to_string())
+        );
         assert_eq!(encode_theme_value(None, None), None);
         // Empty / whitespace-only sides are dropped.
-        assert_eq!(encode_theme_value(Some("  "), Some("Frappe")), Some("dark:Frappe".to_string()));
+        assert_eq!(
+            encode_theme_value(Some("  "), Some("Frappe")),
+            Some("dark:Frappe".to_string())
+        );
         assert_eq!(encode_theme_value(Some(""), Some("")), None);
     }
 
@@ -449,7 +505,11 @@ mod tests {
         for raw in [CATPPUCCIN, MONOKAI, "light:Only Light", "dark:Only Dark"] {
             let selection = parse_theme_selection(Some(raw));
             let encoded = encode_theme_value(selection.light.as_deref(), selection.dark.as_deref());
-            assert_eq!(encoded.as_deref(), Some(raw), "round-trip mismatch for {raw:?}");
+            assert_eq!(
+                encoded.as_deref(),
+                Some(raw),
+                "round-trip mismatch for {raw:?}"
+            );
         }
     }
 
@@ -470,7 +530,10 @@ theme = Last One
 
     #[test]
     fn last_theme_directive_strips_surrounding_quotes_and_ignores_non_theme_keys() {
-        assert_eq!(last_theme_directive("theme = \"Quoted\""), Some("Quoted".to_string()));
+        assert_eq!(
+            last_theme_directive("theme = \"Quoted\""),
+            Some("Quoted".to_string())
+        );
         assert_eq!(last_theme_directive("theme=Bare"), Some("Bare".to_string()));
         // Non-theme keys and comments never set a value.
         assert_eq!(last_theme_directive("# theme = Commented\nfont = x"), None);
@@ -497,25 +560,40 @@ theme = Last One
             validate_theme_name("catppuccin latte", &available),
             Ok("Catppuccin Latte".to_string())
         );
-        assert_eq!(validate_theme_name("  NORD  ", &available), Ok("Nord".to_string()));
+        assert_eq!(
+            validate_theme_name("  NORD  ", &available),
+            Ok("Nord".to_string())
+        );
     }
 
     #[test]
     fn validate_theme_name_passes_through_when_available_is_empty() {
-        assert_eq!(validate_theme_name("Anything", &[]), Ok("Anything".to_string()));
-        assert_eq!(validate_theme_name("  Trimmed Me  ", &[]), Ok("Trimmed Me".to_string()));
+        assert_eq!(
+            validate_theme_name("Anything", &[]),
+            Ok("Anything".to_string())
+        );
+        assert_eq!(
+            validate_theme_name("  Trimmed Me  ", &[]),
+            Ok("Trimmed Me".to_string())
+        );
     }
 
     #[test]
     fn validate_theme_name_rejects_empty_and_unknown() {
         let available = vec!["Nord".to_string()];
-        assert_eq!(validate_theme_name("   ", &available), Err(ThemeValidationError::Empty));
+        assert_eq!(
+            validate_theme_name("   ", &available),
+            Err(ThemeValidationError::Empty)
+        );
         assert_eq!(
             validate_theme_name("Bogus", &available),
             Err(ThemeValidationError::Unknown("Bogus".to_string()))
         );
         // Error messages mirror the Swift CLIError text.
-        assert_eq!(ThemeValidationError::Empty.to_string(), "Theme name cannot be empty");
+        assert_eq!(
+            ThemeValidationError::Empty.to_string(),
+            "Theme name cannot be empty"
+        );
         assert_eq!(
             ThemeValidationError::Unknown("Bogus".to_string()).to_string(),
             "Unknown theme 'Bogus'. Run 'cmux themes' to list available themes."

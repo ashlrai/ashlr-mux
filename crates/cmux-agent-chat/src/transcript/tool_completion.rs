@@ -4,8 +4,7 @@
 //! Ports `Parsing/TranscriptToolCompletion.swift`.
 
 use super::model::{
-    ChatMessage, ChatMessageKind, ChatQuestion, ChatTerminalCapture, ChatToolUse,
-    ChatToolUseStatus,
+    ChatMessage, ChatMessageKind, ChatQuestion, ChatTerminalCapture, ChatToolUse, ChatToolUseStatus,
 };
 use super::text_budget::TranscriptTextBudget;
 
@@ -115,9 +114,13 @@ mod tests {
 
     #[test]
     fn terminal_completion_sets_output_and_exit() {
-        let msg = message(ChatMessageKind::Terminal(ChatTerminalCapture::running("ls")));
+        let msg = message(ChatMessageKind::Terminal(ChatTerminalCapture::running(
+            "ls",
+        )));
         let completion = TranscriptToolCompletion::new(Some("out".into()), false, None, Some(1.5));
-        let completed = completion.applied(&msg, &TranscriptTextBudget::new()).unwrap();
+        let completed = completion
+            .applied(&msg, &TranscriptTextBudget::new())
+            .unwrap();
         let ChatMessageKind::Terminal(capture) = completed.kind else {
             panic!("expected terminal");
         };
@@ -129,9 +132,13 @@ mod tests {
 
     #[test]
     fn error_terminal_without_exit_defaults_to_one() {
-        let msg = message(ChatMessageKind::Terminal(ChatTerminalCapture::running("ls")));
+        let msg = message(ChatMessageKind::Terminal(ChatTerminalCapture::running(
+            "ls",
+        )));
         let completion = TranscriptToolCompletion::new(None, true, None, None);
-        let completed = completion.applied(&msg, &TranscriptTextBudget::new()).unwrap();
+        let completed = completion
+            .applied(&msg, &TranscriptTextBudget::new())
+            .unwrap();
         let ChatMessageKind::Terminal(capture) = completed.kind else {
             panic!("expected terminal");
         };
@@ -140,9 +147,14 @@ mod tests {
 
     #[test]
     fn tool_use_fails_on_nonzero_exit() {
-        let msg = message(ChatMessageKind::ToolUse(ChatToolUse::running("Grep", "Grep x", None)));
-        let completion = TranscriptToolCompletion::new(Some("no match".into()), false, Some(2), None);
-        let completed = completion.applied(&msg, &TranscriptTextBudget::new()).unwrap();
+        let msg = message(ChatMessageKind::ToolUse(ChatToolUse::running(
+            "Grep", "Grep x", None,
+        )));
+        let completion =
+            TranscriptToolCompletion::new(Some("no match".into()), false, Some(2), None);
+        let completed = completion
+            .applied(&msg, &TranscriptTextBudget::new())
+            .unwrap();
         let ChatMessageKind::ToolUse(tool) = completed.kind else {
             panic!("expected toolUse");
         };
@@ -154,7 +166,10 @@ mod tests {
     fn question_selects_answer_by_prompt() {
         let question = ChatQuestion {
             prompt: "Which path?".into(),
-            options: vec![ChatQuestionOption::new("Fast", None), ChatQuestionOption::new("Slow", None)],
+            options: vec![
+                ChatQuestionOption::new("Fast", None),
+                ChatQuestionOption::new("Slow", None),
+            ],
             selected_option_label: None,
         };
         let msg = message(ChatMessageKind::Question(question));
@@ -164,7 +179,9 @@ mod tests {
             None,
             None,
         );
-        let completed = completion.applied(&msg, &TranscriptTextBudget::new()).unwrap();
+        let completed = completion
+            .applied(&msg, &TranscriptTextBudget::new())
+            .unwrap();
         let ChatMessageKind::Question(q) = completed.kind else {
             panic!("expected question");
         };
@@ -179,14 +196,19 @@ mod tests {
             selected_option_label: None,
         };
         let msg = message(ChatMessageKind::Question(question));
-        let completion = TranscriptToolCompletion::new(Some("unrelated output".into()), false, None, None);
-        assert!(completion.applied(&msg, &TranscriptTextBudget::new()).is_none());
+        let completion =
+            TranscriptToolCompletion::new(Some("unrelated output".into()), false, None, None);
+        assert!(completion
+            .applied(&msg, &TranscriptTextBudget::new())
+            .is_none());
     }
 
     #[test]
     fn prose_is_not_completable() {
         let msg = message(ChatMessageKind::Prose(ChatProse::new("hi")));
         let completion = TranscriptToolCompletion::new(Some("x".into()), false, None, None);
-        assert!(completion.applied(&msg, &TranscriptTextBudget::new()).is_none());
+        assert!(completion
+            .applied(&msg, &TranscriptTextBudget::new())
+            .is_none());
     }
 }

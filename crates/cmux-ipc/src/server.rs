@@ -15,6 +15,7 @@
 //! `maxRPCFrameBytes` and bound per-connection memory.
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::sync::mpsc;
 
 use crate::{
     append_line,
@@ -28,11 +29,31 @@ use crate::{
 /// connection with an error rather than buffering unboundedly.
 pub const MAX_RPC_FRAME_BYTES: usize = 4 * 1024 * 1024;
 
+/// Raw NDJSON stream returned by a streaming control method.
+pub enum ControlStream {
+    /// Emit a bounded list of frames and close the connection.
+    Frames(Vec<String>),
+    /// Emit initial frames, then keep the connection open for live frames until
+    /// the sender side is dropped or the client disconnects.
+    Live {
+        initial_frames: Vec<String>,
+        receiver: mpsc::UnboundedReceiver<String>,
+    },
+}
+
 /// Handles one parsed control request, producing the result to encode. The app
 /// supplies this; the transport stays oblivious to the command surface.
 pub trait ControlRequestHandler {
     /// Dispatch `request` and return its result.
     fn handle(&mut self, request: ControlRequest) -> ControlCallResult;
+
+    /// Optionally take over the connection and emit raw NDJSON frames. Most
+    /// methods are single-response RPCs; streaming methods such as
+    /// `events.stream` use this hook so the transport does not wrap each frame
+    /// in a JSON-RPC response envelope.
+    fn handle_stream(&mut self, _request: ControlRequest) -> Option<ControlStream> {
+        None
+    }
 }
 
 impl<F> ControlRequestHandler for F
@@ -51,11 +72,7 @@ where
 /// A malformed request (bad UTF-8 / JSON / shape) yields a protocol error
 /// response and the connection continues, matching the macOS server's
 /// per-line resilience.
-pub async fn serve_connection<R, W, H>(
-    reader: R,
-    writer: W,
-    handler: H,
-) -> std::io::Result<()>
+pub async fn serve_connection<R, W, H>(reader: R, writer: W, handler: H) -> std::io::Result<()>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -113,6 +130,10 @@ where
                 Some(auth_response) => auth_response,
                 None => match parser.request(line) {
                     Ok(request) => {
+                        if let Some(stream) = handler.handle_stream(request.clone()) {
+                            write_stream(&mut writer, stream).await?;
+                            return Ok(());
+                        }
                         let id = request.id.clone();
                         encoder.response(id, handler.handle(request))
                     }
@@ -122,6 +143,31 @@ where
         };
         writer.write_all(append_line(&response).as_bytes()).await?;
         writer.flush().await?;
+    }
+    Ok(())
+}
+
+async fn write_stream<W>(writer: &mut W, stream: ControlStream) -> std::io::Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    match stream {
+        ControlStream::Frames(frames) => {
+            for frame in frames {
+                write_frame(writer, &frame).await?;
+            }
+        }
+        ControlStream::Live {
+            initial_frames,
+            mut receiver,
+        } => {
+            for frame in initial_frames {
+                write_frame(writer, &frame).await?;
+            }
+            while let Some(frame) = receiver.recv().await {
+                write_frame(writer, &frame).await?;
+            }
+        }
     }
     Ok(())
 }
@@ -223,8 +269,8 @@ mod tests {
             PasswordAuthGate::new(OnePassword("s3cret")),
             &[
                 r#"{"id":1,"method":"surface.list"}"#, // before auth → rejected
-                "auth s3cret",                          // authenticate
-                r#"{"id":2,"method":"ping"}"#,          // after auth → dispatched
+                "auth s3cret",                         // authenticate
+                r#"{"id":2,"method":"ping"}"#,         // after auth → dispatched
             ],
         )
         .await;
@@ -253,7 +299,9 @@ mod tests {
         let (mut client, server) = duplex(64 * 1024);
         let (server_reader, server_writer) = tokio::io::split(server);
         let server_task =
-            tokio::spawn(async move { serve_connection(server_reader, server_writer, handler).await });
+            tokio::spawn(
+                async move { serve_connection(server_reader, server_writer, handler).await },
+            );
 
         for request in requests {
             write_frame(&mut client, request).await.expect("write");
@@ -275,6 +323,45 @@ mod tests {
         ControlCallResult::Ok(JsonValue::String(request.method))
     }
 
+    struct StreamHandler;
+
+    impl ControlRequestHandler for StreamHandler {
+        fn handle(&mut self, request: ControlRequest) -> ControlCallResult {
+            ControlCallResult::Ok(JsonValue::String(request.method))
+        }
+
+        fn handle_stream(&mut self, request: ControlRequest) -> Option<ControlStream> {
+            (request.method == "events.stream").then(|| {
+                ControlStream::Frames(vec![
+                    r#"{"type":"ack"}"#.to_string(),
+                    r#"{"type":"heartbeat"}"#.to_string(),
+                ])
+            })
+        }
+    }
+
+    struct LiveStreamHandler;
+
+    impl ControlRequestHandler for LiveStreamHandler {
+        fn handle(&mut self, request: ControlRequest) -> ControlCallResult {
+            ControlCallResult::Ok(JsonValue::String(request.method))
+        }
+
+        fn handle_stream(&mut self, request: ControlRequest) -> Option<ControlStream> {
+            if request.method != "events.stream" {
+                return None;
+            }
+            let (sender, receiver) = mpsc::unbounded_channel();
+            tokio::spawn(async move {
+                let _ = sender.send(r#"{"type":"event","seq":1}"#.to_string());
+            });
+            Some(ControlStream::Live {
+                initial_frames: vec![r#"{"type":"ack"}"#.to_string()],
+                receiver,
+            })
+        }
+    }
+
     #[tokio::test]
     async fn dispatches_request_and_frames_response() {
         let responses = round_trip(echo_handler, &[r#"{"id":1,"method":"ping"}"#]).await;
@@ -283,6 +370,38 @@ mod tests {
         assert_eq!(value["id"], serde_json::json!(1));
         assert_eq!(value["ok"], serde_json::json!(true));
         assert_eq!(value["result"], serde_json::json!("ping"));
+    }
+
+    #[tokio::test]
+    async fn streaming_handler_takes_over_connection_with_raw_frames() {
+        let responses = round_trip(
+            StreamHandler,
+            &[r#"{"id":1,"method":"events.stream","params":{}}"#],
+        )
+        .await;
+        assert_eq!(
+            responses,
+            vec![
+                r#"{"type":"ack"}"#.to_string(),
+                r#"{"type":"heartbeat"}"#.to_string()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn live_stream_handler_keeps_connection_for_receiver_frames() {
+        let responses = round_trip(
+            LiveStreamHandler,
+            &[r#"{"id":1,"method":"events.stream","params":{}}"#],
+        )
+        .await;
+        assert_eq!(
+            responses,
+            vec![
+                r#"{"type":"ack"}"#.to_string(),
+                r#"{"type":"event","seq":1}"#.to_string()
+            ]
+        );
     }
 
     #[tokio::test]
@@ -350,7 +469,10 @@ mod tests {
             .unwrap();
         client.flush().await.unwrap();
         client.shutdown().await.unwrap(); // half-close → server sees EOF
-        let frame = read_frame(&mut client, MAX_RPC_FRAME_BYTES).await.unwrap().unwrap();
+        let frame = read_frame(&mut client, MAX_RPC_FRAME_BYTES)
+            .await
+            .unwrap()
+            .unwrap();
         let value: serde_json::Value = serde_json::from_slice(&frame).unwrap();
         assert_eq!(value["result"], serde_json::json!("crlf"));
         task.await.unwrap().unwrap();

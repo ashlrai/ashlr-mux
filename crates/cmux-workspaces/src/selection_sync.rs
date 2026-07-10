@@ -139,7 +139,11 @@ pub fn anchor_index_after_workspace_reorder(
             }
         }
     }
-    anchor_index(focused_workspace_id, selected_workspace_ids, live_workspace_ids)
+    anchor_index(
+        focused_workspace_id,
+        selected_workspace_ids,
+        live_workspace_ids,
+    )
 }
 
 #[cfg(test)]
@@ -211,7 +215,10 @@ mod tests {
         let focused = Uuid::new_v4();
         let live = vec![a, b, focused];
         // Existing valid index wins.
-        assert_eq!(shift_click_anchor_index(Some(1), &set(&[]), None, &live), Some(1));
+        assert_eq!(
+            shift_click_anchor_index(Some(1), &set(&[]), None, &live),
+            Some(1)
+        );
         // Stale existing index → derive from single selection.
         assert_eq!(
             shift_click_anchor_index(Some(99), &set(&[b]), None, &live),
@@ -223,7 +230,10 @@ mod tests {
             Some(2)
         );
         // Nothing to derive from → None.
-        assert_eq!(shift_click_anchor_index(None, &set(&[a, b]), None, &live), None);
+        assert_eq!(
+            shift_click_anchor_index(None, &set(&[a, b]), None, &live),
+            None
+        );
     }
 
     #[test]

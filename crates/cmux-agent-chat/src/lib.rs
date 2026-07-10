@@ -38,8 +38,9 @@ pub mod transport_action;
 
 pub use claude::{write_claude_stream_json, ClaudeStreamAccumulator};
 pub use codex::{
-    encode_line, initialize_request, initialized_notification, thread_start_request,
-    turn_start_request, unsupported_server_request_error, CodexAccumulator, SubmitRejection,
+    encode_line, initialize_request, initialized_notification, rate_limit_rows_from_value,
+    rate_limits_read_request, thread_start_request, turn_start_request,
+    unsupported_server_request_error, CodexAccumulator, SubmitRejection,
 };
 pub use error::BridgeError;
 pub use event::{
@@ -60,8 +61,8 @@ pub use running_session::{ProviderAccumulator, RunningSession};
 pub use transcript::{
     ChatFileEdit, ChatFileEditOperation, ChatMessage, ChatMessageKind, ChatProse, ChatQuestion,
     ChatQuestionOption, ChatRole, ChatStatusEvent, ChatStatusTransition, ChatTerminalCapture,
-    ChatThought, ChatToolUse, ChatToolUseStatus, ChatTranscriptParseResult, ChatTranscriptParseState,
-    ClaudeTranscriptParser, CodexTranscriptParser, Timestamp,
+    ChatThought, ChatToolUse, ChatToolUseStatus, ChatTranscriptParseResult,
+    ChatTranscriptParseState, ClaudeTranscriptParser, CodexTranscriptParser, Timestamp,
 };
 pub use transport_action::TransportAction;
 
@@ -464,6 +465,9 @@ mod dispatch_tests {
         let recorded = events.borrow();
         assert!(matches!(recorded[0], AgentEvent::ProviderStarted { .. }));
         assert!(matches!(recorded[1], AgentEvent::ProviderOutput { .. }));
-        assert!(matches!(recorded[2], AgentEvent::ProviderTurnComplete { .. }));
+        assert!(matches!(
+            recorded[2],
+            AgentEvent::ProviderTurnComplete { .. }
+        ));
     }
 }

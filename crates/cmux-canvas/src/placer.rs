@@ -41,11 +41,21 @@ impl CanvasPlacer {
         let neighbors: [(CanvasDirection, CanvasRect); 4] = [
             (
                 CanvasDirection::Right,
-                CanvasRect::new(anchor.max_x() + gap, anchor.min_y(), size.width, size.height),
+                CanvasRect::new(
+                    anchor.max_x() + gap,
+                    anchor.min_y(),
+                    size.width,
+                    size.height,
+                ),
             ),
             (
                 CanvasDirection::Down,
-                CanvasRect::new(anchor.min_x(), anchor.max_y() + gap, size.width, size.height),
+                CanvasRect::new(
+                    anchor.min_x(),
+                    anchor.max_y() + gap,
+                    size.width,
+                    size.height,
+                ),
             ),
             (
                 CanvasDirection::Left,
@@ -67,17 +77,15 @@ impl CanvasPlacer {
             ),
         ];
 
-        let ordered_neighbors: Vec<CanvasRect> = match preferred_direction
-            .and_then(|dir| neighbors.iter().find(|(d, _)| *d == dir).map(|(_, f)| (dir, *f)))
-        {
+        let ordered_neighbors: Vec<CanvasRect> = match preferred_direction.and_then(|dir| {
+            neighbors
+                .iter()
+                .find(|(d, _)| *d == dir)
+                .map(|(_, f)| (dir, *f))
+        }) {
             Some((dir, preferred)) => {
                 let mut ordered = vec![preferred];
-                ordered.extend(
-                    neighbors
-                        .iter()
-                        .filter(|(d, _)| *d != dir)
-                        .map(|(_, f)| *f),
-                );
+                ordered.extend(neighbors.iter().filter(|(d, _)| *d != dir).map(|(_, f)| *f));
                 ordered
             }
             None => neighbors.iter().map(|(_, f)| *f).collect(),
@@ -175,9 +183,7 @@ mod tests {
         let blocker = CanvasRect::new(320.0, 10.0, 300.0, 200.0);
         let frame = placer().frame_for_new_pane(size(), Some(anchor), &[anchor, blocker], None);
         for existing in [anchor, blocker] {
-            assert!(!frame
-                .expanded_by(metrics().gap - 0.5)
-                .intersects(&existing));
+            assert!(!frame.expanded_by(metrics().gap - 0.5).intersects(&existing));
         }
     }
 

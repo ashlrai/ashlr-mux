@@ -4,7 +4,7 @@
 /**
  * `workspaceColors`: workspace tab and badge colors.
  */
-export type WorkspaceColorsConfig = { 
+export type WorkspaceColorsConfig = {
 /**
  * Active workspace indicator style. Kept as a `String` because the schema
  * documents legacy aliases that are accepted and normalized at runtime.

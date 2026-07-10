@@ -232,7 +232,8 @@ pub fn detect_for_testing(
     candidates.sort_by(|a, b| b.pid.cmp(&a.pid).then_with(|| b.pgid.cmp(&a.pgid)));
 
     for candidate in candidates {
-        let Some(transport) = RemoteShellTransport::from_executable_name(&candidate.executable_name)
+        let Some(transport) =
+            RemoteShellTransport::from_executable_name(&candidate.executable_name)
         else {
             continue;
         };
@@ -949,7 +950,13 @@ fn consume_et_value_char(
     }
     match option {
         'k' | 'p' => trimmed_value.parse::<i64>().is_ok(),
-        'u' => consume_et_value_str(trimmed_value, "username", destination, jump_host, login_name),
+        'u' => consume_et_value_str(
+            trimmed_value,
+            "username",
+            destination,
+            jump_host,
+            login_name,
+        ),
         _ => true,
     }
 }
@@ -1059,8 +1066,7 @@ fn parse_eternal_terminal_command_line(arguments: &[String]) -> Option<DetectedS
                     if value_after_eq.unwrap().parse::<i64>().is_err() {
                         return None;
                     }
-                } else if index + 1 < arguments.len()
-                    && arguments[index + 1].parse::<i64>().is_ok()
+                } else if index + 1 < arguments.len() && arguments[index + 1].parse::<i64>().is_ok()
                 {
                     index += 1;
                 }
@@ -1308,7 +1314,10 @@ mod tests {
         assert_eq!(ssh_option_key("  ").as_deref(), None);
         assert_eq!(ssh_option_value("Port=2200").as_deref(), Some("2200"));
         assert_eq!(ssh_option_value("Port 2200").as_deref(), Some("2200"));
-        assert_eq!(ssh_option_value("Port  2200  x").as_deref(), Some("2200  x"));
+        assert_eq!(
+            ssh_option_value("Port  2200  x").as_deref(),
+            Some("2200  x")
+        );
         assert_eq!(ssh_option_value("Port=").as_deref(), None);
         assert_eq!(ssh_option_value("Port").as_deref(), None);
     }
@@ -1317,14 +1326,20 @@ mod tests {
 
     #[test]
     fn resolve_destination_cases() {
-        assert_eq!(resolve_destination("example.com", Some("lawrence")), "lawrence@example.com");
+        assert_eq!(
+            resolve_destination("example.com", Some("lawrence")),
+            "lawrence@example.com"
+        );
         assert_eq!(
             resolve_destination("bob@example.com", Some("lawrence")),
             "bob@example.com"
         );
         assert_eq!(resolve_destination("example.com", None), "example.com");
         assert_eq!(resolve_destination("  ", Some("lawrence")), "");
-        assert_eq!(resolve_destination("example.com", Some("  ")), "example.com");
+        assert_eq!(
+            resolve_destination("example.com", Some("  ")),
+            "example.com"
+        );
     }
 
     // --- strip_eternal_terminal_server_port ----------------------------------
@@ -1352,7 +1367,10 @@ mod tests {
 
     #[test]
     fn strip_server_port_hostname_with_port() {
-        assert_eq!(strip_eternal_terminal_server_port("example.com:2024"), "example.com");
+        assert_eq!(
+            strip_eternal_terminal_server_port("example.com:2024"),
+            "example.com"
+        );
     }
 
     #[test]
@@ -1373,8 +1391,14 @@ mod tests {
 
     #[test]
     fn strip_server_port_no_port() {
-        assert_eq!(strip_eternal_terminal_server_port("example.com"), "example.com");
-        assert_eq!(strip_eternal_terminal_server_port("host:notaport"), "host:notaport");
+        assert_eq!(
+            strip_eternal_terminal_server_port("example.com"),
+            "example.com"
+        );
+        assert_eq!(
+            strip_eternal_terminal_server_port("host:notaport"),
+            "host:notaport"
+        );
         assert_eq!(strip_eternal_terminal_server_port("  "), "");
     }
 
@@ -1440,7 +1464,14 @@ mod tests {
         let mut by_pid = HashMap::new();
         by_pid.insert(
             2145,
-            args(&["ssh", "-S", "/tmp/cmux-ssh-%C", "-p", "2200", "lawrence@example.com"]),
+            args(&[
+                "ssh",
+                "-S",
+                "/tmp/cmux-ssh-%C",
+                "-p",
+                "2200",
+                "lawrence@example.com",
+            ]),
         );
         let session = detect_for_testing(
             "/dev/ttys004",
@@ -1458,7 +1489,10 @@ mod tests {
     #[test]
     fn detects_foreground_eternal_terminal_session_for_tty() {
         let mut by_pid = HashMap::new();
-        by_pid.insert(2145, args(&["/opt/homebrew/bin/et", "lawrence@example.com"]));
+        by_pid.insert(
+            2145,
+            args(&["/opt/homebrew/bin/et", "lawrence@example.com"]),
+        );
         let session = detect_for_testing(
             "/dev/ttys004",
             &[snap(2145, 1967, 1967, "ttys004", "et")],
@@ -1501,7 +1535,10 @@ mod tests {
 
         let scp = session.scp_arguments("/tmp/local.png", "/tmp/cmux-drop-123.png");
         assert!(!scp.iter().any(|a| a == "-P"));
-        assert_eq!(scp.last().unwrap(), "lawrence@example.com:/tmp/cmux-drop-123.png");
+        assert_eq!(
+            scp.last().unwrap(),
+            "lawrence@example.com:/tmp/cmux-drop-123.png"
+        );
     }
 
     #[test]
@@ -1548,14 +1585,17 @@ mod tests {
 
     #[test]
     fn detects_et_ignores_options_after_destination() {
-        let session = et(&["et", "lawrence@example.com", "--ssh-option", "Port=2200"])
-            .expect("session");
+        let session =
+            et(&["et", "lawrence@example.com", "--ssh-option", "Port=2200"]).expect("session");
         assert_eq!(session.destination, "lawrence@example.com");
         assert_eq!(session.port, None);
 
         let scp = session.scp_arguments("/tmp/local.png", "/tmp/cmux-drop-123.png");
         assert!(!scp.iter().any(|a| a == "-P"));
-        assert_eq!(scp.last().unwrap(), "lawrence@example.com:/tmp/cmux-drop-123.png");
+        assert_eq!(
+            scp.last().unwrap(),
+            "lawrence@example.com:/tmp/cmux-drop-123.png"
+        );
     }
 
     #[test]
@@ -1567,7 +1607,10 @@ mod tests {
             "lawrence@example.com",
         ])
         .expect("session");
-        assert_eq!(session.jump_host.as_deref(), Some("relay@bastion.example.com"));
+        assert_eq!(
+            session.jump_host.as_deref(),
+            Some("relay@bastion.example.com")
+        );
 
         let scp = session.scp_arguments("/tmp/local.png", "/tmp/cmux-drop-123.png");
         assert_eq!(session.port, None);
@@ -1575,7 +1618,10 @@ mod tests {
         assert!(scp.iter().any(|a| a == "-J"));
         assert!(scp.iter().any(|a| a == "relay@bastion.example.com"));
         assert!(!scp.iter().any(|a| a == "relay@bastion.example.com:2022"));
-        assert_eq!(scp.last().unwrap(), "lawrence@example.com:/tmp/cmux-drop-123.png");
+        assert_eq!(
+            scp.last().unwrap(),
+            "lawrence@example.com:/tmp/cmux-drop-123.png"
+        );
     }
 
     #[test]
@@ -1681,7 +1727,10 @@ mod tests {
 
     #[test]
     fn ssh_plain_destination_and_user_at_host() {
-        assert_eq!(ssh(&["ssh", "example.com"]).unwrap().destination, "example.com");
+        assert_eq!(
+            ssh(&["ssh", "example.com"]).unwrap().destination,
+            "example.com"
+        );
         assert_eq!(
             ssh(&["ssh", "lawrence@example.com"]).unwrap().destination,
             "lawrence@example.com"
@@ -1697,7 +1746,14 @@ mod tests {
     #[test]
     fn ssh_jump_host_and_identity_and_config() {
         let session = ssh(&[
-            "ssh", "-J", "bastion", "-i", "/id", "-F", "/cfg", "example.com",
+            "ssh",
+            "-J",
+            "bastion",
+            "-i",
+            "/id",
+            "-F",
+            "/cfg",
+            "example.com",
         ])
         .unwrap();
         assert_eq!(session.jump_host.as_deref(), Some("bastion"));

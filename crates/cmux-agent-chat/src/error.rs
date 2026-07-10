@@ -90,13 +90,34 @@ mod tests {
     #[test]
     fn codes_match_wire_contract() {
         assert_eq!(BridgeError::InvalidRequest.code(), "invalidRequest");
-        assert_eq!(BridgeError::InvalidProvider("x".into()).code(), "invalidProvider");
-        assert_eq!(BridgeError::MissingParameter("x".into()).code(), "missingParameter");
-        assert_eq!(BridgeError::UnsupportedMethod("x".into()).code(), "unsupportedMethod");
-        assert_eq!(BridgeError::SessionNotFound("x".into()).code(), "sessionNotFound");
-        assert_eq!(BridgeError::SessionAlreadyRunning.code(), "sessionAlreadyRunning");
-        assert_eq!(BridgeError::ProviderLaunchFailed("x".into()).code(), "providerLaunchFailed");
-        assert_eq!(BridgeError::UnsupportedTransport("x".into()).code(), "unsupportedTransport");
+        assert_eq!(
+            BridgeError::InvalidProvider("x".into()).code(),
+            "invalidProvider"
+        );
+        assert_eq!(
+            BridgeError::MissingParameter("x".into()).code(),
+            "missingParameter"
+        );
+        assert_eq!(
+            BridgeError::UnsupportedMethod("x".into()).code(),
+            "unsupportedMethod"
+        );
+        assert_eq!(
+            BridgeError::SessionNotFound("x".into()).code(),
+            "sessionNotFound"
+        );
+        assert_eq!(
+            BridgeError::SessionAlreadyRunning.code(),
+            "sessionAlreadyRunning"
+        );
+        assert_eq!(
+            BridgeError::ProviderLaunchFailed("x".into()).code(),
+            "providerLaunchFailed"
+        );
+        assert_eq!(
+            BridgeError::UnsupportedTransport("x".into()).code(),
+            "unsupportedTransport"
+        );
     }
 
     #[test]
@@ -110,7 +131,10 @@ mod tests {
     #[test]
     fn provider_not_ready_code_is_load_bearing() {
         // The renderer silently no-ops writeLine on exactly this string.
-        assert_eq!(BridgeError::ProviderNotReady("codex".into()).code(), "providerNotReady");
+        assert_eq!(
+            BridgeError::ProviderNotReady("codex".into()).code(),
+            "providerNotReady"
+        );
     }
 
     #[test]

@@ -80,7 +80,10 @@ mod tests {
 
     #[test]
     fn from_wire_parses_known_and_rejects_unknown() {
-        assert_eq!(WorkstreamSource::from_wire("claude"), Some(WorkstreamSource::Claude));
+        assert_eq!(
+            WorkstreamSource::from_wire("claude"),
+            Some(WorkstreamSource::Claude)
+        );
         assert_eq!(
             WorkstreamSource::from_wire("hermes-agent"),
             Some(WorkstreamSource::HermesAgent)

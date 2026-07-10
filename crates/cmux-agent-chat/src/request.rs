@@ -208,6 +208,9 @@ mod tests {
             request(json!({ "permissionMode": "bogus" })).permission_mode(),
             PermissionMode::Standard
         );
-        assert_eq!(request(json!({})).permission_mode(), PermissionMode::Standard);
+        assert_eq!(
+            request(json!({})).permission_mode(),
+            PermissionMode::Standard
+        );
     }
 }

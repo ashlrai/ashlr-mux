@@ -331,38 +331,62 @@ mod tests {
 
     #[test]
     fn https_only() {
-        assert!(!is_potentially_safe_remote_image_url(&parse("http://example.com/a.png")));
-        assert!(is_potentially_safe_remote_image_url(&parse("https://example.com/a.png")));
+        assert!(!is_potentially_safe_remote_image_url(&parse(
+            "http://example.com/a.png"
+        )));
+        assert!(is_potentially_safe_remote_image_url(&parse(
+            "https://example.com/a.png"
+        )));
     }
 
     #[test]
     fn userinfo_rejected() {
-        assert!(!is_potentially_safe_remote_image_url(&parse("https://user@example.com/x")));
-        assert!(!is_potentially_safe_remote_image_url(&parse("https://user:pass@example.com/x")));
+        assert!(!is_potentially_safe_remote_image_url(&parse(
+            "https://user@example.com/x"
+        )));
+        assert!(!is_potentially_safe_remote_image_url(&parse(
+            "https://user:pass@example.com/x"
+        )));
     }
 
     #[test]
     fn nondefault_port_rejected_default_allowed() {
-        assert!(!is_potentially_safe_remote_image_url(&parse("https://example.com:8443/x")));
-        assert!(is_potentially_safe_remote_image_url(&parse("https://example.com:443/x")));
-        assert!(is_potentially_safe_remote_image_url(&parse("https://example.com/x")));
+        assert!(!is_potentially_safe_remote_image_url(&parse(
+            "https://example.com:8443/x"
+        )));
+        assert!(is_potentially_safe_remote_image_url(&parse(
+            "https://example.com:443/x"
+        )));
+        assert!(is_potentially_safe_remote_image_url(&parse(
+            "https://example.com/x"
+        )));
     }
 
     // --- host literal blocklist ----------------------------------------------
 
     #[test]
     fn loopback_names_rejected() {
-        for h in ["https://localhost/x", "https://foo.localhost/x", "https://box.local/x"] {
+        for h in [
+            "https://localhost/x",
+            "https://foo.localhost/x",
+            "https://box.local/x",
+        ] {
             assert!(!is_potentially_safe_remote_image_url(&parse(h)), "{h}");
         }
-        assert!(is_potentially_safe_remote_image_url(&parse("https://example.com/x")));
+        assert!(is_potentially_safe_remote_image_url(&parse(
+            "https://example.com/x"
+        )));
     }
 
     #[test]
     fn host_normalization_case_and_trailing_dot() {
-        assert!(is_potentially_safe_remote_image_url(&parse("https://EXAMPLE.com/x")));
+        assert!(is_potentially_safe_remote_image_url(&parse(
+            "https://EXAMPLE.com/x"
+        )));
         // A trailing-dot FQDN is still a normal domain.
-        assert!(is_potentially_safe_remote_image_url(&parse("https://example.com./x")));
+        assert!(is_potentially_safe_remote_image_url(&parse(
+            "https://example.com./x"
+        )));
     }
 
     // --- IPv4 blocklist ------------------------------------------------------
@@ -370,16 +394,32 @@ mod tests {
     #[test]
     fn ipv4_blocklist() {
         for blocked in [
-            [0, 0, 0, 0], [10, 1, 2, 3], [100, 64, 0, 1], [100, 127, 255, 255],
-            [127, 0, 0, 1], [169, 254, 1, 1], [172, 16, 0, 1], [172, 31, 255, 255],
-            [192, 0, 0, 1], [192, 168, 1, 1], [198, 18, 0, 1], [198, 19, 255, 255],
-            [224, 0, 0, 1], [255, 255, 255, 255],
+            [0, 0, 0, 0],
+            [10, 1, 2, 3],
+            [100, 64, 0, 1],
+            [100, 127, 255, 255],
+            [127, 0, 0, 1],
+            [169, 254, 1, 1],
+            [172, 16, 0, 1],
+            [172, 31, 255, 255],
+            [192, 0, 0, 1],
+            [192, 168, 1, 1],
+            [198, 18, 0, 1],
+            [198, 19, 255, 255],
+            [224, 0, 0, 1],
+            [255, 255, 255, 255],
         ] {
             assert!(!is_allowed_ipv4(blocked), "{blocked:?} should be blocked");
         }
         for allowed in [
-            [8, 8, 8, 8], [1, 1, 1, 1], [100, 63, 255, 255], [100, 128, 0, 1],
-            [172, 15, 0, 1], [172, 32, 0, 1], [198, 17, 0, 1], [198, 20, 0, 1],
+            [8, 8, 8, 8],
+            [1, 1, 1, 1],
+            [100, 63, 255, 255],
+            [100, 128, 0, 1],
+            [172, 15, 0, 1],
+            [172, 32, 0, 1],
+            [198, 17, 0, 1],
+            [198, 20, 0, 1],
             [223, 255, 255, 255],
         ] {
             assert!(is_allowed_ipv4(allowed), "{allowed:?} should be allowed");
@@ -388,16 +428,24 @@ mod tests {
 
     #[test]
     fn ipv4_literal_url_blocked() {
-        assert!(!is_potentially_safe_remote_image_url(&parse("https://127.0.0.1/x")));
-        assert!(!is_potentially_safe_remote_image_url(&parse("https://10.0.0.1/x")));
-        assert!(is_potentially_safe_remote_image_url(&parse("https://8.8.8.8/x")));
+        assert!(!is_potentially_safe_remote_image_url(&parse(
+            "https://127.0.0.1/x"
+        )));
+        assert!(!is_potentially_safe_remote_image_url(&parse(
+            "https://10.0.0.1/x"
+        )));
+        assert!(is_potentially_safe_remote_image_url(&parse(
+            "https://8.8.8.8/x"
+        )));
     }
 
     #[test]
     fn decimal_ipv4_form_is_classified_not_bypassed() {
         // WHATWG parses 2130706433 as 127.0.0.1 — must be blocked (Swift's
         // inet_pton would miss this; documented security-improving divergence).
-        assert!(!is_potentially_safe_remote_image_url(&parse("https://2130706433/x")));
+        assert!(!is_potentially_safe_remote_image_url(&parse(
+            "https://2130706433/x"
+        )));
     }
 
     // --- IPv6 blocklist ------------------------------------------------------
@@ -405,14 +453,29 @@ mod tests {
     #[test]
     fn ipv6_literal_url_blocklist() {
         for blocked in [
-            "https://[::]/x", "https://[::1]/x", "https://[fc00::1]/x", "https://[fdff::1]/x",
-            "https://[fe80::1]/x", "https://[fec0::1]/x", "https://[ff02::1]/x",
-            "https://[::ffff:127.0.0.1]/x", "https://[::1.2.3.4]/x",
+            "https://[::]/x",
+            "https://[::1]/x",
+            "https://[fc00::1]/x",
+            "https://[fdff::1]/x",
+            "https://[fe80::1]/x",
+            "https://[fec0::1]/x",
+            "https://[ff02::1]/x",
+            "https://[::ffff:127.0.0.1]/x",
+            "https://[::1.2.3.4]/x",
         ] {
-            assert!(!is_potentially_safe_remote_image_url(&parse(blocked)), "{blocked}");
+            assert!(
+                !is_potentially_safe_remote_image_url(&parse(blocked)),
+                "{blocked}"
+            );
         }
-        for allowed in ["https://[2606:4700:4700::1111]/x", "https://[::ffff:8.8.8.8]/x"] {
-            assert!(is_potentially_safe_remote_image_url(&parse(allowed)), "{allowed}");
+        for allowed in [
+            "https://[2606:4700:4700::1111]/x",
+            "https://[::ffff:8.8.8.8]/x",
+        ] {
+            assert!(
+                is_potentially_safe_remote_image_url(&parse(allowed)),
+                "{allowed}"
+            );
         }
     }
 
@@ -424,22 +487,40 @@ mod tests {
             remote_image_consent_host(&parse("https://EXAMPLE.com/x")).as_deref(),
             Some("example.com")
         );
-        assert_eq!(remote_image_consent_host(&parse("http://example.com/x")), None);
+        assert_eq!(
+            remote_image_consent_host(&parse("http://example.com/x")),
+            None
+        );
     }
 
     // --- MIME allowlist ------------------------------------------------------
 
     #[test]
     fn mime_allowlist() {
-        assert_eq!(canonical_image_mime_type(Some("image/png")).as_deref(), Some("image/png"));
-        assert_eq!(canonical_image_mime_type(Some("image/jpg")).as_deref(), Some("image/jpeg"));
-        assert_eq!(canonical_image_mime_type(Some("image/jpeg")).as_deref(), Some("image/jpeg"));
+        assert_eq!(
+            canonical_image_mime_type(Some("image/png")).as_deref(),
+            Some("image/png")
+        );
+        assert_eq!(
+            canonical_image_mime_type(Some("image/jpg")).as_deref(),
+            Some("image/jpeg")
+        );
+        assert_eq!(
+            canonical_image_mime_type(Some("image/jpeg")).as_deref(),
+            Some("image/jpeg")
+        );
         assert_eq!(
             canonical_image_mime_type(Some("IMAGE/PNG; charset=binary")).as_deref(),
             Some("image/png")
         );
-        assert_eq!(canonical_image_mime_type(Some("image/svg+xml")).as_deref(), Some("image/svg+xml"));
-        assert_eq!(canonical_image_mime_type(Some("image/gif")).as_deref(), Some("image/gif"));
+        assert_eq!(
+            canonical_image_mime_type(Some("image/svg+xml")).as_deref(),
+            Some("image/svg+xml")
+        );
+        assert_eq!(
+            canonical_image_mime_type(Some("image/gif")).as_deref(),
+            Some("image/gif")
+        );
         assert_eq!(canonical_image_mime_type(Some("text/html")), None);
         assert_eq!(canonical_image_mime_type(None), None);
     }
@@ -449,8 +530,14 @@ mod tests {
     #[test]
     fn path_and_query_defaults_to_slash() {
         assert_eq!(path_and_query(&parse("https://example.com")), "/");
-        assert_eq!(path_and_query(&parse("https://example.com/a/b.png")), "/a/b.png");
-        assert_eq!(path_and_query(&parse("https://example.com/a?x=1&y=2")), "/a?x=1&y=2");
+        assert_eq!(
+            path_and_query(&parse("https://example.com/a/b.png")),
+            "/a/b.png"
+        );
+        assert_eq!(
+            path_and_query(&parse("https://example.com/a?x=1&y=2")),
+            "/a?x=1&y=2"
+        );
     }
 
     #[test]
@@ -465,7 +552,8 @@ mod tests {
 
     #[test]
     fn request_bytes_brackets_ipv6_host() {
-        let bytes = request_bytes(&parse("https://[2606:4700::1111]/a.png"), "2606:4700::1111").unwrap();
+        let bytes =
+            request_bytes(&parse("https://[2606:4700::1111]/a.png"), "2606:4700::1111").unwrap();
         let text = String::from_utf8(bytes).unwrap();
         assert!(text.contains("\r\nHost: [2606:4700::1111]\r\n"), "{text}");
     }
@@ -481,6 +569,8 @@ mod tests {
         assert!(is_allowed_resolved_ip("8.8.8.8".parse().unwrap()));
         assert!(!is_allowed_resolved_ip("127.0.0.1".parse().unwrap()));
         assert!(!is_allowed_resolved_ip("::1".parse().unwrap()));
-        assert!(is_allowed_resolved_ip("2606:4700:4700::1111".parse().unwrap()));
+        assert!(is_allowed_resolved_ip(
+            "2606:4700:4700::1111".parse().unwrap()
+        ));
     }
 }

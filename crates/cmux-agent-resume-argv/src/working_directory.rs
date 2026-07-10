@@ -76,7 +76,14 @@ mod tests {
 
     #[test]
     fn cwd_namespacing_classifies_id_keyed_kinds_as_cwd_in_file() {
-        for kind in ["codex", "opencode", "amp", "antigravity", "rovodev", "hermes-agent"] {
+        for kind in [
+            "codex",
+            "opencode",
+            "amp",
+            "antigravity",
+            "rovodev",
+            "hermes-agent",
+        ] {
             assert_eq!(
                 AgentResumeWorkingDirectory::new().cwd_namespacing(kind),
                 AgentCwdNamespacing::CwdInFile,
@@ -87,8 +94,16 @@ mod tests {
 
     #[test]
     fn cwd_namespacing_classifies_directory_keyed_and_unknown_kinds_as_by_directory() {
-        for kind in ["claude", "grok", "pi", "gemini", "cursor", "qoder", "copilot", "totally-unknown"]
-        {
+        for kind in [
+            "claude",
+            "grok",
+            "pi",
+            "gemini",
+            "cursor",
+            "qoder",
+            "copilot",
+            "totally-unknown",
+        ] {
             assert_eq!(
                 AgentResumeWorkingDirectory::new().cwd_namespacing(kind),
                 AgentCwdNamespacing::ByDirectory,
@@ -150,8 +165,14 @@ mod tests {
 
     #[test]
     fn resolve_returns_none_when_both_inputs_absent() {
-        assert_eq!(AgentResumeWorkingDirectory::new().resolve("claude", None, None), None);
-        assert_eq!(AgentResumeWorkingDirectory::new().resolve("codex", Some("  "), Some("")), None);
+        assert_eq!(
+            AgentResumeWorkingDirectory::new().resolve("claude", None, None),
+            None
+        );
+        assert_eq!(
+            AgentResumeWorkingDirectory::new().resolve("codex", Some("  "), Some("")),
+            None
+        );
     }
 
     #[test]

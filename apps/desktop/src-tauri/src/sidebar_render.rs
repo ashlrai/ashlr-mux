@@ -133,7 +133,11 @@ mod tests {
     use cmux_core::session::{SessionWorkspaceGroupSnapshot, SessionWorkspaceSnapshot};
     use cmux_workspaces::SidebarWorkspaceRenderItemId;
 
-    fn workspace(id: &str, group_id: Option<&str>, is_pinned: Option<bool>) -> SessionWorkspaceSnapshot {
+    fn workspace(
+        id: &str,
+        group_id: Option<&str>,
+        is_pinned: Option<bool>,
+    ) -> SessionWorkspaceSnapshot {
         SessionWorkspaceSnapshot {
             workspace_id: Some(id.to_string()),
             group_id: group_id.map(|s| s.to_string()),
@@ -194,7 +198,10 @@ mod tests {
             }
             other => panic!("expected header, got {other:?}"),
         }
-        assert_eq!(items[0].id(), SidebarWorkspaceRenderItemId::Group(uuid(GID)));
+        assert_eq!(
+            items[0].id(),
+            SidebarWorkspaceRenderItemId::Group(uuid(GID))
+        );
         assert_eq!(items[0].row_workspace_id(), uuid(ANCHOR));
         assert_eq!(items[1].row_workspace_id(), uuid(MEMBER));
         assert_eq!(items[2].row_workspace_id(), uuid(SOLO));
@@ -306,7 +313,10 @@ mod tests {
         };
         let items = render_items(&snapshot);
         assert_eq!(items.len(), 2);
-        assert_eq!(items[0].id(), SidebarWorkspaceRenderItemId::Group(uuid(GID)));
+        assert_eq!(
+            items[0].id(),
+            SidebarWorkspaceRenderItemId::Group(uuid(GID))
+        );
         assert_eq!(items[0].row_workspace_id(), uuid(ANCHOR)); // members[0], not SOLO
         assert_eq!(items[1].row_workspace_id(), uuid(MEMBER));
     }

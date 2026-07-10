@@ -73,17 +73,23 @@ pub fn normalize_workspace_group_runs_preserving_order(
     let mut reordered: Vec<WorkspaceRow> = Vec::with_capacity(cleared.len());
 
     let append = |id: Uuid,
-                      reordered: &mut Vec<WorkspaceRow>,
-                      emitted_workspace_ids: &mut HashSet<Uuid>,
-                      emitted_group_ids: &mut HashSet<Uuid>| {
+                  reordered: &mut Vec<WorkspaceRow>,
+                  emitted_workspace_ids: &mut HashSet<Uuid>,
+                  emitted_group_ids: &mut HashSet<Uuid>| {
         let Some(tab) = tabs_by_id.get(&id) else {
             return;
         };
-        match tab.group_id.and_then(|gid| by_id.get(&gid).map(|g| (gid, g))) {
+        match tab
+            .group_id
+            .and_then(|gid| by_id.get(&gid).map(|g| (gid, g)))
+        {
             Some((gid, group)) => {
                 if emitted_group_ids.insert(gid) {
                     let members = anchor_first(
-                        grouped_by_group_id.get(&gid).map(|v| v.as_slice()).unwrap_or(&[]),
+                        grouped_by_group_id
+                            .get(&gid)
+                            .map(|v| v.as_slice())
+                            .unwrap_or(&[]),
                         group.anchor_workspace_id,
                     );
                     for member in members {
@@ -167,7 +173,11 @@ pub fn expand_workspace_group_for_selection_if_needed(
     let Some(selected) = selected_tab_id else {
         return out;
     };
-    let Some(group_id) = rows.iter().find(|r| r.id == selected).and_then(|r| r.group_id) else {
+    let Some(group_id) = rows
+        .iter()
+        .find(|r| r.id == selected)
+        .and_then(|r| r.group_id)
+    else {
         return out;
     };
     let Some(index) = out.iter().position(|g| g.id == group_id) else {
@@ -230,7 +240,10 @@ pub fn move_workspace_group_members_after_anchors(
         if tab.id == group.anchor_workspace_id {
             continue;
         }
-        promoted_ids_by_group_id.entry(gid).or_default().push(*workspace_id);
+        promoted_ids_by_group_id
+            .entry(gid)
+            .or_default()
+            .push(*workspace_id);
     }
     if promoted_ids_by_group_id.is_empty() {
         return rows.to_vec();
@@ -238,9 +251,14 @@ pub fn move_workspace_group_members_after_anchors(
 
     let mut replacement_members_by_group_id: HashMap<Uuid, Vec<WorkspaceRow>> = HashMap::new();
     for (gid, promoted_ids) in &promoted_ids_by_group_id {
-        let Some(group) = by_id.get(gid) else { continue };
-        let group_members: Vec<WorkspaceRow> =
-            rows.iter().copied().filter(|r| r.group_id == Some(*gid)).collect();
+        let Some(group) = by_id.get(gid) else {
+            continue;
+        };
+        let group_members: Vec<WorkspaceRow> = rows
+            .iter()
+            .copied()
+            .filter(|r| r.group_id == Some(*gid))
+            .collect();
         let ordered_members = anchor_first(&group_members, group.anchor_workspace_id);
         let Some(anchor) = ordered_members
             .iter()
@@ -311,7 +329,10 @@ pub fn dissolve_groups_anchored_by(
         .iter()
         .map(|r| {
             let mut r = *r;
-            if r.group_id.map(|gid| dissolved_group_ids.contains(&gid)).unwrap_or(false) {
+            if r.group_id
+                .map(|gid| dissolved_group_ids.contains(&gid))
+                .unwrap_or(false)
+            {
                 r.group_id = None;
             }
             r
@@ -402,7 +423,10 @@ mod tests {
             new_rows.iter().map(|r| r.id).collect::<Vec<_>>(),
             vec![anchor, member, stale]
         );
-        assert_eq!(new_rows.iter().find(|r| r.id == stale).unwrap().group_id, None);
+        assert_eq!(
+            new_rows.iter().find(|r| r.id == stale).unwrap().group_id,
+            None
+        );
     }
 
     #[test]

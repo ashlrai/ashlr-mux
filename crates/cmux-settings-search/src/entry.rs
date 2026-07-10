@@ -66,7 +66,8 @@ impl SettingsSearchEntry {
             search_text.as_ref()
         );
         let normalized_search_text = SettingsSearchIndex::normalized(&combined);
-        let normalized_search_words = SettingsSearchIndex::normalized_tokens(&normalized_search_text);
+        let normalized_search_words =
+            SettingsSearchIndex::normalized_tokens(&normalized_search_text);
         let normalized_search_word_set: HashSet<String> =
             normalized_search_words.iter().cloned().collect();
         SettingsSearchEntry {

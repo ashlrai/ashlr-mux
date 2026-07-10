@@ -47,8 +47,8 @@ pub fn make(
     workspace_unread_indicator_count: usize,
     max_inline: usize,
 ) -> NotificationMenuSnapshot {
-    let unread_count = notifications.iter().filter(|n| !n.is_read).count()
-        + workspace_unread_indicator_count;
+    let unread_count =
+        notifications.iter().filter(|n| !n.is_read).count() + workspace_unread_indicator_count;
 
     NotificationMenuSnapshot {
         unread_count,

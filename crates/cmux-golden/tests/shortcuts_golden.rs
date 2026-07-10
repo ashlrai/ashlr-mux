@@ -28,7 +28,10 @@ const DOMAIN: &str = "shortcuts";
 fn assert_stored_round_trip(name: &str, shortcut: &StoredShortcut) {
     let json = serde_json::to_string(shortcut).expect("serialize StoredShortcut");
     let decoded: StoredShortcut = serde_json::from_str(&json).expect("deserialize StoredShortcut");
-    assert_eq!(&decoded, shortcut, "round-trip changed StoredShortcut {name}");
+    assert_eq!(
+        &decoded, shortcut,
+        "round-trip changed StoredShortcut {name}"
+    );
     assert_canonical_fixture_from_json_str(DOMAIN, name, &json);
 }
 
@@ -166,7 +169,10 @@ fn clause_and_or_precedence() {
 
 #[test]
 fn clause_not_and_parens() {
-    assert_clause("clause_not_parens", "!(sidebarFocus && commandPaletteVisible)");
+    assert_clause(
+        "clause_not_parens",
+        "!(sidebarFocus && commandPaletteVisible)",
+    );
 }
 
 #[test]

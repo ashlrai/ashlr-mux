@@ -159,6 +159,58 @@ def _wait_browser_contains(client: cmux, surface_id: str, token: str, timeout_s:
     raise cmuxError(f"Timed out waiting for browser content token {token!r}; last body sample={last_text[:240]!r}")
 
 
+def _field(payload: dict, camel: str, snake: str):
+    return payload.get(camel, payload.get(snake))
+
+
+def _wait_browser_network_record(
+    client: cmux,
+    surface_id: str,
+    *,
+    url_token: str,
+    response_token: str,
+    timeout_s: float = 20.0,
+) -> dict:
+    deadline = time.time() + timeout_s
+    last = {}
+    while time.time() < deadline:
+        try:
+            last = client.browser_network_requests(
+                surface_id,
+                url_contains=url_token,
+                limit=20,
+            )
+        except cmuxError:
+            time.sleep(0.25)
+            continue
+
+        for record in last.get("requests") or []:
+            url = str(record.get("url") or "")
+            source = str(record.get("source") or "")
+            attribution = _field(record, "proxyAttribution", "proxy_attribution")
+            response_status = _field(record, "responseStatus", "response_status")
+            response_body = _field(record, "responseBody", "response_body")
+            response_body_preview_kind = _field(record, "responseBodyPreviewKind", "response_body_preview_kind")
+            duration_ms = _field(record, "durationMs", "duration_ms")
+            note = str(record.get("note") or "")
+            if (
+                url_token in url
+                and source == "proxy-stream-http"
+                and attribution == "panel"
+                and response_status == 200
+                and response_body_preview_kind == "text"
+                and isinstance(duration_ms, int)
+                and "HTTP request/response metadata parsed" in note
+                and response_token in str(response_body or "")
+            ):
+                return record
+        time.sleep(0.25)
+    raise cmuxError(
+        "Timed out waiting for panel-attributed proxy network record "
+        f"for {url_token!r}; last network payload={last}"
+    )
+
+
 def _assert_browser_does_not_contain(client: cmux, surface_id: str, token: str, sample_window_s: float = 6.0) -> str:
     deadline = time.time() + sample_window_s
     last_text = ""
@@ -264,16 +316,45 @@ def main() -> int:
 
             _wait_for(_browser_in_remote_workspace, timeout_s=10.0, step_s=0.15)
 
+            clear_reply = client.browser_network_clear(browser_surface_id)
+            _must(
+                isinstance(_field(clear_reply, "clearedCount", "cleared_count"), int),
+                f"browser network clear should report cleared count before remote proof: {clear_reply}",
+            )
+
             client._call("browser.navigate", {"surface_id": browser_surface_id, "url": url})
             _wait_browser_contains(client, browser_surface_id, marker_body, timeout_s=20.0)
 
             body = _browser_body_text(client, browser_surface_id)
             _must(marker_body in body, f"browser did not load remote localhost content over SSH proxy: {body[:240]!r}")
             _must("Can't reach this page" not in body, f"browser rendered local error page instead of remote content: {body[:240]!r}")
+            network_record = _wait_browser_network_record(
+                client,
+                browser_surface_id,
+                url_token=marker_file,
+                response_token=marker_body,
+                timeout_s=20.0,
+            )
+            _must(
+                str(network_record.get("method") or "") == "GET",
+                f"remote browser network record should preserve method: {network_record}",
+            )
+            _must(
+                bool(_field(network_record, "requestHeaders", "request_headers")),
+                f"remote browser network record should include request headers: {network_record}",
+            )
+            _must(
+                bool(_field(network_record, "responseHeaders", "response_headers")),
+                f"remote browser network record should include response headers: {network_record}",
+            )
+            _must(
+                "HTTP request/response metadata parsed" in str(network_record.get("note") or ""),
+                f"remote browser network record should include cleartext proxy note: {network_record}",
+            )
 
             print(
                 "PASS: browser proxy stays scoped to SSH workspace surfaces, uses proxy endpoint without explicit forwarded ports, "
-                "and reaches remote localhost after move"
+                "reaches remote localhost after move, and records panel-attributed proxy network metadata"
             )
             return 0
     finally:

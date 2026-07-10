@@ -7,8 +7,9 @@
 //!
 //! The cmux JSON config file is a tree of nested objects
 //! (`{"app": {"appearance": "dark"}}`). [`JsonPath`] represents one leaf
-//! address (`"app.appearance"`) as a list of components, split once at
-//! construction so hot read/write paths do no string-splitting per call.
+//! address (`"app.appearance"` or `shortcuts.bindings["workspace.new"]`) as a
+//! list of components, split once at construction so hot read/write paths do no
+//! string-splitting per call.
 //! Operations preserve sibling values at every level; [`JsonPath::remove`]
 //! also prunes parent objects that become empty after the removal.
 //!
@@ -67,6 +68,9 @@ pub enum JsonPathError {
     /// yielding an empty component. Carries the offending input.
     /// (Swift `JSONPath.swift:30-33`.)
     EmptyComponent(String),
+    /// The path used bracket syntax but did not contain a valid JSON string key
+    /// followed by `]`, or had a stray separator.
+    Malformed(String),
 }
 
 impl fmt::Display for JsonPathError {
@@ -77,6 +81,7 @@ impl fmt::Display for JsonPathError {
                 f,
                 "JSONPath contains an empty component (leading/trailing dot or consecutive dots): {path}"
             ),
+            Self::Malformed(path) => write!(f, "JSONPath is malformed: {path}"),
         }
     }
 }
@@ -86,13 +91,16 @@ impl std::error::Error for JsonPathError {}
 impl JsonPath {
     /// Creates a [`JsonPath`] from a dotted string, rejecting malformed input.
     ///
-    /// The string is split on `'.'` **without** omitting empty subsequences —
-    /// Rust's [`str::split`] already keeps empty pieces, matching Swift's
-    /// `split(separator:omittingEmptySubsequences: false)`
+    /// Plain paths are split on `'.'` **without** omitting empty subsequences,
+    /// matching Swift's `split(separator:omittingEmptySubsequences: false)`
     /// (`JSONPath.swift:29`). Empty input and any empty component (leading /
     /// trailing / consecutive dots, e.g. `".x"`, `"x."`, `"app..x"`) are
     /// rejected, mirroring the two Swift preconditions (`JSONPath.swift:24`,
     /// `:30-33`).
+    ///
+    /// As a Windows settings bridge extension, bracket-quoted keys may be used
+    /// when a literal component itself contains dots, e.g.
+    /// `shortcuts.bindings["workspace.new"]`.
     ///
     /// # Errors
     ///
@@ -102,10 +110,7 @@ impl JsonPath {
         if dotted.is_empty() {
             return Err(JsonPathError::Empty);
         }
-        let components: Vec<String> = dotted.split('.').map(str::to_owned).collect();
-        if components.iter().any(String::is_empty) {
-            return Err(JsonPathError::EmptyComponent(dotted.to_owned()));
-        }
+        let components = parse_components(dotted)?;
         Ok(Self { components })
     }
 
@@ -184,6 +189,97 @@ impl JsonPath {
             remove_at_path(&self.components, map);
         }
     }
+}
+
+fn parse_components(path: &str) -> Result<Vec<String>, JsonPathError> {
+    let mut components = Vec::new();
+    let mut token = String::new();
+    let mut chars = path.char_indices().peekable();
+    let mut expects_component = true;
+
+    while let Some((index, ch)) = chars.next() {
+        match ch {
+            '.' => {
+                if expects_component || token.is_empty() {
+                    return Err(JsonPathError::EmptyComponent(path.to_owned()));
+                }
+                components.push(std::mem::take(&mut token));
+                expects_component = true;
+            }
+            '[' => {
+                if !token.is_empty() {
+                    components.push(std::mem::take(&mut token));
+                }
+                let (component, closing_index) = parse_bracket_component(path, index)?;
+                components.push(component);
+                expects_component = false;
+                while let Some(&(next_index, next_ch)) = chars.peek() {
+                    if next_index <= closing_index {
+                        chars.next();
+                        continue;
+                    }
+                    if next_ch == '.' {
+                        chars.next();
+                        expects_component = true;
+                    } else if next_ch != '[' {
+                        return Err(JsonPathError::Malformed(path.to_owned()));
+                    }
+                    break;
+                }
+            }
+            ']' => return Err(JsonPathError::Malformed(path.to_owned())),
+            _ => {
+                token.push(ch);
+                expects_component = false;
+            }
+        }
+    }
+
+    if !token.is_empty() {
+        components.push(token);
+    } else if expects_component {
+        return Err(JsonPathError::EmptyComponent(path.to_owned()));
+    }
+
+    Ok(components)
+}
+
+fn parse_bracket_component(
+    path: &str,
+    open_index: usize,
+) -> Result<(String, usize), JsonPathError> {
+    let bracket_body = &path[open_index + 1..];
+    let Some(first) = bracket_body.chars().next() else {
+        return Err(JsonPathError::Malformed(path.to_owned()));
+    };
+    if first != '"' {
+        return Err(JsonPathError::Malformed(path.to_owned()));
+    }
+
+    let mut escaped = false;
+    for (relative_index, ch) in bracket_body.char_indices().skip(1) {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            '"' => {
+                let literal_end = relative_index + ch.len_utf8();
+                let literal = &bracket_body[..literal_end];
+                let after_literal = &bracket_body[literal_end..];
+                if !after_literal.starts_with(']') {
+                    return Err(JsonPathError::Malformed(path.to_owned()));
+                }
+                let component: String = serde_json::from_str(literal)
+                    .map_err(|_| JsonPathError::Malformed(path.to_owned()))?;
+                return Ok((component, open_index + 1 + literal_end));
+            }
+            _ => {}
+        }
+    }
+
+    Err(JsonPathError::Malformed(path.to_owned()))
 }
 
 // ---------------------------------------------------------------------------
@@ -287,7 +383,56 @@ mod tests {
     #[test]
     fn parse_splits_dotted_path() {
         let path = JsonPath::parse("app.appearance").expect("valid path");
-        assert_eq!(path.components, vec!["app".to_owned(), "appearance".to_owned()]);
+        assert_eq!(
+            path.components,
+            vec!["app".to_owned(), "appearance".to_owned()]
+        );
+    }
+
+    /// Bracket-quoted components are a Windows bridge extension for map keys
+    /// that contain dots, such as shortcut action ids.
+    #[test]
+    fn parse_accepts_bracket_quoted_components_with_dots() {
+        let path =
+            JsonPath::parse(r#"shortcuts.bindings["workspace.new"]"#).expect("valid bracket path");
+        assert_eq!(
+            path.components,
+            vec![
+                "shortcuts".to_owned(),
+                "bindings".to_owned(),
+                "workspace.new".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_accepts_json_escaped_bracket_components() {
+        let path = JsonPath::parse(r#"shortcuts.bindings["workspace.\"new\""]"#)
+            .expect("valid escaped path");
+        assert_eq!(
+            path.components,
+            vec![
+                "shortcuts".to_owned(),
+                "bindings".to_owned(),
+                "workspace.\"new\"".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_rejects_malformed_bracket_components() {
+        assert_eq!(
+            JsonPath::parse(r#"shortcuts.bindings[workspace.new]"#),
+            Err(JsonPathError::Malformed(
+                r#"shortcuts.bindings[workspace.new]"#.to_owned()
+            ))
+        );
+        assert_eq!(
+            JsonPath::parse(r#"shortcuts.bindings["workspace.new""#),
+            Err(JsonPathError::Malformed(
+                r#"shortcuts.bindings["workspace.new""#.to_owned()
+            ))
+        );
     }
 
     /// A single-segment path parses to one component.
@@ -365,8 +510,22 @@ mod tests {
         let mut root = json!({});
         let path = JsonPath::parse("automation.socketPassword").expect("valid");
         path.assign(&mut root, json!("hunter2"));
-        assert_eq!(root, json!({ "automation": { "socketPassword": "hunter2" } }));
+        assert_eq!(
+            root,
+            json!({ "automation": { "socketPassword": "hunter2" } })
+        );
         assert_eq!(path.lookup(&root), Some(&json!("hunter2")));
+    }
+
+    #[test]
+    fn assign_bracket_component_preserves_literal_dots() {
+        let mut root = json!({});
+        let path = JsonPath::parse(r#"shortcuts.bindings["workspace.new"]"#).expect("valid");
+        path.assign(&mut root, json!("cmd+t"));
+        assert_eq!(
+            root,
+            json!({ "shortcuts": { "bindings": { "workspace.new": "cmd+t" } } })
+        );
     }
 
     /// Assign overwrites a primitive intermediate with a fresh object — write

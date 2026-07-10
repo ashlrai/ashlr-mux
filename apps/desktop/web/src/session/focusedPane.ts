@@ -1,5 +1,8 @@
 import { useSyncExternalStore } from "react";
 
+import type { SessionCanvasPaneSnapshot } from "@cmux/core-types";
+
+import { paneRects, type Rect } from "./paneRects";
 import { firstActivePanelId, isPane, type Layout } from "./splitLayout";
 
 /**
@@ -81,6 +84,23 @@ export function panelIdsInLayout(layout: Layout): ReadonlySet<string> {
   return ids;
 }
 
+/** The pane id that owns `panelId`, or undefined when the layout lacks one. */
+export function paneIdForPanelId(
+  layout: Layout,
+  panelId: string,
+): string | undefined {
+  if (isPane(layout)) {
+    return layout.pane.panel_ids.includes(panelId) ||
+      layout.pane.selected_panel_id === panelId
+      ? layout.pane.pane_id
+      : undefined;
+  }
+  return (
+    paneIdForPanelId(layout.split.first, panelId) ??
+    paneIdForPanelId(layout.split.second, panelId)
+  );
+}
+
 /**
  * The focused panel id revalidated against the CURRENT layout, with a
  * first-leaf fallback — mirroring the canonical session-restore
@@ -105,6 +125,205 @@ export function resolveActivePanelId(
     return focused;
   }
   return firstActivePanelId(layout);
+}
+
+/** The focused pane id revalidated against the current layout, else first-leaf. */
+export function resolveActivePaneId(
+  focused: string | undefined,
+  layout: Layout | null | undefined,
+): string | undefined {
+  if (!layout) {
+    return undefined;
+  }
+  const panelId = resolveActivePanelId(focused, layout);
+  return panelId === undefined ? undefined : paneIdForPanelId(layout, panelId);
+}
+
+export type PaneFocusDirection = "left" | "right" | "up" | "down";
+
+function center(rect: Rect): { x: number; y: number } {
+  return { x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 };
+}
+
+function intervalGap(a0: number, a1: number, b0: number, b1: number): number {
+  if (a1 < b0) {
+    return b0 - a1;
+  }
+  if (b1 < a0) {
+    return a0 - b1;
+  }
+  return 0;
+}
+
+function primaryGap(
+  current: Rect,
+  candidate: Rect,
+  direction: PaneFocusDirection,
+): number {
+  switch (direction) {
+    case "left":
+      return Math.max(0, current.x - (candidate.x + candidate.w));
+    case "right":
+      return Math.max(0, candidate.x - (current.x + current.w));
+    case "up":
+      return Math.max(0, current.y - (candidate.y + candidate.h));
+    case "down":
+      return Math.max(0, candidate.y - (current.y + current.h));
+  }
+}
+
+function orthogonalGap(
+  current: Rect,
+  candidate: Rect,
+  direction: PaneFocusDirection,
+): number {
+  if (direction === "left" || direction === "right") {
+    return intervalGap(
+      current.y,
+      current.y + current.h,
+      candidate.y,
+      candidate.y + candidate.h,
+    );
+  }
+  return intervalGap(
+    current.x,
+    current.x + current.w,
+    candidate.x,
+    candidate.x + candidate.w,
+  );
+}
+
+function isInDirection(
+  current: Rect,
+  candidate: Rect,
+  direction: PaneFocusDirection,
+): boolean {
+  const c = center(current);
+  const n = center(candidate);
+  switch (direction) {
+    case "left":
+      return n.x < c.x;
+    case "right":
+      return n.x > c.x;
+    case "up":
+      return n.y < c.y;
+    case "down":
+      return n.y > c.y;
+  }
+}
+
+/**
+ * Resolve the pane that should receive focus for a directional focus command.
+ * Geometry comes from the same flat-portal rectangles used by Workspace, so the
+ * command path and renderer agree on what "left/right/up/down" means.
+ */
+export function adjacentPanelId(
+  layout: Layout | null | undefined,
+  currentPanelId: string | undefined,
+  direction: PaneFocusDirection,
+): string | undefined {
+  if (layout == null || currentPanelId === undefined) {
+    return undefined;
+  }
+  const rects = paneRects(layout);
+  const current = rects.get(currentPanelId);
+  if (current === undefined) {
+    return undefined;
+  }
+  const currentCenter = center(current);
+  const ranked = [...rects.entries()]
+    .filter(
+      ([panelId, rect]) =>
+        panelId !== currentPanelId && isInDirection(current, rect, direction),
+    )
+    .map(([panelId, rect], order) => {
+      const candidateCenter = center(rect);
+      return {
+        panelId,
+        order,
+        primary: primaryGap(current, rect, direction),
+        orthogonal: orthogonalGap(current, rect, direction),
+        distance:
+          Math.abs(candidateCenter.x - currentCenter.x) +
+          Math.abs(candidateCenter.y - currentCenter.y),
+      };
+    })
+    .sort(
+      (a, b) =>
+        a.primary - b.primary ||
+        a.orthogonal - b.orthogonal ||
+        a.distance - b.distance ||
+        a.order - b.order,
+    );
+  return ranked[0]?.panelId;
+}
+
+function canvasPaneKey(pane: SessionCanvasPaneSnapshot): string {
+  return pane.selected_panel_id ?? pane.panel_id;
+}
+
+function canvasPaneMatches(
+  pane: SessionCanvasPaneSnapshot,
+  panelId: string,
+): boolean {
+  return (
+    pane.panel_id === panelId ||
+    pane.selected_panel_id === panelId ||
+    pane.panel_ids?.includes(panelId) === true
+  );
+}
+
+/** Directional focus over persisted freeform canvas pane frames. */
+export function adjacentCanvasPanelId(
+  panes: readonly SessionCanvasPaneSnapshot[] | undefined,
+  currentPanelId: string | undefined,
+  direction: PaneFocusDirection,
+): string | undefined {
+  if (panes === undefined || currentPanelId === undefined) {
+    return undefined;
+  }
+  const entries = panes
+    .map((pane, order) => ({
+      panelId: canvasPaneKey(pane),
+      order,
+      pane,
+      rect: { x: pane.x, y: pane.y, w: pane.width, h: pane.height } satisfies Rect,
+    }))
+    .filter((entry) => entry.rect.w > 0 && entry.rect.h > 0);
+  const currentEntry = entries.find((entry) =>
+    canvasPaneMatches(entry.pane, currentPanelId),
+  );
+  if (currentEntry === undefined) {
+    return undefined;
+  }
+  const current = currentEntry.rect;
+  const currentCenter = center(current);
+  const ranked = entries
+    .filter(
+      (entry) =>
+        entry.order !== currentEntry.order &&
+        isInDirection(current, entry.rect, direction),
+    )
+    .map((entry) => {
+      const candidateCenter = center(entry.rect);
+      return {
+        panelId: entry.panelId,
+        order: entry.order,
+        primary: primaryGap(current, entry.rect, direction),
+        orthogonal: orthogonalGap(current, entry.rect, direction),
+        distance:
+          Math.abs(candidateCenter.x - currentCenter.x) +
+          Math.abs(candidateCenter.y - currentCenter.y),
+      };
+    })
+    .sort(
+      (a, b) =>
+        a.primary - b.primary ||
+        a.orthogonal - b.orthogonal ||
+        a.distance - b.distance ||
+        a.order - b.order,
+    );
+  return ranked[0]?.panelId;
 }
 
 /** The resolved focused panel id, subscribed to the singleton store. */

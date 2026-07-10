@@ -86,7 +86,9 @@ impl WorkspaceReorderPlanner {
         let mut seen: HashSet<Uuid> = HashSet::new();
         for workspace_id in ordered_workspace_ids {
             if !seen.insert(*workspace_id) {
-                return Err(WorkspaceBatchReorderError::DuplicateWorkspace(*workspace_id));
+                return Err(WorkspaceBatchReorderError::DuplicateWorkspace(
+                    *workspace_id,
+                ));
             }
         }
 

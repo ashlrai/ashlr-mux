@@ -118,7 +118,9 @@ impl SurfaceTree {
     /// Every surface across all panes in tab order (legacy
     /// `surfaceIdsInTabOrderAcrossAllPanes`, `FakeTree` line 28-30).
     fn surface_ids_in_tab_order_across_all_panes(&self) -> impl Iterator<Item = Uuid> + '_ {
-        self.panes.iter().flat_map(|pane| pane.surface_ids.iter().copied())
+        self.panes
+            .iter()
+            .flat_map(|pane| pane.surface_ids.iter().copied())
     }
 
     /// The focused pane's selected surface id (legacy
@@ -137,7 +139,8 @@ impl SurfaceTree {
     /// The pane's surface ids in tab order, or `[]` when the pane is gone
     /// (legacy `surfaceIdsInTabOrder(inPaneId:)`, `FakeTree` line 47-49).
     fn surface_ids_in_tab_order(&self, pane_id: Uuid) -> &[Uuid] {
-        self.pane(pane_id).map_or(&[], |pane| pane.surface_ids.as_slice())
+        self.pane(pane_id)
+            .map_or(&[], |pane| pane.surface_ids.as_slice())
     }
 
     fn panel_id(&self, surface_id: Uuid) -> Option<Uuid> {
@@ -505,7 +508,10 @@ mod tests {
         assert_eq!(tree.surface_ids_to_right(b, pane), vec![c]);
         assert_eq!(tree.surface_ids_to_close_others(b, pane), vec![a, c]);
         // Anchor absent.
-        assert_eq!(tree.surface_ids_to_left(Uuid::new_v4(), pane), Vec::<Uuid>::new());
+        assert_eq!(
+            tree.surface_ids_to_left(Uuid::new_v4(), pane),
+            Vec::<Uuid>::new()
+        );
         // Last tab has nothing to the right.
         assert_eq!(tree.surface_ids_to_right(c, pane), Vec::<Uuid>::new());
     }
@@ -545,7 +551,10 @@ mod tests {
         let mut tree = detached_defaults();
         assert_eq!(tree.ordered_panel_ids(), Vec::<Uuid>::new());
         assert_eq!(tree.focused_panel_id(), None);
-        assert_eq!(tree.representative_panel_id_for_workspace_manual_unread(), None);
+        assert_eq!(
+            tree.representative_panel_id_for_workspace_manual_unread(),
+            None
+        );
         assert!(!tree.register_geometry_change());
     }
 }

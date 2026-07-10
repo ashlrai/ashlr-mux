@@ -531,7 +531,10 @@ mod tests {
 
         let uuid = sample_uuid();
         let by_uuid = parser().parse_mutation_tab_target(&opts(&[("tab", &uuid.to_string())]));
-        assert_eq!(by_uuid.target, Some(SidebarMutationTabTarget::Workspace(uuid)));
+        assert_eq!(
+            by_uuid.target,
+            Some(SidebarMutationTabTarget::Workspace(uuid))
+        );
         assert_eq!(by_uuid.error, None);
 
         let by_index = parser().parse_mutation_tab_target(&opts(&[("tab", "3")]));
@@ -560,7 +563,9 @@ mod tests {
             None
         );
         assert_eq!(
-            parser().parse_optional_panel_id(&HashMap::new(), usage).error,
+            parser()
+                .parse_optional_panel_id(&HashMap::new(), usage)
+                .error,
             None
         );
 

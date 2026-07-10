@@ -20,9 +20,17 @@
         "title": "cmux for Windows - bootstrap",
         "width": 1280,
         "height": 840,
-        "resizable": true
+        "resizable": true,
+        "decorations": false
       }
     ]
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["cmux", "cmux-dev"]
+      }
+    }
   },
   "bundle": {
     "active": true,

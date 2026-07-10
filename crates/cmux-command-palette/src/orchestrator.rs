@@ -166,7 +166,8 @@ impl CommandPaletteSearchOrchestrator {
             return Vec::new();
         }
 
-        let mut seen_command_ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut seen_command_ids: std::collections::HashSet<&str> =
+            std::collections::HashSet::new();
         let preview_entries: Vec<SearchCorpusEntry<String>> = candidate_command_ids
             .iter()
             .filter_map(|command_id| {
@@ -357,7 +358,12 @@ mod tests {
         entries
             .iter()
             .map(|&(id, rank, title)| {
-                SearchCorpusEntry::new(id.to_string(), rank, title.to_string(), vec![title.to_string()])
+                SearchCorpusEntry::new(
+                    id.to_string(),
+                    rank,
+                    title.to_string(),
+                    vec![title.to_string()],
+                )
             })
             .collect()
     }
@@ -379,7 +385,8 @@ mod tests {
             ("palette.unique", "Unique"),
             ("palette.duplicate", "Second"),
         ];
-        let by_id = CommandPaletteSearchOrchestrator::first_value_dictionary(values, |value| value.0);
+        let by_id =
+            CommandPaletteSearchOrchestrator::first_value_dictionary(values, |value| value.0);
         assert_eq!(by_id.get("palette.duplicate").map(|v| v.1), Some("First"));
         assert_eq!(by_id.get("palette.unique").map(|v| v.1), Some("Unique"));
         assert_eq!(by_id.len(), 2);
@@ -417,7 +424,10 @@ mod tests {
             3,
         );
         assert_eq!(
-            matches.iter().map(|m| m.command_id.as_str()).collect::<Vec<_>>(),
+            matches
+                .iter()
+                .map(|m| m.command_id.as_str())
+                .collect::<Vec<_>>(),
             vec!["palette.high", "palette.medium", "palette.fallback"]
         );
     }

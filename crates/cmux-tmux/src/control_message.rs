@@ -61,7 +61,11 @@ pub fn pane_state_seed_sequence(line: &str) -> Vec<u8> {
         }
     }
 
-    seq += if on("wrap_flag") { "\u{1b}[?7h" } else { "\u{1b}[?7l" }; // DECAWM
+    seq += if on("wrap_flag") {
+        "\u{1b}[?7h"
+    } else {
+        "\u{1b}[?7l"
+    }; // DECAWM
     seq += if on("cursor_flag") {
         "\u{1b}[?25h"
     } else {
@@ -77,7 +81,11 @@ pub fn pane_state_seed_sequence(line: &str) -> Vec<u8> {
     } else {
         "\u{1b}[?1l"
     }; // DECCKM
-    seq += if on("keypad_flag") { "\u{1b}=" } else { "\u{1b}>" }; // DECKPAM / DECKPNM
+    seq += if on("keypad_flag") {
+        "\u{1b}="
+    } else {
+        "\u{1b}>"
+    }; // DECKPAM / DECKPNM
 
     // Reset all mouse tracking + encoding modes FIRST, then conditionally enable
     // the active one below.
@@ -97,7 +105,11 @@ pub fn pane_state_seed_sequence(line: &str) -> Vec<u8> {
 
     // Origin mode (DECOM) before the cursor — changing it homes the cursor.
     let origin_on = on("origin_flag");
-    seq += if origin_on { "\u{1b}[?6h" } else { "\u{1b}[?6l" };
+    seq += if origin_on {
+        "\u{1b}[?6h"
+    } else {
+        "\u{1b}[?6l"
+    };
 
     // Cursor LAST. tmux reports an absolute row; with origin mode on and a
     // restricted region the CUP is interpreted region-relative, so subtract the
@@ -275,8 +287,12 @@ mod tests {
 
     #[test]
     fn stderr_session_gone_matches_known_phrases() {
-        assert!(stderr_indicates_session_gone("tmux: can't find session: main"));
-        assert!(stderr_indicates_session_gone("no server running on /tmp/tmux-1000/default"));
+        assert!(stderr_indicates_session_gone(
+            "tmux: can't find session: main"
+        ));
+        assert!(stderr_indicates_session_gone(
+            "no server running on /tmp/tmux-1000/default"
+        ));
         assert!(stderr_indicates_session_gone("LOST SERVER"));
         assert!(stderr_indicates_session_gone("session not found"));
         // Curly apostrophe variant.
@@ -285,7 +301,11 @@ mod tests {
 
     #[test]
     fn stderr_transient_failures_not_session_gone() {
-        assert!(!stderr_indicates_session_gone("ssh: connect to host example.com port 22: Connection refused"));
-        assert!(!stderr_indicates_session_gone("ssh: Could not resolve hostname"));
+        assert!(!stderr_indicates_session_gone(
+            "ssh: connect to host example.com port 22: Connection refused"
+        ));
+        assert!(!stderr_indicates_session_gone(
+            "ssh: Could not resolve hostname"
+        ));
     }
 }

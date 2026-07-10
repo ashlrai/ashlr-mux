@@ -242,7 +242,10 @@ impl Osc133Parser {
     fn csi_alt_screen(params: &str) -> bool {
         params
             .strip_prefix('?')
-            .map(|rest| rest.split(';').any(|value| value == "1049" || value == "1047"))
+            .map(|rest| {
+                rest.split(';')
+                    .any(|value| value == "1049" || value == "1047")
+            })
             .unwrap_or(false)
     }
 
@@ -280,7 +283,8 @@ impl Osc133Parser {
             Phase::Command => self.command_buffer.push(ch),
             Phase::Output => {
                 if ch == '\n' {
-                    self.folded_output.push_str(&Self::fold_line(&self.open_line));
+                    self.folded_output
+                        .push_str(&Self::fold_line(&self.open_line));
                     self.folded_output.push('\n');
                     self.open_line.clear();
                 } else {
@@ -343,7 +347,15 @@ mod tests {
     #[test]
     fn happy_path() {
         let mut parser = Osc133Parser::new();
-        parser.consume(&(mark("A") + "user@host$ " + &mark("B") + "echo hi" + &mark("C") + "hi\n" + &mark("D;0")));
+        parser.consume(
+            &(mark("A")
+                + "user@host$ "
+                + &mark("B")
+                + "echo hi"
+                + &mark("C")
+                + "hi\n"
+                + &mark("D;0")),
+        );
         assert_eq!(parser.blocks.len(), 1);
         let block = &parser.blocks[0];
         assert_eq!(block.command, "echo hi");
@@ -389,7 +401,9 @@ mod tests {
     #[test]
     fn carriage_return_progress_folds() {
         let mut parser = Osc133Parser::new();
-        parser.consume(&(mark("A") + &mark("B") + "dl" + &mark("C") + "10%\r50%\r100%\n" + &mark("D;0")));
+        parser.consume(
+            &(mark("A") + &mark("B") + "dl" + &mark("C") + "10%\r50%\r100%\n" + &mark("D;0")),
+        );
         assert_eq!(parser.blocks[0].output, "100%\n");
     }
 
@@ -411,7 +425,9 @@ mod tests {
     #[test]
     fn crlf_is_preserved() {
         let mut parser = Osc133Parser::new();
-        parser.consume(&(mark("A") + &mark("B") + "x" + &mark("C") + "line1\r\nline2\r\n" + &mark("D;0")));
+        parser.consume(
+            &(mark("A") + &mark("B") + "x" + &mark("C") + "line1\r\nline2\r\n" + &mark("D;0")),
+        );
         assert_eq!(parser.blocks[0].output, "line1\nline2\n");
     }
 
@@ -439,7 +455,10 @@ mod tests {
         // An OSC sequence whose body never terminates and exceeds the runaway
         // guard must be abandoned rather than accumulated unboundedly, and the
         // parser must keep working on the next well-formed sequence.
-        let runaway = format!("\u{1b}]{}", "x".repeat(Osc133Parser::MAX_ESCAPE_LENGTH + 500));
+        let runaway = format!(
+            "\u{1b}]{}",
+            "x".repeat(Osc133Parser::MAX_ESCAPE_LENGTH + 500)
+        );
         parser.consume(&runaway);
         assert!(parser.blocks.is_empty());
 

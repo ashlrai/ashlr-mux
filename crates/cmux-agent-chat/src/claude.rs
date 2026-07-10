@@ -84,10 +84,7 @@ pub fn write_claude_stream_json(text: &str) -> String {
         kind: "user",
         message: ClaudeUserMessage {
             role: "user",
-            content: [ClaudeTextBlock {
-                kind: "text",
-                text,
-            }],
+            content: [ClaudeTextBlock { kind: "text", text }],
         },
     };
     // Serialization of these plain owned/borrowed types is infallible.
@@ -300,9 +297,7 @@ impl ClaudeStreamAccumulator {
 /// `assistant` full message, `result`) pass through unchanged. Without this, the
 /// wrapped deltas are ignored and only the final full `assistant` message emits —
 /// i.e. the whole reply arrives at once instead of streaming.
-fn unwrap_stream_event(
-    object: serde_json::Map<String, Value>,
-) -> serde_json::Map<String, Value> {
+fn unwrap_stream_event(object: serde_json::Map<String, Value>) -> serde_json::Map<String, Value> {
     if object.get("type").and_then(Value::as_str) == Some("stream_event") {
         if let Some(event) = object.get("event").and_then(Value::as_object) {
             return event.clone();
@@ -371,7 +366,11 @@ mod tests {
     fn write_claude_stream_json_shape_and_newline() {
         let line = write_claude_stream_json("hello world");
         assert!(line.ends_with('\n'), "must be newline-terminated");
-        assert_eq!(line.matches('\n').count(), 1, "exactly one trailing newline");
+        assert_eq!(
+            line.matches('\n').count(),
+            1,
+            "exactly one trailing newline"
+        );
         let parsed: Value = serde_json::from_str(line.trim_end()).unwrap();
         assert_eq!(
             parsed,
@@ -389,7 +388,10 @@ mod tests {
     fn write_claude_stream_json_escapes_special_chars() {
         let line = write_claude_stream_json("quote \" and \n newline");
         let parsed: Value = serde_json::from_str(line.trim_end()).unwrap();
-        assert_eq!(parsed["message"]["content"][0]["text"], "quote \" and \n newline");
+        assert_eq!(
+            parsed["message"]["content"][0]["text"],
+            "quote \" and \n newline"
+        );
     }
 
     #[test]
@@ -417,8 +419,7 @@ mod tests {
     #[test]
     fn empty_delta_text_yields_nothing() {
         let mut acc = ClaudeStreamAccumulator::new();
-        let out =
-            acc.consume_line(r#"{"type":"content_block_delta","delta":{"text":""}}"#);
+        let out = acc.consume_line(r#"{"type":"content_block_delta","delta":{"text":""}}"#);
         assert!(out.is_empty());
     }
 
@@ -436,9 +437,7 @@ mod tests {
         let mut acc = ClaudeStreamAccumulator::new();
         acc.consume_line(r#"{"type":"message_start","message":{"id":"m1","role":"assistant"}}"#);
         assert_eq!(
-            acc.consume_line(
-                r#"{"type":"content_block_delta","delta":{"text":"Hello, "}}"#
-            ),
+            acc.consume_line(r#"{"type":"content_block_delta","delta":{"text":"Hello, "}}"#),
             vec!["Hello, ".to_string()]
         );
         assert_eq!(
@@ -450,7 +449,10 @@ mod tests {
         let out = acc.consume_line(
             r#"{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"Hello, world"}]}}"#,
         );
-        assert!(out.is_empty(), "fully-covered text yields no new tail, got {out:?}");
+        assert!(
+            out.is_empty(),
+            "fully-covered text yields no new tail, got {out:?}"
+        );
     }
 
     #[test]
@@ -477,8 +479,8 @@ mod tests {
     #[test]
     fn assistant_content_as_plain_string() {
         let mut acc = ClaudeStreamAccumulator::new();
-        let out =
-            acc.consume_line(r#"{"type":"assistant","message":{"id":"m1","content":"raw string"}}"#);
+        let out = acc
+            .consume_line(r#"{"type":"assistant","message":{"id":"m1","content":"raw string"}}"#);
         assert_eq!(out, vec!["raw string".to_string()]);
     }
 
@@ -508,7 +510,10 @@ mod tests {
             vec!["streamed".to_string()]
         );
         let out = acc.consume_line(r#"{"type":"result","result":"streamed"}"#);
-        assert!(out.is_empty(), "result must not double-emit after streamed text");
+        assert!(
+            out.is_empty(),
+            "result must not double-emit after streamed text"
+        );
     }
 
     #[test]
@@ -569,15 +574,27 @@ mod tests {
     #[test]
     fn malformed_and_non_object_lines_tolerated() {
         let mut acc = ClaudeStreamAccumulator::new();
-        for line in ["", "   ", "not json", "[1,2,3]", "42", "\"a string\"", "null"] {
-            assert!(acc.consume_line(line).is_empty(), "{line:?} should be inert");
+        for line in [
+            "",
+            "   ",
+            "not json",
+            "[1,2,3]",
+            "42",
+            "\"a string\"",
+            "null",
+        ] {
+            assert!(
+                acc.consume_line(line).is_empty(),
+                "{line:?} should be inert"
+            );
         }
     }
 
     #[test]
     fn line_with_surrounding_whitespace_is_trimmed() {
         let mut acc = ClaudeStreamAccumulator::new();
-        let out = acc.consume_line("  {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"hi\"}}  \n");
+        let out = acc
+            .consume_line("  {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"hi\"}}  \n");
         assert_eq!(out, vec!["hi".to_string()]);
     }
 
@@ -703,7 +720,10 @@ mod tests {
         // added nothing on top.
         assert_eq!(
             outputs,
-            vec!["Hello there,".to_string(), " fellow human friend.".to_string()]
+            vec![
+                "Hello there,".to_string(),
+                " fellow human friend.".to_string()
+            ]
         );
         assert_eq!(outputs.concat(), "Hello there, fellow human friend.");
         assert!(completed, "the turn must complete (result / message_stop)");

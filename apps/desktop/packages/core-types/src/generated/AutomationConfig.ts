@@ -5,13 +5,13 @@ import type { KiroNotificationLevel } from "./KiroNotificationLevel";
 /**
  * `automation`: socket control and automation settings.
  */
-export type AutomationConfig = { 
+export type AutomationConfig = {
 /**
  * Socket control mode. Kept as a `String` because the schema documents
  * legacy aliases that are accepted and normalized at runtime.
  */
-socketControlMode: string, 
+socketControlMode: string,
 /**
  * Password for password-mode socket access. `null` or `""` clears it.
  */
-socket_password?: string, claudeCodeIntegration: boolean, claudeBinaryPath: string, workspaceAutoNaming: boolean, autoNamingAgent: string, ripgrepBinaryPath: string, suppressSubagentNotifications: boolean, ampIntegration: boolean, cursorIntegration: boolean, geminiIntegration: boolean, kiroIntegration: boolean, kiroNotificationLevel: KiroNotificationLevel, portBase: number, portRange: number, };
+socket_password?: string, claudeCodeIntegration: boolean, codexIntegration: boolean, opencodeIntegration: boolean, claudeBinaryPath: string, workspaceAutoNaming: boolean, autoNamingAgent: string, ripgrepBinaryPath: string, suppressSubagentNotifications: boolean, ampIntegration: boolean, cursorIntegration: boolean, geminiIntegration: boolean, kiroIntegration: boolean, kiroNotificationLevel: KiroNotificationLevel, portBase: number, portRange: number, };

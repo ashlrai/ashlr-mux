@@ -152,7 +152,10 @@ mod tests {
     #[test]
     fn single_pane_with_checksum() {
         let node = parse("b2f1,80x24,0,0,1").unwrap();
-        assert_eq!(node, RemoteTmuxLayoutNode::new(80, 24, 0, 0, RemoteTmuxLayoutContent::Pane(1)));
+        assert_eq!(
+            node,
+            RemoteTmuxLayoutNode::new(80, 24, 0, 0, RemoteTmuxLayoutContent::Pane(1))
+        );
     }
 
     #[test]

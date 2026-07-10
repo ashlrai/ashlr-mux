@@ -94,12 +94,24 @@ pub fn applying_default_codex_base_url(
         return environment;
     };
     let mut result = environment;
-    if normalized_value(result.get(CODEX_BASE_URL_ENVIRONMENT_KEY).map(String::as_str)).is_none() {
+    if normalized_value(
+        result
+            .get(CODEX_BASE_URL_ENVIRONMENT_KEY)
+            .map(String::as_str),
+    )
+    .is_none()
+    {
         if let Some(codex_base_url) = codex_base_url_from_codex_config_content(content) {
             result.insert(CODEX_BASE_URL_ENVIRONMENT_KEY.to_owned(), codex_base_url);
         }
     }
-    if normalized_value(result.get(CUSTOM_BASE_URL_ENVIRONMENT_KEY).map(String::as_str)).is_none() {
+    if normalized_value(
+        result
+            .get(CUSTOM_BASE_URL_ENVIRONMENT_KEY)
+            .map(String::as_str),
+    )
+    .is_none()
+    {
         if let Some(custom_base_url) = custom_base_url_from_codex_config_content(content) {
             result.insert(CUSTOM_BASE_URL_ENVIRONMENT_KEY.to_owned(), custom_base_url);
         }
@@ -255,10 +267,7 @@ fn toml_string_value(key: &str, line: &str) -> Option<String> {
     }
     let equals_index = without_comment.find('=')?;
     let key_part = trim_toml_ws(&without_comment[..equals_index]);
-    if key_part != key
-        && key_part != format!("\"{key}\"")
-        && key_part != format!("'{key}'")
-    {
+    if key_part != key && key_part != format!("\"{key}\"") && key_part != format!("'{key}'") {
         return None;
     }
     let value_part = trim_toml_ws(&without_comment[equals_index + 1..]);
@@ -451,7 +460,10 @@ fn host_matches(raw_host: &str, host_suffix: &str) -> bool {
 /// port] path [ "?" query ] [ "#" fragment ]`; rejects a space/control char
 /// anywhere and a non-numeric port (both `URLComponents` nil cases).
 fn parse_url_components(value: &str) -> Option<UrlComponents> {
-    if value.chars().any(|character| character.is_control() || character == ' ') {
+    if value
+        .chars()
+        .any(|character| character.is_control() || character == ' ')
+    {
         return None;
     }
     let (before_fragment, fragment) = match value.find('#') {
@@ -580,11 +592,20 @@ mod tests {
             None
         );
         assert_eq!(codex_base_url_from_chatgpt_base_url("https://"), None);
-        assert_eq!(codex_base_url_from_chatgpt_base_url("https://host?x=1"), None);
+        assert_eq!(
+            codex_base_url_from_chatgpt_base_url("https://host?x=1"),
+            None
+        );
         assert_eq!(custom_base_url_from_openai_base_url("https://"), None);
-        assert_eq!(custom_base_url_from_openai_base_url("https://host?x=1"), None);
+        assert_eq!(
+            custom_base_url_from_openai_base_url("https://host?x=1"),
+            None
+        );
         assert_eq!(custom_base_url_from_chatgpt_base_url("https://"), None);
-        assert_eq!(custom_base_url_from_chatgpt_base_url("https://host?x=1"), None);
+        assert_eq!(
+            custom_base_url_from_chatgpt_base_url("https://host?x=1"),
+            None
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -679,8 +700,10 @@ mod tests {
     #[test]
     fn blank_explicit_value_is_overridden() {
         let content = "chatgpt_base_url = \"http://subrouter-team:31415/backend-api\"";
-        let applied =
-            applying_default_codex_base_url(env(&[("HERMES_CODEX_BASE_URL", "   ")]), Some(content));
+        let applied = applying_default_codex_base_url(
+            env(&[("HERMES_CODEX_BASE_URL", "   ")]),
+            Some(content),
+        );
         assert_eq!(
             applied.get("HERMES_CODEX_BASE_URL").map(String::as_str),
             Some("http://subrouter-team:31415/backend-api/codex")
@@ -717,7 +740,8 @@ mod tests {
     /// the double-quoted value decodes cleanly regardless.
     #[test]
     fn crlf_line_value_parses() {
-        let content = "chatgpt_base_url = \"http://subrouter-team:31415/backend-api\"\r\nmodel = \"gpt-5.5\"";
+        let content =
+            "chatgpt_base_url = \"http://subrouter-team:31415/backend-api\"\r\nmodel = \"gpt-5.5\"";
         assert_eq!(
             codex_base_url_from_codex_config_content(content).as_deref(),
             Some("http://subrouter-team:31415/backend-api/codex")

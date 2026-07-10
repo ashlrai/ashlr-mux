@@ -28,12 +28,10 @@ import { errorReply, isEnvelope, type HostMessage, type NativeReply } from "./ho
  *    guest compile against the same protocol constants.
  *
  * The request payload carries no secrets — the trust gate stays Rust-side
- * (`diff.rs` token → `DiffSessionRegistry`). KNOWN Rust-side consequence: with
- * the relay, the invoke originates from the main document, so `diff.rs`'s
- * current `webview.url()` token source sees `http://tauri.localhost/...` and
- * answers `{ ok: false, error: { code: "not_allowed" } }` — the "single
- * swappable line" deferred in diff.rs / UI-TEST-QUEUE.md item 1 must re-point
- * the token source before comment saves work end-to-end.
+ * (`diff.rs` token → `DiffSessionRegistry`). The host half threads the diff
+ * session token and hosting panel id alongside the untouched bridge message so
+ * Rust can trust-gate iframe requests and register pending review comments
+ * against the correct workspace.
  */
 
 /** `type` tag of a guest→parent relay request envelope. */
@@ -101,6 +99,10 @@ export interface DiffCommentsRelayOptions {
   windowTarget?: RelayWindowTarget;
   /** Origin filter for incoming requests. Defaults to {@link defaultAllowDiffViewerOrigin}. */
   allowOrigin?: (origin: string) => boolean;
+  /** Diff session token for the iframe whose messages this relay forwards. */
+  token?: string | null;
+  /** Pane id hosting the diff iframe, used for workspace-scoped pending comments. */
+  panelId?: string | null;
 }
 
 function isRelayRequest(data: unknown): data is DiffCommentsRelayRequest {
@@ -164,7 +166,14 @@ export function installDiffCommentsRelay(options: DiffCommentsRelayOptions = {})
     void (async () => {
       let reply: NativeReply;
       try {
-        const result = await invoke(DIFF_COMMENTS_COMMAND, { message });
+        const params: Record<string, unknown> = { message };
+        if (typeof options.token === "string" && options.token.trim() !== "") {
+          params.token = options.token;
+        }
+        if (typeof options.panelId === "string" && options.panelId.trim() !== "") {
+          params.panelId = options.panelId;
+        }
+        const result = await invoke(DIFF_COMMENTS_COMMAND, params);
         reply = isEnvelope(result) ? result : { ok: true, value: result };
       } catch (error) {
         reply = errorReply(error);

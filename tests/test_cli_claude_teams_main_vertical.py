@@ -62,7 +62,6 @@ class FakeCmuxState:
         self.workspace = {
             "id": INITIAL_WORKSPACE_ID,
             "ref": "workspace:1",
-            "index": 1,
             "title": "demo-team",
         }
         self.window = {"id": INITIAL_WINDOW_ID, "ref": "window:1"}
@@ -72,7 +71,6 @@ class FakeCmuxState:
             {
                 "id": INITIAL_PANE_ID,
                 "ref": "pane:1",
-                "index": 7,
                 "surface_ids": [INITIAL_SURFACE_ID],
             }
         ]
@@ -118,7 +116,6 @@ class FakeCmuxState:
                         {
                             "id": self.workspace["id"],
                             "ref": self.workspace["ref"],
-                            "index": self.workspace["index"],
                             "title": self.workspace["title"],
                         }
                     ]
@@ -137,7 +134,7 @@ class FakeCmuxState:
             if method == "pane.list":
                 return {
                     "panes": [
-                        {"id": p["id"], "ref": p["ref"], "index": p["index"]}
+                        {"id": p["id"], "ref": p["ref"]}
                         for p in self.panes
                     ]
                 }
@@ -192,7 +189,6 @@ class FakeCmuxState:
                 self.panes.append({
                     "id": new_pane_id,
                     "ref": f"pane:{idx + 2}",
-                    "index": 8 + idx,
                     "surface_ids": [new_surface_id],
                 })
                 self.surfaces.append({

@@ -49,7 +49,10 @@ mod tests {
     fn password_file_path_joins_state_dir_or_is_none() {
         assert_eq!(password_file_path(None), None);
         let path = password_file_path(Some("C:\\Users\\u\\AppData\\Local")).unwrap();
-        assert!(path.ends_with("cmux/state/socket-control-password") || path.ends_with("cmux\\state\\socket-control-password"));
+        assert!(
+            path.ends_with("cmux/state/socket-control-password")
+                || path.ends_with("cmux\\state\\socket-control-password")
+        );
         assert!(path.starts_with("C:\\Users\\u\\AppData\\Local"));
     }
 

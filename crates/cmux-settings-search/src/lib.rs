@@ -46,7 +46,10 @@ mod tests {
     #[test]
     fn normalized_lowercases_ascii() {
         assert_eq!(SettingsSearchIndex::normalized("MixedCASE"), "mixedcase");
-        assert_eq!(SettingsSearchIndex::normalized("App.Language"), "app.language");
+        assert_eq!(
+            SettingsSearchIndex::normalized("App.Language"),
+            "app.language"
+        );
     }
 
     #[test]
@@ -217,17 +220,25 @@ mod tests {
 
     #[test]
     fn word_boundary_empty_needle_is_true() {
-        assert!(SettingsSearchIndex::contains_at_word_boundary("", "anything"));
+        assert!(SettingsSearchIndex::contains_at_word_boundary(
+            "", "anything"
+        ));
     }
 
     #[test]
     fn word_boundary_at_start_is_true() {
-        assert!(SettingsSearchIndex::contains_at_word_boundary("app", "appearance"));
+        assert!(SettingsSearchIndex::contains_at_word_boundary(
+            "app",
+            "appearance"
+        ));
     }
 
     #[test]
     fn word_boundary_after_space_is_true() {
-        assert!(SettingsSearchIndex::contains_at_word_boundary("theme", "app theme x"));
+        assert!(SettingsSearchIndex::contains_at_word_boundary(
+            "theme",
+            "app theme x"
+        ));
     }
 
     #[test]
@@ -238,7 +249,10 @@ mod tests {
     #[test]
     fn word_boundary_mid_word_is_false() {
         // "pear" occurs inside "appearance" preceded by a letter -> not a boundary.
-        assert!(!SettingsSearchIndex::contains_at_word_boundary("pear", "appearance"));
+        assert!(!SettingsSearchIndex::contains_at_word_boundary(
+            "pear",
+            "appearance"
+        ));
         assert!(!SettingsSearchIndex::contains_at_word_boundary("a", "cat"));
     }
 
@@ -285,7 +299,10 @@ mod tests {
 
     #[test]
     fn edit_distance_classic_value() {
-        assert_eq!(SettingsSearchIndex::edit_distance("kitten", "sitting", 10), 3);
+        assert_eq!(
+            SettingsSearchIndex::edit_distance("kitten", "sitting", 10),
+            3
+        );
     }
 
     #[test]
@@ -543,10 +560,7 @@ mod tests {
             );
         }
         assert_eq!(SettingsNavigationTarget::from_raw_value("nope"), None);
-        assert_eq!(
-            SettingsNavigationTarget::TextBox.raw_value(),
-            "textBox"
-        );
+        assert_eq!(SettingsNavigationTarget::TextBox.raw_value(), "textBox");
         assert_eq!(
             SettingsNavigationTarget::SettingsJson.raw_value(),
             "settingsJSON"

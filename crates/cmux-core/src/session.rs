@@ -9,9 +9,19 @@ use ts_rs::TS;
 // default configuration are unaffected. `#[ts(export)]` makes each type emit a
 // `.ts` file into `TS_RS_EXPORT_DIR` when the `export_bindings_*` tests run.
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SessionPaneLayoutSnapshot {
+    /// Stable pane identity (the canonical bonsplit pane id). Optional for
+    /// wire/back-compatibility: older snapshots decode without it and the
+    /// stateful desktop layer can mint one exactly once during restore.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub pane_id: Option<String>,
     pub panel_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
@@ -25,6 +35,85 @@ pub struct SessionPaneLayoutSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub surface_kind: Option<String>,
+    /// The markdown file currently bound to this pane's markdown surface, when
+    /// any. Pane-local on purpose: the Windows port swaps a pane between
+    /// terminal/agent/markdown/diff surfaces, so the markdown viewer needs a
+    /// stable place to remember which file to reopen when the pane returns to
+    /// `"markdown"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub markdown_file_path: Option<String>,
+    /// The plain-text file currently bound to this pane's file editor surface,
+    /// when any. Separate from `markdown_file_path` so rendered markdown and
+    /// editable text files can be restored independently.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub file_path: Option<String>,
+    /// The diff-viewer session token currently bound to this pane's diff
+    /// surface, when any. Pane-local for the same reason as
+    /// `markdown_file_path`: the Windows port swaps a pane between multiple
+    /// surfaces and needs to remember which live diff session to reopen when
+    /// returning to `"diff"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub diff_viewer_token: Option<String>,
+    /// The diff-viewer request path to navigate within `diff_viewer_token`,
+    /// usually `/index.html`. Stored alongside the token so restored panes can
+    /// reopen the same entry page rather than assuming the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub diff_viewer_request_path: Option<String>,
+    /// The browser URL currently bound to this pane's browser surface. This is
+    /// pane-local in the Windows port because the surface kind lives on the
+    /// pane, not on separate per-panel BrowserPanel objects yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub browser_url: Option<String>,
+    /// Optional loopback proxy endpoint for the pane-local browser surface.
+    /// Remote workspaces can publish `http://host:port` or `socks5://host:port`
+    /// here so the Tauri/WebView child is created with matching proxy routing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub browser_proxy_url: Option<String>,
+    /// Back navigation history for the pane-local browser surface. The current
+    /// Windows implementation stores history as simple URL stacks on the pane;
+    /// the last entry is the next URL to visit when going back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub browser_back_history: Option<Vec<String>>,
+    /// Forward navigation history for the pane-local browser surface. The last
+    /// entry is the next URL to visit when going forward.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub browser_forward_history: Option<Vec<String>>,
+    /// Whether the browser omnibar/toolbar is visible. Absent defaults to
+    /// visible for back-compatibility, matching the port's original always-on
+    /// browser chrome.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub browser_omnibar_visible: Option<bool>,
+    /// Whether browser focus mode is active for this pane. Focus mode is a
+    /// pane-local browser UI state in canonical cmux; absent defaults to off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub browser_focus_mode_active: Option<bool>,
+    /// Whether the browser developer-tools drawer is visible. Absent defaults
+    /// to hidden, matching canonical BrowserPanel snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub browser_developer_tools_visible: Option<bool>,
+    /// Lightweight devtools lane selected by palette commands (`"inspector"`,
+    /// `"console"`, or `"react"`). The drawer is still pane-local browser
+    /// state, and unknown/future strings are tolerated by the UI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub browser_developer_tools_panel: Option<String>,
+    /// The browser surface zoom factor. Canonical cmux persists pageZoom on
+    /// BrowserPanel snapshots; the Windows port stores the equivalent with the
+    /// pane-local browser state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub browser_page_zoom: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -182,6 +271,324 @@ pub struct SessionCanvasPaneSnapshot {
     pub selected_panel_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionPanelTitleSnapshot {
+    pub panel_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub custom_title: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionPanelPinSnapshot {
+    pub panel_id: String,
+    pub is_pinned: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionPanelUnreadSnapshot {
+    pub panel_id: String,
+    pub is_unread: bool,
+    /// Unix timestamp (seconds) when the panel became unread. Optional for
+    /// backward compatibility with snapshots written before unread ordering was
+    /// persisted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional, type = "number"))]
+    pub unread_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionPanelTerminalStartupSnapshot {
+    pub panel_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub initial_terminal_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub initial_terminal_input: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub initial_terminal_environment: Option<std::collections::BTreeMap<String, String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct AgentLaunchCommandSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub launcher: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub executable_path: Option<String>,
+    #[serde(default)]
+    pub arguments: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub working_directory: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub environment: Option<std::collections::BTreeMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionRestorableAgentSnapshot {
+    pub kind: String,
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub working_directory: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub launch_command: Option<AgentLaunchCommandSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub resume_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub fork_command: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionPanelRestorableAgentSnapshot {
+    pub panel_id: String,
+    pub snapshot: SessionRestorableAgentSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionGitBranchSnapshot {
+    pub branch: String,
+    pub is_dirty: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionPanelGitBranchSnapshot {
+    pub panel_id: String,
+    pub branch: String,
+    pub is_dirty: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, rename_all = "lowercase"))]
+#[serde(rename_all = "lowercase")]
+pub enum SessionPullRequestStatusSnapshot {
+    Open,
+    Merged,
+    Closed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionPanelPullRequestSnapshot {
+    pub panel_id: String,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub number: i64,
+    pub label: String,
+    pub url: String,
+    pub status: SessionPullRequestStatusSnapshot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub branch: Option<String>,
+    pub is_stale: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionPanelListeningPortsSnapshot {
+    pub panel_id: String,
+    #[serde(default)]
+    pub ports: Vec<u16>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionPanelTtySnapshot {
+    pub panel_id: String,
+    pub tty: String,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, rename_all = "camelCase"))]
+#[serde(rename_all = "camelCase")]
+pub enum SessionPanelShellActivityStateSnapshot {
+    Unknown,
+    PromptIdle,
+    CommandRunning,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionPanelShellActivitySnapshot {
+    pub panel_id: String,
+    pub state: SessionPanelShellActivityStateSnapshot,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionWorkspaceAgentPidSnapshot {
+    pub key: String,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub pid: u32,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionWorkspaceRemoteDaemonSnapshot {
+    #[serde(default)]
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionWorkspaceRemoteProxySnapshot {
+    #[serde(default)]
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub host: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional, type = "number"))]
+    pub port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub schemes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub error_code: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionWorkspaceRemoteSnapshot {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub connected: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub transport: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub destination: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional, type = "number"))]
+    pub port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional, type = "number"))]
+    pub local_proxy_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub persistent_daemon_slot: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub has_ssh_options: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub daemon: Option<SessionWorkspaceRemoteDaemonSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub proxy: Option<SessionWorkspaceRemoteProxySnapshot>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub detected_ports: Vec<u16>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub forwarded_ports: Vec<u16>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conflicted_ports: Vec<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional, type = "number"))]
+    pub active_terminal_sessions: Option<u16>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionWorkspaceSidebarProgressSnapshot {
+    pub value: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionWorkspaceSidebarStatusSnapshot {
+    pub key: String,
+    pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional, type = "number"))]
+    pub priority: Option<i64>,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionWorkspaceSidebarMetadataSnapshot {
+    pub key: String,
+    pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub icon: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional, type = "number"))]
+    pub priority: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub format: Option<String>,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionWorkspaceSidebarMetadataBlockSnapshot {
+    pub key: String,
+    pub markdown: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional, type = "number"))]
+    pub priority: Option<i64>,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionWorkspaceSidebarLogEntrySnapshot {
+    pub level: String,
+    pub message: String,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub created_at: i64,
+}
+
 // No `Eq`: `layout` reaches `SessionSplitLayoutSnapshot::divider_position` (f64).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
@@ -198,7 +605,28 @@ pub struct SessionWorkspaceSnapshot {
     pub custom_title_source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
+    pub custom_description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub custom_color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
     pub current_directory: Option<String>,
+    /// Optional command used for the first terminal surface in this workspace.
+    /// This mirrors macOS `initialTerminalCommand` and is required by
+    /// restore/fork/external-open flows that launch something more specific than
+    /// the default interactive shell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub initial_terminal_command: Option<String>,
+    /// Optional text injected into the first terminal after its PTY opens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub initial_terminal_input: Option<String>,
+    /// Environment overrides for the initial terminal process.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub initial_terminal_environment: Option<std::collections::BTreeMap<String, String>>,
     // `layout` has `#[serde(default)]` but NO `skip_serializing_if`, so it is
     // serialized as `"layout": null` when absent — keep it nullable, not optional.
     #[serde(default)]
@@ -206,6 +634,103 @@ pub struct SessionWorkspaceSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub layout_mode: Option<String>,
+    /// The panel id currently zoomed to fill the workspace split area, if any.
+    /// Omitted when no pane zoom is active.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub zoomed_panel_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub panel_titles: Option<Vec<SessionPanelTitleSnapshot>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub panel_pins: Option<Vec<SessionPanelPinSnapshot>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub panel_unreads: Option<Vec<SessionPanelUnreadSnapshot>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub restorable_agent_snapshots: Option<Vec<SessionPanelRestorableAgentSnapshot>>,
+    /// Workspace-level git branch fallback used only when no panel reports a
+    /// branch. Mirrors canonical `Workspace.gitBranch` as consumed by the
+    /// sidebar badge projection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub git_branch: Option<SessionGitBranchSnapshot>,
+    /// Per-panel git branch state keyed by `panel_id`. The ordered panel ids
+    /// still come from the layout tree, so this field only carries facts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub panel_git_branches: Option<Vec<SessionPanelGitBranchSnapshot>>,
+    /// Per-panel pull request state keyed by `panel_id`. Stale rows are kept so
+    /// the UI can render canonical secondary-stale badges while the poller
+    /// refreshes inactive panels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub panel_pull_requests: Option<Vec<SessionPanelPullRequestSnapshot>>,
+    /// Remote workspace connection/proxy metadata. The macOS app owns the live
+    /// broker; the Windows/Tauri port persists the same control-plane facts so
+    /// browser panes can be rebound to a published local proxy endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub remote: Option<SessionWorkspaceRemoteSnapshot>,
+    /// Optional sidebar progress reported by agents/CLI integrations. Mirrors
+    /// canonical `set_progress`/`clear_progress` workspace metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub sidebar_progress: Option<SessionWorkspaceSidebarProgressSnapshot>,
+    /// Sidebar status pills reported by CLI/agent integrations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub sidebar_status_entries: Option<Vec<SessionWorkspaceSidebarStatusSnapshot>>,
+    /// Rich custom sidebar metadata entries reported by CLI/agent integrations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub sidebar_metadata_entries: Option<Vec<SessionWorkspaceSidebarMetadataSnapshot>>,
+    /// Freeform custom sidebar markdown metadata blocks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub sidebar_metadata_blocks: Option<Vec<SessionWorkspaceSidebarMetadataBlockSnapshot>>,
+    /// Recent sidebar log entries reported by CLI/agent integrations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub sidebar_log_entries: Option<Vec<SessionWorkspaceSidebarLogEntrySnapshot>>,
+    /// Aggregate listening ports for this workspace, sorted and deduplicated.
+    /// Mirrors canonical `Workspace.listeningPorts`; per-panel contributors
+    /// live in `panel_listening_ports`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub listening_ports: Option<Vec<u16>>,
+    /// Workspace-level listening ports owned by live agent process trees. Kept
+    /// separate from `panel_listening_ports` so panel recomputes do not erase
+    /// non-terminal agent facts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub agent_listening_ports: Option<Vec<u16>>,
+    /// Workspace-scoped agent root PIDs registered by shell/agent hooks.
+    /// Scanning their descendant process trees feeds `agent_listening_ports`,
+    /// which is then rendered by the existing sidebar port badge path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub agent_pids: Option<Vec<SessionWorkspaceAgentPidSnapshot>>,
+    /// Per-panel listening ports keyed by `panel_id`, matching canonical
+    /// `Workspace.surfaceListeningPorts`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub panel_listening_ports: Option<Vec<SessionPanelListeningPortsSnapshot>>,
+    /// Per-panel terminal TTY names reported by shell/SSH integration. This is
+    /// used by legacy hook/session mapping and debug terminal compatibility.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub panel_ttys: Option<Vec<SessionPanelTtySnapshot>>,
+    /// Per-panel shell activity state as reported by shell integration prompt
+    /// markers. Mirrors canonical `Workspace.panelShellActivityStates`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub panel_shell_activity: Option<Vec<SessionPanelShellActivitySnapshot>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub panel_terminal_startups: Option<Vec<SessionPanelTerminalStartupSnapshot>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub canvas_panes: Option<Vec<SessionCanvasPaneSnapshot>>,
@@ -351,14 +876,28 @@ export type SessionWorkspaceLayoutSnapshot = { type: \"pane\", pane: SessionPane
         let barrel = "\
 // This file was generated by cmux-core (cargo test --features ts). Do not edit.
 export type { AppSessionSnapshot } from \"./AppSessionSnapshot\";
+export type { AgentLaunchCommandSnapshot } from \"./AgentLaunchCommandSnapshot\";
 export type { SessionCanvasPaneSnapshot } from \"./SessionCanvasPaneSnapshot\";
+export type { SessionPanelListeningPortsSnapshot } from \"./SessionPanelListeningPortsSnapshot\";
+export type { SessionPanelRestorableAgentSnapshot } from \"./SessionPanelRestorableAgentSnapshot\";
+export type { SessionPanelShellActivitySnapshot } from \"./SessionPanelShellActivitySnapshot\";
+export type { SessionPanelShellActivityStateSnapshot } from \"./SessionPanelShellActivityStateSnapshot\";
+export type { SessionPanelTerminalStartupSnapshot } from \"./SessionPanelTerminalStartupSnapshot\";
+export type { SessionPanelTtySnapshot } from \"./SessionPanelTtySnapshot\";
 export type { SessionPaneLayoutSnapshot } from \"./SessionPaneLayoutSnapshot\";
 export type { SessionSplitLayoutSnapshot } from \"./SessionSplitLayoutSnapshot\";
+export type { SessionRestorableAgentSnapshot } from \"./SessionRestorableAgentSnapshot\";
 export type { SessionSplitOrientation } from \"./SessionSplitOrientation\";
 export type { SessionTabManagerSnapshot } from \"./SessionTabManagerSnapshot\";
 export type { SessionWindowSnapshot } from \"./SessionWindowSnapshot\";
 export type { SessionWorkspaceGroupSnapshot } from \"./SessionWorkspaceGroupSnapshot\";
 export type { SessionWorkspaceLayoutSnapshot } from \"./SessionWorkspaceLayoutSnapshot\";
+export type { SessionWorkspaceAgentPidSnapshot } from \"./SessionWorkspaceAgentPidSnapshot\";
+export type { SessionWorkspaceSidebarLogEntrySnapshot } from \"./SessionWorkspaceSidebarLogEntrySnapshot\";
+export type { SessionWorkspaceSidebarMetadataBlockSnapshot } from \"./SessionWorkspaceSidebarMetadataBlockSnapshot\";
+export type { SessionWorkspaceSidebarMetadataSnapshot } from \"./SessionWorkspaceSidebarMetadataSnapshot\";
+export type { SessionWorkspaceSidebarProgressSnapshot } from \"./SessionWorkspaceSidebarProgressSnapshot\";
+export type { SessionWorkspaceSidebarStatusSnapshot } from \"./SessionWorkspaceSidebarStatusSnapshot\";
 export type { SessionWorkspaceSnapshot } from \"./SessionWorkspaceSnapshot\";
 
 // --- WS3 extension point -------------------------------------------------
@@ -372,6 +911,19 @@ export type { SessionWorkspaceSnapshot } from \"./SessionWorkspaceSnapshot\";
         // Touch the derived types so a missing derive fails the export run.
         let _ = SessionPaneLayoutSnapshot::name();
         let _ = SessionSplitLayoutSnapshot::name();
+        let _ = AgentLaunchCommandSnapshot::name();
+        let _ = SessionRestorableAgentSnapshot::name();
+        let _ = SessionPanelTerminalStartupSnapshot::name();
+        let _ = SessionPanelListeningPortsSnapshot::name();
+        let _ = SessionPanelTtySnapshot::name();
+        let _ = SessionPanelShellActivitySnapshot::name();
+        let _ = SessionPanelShellActivityStateSnapshot::name();
+        let _ = SessionWorkspaceAgentPidSnapshot::name();
+        let _ = SessionWorkspaceSidebarLogEntrySnapshot::name();
+        let _ = SessionWorkspaceSidebarMetadataBlockSnapshot::name();
+        let _ = SessionWorkspaceSidebarMetadataSnapshot::name();
+        let _ = SessionWorkspaceSidebarProgressSnapshot::name();
+        let _ = SessionWorkspaceSidebarStatusSnapshot::name();
         let _ = AppSessionSnapshot::name();
     }
 }
@@ -385,16 +937,48 @@ mod tests {
         let snapshot = SessionWorkspaceLayoutSnapshot::Split(SessionSplitLayoutSnapshot {
             orientation: SessionSplitOrientation::Horizontal,
             divider_position: 0.5,
-            first: Box::new(SessionWorkspaceLayoutSnapshot::Pane(SessionPaneLayoutSnapshot {
-                panel_ids: vec!["A".into()],
-                selected_panel_id: Some("A".into()),
-                surface_kind: None,
-            })),
-            second: Box::new(SessionWorkspaceLayoutSnapshot::Pane(SessionPaneLayoutSnapshot {
-                panel_ids: vec!["B".into()],
-                selected_panel_id: Some("B".into()),
-                surface_kind: None,
-            })),
+            first: Box::new(SessionWorkspaceLayoutSnapshot::Pane(
+                SessionPaneLayoutSnapshot {
+                    pane_id: None,
+                    panel_ids: vec!["A".into()],
+                    selected_panel_id: Some("A".into()),
+                    surface_kind: None,
+                    markdown_file_path: None,
+                    file_path: None,
+                    diff_viewer_token: None,
+                    diff_viewer_request_path: None,
+                    browser_url: None,
+                    browser_proxy_url: None,
+                    browser_back_history: None,
+                    browser_forward_history: None,
+                    browser_omnibar_visible: None,
+                    browser_focus_mode_active: None,
+                    browser_developer_tools_visible: None,
+                    browser_developer_tools_panel: None,
+                    browser_page_zoom: None,
+                },
+            )),
+            second: Box::new(SessionWorkspaceLayoutSnapshot::Pane(
+                SessionPaneLayoutSnapshot {
+                    pane_id: None,
+                    panel_ids: vec!["B".into()],
+                    selected_panel_id: Some("B".into()),
+                    surface_kind: None,
+                    markdown_file_path: None,
+                    file_path: None,
+                    diff_viewer_token: None,
+                    diff_viewer_request_path: None,
+                    browser_url: None,
+                    browser_proxy_url: None,
+                    browser_back_history: None,
+                    browser_forward_history: None,
+                    browser_omnibar_visible: None,
+                    browser_focus_mode_active: None,
+                    browser_developer_tools_visible: None,
+                    browser_developer_tools_panel: None,
+                    browser_page_zoom: None,
+                },
+            )),
         });
 
         let json = serde_json::to_value(&snapshot).expect("serialize");
@@ -409,12 +993,37 @@ mod tests {
     #[test]
     fn workspace_snapshot_defaults_group_and_pinned_to_none() {
         let snapshot = SessionWorkspaceSnapshot::default();
+        assert_eq!(snapshot.custom_description, None);
+        assert_eq!(snapshot.custom_color, None);
         assert_eq!(snapshot.group_id, None);
         assert_eq!(snapshot.is_pinned, None);
+        assert_eq!(snapshot.zoomed_panel_id, None);
+        assert_eq!(snapshot.panel_titles, None);
+        assert_eq!(snapshot.panel_pins, None);
+        assert_eq!(snapshot.panel_unreads, None);
+        assert_eq!(snapshot.restorable_agent_snapshots, None);
+        assert_eq!(snapshot.git_branch, None);
+        assert_eq!(snapshot.panel_git_branches, None);
+        assert_eq!(snapshot.panel_pull_requests, None);
+        assert_eq!(snapshot.sidebar_progress, None);
+        assert_eq!(snapshot.sidebar_status_entries, None);
+        assert_eq!(snapshot.sidebar_metadata_entries, None);
+        assert_eq!(snapshot.sidebar_metadata_blocks, None);
+        assert_eq!(snapshot.sidebar_log_entries, None);
+        assert_eq!(snapshot.listening_ports, None);
+        assert_eq!(snapshot.agent_listening_ports, None);
+        assert_eq!(snapshot.agent_pids, None);
+        assert_eq!(snapshot.panel_listening_ports, None);
+        assert_eq!(snapshot.panel_ttys, None);
+        assert_eq!(snapshot.panel_shell_activity, None);
+        assert_eq!(snapshot.panel_terminal_startups, None);
+        assert_eq!(snapshot.initial_terminal_command, None);
+        assert_eq!(snapshot.initial_terminal_input, None);
+        assert_eq!(snapshot.initial_terminal_environment, None);
     }
 
     #[test]
-    fn workspace_snapshot_omits_group_and_pinned_when_none() {
+    fn workspace_snapshot_omits_description_group_and_pinned_when_none() {
         // Parity oracle: mirrors Swift's `encodeIfPresent` for `groupId` and keeps
         // existing (unpinned, ungrouped) fixtures byte-identical — neither key may
         // appear in the JSON when absent.
@@ -424,35 +1033,302 @@ mod tests {
         };
         let json = serde_json::to_value(&snapshot).expect("serialize");
         let object = json.as_object().expect("object");
-        assert!(!object.contains_key("group_id"), "group_id must be omitted when None");
-        assert!(!object.contains_key("is_pinned"), "is_pinned must be omitted when None");
+        assert!(
+            !object.contains_key("custom_description"),
+            "custom_description must be omitted when None"
+        );
+        assert!(
+            !object.contains_key("custom_color"),
+            "custom_color must be omitted when None"
+        );
+        assert!(
+            !object.contains_key("group_id"),
+            "group_id must be omitted when None"
+        );
+        assert!(
+            !object.contains_key("is_pinned"),
+            "is_pinned must be omitted when None"
+        );
+        assert!(
+            !object.contains_key("zoomed_panel_id"),
+            "zoomed_panel_id must be omitted when None"
+        );
+        assert!(
+            !object.contains_key("panel_titles"),
+            "panel_titles must be omitted when None"
+        );
+        assert!(
+            !object.contains_key("panel_pins"),
+            "panel_pins must be omitted when None"
+        );
+        assert!(
+            !object.contains_key("panel_unreads"),
+            "panel_unreads must be omitted when None"
+        );
+        assert!(
+            !object.contains_key("restorable_agent_snapshots"),
+            "restorable_agent_snapshots must be omitted when None"
+        );
+        assert!(
+            !object.contains_key("git_branch"),
+            "git_branch must be omitted when None"
+        );
+        assert!(
+            !object.contains_key("panel_git_branches"),
+            "panel_git_branches must be omitted when None"
+        );
+        assert!(
+            !object.contains_key("panel_pull_requests"),
+            "panel_pull_requests must be omitted when None"
+        );
+        assert!(
+            !object.contains_key("sidebar_progress"),
+            "sidebar_progress must be omitted when None"
+        );
+        assert!(
+            !object.contains_key("sidebar_status_entries"),
+            "sidebar_status_entries must be omitted when None"
+        );
+        assert!(
+            !object.contains_key("sidebar_metadata_entries"),
+            "sidebar_metadata_entries must be omitted when None"
+        );
+        assert!(
+            !object.contains_key("sidebar_metadata_blocks"),
+            "sidebar_metadata_blocks must be omitted when None"
+        );
+        assert!(
+            !object.contains_key("sidebar_log_entries"),
+            "sidebar_log_entries must be omitted when None"
+        );
+        assert!(
+            !object.contains_key("listening_ports"),
+            "listening_ports must be omitted when None"
+        );
+        assert!(
+            !object.contains_key("agent_listening_ports"),
+            "agent_listening_ports must be omitted when None"
+        );
+        assert!(
+            !object.contains_key("agent_pids"),
+            "agent_pids must be omitted when None"
+        );
+        assert!(
+            !object.contains_key("panel_listening_ports"),
+            "panel_listening_ports must be omitted when None"
+        );
+        assert!(
+            !object.contains_key("panel_ttys"),
+            "panel_ttys must be omitted when None"
+        );
+        assert!(
+            !object.contains_key("panel_shell_activity"),
+            "panel_shell_activity must be omitted when None"
+        );
+        assert!(
+            !object.contains_key("panel_terminal_startups"),
+            "panel_terminal_startups must be omitted when None"
+        );
+        assert!(
+            !object.contains_key("initial_terminal_command"),
+            "initial_terminal_command must be omitted when None"
+        );
+        assert!(
+            !object.contains_key("initial_terminal_input"),
+            "initial_terminal_input must be omitted when None"
+        );
+        assert!(
+            !object.contains_key("initial_terminal_environment"),
+            "initial_terminal_environment must be omitted when None"
+        );
     }
 
     #[test]
     fn workspace_snapshot_round_trips_group_and_pinned() {
         let snapshot = SessionWorkspaceSnapshot {
             process_title: "zsh".into(),
+            custom_description: Some("alpha\nbeta".into()),
+            custom_color: Some("#C0392B".into()),
             group_id: Some("11111111-2222-3333-4444-555555555555".into()),
             is_pinned: Some(true),
+            zoomed_panel_id: Some("surface-1".into()),
+            panel_titles: Some(vec![SessionPanelTitleSnapshot {
+                panel_id: "surface-1".into(),
+                custom_title: Some("api logs".into()),
+            }]),
+            panel_pins: Some(vec![SessionPanelPinSnapshot {
+                panel_id: "surface-1".into(),
+                is_pinned: true,
+            }]),
+            panel_unreads: Some(vec![SessionPanelUnreadSnapshot {
+                panel_id: "surface-1".into(),
+                is_unread: true,
+                unread_at: Some(42),
+            }]),
+            restorable_agent_snapshots: Some(vec![SessionPanelRestorableAgentSnapshot {
+                panel_id: "surface-1".into(),
+                snapshot: SessionRestorableAgentSnapshot {
+                    kind: "codex".into(),
+                    session_id: "session-1".into(),
+                    working_directory: Some("C:/repo".into()),
+                    launch_command: Some(AgentLaunchCommandSnapshot {
+                        launcher: None,
+                        executable_path: Some("codex".into()),
+                        arguments: vec!["codex".into()],
+                        working_directory: Some("C:/repo".into()),
+                        environment: Some(std::collections::BTreeMap::from([(
+                            "CODEX_HOME".into(),
+                            "C:/codex".into(),
+                        )])),
+                        source: Some("provider.start".into()),
+                    }),
+                    resume_command: Some("codex resume session-1".into()),
+                    fork_command: Some("codex resume session-1 --fork".into()),
+                },
+            }]),
+            panel_terminal_startups: Some(vec![SessionPanelTerminalStartupSnapshot {
+                panel_id: "surface-1".into(),
+                initial_terminal_command: None,
+                initial_terminal_input: Some("codex fork session-1\r\n".into()),
+                initial_terminal_environment: Some(std::collections::BTreeMap::from([(
+                    "CMUX_AGENT_FORK".into(),
+                    "1".into(),
+                )])),
+            }]),
+            listening_ports: Some(vec![3000, 5173]),
+            agent_listening_ports: Some(vec![7000]),
+            agent_pids: Some(vec![SessionWorkspaceAgentPidSnapshot {
+                key: "codex.session-1".into(),
+                pid: 1234,
+                updated_at: 99,
+            }]),
+            panel_listening_ports: Some(vec![SessionPanelListeningPortsSnapshot {
+                panel_id: "surface-1".into(),
+                ports: vec![5173, 3000],
+            }]),
+            panel_ttys: Some(vec![SessionPanelTtySnapshot {
+                panel_id: "surface-1".into(),
+                tty: "ttys004".into(),
+                updated_at: 101,
+            }]),
+            initial_terminal_command: Some("ssh".into()),
+            initial_terminal_input: Some("echo ready\r".into()),
+            initial_terminal_environment: Some(std::collections::BTreeMap::from([(
+                "CMUX_FORK".into(),
+                "1".into(),
+            )])),
             ..Default::default()
         };
         let json = serde_json::to_value(&snapshot).expect("serialize");
+        assert_eq!(json["custom_description"], "alpha\nbeta");
+        assert_eq!(json["custom_color"], "#C0392B");
         assert_eq!(json["group_id"], "11111111-2222-3333-4444-555555555555");
         assert_eq!(json["is_pinned"], true);
+        assert_eq!(json["zoomed_panel_id"], "surface-1");
+        assert_eq!(json["panel_titles"][0]["panel_id"], "surface-1");
+        assert_eq!(json["panel_titles"][0]["custom_title"], "api logs");
+        assert_eq!(json["panel_pins"][0]["panel_id"], "surface-1");
+        assert_eq!(json["panel_pins"][0]["is_pinned"], true);
+        assert_eq!(json["panel_unreads"][0]["panel_id"], "surface-1");
+        assert_eq!(json["panel_unreads"][0]["is_unread"], true);
+        assert_eq!(json["panel_unreads"][0]["unread_at"], 42);
+        assert_eq!(
+            json["restorable_agent_snapshots"][0]["panel_id"],
+            "surface-1"
+        );
+        assert_eq!(
+            json["restorable_agent_snapshots"][0]["snapshot"]["kind"],
+            "codex"
+        );
+        assert_eq!(
+            json["restorable_agent_snapshots"][0]["snapshot"]["session_id"],
+            "session-1"
+        );
+        assert_eq!(
+            json["restorable_agent_snapshots"][0]["snapshot"]["launch_command"]["environment"]
+                ["CODEX_HOME"],
+            "C:/codex"
+        );
+        assert_eq!(
+            json["restorable_agent_snapshots"][0]["snapshot"]["fork_command"],
+            "codex resume session-1 --fork"
+        );
+        assert_eq!(json["panel_terminal_startups"][0]["panel_id"], "surface-1");
+        assert_eq!(
+            json["panel_terminal_startups"][0]["initial_terminal_input"],
+            "codex fork session-1\r\n"
+        );
+        assert_eq!(
+            json["panel_terminal_startups"][0]["initial_terminal_environment"]["CMUX_AGENT_FORK"],
+            "1"
+        );
+        assert_eq!(json["listening_ports"], serde_json::json!([3000, 5173]));
+        assert_eq!(json["agent_listening_ports"], serde_json::json!([7000]));
+        assert_eq!(
+            json["agent_pids"][0],
+            serde_json::json!({
+                "key": "codex.session-1",
+                "pid": 1234,
+                "updated_at": 99,
+            })
+        );
+        assert_eq!(
+            json["panel_listening_ports"][0],
+            serde_json::json!({
+                "panel_id": "surface-1",
+                "ports": [5173, 3000],
+            })
+        );
+        assert_eq!(
+            json["panel_ttys"][0],
+            serde_json::json!({
+                "panel_id": "surface-1",
+                "tty": "ttys004",
+                "updated_at": 101,
+            })
+        );
+        assert_eq!(json["initial_terminal_command"], "ssh");
+        assert_eq!(json["initial_terminal_input"], "echo ready\r");
+        assert_eq!(json["initial_terminal_environment"]["CMUX_FORK"], "1");
 
-        let decoded: SessionWorkspaceSnapshot =
-            serde_json::from_value(json).expect("deserialize");
+        let decoded: SessionWorkspaceSnapshot = serde_json::from_value(json).expect("deserialize");
         assert_eq!(decoded, snapshot);
     }
 
     #[test]
-    fn workspace_snapshot_decodes_absent_group_and_pinned_as_none() {
+    fn workspace_snapshot_decodes_absent_description_group_and_pinned_as_none() {
         // Raw JSON lacking both keys (i.e. every existing fixture) must decode to
         // `None`/`None`, proving wire back-compatibility.
         let raw = serde_json::json!({ "process_title": "zsh", "layout": null });
-        let decoded: SessionWorkspaceSnapshot =
-            serde_json::from_value(raw).expect("deserialize");
+        let decoded: SessionWorkspaceSnapshot = serde_json::from_value(raw).expect("deserialize");
+        assert_eq!(decoded.custom_description, None);
+        assert_eq!(decoded.custom_color, None);
         assert_eq!(decoded.group_id, None);
         assert_eq!(decoded.is_pinned, None);
+        assert_eq!(decoded.panel_titles, None);
+        assert_eq!(decoded.panel_pins, None);
+        assert_eq!(decoded.panel_unreads, None);
+        assert_eq!(decoded.restorable_agent_snapshots, None);
+        assert_eq!(decoded.sidebar_progress, None);
+        assert_eq!(decoded.sidebar_status_entries, None);
+        assert_eq!(decoded.sidebar_metadata_entries, None);
+        assert_eq!(decoded.sidebar_metadata_blocks, None);
+        assert_eq!(decoded.sidebar_log_entries, None);
+        assert_eq!(decoded.panel_terminal_startups, None);
+        assert_eq!(decoded.listening_ports, None);
+        assert_eq!(decoded.agent_listening_ports, None);
+        assert_eq!(decoded.agent_pids, None);
+        assert_eq!(decoded.panel_listening_ports, None);
+        assert_eq!(decoded.panel_ttys, None);
+        assert_eq!(decoded.initial_terminal_command, None);
+        assert_eq!(decoded.initial_terminal_input, None);
+        assert_eq!(decoded.initial_terminal_environment, None);
+    }
+
+    #[test]
+    fn panel_unread_snapshot_decodes_absent_unread_at_as_none() {
+        let raw = serde_json::json!({ "panel_id": "surface-1", "is_unread": true });
+        let decoded: SessionPanelUnreadSnapshot = serde_json::from_value(raw).expect("deserialize");
+        assert_eq!(decoded.unread_at, None);
     }
 }

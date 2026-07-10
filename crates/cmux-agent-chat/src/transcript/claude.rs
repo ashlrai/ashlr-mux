@@ -29,8 +29,17 @@ use super::tool_completion::TranscriptToolCompletion;
 const USER_NOISE_PREFIXES: [&str; 3] = ["<command-name>", "<local-command", "<system-reminder"];
 const EDIT_TOOL_NAMES: [&str; 3] = ["Edit", "MultiEdit", "NotebookEdit"];
 const SUMMARY_ARGUMENT_KEYS: [&str; 11] = [
-    "file_path", "notebook_path", "path", "pattern", "command", "query", "url", "description",
-    "prompt", "skill", "name",
+    "file_path",
+    "notebook_path",
+    "path",
+    "pattern",
+    "command",
+    "query",
+    "url",
+    "description",
+    "prompt",
+    "skill",
+    "name",
 ];
 
 /// Matches an `Exit code[:] N` header in a tool result.
@@ -94,7 +103,9 @@ impl ClaudeTranscriptParser {
             let timestamp = last_timestamp.unwrap_or(Timestamp::EPOCH_ZERO);
             match root.get("type").and_then(|v| v.string()) {
                 Some("user") => self.append_user_line(root, seq, timestamp, &mut assembler),
-                Some("assistant") => self.append_assistant_line(root, seq, timestamp, &mut assembler),
+                Some("assistant") => {
+                    self.append_assistant_line(root, seq, timestamp, &mut assembler)
+                }
                 _ => continue,
             }
         }
@@ -180,7 +191,10 @@ impl ClaudeTranscriptParser {
             return;
         };
         let output = result_text(block.get("content"));
-        let is_error = block.get("is_error").and_then(|v| v.bool()).unwrap_or(false);
+        let is_error = block
+            .get("is_error")
+            .and_then(|v| v.bool())
+            .unwrap_or(false);
         let exit_code = parsed_exit_code(output.as_deref());
         assembler.resolve(
             call_id,
@@ -214,7 +228,14 @@ impl ClaudeTranscriptParser {
             match block.get("type").and_then(|v| v.string()) {
                 Some("text") => {
                     let text = block.get("text").and_then(|v| v.string()).unwrap_or("");
-                    self.append_agent_prose(text, &line_id, &mut emitted, seq, timestamp, assembler);
+                    self.append_agent_prose(
+                        text,
+                        &line_id,
+                        &mut emitted,
+                        seq,
+                        timestamp,
+                        assembler,
+                    );
                 }
                 Some("thinking") => {
                     let text = block.get("thinking").and_then(|v| v.string()).unwrap_or("");
@@ -299,7 +320,13 @@ impl ClaudeTranscriptParser {
         let input = block.get("input");
         for kind in self.tool_use_kinds(tool_name, input) {
             assembler.append(
-                ChatMessage::new(block_id(line_id, *emitted), seq, ChatRole::Agent, timestamp, kind),
+                ChatMessage::new(
+                    block_id(line_id, *emitted),
+                    seq,
+                    ChatRole::Agent,
+                    timestamp,
+                    kind,
+                ),
                 call_id,
             );
             *emitted += 1;
@@ -313,8 +340,13 @@ impl ClaudeTranscriptParser {
         input: Option<TranscriptJson<'_>>,
     ) -> Vec<ChatMessageKind> {
         if tool_name == "Bash" {
-            if let Some(command) = input.and_then(|i| i.get("command")).and_then(|v| v.string()) {
-                return vec![ChatMessageKind::Terminal(ChatTerminalCapture::running(command))];
+            if let Some(command) = input
+                .and_then(|i| i.get("command"))
+                .and_then(|v| v.string())
+            {
+                return vec![ChatMessageKind::Terminal(ChatTerminalCapture::running(
+                    command,
+                ))];
             }
         }
         if tool_name == "Write" || EDIT_TOOL_NAMES.contains(&tool_name) {
@@ -355,8 +387,12 @@ impl ClaudeTranscriptParser {
                     .iter()
                     .map(|edit| {
                         self.diffs.replacement(
-                            edit.get("old_string").and_then(|v| v.string()).unwrap_or(""),
-                            edit.get("new_string").and_then(|v| v.string()).unwrap_or(""),
+                            edit.get("old_string")
+                                .and_then(|v| v.string())
+                                .unwrap_or(""),
+                            edit.get("new_string")
+                                .and_then(|v| v.string())
+                                .unwrap_or(""),
                         )
                     })
                     .collect();
@@ -365,7 +401,10 @@ impl ClaudeTranscriptParser {
             _ => (
                 ChatFileEditOperation::Edit,
                 self.diffs.replacement(
-                    input.get("old_string").and_then(|v| v.string()).unwrap_or(""),
+                    input
+                        .get("old_string")
+                        .and_then(|v| v.string())
+                        .unwrap_or(""),
                     input
                         .get("new_string")
                         .and_then(|v| v.string())
@@ -409,7 +448,9 @@ impl ClaudeTranscriptParser {
 }
 
 fn question_kinds(input: Option<TranscriptJson<'_>>) -> Vec<ChatMessageKind> {
-    let questions = input.and_then(|i| i.get("questions")).and_then(|v| v.array());
+    let questions = input
+        .and_then(|i| i.get("questions"))
+        .and_then(|v| v.array());
     questions
         .unwrap_or_default()
         .iter()
@@ -424,7 +465,10 @@ fn question_kinds(input: Option<TranscriptJson<'_>>) -> Vec<ChatMessageKind> {
                     option.get("label").and_then(|v| v.string()).map(|label| {
                         ChatQuestionOption::new(
                             label,
-                            option.get("description").and_then(|v| v.string()).map(str::to_string),
+                            option
+                                .get("description")
+                                .and_then(|v| v.string())
+                                .map(str::to_string),
                         )
                     })
                 })
@@ -492,7 +536,12 @@ mod tests {
         parser().parse(lines.iter(), starting_seq, ChatTranscriptParseState::new())
     }
 
-    fn user_line(uuid: &str, content: Value, is_meta: Option<bool>, timestamp: Option<&str>) -> String {
+    fn user_line(
+        uuid: &str,
+        content: Value,
+        is_meta: Option<bool>,
+        timestamp: Option<&str>,
+    ) -> String {
         let mut object = json!({
             "parentUuid": Value::Null, "isSidechain": false, "type": "user",
             "message": {"role": "user", "content": content},
@@ -527,8 +576,14 @@ mod tests {
         assistant_line("a-1", blocks, "2026-06-12T05:08:20.730Z")
     }
 
-    fn tool_result_line(uuid: &str, tool_use_id: &str, content: Value, is_error: Option<bool>) -> String {
-        let mut block = json!({"tool_use_id": tool_use_id, "type": "tool_result", "content": content});
+    fn tool_result_line(
+        uuid: &str,
+        tool_use_id: &str,
+        content: Value,
+        is_error: Option<bool>,
+    ) -> String {
+        let mut block =
+            json!({"tool_use_id": tool_use_id, "type": "tool_result", "content": content});
         if let Some(err) = is_error {
             block["is_error"] = json!(err);
         }
@@ -548,7 +603,10 @@ mod tests {
         assert_eq!(message.id, "u-9");
         assert_eq!(message.seq, 41);
         assert_eq!(message.role, ChatRole::User);
-        assert_eq!(message.kind, ChatMessageKind::Prose(ChatProse::new("fix the bug")));
+        assert_eq!(
+            message.kind,
+            ChatMessageKind::Prose(ChatProse::new("fix the bug"))
+        );
         assert!(result.updated_messages.is_empty());
     }
 
@@ -561,11 +619,18 @@ mod tests {
                 Some(true),
                 Some("2026-06-12T05:07:51.103Z"),
             ),
-            user_text("u-1", "<command-name>/model</command-name>\n<command-message>model</command-message>"),
-            user_text("u-1", "<local-command-stdout>Set model</local-command-stdout>"),
+            user_text(
+                "u-1",
+                "<command-name>/model</command-name>\n<command-message>model</command-message>",
+            ),
+            user_text(
+                "u-1",
+                "<local-command-stdout>Set model</local-command-stdout>",
+            ),
             user_text("u-1", "<system-reminder>noise</system-reminder>"),
             r#"{"type": "mode", "mode": "normal", "sessionId": "s-1"}"#.to_string(),
-            r#"{"type": "summary", "summary": "Earlier conversation", "leafUuid": "x"}"#.to_string(),
+            r#"{"type": "summary", "summary": "Earlier conversation", "leafUuid": "x"}"#
+                .to_string(),
             r#"{"type": "ai-title", "aiTitle": "Build a thing", "sessionId": "s-1"}"#.to_string(),
             user_text("u-real", "real prompt"),
         ];
@@ -578,15 +643,33 @@ mod tests {
     #[test]
     fn assistant_text_and_thinking() {
         let lines = vec![
-            assistant_line("a-t", json!([{"type": "thinking", "thinking": "", "signature": "CAIS"}]), "2026-06-12T05:08:20.730Z"),
-            assistant_line("a-u", json!([{"type": "thinking", "thinking": "weighing options", "signature": "CAIS"}]), "2026-06-12T05:08:20.730Z"),
-            assistant_line("a-v", json!([{"type": "text", "text": "Here is the plan."}]), "2026-06-12T05:08:20.730Z"),
+            assistant_line(
+                "a-t",
+                json!([{"type": "thinking", "thinking": "", "signature": "CAIS"}]),
+                "2026-06-12T05:08:20.730Z",
+            ),
+            assistant_line(
+                "a-u",
+                json!([{"type": "thinking", "thinking": "weighing options", "signature": "CAIS"}]),
+                "2026-06-12T05:08:20.730Z",
+            ),
+            assistant_line(
+                "a-v",
+                json!([{"type": "text", "text": "Here is the plan."}]),
+                "2026-06-12T05:08:20.730Z",
+            ),
         ];
         let result = parse(&lines, 0);
         assert_eq!(result.messages.len(), 2);
-        assert_eq!(result.messages[0].kind, ChatMessageKind::Thought(ChatThought::new("weighing options")));
+        assert_eq!(
+            result.messages[0].kind,
+            ChatMessageKind::Thought(ChatThought::new("weighing options"))
+        );
         assert_eq!(result.messages[1].role, ChatRole::Agent);
-        assert_eq!(result.messages[1].kind, ChatMessageKind::Prose(ChatProse::new("Here is the plan.")));
+        assert_eq!(
+            result.messages[1].kind,
+            ChatMessageKind::Prose(ChatProse::new("Here is the plan."))
+        );
     }
 
     #[test]
@@ -625,7 +708,9 @@ mod tests {
     #[test]
     fn bash_result_same_call() {
         let lines = vec![
-            assistant(json!([{"type": "tool_use", "id": "toolu_b", "name": "Bash", "input": {"command": "ls"}}])),
+            assistant(
+                json!([{"type": "tool_use", "id": "toolu_b", "name": "Bash", "input": {"command": "ls"}}]),
+            ),
             tool_result_line("r-1", "toolu_b", json!("file-a\nfile-b"), None),
         ];
         let result = parse(&lines, 0);
@@ -703,7 +788,10 @@ mod tests {
         assert_eq!(edit.operation, ChatFileEditOperation::Edit);
         assert_eq!(edit.additions, Some(2));
         assert_eq!(edit.deletions, Some(1));
-        assert_eq!(edit.unified_diff.as_deref(), Some("-let a = 1\n+let a = 2\n+let b = 3"));
+        assert_eq!(
+            edit.unified_diff.as_deref(),
+            Some("-let a = 1\n+let a = 2\n+let b = 3")
+        );
     }
 
     #[test]
@@ -760,10 +848,17 @@ mod tests {
         };
         assert_eq!(question.prompt, "Which path?");
         assert_eq!(
-            question.options.iter().map(|o| o.label.as_str()).collect::<Vec<_>>(),
+            question
+                .options
+                .iter()
+                .map(|o| o.label.as_str())
+                .collect::<Vec<_>>(),
             vec!["Fast", "Slow"]
         );
-        assert_eq!(question.options[0].detail.as_deref(), Some("Quick but rough"));
+        assert_eq!(
+            question.options[0].detail.as_deref(),
+            Some("Quick but rough")
+        );
         assert_eq!(question.selected_option_label.as_deref(), Some("Slow"));
     }
 
@@ -794,11 +889,21 @@ mod tests {
             .collect();
         assert_eq!(questions.len(), 2);
         assert_eq!(
-            questions.iter().find(|q| q.prompt == "Which path?").unwrap().selected_option_label.as_deref(),
+            questions
+                .iter()
+                .find(|q| q.prompt == "Which path?")
+                .unwrap()
+                .selected_option_label
+                .as_deref(),
             Some("Slow")
         );
         assert_eq!(
-            questions.iter().find(|q| q.prompt == "Which env?").unwrap().selected_option_label.as_deref(),
+            questions
+                .iter()
+                .find(|q| q.prompt == "Which env?")
+                .unwrap()
+                .selected_option_label
+                .as_deref(),
             Some("Dev")
         );
     }
@@ -833,14 +938,19 @@ mod tests {
     #[test]
     fn tool_result_array_content() {
         let lines = vec![
-            assistant(json!([{"type": "tool_use", "id": "toolu_a", "name": "Read", "input": {"file_path": "/x"}}])),
-            tool_result_line("r-1", "toolu_a",
+            assistant(
+                json!([{"type": "tool_use", "id": "toolu_a", "name": "Read", "input": {"file_path": "/x"}}]),
+            ),
+            tool_result_line(
+                "r-1",
+                "toolu_a",
                 json!([
                     {"type": "text", "text": "first"},
                     {"type": "tool_reference", "tool_name": "TaskCreate"},
                     {"type": "text", "text": "second"},
                 ]),
-                None),
+                None,
+            ),
         ];
         let result = parse(&lines, 0);
         let ChatMessageKind::ToolUse(tool) = &result.messages[0].kind else {
@@ -857,7 +967,8 @@ mod tests {
                 "parentUuid": Value::Null, "isSidechain": true, "type": "user",
                 "message": {"role": "user", "content": "injected subagent prompt"},
                 "uuid": "side-1", "sessionId": "s-1", "timestamp": "2026-06-12T05:07:51.103Z",
-            }).to_string(),
+            })
+            .to_string(),
             user_text("u-real", "the human's prompt"),
         ];
         let result = parse(&lines, 10);
@@ -887,7 +998,9 @@ mod tests {
         let huge = "x".repeat(40_000);
         let lines = vec![
             user_text("u-1", &huge),
-            assistant(json!([{"type": "tool_use", "id": "toolu_t", "name": "Bash", "input": {"command": "cat big"}}])),
+            assistant(
+                json!([{"type": "tool_use", "id": "toolu_t", "name": "Bash", "input": {"command": "cat big"}}]),
+            ),
             tool_result_line("r-1", "toolu_t", json!(huge), None),
         ];
         let result = parse(&lines, 0);
@@ -899,13 +1012,25 @@ mod tests {
         let ChatMessageKind::Terminal(capture) = &result.messages[1].kind else {
             panic!("expected terminal");
         };
-        assert!(capture.output.as_ref().map(|o| o.chars().count()).unwrap_or(0) <= 16_385);
+        assert!(
+            capture
+                .output
+                .as_ref()
+                .map(|o| o.chars().count())
+                .unwrap_or(0)
+                <= 16_385
+        );
     }
 
     #[test]
     fn timestamp_fallback() {
         let lines = vec![
-            user_line("u-a", json!("first"), None, Some("2026-06-12T05:07:51.103Z")),
+            user_line(
+                "u-a",
+                json!("first"),
+                None,
+                Some("2026-06-12T05:07:51.103Z"),
+            ),
             user_line("u-b", json!("second"), None, None),
         ];
         let result = parse(&lines, 0);

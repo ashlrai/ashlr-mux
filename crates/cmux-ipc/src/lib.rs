@@ -11,6 +11,8 @@
 //! - `Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Wire/ControlRequestParser.swift`
 //! - `Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Wire/ControlResponseEncoder.swift`
 
+use std::time::Duration;
+
 mod auth;
 mod client;
 mod control_call_result;
@@ -42,8 +44,13 @@ pub use named_pipe::{
 };
 pub use server::{
     read_frame, serve_connection, serve_connection_authenticated, write_frame,
-    ControlRequestHandler, MAX_RPC_FRAME_BYTES,
+    ControlRequestHandler, ControlStream, MAX_RPC_FRAME_BYTES,
 };
+pub use tokio::sync::mpsc as stream_mpsc;
+
+pub async fn stream_sleep(duration: Duration) {
+    tokio::time::sleep(duration).await;
+}
 
 #[cfg(test)]
 mod tests {
@@ -72,15 +79,23 @@ mod tests {
     #[test]
     fn lenient_requires_object_prefix_after_trim() {
         assert!(ControlRequestParser.lenient_request("ping").is_none());
-        assert!(ControlRequestParser.lenient_request(r#"[{"method":"x"}]"#).is_none());
+        assert!(ControlRequestParser
+            .lenient_request(r#"[{"method":"x"}]"#)
+            .is_none());
         assert!(ControlRequestParser.lenient_request("").is_none());
     }
 
     #[test]
     fn lenient_rejects_missing_or_empty_method() {
-        assert!(ControlRequestParser.lenient_request(r#"{"id":1}"#).is_none());
-        assert!(ControlRequestParser.lenient_request(r#"{"method":"  "}"#).is_none());
-        assert!(ControlRequestParser.lenient_request(r#"{"method":5}"#).is_none());
+        assert!(ControlRequestParser
+            .lenient_request(r#"{"id":1}"#)
+            .is_none());
+        assert!(ControlRequestParser
+            .lenient_request(r#"{"method":"  "}"#)
+            .is_none());
+        assert!(ControlRequestParser
+            .lenient_request(r#"{"method":5}"#)
+            .is_none());
     }
 
     #[test]
@@ -112,13 +127,22 @@ mod tests {
 
     #[test]
     fn strict_classifies_invalid_json() {
-        assert_eq!(strict_error("not json"), Some(ControlRequestParseError::InvalidJson));
-        assert_eq!(strict_error(r#"{"method""#), Some(ControlRequestParseError::InvalidJson));
+        assert_eq!(
+            strict_error("not json"),
+            Some(ControlRequestParseError::InvalidJson)
+        );
+        assert_eq!(
+            strict_error(r#"{"method""#),
+            Some(ControlRequestParseError::InvalidJson)
+        );
     }
 
     #[test]
     fn strict_classifies_non_object_top_level() {
-        assert_eq!(strict_error("[1,2]"), Some(ControlRequestParseError::NotAnObject));
+        assert_eq!(
+            strict_error("[1,2]"),
+            Some(ControlRequestParseError::NotAnObject)
+        );
     }
 
     #[test]
@@ -148,7 +172,7 @@ mod tests {
             Some(JsonValue::Int(4)),
             JsonValue::Object(serde_json::Map::from_iter([(
                 "pong".to_owned(),
-                serde_json::Value::Bool(true)
+                serde_json::Value::Bool(true),
             )])),
         );
         let decoded: serde_json::Value = serde_json::from_str(&line).expect("json");

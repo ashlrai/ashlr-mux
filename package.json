@@ -11,6 +11,7 @@
     "core-types:generate": "bun apps/desktop/packages/core-types/scripts/generate.mjs",
     "core-types:check-drift": "bun apps/desktop/packages/core-types/scripts/check-drift.mjs",
     "desktop:contracts:check": "python scripts/desktop/verify_cmux_contracts.py",
+    "desktop:shortcut": "powershell -ExecutionPolicy Bypass -File scripts/desktop/install-desktop-shortcut.ps1",
     "desktop:sidecars:stage": "powershell -ExecutionPolicy Bypass -File scripts/desktop/stage-sidecars.ps1",
     "desktop:test": "python scripts/desktop/run_desktop_test_matrix.py",
     "desktop:test:e2e": "python scripts/desktop/run_desktop_test_matrix.py e2e",

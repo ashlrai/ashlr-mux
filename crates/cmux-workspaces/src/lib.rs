@@ -82,12 +82,12 @@ pub use session_restore_policy::{
 };
 pub use surface_list::{Pane, SurfaceTree};
 pub use tab_colors::{
-    add_custom_color, backup_palette_map, brightened_for_dark_appearance_rgb,
-    custom_palette_entries, current_color_hex, default_color_hex, default_palette,
-    display_color_hex, effective_palette_map, finder_like_cmp, invalid_color_message, luminance,
-    normalize_hex, normalized_color_name, normalized_custom_color, palette,
-    palette_cache_fingerprint, persist_palette_map, remove_color, resolve_set_color_input,
-    resolved_color_hex, set_color, PaletteStoreSnapshot, PalettePersistOutcome, SetColorError,
-    TabColorEntry, DEFAULT_PALETTE, INVALID_COLOR_MESSAGE, LEGACY_CUSTOM_COLORS_KEY,
-    LEGACY_DEFAULT_OVERRIDES_KEY, MISSING_COLOR_MESSAGE, PALETTE_KEY,
+    add_custom_color, backup_palette_map, brightened_for_dark_appearance_rgb, current_color_hex,
+    custom_palette_entries, default_color_hex, default_palette, display_color_hex,
+    effective_palette_map, finder_like_cmp, invalid_color_message, luminance, normalize_hex,
+    normalized_color_name, normalized_custom_color, palette, palette_cache_fingerprint,
+    persist_palette_map, remove_color, resolve_set_color_input, resolved_color_hex, set_color,
+    PalettePersistOutcome, PaletteStoreSnapshot, SetColorError, TabColorEntry, DEFAULT_PALETTE,
+    INVALID_COLOR_MESSAGE, LEGACY_CUSTOM_COLORS_KEY, LEGACY_DEFAULT_OVERRIDES_KEY,
+    MISSING_COLOR_MESSAGE, PALETTE_KEY,
 };

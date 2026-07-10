@@ -171,7 +171,9 @@ impl DiffCommentStore {
             repo_root: canonical_repo_root(repo_root),
         };
         match std::fs::read(&path) {
-            Ok(data) => serde_json::from_slice::<RepoCommentsFile>(&data).unwrap_or_else(|_| empty()),
+            Ok(data) => {
+                serde_json::from_slice::<RepoCommentsFile>(&data).unwrap_or_else(|_| empty())
+            }
             Err(_) => empty(),
         }
     }
@@ -347,8 +349,14 @@ mod tests {
         edit.message = "edited".to_string();
         let stored = store.upsert(edit, &repo).unwrap();
 
-        assert_eq!(stored.created_at, "2026-01-01T00:00:00Z", "createdAt preserved");
-        assert_eq!(stored.updated_at, "2026-02-02T00:00:00Z", "updatedAt refreshed");
+        assert_eq!(
+            stored.created_at, "2026-01-01T00:00:00Z",
+            "createdAt preserved"
+        );
+        assert_eq!(
+            stored.updated_at, "2026-02-02T00:00:00Z",
+            "updatedAt refreshed"
+        );
         assert_eq!(stored.message, "edited");
 
         let listed = store.list(&repo);
@@ -381,7 +389,10 @@ mod tests {
         store.upsert(a.clone(), &repo).unwrap();
         store.upsert(b.clone(), &repo).unwrap();
 
-        assert!(!store.mark_consumed(&[], &repo, "t").unwrap(), "empty ids no-op");
+        assert!(
+            !store.mark_consumed(&[], &repo, "t").unwrap(),
+            "empty ids no-op"
+        );
 
         let changed = store
             .mark_consumed(std::slice::from_ref(&a.id), &repo, "2026-07-01T12:00:00Z")
@@ -408,7 +419,9 @@ mod tests {
         // Key shape: 24 lowercase hex chars.
         let key = repo_key(&repo_a);
         assert_eq!(key.len(), 24);
-        assert!(key.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert!(key
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
     }
 
     #[test]
@@ -504,7 +517,10 @@ mod tests {
         store.upsert(c, &repo).unwrap();
         let raw = std::fs::read_to_string(store.file_path(&repo)).unwrap();
         assert!(!raw.contains("endSide"), "None endSide omitted");
-        assert!(!raw.contains("submissionText"), "None submissionText omitted");
+        assert!(
+            !raw.contains("submissionText"),
+            "None submissionText omitted"
+        );
         assert!(!raw.contains("consumedAt"), "None consumedAt omitted");
     }
 

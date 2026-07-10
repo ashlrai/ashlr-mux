@@ -74,10 +74,7 @@ mod tests {
         assert_eq!(suggestion.title, "$sample-dollar-skill");
         assert_eq!(suggestion.system_image_name, "sparkle.magnifyingglass");
         assert_eq!(suggestion.insertion_text, "$sample-dollar-skill");
-        assert_eq!(
-            suggestion.id,
-            "$:/tmp/skills/sample-dollar-skill/SKILL.md"
-        );
+        assert_eq!(suggestion.id, "$:/tmp/skills/sample-dollar-skill/SKILL.md");
     }
 
     // Oracle: `testTextBoxMentionSkillSuggestionsUseTypedSlashTriggerForEmptyQuery`.

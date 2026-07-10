@@ -137,11 +137,7 @@ impl SettingsSearchIndex {
     /// Swift call site passes `normalized(query).trimmingCharacters(in: .whitespacesAndNewlines)`).
     /// Returns `None` when any token fails to match the entry (excluding it);
     /// otherwise `Some(score)` where a *lower* score sorts earlier.
-    pub fn match_score(
-        entry: &SettingsSearchEntry,
-        query: &str,
-        tokens: &[String],
-    ) -> Option<i32> {
+    pub fn match_score(entry: &SettingsSearchEntry, query: &str, tokens: &[String]) -> Option<i32> {
         let mut score: i32 = 0;
         for token in tokens {
             match Self::match_score_token(
@@ -274,7 +270,11 @@ impl SettingsSearchIndex {
         if token_count < 4 || word_count < 4 {
             return false;
         }
-        let allowed_distance = if token_count.min(word_count) >= 6 { 2 } else { 1 };
+        let allowed_distance = if token_count.min(word_count) >= 6 {
+            2
+        } else {
+            1
+        };
         if (token_count - word_count).abs() > allowed_distance {
             return false;
         }

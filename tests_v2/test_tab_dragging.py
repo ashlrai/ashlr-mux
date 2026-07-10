@@ -31,6 +31,30 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from cmux import cmux, cmuxError
 
 
+def _surface_ordinal(row: dict) -> int | None:
+    ref = str(row.get("ref") or row.get("surface_ref") or "")
+    kind, sep, raw = ref.partition(":")
+    if sep and kind == "surface" and raw.isdigit():
+        ordinal = int(raw)
+        return ordinal - 1 if ordinal > 0 else None
+    return None
+
+
+def _surface_handle(row: dict):
+    return row.get("ref") or row.get("surface_ref") or row.get("id")
+
+
+def _surface_matches(row: dict, surface) -> bool:
+    if isinstance(surface, int):
+        return _surface_ordinal(row) == surface
+    wanted = str(surface)
+    return wanted in {
+        str(row.get("id") or ""),
+        str(row.get("ref") or ""),
+        str(row.get("surface_ref") or ""),
+    }
+
+
 class TestResult:
     def __init__(self, name: str):
         self.name = name
@@ -71,15 +95,15 @@ def ensure_focused_terminal(client: cmux) -> None:
             health = client.surface_health()
             term = next((h for h in health if h.get("type") == "terminal"), None)
         if term is not None:
-            client.focus_surface(term["index"])
+            client.focus_surface(_surface_handle(term))
             time.sleep(0.2)
-            wait_for_terminal_in_window(client, term["index"], timeout=5.0)
+            wait_for_terminal_in_window(client, _surface_handle(term), timeout=5.0)
     except Exception:
         pass
 
 
-def wait_for_terminal_in_window(client: cmux, surface_idx: int, timeout: float = 5.0) -> bool:
-    """Wait until a terminal surface index reports in_window=true via surface_health()."""
+def wait_for_terminal_in_window(client: cmux, surface_idx, timeout: float = 5.0) -> bool:
+    """Wait until a terminal surface reports in_window=true via surface_health()."""
     start = time.time()
     while time.time() - start < timeout:
         try:
@@ -87,7 +111,7 @@ def wait_for_terminal_in_window(client: cmux, surface_idx: int, timeout: float =
         except Exception:
             health = []
         for h in health:
-            if h.get("index") == surface_idx and h.get("type") == "terminal" and h.get("in_window"):
+            if _surface_matches(h, surface_idx) and h.get("type") == "terminal" and h.get("in_window"):
                 return True
         time.sleep(0.2)
     return False
@@ -174,7 +198,7 @@ def test_initial_terminal_responsive(client: cmux) -> TestResult:
             health = client.surface_health()
             term = next((h for h in health if h.get("type") == "terminal"), None)
             if term is not None:
-                term_idx = term.get("index")
+                term_idx = _surface_handle(term)
                 client.focus_surface(term_idx)
                 wait_for_terminal_in_window(client, term_idx, timeout=5.0)
         except Exception:

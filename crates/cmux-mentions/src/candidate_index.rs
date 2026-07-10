@@ -14,9 +14,7 @@ use crate::candidate::MentionCandidate;
 use crate::compare::localized_standard_compare;
 use crate::palette::corpus::SearchCorpusEntry;
 use crate::palette::engine::SearchEngine;
-use crate::palette::fuzzy::{
-    prepared_query, token_can_match_without_single_edit, PreparedQuery,
-};
+use crate::palette::fuzzy::{prepared_query, token_can_match_without_single_edit, PreparedQuery};
 
 /// Swift: `struct TextBoxMentionCandidateIndex: Sendable`.
 #[derive(Debug, Clone)]
@@ -265,7 +263,10 @@ mod tests {
         let index = MentionCandidateIndex::new(candidates);
 
         let matches = index.ranked_candidates("iterate-pr", 500);
-        assert_eq!(matches.first().map(|c| c.title.as_str()), Some("/iterate-pr"));
+        assert_eq!(
+            matches.first().map(|c| c.title.as_str()),
+            Some("/iterate-pr")
+        );
         assert!(!matches.iter().any(|c| c.title == "/pi-agent-rust"));
         assert!(!matches.iter().any(|c| c.title == "/agent-browser"));
     }

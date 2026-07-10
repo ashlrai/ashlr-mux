@@ -51,6 +51,7 @@ import {
   statusLabel,
   stopProvider,
   type Action,
+  type NativeCallScope,
   type SessionState,
   type TranscriptEntry,
 } from "../shared/sessionModel";
@@ -290,44 +291,46 @@ function cssPixelValue(value: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function useInitialData(dispatch: React.Dispatch<Action>) {
+function useInitialData(dispatch: React.Dispatch<Action>, nativeScope?: NativeCallScope) {
   useEffect(() => {
-    void loadInitialData(dispatch);
-  }, [dispatch]);
+    void loadInitialData(dispatch, nativeScope);
+  }, [dispatch, nativeScope?.panelId, nativeScope?.workspaceId]);
 }
 
 function useNativeEvents(dispatch: React.Dispatch<Action>) {
   useEffect(() => subscribeToAgentEvents((event) => dispatch({ type: "event", event })), [dispatch]);
 }
 
-function useAutoStart(state: SessionState, dispatch: React.Dispatch<Action>) {
+function useAutoStart(state: SessionState, dispatch: React.Dispatch<Action>, nativeScope?: NativeCallScope) {
   useEffect(() => {
-    void autoStartProvider(state, dispatch);
-  }, [state, dispatch]);
+    void autoStartProvider(state, dispatch, nativeScope);
+  }, [state, dispatch, nativeScope?.panelId, nativeScope?.workspaceId]);
 }
 
-function useProviderSwitch(state: SessionState, dispatch: React.Dispatch<Action>) {
+function useProviderSwitch(state: SessionState, dispatch: React.Dispatch<Action>, nativeScope?: NativeCallScope) {
   useEffect(() => {
-    void advanceProviderSwitch(state, dispatch);
-  }, [state, dispatch]);
+    void advanceProviderSwitch(state, dispatch, nativeScope);
+  }, [state, dispatch, nativeScope?.panelId, nativeScope?.workspaceId]);
 }
 
-export function AgentSessionApp() {
+export function AgentSessionApp({ nativeScope }: { nativeScope?: NativeCallScope } = {}) {
   const [state, dispatch] = useReducer(reduceSession, initialState("react"));
-  useInitialData(dispatch);
+  useInitialData(dispatch, nativeScope);
   useNativeEvents(dispatch);
-  useAutoStart(state, dispatch);
-  useProviderSwitch(state, dispatch);
-  return h(SessionSurface, { state, dispatch, renderer: "React" });
+  useAutoStart(state, dispatch, nativeScope);
+  useProviderSwitch(state, dispatch, nativeScope);
+  return h(SessionSurface, { state, dispatch, nativeScope, renderer: "React" });
 }
 
 function SessionSurface({
   state,
   dispatch,
+  nativeScope,
   renderer,
 }: {
   state: SessionState;
   dispatch: React.Dispatch<Action>;
+  nativeScope?: NativeCallScope;
   renderer: string;
 }) {
   "use no memo";
@@ -413,7 +416,7 @@ function SessionSurface({
       displayText: currentInput,
       permissionMode: canConfigurePermissions ? permissionMode : "default",
       text,
-    }).then((didSend) => {
+    }, nativeScope).then((didSend) => {
       if (didSend) {
         setAttachments((currentAttachments) =>
           currentAttachments.filter((attachment) => !submittedAttachmentIds.has(attachment.id)),
@@ -540,7 +543,7 @@ function SessionSurface({
     return false;
   };
   const selectProviderMenuItem = (providerId: ProviderId) => {
-    selectProvider(providerId, state, dispatch);
+    selectProvider(providerId, state, dispatch, nativeScope);
     setProviderMenuOpen(false);
   };
   const modelPicker = intelligenceCollapse.hideControl ? null : h(
@@ -750,7 +753,7 @@ function SessionSurface({
             className: `codex-action codex-start ${CODEX_BUTTON_BASE} ${CODEX_BUTTON_GHOST} ${CODEX_BUTTON_COMPOSER} rounded-full`,
             type: "button",
             disabled: !canStart,
-            onClick: () => void startProvider(state, dispatch),
+            onClick: () => void startProvider(state, dispatch, nativeScope),
           },
           state.context?.copy.start ?? "Start",
         )
@@ -763,7 +766,7 @@ function SessionSurface({
               `codex-action codex-stop ${CODEX_BUTTON_BASE} ${CODEX_BUTTON_GHOST} ${CODEX_BUTTON_COMPOSER} ${CODEX_BUTTON_UNIFORM} rounded-full`,
             type: "button",
             "aria-label": state.context?.copy.stop ?? "Stop",
-            onClick: () => void stopProvider(state, dispatch),
+            onClick: () => void stopProvider(state, dispatch, nativeScope),
           },
           stopIcon(),
         )

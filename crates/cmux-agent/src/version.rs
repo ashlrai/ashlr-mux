@@ -170,10 +170,26 @@ mod tests {
 
     #[test]
     fn ordering_is_field_lexicographic() {
-        let a = SemanticVersion { major: 1, minor: 14, patch: 50 };
-        let b = SemanticVersion { major: 1, minor: 14, patch: 49 };
-        let c = SemanticVersion { major: 1, minor: 15, patch: 0 };
-        let d = SemanticVersion { major: 2, minor: 0, patch: 0 };
+        let a = SemanticVersion {
+            major: 1,
+            minor: 14,
+            patch: 50,
+        };
+        let b = SemanticVersion {
+            major: 1,
+            minor: 14,
+            patch: 49,
+        };
+        let c = SemanticVersion {
+            major: 1,
+            minor: 15,
+            patch: 0,
+        };
+        let d = SemanticVersion {
+            major: 2,
+            minor: 0,
+            patch: 0,
+        };
         assert!(b < a);
         assert!(a < c);
         assert!(c < d);

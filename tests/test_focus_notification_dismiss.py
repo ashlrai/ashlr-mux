@@ -25,12 +25,23 @@ def wait_for_notification(client: cmux, surface_id: str, is_read: bool, timeout:
     return False
 
 
-def surface_id_for_index(client: cmux, index: int) -> str:
+def surface_id_for_handle(client: cmux, handle: str | int) -> str:
+    wanted = str(handle)
+    for row in client.surface_health():
+        candidates = {
+            str(row.get("id") or ""),
+            str(row.get("ref") or ""),
+            str(row.get("surface_ref") or ""),
+        }
+        if wanted in candidates:
+            surface_id = str(row.get("id") or "")
+            if surface_id:
+                return surface_id
     surfaces = client.list_surfaces()
     for entry in surfaces:
-        if entry[0] == index:
+        if str(entry[0]) == wanted or str(entry[1]) == wanted:
             return entry[1]
-    raise RuntimeError(f"Surface index {index} not found")
+    raise RuntimeError(f"Surface handle {handle} not found")
 
 
 def ensure_two_surfaces(client: cmux) -> None:
@@ -39,9 +50,14 @@ def ensure_two_surfaces(client: cmux) -> None:
         client.new_split("right")
         time.sleep(0.2)
 
-def first_two_terminal_indices(client: cmux) -> tuple[int, int]:
+def first_two_terminal_refs(client: cmux) -> tuple[str, str]:
     health = client.surface_health()
-    terms = [h["index"] for h in health if h.get("type") == "terminal"]
+    terms = [
+        str(h.get("ref") or h.get("surface_ref") or h.get("id") or "")
+        for h in health
+        if h.get("type") == "terminal"
+    ]
+    terms = [term for term in terms if term]
     if len(terms) < 2:
         raise RuntimeError(f"Expected >=2 terminal surfaces, got {health}")
     return terms[0], terms[1]
@@ -57,10 +73,10 @@ def main() -> int:
             client.select_workspace(ws_id)
             time.sleep(0.5)
             ensure_two_surfaces(client)
-            term_a, term_b = first_two_terminal_indices(client)
+            term_a, term_b = first_two_terminal_refs(client)
             client.focus_surface(term_a)
 
-            surface_id = surface_id_for_index(client, term_b)
+            surface_id = surface_id_for_handle(client, term_b)
             client.clear_notifications()
             client.reset_flash_counts()
             initial_flash = client.flash_count(term_b)

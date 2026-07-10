@@ -13,12 +13,16 @@ name = "cmux"
 path = "src/main.rs"
 
 [dependencies]
+base64 = "0.22"
+cmux-config = { path = "../cmux-config" }
+cmux-diff = { path = "../cmux-diff" }
 cmux-ipc = { path = "../cmux-ipc" }
+cmux-ssh = { path = "../cmux-ssh" }
 serde_json = { workspace = true }
+uuid = { workspace = true }
 # rt drives the one-shot socket round-trip; io-util backs tokio::io::split.
 tokio = { version = "1", features = ["io-util", "rt"] }
 
 [dev-dependencies]
 # `macros` only powers #[tokio::test]; kept out of the shipped binary.
 tokio = { version = "1", features = ["io-util", "rt", "macros"] }
-

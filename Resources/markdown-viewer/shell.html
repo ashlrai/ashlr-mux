@@ -31,11 +31,12 @@ body {
   background: transparent;
   /* GitHub uses 16px on github.com for body text; keep that exact
      metric so headings, line-height, and spacing match. */
-  font-size: 15px;
+  font-size: var(--cmux-markdown-body-font-size, 15px);
+  font-family: var(--cmux-markdown-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji");
   /* The package sets max-width via wrapper class on github.com; we
      let it span the panel and just cap it to a comfortable reading
      width on very wide splits. */
-  max-width: 980px;
+  max-width: var(--cmux-markdown-max-width, 980px);
   margin: 0 auto;
 }
 /* Fenced code blocks: github-markdown-css already styles `pre`; we
@@ -43,7 +44,7 @@ body {
 .markdown-body pre code.hljs {
   padding: 16px;
   background: transparent;
-  font-size: 13.5px;
+  font-size: var(--cmux-markdown-code-font-size, 13.5px);
   line-height: 1.5;
 }
 .markdown-body pre {
@@ -211,7 +212,7 @@ body {
 .cmux-frontmatter pre code.hljs {
   padding: 10px 12px;
   background: transparent;
-  font-size: 12.5px;
+  font-size: var(--cmux-markdown-frontmatter-code-font-size, 12.5px);
   line-height: 1.45;
 }
 .cmux-render-error {
@@ -250,6 +251,10 @@ html { scroll-behavior: smooth; }
   var contentEl = document.getElementById('content');
   var lightSheet = document.getElementById('hljs-light');
   var darkSheet  = document.getElementById('hljs-dark');
+  var cmuxMarkdownPanelId = '';
+  try {
+    cmuxMarkdownPanelId = new URL(window.location.href).searchParams.get('panelId') || '';
+  } catch (e) { /* ignore malformed location */ }
   function showBootError(message) {
     if (!contentEl) { return; }
     contentEl.textContent = '';
@@ -294,6 +299,14 @@ html { scroll-behavior: smooth; }
   function unescapeDataAttribute(s) {
     try { return decodeURIComponent(String(s || '')); }
     catch (e) { return String(s || ''); }
+  }
+
+  function postCmuxLibMessage(message) {
+    var payload = Object.assign({}, message || {});
+    if (cmuxMarkdownPanelId) {
+      payload.panelId = cmuxMarkdownPanelId;
+    }
+    window.webkit.messageHandlers.cmuxLib.postMessage(payload);
   }
 
   function stripQueryFragment(path) {
@@ -552,7 +565,10 @@ html { scroll-behavior: smooth; }
     try {
       var parsed = new URL(raw, document.baseURI || window.location.href);
       if ((parsed.protocol || '').toLowerCase() !== 'file:') { return null; }
-      return 'cmux-local-image://image?url=' + encodeURIComponent(parsed.href);
+      var panelPart = cmuxMarkdownPanelId
+        ? 'panelId=' + encodeURIComponent(cmuxMarkdownPanelId) + '&'
+        : '';
+      return 'cmux-local-image://image?' + panelPart + 'url=' + encodeURIComponent(parsed.href);
     } catch (e) {
       return null;
     }
@@ -1011,7 +1027,7 @@ html { scroll-behavior: smooth; }
     if (libState[name] !== 'pending') {
       libState[name] = 'pending';
       try {
-        window.webkit.messageHandlers.cmuxLib.postMessage({ lib: name });
+        postCmuxLibMessage({ lib: name });
       } catch (e) {
         libState[name] = undefined;
         renderLibError(name, 'bridge unavailable');
@@ -1284,8 +1300,33 @@ html { scroll-behavior: smooth; }
 
   window.__cmuxSetMarkdownZoom = function(zoom) {
     cmuxMarkdownZoom = normalizedMarkdownZoom(zoom);
+    contentEl.style.setProperty('--cmux-markdown-body-font-size', (15 * cmuxMarkdownZoom) + 'px');
+    contentEl.style.setProperty('--cmux-markdown-code-font-size', (13.5 * cmuxMarkdownZoom) + 'px');
+    contentEl.style.setProperty('--cmux-markdown-frontmatter-code-font-size', (12.5 * cmuxMarkdownZoom) + 'px');
     mermaidObservedWidth = mermaidContentWidth(null);
     applyMermaidZoom(contentEl);
+  };
+
+  window.__cmuxApplyTypography = function(typography) {
+    var value = typography || {};
+    var fontSize = Number(value.fontSize);
+    if (!Number.isFinite(fontSize) || fontSize <= 0) {
+      fontSize = 15;
+    }
+    window.__cmuxSetMarkdownZoom(fontSize / 15);
+
+    var maxWidth = Number(value.maxWidth);
+    if (!Number.isFinite(maxWidth) || maxWidth <= 0) {
+      maxWidth = 980;
+    }
+    contentEl.style.setProperty('--cmux-markdown-max-width', maxWidth + 'px');
+
+    var fontFamily = typeof value.fontFamily === 'string' ? value.fontFamily.trim() : '';
+    if (fontFamily) {
+      contentEl.style.setProperty('--cmux-markdown-font-family', fontFamily);
+    } else {
+      contentEl.style.removeProperty('--cmux-markdown-font-family');
+    }
   };
 
   function renderMermaidBlocks() {
@@ -1519,7 +1560,7 @@ html { scroll-behavior: smooth; }
     var requestId = 'mdfile-' + (++mdFileRequestSeq);
     mdFileResolvePending[requestId] = { rawPath: rawPath, elements: [el], openAfterResolve: !!openAfterResolve };
     try {
-      window.webkit.messageHandlers.cmuxLib.postMessage({
+      postCmuxLibMessage({
         action: 'resolveMarkdownFile',
         requestId: requestId,
         path: rawPath
@@ -1540,7 +1581,7 @@ html { scroll-behavior: smooth; }
 
   function openMarkdownCandidate(rawPath) {
     try {
-      window.webkit.messageHandlers.cmuxLib.postMessage({ action: 'openMarkdownFile', path: rawPath });
+      postCmuxLibMessage({ action: 'openMarkdownFile', path: rawPath });
     } catch (e) { /* no bridge */ }
   }
 

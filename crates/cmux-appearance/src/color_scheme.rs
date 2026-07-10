@@ -67,7 +67,10 @@ impl ColorSchemePreference {
     /// interface style. Note this matches the raw string literally — callers who
     /// pass an already-normalized mode see identical behavior because normalize
     /// only ever emits `system`/`light`/`dark`.
-    pub fn resolve(appearance_mode_raw: Option<&str>, system: &SystemAppearance) -> ColorSchemePreference {
+    pub fn resolve(
+        appearance_mode_raw: Option<&str>,
+        system: &SystemAppearance,
+    ) -> ColorSchemePreference {
         match appearance_mode_raw {
             Some("light") => ColorSchemePreference::Light,
             Some("dark") => ColorSchemePreference::Dark,

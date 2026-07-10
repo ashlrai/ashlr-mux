@@ -45,7 +45,10 @@ impl FixtureEntry {
             id: id.to_string(),
             rank,
             title: title.to_string(),
-            searchable_texts: searchable_texts.iter().map(|text| text.to_string()).collect(),
+            searchable_texts: searchable_texts
+                .iter()
+                .map(|text| text.to_string())
+                .collect(),
         }
     }
 }
@@ -183,7 +186,9 @@ fn make_large_workspace_switcher_entries(count: usize) -> Vec<FixtureEntry> {
                         4200 + (index as i64 % 25),
                         9200 + (index as i64 % 10),
                     ],
-                    Some(format!("Palette performance fixture {index} for {project_slug}")),
+                    Some(format!(
+                        "Palette performance fixture {index} for {project_slug}"
+                    )),
                 ),
                 MetadataDetail::Workspace,
             )
@@ -224,7 +229,13 @@ fn make_finder_command_entries() -> Vec<FixtureEntry> {
             "command.filter",
             2,
             "Filter Sidebar Items",
-            &["Filter Sidebar Items", "Sidebar", "filter", "sidebar", "items"],
+            &[
+                "Filter Sidebar Items",
+                "Sidebar",
+                "filter",
+                "sidebar",
+                "items",
+            ],
         ),
     ]
 }
@@ -235,7 +246,13 @@ fn make_update_command_entries() -> Vec<FixtureEntry> {
             "command.checkForUpdates",
             0,
             "Check for Updates",
-            &["Check for Updates", "Global", "update", "upgrade", "release"],
+            &[
+                "Check for Updates",
+                "Global",
+                "update",
+                "upgrade",
+                "release",
+            ],
         ),
         FixtureEntry::new(
             "command.attemptUpdate",
@@ -365,7 +382,10 @@ fn normalized_search_word_text(characters: &[char], segments: &[WordSegment]) ->
     let mut words: Vec<String> = Vec::with_capacity(segments.len());
     for segment in segments {
         let word_characters = &characters[segment.start..segment.end];
-        if !word_characters.iter().any(|&character| character.is_alphanumeric()) {
+        if !word_characters
+            .iter()
+            .any(|&character| character.is_alphanumeric())
+        {
             continue;
         }
         words.push(word_characters.iter().collect());
@@ -454,8 +474,7 @@ fn reference_results(entries: &[FixtureEntry], query: &str) -> Vec<FixtureResult
         entries
             .iter()
             .filter_map(|entry| {
-                let score =
-                    weighted_reference_score(query, &entry.title, &entry.searchable_texts)?;
+                let score = weighted_reference_score(query, &entry.title, &entry.searchable_texts)?;
                 let pq = prepared_query(query);
                 let title_match_indices = prepare_candidate_text(&entry.title)
                     .map(|prepared_title| match_character_indices(&pq, &prepared_title))
@@ -526,11 +545,19 @@ fn optimized_search_matches_reference_pipeline() {
 #[test]
 fn multi_token_search_can_match_across_title_and_keyword_fields() {
     let entries = vec![
-        FixtureEntry::new("workspace.projectA", 0, "Project A", &["Project A", "Workspace"]),
+        FixtureEntry::new(
+            "workspace.projectA",
+            0,
+            "Project A",
+            &["Project A", "Workspace"],
+        ),
         FixtureEntry::new("workspace.notes", 1, "Notes", &["Notes", "Workspace"]),
     ];
     let results = optimized_results(&entries, "project workspace", None);
-    assert_eq!(results.first().map(|r| r.id.as_str()), Some("workspace.projectA"));
+    assert_eq!(
+        results.first().map(|r| r.id.as_str()),
+        Some("workspace.projectA")
+    );
 }
 
 // Swift: `limitedSearchReturnsSameTopResultsAsFullSearch`.
@@ -550,7 +577,10 @@ fn limited_search_returns_same_top_results_as_full_search() {
         let limited = optimized_results(&entries, query, Some(48));
         let expected: Vec<&FixtureResult> = full.iter().take(48).collect();
         let actual: Vec<&FixtureResult> = limited.iter().collect();
-        assert_eq!(actual, expected, "limited search mismatch for query {query:?}");
+        assert_eq!(
+            actual, expected,
+            "limited search mismatch for query {query:?}"
+        );
     }
 }
 
@@ -559,7 +589,10 @@ fn limited_search_returns_same_top_results_as_full_search() {
 fn limited_search_still_finds_deep_workspace_match() {
     let entries = make_large_workspace_switcher_entries(5_000);
     let results = optimized_results(&entries, "workspace 4913", Some(10));
-    assert_eq!(results.first().map(|r| r.id.as_str()), Some("workspace.large.4913"));
+    assert_eq!(
+        results.first().map(|r| r.id.as_str()),
+        Some("workspace.large.4913")
+    );
     assert!(results.len() <= 10);
 }
 
@@ -628,7 +661,10 @@ fn command_search_prefers_open_folder_for_open_folder_query() {
 fn search_matches_single_omitted_character() {
     let entries = make_finder_command_entries();
     let results = optimized_results(&entries, "findr", None);
-    assert_eq!(results.first().map(|r| r.id.as_str()), Some("command.finder"));
+    assert_eq!(
+        results.first().map(|r| r.id.as_str()),
+        Some("command.finder")
+    );
 }
 
 // Swift: `searchMatchesSingleInsertedCharacterInCommandWordPrefix`.
@@ -636,7 +672,10 @@ fn search_matches_single_omitted_character() {
 fn search_matches_single_inserted_character() {
     let entries = make_finder_command_entries();
     let results = optimized_results(&entries, "findder", None);
-    assert_eq!(results.first().map(|r| r.id.as_str()), Some("command.finder"));
+    assert_eq!(
+        results.first().map(|r| r.id.as_str()),
+        Some("command.finder")
+    );
 }
 
 // Swift: `searchMatchesSingleSubstitutedCharacterInCommandWordPrefix`.
@@ -644,7 +683,10 @@ fn search_matches_single_inserted_character() {
 fn search_matches_single_substituted_character() {
     let entries = make_finder_command_entries();
     let results = optimized_results(&entries, "fander", None);
-    assert_eq!(results.first().map(|r| r.id.as_str()), Some("command.finder"));
+    assert_eq!(
+        results.first().map(|r| r.id.as_str()),
+        Some("command.finder")
+    );
 }
 
 // Swift: `searchMatchesSingleTransposedCharacterInCommandWordPrefix`.
@@ -652,7 +694,10 @@ fn search_matches_single_substituted_character() {
 fn search_matches_single_transposed_character() {
     let entries = make_finder_command_entries();
     let results = optimized_results(&entries, "fidner", None);
-    assert_eq!(results.first().map(|r| r.id.as_str()), Some("command.finder"));
+    assert_eq!(
+        results.first().map(|r| r.id.as_str()),
+        Some("command.finder")
+    );
 }
 
 // Swift: `searchRejectsMultipleEditsInCommandWordPrefix`.
@@ -660,7 +705,10 @@ fn search_matches_single_transposed_character() {
 fn search_rejects_multiple_edits() {
     let entries = make_finder_command_entries();
     let results = optimized_results(&entries, "fadnr", None);
-    assert_ne!(results.first().map(|r| r.id.as_str()), Some("command.finder"));
+    assert_ne!(
+        results.first().map(|r| r.id.as_str()),
+        Some("command.finder")
+    );
 }
 
 // Swift: `searchPrefersTitleMatchOverKeywordOnlyMatchForCheckQuery`.
@@ -682,17 +730,32 @@ fn search_prefers_emoji_prefixed_full_title_words_over_partial_title_prefix() {
             "workspace.fullTitleMatch",
             20,
             "🧪 Command Palette",
-            &["🧪 Command Palette", "Workspace", "workspace", "switch", "go"],
+            &[
+                "🧪 Command Palette",
+                "Workspace",
+                "workspace",
+                "switch",
+                "go",
+            ],
         ),
         FixtureEntry::new(
             "workspace.partialTitlePrefix",
             0,
             "Command Palette Archive",
-            &["Command Palette Archive", "Workspace", "workspace", "switch", "go"],
+            &[
+                "Command Palette Archive",
+                "Workspace",
+                "workspace",
+                "switch",
+                "go",
+            ],
         ),
     ];
     let results = optimized_results(&entries, "command palette", Some(5));
-    assert_eq!(results.first().map(|r| r.id.as_str()), Some("workspace.fullTitleMatch"));
+    assert_eq!(
+        results.first().map(|r| r.id.as_str()),
+        Some("workspace.fullTitleMatch")
+    );
 }
 
 // Swift emoji: `searchPrefersEmojiPrefixedTitleWordPrefixOverHiddenTokenMatches`.
@@ -703,7 +766,13 @@ fn search_prefers_emoji_prefixed_title_word_prefix_over_hidden_token_matches() {
             "workspace.titlePrefixMatch",
             20,
             "🧪 Command Palette Archive",
-            &["🧪 Command Palette Archive", "Workspace", "workspace", "switch", "go"],
+            &[
+                "🧪 Command Palette Archive",
+                "Workspace",
+                "workspace",
+                "switch",
+                "go",
+            ],
         ),
         FixtureEntry::new(
             "workspace.hiddenTokenMatches",
@@ -721,7 +790,10 @@ fn search_prefers_emoji_prefixed_title_word_prefix_over_hidden_token_matches() {
         ),
     ];
     let results = optimized_results(&entries, "command palette", Some(5));
-    assert_eq!(results.first().map(|r| r.id.as_str()), Some("workspace.titlePrefixMatch"));
+    assert_eq!(
+        results.first().map(|r| r.id.as_str()),
+        Some("workspace.titlePrefixMatch")
+    );
 }
 
 // Swift emoji: `searchPrefersEmojiPrefixedFullTitleWordsWithRepeatedQuerySpaces`.
@@ -732,7 +804,13 @@ fn search_prefers_emoji_prefixed_full_title_words_with_repeated_query_spaces() {
             "workspace.fullTitleMatch",
             20,
             "🧪 Command Palette",
-            &["🧪 Command Palette", "Workspace", "workspace", "switch", "go"],
+            &[
+                "🧪 Command Palette",
+                "Workspace",
+                "workspace",
+                "switch",
+                "go",
+            ],
         ),
         FixtureEntry::new(
             "workspace.hiddenTokenMatches",
@@ -742,5 +820,8 @@ fn search_prefers_emoji_prefixed_full_title_words_with_repeated_query_spaces() {
         ),
     ];
     let results = optimized_results(&entries, "command  palette", Some(5));
-    assert_eq!(results.first().map(|r| r.id.as_str()), Some("workspace.fullTitleMatch"));
+    assert_eq!(
+        results.first().map(|r| r.id.as_str()),
+        Some("workspace.fullTitleMatch")
+    );
 }

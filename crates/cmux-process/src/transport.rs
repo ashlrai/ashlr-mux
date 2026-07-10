@@ -168,9 +168,7 @@ pub fn encode_line(line: &str) -> Vec<u8> {
 pub fn opencode_server_url(line: &str) -> Option<String> {
     const MARKER: &str = "opencode server listening on ";
     let marker_at = line.find(MARKER)?;
-    let candidate = line[marker_at + MARKER.len()..]
-        .split_whitespace()
-        .next()?;
+    let candidate = line[marker_at + MARKER.len()..].split_whitespace().next()?;
     if is_loopback_http_url(candidate) {
         Some(candidate.to_string())
     } else {
@@ -207,7 +205,10 @@ mod tests {
     use super::*;
 
     fn oks(frames: Vec<Result<String, FrameError>>) -> Vec<String> {
-        frames.into_iter().map(|frame| frame.expect("frame")).collect()
+        frames
+            .into_iter()
+            .map(|frame| frame.expect("frame"))
+            .collect()
     }
 
     #[test]
@@ -326,7 +327,9 @@ mod tests {
     #[test]
     fn scrapes_url_ignoring_trailing_text() {
         assert_eq!(
-            opencode_server_url("opencode server listening on http://127.0.0.1:8080 (ctrl-c to quit)"),
+            opencode_server_url(
+                "opencode server listening on http://127.0.0.1:8080 (ctrl-c to quit)"
+            ),
             Some("http://127.0.0.1:8080".to_string())
         );
     }

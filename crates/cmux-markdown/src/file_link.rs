@@ -235,7 +235,10 @@ mod tests {
     #[test]
     fn markdown_extensions_recognized() {
         for ext in ["md", "markdown", "mkd", "mdx", "MD", "Markdown"] {
-            assert!(is_markdown_path_like(&format!("docs/readme.{ext}")), "{ext}");
+            assert!(
+                is_markdown_path_like(&format!("docs/readme.{ext}")),
+                "{ext}"
+            );
         }
     }
 

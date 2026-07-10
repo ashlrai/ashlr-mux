@@ -352,7 +352,10 @@ pub fn sanitized_value(
 /// `"1"`, sanitize the stashed original; if `"0"`, the parent had none, so emit
 /// nothing; otherwise sanitize the live `NODE_OPTIONS`.
 fn selected_node_options(env: &BTreeMap<String, String>) -> Option<String> {
-    match normalized_value(env.get("CMUX_ORIGINAL_NODE_OPTIONS_PRESENT").map(String::as_str)) {
+    match normalized_value(
+        env.get("CMUX_ORIGINAL_NODE_OPTIONS_PRESENT")
+            .map(String::as_str),
+    ) {
         Some(ref flag) if flag == "1" => {
             sanitized_node_options(env.get("CMUX_ORIGINAL_NODE_OPTIONS").map(String::as_str))
         }
@@ -368,7 +371,9 @@ fn selected_node_options(env: &BTreeMap<String, String>) -> Option<String> {
 /// forms) and the paired injected `--max-old-space-size[=]4096` heap cap that
 /// immediately follows it. Returns `None` when nothing survives.
 pub fn sanitized_node_options(raw: Option<&str>) -> Option<String> {
-    let tokens: Vec<&str> = raw.map(|s| s.split_whitespace().collect()).unwrap_or_default();
+    let tokens: Vec<&str> = raw
+        .map(|s| s.split_whitespace().collect())
+        .unwrap_or_default();
     if tokens.is_empty() {
         return None;
     }
@@ -524,7 +529,8 @@ mod tests {
         let without = selected_environment(&input, None, &ClaudeConfigContext::inert());
         assert_eq!(without, env(&[("GH_HOST", "github.example")]));
 
-        let with = selected_environment(&input, Some("hermes-agent"), &ClaudeConfigContext::inert());
+        let with =
+            selected_environment(&input, Some("hermes-agent"), &ClaudeConfigContext::inert());
         assert_eq!(with, input);
     }
 
@@ -556,8 +562,9 @@ mod tests {
     fn node_options_preserves_user_require() {
         // A user's own --require (not a cmux restore shim) survives, and the
         // following heap cap is NOT dropped because no injected require preceded it.
-        let sanitized =
-            sanitized_node_options(Some("--require /home/u/my-setup.js --max-old-space-size=4096"));
+        let sanitized = sanitized_node_options(Some(
+            "--require /home/u/my-setup.js --max-old-space-size=4096",
+        ));
         assert_eq!(
             sanitized.as_deref(),
             Some("--require /home/u/my-setup.js --max-old-space-size=4096")
@@ -592,8 +599,7 @@ mod tests {
             home_directory: "/home/u".to_string(),
             directory_exists: Box::new(|path: &str| path == "/home/u/.codex-accounts/claude"),
         };
-        let rewritten =
-            claude_config_preferred_path("/home/u/.subrouter/codex/claude", &ctx);
+        let rewritten = claude_config_preferred_path("/home/u/.subrouter/codex/claude", &ctx);
         assert_eq!(rewritten, "/home/u/.codex-accounts/claude");
     }
 
@@ -632,12 +638,27 @@ mod tests {
         let launch = launch_environment(&source, None, &ClaudeConfigContext::inert());
 
         // Allowlisted agent config kept.
-        assert_eq!(launch.get("ANTHROPIC_MODEL").map(String::as_str), Some("claude-opus-4-8"));
+        assert_eq!(
+            launch.get("ANTHROPIC_MODEL").map(String::as_str),
+            Some("claude-opus-4-8")
+        );
         // Essential Windows system vars kept (incl. rewritten PATH).
-        assert_eq!(launch.get("PATH").map(String::as_str), Some("C:\\rt\\bin;C:\\Windows\\System32"));
-        assert_eq!(launch.get("SystemRoot").map(String::as_str), Some("C:\\Windows"));
-        assert_eq!(launch.get("TEMP").map(String::as_str), Some("C:\\Users\\u\\AppData\\Local\\Temp"));
-        assert_eq!(launch.get("PATHEXT").map(String::as_str), Some(".COM;.EXE;.CMD"));
+        assert_eq!(
+            launch.get("PATH").map(String::as_str),
+            Some("C:\\rt\\bin;C:\\Windows\\System32")
+        );
+        assert_eq!(
+            launch.get("SystemRoot").map(String::as_str),
+            Some("C:\\Windows")
+        );
+        assert_eq!(
+            launch.get("TEMP").map(String::as_str),
+            Some("C:\\Users\\u\\AppData\\Local\\Temp")
+        );
+        assert_eq!(
+            launch.get("PATHEXT").map(String::as_str),
+            Some(".COM;.EXE;.CMD")
+        );
         // Secrets and arbitrary user vars never cross.
         assert!(!launch.contains_key("AMP_API_KEY"));
         assert!(!launch.contains_key("OPENAI_API_KEY"));
@@ -654,8 +675,14 @@ mod tests {
             ("tEmP", "C:\\Temp"),
         ]);
         let launch = launch_environment(&source, None, &ClaudeConfigContext::inert());
-        assert_eq!(launch.get("Path").map(String::as_str), Some("C:\\Windows\\System32"));
-        assert_eq!(launch.get("Systemroot").map(String::as_str), Some("C:\\Windows"));
+        assert_eq!(
+            launch.get("Path").map(String::as_str),
+            Some("C:\\Windows\\System32")
+        );
+        assert_eq!(
+            launch.get("Systemroot").map(String::as_str),
+            Some("C:\\Windows")
+        );
         assert_eq!(launch.get("tEmP").map(String::as_str), Some("C:\\Temp"));
     }
 
@@ -663,9 +690,7 @@ mod tests {
     fn selected_environment_rewrites_claude_config_dir() {
         let ctx = ClaudeConfigContext {
             home_directory: "/home/u".to_string(),
-            directory_exists: Box::new(|path: &str| {
-                path == "/home/u/.codex-accounts/claude/sub"
-            }),
+            directory_exists: Box::new(|path: &str| path == "/home/u/.codex-accounts/claude/sub"),
         };
         let selected = selected_environment(
             &env(&[("CLAUDE_CONFIG_DIR", "/home/u/.subrouter/codex/claude/sub")]),

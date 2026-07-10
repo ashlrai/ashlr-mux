@@ -246,11 +246,7 @@ pub fn last_path_component(path: &str) -> String {
         // `URL(fileURLWithPath: "/").lastPathComponent == "/"`.
         return "/".to_string();
     }
-    trimmed
-        .rsplit('/')
-        .next()
-        .unwrap_or(trimmed)
-        .to_string()
+    trimmed.rsplit('/').next().unwrap_or(trimmed).to_string()
 }
 
 /// The pure cache half of the Swift actor's `fileIndexesByRoot` handling:
@@ -396,7 +392,7 @@ mod tests {
         assert_eq!(directory_priority("Sources/Components"), 2);
         assert_eq!(file_priority("Sources/Components/NestedView.swift"), 5);
         assert_eq!(directory_priority(""), 0); // depth clamps to 1
-        // Caps at 40 / 41.
+                                               // Caps at 40 / 41.
         let deep: String = vec!["d"; 64].join("/");
         assert_eq!(directory_priority(&deep), 40);
         assert_eq!(file_priority(&deep), 41);
@@ -442,7 +438,10 @@ mod tests {
             skill_name_from_content("---\nname: \"quoted-skill\"\n---\nbody", "dir-name"),
             "quoted-skill"
         );
-        assert_eq!(skill_name_from_content("no front matter", "dir-name"), "dir-name");
+        assert_eq!(
+            skill_name_from_content("no front matter", "dir-name"),
+            "dir-name"
+        );
         // An empty `name:` value falls through to the fallback.
         assert_eq!(skill_name_from_content("name:\n", "dir-name"), "dir-name");
         // Swift splits with `maxSplits: 32`; a name line past the 33rd piece
@@ -456,15 +455,25 @@ mod tests {
         // ...but content before it in the remainder hides it (fallback).
         let buried_name = format!(
             "{}\nname: too-late\n",
-            (0..40).map(|i| format!("x{i}")).collect::<Vec<_>>().join("\n")
+            (0..40)
+                .map(|i| format!("x{i}"))
+                .collect::<Vec<_>>()
+                .join("\n")
         );
-        assert_eq!(skill_name_from_content(&buried_name, "dir-name"), "dir-name");
+        assert_eq!(
+            skill_name_from_content(&buried_name, "dir-name"),
+            "dir-name"
+        );
     }
 
     #[test]
     fn skill_search_key_lowercases_name_and_relative_path() {
         assert_eq!(
-            skill_search_key("Nested-Skill", "/root/skills/Team/nested-skill", "/root/skills"),
+            skill_search_key(
+                "Nested-Skill",
+                "/root/skills/Team/nested-skill",
+                "/root/skills"
+            ),
             "nested-skill team/nested-skill"
         );
     }
@@ -526,7 +535,12 @@ mod tests {
     fn cache_prunes_least_recently_accessed_beyond_cap() {
         let mut cache = FileIndexCache::new();
         for slot in 0..=MAX_CACHED_FILE_INDEXES {
-            cache.store_file_index(&format!("/root{slot}"), empty_index(), slot as f64, slot as f64);
+            cache.store_file_index(
+                &format!("/root{slot}"),
+                empty_index(),
+                slot as f64,
+                slot as f64,
+            );
         }
         assert_eq!(cache.len(), MAX_CACHED_FILE_INDEXES);
         // "/root0" had the oldest lastAccessedAt and was evicted.

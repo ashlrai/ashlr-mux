@@ -1,14 +1,26 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  adjacentCanvasPanelId,
+  adjacentPanelId,
   createFocusedPaneStore,
+  paneIdForPanelId,
   panelIdsInLayout,
   resolveActivePanelId,
+  resolveActivePaneId,
 } from "./focusedPane";
+import type { SessionCanvasPaneSnapshot } from "@cmux/core-types";
 import type { Layout } from "./splitLayout";
 
-function pane(panelIds: string[], selected?: string): Layout {
-  return { type: "pane", pane: { panel_ids: panelIds, selected_panel_id: selected } };
+function pane(panelIds: string[], selected?: string, paneId?: string): Layout {
+  return {
+    type: "pane",
+    pane: {
+      panel_ids: panelIds,
+      selected_panel_id: selected,
+      pane_id: paneId,
+    },
+  };
 }
 
 function split(
@@ -98,6 +110,25 @@ describe("panelIdsInLayout", () => {
   });
 });
 
+describe("paneIdForPanelId", () => {
+  test("returns the owning pane id for a selected or non-selected panel", () => {
+    const layout = split(
+      "horizontal",
+      0.5,
+      pane(["a1", "a2"], "a1", "pane-left"),
+      pane(["b"], "b", "pane-right"),
+    );
+    expect(paneIdForPanelId(layout, "a1")).toBe("pane-left");
+    expect(paneIdForPanelId(layout, "a2")).toBe("pane-left");
+    expect(paneIdForPanelId(layout, "b")).toBe("pane-right");
+  });
+
+  test("returns undefined when the layout carries no pane id or panel match", () => {
+    expect(paneIdForPanelId(pane(["a"]), "missing")).toBeUndefined();
+    expect(paneIdForPanelId(pane(["a"]), "a")).toBeUndefined();
+  });
+});
+
 describe("resolveActivePanelId", () => {
   const twoPanes = split("horizontal", 0.5, pane(["a"]), pane(["b"]));
 
@@ -141,5 +172,105 @@ describe("resolveActivePanelId", () => {
     store.focus("b");
     expect(resolveActivePanelId(store.get(), workspace2)).toBe("x");
     expect(resolveActivePanelId(store.get(), twoPanes)).toBe("b");
+  });
+});
+
+describe("resolveActivePaneId", () => {
+  const twoPanes = split(
+    "horizontal",
+    0.5,
+    pane(["a"], "a", "pane-a"),
+    pane(["b"], "b", "pane-b"),
+  );
+
+  test("no layout resolves to undefined regardless of focus", () => {
+    expect(resolveActivePaneId("a", undefined)).toBeUndefined();
+    expect(resolveActivePaneId("a", null)).toBeUndefined();
+  });
+
+  test("focused and fallback resolution returns the owning pane id", () => {
+    expect(resolveActivePaneId("b", twoPanes)).toBe("pane-b");
+    expect(resolveActivePaneId(undefined, twoPanes)).toBe("pane-a");
+  });
+
+  test("returns undefined when the resolved pane lacks a pane id", () => {
+    expect(resolveActivePaneId("a", pane(["a"]))).toBeUndefined();
+  });
+});
+
+describe("adjacentPanelId", () => {
+  const quadrant = split(
+    "horizontal",
+    0.5,
+    split("vertical", 0.5, pane(["top-left"]), pane(["bottom-left"])),
+    split("vertical", 0.5, pane(["top-right"]), pane(["bottom-right"])),
+  );
+
+  test("moves left, right, up, and down by flat-portal pane geometry", () => {
+    expect(adjacentPanelId(quadrant, "top-left", "right")).toBe("top-right");
+    expect(adjacentPanelId(quadrant, "top-right", "left")).toBe("top-left");
+    expect(adjacentPanelId(quadrant, "top-left", "down")).toBe("bottom-left");
+    expect(adjacentPanelId(quadrant, "bottom-left", "up")).toBe("top-left");
+  });
+
+  test("prefers an overlapping neighbor over a diagonal-only candidate", () => {
+    const layout = split(
+      "horizontal",
+      0.5,
+      split("vertical", 0.5, pane(["upper-left"]), pane(["lower-left"])),
+      pane(["right-tall"]),
+    );
+    expect(adjacentPanelId(layout, "upper-left", "right")).toBe("right-tall");
+    expect(adjacentPanelId(layout, "lower-left", "right")).toBe("right-tall");
+  });
+
+  test("returns undefined at an edge or without a live current pane", () => {
+    expect(adjacentPanelId(quadrant, "top-left", "left")).toBeUndefined();
+    expect(adjacentPanelId(quadrant, "missing", "right")).toBeUndefined();
+    expect(adjacentPanelId(null, "top-left", "right")).toBeUndefined();
+  });
+});
+
+describe("adjacentCanvasPanelId", () => {
+  const panes: SessionCanvasPaneSnapshot[] = [
+    { panel_id: "left", x: 0, y: 0, width: 200, height: 120 },
+    { panel_id: "right", x: 260, y: 0, width: 200, height: 120 },
+    { panel_id: "down", x: 0, y: 180, width: 200, height: 120 },
+    { panel_id: "diagonal", x: 260, y: 220, width: 200, height: 120 },
+  ];
+
+  test("moves by persisted canvas pane geometry", () => {
+    expect(adjacentCanvasPanelId(panes, "left", "right")).toBe("right");
+    expect(adjacentCanvasPanelId(panes, "right", "left")).toBe("left");
+    expect(adjacentCanvasPanelId(panes, "left", "down")).toBe("down");
+    expect(adjacentCanvasPanelId(panes, "down", "up")).toBe("left");
+  });
+
+  test("prefers overlapping canvas neighbors over diagonal candidates", () => {
+    expect(adjacentCanvasPanelId(panes, "down", "right")).toBe("diagonal");
+    expect(adjacentCanvasPanelId(panes, "left", "right")).toBe("right");
+  });
+
+  test("matches non-selected tab ids and returns the selected panel key", () => {
+    const tabbed: SessionCanvasPaneSnapshot[] = [
+      {
+        panel_id: "pane-a",
+        selected_panel_id: "a1",
+        panel_ids: ["a1", "a2"],
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+      },
+      { panel_id: "b", x: 160, y: 0, width: 100, height: 100 },
+    ];
+    expect(adjacentCanvasPanelId(tabbed, "a2", "right")).toBe("b");
+    expect(adjacentCanvasPanelId(tabbed, "b", "left")).toBe("a1");
+  });
+
+  test("returns undefined at an edge or without a live current pane", () => {
+    expect(adjacentCanvasPanelId(panes, "left", "left")).toBeUndefined();
+    expect(adjacentCanvasPanelId(panes, "missing", "right")).toBeUndefined();
+    expect(adjacentCanvasPanelId(undefined, "left", "right")).toBeUndefined();
   });
 });

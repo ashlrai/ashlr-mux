@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import threading
 import urllib.request
@@ -11,6 +12,7 @@ from functools import partial
 from http.server import SimpleHTTPRequestHandler
 from pathlib import Path
 from socketserver import TCPServer
+from urllib.parse import urljoin
 
 from test_desktop_integration import DESKTOP_WEB_DIST, ROOT, powershell_executable, run
 
@@ -38,16 +40,28 @@ def test_desktop_web_shell_serves_end_to_end() -> None:
         thread.start()
         try:
             port = server.server_address[1]
-            index_html = fetch_text(f"http://127.0.0.1:{port}/index.html")
-            main_js = fetch_text(f"http://127.0.0.1:{port}/assets/main.js")
-            styles_css = fetch_text(f"http://127.0.0.1:{port}/assets/styles.css")
+            base_url = f"http://127.0.0.1:{port}/"
+            index_html = fetch_text(urljoin(base_url, "index.html"))
+            asset_refs = re.findall(r'(?:src|href)="([^"]+)"', index_html)
+            js_bundles = [
+                fetch_text(urljoin(base_url, ref))
+                for ref in asset_refs
+                if ref.endswith(".js")
+            ]
+            css_bundles = [
+                fetch_text(urljoin(base_url, ref))
+                for ref in asset_refs
+                if ref.endswith(".css")
+            ]
         finally:
             server.shutdown()
             thread.join(timeout=5)
 
     assert "cmux for Windows" in index_html
-    assert "bootstrap-shell" in styles_css
-    assert "Native bridge ready" in main_js
+    assert js_bundles, "index.html should reference at least one served JS bundle"
+    assert css_bundles, "index.html should reference at least one served CSS bundle"
+    assert any("cmux" in bundle for bundle in js_bundles)
+    assert any(".cmux" in bundle for bundle in css_bundles)
 
 
 def test_native_desktop_smoke_launch() -> None:

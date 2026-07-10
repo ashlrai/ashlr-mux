@@ -1329,7 +1329,7 @@ class cmux:
     def surface_health(self, workspace: Union[str, int, None] = None) -> List[dict]:
         """
         Check view health of all surfaces in a workspace.
-        Returns list of dicts with keys: index, id, type, in_window, plus any
+        Returns list of dicts with keys: ref, surface_ref, id, type, in_window, plus any
         extra key=value fields returned by the daemon.
         """
         arg = "" if workspace is None else str(workspace)
@@ -1357,7 +1357,8 @@ class cmux:
             in_window = kv.get("in_window", "false") == "true"
 
             row: dict = {
-                "index": index,
+                "ref": f"surface:{index + 1}",
+                "surface_ref": f"surface:{index + 1}",
                 "id": surface_id,
                 "type": panel_type,
                 "in_window": in_window,

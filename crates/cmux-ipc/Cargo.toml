@@ -13,7 +13,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 # `net` brings in the Windows named-pipe transport (tokio::net::windows::named_pipe);
 # `time` backs the client connect-retry backoff.
-tokio = { version = "1", features = ["io-util", "net", "rt", "macros", "time"] }
+tokio = { version = "1", features = ["io-util", "net", "rt", "macros", "time", "sync"] }
 
 # Windows named-pipe control server: bind the pipe with an explicit current-user
 # DACL (token SID → SDDL → SECURITY_ATTRIBUTES) instead of the default
@@ -28,4 +28,4 @@ windows = { version = "0.61", features = [
 ] }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["io-util", "net", "rt", "rt-multi-thread", "macros", "time"] }
+tokio = { version = "1", features = ["io-util", "net", "rt", "rt-multi-thread", "macros", "time", "sync"] }

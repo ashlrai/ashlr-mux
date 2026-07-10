@@ -386,9 +386,7 @@ fn generate_uuid_lowercased() -> String {
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0);
     let counter = COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
-    let mut state = nanos
-        ^ counter.wrapping_mul(0x9E37_79B9_7F4A_7C15)
-        ^ 0xD1B5_4A32_D192_ED03;
+    let mut state = nanos ^ counter.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xD1B5_4A32_D192_ED03;
     let mut next = || {
         state ^= state << 13;
         state ^= state >> 7;
@@ -478,9 +476,12 @@ mod tests {
     fn load_accepts_stored_file_envelope() {
         let dir = TempDir::new().unwrap();
         let path = store_path(&dir);
-        let record = make_record("r1", &["c"], SurfaceResumeApprovalPolicy::Manual, 1.0)
-            .signed(SECRET);
-        let file = StoredFile { version: 1, records: vec![record] };
+        let record =
+            make_record("r1", &["c"], SurfaceResumeApprovalPolicy::Manual, 1.0).signed(SECRET);
+        let file = StoredFile {
+            version: 1,
+            records: vec![record],
+        };
         write_raw(&path, &serde_json::to_string(&file).unwrap());
         let loaded = load_records(&path);
         assert_eq!(loaded.len(), 1);
@@ -491,8 +492,8 @@ mod tests {
     fn load_accepts_bare_array_fallback() {
         let dir = TempDir::new().unwrap();
         let path = store_path(&dir);
-        let record = make_record("r1", &["c"], SurfaceResumeApprovalPolicy::Manual, 1.0)
-            .signed(SECRET);
+        let record =
+            make_record("r1", &["c"], SurfaceResumeApprovalPolicy::Manual, 1.0).signed(SECRET);
         write_raw(&path, &serde_json::to_string(&vec![record]).unwrap());
         let loaded = load_records(&path);
         assert_eq!(loaded.len(), 1);
@@ -503,13 +504,16 @@ mod tests {
     fn valid_records_drops_unsigned_and_tampered() {
         let dir = TempDir::new().unwrap();
         let path = store_path(&dir);
-        let good = make_record("good", &["c"], SurfaceResumeApprovalPolicy::Auto, 1.0)
-            .signed(SECRET);
+        let good =
+            make_record("good", &["c"], SurfaceResumeApprovalPolicy::Auto, 1.0).signed(SECRET);
         let unsigned = make_record("unsigned", &["c"], SurfaceResumeApprovalPolicy::Auto, 1.0);
         // Signed with a different secret → invalid under SECRET.
         let wrong_secret = make_record("wrong", &["c"], SurfaceResumeApprovalPolicy::Auto, 1.0)
             .signed(b"other-secret");
-        let file = StoredFile { version: 1, records: vec![good, unsigned, wrong_secret] };
+        let file = StoredFile {
+            version: 1,
+            records: vec![good, unsigned, wrong_secret],
+        };
         write_raw(&path, &serde_json::to_string(&file).unwrap());
         let valid = valid_records(&path, SECRET);
         assert_eq!(valid.len(), 1);
@@ -520,8 +524,13 @@ mod tests {
     fn matching_record_picks_longest_prefix_then_newest() {
         let dir = TempDir::new().unwrap();
         let path = store_path(&dir);
-        let short = make_record("short", &["claude"], SurfaceResumeApprovalPolicy::Auto, 100.0)
-            .signed(SECRET);
+        let short = make_record(
+            "short",
+            &["claude"],
+            SurfaceResumeApprovalPolicy::Auto,
+            100.0,
+        )
+        .signed(SECRET);
         let long_old = make_record(
             "long_old",
             &["claude", "--resume"],
@@ -595,9 +604,12 @@ mod tests {
     fn applying_stored_approval_matched_record_uses_record_policy() {
         let dir = TempDir::new().unwrap();
         let path = store_path(&dir);
-        let record = make_record("r", &["claude"], SurfaceResumeApprovalPolicy::Auto, 1.0)
-            .signed(SECRET);
-        let file = StoredFile { version: 1, records: vec![record] };
+        let record =
+            make_record("r", &["claude"], SurfaceResumeApprovalPolicy::Auto, 1.0).signed(SECRET);
+        let file = StoredFile {
+            version: 1,
+            records: vec![record],
+        };
         write_raw(&path, &serde_json::to_string(&file).unwrap());
         let decision = applying_stored_approval(
             &binding("claude --resume", None, Some("other"), None, None),
@@ -633,7 +645,13 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = store_path(&dir);
         let record = approve(
-            &binding("claude --resume main", Some("/w"), Some("other"), None, None),
+            &binding(
+                "claude --resume main",
+                Some("/w"),
+                Some("other"),
+                None,
+                None,
+            ),
             SurfaceResumeApprovalPolicy::Auto,
             None,
             &path,
@@ -650,12 +668,21 @@ mod tests {
 
         // Now it is the matching record.
         let decision = applying_stored_approval(
-            &binding("claude --resume main", Some("/w"), Some("other"), None, None),
+            &binding(
+                "claude --resume main",
+                Some("/w"),
+                Some("other"),
+                None,
+                None,
+            ),
             &path,
             SECRET,
         );
         assert!(decision.auto_resume);
-        assert_eq!(decision.approval_record_id.as_deref(), Some(record.id.as_str()));
+        assert_eq!(
+            decision.approval_record_id.as_deref(),
+            Some(record.id.as_str())
+        );
     }
 
     #[test]
@@ -753,7 +780,13 @@ mod tests {
             SECRET,
         )
         .unwrap();
-        assert!(!update("nope", Some(SurfaceResumeApprovalPolicy::Auto), None, &path, SECRET));
+        assert!(!update(
+            "nope",
+            Some(SurfaceResumeApprovalPolicy::Auto),
+            None,
+            &path,
+            SECRET
+        ));
         assert!(!update(&record.id, None, Some(Vec::new()), &path, SECRET));
     }
 
@@ -764,9 +797,18 @@ mod tests {
         // Record signed with a different secret.
         let record = make_record("r", &["c"], SurfaceResumeApprovalPolicy::Manual, 1.0)
             .signed(b"other-secret");
-        let file = StoredFile { version: 1, records: vec![record] };
+        let file = StoredFile {
+            version: 1,
+            records: vec![record],
+        };
         write_raw(&path, &serde_json::to_string(&file).unwrap());
-        assert!(!update("r", Some(SurfaceResumeApprovalPolicy::Auto), None, &path, SECRET));
+        assert!(!update(
+            "r",
+            Some(SurfaceResumeApprovalPolicy::Auto),
+            None,
+            &path,
+            SECRET
+        ));
     }
 
     #[test]
@@ -836,7 +878,10 @@ mod tests {
             SECRET,
         )
         .unwrap();
-        assert_eq!(decision.approval_policy, SurfaceResumeApprovalPolicy::Manual);
+        assert_eq!(
+            decision.approval_policy,
+            SurfaceResumeApprovalPolicy::Manual
+        );
         assert!(!decision.auto_resume);
         assert!(decision.approval_record_id.is_some());
         assert_eq!(valid_records(&path, SECRET).len(), 1);

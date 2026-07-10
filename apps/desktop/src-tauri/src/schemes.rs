@@ -1,4 +1,4 @@
-//! Pure request-mapping helpers for the four Phase-4 custom URI schemes.
+//! Pure request-mapping helpers for the Phase-4 custom URI schemes.
 //!
 //! Faithful port of the URL-scheme routing in the macOS handlers
 //! (`CmuxDiffViewerURLSchemeHandler` — `Sources/Panels/BrowserPanel.swift:1904`,
@@ -20,6 +20,7 @@
 //! and the Windows `http[s]://<scheme>.localhost/…` rewrite, keeping the routing
 //! identical to macOS regardless of which origin the WebView delivers.
 
+use std::path::Path;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
@@ -75,6 +76,48 @@ pub fn resolve_diff_request(
     Some((file.file_path, file.mime_type))
 }
 
+/// Resolve a public bundled diff-webview asset (`/main.mjs`,
+/// `/chunks/vendor.mjs`, ...). Session-registered files are resolved by
+/// [`resolve_diff_request`]; this is only the static app bundle that generated
+/// diff pages import. The asset path is jailed to
+/// `<resources>/markdown-viewer/webviews-app`.
+pub fn resolve_diff_asset_request(resources_root: &Path, uri: &str) -> Option<(PathBuf, String)> {
+    if uri.contains('?') || uri.contains('#') {
+        return None;
+    }
+    let (_token, request_path) = parse_diff_viewer_uri(uri)?;
+    let relative = request_path.strip_prefix('/')?;
+    if relative.is_empty()
+        || relative.contains("..")
+        || relative.contains('\\')
+        || relative.starts_with('/')
+    {
+        return None;
+    }
+    let mime = diff_asset_mime(relative)?;
+    let asset_root = resources_root.join("markdown-viewer").join("webviews-app");
+    let asset_root = std::fs::canonicalize(asset_root).ok()?;
+    let candidate = std::fs::canonicalize(asset_root.join(relative)).ok()?;
+    if !candidate.starts_with(&asset_root) || !candidate.is_file() {
+        return None;
+    }
+    Some((candidate, mime.to_string()))
+}
+
+fn diff_asset_mime(path: &str) -> Option<&'static str> {
+    if path.ends_with(".html") {
+        Some("text/html")
+    } else if path.ends_with(".mjs") || path.ends_with(".js") {
+        Some("text/javascript")
+    } else if path.ends_with(".css") {
+        Some("text/css")
+    } else if path.ends_with(".wasm") {
+        Some("application/wasm")
+    } else {
+        None
+    }
+}
+
 // ---------------------------------------------------------------------------
 // cmux-md://<host>/<asset>   (shell.html + lazy libs/css)
 // ---------------------------------------------------------------------------
@@ -84,7 +127,10 @@ pub fn resolve_diff_request(
 /// `*.css` bundle (mermaid, vega, github-markdown, …) for a single-segment
 /// filename. Returns the bytes + MIME to stream. Port of the static-asset arm of
 /// `MarkdownWebRenderer`'s shell base-URL loading + `lazyAsset`.
-pub fn resolve_md_request(assets: &MarkdownViewerAssets, uri: &str) -> Option<(Vec<u8>, &'static str)> {
+pub fn resolve_md_request(
+    assets: &MarkdownViewerAssets,
+    uri: &str,
+) -> Option<(Vec<u8>, &'static str)> {
     let path = md_request_path(uri)?;
     match path.as_str() {
         "/" | "/shell.html" => {
@@ -93,7 +139,7 @@ pub fn resolve_md_request(assets: &MarkdownViewerAssets, uri: &str) -> Option<(V
         }
         p => {
             let name = &p[1..]; // drop the leading '/'
-            // Single-segment filenames only (no nested paths / traversal).
+                                // Single-segment filenames only (no nested paths / traversal).
             if name.is_empty() || name.contains('/') || name.contains("..") {
                 return None;
             }
@@ -129,14 +175,27 @@ pub fn resolve_local_image_request(
     Some((resolved.path, resolved.mime_type))
 }
 
+/// Extract the `panelId` query value from a markdown request URL, if present.
+/// Accepts both custom-scheme and WebView2-rewritten forms because only the
+/// query string matters.
+pub fn markdown_panel_id_from_request(uri: &str) -> Option<String> {
+    let query = uri.split_once('?')?.1.split('#').next().unwrap_or_default();
+    for pair in query.split('&') {
+        let (name, value) = match pair.split_once('=') {
+            Some(parts) => parts,
+            None => (pair, ""),
+        };
+        if name == "panelId" && !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
 /// Validate + canonicalize a `cmux-remote-image` request URL to the outbound
 /// HTTPS image URL it is allowed to fetch (SSRF gate). Thin wrapper over
-/// [`cmux_markdown::remote_image_url`].
-///
-/// DEFERRED (host-layer / network, out of this headless slice): the actual DNS
-/// pinning + TLS fetch of the returned URL (`MarkdownRemoteImageLoader`). This
-/// helper only proves the URL is admissible; the scheme closure responds
-/// not-implemented for an admitted URL until the fetch loop is ported.
+/// [`cmux_markdown::remote_image_url`]. The Tauri scheme handler owns the
+/// DNS-pinned TLS fetch of this returned URL.
 pub fn remote_image_request(request_url: &str) -> Option<String> {
     cmux_markdown::remote_image_url(request_url)
 }
@@ -194,7 +253,9 @@ mod tests {
         );
         // Windows WebView2 rewrite.
         assert_eq!(
-            parse_diff_viewer_uri("http://cmux-diff-viewer.localhost/tok-abcdef0123456789/a/b.patch"),
+            parse_diff_viewer_uri(
+                "http://cmux-diff-viewer.localhost/tok-abcdef0123456789/a/b.patch"
+            ),
             Some(("tok-abcdef0123456789".into(), "/a/b.patch".into()))
         );
         // Query/fragment stripped; root path.
@@ -209,7 +270,10 @@ mod tests {
         );
         // Wrong scheme / empty token.
         assert_eq!(parse_diff_viewer_uri("https://example.com/x"), None);
-        assert_eq!(parse_diff_viewer_uri("cmux-diff-viewer:///index.html"), None);
+        assert_eq!(
+            parse_diff_viewer_uri("cmux-diff-viewer:///index.html"),
+            None
+        );
     }
 
     // --- resolve_diff_request (parse + registry lookup + mime) ---
@@ -242,20 +306,90 @@ mod tests {
         assert!(path.ends_with("index.html"));
 
         // Unregistered path / unknown token miss.
-        assert!(resolve_diff_request(&registry, &format!("cmux-diff-viewer://{token}/missing.html"), now).is_none());
-        assert!(resolve_diff_request(&registry, "cmux-diff-viewer://tok-not-registered-000/index.html", now).is_none());
+        assert!(resolve_diff_request(
+            &registry,
+            &format!("cmux-diff-viewer://{token}/missing.html"),
+            now
+        )
+        .is_none());
+        assert!(resolve_diff_request(
+            &registry,
+            "cmux-diff-viewer://tok-not-registered-000/index.html",
+            now
+        )
+        .is_none());
 
         // Swift `registeredFile(for:)` rejects a URL with any query or fragment,
         // even when the path IS registered — the file-serving path must not serve
         // `index.html?v=1` or `index.html#frag` that macOS would 404.
         assert!(
-            resolve_diff_request(&registry, &format!("cmux-diff-viewer://{token}/index.html?v=1"), now).is_none(),
+            resolve_diff_request(
+                &registry,
+                &format!("cmux-diff-viewer://{token}/index.html?v=1"),
+                now
+            )
+            .is_none(),
             "a query on the file request must be rejected (Swift url.query == nil)"
         );
         assert!(
-            resolve_diff_request(&registry, &format!("cmux-diff-viewer://{token}/index.html#frag"), now).is_none(),
+            resolve_diff_request(
+                &registry,
+                &format!("cmux-diff-viewer://{token}/index.html#frag"),
+                now
+            )
+            .is_none(),
             "a fragment on the file request must be rejected (Swift url.fragment == nil)"
         );
+    }
+
+    #[test]
+    fn resolve_diff_asset_request_serves_bundled_webview_assets() {
+        let dir = tempfile::tempdir().unwrap();
+        let app_root = dir.path().join("markdown-viewer").join("webviews-app");
+        std::fs::create_dir_all(app_root.join("chunks")).unwrap();
+        std::fs::write(app_root.join("main.mjs"), "import './chunks/vendor.mjs';").unwrap();
+        std::fs::write(app_root.join("chunks").join("vendor.mjs"), "export {};").unwrap();
+
+        let (main_path, main_mime) = resolve_diff_asset_request(
+            dir.path(),
+            "cmux-diff-viewer://tok-abcdef0123456789/main.mjs",
+        )
+        .expect("main asset");
+        assert_eq!(main_mime, "text/javascript");
+        assert!(main_path.ends_with("main.mjs"));
+
+        let (chunk_path, chunk_mime) = resolve_diff_asset_request(
+            dir.path(),
+            "http://cmux-diff-viewer.localhost/tok-abcdef0123456789/chunks/vendor.mjs",
+        )
+        .expect("chunk asset");
+        assert_eq!(chunk_mime, "text/javascript");
+        assert!(chunk_path.ends_with("vendor.mjs"));
+    }
+
+    #[test]
+    fn resolve_diff_asset_request_rejects_queries_traversal_and_unknown_types() {
+        let dir = tempfile::tempdir().unwrap();
+        let app_root = dir.path().join("markdown-viewer").join("webviews-app");
+        std::fs::create_dir_all(&app_root).unwrap();
+        std::fs::write(app_root.join("main.mjs"), "export {};").unwrap();
+        std::fs::write(app_root.join("secret.txt"), "nope").unwrap();
+
+        assert!(resolve_diff_asset_request(
+            dir.path(),
+            "cmux-diff-viewer://tok-abcdef0123456789/main.mjs?v=1",
+        )
+        .is_none());
+        assert!(resolve_diff_asset_request(
+            dir.path(),
+            "cmux-diff-viewer://tok-abcdef0123456789/../main.mjs",
+        )
+        .is_none());
+        assert!(resolve_diff_asset_request(
+            dir.path(),
+            "cmux-diff-viewer://tok-abcdef0123456789/secret.txt",
+        )
+        .is_none());
     }
 
     // --- resolve_md_request (shell + lazy libs) ---
@@ -287,11 +421,16 @@ mod tests {
         let (html, mime) = resolve_md_request(&assets, "cmux-md://localhost/shell.html").unwrap();
         assert_eq!(mime, "text/html");
         let html = String::from_utf8(html).unwrap();
-        assert!(html.contains("MARKED"), "shell substitutes marked.js: {html}");
+        assert!(
+            html.contains("MARKED"),
+            "shell substitutes marked.js: {html}"
+        );
 
         // Root serves the shell too.
         assert_eq!(
-            resolve_md_request(&assets, "cmux-md://localhost/").unwrap().1,
+            resolve_md_request(&assets, "cmux-md://localhost/")
+                .unwrap()
+                .1,
             "text/html"
         );
 
@@ -336,6 +475,26 @@ mod tests {
         assert!(resolve_local_image_request(&bad, &md.to_string_lossy()).is_none());
     }
 
+    #[test]
+    fn markdown_panel_id_from_request_reads_the_query_value() {
+        assert_eq!(
+            markdown_panel_id_from_request(
+                "cmux-local-image://image?panelId=surface-2&url=file:///C:/docs/a.png"
+            ),
+            Some("surface-2".to_string())
+        );
+        assert_eq!(
+            markdown_panel_id_from_request(
+                "http://cmux-local-image.localhost/?url=file:///C:/docs/a.png&panelId=panel-7"
+            ),
+            Some("panel-7".to_string())
+        );
+        assert_eq!(
+            markdown_panel_id_from_request("cmux-local-image://image?url=file:///C:/docs/a.png"),
+            None
+        );
+    }
+
     // --- remote_image_request (SSRF gate delegate) ---
 
     #[test]
@@ -344,7 +503,9 @@ mod tests {
         let ok = remote_image_request("cmux-remote-image://img?url=https://example.com/a.png");
         assert_eq!(ok.as_deref(), Some("https://example.com/a.png"));
         // Wrong scheme / disallowed target rejected.
-        assert!(remote_image_request("cmux-remote-image://img?url=http://127.0.0.1/a.png").is_none());
+        assert!(
+            remote_image_request("cmux-remote-image://img?url=http://127.0.0.1/a.png").is_none()
+        );
         assert!(remote_image_request("https://img?url=https://example.com/a.png").is_none());
     }
 }

@@ -4,6 +4,8 @@
 // pure `paletteSelection` reducer — this shell holds no interaction logic
 // (SSR fires no handlers).
 
+import { useEffect, useRef } from "react";
+
 import { CommandRow, type CommandPaletteCommand } from "./CommandRow";
 
 /**
@@ -29,6 +31,27 @@ export interface CommandPaletteProps {
   selectedIndex: number;
   /** Text shown when there are no matches. */
   emptyLabel?: string;
+  /** Stable id for the listbox. */
+  listId?: string;
+  /** Stable id prefix for each rendered option. */
+  optionIdPrefix?: string;
+  /** Hovering a row should update the highlighted selection. */
+  onHoverIndex?: (index: number) => void;
+  /** Clicking a row should activate it. */
+  onActivateIndex?: (index: number) => void;
+}
+
+export interface ScrollablePaletteRow {
+  scrollIntoView(options?: ScrollIntoViewOptions): void;
+}
+
+export function scrollSelectedPaletteRow(
+  rows: readonly (ScrollablePaletteRow | null)[],
+  selectedIndex: number,
+): void {
+  rows[selectedIndex]?.scrollIntoView({
+    block: "nearest",
+  });
 }
 
 /** Renders the command-palette result list (or its empty state). */
@@ -37,8 +60,13 @@ export function CommandPalette({
   commands,
   selectedIndex,
   emptyLabel = "No matching commands",
+  listId = "cmux-palette-results",
+  optionIdPrefix = "cmux-palette-option",
+  onHoverIndex,
+  onActivateIndex,
 }: CommandPaletteProps): React.JSX.Element {
   const byId = new Map(commands.map((command) => [command.id, command]));
+  const rowRefs = useRef<Array<HTMLDivElement | null>>([]);
 
   // Join matches to commands, dropping any match whose command is absent.
   const rows = matches
@@ -48,22 +76,42 @@ export function CommandPalette({
     })
     .filter((row): row is { command: CommandPaletteCommand; match: CommandPaletteResolvedSearchMatch } => row !== null);
 
+  useEffect(() => {
+    scrollSelectedPaletteRow(rowRefs.current, selectedIndex);
+  }, [selectedIndex, rows.length]);
+
   if (rows.length === 0) {
     return (
-      <div className="cmux-palette" role="listbox" aria-label="Command palette results">
+      <div
+        id={listId}
+        className="cmux-palette"
+        role="listbox"
+        aria-label="Command palette results"
+      >
         <div className="cmux-palette-empty">{emptyLabel}</div>
       </div>
     );
   }
 
   return (
-    <div className="cmux-palette" role="listbox" aria-label="Command palette results">
+    <div
+      id={listId}
+      className="cmux-palette"
+      role="listbox"
+      aria-label="Command palette results"
+    >
       {rows.map(({ command, match }, index) => (
         <CommandRow
           key={command.id}
           command={command}
           titleMatchIndices={match.title_match_indices}
           active={index === selectedIndex}
+          rowId={`${optionIdPrefix}-${index}`}
+          rowRef={(node) => {
+            rowRefs.current[index] = node;
+          }}
+          onMouseEnter={() => onHoverIndex?.(index)}
+          onClick={() => onActivateIndex?.(index)}
         />
       ))}
     </div>

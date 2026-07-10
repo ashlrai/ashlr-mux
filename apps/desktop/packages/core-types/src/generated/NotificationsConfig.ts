@@ -6,7 +6,7 @@ import type { NotificationHook } from "./NotificationHook";
 /**
  * `notifications`: notification behavior from Settings > Notifications.
  */
-export type NotificationsConfig = { dockBadge: boolean, showInMenuBar: boolean, unreadPaneRing: boolean, paneFlash: boolean, 
+export type NotificationsConfig = { dockBadge: boolean, showInMenuBar: boolean, unreadPaneRing: boolean, paneFlash: boolean,
 /**
  * Notification sound preset. Kept as a `String` because the preset set is
  * large and includes the sentinel `custom_file`.

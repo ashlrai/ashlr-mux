@@ -43,7 +43,10 @@ pub struct ResolvedLocalImage {
 /// Resolve a `cmux-local-image://…?url=<file-url>` request against the directory
 /// of `markdown_file_path`, returning the servable image only when it passes the
 /// jail. Port of `localImageFileURL(from:)`.
-pub fn resolve_local_image(request_url: &str, markdown_file_path: &str) -> Option<ResolvedLocalImage> {
+pub fn resolve_local_image(
+    request_url: &str,
+    markdown_file_path: &str,
+) -> Option<ResolvedLocalImage> {
     // 1. The request must use the local-image scheme and carry a `url` query
     //    item whose value is a `file:` URL.
     let scheme = url_scheme(request_url)?;

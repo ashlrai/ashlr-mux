@@ -50,8 +50,9 @@ export const host = {
  * The macOS `webkit.messageHandlers` channel names the reused webviews call,
  * mapped to the Tauri command that services each one. The Rust command receives
  * a single `message` argument (`{ id, method, params }`) and returns a
- * `NativeReply`. The command implementations land per-surface in later phases
- * (agent chat → Phase 3, diff comments → Phase 4); the shim itself is stable.
+ * `NativeReply`. The agent-session, diff-comments, and cmuxLib RPC commands are
+ * now live in the desktop host; the shim keeps the reused webviews on their
+ * original WKWebView-shaped contract.
  */
 export const MAC_HOST_CHANNELS: Record<string, string> = {
   agentSession: "agent_session_rpc",

@@ -33,6 +33,26 @@ from cmux import cmux, cmuxError
 MARKER_DIR = Path(tempfile.gettempdir())
 
 
+def _surface_ordinal(row: dict) -> int | None:
+    ref = str(row.get("ref") or row.get("surface_ref") or "")
+    kind, sep, raw = ref.partition(":")
+    if sep and kind == "surface" and raw.isdigit():
+        ordinal = int(raw)
+        return ordinal - 1 if ordinal > 0 else None
+    return None
+
+
+def _surface_matches(row: dict, surface) -> bool:
+    if isinstance(surface, int):
+        return _surface_ordinal(row) == surface
+    wanted = str(surface)
+    return wanted in {
+        str(row.get("id") or ""),
+        str(row.get("ref") or ""),
+        str(row.get("surface_ref") or ""),
+    }
+
+
 def _marker(name: str) -> Path:
     return MARKER_DIR / f"cmux_mwf_{name}_{os.getpid()}"
 
@@ -71,7 +91,7 @@ def _verify_responsive(c: cmux, marker: Path, surface_idx: int, retries: int = 3
     return False
 
 
-def _wait_terminal_in_window(c: cmux, surface_idx: int, timeout: float = 5.0) -> bool:
+def _wait_terminal_in_window(c: cmux, surface_idx, timeout: float = 5.0) -> bool:
     start = time.time()
     while time.time() - start < timeout:
         try:
@@ -79,7 +99,7 @@ def _wait_terminal_in_window(c: cmux, surface_idx: int, timeout: float = 5.0) ->
         except Exception:
             health = []
         for h in health:
-            if h.get("index") == surface_idx and h.get("type") == "terminal" and h.get("in_window"):
+            if _surface_matches(h, surface_idx) and h.get("type") == "terminal" and h.get("in_window"):
                 return True
         time.sleep(0.2)
     return False

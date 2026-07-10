@@ -217,10 +217,7 @@ mod tests {
     fn percent_encode_escapes_reserved_and_keeps_unreserved() {
         assert_eq!(percent_encode("abcXYZ019-._~"), "abcXYZ019-._~");
         // A Windows path: backslashes, colon, and space are all escaped.
-        assert_eq!(
-            percent_encode(r"C:\work dir"),
-            "C%3A%5Cwork%20dir"
-        );
+        assert_eq!(percent_encode(r"C:\work dir"), "C%3A%5Cwork%20dir");
     }
 
     #[test]
@@ -302,9 +299,15 @@ mod tests {
         let id = create_session(&base, Some("Basic zzz"), Some("/w")).expect("create");
         assert_eq!(id, "oc-42");
         let request = captured.lock().unwrap().clone();
-        assert!(request.starts_with("POST /session?directory=%2Fw "), "{request}");
+        assert!(
+            request.starts_with("POST /session?directory=%2Fw "),
+            "{request}"
+        );
         assert!(request.contains("Authorization: Basic zzz"), "{request}");
-        assert!(request.contains("Content-Type: application/json"), "{request}");
+        assert!(
+            request.contains("Content-Type: application/json"),
+            "{request}"
+        );
         assert!(request.trim_end().ends_with("{}"), "empty body: {request}");
     }
 

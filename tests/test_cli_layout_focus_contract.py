@@ -35,7 +35,6 @@ class FakeCmuxState:
                     {
                         "id": WINDOW_ID,
                         "ref": WINDOW_REF,
-                        "index": 7,
                     },
                 ],
             }
@@ -283,11 +282,11 @@ def main() -> int:
                 },
             )
 
-            run_cli(cli, socket_path, ["reorder-surface", "--surface", SURFACE_ID, "--index", "0"])
-            assert_last_call(
-                state,
-                "surface.reorder",
-                {"surface_id": SURFACE_ID, "index": 0, "focus": False},
+            assert_cli_fails(
+                cli,
+                socket_path,
+                ["reorder-surface", "--surface", SURFACE_ID, "--index", "0"],
+                "not yet ported",
             )
 
             run_cli(cli, socket_path, ["tab-action", "--action", "duplicate", "--workspace", WORKSPACE_ID, "--surface", SURFACE_ID])

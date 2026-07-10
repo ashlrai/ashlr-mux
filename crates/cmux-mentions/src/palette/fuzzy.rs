@@ -204,7 +204,9 @@ pub fn prepare_candidate_text(candidate: &str) -> Option<PreparedCandidateText> 
 }
 
 /// Swift: `prepareNormalizedCandidateText(_:)`.
-pub fn prepare_normalized_candidate_text(normalized_candidate: &str) -> Option<PreparedCandidateText> {
+pub fn prepare_normalized_candidate_text(
+    normalized_candidate: &str,
+) -> Option<PreparedCandidateText> {
     if normalized_candidate.is_empty() {
         return None;
     }
@@ -293,7 +295,10 @@ fn best_whole_candidate_prefix_score(
 ) -> Option<i64> {
     let mut best_score: Option<i64> = None;
     for candidate in prepared_candidates {
-        if !candidate.normalized_text.starts_with(&token.normalized_text) {
+        if !candidate
+            .normalized_text
+            .starts_with(&token.normalized_text)
+        {
             continue;
         }
         let score =
@@ -314,8 +319,7 @@ pub fn whole_candidate_prefix_score_by_token(
         let prefix_limit = candidate.characters.len().min(DEFAULT_MAX_PREFIX_LENGTH);
         for prefix_length in 1..=prefix_limit {
             let prefix: String = candidate.characters[..prefix_length].iter().collect();
-            let score =
-                6800 - 0i64.max(candidate.characters.len() as i64 - prefix_length as i64);
+            let score = 6800 - 0i64.max(candidate.characters.len() as i64 - prefix_length as i64);
             let entry = scores.entry(prefix).or_insert(i64::MIN);
             if score > *entry {
                 *entry = score;
@@ -464,7 +468,8 @@ fn score_token(token: &PreparedToken, candidate: &PreparedCandidateText) -> Opti
         if let Some(word_score) = best_word_score(token_chars, candidate) {
             consider(word_score, &mut best_score);
         }
-        if let Some(single_edit_prefix_score) = single_edit_word_prefix_score(token_chars, candidate)
+        if let Some(single_edit_prefix_score) =
+            single_edit_word_prefix_score(token_chars, candidate)
         {
             consider(single_edit_prefix_score, &mut best_score);
         }
@@ -553,8 +558,7 @@ fn single_edit_word_prefix_score_for_match(
     matched: &SingleEditWordPrefixMatch,
     candidate_length: usize,
 ) -> i64 {
-    let length_penalty =
-        0i64.max(matched.segment_length as i64 - matched.prefix_length as i64) * 6;
+    let length_penalty = 0i64.max(matched.segment_length as i64 - matched.prefix_length as i64) * 6;
     let distance_penalty = matched.segment_start as i64 * 8;
     let trailing_penalty = 0i64.max(candidate_length as i64 - matched.segment_length as i64);
     let edit_position_penalty =
@@ -689,8 +693,7 @@ fn stitched_word_prefix_score(
 
                 let chunk_coverage = chunk_length as i64 * 220;
                 let contiguity_bonus: i64 = if segment_index == word_index { 80 } else { 0 };
-                let segment_remainder_penalty =
-                    (segment_length as i64 - chunk_length as i64) * 9;
+                let segment_remainder_penalty = (segment_length as i64 - chunk_length as i64) * 9;
                 let distance_penalty = segment.start as i64 * 4;
                 let chunk_score = chunk_coverage + contiguity_bonus
                     - segment_remainder_penalty
@@ -1099,7 +1102,8 @@ fn char_find(haystack: &[char], needle: &[char]) -> Option<usize> {
     if needle.len() > haystack.len() {
         return None;
     }
-    (0..=haystack.len() - needle.len()).find(|&start| haystack[start..start + needle.len()] == *needle)
+    (0..=haystack.len() - needle.len())
+        .find(|&start| haystack[start..start + needle.len()] == *needle)
 }
 
 #[cfg(test)]
@@ -1174,13 +1178,22 @@ mod tests {
         // `testTextBoxMentionCandidateIndexFiltersWeakPartialFuzzyRows`.
         let query = prepared_query("iterate");
         let tok = &query.tokens[0];
-        assert!(token_can_match_without_single_edit(tok, &candidate("/iterate-pr")));
-        assert!(!token_can_match_without_single_edit(tok, &candidate("agent-browser")));
+        assert!(token_can_match_without_single_edit(
+            tok,
+            &candidate("/iterate-pr")
+        ));
+        assert!(!token_can_match_without_single_edit(
+            tok,
+            &candidate("agent-browser")
+        ));
         assert!(!token_can_match_without_single_edit(
             tok,
             &candidate("agent-cli-integration")
         ));
-        assert!(!token_can_match_without_single_edit(tok, &candidate("pi-agent-rust")));
+        assert!(!token_can_match_without_single_edit(
+            tok,
+            &candidate("pi-agent-rust")
+        ));
     }
 
     #[test]
@@ -1211,7 +1224,10 @@ mod tests {
         let cand = candidate("/iterate-pr");
         assert_eq!(
             cand.word_segments,
-            vec![WordSegment { start: 1, end: 8 }, WordSegment { start: 9, end: 11 }]
+            vec![
+                WordSegment { start: 1, end: 8 },
+                WordSegment { start: 9, end: 11 }
+            ]
         );
     }
 
@@ -1219,6 +1235,9 @@ mod tests {
     fn empty_query_scores_zero() {
         let query = prepared_query("   ");
         assert!(query.is_empty());
-        assert_eq!(score_prepared_candidate(&query, &candidate("anything")), Some(0));
+        assert_eq!(
+            score_prepared_candidate(&query, &candidate("anything")),
+            Some(0)
+        );
     }
 }

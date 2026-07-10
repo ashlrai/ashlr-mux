@@ -86,7 +86,10 @@ impl Rect {
 
     /// Whether all four components are finite.
     pub fn is_finite(&self) -> bool {
-        self.x.is_finite() && self.y.is_finite() && self.width.is_finite() && self.height.is_finite()
+        self.x.is_finite()
+            && self.y.is_finite()
+            && self.width.is_finite()
+            && self.height.is_finite()
     }
 
     /// A copy with non-negative width/height (origin adjusted), matching
@@ -257,7 +260,7 @@ mod tests {
         // A 30×30 window needs only 30pt of overlap (its full extent), not 60.
         let screen = r(0.0, 0.0, 1000.0, 1000.0);
         let window = r(-10.0, -10.0, 30.0, 30.0); // overlaps [0,20) × [0,20)
-        // 20 < 30 → still not reachable.
+                                                  // 20 < 30 → still not reachable.
         assert!(!should_preserve_frame_during_constrain(window, &[screen]));
         let window2 = r(-2.0, -2.0, 30.0, 30.0); // overlaps [0,28) × [0,28) ≥ 28? need ≥30
         assert!(!should_preserve_frame_during_constrain(window2, &[screen]));
@@ -278,7 +281,10 @@ mod tests {
         let primary = r(0.0, 0.0, 1920.0, 1080.0);
         let secondary = r(1920.0, 0.0, 2560.0, 1440.0);
         let window = r(2200.0, 200.0, 800.0, 600.0); // fully on the secondary
-        assert!(should_preserve_frame_during_constrain(window, &[primary, secondary]));
+        assert!(should_preserve_frame_during_constrain(
+            window,
+            &[primary, secondary]
+        ));
     }
 
     #[test]

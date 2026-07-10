@@ -282,7 +282,9 @@ mod tests {
     #[test]
     fn v1_correct_password_authenticates() {
         let mut state = AuthState::default();
-        let response = gate().intercept("auth s3cret", &mut state).expect("response");
+        let response = gate()
+            .intercept("auth s3cret", &mut state)
+            .expect("response");
         assert_eq!(response, "OK: Authenticated");
         assert!(state.authenticated());
     }
@@ -291,12 +293,16 @@ mod tests {
     fn v1_command_keyword_is_case_insensitive_but_password_is_not() {
         let mut state = AuthState::default();
         // Keyword may be upper-cased; the password keeps its exact casing.
-        let response = gate().intercept("AUTH s3cret", &mut state).expect("response");
+        let response = gate()
+            .intercept("AUTH s3cret", &mut state)
+            .expect("response");
         assert_eq!(response, "OK: Authenticated");
         assert!(state.authenticated());
 
         let mut wrong = AuthState::default();
-        let response = gate().intercept("auth S3CRET", &mut wrong).expect("response");
+        let response = gate()
+            .intercept("auth S3CRET", &mut wrong)
+            .expect("response");
         assert_eq!(response, "ERROR: Invalid password");
         assert!(!wrong.authenticated());
     }
@@ -332,7 +338,9 @@ mod tests {
         });
         let mut state = AuthState::default();
         // Everything after "auth " is the password verbatim, including spaces.
-        let response = spaced.intercept("auth  pad ed ", &mut state).expect("response");
+        let response = spaced
+            .intercept("auth  pad ed ", &mut state)
+            .expect("response");
         assert_eq!(response, "OK: Authenticated");
     }
 
@@ -343,7 +351,9 @@ mod tests {
             password: "",
         });
         let mut state = AuthState::default();
-        let response = unconfigured.intercept("auth anything", &mut state).expect("response");
+        let response = unconfigured
+            .intercept("auth anything", &mut state)
+            .expect("response");
         assert_eq!(
             response,
             "ERROR: Password mode is enabled but no socket password is configured in Settings."
@@ -380,7 +390,10 @@ mod tests {
         assert_eq!(value["id"], serde_json::json!("x"));
         assert_eq!(value["ok"], serde_json::json!(false));
         assert_eq!(value["error"]["code"], serde_json::json!("auth_failed"));
-        assert_eq!(value["error"]["message"], serde_json::json!("Invalid password"));
+        assert_eq!(
+            value["error"]["message"],
+            serde_json::json!("Invalid password")
+        );
         assert!(!state.authenticated());
     }
 
@@ -437,7 +450,9 @@ mod tests {
     #[test]
     fn unauthenticated_v1_command_gets_text_auth_required() {
         let mut state = AuthState::default();
-        let response = gate().intercept("list-workspaces", &mut state).expect("response");
+        let response = gate()
+            .intercept("list-workspaces", &mut state)
+            .expect("response");
         assert_eq!(
             response,
             "ERROR: Authentication required \u{2014} send auth <password> first"

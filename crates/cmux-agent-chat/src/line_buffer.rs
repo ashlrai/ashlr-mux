@@ -111,7 +111,10 @@ mod tests {
     fn crlf_carriage_return_is_preserved() {
         let mut buf = OutputLineBuffer::new();
         let lines = buf.append(b"line1\r\nline2\r\n");
-        assert_eq!(lines, vec!["line1\r\n".to_string(), "line2\r\n".to_string()]);
+        assert_eq!(
+            lines,
+            vec!["line1\r\n".to_string(), "line2\r\n".to_string()]
+        );
     }
 
     #[test]

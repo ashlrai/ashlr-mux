@@ -349,15 +349,9 @@ mod tests {
             None,
             Some("plan".to_string()),
         );
-        let merged = WorkstreamContext::new(
-            Some("new".to_string()),
-            None,
-            None,
-            vec![],
-            None,
-            None,
-        )
-        .merging_missing(Some(&base));
+        let merged =
+            WorkstreamContext::new(Some("new".to_string()), None, None, vec![], None, None)
+                .merging_missing(Some(&base));
         assert_eq!(merged.last_user_message.as_deref(), Some("new"));
         assert_eq!(merged.assistant_preamble.as_deref(), Some("preamble"));
         assert_eq!(merged.permission_mode.as_deref(), Some("plan"));
@@ -365,14 +359,7 @@ mod tests {
 
     #[test]
     fn encode_omits_nil_optionals_keeps_allowed_prompts() {
-        let ctx = WorkstreamContext::new(
-            Some("hi".to_string()),
-            None,
-            None,
-            vec![],
-            None,
-            None,
-        );
+        let ctx = WorkstreamContext::new(Some("hi".to_string()), None, None, vec![], None, None);
         // camelCase keys, nil optionals omitted, allowedPrompts always present.
         assert_eq!(
             serde_json::to_string(&ctx).unwrap(),
@@ -383,7 +370,8 @@ mod tests {
     #[test]
     fn decode_cleans_via_new() {
         let ctx: WorkstreamContext =
-            serde_json::from_str(r#"{"lastUserMessage":"  hi  ","permissionMode":"plan"}"#).unwrap();
+            serde_json::from_str(r#"{"lastUserMessage":"  hi  ","permissionMode":"plan"}"#)
+                .unwrap();
         assert_eq!(ctx.last_user_message.as_deref(), Some("hi"));
         assert_eq!(ctx.permission_mode.as_deref(), Some("plan"));
         assert!(ctx.allowed_prompts.is_empty());
@@ -395,7 +383,10 @@ mod tests {
             "{\"plan\":\"# Demo Plan\\n\\n## Context\\nShow the new feed UI.\",\"allowedPrompts\":[{\"tool\":\"Bash\",\"prompt\":\"run reload.sh --tag feedctx\"}],\"planFilePath\":\"/tmp/demo.md\"}",
         );
         assert_eq!(preview.summary.as_deref(), Some("Show the new feed UI."));
-        assert_eq!(preview.allowed_prompts.first().map(|p| p.tool.as_str()), Some("Bash"));
+        assert_eq!(
+            preview.allowed_prompts.first().map(|p| p.tool.as_str()),
+            Some("Bash")
+        );
         assert_eq!(
             preview.allowed_prompts.first().map(|p| p.prompt.as_str()),
             Some("run reload.sh --tag feedctx")
@@ -414,12 +405,16 @@ mod tests {
     #[test]
     fn summary_numbered_list() {
         assert_eq!(
-            WorkstreamExitPlanPreview::new("12.  do the thing").summary.as_deref(),
+            WorkstreamExitPlanPreview::new("12.  do the thing")
+                .summary
+                .as_deref(),
             Some("do the thing")
         );
         // Not a numbered list: "12.3. text" has no whitespace after the first dot.
         assert_eq!(
-            WorkstreamExitPlanPreview::new("12.3. text").summary.as_deref(),
+            WorkstreamExitPlanPreview::new("12.3. text")
+                .summary
+                .as_deref(),
             Some("12.3. text")
         );
     }
@@ -427,7 +422,9 @@ mod tests {
     #[test]
     fn summary_heading_only() {
         assert_eq!(
-            WorkstreamExitPlanPreview::new("# Title\n").summary.as_deref(),
+            WorkstreamExitPlanPreview::new("# Title\n")
+                .summary
+                .as_deref(),
             Some("Title")
         );
     }

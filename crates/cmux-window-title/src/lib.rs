@@ -174,12 +174,7 @@ impl WindowTitleTemplate {
     /// hex digits, lowercased. The `uuid` crate already renders lowercase hex,
     /// matching Swift's uppercase `uuidString` followed by `.lowercased()`.
     pub fn window_token(window_id: Uuid) -> String {
-        window_id
-            .hyphenated()
-            .to_string()
-            .chars()
-            .take(8)
-            .collect()
+        window_id.hyphenated().to_string().chars().take(8).collect()
     }
 }
 

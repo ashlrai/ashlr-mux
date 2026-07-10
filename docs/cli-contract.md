@@ -82,6 +82,7 @@ Environment:
 | `ping` | Check socket connectivity. |
 | `capabilities` | Print server capabilities as JSON. |
 | `events` | Stream reconnectable cmux events as newline-delimited JSON. |
+| `sidebar-snapshot`, `extension-sidebar-snapshot` | Print the rich `extension.sidebar.snapshot` payload used by custom sidebars and event-stream catch-up, including the interpreter-ready `data` tree. |
 | `auth` | Manage auth status, login, and logout through the app. |
 | `vm`, `cloud` | Manage cloud VMs. `cloud` is an alias for `vm`. |
 | `remotes`, `remote` | Manage remote Macs in the team device registry so they appear in the iOS app's device list. `remote` is an alias for `remotes`. |
@@ -150,6 +151,20 @@ Environment:
 | `set-status` | Set a sidebar status pill. |
 | `clear-status` | Remove a sidebar status pill. |
 | `list-status` | List sidebar status pills. |
+| `set-agent-pid` | Register an agent root PID so descendant listening ports can appear in the sidebar. |
+| `clear-agent-pid` | Clear a registered agent root PID and refresh sidebar agent ports. |
+| `report-tty` | Report a terminal TTY name for a workspace surface. |
+| `report-shell-state` | Report whether a workspace surface shell is idle at a prompt, running a command, or unknown. |
+| `report-pr` | Report pull-request metadata for sidebar display. |
+| `report-review` | Report provider-specific review metadata for sidebar display. |
+| `clear-pr` | Remove pull-request/review metadata from a sidebar surface. |
+| `report-meta`, `set-meta` | Set a rich sidebar metadata entry. |
+| `clear-meta` | Remove a rich sidebar metadata entry. |
+| `list-meta` | List rich sidebar metadata entries. |
+| `report-meta-block`, `set-meta-block` | Set a markdown sidebar metadata block. |
+| `clear-meta-block` | Remove a markdown sidebar metadata block. |
+| `list-meta-blocks` | List markdown sidebar metadata blocks. |
+| `reset-sidebar` | Clear sidebar progress, status, metadata, metadata blocks, and log entries. |
 | `set-progress` | Set sidebar progress. |
 | `clear-progress` | Clear sidebar progress. |
 | `log` | Append a sidebar log entry. |
@@ -337,6 +352,8 @@ Browser subcommands:
 | `browser input`, `browser input_mouse`, `browser input_keyboard`, `browser input_touch` | Send low-level input. |
 | `browser identify` | Identify browser surface context. |
 
+See `docs/browser-automation.md` for the agent workflow, target terminology, supported automation families, and Windows/Tauri WKWebView hard gaps. On the Windows/Tauri backend, viewport/geolocation/offline overrides, trace/screencast, network route/unroute interception, and raw input injection return explicit `not_supported` errors; Network request inspection remains supported through `browser network`.
+
 Hook subcommands:
 
 | Command | Contract |
@@ -371,6 +388,383 @@ Custom sidebar commands:
 | `sidebar reload [name]` | Validate all custom sidebars, then request a reload for every valid one. |
 | `sidebar select <name>` | Validate and activate one custom sidebar in the sidebar picker. |
 | `sidebar open <name>` | Validate and open one custom sidebar as a normal Bonsplit pane tab, preferring the right-side split from the focused surface. |
+
+Windows/Tauri status: `sidebar list` and `sidebar validate [name]` are routed
+through the desktop control socket and return structured validation for
+`~/.config/cmux/sidebars` (`CMUX_SIDEBARS_DIR` may override the directory for
+tests/tools). `sidebar open <name>` now validates the selected sidebar and binds
+the focused pane to a `custom-sidebar` surface backed by live session data.
+`.json` sidebars render through the Windows/Tauri JSON block renderer with
+interactive rows plus authored action objects that invoke shared control-socket
+methods through `custom_sidebar_action_invoke`; `.swift` sidebars render through
+a constrained Windows/Tauri Swift subset renderer for common stack/text/button/
+`Label`/`Image`/`AsyncImage`/`ProgressView`/`Gauge`/`ScrollView`/`List`/`Section`/`ZStack`/`Grid`/
+`GridRow`/constrained `LazyVGrid(columns: [GridItem(...)])`/`LazyHGrid(rows: [GridItem(...)])`/
+`Menu`/`Group`/`EmptyView`/`ViewThatFits(in:)`/`AnyView`/`TabView`/`TextField`/`SecureField`/`TextEditor`/`Toggle`/`Slider`/`Stepper`/`DatePicker`/`ColorPicker`/`Picker` authoring, stack `spacing:`,
+sidebar-local `Form { ... }` containers,
+`HSplitView`/`VSplitView` sidebar-local split panes,
+`Button(role:)`, basic shapes (`Circle`, `Ellipse`, `Rectangle`,
+`RoundedRectangle`, `UnevenRoundedRectangle`, `Capsule`, `ContainerRelativeShape`,
+and constrained `Path(roundedRect:)` / `Path(ellipseIn:)`) with fill/stroke/strokeBorder/trim,
+CSS-backed SwiftUI gradient styles (`LinearGradient`, `RadialGradient`,
+`AngularGradient`, and `Color.<token>.gradient`) for background/foreground/fill,
+CSS-backed Material background tokens (`.ultraThinMaterial`, `.thinMaterial`,
+`.regularMaterial`, `.thickMaterial`, `.ultraThickMaterial`, and `.bar`),
+`ForEach(workspaces)`,
+`ForEach(workspaces.indices)`, constrained `ForEach($localCollection)` element
+bindings for local `@State` arrays, simple `for` ranges, `if let`,
+local `let` bindings, simple user `func` value helpers and `some View` row
+helpers, `workspaces[i]` reads, array helpers (`.first`, `.last`, `.contains`,
+`.reversed()`, `.prefix(n)`, `.suffix(n)`, `.dropFirst(n)`, `.dropLast(n)`,
+`.enumerated()`, `.filter { ... }`, `.map { ... }`, `.flatMap { ... }`,
+`.compactMap { ... }`, `.reduce(initial) { ... }`, `.sorted { ... }`,
+`.min(by:)`, `.max(by:)`, `.allSatisfy(...)`,
+constrained key-path transforms such as `.map(\.title)`,
+`.compactMap(\.progress)`, `.flatMap(\.ports)`, and `.sorted(by: \.title)`),
+constrained `Dictionary(grouping: workspaces, by: \.selected)` records,
+`ForEach(Array(workspaces.enumerated()), id: \.offset)`
+tuple-style closure params plus `$0`/`$1` shorthand closures, string helpers (`.count`, `.hasPrefix`,
+`.hasSuffix`, `.contains`, `.uppercased()`, `.lowercased()`,
+`.split(separator:)`), common numeric/string builtins (`min`, `max`, `abs`,
+`Int`, `Double`, `String`, and constrained `String(format:)` for common
+`%d`/`%f`/`%@`/`%s` forms), numeric formatting (`.formatted(.currency(code:))`,
+`.formatted(.percent)`, `.formatted(.notation(.compactName))`, and
+`.formatted(.byteCount(style: .file))` / `Text(value, format: ...)`), simple
+`Measurement(value:unit:).formatted(.measurement(width: ...))` values,
+deterministic `Date(timeIntervalSince1970:).formatted(.dateTime...)` values,
+constrained `Text(date, style: .date/.time)` and static
+`Text(timerInterval: start...end)` timer snapshots,
+read-only `@Environment(\.colorScheme)`, `@Environment(\.layoutDirection)`,
+and `@Environment(\.locale)` declarations with stable sidebar defaults,
+static array `.formatted(.list(type: ...))` values,
+arithmetic/comparison/logical expressions
+(`+ - * / %`, `== != > >= < <=`, `&& || !`), nested Swift string interpolation,
+`Text(verbatim:)`, static inline `Text` markdown for `**bold**`, `*italic*`,
+`` `code` ``, and `[label](https://...)` links, constrained
+`Text("A") + Text(value)` concatenation, dictionary literals
+(`["key": value]`), dynamic keyed subscripts
+(`lookup[workspace.id]`), optional-style missing-value checks against `nil`,
+common visual modifiers (`.font`, `.fontWeight`, `.fontDesign`, `.fontWidth`, `.dynamicTypeSize`, `.bold`,
+`.italic`, `.monospaced`, `.lineLimit`, `.truncationMode`,
+`.multilineTextAlignment`, `.textCase`, `.underline`, `.strikethrough`,
+`.foregroundColor`/`.foregroundStyle`, `.opacity`, `.hidden`, `.fixedSize`, `.badge`, `.allowsHitTesting`,
+`.hoverEffect`, `.defaultHoverEffect`, `.disabled`,
+`.help`, `.accessibilityLabel`, `.accessibilityHidden`, `.accessibilityValue`,
+`.accessibilityHint`, `.accessibilityAddTraits`, `.accessibilityElement(children:)`,
+`.accessibilityAction`, `.accessibilityActivationPoint`, `.accessibilityRepresentation`,
+`.accessibilitySortPriority`, `.redacted`,
+`.privacySensitive`, `.padding`, edge-set `.padding(.horizontal|.vertical|[...], length)`,
+`.background`, `.cornerRadius`, `.layoutPriority`,
+`.containerRelativeFrame(...)`,
+`.safeAreaPadding(...)`, `.contentMargins(...)`,
+`.coordinateSpace(name:)`, `.alignmentGuide(...)`,
+`.gridCellColumns`, `.gridColumnAlignment`, `.gridCellAnchor`,
+`.tracking`, `.kerning`, `.baselineOffset`,
+`.offset`, `.position`, `.zIndex`, `.aspectRatio`, `.scaledToFit`, `.scaledToFill`,
+`.clipShape`, `.clipped`, `.compositingGroup`, `.shadow`, `.border`, `.stroke`, `.blur`,
+`.brightness`, `.contrast`, `.saturation`, `.grayscale`, `.hueRotation`,
+`.blendMode`, `.rotationEffect`, `.scaleEffect`, `.rotation3DEffect`, `.visualEffect`, `.listStyle`, `.labelStyle`, `.labelsHidden`, `.menuStyle`, `.controlGroupStyle`, `.controlSize`,
+`.buttonStyle`, `.buttonBorderShape`, `.pickerStyle`, `.tabViewStyle`, `.toggleStyle`,
+`.textFieldStyle`, `.scrollContentBackground`, `.scrollIndicators`,
+`.scrollClipDisabled`, `.scrollTargetBehavior`, `.scrollTargetLayout`,
+`.scrollBounceBehavior`, `.scrollDisabled`, `.scrollPosition`,
+`.defaultScrollAnchor`, `.resizable(capInsets:resizingMode:)`,
+`.renderingMode`, `.interpolation`, `.antialiased`, `.imageScale`,
+`.flipsForRightToLeftLayoutDirection`, `.symbolRenderingMode`, `.symbolVariant`, `.listRowBackground`,
+`.listRowSeparator`, `.fill`, `.tint`, `.animation(...)`, `.transition(...)`,
+`.contentTransition(...)`, `.symbolEffect(...)`, `.symbolEffectsRemoved()`, constrained
+`.preferredColorScheme(...)`, `.environment(\.colorScheme, ...)`,
+`.environment(\.layoutDirection, ...)`,
+`.frame(width:height:minWidth:minHeight:idealWidth:idealHeight:maxWidth:maxHeight:alignment:)`,
+child-bearing `.background { ... }`, `.overlay { ... }`, `.mask { ... }`,
+`.safeAreaInset { ... }`, `.contextMenu { ... }`, `.refreshable { ... }`,
+`.swipeActions { ... }`, `.accessibilityRepresentation { ... }`,
+`.tabItem { ... }`, `.onTapGesture { cmux(...) }`,
+`.onTapGesture(count:) { cmux(...) }`, `.onLongPressGesture { cmux(...) }`,
+`.onSubmit { ... }`, `.onChange(of:) { ... }`, `.onAppear { ... }`,
+`.onDisappear { ... }`, `.task { ... }`, `.task(id:) { ... }`, and
+`.onHover { hovering in ... }`, `.onGeometryChange(for:) { ... }`,
+`.focusable()`, and `.focused($localBool)`),
+static `.navigationTitle(...)`, `.navigationSubtitle(...)`,
+`.navigationBarTitleDisplayMode(...)`, `.toolbar { ToolbarItem { ... } }`,
+`.toolbarBackground(...)`, `.toolbarColorScheme(...)`,
+`.keyboardShortcut(...)`, `.keyboardShortcut(..., modifiers: [...])`,
+`.contentShape(...)`, `.allowsHitTesting(...)`, `.id(...)`, static `.draggable(...)`,
+`.dropDestination(for:) { cmux(...) }`,
+sidebar-local `ControlGroup { ... }` grouped control containers,
+sidebar-local `GroupBox("Title") { ... }` / `GroupBox(label: { ... }) { ... }`
+labeled card containers,
+sidebar-local `DisclosureGroup("Title") { ... }` /
+`DisclosureGroup(isExpanded: $localBool) { ... } label: { ... }` collapsible
+sections with direct local `@State Bool` expansion write-back,
+sidebar-local `NavigationStack { ... }` with static-destination
+`NavigationLink("Title") { ... }` / `NavigationLink(destination:) { ... }` plus
+a constrained `NavigationLink(value:)` / `.navigationDestination(for:)` route
+subset for string-like values, and
+sidebar-local `Link("Title", destination: URL(string: "https://...")!)` /
+`Link(destination: URL(string: "https://...")!) { ... }` external anchors for
+safe `http`/`https` destinations,
+sidebar-local `ContentUnavailableView(...)` empty-state panels with constrained
+title/system-image, description, and action slots,
+sidebar-local `.searchable(text: $localQuery, placement: .sidebar, prompt: "...")`
+search fields with direct local `@State String` write-back,
+sidebar-local `LabeledContent("Title", value: expr)` /
+`LabeledContent("Title") { <value views> }` read-only inspector rows,
+sidebar-local `.sheet(isPresented:)`, `.popover(isPresented:)`,
+`.fullScreenCover(isPresented:)`, `.alert("Title", isPresented:)`, and
+`.confirmationDialog("Title", isPresented:)` panels for simple local
+`@State Bool` bindings, constrained `.sheet(item:)`, `.popover(item:)`,
+`.fullScreenCover(item:)`, `.alert("Title", item:)`, and
+`.confirmationDialog("Title", item:)` panels for optional/string-like item values,
+sidebar-local `dismiss()` button/action closures inside presentation content,
+`.presentationDetents(...)`, `.presentationDragIndicator(...)`,
+`.presentationBackground(...)`, and `.presentationCornerRadius(...)`
+panel-chrome breadcrumbs/hints on presented content,
+alert/confirmation dialog action rows for direct child `Button(role:)` views,
+and authored `cmux(...)` actions.
+Static toolbar content preserves constrained `ToolbarItem(placement:)` tokens as
+stable placement classes/data, and constrained toolbar background/color-scheme
+tokens as sidebar-local nav/toolbar chrome hints plus `data-swift-toolbar-*`
+breadcrumbs; native platform toolbar slotting, collapsing, automatic placement,
+color propagation, visibility resolution, and customization semantics remain out
+of scope.
+Constrained `.labelsHidden()` preserves authored label-hiding intent as
+`data-swift-labels-hidden` metadata and applies sidebar-local visually-hidden
+label chrome for common controls; full inherited SwiftUI label-style propagation
+and exact platform label layout remain follow-up.
+Constrained `.controlGroupStyle(...)` preserves built-in style tokens as
+`data-swift-control-group-style` metadata and sidebar-local grouped-control
+chrome hints; custom `ControlGroupStyle` structs and native platform menu/palette
+behavior remain follow-up.
+Constrained `.groupBoxStyle(...)` preserves built-in style tokens as
+`data-swift-group-box-style` metadata and sidebar-local card chrome hints;
+custom `GroupBoxStyle` structs and native platform group-box styling remain
+follow-up.
+`DisclosureGroup` emits stable `data-swift-disclosure-*` breadcrumbs and uses
+the existing direct local state path for constrained `isExpanded: $localBool`
+bindings; native `DisclosureGroupStyle`, outline/list integration, and broader
+binding semantics remain follow-up.
+Constrained `.searchable(text:prompt:placement:)` emits stable
+`data-swift-search-*` breadcrumbs and uses the existing direct local state path
+for `@State String` text bindings; native suggestions, tokens, scopes, platform
+search-field placement, and broad `SearchFieldPlacement` semantics remain
+follow-up.
+Constrained `.contentShape(...)`, counted tap gestures, and long-press gestures
+emit stable Swift-style shape/gesture/count/duration breadcrumbs; native
+hit-test geometry, gesture priority, composition, and gesture-value semantics
+remain out of scope.
+Constrained `.allowsHitTesting(...)` preserves authored hit-testing intent as
+`data-swift-allows-hit-testing` metadata and maps `false` to a sidebar-local
+`pointer-events:none` hint; native SwiftUI hit-test tree behavior, gesture
+priority, and keyboard-vs-pointer focus nuance remain follow-up.
+Constrained `.hidden()` preserves authored hidden-view intent as
+`data-swift-hidden` metadata and maps to sidebar-local `visibility:hidden`, so
+layout space is retained while visible chrome is suppressed; SwiftUI identity,
+transition, lifecycle, and native layout negotiation semantics remain follow-up.
+Constrained `.badge(...)` preserves scalar/text badge values as
+`data-swift-badge` metadata and renders a sidebar-local pill on the authored
+node; native list-row, tab, toolbar, menu, and accessibility badge placement
+semantics remain follow-up.
+Constrained `.hoverEffect(...)` and `.defaultHoverEffect(...)` preserve authored
+pointer-hover style tokens as stable `data-swift-hover-effect` /
+`data-swift-default-hover-effect` metadata and sidebar-local hover chrome hints;
+native pointer regions, inherited default hover environments, and exact platform
+hover-effect animations remain follow-up.
+Static `.draggable(...)` resolves string/scalar payloads into browser draggable
+affordances and `data-swift-draggable` breadcrumbs; native `Transferable`,
+item-provider, drag preview, and drag-session semantics remain out of scope.
+`Label("Title", systemImage:)` and constrained
+`Label(title: { Text(...) }, icon: { Image(systemName:) })` forms lower to the
+same sidebar-local label row; arbitrary rich label title/icon builders remain
+follow-up.
+`Image(systemName:)` renders a constrained text-glyph fallback with stable
+`data-swift-system-image` and `data-swift-system-image-glyph` breadcrumbs;
+native SF Symbol vector paths, weights, variable values, and exact symbol
+rendering remain follow-up.
+Positional `Image("name")` and `Image(decorative:)` resolve through the
+`extension.sidebar.snapshot` `assets` map when the host provides one; accepted
+asset URLs are limited to `http`/`https` and host-minted
+`cmux-sidebar-asset://` URLs, with missing/unsafe entries rendered as
+placeholders. Windows/Tauri mints local asset URLs for image files in a sibling
+`<sidebar-name>.assets/` directory, keyed by both relative path and extensionless
+relative path. `Image(decorative:)` renders with empty alt text and forced
+`aria-hidden`, so authored accessibility labels do not leak onto decorative
+assets.
+`AsyncImage(url:)` accepts only `http`/`https` remote image URLs; unsafe schemes
+render as a placeholder instead of loading local or app-internal resources.
+Rendered nodes expose constrained `data-swift-async-image-phase` breadcrumbs and
+the accepted safe URL as `data-swift-async-image-url`. Constrained named
+`AsyncImage(url:content:placeholder:)` closures can render interpreted success
+content plus placeholder breadcrumbs, including common `image in
+image.resizable()` parameter bodies. Both named closure arguments and SwiftUI's
+`AsyncImage(url:) { image in ... } placeholder: { ... }` spelling are supported;
+native phase values and true load lifecycle remain follow-up.
+`ViewThatFits(in:)` preserves the requested axis as sidebar-local classes/data
+and renders interpreted alternatives, but it does not perform native SwiftUI
+fit measurement or hide non-fitting alternatives.
+`Group { ... }` renders as a semantic layout-transparent container, while
+`EmptyView()` is treated as an intentional no-op; native Group modifier fan-out
+remains follow-up.
+`@State var name = ...` declarations support direct local `$name` bindings for
+editable `TextField`, `SecureField`, `TextEditor`, `Toggle`, `Slider`,
+`Stepper`, `DatePicker`, `ColorPicker`, and simple text-option `Picker`
+controls inside the sidebar pane. Constrained `ForEach($items) { $item in ... }`
+loops over local JSON-like `@State` arrays also support editable element-field
+bindings such as `$item.title`, `$item.done`, and `$item.count` for those direct
+controls by writing back through the local array index. `Picker` options may use
+constrained `.tag(value)` metadata on text/label-like option rows so the visible
+label can differ from the written selection value. `LabeledContent` supports
+constrained title/value and title/trailing-content rows, but not every SwiftUI
+format-style, named-label, or arbitrary initializer overload. Bindings to live cmux/session data and
+`.constant(...)` still render accessible read-only controls; attach
+`.onTapGesture { cmux(...) }` or `.onLongPressGesture { cmux(...) }` when a
+control-shaped row should trigger a backend action. Direct local controls also
+support `.onSubmit { ... }` and `.onChange(of:) { ... }` for simple local
+`@State` assignments plus safe-scoped `cmux(...)` calls; single-line text fields
+submit on Enter and multiline text editors submit on Ctrl/Cmd+Enter. Rendered
+nodes also support constrained `.onAppear { ... }` and `.onDisappear { ... }`
+lifecycle hooks plus `.task { ... }` / `.task(id:) { ... }` mount/id-change
+hooks for the same safe local handler subset. These handlers are intentionally
+not arbitrary Swift closure execution, full async/await task runtime,
+cancellation/priority/actor semantics, exact SwiftUI lifecycle modeling, or true
+value-diffing across re-walks. `.onHover { hovering in ... }` supports
+constrained browser mouse enter/leave local state updates and safe actions, but
+not full gesture composition, drag/drop values, or native pointer-region
+semantics. `.focusable()` makes a rendered node keyboard-focusable, and
+`.focused($localBool)` mirrors browser focus/blur into a direct local `@State`
+Bool binding; full `@FocusState`, programmatic focus ownership, focus scopes,
+and native focus propagation remain follow-up. `.refreshable { cmux(...) }`
+renders a sidebar-local Refresh button, and `.swipeActions { ... }` renders a
+sidebar-local action tray from authored child buttons; these do not claim native
+pull-to-refresh physics or platform swipe gestures. `.dropDestination(for:) { cmux(...) }`
+marks a rendered node as a browser drop target and invokes the
+authored safe action on drop; typed payload/location binding and native
+drag/drop highlighting remain follow-up. `.background(.regularMaterial)` and
+related Material tokens render as safe translucent CSS backgrounds with
+blur/saturation and stable material classes; native SwiftUI vibrancy/material
+blending and host-window sampling remain follow-up. `.onEvent("event.name")` and
+`.onEvent(category: "workspace")` run on subsequent live event-bridge updates
+and support local `@State` assignments plus safe-scoped `cmux(...)` calls.
+Swift-authored action params preserve basic
+JSON-compatible types (numbers, booleans, nulls, arrays, ternaries, and resolved
+live-data fields) before dispatch.
+The safe color/style palette covers hierarchical foreground tokens
+(`primary`/`secondary`/`tertiary`/`quaternary`/`quinary`), `accent`/`accentColor`,
+and common named colors such as `mint`, `indigo`, and `brown`, with stable
+foreground hierarchy classes where applicable. Full inherited SwiftUI
+`ShapeStyle` resolution and multi-layer foreground styles remain follow-up.
+Typography modifiers lower constrained bold/italic bool forms, font width,
+dynamic type size, monospaced-digit, numeric `lineLimit(..., reservesSpace:)`,
+tracking/kerning, baseline offset, truncation/alignment/case tokens, and
+underline/strikethrough pattern/color values to CSS hints plus stable
+breadcrumbs; exact SwiftUI
+text-run layout, range/nil line limits, native middle truncation algorithms,
+per-decoration styling when underline and strikethrough are combined, variable
+font availability, host/user Dynamic Type propagation, attributed-run
+preservation across concatenated Text values, OpenType feature availability, and
+font-engine metrics remain follow-up.
+Visual filters include constrained CSS-backed hue rotation and blend modes via
+a fixed safe allow-list, including constrained `Angle` literals for hue and
+rotation modifiers; exact SwiftUI compositing groups and color-space matching
+remain follow-up.
+Redaction/privacy modifiers lower to sidebar-local placeholder/privacy classes
+and stable `data-swift-redacted`, `data-swift-redaction-reason`,
+`data-swift-privacy-sensitive`, and `data-swift-unredacted` breadcrumbs. Native
+inherited redaction environments, system privacy lock-state propagation, and
+exact SwiftUI placeholder rendering remain follow-up.
+Padding supports the all-side shorthand, constrained edge-set forms for `.top`,
+`.bottom`, `.leading`, `.trailing`, `.horizontal`, `.vertical`, `.all`, simple
+arrays of those tokens, and `.padding(EdgeInsets(top:leading:bottom:trailing:))`
+side-specific values. RTL-aware leading/trailing mirroring and native layout
+negotiation remain follow-up.
+Frame dimensions lower to safe CSS sizing fields, and `maxWidth: .infinity`
+continues to render as the sidebar fill class. Constrained `alignment:` tokens
+add stable frame classes plus CSS text/flex alignment hints; full SwiftUI
+proposed-size, ideal-size negotiation, and native wrapper placement remain
+follow-up. Constrained `.containerRelativeFrame(...)` axis/count/span/spacing/
+alignment metadata lowers to stable classes, `data-swift-container-*`
+breadcrumbs, and safe CSS sizing hints; native container proposal math and
+scroll-target sizing remain follow-up. Constrained `.coordinateSpace(name:)`
+preserves the named coordinate-space registration as stable classes and
+`data-swift-coordinate-space`; GeometryProxy frame conversion and named-space
+lookups remain host-borrowed follow-up. Constrained `.alignmentGuide(...)`
+preserves guide metadata and static numeric closure offsets as stable
+classes/data breadcrumbs plus a safe CSS margin hint; native `ViewDimensions`
+closure evaluation and SwiftUI alignment negotiation remain follow-up.
+Constrained `Angle`, `UnitPoint`, `CGPoint`, `CGSize`, and `CGRect` literals are
+preserved through the Swift expression evaluator with basic member access, so
+geometry values can feed transform/accessibility metadata and string
+interpolation. Full CoreGraphics APIs, path construction, affine transforms, and
+host `GeometryProxy` values remain follow-up.
+Constrained `Path(roundedRect: CGRect(...))` and `Path(ellipseIn: CGRect(...))`
+render as sidebar-local shape approximations with `data-swift-path-*`
+breadcrumbs and CSS size hints; imperative path builders, Canvas, custom Shape
+protocol implementations, and exact native vector drawing remain follow-up.
+Constrained `RoundedRectangle(..., style:)` and `Capsule(style:)` preserve
+corner-style metadata as `data-swift-shape-style` breadcrumbs and stable classes;
+exact native continuous/circular corner geometry remains follow-up.
+Constrained `.clipShape(_:style:)` preserves `FillStyle(eoFill:antialiased:)`
+metadata as `data-swift-clip-*` breadcrumbs; exact native clipping paths,
+fill-rule geometry, and antialias rasterization remain follow-up.
+Constrained `.safeAreaPadding(...)` and `.contentMargins(..., for:)` preserve
+edge/length/`EdgeInsets` and content-margin placement metadata as
+`data-swift-safe-area-padding-*` / `data-swift-content-margins-*` breadcrumbs
+with sidebar-local padding hints; native safe-area environment and scroll-margin
+layout negotiation remain follow-up.
+Image `.scaledToFit()` / `.scaledToFill()` helpers lower to sidebar-local
+aspect fit/fill classes; native SwiftUI image proposal sizing and exact
+object-fit behavior remain follow-up.
+Stack initializer alignment on `VStack`, `HStack`, `ZStack`, `LazyVStack`, and
+`LazyHStack` preserves constrained alignment tokens as stable classes and
+axis-aware CSS alignment hints. Full SwiftUI alignment guides, baseline
+alignment, RTL-aware leading/trailing mirroring, and native layout negotiation
+remain follow-up.
+`LazyVStack` and `LazyHStack` preserve constrained `pinnedViews:` metadata as
+stable classes and `data-swift-pinned-views` breadcrumbs, but Windows/Tauri
+still renders them eagerly; native virtualization, sticky section headers or
+footers, and pinned scroll physics remain follow-up.
+`Section("Title")` and constrained `Section(header: Text(...), footer: Text(...))`
+forms render dedicated title/header/body/footer slots. Arbitrary `@ViewBuilder`
+header/footer closures and full platform list section chrome remain follow-up.
+Constrained `List(data, id:)` forms expand supported sequence expressions
+through their trailing row closure and preserve the `id:` token as
+`data-swift-list-id`; list selection, edit mode, SwiftUI identity diffing, and
+native platform list chrome remain follow-up.
+Constrained `ForEach(data, id:)` forms stamp generated top-level rows with
+`data-swift-id` breadcrumbs for scalar/key-path identities; SwiftUI row identity
+diffing, move animations, and native reconciliation remain follow-up.
+`ScrollView(axes, showsIndicators:)` preserves vertical/horizontal/both axis
+metadata and the indicator flag as stable classes plus `data-swift-scroll-*`
+breadcrumbs; scroll-to-position, native paging/snap targets, bounce behavior,
+and exact platform scrollbar semantics remain follow-up.
+Scroll chrome modifiers support constrained `.scrollContentBackground(.hidden)`,
+`.scrollIndicators(.hidden, axes:)`, `.scrollClipDisabled()`,
+`.scrollTargetBehavior(...)`, `.scrollTargetLayout()`,
+`.scrollBounceBehavior(...)`, `.scrollDisabled(...)`, `.scrollPosition(id:)`,
+and `.defaultScrollAnchor(...)` classes/data breadcrumbs plus safe CSS hints
+where possible; native paging/snap targets, bounce physics, scroll-position
+binding, `ScrollViewReader.scrollTo`, and exact platform scrollbar semantics
+remain follow-up.
+Authored sidebar actions are safe-scoped by `custom_sidebar_action_invoke`:
+sidebar validation/navigation, workspace selection, surface focus/navigation,
+sidebar read methods, and sidebar presentation metadata updates are allowed;
+browser automation, debug, remote/SSH configuration, close/delete, and broad
+file/system mutation methods are denied with `custom_sidebar_capability_denied`.
+Allowed authored actions are also checked against a method-specific schema
+before dispatch; required field failures return
+`custom_sidebar_action_schema_invalid` with `field`, `expected`, and
+`accepted_keys` data, and `capabilities` advertises the current catalog at
+`custom_sidebar_actions.schema`.
+The left-sidebar custom host surfaces adjacent capability-manifest status with
+safe-default/no-manifest, requested/allowed counts, and denied requested methods
+so authors can see trust-policy mismatches before a blocked action fires.
+`sidebar reload [name]` validates sidebars, emits
+`cmux://custom-sidebar-reload`, and returns the targeted valid paths so open
+custom-sidebar panes can refresh immediately; authored panes also poll their
+source for save-time hot reload. `sidebar select <name>` validates a sidebar,
+emits `cmux://custom-sidebar-select`, and activates the left-sidebar custom
+host. Full macOS SwiftUI interpreter coverage, manifest-granted privilege UX,
+and broader dispatcher-wide action schema generation remain follow-up parity work.
 
 Docs topics:
 
@@ -432,6 +826,11 @@ response frame is an `ack`; sequence resume metadata lives under `ack.resume` as
 `after_seq`, `oldest_seq`, `latest_seq`, `next_seq`, and `gap`. Event frames
 carry a process-local monotonic `seq` and a stable `id` for dedupe. Clients
 should persist `seq` after processing each event and reconnect with that value.
+Windows/Tauri currently supports this method and `cmux events` for retained
+replay plus live session-derived event delivery; it prints ack/event/heartbeat
+NDJSON frames, appends those events to `~/.cmuxterm/events.jsonl` with one
+rotated archive, and keeps the stream open for matching live events and
+heartbeats. The full macOS event catalog remains tracked parity work.
 See [events.md](events.md) for the full protocol and event catalog. Every emitted event is also appended to
 `~/.cmuxterm/events.jsonl`, including model lifecycle events for window
 creation, close, focus, key-window state, workspace selection, pane focus, and
@@ -571,6 +970,18 @@ the expected text without connecting to a cmux socket.
 - `cmux set-status --help` -> `Usage: cmux set-status`
 - `cmux clear-status --help` -> `Usage: cmux clear-status`
 - `cmux list-status --help` -> `Usage: cmux list-status`
+- `cmux set-agent-pid --help` -> `Usage: cmux set-agent-pid`
+- `cmux clear-agent-pid --help` -> `Usage: cmux clear-agent-pid`
+- `cmux report-pr --help` -> `Usage: cmux report-pr`
+- `cmux report-review --help` -> `Usage: cmux report-review`
+- `cmux clear-pr --help` -> `Usage: cmux clear-pr`
+- `cmux report-meta --help` -> `Usage: cmux report-meta`
+- `cmux clear-meta --help` -> `Usage: cmux clear-meta`
+- `cmux list-meta --help` -> `Usage: cmux list-meta`
+- `cmux report-meta-block --help` -> `Usage: cmux report-meta-block`
+- `cmux clear-meta-block --help` -> `Usage: cmux clear-meta-block`
+- `cmux list-meta-blocks --help` -> `Usage: cmux list-meta-blocks`
+- `cmux reset-sidebar --help` -> `Usage: cmux reset-sidebar`
 - `cmux set-progress --help` -> `Usage: cmux set-progress`
 - `cmux clear-progress --help` -> `Usage: cmux clear-progress`
 - `cmux log --help` -> `Usage: cmux log`

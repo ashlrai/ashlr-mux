@@ -94,10 +94,7 @@ mod tests {
     fn serialized_matches_swift() {
         assert_eq!(serialized(&[]), "");
         assert_eq!(serialized(&["a".to_string()]), "a\n");
-        assert_eq!(
-            serialized(&["a".to_string(), "b".to_string()]),
-            "a\nb\n"
-        );
+        assert_eq!(serialized(&["a".to_string(), "b".to_string()]), "a\nb\n");
     }
 
     #[test]

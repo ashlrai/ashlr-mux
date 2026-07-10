@@ -24,6 +24,28 @@ use support::assert_canonical_fixture;
 
 const DOMAIN: &str = "session";
 
+fn pane(panel_ids: Vec<&str>, selected_panel_id: Option<&str>) -> SessionPaneLayoutSnapshot {
+    SessionPaneLayoutSnapshot {
+        pane_id: None,
+        panel_ids: panel_ids.into_iter().map(str::to_string).collect(),
+        selected_panel_id: selected_panel_id.map(str::to_string),
+        surface_kind: None,
+        markdown_file_path: None,
+        file_path: None,
+        diff_viewer_token: None,
+        diff_viewer_request_path: None,
+        browser_url: None,
+        browser_proxy_url: None,
+        browser_back_history: None,
+        browser_forward_history: None,
+        browser_omnibar_visible: None,
+        browser_focus_mode_active: None,
+        browser_developer_tools_visible: None,
+        browser_developer_tools_panel: None,
+        browser_page_zoom: None,
+    }
+}
+
 /// Encode → decode → re-encode and assert the snapshot survives the round-trip,
 /// then assert the canonical JSON matches the committed fixture.
 fn assert_round_trip(name: &str, snapshot: &AppSessionSnapshot) {
@@ -48,31 +70,22 @@ fn full_modern_snapshot() {
     let split = SessionWorkspaceLayoutSnapshot::Split(SessionSplitLayoutSnapshot {
         orientation: SessionSplitOrientation::Horizontal,
         divider_position: 0.5,
-        first: Box::new(SessionWorkspaceLayoutSnapshot::Pane(
-            SessionPaneLayoutSnapshot {
-                panel_ids: vec!["panel-a".into(), "panel-b".into()],
-                selected_panel_id: Some("panel-a".into()),
-                surface_kind: None,
-            },
-        )),
+        first: Box::new(SessionWorkspaceLayoutSnapshot::Pane(pane(
+            vec!["panel-a", "panel-b"],
+            Some("panel-a"),
+        ))),
         second: Box::new(SessionWorkspaceLayoutSnapshot::Split(
             SessionSplitLayoutSnapshot {
                 orientation: SessionSplitOrientation::Vertical,
                 divider_position: 0.25,
-                first: Box::new(SessionWorkspaceLayoutSnapshot::Pane(
-                    SessionPaneLayoutSnapshot {
-                        panel_ids: vec!["panel-c".into()],
-                        selected_panel_id: None,
-                        surface_kind: None,
-                    },
-                )),
-                second: Box::new(SessionWorkspaceLayoutSnapshot::Pane(
-                    SessionPaneLayoutSnapshot {
-                        panel_ids: vec!["panel-d".into()],
-                        selected_panel_id: Some("panel-d".into()),
-                        surface_kind: None,
-                    },
-                )),
+                first: Box::new(SessionWorkspaceLayoutSnapshot::Pane(pane(
+                    vec!["panel-c"],
+                    None,
+                ))),
+                second: Box::new(SessionWorkspaceLayoutSnapshot::Pane(pane(
+                    vec!["panel-d"],
+                    Some("panel-d"),
+                ))),
             },
         )),
     });
@@ -138,13 +151,10 @@ fn legacy_pre_canvas_pre_tab_snapshot() {
         custom_title: None,
         custom_title_source: None,
         current_directory: None,
-        layout: Some(SessionWorkspaceLayoutSnapshot::Pane(
-            SessionPaneLayoutSnapshot {
-                panel_ids: vec!["legacy-panel".into()],
-                selected_panel_id: None,
-                surface_kind: None,
-            },
-        )),
+        layout: Some(SessionWorkspaceLayoutSnapshot::Pane(pane(
+            vec!["legacy-panel"],
+            None,
+        ))),
         layout_mode: None,
         canvas_panes: None,
         // A1 fields absent on this legacy shape too — omit-when-none keeps the

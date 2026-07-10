@@ -134,7 +134,10 @@ impl SessionLedger {
     /// The entries whose recorded process is still alive with a matching
     /// identity — i.e. orphan trees that escaped a crash and must be swept.
     pub fn survivors(&self) -> Vec<&LedgerEntry> {
-        self.entries.iter().filter(|entry| entry.is_alive()).collect()
+        self.entries
+            .iter()
+            .filter(|entry| entry.is_alive())
+            .collect()
     }
 
     /// Reconcile after a (possibly crashed) prior run: terminate the *entire*
@@ -358,7 +361,10 @@ mod tests {
         // Don't assume the host has LOCALAPPDATA; only assert the shape when it does.
         if std::env::var_os("LOCALAPPDATA").is_some() {
             let path = SessionLedger::default_path().expect("path");
-            assert!(path.ends_with("cmux/state/process-ledger.json") || path.ends_with(r"cmux\state\process-ledger.json"));
+            assert!(
+                path.ends_with("cmux/state/process-ledger.json")
+                    || path.ends_with(r"cmux\state\process-ledger.json")
+            );
         }
     }
 

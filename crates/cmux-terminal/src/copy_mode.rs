@@ -600,7 +600,11 @@ pub fn copy_mode_action_with_ascii_fallback(
     use CopyModeSelectionMove::*;
 
     let normalized = normalized_modifiers(modifiers);
-    let chars = resolve_chars(characters_ignoring_modifiers, key_code, &ascii_character_provider);
+    let chars = resolve_chars(
+        characters_ignoring_modifiers,
+        key_code,
+        &ascii_character_provider,
+    );
     let lowercased = chars.to_lowercase();
     let is_uppercase = is_uppercase_command(&chars, modifiers, normalized);
 
@@ -752,7 +756,11 @@ pub fn copy_mode_action_with_ascii_fallback(
             }
         }
         "/" => Some(StartSearch),
-        "n" => Some(if is_uppercase { SearchPrevious } else { SearchNext }),
+        "n" => Some(if is_uppercase {
+            SearchPrevious
+        } else {
+            SearchNext
+        }),
         _ => None,
     }
 }
@@ -799,7 +807,11 @@ pub fn copy_mode_resolve_with_ascii_fallback(
     use CopyModeSelectionMove::*;
 
     let normalized = normalized_modifiers(modifiers);
-    let chars = resolve_chars(characters_ignoring_modifiers, key_code, &ascii_character_provider);
+    let chars = resolve_chars(
+        characters_ignoring_modifiers,
+        key_code,
+        &ascii_character_provider,
+    );
     let lowercased = chars.to_lowercase();
     let is_uppercase = is_uppercase_command(&chars, modifiers, normalized);
 
@@ -1018,7 +1030,9 @@ impl CopyModeVisualLineSelection {
 
         match direction {
             CopyModeSelectionMove::Left => column = (column - clamped_count).max(0),
-            CopyModeSelectionMove::Right => column = (column + clamped_count).min(clamped_columns - 1),
+            CopyModeSelectionMove::Right => {
+                column = (column + clamped_count).min(clamped_columns - 1)
+            }
             CopyModeSelectionMove::BeginningOfLine => column = 0,
             CopyModeSelectionMove::EndOfLine => column = clamped_columns - 1,
             CopyModeSelectionMove::Up => {
@@ -1155,7 +1169,11 @@ impl CopyModeVisualLineSelection {
     ///
     /// Swift: static `pendingScrollOffset(baseOffset:lineDelta:totalRows:)`
     /// (VisualLineSelection.swift:276-286).
-    pub fn pending_scroll_offset(base_offset: u64, line_delta: i32, total_rows: Option<u64>) -> u64 {
+    pub fn pending_scroll_offset(
+        base_offset: u64,
+        line_delta: i32,
+        total_rows: Option<u64>,
+    ) -> u64 {
         let delta_magnitude = (line_delta as i64).unsigned_abs();
         if line_delta > 0 {
             let unclamped_offset = if base_offset > u64::MAX - delta_magnitude {
@@ -1300,7 +1318,12 @@ mod tests {
         ];
         for (key_code, characters, action) in cases {
             assert_eq!(
-                copy_mode_action(key_code, Some(characters), CopyModeModifiers::CAPS_LOCK, false),
+                copy_mode_action(
+                    key_code,
+                    Some(characters),
+                    CopyModeModifiers::CAPS_LOCK,
+                    false
+                ),
                 Some(action)
             );
         }
@@ -1402,7 +1425,13 @@ mod tests {
     fn caps_lock_uppercase_y_starts_pending_yank_line() {
         let mut state = CopyModeInputState::default();
         assert_eq!(
-            copy_mode_resolve(16, Some("Y"), CopyModeModifiers::CAPS_LOCK, false, &mut state),
+            copy_mode_resolve(
+                16,
+                Some("Y"),
+                CopyModeModifiers::CAPS_LOCK,
+                false,
+                &mut state
+            ),
             Consume
         );
         assert_eq!(state, CopyModeInputState::new(None, true, false));
@@ -1412,7 +1441,13 @@ mod tests {
     fn caps_lock_uppercase_g_starts_pending_top_jump() {
         let mut state = CopyModeInputState::default();
         assert_eq!(
-            copy_mode_resolve(5, Some("G"), CopyModeModifiers::CAPS_LOCK, false, &mut state),
+            copy_mode_resolve(
+                5,
+                Some("G"),
+                CopyModeModifiers::CAPS_LOCK,
+                false,
+                &mut state
+            ),
             Consume
         );
         assert_eq!(state, CopyModeInputState::new(None, false, true));
@@ -1544,9 +1579,15 @@ mod tests {
         assert!(copy_mode_should_bypass_for_shortcut(
             CopyModeModifiers::COMMAND | CopyModeModifiers::SHIFT
         ));
-        assert!(copy_mode_should_bypass_for_shortcut(CopyModeModifiers::COMMAND));
-        assert!(!copy_mode_should_bypass_for_shortcut(CopyModeModifiers::SHIFT));
-        assert!(!copy_mode_should_bypass_for_shortcut(CopyModeModifiers::EMPTY));
+        assert!(copy_mode_should_bypass_for_shortcut(
+            CopyModeModifiers::COMMAND
+        ));
+        assert!(!copy_mode_should_bypass_for_shortcut(
+            CopyModeModifiers::SHIFT
+        ));
+        assert!(!copy_mode_should_bypass_for_shortcut(
+            CopyModeModifiers::EMPTY
+        ));
     }
 
     #[test]

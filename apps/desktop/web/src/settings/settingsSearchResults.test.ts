@@ -18,6 +18,14 @@ function entryById(id: string) {
 // ---- paneSectionForEntry mapping ---------------------------------------------
 
 describe("paneSectionForEntry", () => {
+  test("account and mobile targets map to their rendered panes", () => {
+    expect(paneSectionForEntry(entryById("section:account"))).toBe("account");
+    expect(paneSectionForEntry(entryById("setting:account:account"))).toBe(
+      "account",
+    );
+    expect(paneSectionForEntry(entryById("section:mobile"))).toBe("mobile");
+  });
+
   test("sidebarAppearance target maps to sidebar (rows and section)", () => {
     expect(
       paneSectionForEntry(entryById("setting:sidebarAppearance:show-ports")),
@@ -36,8 +44,76 @@ describe("paneSectionForEntry", () => {
     ).toBe("shortcuts");
   });
 
-  test("appearance row and the App section map to appearance", () => {
+  test("browser targets map to the rendered browser pane", () => {
+    expect(paneSectionForEntry(entryById("section:browser"))).toBe("browser");
+    expect(paneSectionForEntry(entryById("setting:browser:theme"))).toBe(
+      "browser",
+    );
+  });
+
+  test("browser import maps to its support pane", () => {
+    expect(paneSectionForEntry(entryById("section:browserImport"))).toBe(
+      "browserImport",
+    );
+  });
+
+  test("automation targets map to the rendered automation pane", () => {
+    expect(paneSectionForEntry(entryById("section:automation"))).toBe(
+      "automation",
+    );
+    expect(
+      paneSectionForEntry(entryById("setting:automation:socket-mode")),
+    ).toBe("automation");
+    expect(paneSectionForEntry(entryById("setting:automation:codex"))).toBe(
+      "automation",
+    );
+    expect(paneSectionForEntry(entryById("setting:automation:opencode"))).toBe(
+      "automation",
+    );
+    expect(paneSectionForEntry(entryById("setting:automation:port-base"))).toBe(
+      "automation",
+    );
+  });
+
+  test("terminal and TextBox targets map to the rendered terminal pane", () => {
+    expect(paneSectionForEntry(entryById("section:terminal"))).toBe("terminal");
+    expect(paneSectionForEntry(entryById("setting:terminal:copy-on-select"))).toBe(
+      "terminal",
+    );
+    expect(
+      paneSectionForEntry(entryById("setting:textBox:textbox-max-lines")),
+    ).toBe("terminal");
+  });
+
+  test("workspaceColors targets map to the rendered workspace colors pane", () => {
+    expect(paneSectionForEntry(entryById("section:workspaceColors"))).toBe(
+      "workspaceColors",
+    );
+    expect(
+      paneSectionForEntry(entryById("setting:workspaceColors:indicator")),
+    ).toBe("workspaceColors");
+    expect(paneSectionForEntry(entryById("setting:workspaceColors:palette"))).toBe(
+      "workspaceColors",
+    );
+  });
+
+  test("app target rows and the App section map to the rendered app pane", () => {
     expect(paneSectionForEntry(entryById("setting:app:appearance"))).toBe(
+      "appearance",
+    );
+    expect(paneSectionForEntry(entryById("setting:app:telemetry"))).toBe(
+      "appearance",
+    );
+    expect(paneSectionForEntry(entryById("setting:app:new-workspace-placement"))).toBe(
+      "appearance",
+    );
+    expect(paneSectionForEntry(entryById("setting:app:markdown-font-size"))).toBe(
+      "appearance",
+    );
+    expect(paneSectionForEntry(entryById("setting:app:file-editor-word-wrap"))).toBe(
+      "appearance",
+    );
+    expect(paneSectionForEntry(entryById("setting:app:canvas-pane-gap"))).toBe(
       "appearance",
     );
     expect(paneSectionForEntry(entryById("section:app"))).toBe("appearance");
@@ -54,12 +130,20 @@ describe("paneSectionForEntry", () => {
     }
   });
 
-  test("targets the pane does not render map to null", () => {
-    expect(paneSectionForEntry(entryById("setting:app:telemetry"))).toBeNull();
-    expect(paneSectionForEntry(entryById("section:terminal"))).toBeNull();
-    expect(
-      paneSectionForEntry(entryById("setting:automation:socket-mode")),
-    ).toBeNull();
+  test("support-only targets map to rendered status/action panes", () => {
+    expect(paneSectionForEntry(entryById("section:customSidebars"))).toBe(
+      "customSidebars",
+    );
+    expect(paneSectionForEntry(entryById("section:betaFeatures"))).toBe(
+      "betaFeatures",
+    );
+    expect(paneSectionForEntry(entryById("section:globalHotkey"))).toBe(
+      "globalHotkey",
+    );
+    expect(paneSectionForEntry(entryById("section:settingsJSON"))).toBe(
+      "settingsJSON",
+    );
+    expect(paneSectionForEntry(entryById("section:reset"))).toBe("reset");
   });
 });
 
@@ -70,7 +154,7 @@ describe("settingsSearchResults", () => {
     // Mirrors cmuxTests/SettingsSearchIndexTests.swift:57.
     const results = settingsSearchResults("copy on select");
     expect(results[0].id).toBe("setting:terminal:copy-on-select");
-    expect(results[0].paneSection).toBeNull();
+    expect(results[0].paneSection).toBe("terminal");
     expect(results[0].subtitle).toBe("Terminal");
   });
 
@@ -82,6 +166,7 @@ describe("settingsSearchResults", () => {
     );
     for (const result of results) {
       expect(result.subtitle).toBeNull();
+      expect(result.paneSection).not.toBeNull();
     }
   });
 
@@ -89,5 +174,6 @@ describe("settingsSearchResults", () => {
     const results = settingsSearchResults("");
     expect(results).toHaveLength(16);
     expect(results[0].id).toBe("section:account");
+    expect(results[0].paneSection).toBe("account");
   });
 });

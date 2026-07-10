@@ -6,8 +6,8 @@
 //! `sha2` crates with `base64` standard encoding to produce a byte-identical
 //! signature string for the same payload and secret.
 
-use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
+use base64::Engine as _;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
@@ -69,19 +69,31 @@ mod tests {
     #[test]
     fn sign_verify_round_trip() {
         let sig = SurfaceResumeApprovalSignature::sign(b"the-payload", b"the-secret");
-        assert!(SurfaceResumeApprovalSignature::verify(b"the-payload", b"the-secret", &sig));
+        assert!(SurfaceResumeApprovalSignature::verify(
+            b"the-payload",
+            b"the-secret",
+            &sig
+        ));
     }
 
     #[test]
     fn verify_rejects_tampered_payload() {
         let sig = SurfaceResumeApprovalSignature::sign(b"the-payload", b"the-secret");
-        assert!(!SurfaceResumeApprovalSignature::verify(b"the-payload-x", b"the-secret", &sig));
+        assert!(!SurfaceResumeApprovalSignature::verify(
+            b"the-payload-x",
+            b"the-secret",
+            &sig
+        ));
     }
 
     #[test]
     fn verify_rejects_wrong_secret() {
         let sig = SurfaceResumeApprovalSignature::sign(b"the-payload", b"the-secret");
-        assert!(!SurfaceResumeApprovalSignature::verify(b"the-payload", b"other-secret", &sig));
+        assert!(!SurfaceResumeApprovalSignature::verify(
+            b"the-payload",
+            b"other-secret",
+            &sig
+        ));
     }
 
     #[test]

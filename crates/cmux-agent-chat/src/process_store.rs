@@ -9,11 +9,9 @@
 //! The two things that would otherwise pin the crate to an async runtime and the
 //! OS are abstracted away:
 //!
-//! * **Side effects** (spawning the child, writing a prompt line, terminating)
-//!   live behind [`AgentTransport`]. The real implementation — `cmux-process`
-//!   `SpawnSpec` + Job-Object supervision, the stdio pumps, the Codex
-//!   app-server write side, and the OpenCode HTTP-loopback client — is the
-//!   deferred GUI-wiring slice.
+//! * **Side effects** live outside the store. Claude's simple prompt write uses
+//!   [`AgentTransport`], while Codex stdin frames, OpenCode HTTP calls, and
+//!   teardown are emitted as [`TransportAction`]s for the host actor to drain.
 //! * **Events** are pushed through a generic `FnMut(AgentEvent)` sink, exactly as
 //!   the research prescribed, so the store stays synchronous and unit-testable.
 //!
@@ -25,12 +23,11 @@
 //! / `provider.activity` / `provider.turnComplete`, the exit-and-drain gate that
 //! emits `provider.exit`, and clearing the active session on exit.
 //!
-//! Deferred (transport / GUI slice): the concrete async spawn + stdio pump, the
-//! Codex handshake/turn write side and its single-queued-input backpressure, the
-//! OpenCode `POST /session` + SSE `/event` client, the termination-escalation
-//! `SIGKILL` timer, and the separate active-provider *bool* sink
-//! (`activeProviderSink`). The active-provider bool is intentionally omitted —
-//! callers can derive it from [`ProcessStore::has_active_session`].
+//! Host-provided (transport / GUI slice): the concrete spawn + stdio pump, the
+//! execution of queued [`TransportAction`]s, the termination-escalation `SIGKILL`
+//! timer, and the separate active-provider *bool* sink (`activeProviderSink`).
+//! The active-provider bool is intentionally omitted — callers can derive it from
+//! [`ProcessStore::has_active_session`].
 
 use std::collections::HashMap;
 
@@ -114,11 +111,11 @@ pub trait AgentTransport {
     /// Resolve + spawn the provider process, returning its executable/arguments.
     fn spawn(&mut self, request: &SpawnRequest) -> Result<SpawnedSession, TransportError>;
 
-    /// Write one prompt line to the running session.
+    /// Write one Claude prompt line to the running session.
     ///
-    /// The provider-specific framing (Codex `turn/start`, Claude `stream-json`,
-    /// OpenCode `POST …/prompt_async`) and the `permission_mode` handling live
-    /// in the implementation.
+    /// Codex and OpenCode writes are modelled by [`TransportAction`] instead, so
+    /// the pure store can unit-test their app-server / HTTP-loopback state
+    /// machines without performing I/O.
     fn write_line(
         &mut self,
         session_id: &str,
@@ -157,6 +154,34 @@ impl StartedSession {
     }
 }
 
+/// A prepared provider process that is not yet owned by a visible renderer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WarmedSession {
+    /// The store-allocated session id.
+    pub session_id: String,
+    /// The provider that was prepared.
+    pub provider_id: ProviderId,
+    /// The working directory the process was prepared for.
+    pub working_directory: Option<String>,
+    /// The resolved executable path.
+    pub executable_path: String,
+    /// The transport launch arguments.
+    pub arguments: Vec<String>,
+}
+
+impl WarmedSession {
+    /// The warm-pool status object (camelCase wire shape).
+    pub fn to_value(&self) -> Value {
+        json!({
+            "sessionId": self.session_id,
+            "providerId": self.provider_id.as_str(),
+            "workingDirectory": self.working_directory,
+            "executablePath": self.executable_path,
+            "arguments": self.arguments,
+        })
+    }
+}
+
 /// The agent-session lifecycle store.
 ///
 /// Generic over an [`AgentTransport`] `T` and an `FnMut(AgentEvent)` sink `S`.
@@ -181,6 +206,7 @@ where
     sink: S,
     client_version: String,
     sessions: HashMap<String, RunningSession>,
+    warm_sessions: Vec<WarmedSession>,
     selected_provider: Option<ProviderId>,
     /// Pure I/O intents the host must perform (Codex stdin frames, OpenCode HTTP
     /// calls, teardown). Appended by `start`/`write_line`/`feed_output`; drained by
@@ -203,6 +229,7 @@ where
             sink,
             client_version: client_version.into(),
             sessions: HashMap::new(),
+            warm_sessions: Vec::new(),
             selected_provider: None,
             pending_actions: Vec::new(),
         }
@@ -231,6 +258,70 @@ where
         self.sessions.get(session_id)
     }
 
+    /// Snapshot of currently prepared sessions.
+    pub fn warm_sessions(&self) -> &[WarmedSession] {
+        &self.warm_sessions
+    }
+
+    /// Prepare a Claude Code process for a later `provider.start`.
+    ///
+    /// The warm process is launched but intentionally does not emit
+    /// `provider.started` until it is adopted by [`start`](Self::start). Matching
+    /// is provider + working directory, so a renderer in a different workspace
+    /// never accidentally adopts the wrong process.
+    pub fn warm_claude_session(
+        &mut self,
+        working_directory: Option<String>,
+        max_warm_sessions: usize,
+    ) -> Result<WarmedSession, BridgeError> {
+        if max_warm_sessions == 0 {
+            self.clear_warm_sessions();
+            return Err(BridgeError::ProviderNotReady(
+                "Claude Code warm pool is disabled.".to_string(),
+            ));
+        }
+        if let Some(existing) = self
+            .warm_sessions
+            .iter()
+            .find(|session| session.working_directory == working_directory)
+        {
+            return Ok(existing.clone());
+        }
+
+        while self.warm_sessions.len() >= max_warm_sessions {
+            let retired = self.warm_sessions.remove(0);
+            let _ = self.transport.terminate(&retired.session_id);
+        }
+
+        let session_id = Uuid::new_v4().to_string();
+        let request = SpawnRequest {
+            session_id: session_id.clone(),
+            provider_id: ProviderId::Claude,
+            working_directory: working_directory.clone(),
+        };
+        let spawned = self
+            .transport
+            .spawn(&request)
+            .map_err(|error| error.into_bridge_error(ProviderId::Claude))?;
+        let warmed = WarmedSession {
+            session_id,
+            provider_id: ProviderId::Claude,
+            working_directory,
+            executable_path: spawned.executable_path,
+            arguments: spawned.arguments,
+        };
+        self.warm_sessions.push(warmed.clone());
+        Ok(warmed)
+    }
+
+    /// Drop all prepared sessions, best-effort terminating their children.
+    pub fn clear_warm_sessions(&mut self) {
+        let warm_sessions = std::mem::take(&mut self.warm_sessions);
+        for session in warm_sessions {
+            let _ = self.transport.terminate(&session.session_id);
+        }
+    }
+
     /// Record a `provider.select` (Swift updates `initialProviderID`).
     pub fn select_provider(&mut self, provider_id: ProviderId) {
         self.selected_provider = Some(provider_id);
@@ -249,6 +340,15 @@ where
         provider_id: ProviderId,
         working_directory: Option<String>,
     ) -> Result<StartedSession, BridgeError> {
+        if provider_id == ProviderId::Claude {
+            if let Some(index) = self.warm_sessions.iter().position(|session| {
+                session.provider_id == provider_id && session.working_directory == working_directory
+            }) {
+                let warmed = self.warm_sessions.remove(index);
+                return Ok(self.adopt_warmed_session(warmed));
+            }
+        }
+
         let session_id = Uuid::new_v4().to_string();
         let request = SpawnRequest {
             session_id: session_id.clone(),
@@ -302,6 +402,38 @@ where
         })
     }
 
+    fn adopt_warmed_session(&mut self, warmed: WarmedSession) -> StartedSession {
+        let session = RunningSession::new(
+            warmed.session_id.clone(),
+            warmed.provider_id,
+            warmed.executable_path.clone(),
+            warmed.arguments.clone(),
+            warmed.working_directory.clone(),
+            self.client_version.clone(),
+        );
+        self.sessions.insert(warmed.session_id.clone(), session);
+        self.selected_provider = Some(warmed.provider_id);
+
+        if warmed.provider_id.emits_started_on_spawn() {
+            let event = {
+                let session = self
+                    .sessions
+                    .get_mut(&warmed.session_id)
+                    .expect("warmed session just adopted");
+                session.mark_started_emitted();
+                session.started_event()
+            };
+            self.emit(event);
+        }
+
+        StartedSession {
+            session_id: warmed.session_id,
+            provider_id: warmed.provider_id,
+            executable_path: warmed.executable_path,
+            arguments: warmed.arguments,
+        }
+    }
+
     /// Route a prompt line to the active session.
     ///
     /// Returns [`BridgeError::SessionNotFound`] when `session_id` is not the
@@ -350,12 +482,13 @@ where
                 };
                 match (base_url, opencode_session_id) {
                     (Some(base_url), Some(opencode_session_id)) => {
-                        self.pending_actions.push(TransportAction::OpenCodePostPrompt {
-                            session_id: session_id.to_string(),
-                            base_url,
-                            opencode_session_id,
-                            text: text.to_string(),
-                        });
+                        self.pending_actions
+                            .push(TransportAction::OpenCodePostPrompt {
+                                session_id: session_id.to_string(),
+                                base_url,
+                                opencode_session_id,
+                                text: text.to_string(),
+                            });
                         Ok(())
                     }
                     _ => Err(BridgeError::ProviderNotReady(
@@ -387,6 +520,7 @@ where
         for session_id in session_ids {
             let _ = self.transport.terminate(&session_id);
         }
+        self.clear_warm_sessions();
     }
 
     /// Feed a raw stdout/stderr chunk for `session_id`, emitting its events.
@@ -481,7 +615,11 @@ where
     /// Emit the OpenCode session-create failure teardown (Swift
     /// `createOpenCodeSession` catch): synthetic stderr + `provider.exit(1)`.
     pub fn fail_opencode_session_create(&mut self, session_id: &str) {
-        self.fail_session(session_id, 1, Some("OpenCode session could not be created.\n"));
+        self.fail_session(
+            session_id,
+            1,
+            Some("OpenCode session could not be created.\n"),
+        );
     }
 
     /// Emit the OpenCode event-stream disconnect teardown (Swift
@@ -538,6 +676,9 @@ where
     pub fn notify_exit(&mut self, session_id: &str, status: i32) {
         if let Some(session) = self.sessions.get_mut(session_id) {
             session.set_pending_exit_status(status);
+        } else {
+            self.warm_sessions
+                .retain(|session| session.session_id != session_id);
         }
         self.finish_if_exited_and_drained(session_id);
     }
@@ -574,6 +715,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::RateLimitRole;
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -663,6 +805,105 @@ mod tests {
         assert_eq!(store.selected_provider(), Some(ProviderId::Claude));
     }
 
+    #[test]
+    fn warm_claude_prepares_without_emitting_started() {
+        let (mut store, events) = store_with(FakeTransport::default());
+        let warmed = store
+            .warm_claude_session(Some("/work".to_string()), 2)
+            .expect("warm");
+
+        assert_eq!(warmed.provider_id, ProviderId::Claude);
+        assert_eq!(warmed.working_directory.as_deref(), Some("/work"));
+        assert!(events.borrow().is_empty());
+        assert!(!store.has_active_session());
+        assert_eq!(store.warm_sessions().len(), 1);
+        assert_eq!(store.transport.spawned.len(), 1);
+        assert_eq!(store.transport.spawned[0].session_id, warmed.session_id);
+    }
+
+    #[test]
+    fn start_adopts_matching_warm_claude_session_without_second_spawn() {
+        let (mut store, events) = store_with(FakeTransport::default());
+        let warmed = store
+            .warm_claude_session(Some("/work".to_string()), 2)
+            .expect("warm");
+        let started = store
+            .start(ProviderId::Claude, Some("/work".to_string()))
+            .expect("start");
+
+        assert_eq!(started.session_id, warmed.session_id);
+        assert_eq!(started.executable_path, warmed.executable_path);
+        assert_eq!(store.transport.spawned.len(), 1);
+        assert!(store.warm_sessions().is_empty());
+        assert!(store.session(&started.session_id).is_some());
+        let recorded = events.borrow();
+        assert_eq!(recorded.len(), 1);
+        assert!(matches!(
+            recorded[0],
+            AgentEvent::ProviderStarted {
+                provider_id: ProviderId::Claude,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn start_does_not_adopt_warm_claude_for_different_working_directory() {
+        let (mut store, _events) = store_with(FakeTransport::default());
+        let warmed = store
+            .warm_claude_session(Some("/warm".to_string()), 2)
+            .expect("warm");
+        let started = store
+            .start(ProviderId::Claude, Some("/other".to_string()))
+            .expect("start");
+
+        assert_ne!(started.session_id, warmed.session_id);
+        assert_eq!(store.transport.spawned.len(), 2);
+        assert_eq!(store.warm_sessions().len(), 1);
+        assert_eq!(store.warm_sessions()[0].session_id, warmed.session_id);
+    }
+
+    #[test]
+    fn warm_claude_pool_reuses_existing_and_evicts_oldest_when_bounded() {
+        let (mut store, _events) = store_with(FakeTransport::default());
+        let first = store
+            .warm_claude_session(Some("/one".to_string()), 2)
+            .expect("first warm");
+        let duplicate = store
+            .warm_claude_session(Some("/one".to_string()), 2)
+            .expect("duplicate warm");
+        assert_eq!(duplicate.session_id, first.session_id);
+        assert_eq!(store.transport.spawned.len(), 1);
+
+        let second = store
+            .warm_claude_session(Some("/two".to_string()), 2)
+            .expect("second warm");
+        let third = store
+            .warm_claude_session(Some("/three".to_string()), 2)
+            .expect("third warm");
+
+        assert_eq!(
+            store
+                .warm_sessions()
+                .iter()
+                .map(|session| session.session_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![second.session_id.as_str(), third.session_id.as_str()]
+        );
+        assert_eq!(store.transport.terminated, vec![first.session_id]);
+    }
+
+    #[test]
+    fn notify_exit_removes_unadopted_warm_session() {
+        let (mut store, _events) = store_with(FakeTransport::default());
+        let warmed = store.warm_claude_session(None, 1).expect("warm");
+
+        store.notify_exit(&warmed.session_id, 0);
+
+        assert!(store.warm_sessions().is_empty());
+        assert!(!store.has_active_session());
+    }
+
     // ---- provider.started timing ----
 
     #[test]
@@ -702,7 +943,10 @@ mod tests {
         );
         assert!(events.borrow().is_empty());
         assert_eq!(
-            store.session(&started.session_id).unwrap().opencode_base_url(),
+            store
+                .session(&started.session_id)
+                .unwrap()
+                .opencode_base_url(),
             Some("http://127.0.0.1:4096")
         );
 
@@ -880,7 +1124,9 @@ mod tests {
         let mut completed = false;
         for event in recorded.iter().skip(1) {
             match event {
-                AgentEvent::ProviderOutput { text: t, stream, .. } => {
+                AgentEvent::ProviderOutput {
+                    text: t, stream, ..
+                } => {
                     assert_eq!(*stream, ProviderStream::Stdout);
                     text.push_str(t);
                 }
@@ -975,7 +1221,11 @@ mod tests {
     fn feed_output_for_wrong_session_is_ignored() {
         let (mut store, events) = store_with(FakeTransport::default());
         start_codex(&mut store);
-        store.feed_output("other", ProviderStream::Stdout, b"{\"method\":\"turn/completed\"}\n");
+        store.feed_output(
+            "other",
+            ProviderStream::Stdout,
+            b"{\"method\":\"turn/completed\"}\n",
+        );
         // Only the started event exists; the stray feed was ignored.
         assert_eq!(events.borrow().len(), 1);
     }
@@ -1030,12 +1280,14 @@ mod tests {
             r#"{"id":1,"result":{"userAgent":"codex"}}"#,
         );
         let frames = write_frames(&store.take_transport_actions());
-        // Exactly two frames, in order: initialized (no id), then thread/start.
-        assert_eq!(frames.len(), 2);
+        // Exactly three frames, in order: initialized (no id), thread/start,
+        // then the auxiliary rate-limit snapshot read.
+        assert_eq!(frames.len(), 3);
         assert_eq!(frames[0]["method"], json!("initialized"));
         assert!(frames[0].get("id").is_none());
         assert_eq!(frames[1]["method"], json!("thread/start"));
         assert_eq!(frames[1]["params"]["cwd"], json!("/work"));
+        assert_eq!(frames[2]["method"], json!("account/rateLimits/read"));
     }
 
     /// Drive a Codex session through the handshake so a thread exists.
@@ -1147,6 +1399,78 @@ mod tests {
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0]["id"], json!("req-7"));
         assert_eq!(frames[0]["result"]["decision"], json!("acceptForSession"));
+    }
+
+    #[test]
+    fn codex_rate_limit_read_response_emits_app_rate_limit_rows() {
+        let (mut store, events) = store_with(FakeTransport::default());
+        let started = start_codex(&mut store);
+        let _ = store.take_transport_actions();
+        feed_line(
+            &mut store,
+            &started.session_id,
+            r#"{"id":1,"result":{"userAgent":"codex"}}"#,
+        );
+        let frames = write_frames(&store.take_transport_actions());
+        let rate_limit_id = frames
+            .iter()
+            .find(|frame| frame["method"] == json!("account/rateLimits/read"))
+            .and_then(|frame| frame["id"].as_i64())
+            .expect("rate-limit read id");
+
+        feed_line(
+            &mut store,
+            &started.session_id,
+            &format!(
+                r#"{{"id":{rate_limit_id},"result":{{"rateLimits":{{"primary":{{"usedPercent":25,"windowDurationMins":300,"resetsAt":1850000000}},"secondary":{{"remainingPercent":80,"windowDurationMins":10080}}}}}}}}"#
+            ),
+        );
+
+        let recorded = events.borrow();
+        let event = recorded
+            .iter()
+            .find_map(|event| match event {
+                AgentEvent::AppRateLimitRows { rate_limit_rows } => Some(rate_limit_rows),
+                _ => None,
+            })
+            .expect("rate-limit rows event");
+        assert_eq!(event.len(), 2);
+        assert_eq!(event[0].role, RateLimitRole::Primary);
+        assert_eq!(event[0].remaining_percent, 75.0);
+        assert_eq!(event[0].used_percent, Some(25.0));
+        assert_eq!(event[0].window_duration_mins, Some(300.0));
+        assert_eq!(event[0].resets_at, Some(1_850_000_000.0));
+        assert_eq!(event[1].role, RateLimitRole::Secondary);
+        assert_eq!(event[1].remaining_percent, 80.0);
+    }
+
+    #[test]
+    fn codex_sparse_rate_limit_update_emits_and_refetches_snapshot() {
+        let (mut store, events) = store_with(FakeTransport::default());
+        let started = start_codex(&mut store);
+        codex_established(&mut store, &started.session_id);
+
+        feed_line(
+            &mut store,
+            &started.session_id,
+            r#"{"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":45,"windowDurationMins":300}}}}"#,
+        );
+
+        let recorded = events.borrow();
+        let rows = recorded
+            .iter()
+            .find_map(|event| match event {
+                AgentEvent::AppRateLimitRows { rate_limit_rows } => Some(rate_limit_rows),
+                _ => None,
+            })
+            .expect("sparse rate-limit event");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].remaining_percent, 55.0);
+        drop(recorded);
+
+        let frames = write_frames(&store.take_transport_actions());
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0]["method"], json!("account/rateLimits/read"));
     }
 
     #[test]

@@ -55,7 +55,10 @@ pub fn sidebar_top_level_workspace_ids(
     let mut emitted_group_ids: HashSet<Uuid> = HashSet::new();
     let mut ids: Vec<Uuid> = Vec::with_capacity(tabs.len());
     for tab in tabs {
-        match tab.group_id.and_then(|gid| by_id.get(&gid).map(|g| (gid, g))) {
+        match tab
+            .group_id
+            .and_then(|gid| by_id.get(&gid).map(|g| (gid, g)))
+        {
             Some((gid, group)) => {
                 if emitted_group_ids.insert(gid) {
                     ids.push(group.anchor_workspace_id);
@@ -95,7 +98,10 @@ fn append_top_level_id(
     if !emitted_workspace_ids.insert(tab.id) {
         return;
     }
-    match tab.group_id.and_then(|gid| by_id.get(&gid).map(|g| (gid, g))) {
+    match tab
+        .group_id
+        .and_then(|gid| by_id.get(&gid).map(|g| (gid, g)))
+    {
         Some((gid, group)) => {
             if emitted_group_ids.insert(gid) {
                 ids.push(group.anchor_workspace_id);
@@ -194,8 +200,11 @@ pub fn anchor_first(members: &[WorkspaceRow], anchor_id: Uuid) -> Vec<WorkspaceR
         return members.to_vec();
     };
     let anchor = members[anchor_index];
-    let non_anchors: Vec<WorkspaceRow> =
-        members.iter().copied().filter(|m| m.id != anchor_id).collect();
+    let non_anchors: Vec<WorkspaceRow> = members
+        .iter()
+        .copied()
+        .filter(|m| m.id != anchor_id)
+        .collect();
     let mut out: Vec<WorkspaceRow> = Vec::with_capacity(members.len());
     out.push(anchor);
     out.extend(non_anchors.iter().copied().filter(|m| m.is_pinned));
@@ -276,7 +285,10 @@ pub fn leading_global_pinned_row_count(tabs: &[WorkspaceRow], groups: &[Workspac
 /// Whether the row renders as pinned: group pin for grouped members, workspace
 /// pin otherwise.
 pub fn is_global_pinned_row(groups: &[WorkspaceGroup], tab: &WorkspaceRow) -> bool {
-    if let Some(group) = tab.group_id.and_then(|gid| groups.iter().find(|g| g.id == gid)) {
+    if let Some(group) = tab
+        .group_id
+        .and_then(|gid| groups.iter().find(|g| g.id == gid))
+    {
         group.is_pinned
     } else {
         tab.is_pinned
@@ -344,7 +356,11 @@ mod tests {
         let a = Uuid::new_v4();
         let b = Uuid::new_v4();
         let c = Uuid::new_v4();
-        let rows = vec![row(a, None, false), row(b, None, false), row(c, None, false)];
+        let rows = vec![
+            row(a, None, false),
+            row(b, None, false),
+            row(c, None, false),
+        ];
         assert_eq!(
             top_level_workspace_ids_preserving_order(&rows, &[], &[c, a]),
             vec![c, a, b]

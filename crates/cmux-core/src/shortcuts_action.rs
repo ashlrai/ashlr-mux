@@ -511,7 +511,9 @@ impl Action {
             "closeOtherTabsInPane" => Some(Action::CloseOtherTabsInPane),
             "closeWorkspace" => Some(Action::CloseWorkspace),
             "groupSelectedWorkspaces" => Some(Action::GroupSelectedWorkspaces),
-            "toggleFocusedWorkspaceGroupCollapsed" => Some(Action::ToggleFocusedWorkspaceGroupCollapsed),
+            "toggleFocusedWorkspaceGroupCollapsed" => {
+                Some(Action::ToggleFocusedWorkspaceGroupCollapsed)
+            }
             "reopenClosedBrowserPanel" => Some(Action::ReopenClosedBrowserPanel),
             "newSurface" => Some(Action::NewSurface),
             "toggleTerminalCopyMode" => Some(Action::ToggleTerminalCopyMode),
@@ -546,7 +548,9 @@ impl Action {
             "canvasDistributeVertically" => Some(Action::CanvasDistributeVertically),
             "toggleFileExplorer" => Some(Action::ToggleRightSidebar),
             "fileExplorerOpenSelection" => Some(Action::FileExplorerOpenSelection),
-            "fileExplorerOpenSelectionFinderAlias" => Some(Action::FileExplorerOpenSelectionFinderAlias),
+            "fileExplorerOpenSelectionFinderAlias" => {
+                Some(Action::FileExplorerOpenSelectionFinderAlias)
+            }
             "saveFilePreview" => Some(Action::SaveFilePreview),
             "openBrowser" => Some(Action::OpenBrowser),
             "focusBrowserAddressBar" => Some(Action::FocusBrowserAddressBar),
@@ -614,7 +618,10 @@ mod tests {
             // serde serializes a unit variant to a bare JSON string.
             let json = serde_json::to_string(&action).unwrap();
             let expected = format!("\"{}\"", action.raw_value());
-            assert_eq!(json, expected, "serde rename must equal raw value for {action:?}");
+            assert_eq!(
+                json, expected,
+                "serde rename must equal raw value for {action:?}"
+            );
             let back: Action = serde_json::from_str(&json).unwrap();
             assert_eq!(back, action);
         }
@@ -625,7 +632,11 @@ mod tests {
         use std::collections::HashSet;
         let mut seen = HashSet::new();
         for action in Action::ALL {
-            assert!(seen.insert(action.raw_value()), "duplicate raw value: {}", action.raw_value());
+            assert!(
+                seen.insert(action.raw_value()),
+                "duplicate raw value: {}",
+                action.raw_value()
+            );
         }
         assert_eq!(seen.len(), Action::COUNT);
     }
@@ -646,9 +657,15 @@ mod tests {
         assert_eq!(Action::ToggleSplitZoom.raw_value(), "toggleSplitZoom");
         // Explicit Swift rename: `case toggleRightSidebar = "toggleFileExplorer"`.
         assert_eq!(Action::ToggleRightSidebar.raw_value(), "toggleFileExplorer");
-        assert_eq!(Action::from_raw("toggleFileExplorer"), Some(Action::ToggleRightSidebar));
+        assert_eq!(
+            Action::from_raw("toggleFileExplorer"),
+            Some(Action::ToggleRightSidebar)
+        );
         assert_eq!(Action::from_raw("toggleRightSidebar"), None);
-        assert_eq!(Action::DiffViewerOpenFileSearch.raw_value(), "diffViewerOpenFileSearch");
+        assert_eq!(
+            Action::DiffViewerOpenFileSearch.raw_value(),
+            "diffViewerOpenFileSearch"
+        );
     }
 
     // When the Swift source is reachable from the test working directory, re-parse
@@ -669,7 +686,11 @@ mod tests {
             return;
         };
         let count = count_swift_action_cases(&text);
-        assert_eq!(count, Action::COUNT, "live Swift case count drifted from generated enum");
+        assert_eq!(
+            count,
+            Action::COUNT,
+            "live Swift case count drifted from generated enum"
+        );
     }
 
     /// Count `case` declarations inside the `enum Action: String { ... }` block,

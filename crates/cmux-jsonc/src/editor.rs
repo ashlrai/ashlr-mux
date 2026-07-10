@@ -71,7 +71,12 @@ pub fn set_nested_object_property(
                         &value_json_for_property(child_value_json, &child_indent),
                         newline,
                     );
-                    return Some(replacing(&chars, child.value_start, child.value_end, &replacement));
+                    return Some(replacing(
+                        &chars,
+                        child.value_start,
+                        child.value_end,
+                        &replacement,
+                    ));
                 }
 
                 let child_indent = property_indent(&parent_object, &chars);
@@ -83,11 +88,14 @@ pub fn set_nested_object_property(
         let parent_indent = indentation_before_line(&chars, parent.key_start);
         let child_indent = format!("{parent_indent}  ");
         let child_property = property_text(child_key, child_value_json, &child_indent);
-        let replacement = with_preferred_newline(
-            &format!("{{\n{child_property}\n{parent_indent}}}"),
-            newline,
-        );
-        return Some(replacing(&chars, parent.value_start, parent.value_end, &replacement));
+        let replacement =
+            with_preferred_newline(&format!("{{\n{child_property}\n{parent_indent}}}"), newline);
+        return Some(replacing(
+            &chars,
+            parent.value_start,
+            parent.value_end,
+            &replacement,
+        ));
     }
 
     let parent_indent = property_indent(&root, &chars);
@@ -560,10 +568,7 @@ mod tests {
     fn crlf_value_replace_preserves_crlf() {
         let src = "{\r\n  \"parent\": {\r\n    \"child\": 1\r\n  }\r\n}";
         let out = set_nested_object_property("parent", "child", "2", src).unwrap();
-        assert_eq!(
-            out,
-            "{\r\n  \"parent\": {\r\n    \"child\": 2\r\n  }\r\n}"
-        );
+        assert_eq!(out, "{\r\n  \"parent\": {\r\n    \"child\": 2\r\n  }\r\n}");
     }
 
     #[test]
@@ -646,9 +651,6 @@ mod tests {
         // The "//" inside the existing string value must not confuse parsing.
         let src = "{\n  \"parent\": {\n    \"url\": \"http://x\"\n  }\n}";
         let out = set_nested_object_property("parent", "url", "\"http://y\"", src).unwrap();
-        assert_eq!(
-            out,
-            "{\n  \"parent\": {\n    \"url\": \"http://y\"\n  }\n}"
-        );
+        assert_eq!(out, "{\n  \"parent\": {\n    \"url\": \"http://y\"\n  }\n}");
     }
 }

@@ -463,6 +463,8 @@ describe("badgesForWorkspace", () => {
       showBranchDirectory: true,
       showGitBranch: true,
       showPullRequests: true,
+      showPorts: true,
+      showSsh: true,
     });
     const result = badgesForWorkspace({ orderedPanelIds: [P1] });
     expect(result.badges).toEqual([]);
@@ -474,5 +476,183 @@ describe("badgesForWorkspace", () => {
       input({ panelPullRequests: {}, panelGitBranches: {} }),
     );
     expect(result.badges).toEqual([]);
+  });
+
+  test("listening ports render as sorted localhost badge descriptors", () => {
+    const result = badgesForWorkspace(
+      input({
+        listeningPorts: [5173, 3000, 5173, 0, 65536],
+      }),
+    );
+    expect(result.badges.slice(-2)).toEqual([
+      {
+        kind: "port",
+        id: "port:3000",
+        label: ":3000",
+        tone: "secondary",
+        port: 3000,
+        url: "http://localhost:3000",
+      },
+      {
+        kind: "port",
+        id: "port:5173",
+        label: ":5173",
+        tone: "secondary",
+        port: 5173,
+        url: "http://localhost:5173",
+      },
+    ]);
+  });
+
+  test("command-running shell activity renders a runtime badge", () => {
+    const result = badgesForWorkspace(
+      input({
+        panelShellActivity: {
+          [P1]: "promptIdle",
+          [P2]: "commandRunning",
+        },
+      }),
+    );
+
+    expect(result.badges.at(-1)).toEqual({
+      kind: "shellActivity",
+      id: "shell-activity:running",
+      label: "shell",
+      tone: "secondary",
+      status: "running",
+      statusLabel: "running",
+      runningPanelCount: 1,
+      title: `Running command in ${P2}`,
+    });
+  });
+
+  test("hideAllDetails suppresses shell activity badges", () => {
+    const result = badgesForWorkspace(
+      input({
+        panelShellActivity: {
+          [P1]: "commandRunning",
+        },
+        settings: { hideAllDetails: true },
+      }),
+    );
+
+    expect(result.badges).toEqual([]);
+  });
+
+  test("showPorts=false hides listening-port badges only", () => {
+    const result = badgesForWorkspace(
+      input({
+        listeningPorts: [3000],
+        settings: { showPorts: false },
+      }),
+    );
+    expect(result.badges.map((badge) => badge.kind)).toEqual([
+      "branch",
+      "branch",
+      "pullRequest",
+    ]);
+  });
+
+  test("remote workspace state renders as an SSH badge before port chips", () => {
+    const result = badgesForWorkspace(
+      input({
+        listeningPorts: [5173],
+        remote: {
+          enabled: true,
+          connected: true,
+          state: "connected",
+          transport: "ssh",
+          destination: "dev.example.com",
+          localProxyPort: 31337,
+          hasSshOptions: true,
+          proxyUrl: "socks5://127.0.0.1:31337",
+          forwardedPorts: [5173],
+          activeTerminalSessions: 2,
+        },
+        panelShellActivity: {
+          [P2]: "commandRunning",
+        },
+      }),
+    );
+
+    expect(result.badges.map((badge) => badge.kind)).toEqual([
+      "branch",
+      "branch",
+      "pullRequest",
+      "remote",
+      "shellActivity",
+      "port",
+    ]);
+    expect(result.badges[3]).toEqual({
+      kind: "remote",
+      id: "remote:ssh:dev.example.com",
+      label: "SSH dev.example.com",
+      tone: "secondary",
+      status: "connected",
+      statusLabel: "connected",
+      transport: "SSH",
+      destination: "dev.example.com",
+      title:
+        "SSH dev.example.com | state: connected | proxy: socks5://127.0.0.1:31337 | local proxy: 31337 | forwarded: 5173 | terminals: 2 | custom SSH options",
+    });
+    expect(result.badges[4]).toMatchObject({
+      kind: "shellActivity",
+      statusLabel: "running",
+    });
+  });
+
+  test("showSsh=false hides only the remote badge", () => {
+    const result = badgesForWorkspace(
+      input({
+        listeningPorts: [3000],
+        remote: {
+          enabled: true,
+          connected: false,
+          state: "bootstrapping",
+          transport: "ssh",
+          destination: "dev.example.com",
+        },
+        settings: { showSsh: false },
+      }),
+    );
+
+    expect(result.badges.map((badge) => badge.kind)).toEqual([
+      "branch",
+      "branch",
+      "pullRequest",
+      "port",
+    ]);
+  });
+
+  test("remote errors render with stale secondary tone and detail", () => {
+    const result = badgesForWorkspace(
+      input({
+        panelGitBranches: {},
+        panelPullRequests: {},
+        remote: {
+          enabled: true,
+          connected: false,
+          state: "error",
+          transport: "ssh",
+          destination: "dev.example.com",
+          conflictedPorts: [31337],
+          detail: "proxy failed",
+        },
+      }),
+    );
+
+    expect(result.badges).toEqual([
+      {
+        kind: "remote",
+        id: "remote:ssh:dev.example.com",
+        label: "SSH dev.example.com",
+        tone: "secondaryStale",
+        status: "error",
+        statusLabel: "error",
+        transport: "SSH",
+        destination: "dev.example.com",
+        title: "SSH dev.example.com | state: error | conflicts: 31337 | proxy failed",
+      },
+    ]);
   });
 });

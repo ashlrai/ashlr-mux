@@ -39,7 +39,6 @@ class FakeCmuxState:
                     {
                         "id": WORKSPACE_ID,
                         "ref": "workspace:1",
-                        "index": 1,
                         "title": "demo",
                     }
                 ]
@@ -82,7 +81,6 @@ class FakeCmuxState:
                 {
                     "id": PANE_ID,
                     "ref": "pane:1",
-                    "index": 1,
                     "rows": 32,
                     "columns": 120,
                     "cell_height_px": 18,
@@ -94,7 +92,6 @@ class FakeCmuxState:
                     {
                         "id": HUD_PANE_ID,
                         "ref": "pane:2",
-                        "index": 2,
                         "rows": self.hud_rows,
                         "columns": 120,
                         "cell_height_px": 18,

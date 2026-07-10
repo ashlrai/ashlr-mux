@@ -85,9 +85,15 @@ mod tests {
     fn request_before_launch_latches_and_launch_observes_it() {
         let gate = ProcessTerminationGate::new();
         // Killer arrives first: child does not exist yet.
-        assert!(!gate.request_termination(), "no handle yet → cannot kill now");
+        assert!(
+            !gate.request_termination(),
+            "no handle yet → cannot kill now"
+        );
         // Spawn completes: it must see the latched request and kill.
-        assert!(gate.mark_launched(), "launch must observe the pending request");
+        assert!(
+            gate.mark_launched(),
+            "launch must observe the pending request"
+        );
     }
 
     #[test]

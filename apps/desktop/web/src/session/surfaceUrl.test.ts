@@ -13,7 +13,9 @@ describe("normalizeSurfaceKind", () => {
   test("maps each recognized surface tag to itself", () => {
     expect(normalizeSurfaceKind("agent")).toBe("agent");
     expect(normalizeSurfaceKind("markdown")).toBe("markdown");
+    expect(normalizeSurfaceKind("file")).toBe("file");
     expect(normalizeSurfaceKind("diff")).toBe("diff");
+    expect(normalizeSurfaceKind("browser")).toBe("browser");
   });
 
   test("absent / null / empty fall back to terminal (macOS: absent = terminal)", () => {
@@ -24,7 +26,6 @@ describe("normalizeSurfaceKind", () => {
   });
 
   test("an unknown/future tag falls back to terminal, not to itself", () => {
-    expect(normalizeSurfaceKind("browser")).toBe("terminal");
     expect(normalizeSurfaceKind("Markdown")).toBe("terminal"); // case-sensitive
   });
 });
@@ -34,8 +35,20 @@ describe("markdownSurfaceUrl", () => {
     expect(markdownSurfaceUrl()).toBe("cmux-md://localhost/shell.html");
   });
 
+  test("threads a panel id through the query when provided", () => {
+    expect(markdownSurfaceUrl("surface-4")).toBe(
+      "cmux-md://localhost/shell.html?panelId=surface-4",
+    );
+  });
+
   test("http rewrite form matches the WebView2-delivered origin", () => {
     expect(markdownSurfaceHttpUrl()).toBe("http://cmux-md.localhost/shell.html");
+  });
+
+  test("http rewrite form keeps the panel id query too", () => {
+    expect(markdownSurfaceHttpUrl("pane/with space")).toBe(
+      "http://cmux-md.localhost/shell.html?panelId=pane%2Fwith%20space",
+    );
   });
 });
 
@@ -49,6 +62,15 @@ describe("diffSurfaceUrl", () => {
   test("http rewrite form matches the WebView2-delivered origin", () => {
     expect(diffSurfaceHttpUrl(token)).toBe(
       `http://cmux-diff-viewer.localhost/${token}/index.html`,
+    );
+  });
+
+  test("a stored request path reopens the same diff entry instead of hardcoding index", () => {
+    expect(diffSurfaceUrl(token, "/review/file.patch.html")).toBe(
+      `cmux-diff-viewer://${token}/review/file.patch.html`,
+    );
+    expect(diffSurfaceHttpUrl(token, "review/file.patch.html")).toBe(
+      `http://cmux-diff-viewer.localhost/${token}/review/file.patch.html`,
     );
   });
 

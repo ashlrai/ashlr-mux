@@ -141,7 +141,11 @@ pub struct FocusHistoryMenuSnapshot {
 
 impl FocusHistoryMenuSnapshot {
     /// Creates a snapshot.
-    pub fn new(items: Vec<FocusHistoryMenuItem>, total_item_count: usize, is_limited: bool) -> Self {
+    pub fn new(
+        items: Vec<FocusHistoryMenuItem>,
+        total_item_count: usize,
+        is_limited: bool,
+    ) -> Self {
         Self {
             items,
             total_item_count,
@@ -159,8 +163,12 @@ impl FocusHistoryMenuSnapshot {
         forward: &FocusHistoryMenuSnapshot,
         max_item_count: Option<i64>,
     ) -> FocusHistoryMenuSnapshot {
-        let mut items: Vec<FocusHistoryMenuItem> =
-            back.items.iter().chain(forward.items.iter()).cloned().collect();
+        let mut items: Vec<FocusHistoryMenuItem> = back
+            .items
+            .iter()
+            .chain(forward.items.iter())
+            .cloned()
+            .collect();
         items.sort_by(|lhs, rhs| {
             if lhs.focused_at == rhs.focused_at {
                 // Later history index first.
@@ -368,7 +376,8 @@ impl FocusHistoryModel {
 
                 let record = self.make_record(entry);
                 self.focus_history.insert(insertion_index as usize, record);
-                let overflow = (self.focus_history.len() as i64 - self.max_history_size as i64).max(0);
+                let overflow =
+                    (self.focus_history.len() as i64 - self.max_history_size as i64).max(0);
                 if overflow > 0 {
                     self.focus_history.drain(0..overflow as usize);
                 }
@@ -377,7 +386,8 @@ impl FocusHistoryModel {
                 return;
             } else {
                 // focusHistory = Array(focusHistory.prefix(historyIndex + 1))
-                self.focus_history.truncate((self.history_index + 1) as usize);
+                self.focus_history
+                    .truncate((self.history_index + 1) as usize);
                 did_mutate_history = true;
             }
         }
@@ -437,7 +447,10 @@ impl FocusHistoryModel {
 
         if self.history_index >= 0
             && self.history_index < self.focus_history.len() as i64 - 1
-            && self.focus_history[self.history_index as usize].entry.workspace_id == workspace_id
+            && self.focus_history[self.history_index as usize]
+                .entry
+                .workspace_id
+                == workspace_id
         {
             if self.focus_history[self.history_index as usize].entry != entry {
                 let record = self.make_record(entry);
@@ -906,7 +919,9 @@ mod tests {
         }
 
         fn workspace_title(&self, workspace_id: Uuid) -> Option<String> {
-            self.workspaces.get(&workspace_id).map(|ws| ws.title.clone())
+            self.workspaces
+                .get(&workspace_id)
+                .map(|ws| ws.title.clone())
         }
 
         fn panel_title(&self, workspace_id: Uuid, panel_id: Uuid) -> Option<String> {
@@ -1145,7 +1160,8 @@ mod tests {
         let (mut model, mut host) = make_model(50);
         for index in 0..4 {
             let panel = Uuid::new_v4();
-            let ws = host.add_workspace(&format!("ws{index}"), &[(panel, &format!("panel{index}"))]);
+            let ws =
+                host.add_workspace(&format!("ws{index}"), &[(panel, &format!("panel{index}"))]);
             host.selected_workspace_id = Some(ws);
             host.set_remembered(ws, panel);
             model.record_focus_in_history(&mut host, ws, Some(panel), false);
@@ -1352,7 +1368,9 @@ mod tests {
         assert!(!model.can_navigate_forward(&host));
         assert!(!model.consume_suppressed_selection_side_effect_generation(1));
         assert_eq!(
-            model.current_focus_history_entry(&host).map(|e| e.workspace_id),
+            model
+                .current_focus_history_entry(&host)
+                .map(|e| e.workspace_id),
             Some(ws_b)
         );
     }

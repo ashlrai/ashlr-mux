@@ -27,10 +27,14 @@ pub enum PreSocketAction {
     /// `version` (matched by name, before the help gate).
     BareVersion,
     /// A help flag on a command that has a usage entry → print its usage.
-    SubcommandHelp { command: String },
+    SubcommandHelp {
+        command: String,
+    },
     /// A help flag on a command with no usage entry → print the unknown-command
     /// line and exit 0.
-    UnknownCommandHelp { command: String },
+    UnknownCommandHelp {
+        command: String,
+    },
     /// The bare `help` command.
     Help,
     RemoteDaemonStatus,
@@ -98,7 +102,10 @@ pub fn classify_command(
             Some(index) => &command_args[..index],
             None => command_args,
         };
-        if pre_separator.iter().any(|arg| arg == "--help" || arg == "-h") {
+        if pre_separator
+            .iter()
+            .any(|arg| arg == "--help" || arg == "-h")
+        {
             return if command_has_usage_entry(command) {
                 PreSocketAction::SubcommandHelp {
                     command: command.to_owned(),
@@ -168,11 +175,7 @@ pub fn classify_command(
 /// source are subsumed by the `contains` checks, so the result is identical for
 /// POSIX inputs.
 fn looks_like_path(arg: &str) -> bool {
-    arg == "."
-        || arg == ".."
-        || arg.starts_with('~')
-        || arg.contains('/')
-        || arg.contains('\\')
+    arg == "." || arg == ".." || arg.starts_with('~') || arg.contains('/') || arg.contains('\\')
 }
 
 /// Resolve a bare relative `arg` against `cwd` for the existence check. Absolute
@@ -247,7 +250,10 @@ fn settings_command_does_not_need_socket(args: &[String]) -> bool {
         .map(|arg| arg.to_lowercase())
         .unwrap_or_else(|| "open".to_owned());
     has_help_request(head)
-        || matches!(subcommand.as_str(), "path" | "paths" | "docs" | "documentation")
+        || matches!(
+            subcommand.as_str(),
+            "path" | "paths" | "docs" | "documentation"
+        )
 }
 
 /// Whether a `config` invocation can run without a socket. The font-size keys
@@ -288,32 +294,185 @@ fn command_has_usage_entry(command: &str) -> bool {
 /// The authoritative top-level command names (verbatim from
 /// `cmux.swift` `topLevelCommandNames`, 156 entries).
 const TOP_LEVEL_COMMAND_NAMES: &[&str] = &[
-    "__codex-teams-watch", "__tmux-compat", "agent-hibernation", "auth", "bind-key", "break-pane",
-    "browser", "browser-back", "browser-forward", "browser-reload", "browser-status",
-    "capabilities", "capture-pane", "claude-hook", "claude-teams", "clear-history", "clear-log",
-    "clear-notifications", "clear-progress", "clear-status", "close-surface", "close-window",
-    "close-workspace", "cloud", "codex", "codex-hook", "codex-teams", "config", "copy-mode",
-    "current-window", "current-workspace", "debug-terminals", "detach-tab", "diff",
-    "disable-browser", "dismiss-notification", "display-message", "docs", "drag-surface-to-split",
-    "enable-browser", "events", "feedback", "feed", "feed-hook", "find-window", "focus-pane",
-    "focus-panel", "focus-webview", "focus-window", "get-url", "help", "hooks", "identify",
-    "is-webview-focused", "join-pane", "jump-to-unread", "last-pane", "last-window", "list-buffers",
-    "list-log", "list-notifications", "list-pane-surfaces", "list-panels", "list-panes",
-    "list-status", "list-windows", "list-workspaces", "log", "login", "logout", "markdown",
-    "mark-notification-read", "memory", "mobile", "move-surface", "move-tab-to-new-workspace",
-    "move-workspace-to-window", "navigate", "new-pane", "new-split", "new-surface", "new-window",
-    "new-workspace", "next-window", "notify", "omc", "omo", "omx", "open", "open-browser",
-    "open-notification", "paste-buffer", "ping", "pipe-pane", "popup", "previous-window",
-    "read-screen", "refresh-surfaces", "reload-config", "remote-daemon-status", "rename-tab",
-    "rename-window", "rename-workspace", "reorder-surface", "reorder-workspace",
-    "reorder-workspaces", "resize-pane", "respawn-pane", "restore-session", "right-sidebar", "rpc",
-    "select-workspace", "send", "send-key", "send-key-panel", "send-panel", "set-app-focus",
-    "set-buffer", "set-hook", "set-progress", "set-status", "settings", "setup-hooks", "shortcuts",
-    "sidebar", "sidebar-state", "simulate-app-active", "split-off", "ssh", "ssh-pty-attach",
-    "ssh-session-attach", "ssh-session-cleanup", "ssh-session-end", "ssh-session-list", "ssh-tmux",
-    "surface", "surface-health", "surface-resume", "swap-pane", "tab-action", "themes", "top",
-    "tree", "trigger-flash", "unbind-key", "uninstall-hooks", "version", "vm", "vm-pty-attach",
-    "vm-pty-connect", "vm-ssh-attach", "wait-for", "welcome", "workspace", "workspace-action",
+    "__codex-teams-watch",
+    "__tmux-compat",
+    "agent-hibernation",
+    "auth",
+    "bind-key",
+    "break-pane",
+    "browser",
+    "browser-back",
+    "browser-forward",
+    "browser-reload",
+    "browser-status",
+    "capabilities",
+    "capture-pane",
+    "claude-hook",
+    "claude-teams",
+    "clear-agent-pid",
+    "clear-history",
+    "clear-log",
+    "clear-meta",
+    "clear-meta-block",
+    "clear-pr",
+    "clear-notifications",
+    "clear-progress",
+    "clear-status",
+    "close-surface",
+    "close-window",
+    "close-workspace",
+    "close-workspaces",
+    "cloud",
+    "codex",
+    "codex-hook",
+    "codex-teams",
+    "config",
+    "copy-mode",
+    "current-window",
+    "current-workspace",
+    "debug-terminals",
+    "detach-tab",
+    "diff",
+    "disable-browser",
+    "dismiss-notification",
+    "display-message",
+    "docs",
+    "drag-surface-to-split",
+    "enable-browser",
+    "events",
+    "extension-sidebar-snapshot",
+    "feedback",
+    "feed",
+    "feed-hook",
+    "find-window",
+    "focus-pane",
+    "focus-panel",
+    "focus-webview",
+    "focus-window",
+    "get-url",
+    "help",
+    "hooks",
+    "identify",
+    "is-webview-focused",
+    "join-pane",
+    "jump-to-unread",
+    "last-pane",
+    "last-window",
+    "list-buffers",
+    "list-log",
+    "list-meta",
+    "list-meta-blocks",
+    "list-notifications",
+    "list-pane-surfaces",
+    "list-panels",
+    "list-panes",
+    "list-status",
+    "list-windows",
+    "list-workspaces",
+    "log",
+    "login",
+    "logout",
+    "markdown",
+    "mark-notification-read",
+    "memory",
+    "mobile",
+    "move-surface",
+    "move-tab-to-new-workspace",
+    "move-workspace-to-window",
+    "navigate",
+    "new-browser-workspace",
+    "new-pane",
+    "new-split",
+    "new-surface",
+    "new-terminal-tab",
+    "new-window",
+    "new-workspace",
+    "next-window",
+    "notify",
+    "omc",
+    "omo",
+    "omx",
+    "open",
+    "open-browser",
+    "open-notification",
+    "paste-buffer",
+    "ping",
+    "pipe-pane",
+    "popup",
+    "previous-window",
+    "read-screen",
+    "refresh-surfaces",
+    "reload-config",
+    "report-meta",
+    "report-meta-block",
+    "report-pr",
+    "report-review",
+    "report-shell-state",
+    "report-tty",
+    "remote-daemon-status",
+    "rename-tab",
+    "rename-window",
+    "rename-workspace",
+    "reorder-surface",
+    "reorder-workspace",
+    "reorder-workspaces",
+    "resize-pane",
+    "respawn-pane",
+    "reopen-closed-browser-tab",
+    "restore-session",
+    "restore-previous-launch",
+    "right-sidebar",
+    "rpc",
+    "reset-sidebar",
+    "select-workspace",
+    "send",
+    "send-key",
+    "send-key-panel",
+    "send-panel",
+    "set-app-focus",
+    "set-agent-pid",
+    "set-buffer",
+    "set-hook",
+    "set-meta",
+    "set-meta-block",
+    "set-progress",
+    "set-status",
+    "settings",
+    "setup-hooks",
+    "shortcuts",
+    "sidebar",
+    "sidebar-state",
+    "sidebar-snapshot",
+    "simulate-app-active",
+    "split-off",
+    "split-browser",
+    "ssh",
+    "ssh-pty-attach",
+    "ssh-session-attach",
+    "ssh-session-cleanup",
+    "ssh-session-end",
+    "ssh-session-list",
+    "ssh-tmux",
+    "surface",
+    "surface-health",
+    "surface-resume",
+    "swap-pane",
+    "tab-action",
+    "themes",
+    "top",
+    "tree",
+    "trigger-flash",
+    "unbind-key",
+    "uninstall-hooks",
+    "version",
+    "vm",
+    "vm-pty-attach",
+    "vm-pty-connect",
+    "vm-ssh-attach",
+    "wait-for",
+    "welcome",
+    "workspace",
+    "workspace-action",
     "workspace-group",
 ];
 
@@ -322,31 +481,179 @@ const TOP_LEVEL_COMMAND_NAMES: &[&str] = &[
 /// [`TOP_LEVEL_COMMAND_NAMES`] — e.g. `canvas` / `simulate-sidebar-drag` appear
 /// here but not there.
 const SUBCOMMAND_USAGE_COMMANDS: &[&str] = &[
-    "remotes", "remote", "ping", "capabilities", "canvas", "events", "auth", "login", "logout",
-    "vm", "cloud", "rpc", "help", "docs", "settings", "config", "welcome", "shortcuts",
-    "disable-browser", "enable-browser", "browser-status", "agent-hibernation", "restore-session",
-    "sessions", "session-debug", "feedback", "feed", "hooks", "themes", "claude-teams",
-    "codex-teams", "omo", "omx", "omc", "identify", "list-windows", "current-window", "new-window",
-    "focus-window", "close-window", "move-workspace-to-window", "move-surface", "reorder-surface",
-    "reorder-workspace", "reorder-workspaces", "simulate-sidebar-drag", "workspace-action",
-    "tab-action", "move-tab-to-new-workspace", "detach-tab", "rename-tab", "new-workspace",
-    "list-workspaces", "workspace", "workspace-group", "ssh", "ssh-tmux", "ssh-session-list",
-    "ssh-session-attach", "ssh-session-cleanup", "remote-daemon-status", "new-split", "list-panes",
-    "list-pane-surfaces", "tree", "top", "memory", "focus-pane", "new-pane", "new-surface",
-    "close-surface", "drag-surface-to-split", "split-off", "refresh-surfaces", "reload-config",
-    "surface-health", "surface", "surface-resume", "debug-terminals", "trigger-flash",
-    "list-panels", "focus-panel", "close-workspace", "select-workspace", "rename-workspace",
-    "rename-window", "current-workspace", "capture-pane", "resize-pane", "pipe-pane", "wait-for",
-    "swap-pane", "break-pane", "join-pane", "next-window", "previous-window", "last-window",
-    "last-pane", "find-window", "clear-history", "set-hook", "popup", "bind-key", "unbind-key",
-    "copy-mode", "set-buffer", "paste-buffer", "list-buffers", "respawn-pane", "display-message",
-    "read-screen", "send", "send-key", "send-panel", "send-key-panel", "notify",
-    "list-notifications", "dismiss-notification", "mark-notification-read", "open-notification",
-    "jump-to-unread", "clear-notifications", "set-status", "clear-status", "list-status",
-    "set-progress", "clear-progress", "log", "clear-log", "list-log", "sidebar-state",
-    "right-sidebar", "sidebar", "set-app-focus", "simulate-app-active", "claude-hook", "codex",
-    "browser", "open-browser", "navigate", "browser-back", "browser-forward", "browser-reload",
-    "get-url", "focus-webview", "is-webview-focused", "open", "diff", "markdown",
+    "remotes",
+    "remote",
+    "ping",
+    "capabilities",
+    "canvas",
+    "events",
+    "auth",
+    "login",
+    "logout",
+    "vm",
+    "cloud",
+    "rpc",
+    "help",
+    "docs",
+    "settings",
+    "config",
+    "welcome",
+    "shortcuts",
+    "disable-browser",
+    "enable-browser",
+    "browser-status",
+    "agent-hibernation",
+    "restore-session",
+    "sessions",
+    "session-debug",
+    "feedback",
+    "feed",
+    "hooks",
+    "themes",
+    "claude-teams",
+    "codex-teams",
+    "omo",
+    "omx",
+    "omc",
+    "identify",
+    "list-windows",
+    "current-window",
+    "new-window",
+    "focus-window",
+    "close-window",
+    "move-workspace-to-window",
+    "move-surface",
+    "reorder-surface",
+    "reorder-workspace",
+    "reorder-workspaces",
+    "simulate-sidebar-drag",
+    "workspace-action",
+    "tab-action",
+    "move-tab-to-new-workspace",
+    "detach-tab",
+    "rename-tab",
+    "close-workspaces",
+    "new-browser-workspace",
+    "new-terminal-tab",
+    "split-browser",
+    "reopen-closed-browser-tab",
+    "restore-previous-launch",
+    "new-workspace",
+    "list-workspaces",
+    "workspace",
+    "workspace-group",
+    "ssh",
+    "ssh-tmux",
+    "ssh-session-list",
+    "ssh-session-attach",
+    "ssh-session-cleanup",
+    "remote-daemon-status",
+    "new-split",
+    "list-panes",
+    "list-pane-surfaces",
+    "tree",
+    "top",
+    "memory",
+    "focus-pane",
+    "new-pane",
+    "new-surface",
+    "close-surface",
+    "drag-surface-to-split",
+    "split-off",
+    "refresh-surfaces",
+    "reload-config",
+    "surface-health",
+    "surface",
+    "surface-resume",
+    "debug-terminals",
+    "trigger-flash",
+    "list-panels",
+    "focus-panel",
+    "close-workspace",
+    "select-workspace",
+    "rename-workspace",
+    "rename-window",
+    "current-workspace",
+    "capture-pane",
+    "resize-pane",
+    "pipe-pane",
+    "wait-for",
+    "swap-pane",
+    "break-pane",
+    "join-pane",
+    "next-window",
+    "previous-window",
+    "last-window",
+    "last-pane",
+    "find-window",
+    "clear-history",
+    "set-hook",
+    "popup",
+    "bind-key",
+    "unbind-key",
+    "copy-mode",
+    "set-buffer",
+    "paste-buffer",
+    "list-buffers",
+    "respawn-pane",
+    "display-message",
+    "read-screen",
+    "send",
+    "send-key",
+    "send-panel",
+    "send-key-panel",
+    "notify",
+    "list-notifications",
+    "dismiss-notification",
+    "mark-notification-read",
+    "open-notification",
+    "jump-to-unread",
+    "clear-notifications",
+    "set-agent-pid",
+    "clear-agent-pid",
+    "set-status",
+    "clear-status",
+    "list-status",
+    "report-pr",
+    "report-review",
+    "report-shell-state",
+    "report-tty",
+    "clear-pr",
+    "report-meta",
+    "set-meta",
+    "clear-meta",
+    "list-meta",
+    "report-meta-block",
+    "set-meta-block",
+    "clear-meta-block",
+    "list-meta-blocks",
+    "reset-sidebar",
+    "set-progress",
+    "clear-progress",
+    "log",
+    "clear-log",
+    "list-log",
+    "sidebar-state",
+    "sidebar-snapshot",
+    "extension-sidebar-snapshot",
+    "right-sidebar",
+    "sidebar",
+    "set-app-focus",
+    "simulate-app-active",
+    "claude-hook",
+    "codex",
+    "browser",
+    "open-browser",
+    "navigate",
+    "browser-back",
+    "browser-forward",
+    "browser-reload",
+    "get-url",
+    "focus-webview",
+    "is-webview-focused",
+    "open",
+    "diff",
+    "markdown",
 ];
 
 #[cfg(test)]
@@ -358,7 +665,12 @@ mod tests {
     }
 
     /// A classify env over `/w` whose path-existence answer is fixed.
-    fn classify(command: &str, tokens: &[&str], socket: Option<&str>, exists: bool) -> PreSocketAction {
+    fn classify(
+        command: &str,
+        tokens: &[&str],
+        socket: Option<&str>,
+        exists: bool,
+    ) -> PreSocketAction {
         let cwd = Path::new("/w");
         let path_exists = move |_: &Path| exists;
         let env = ClassifyEnv {
@@ -370,7 +682,9 @@ mod tests {
 
     #[test]
     fn looks_like_path_matches_posix_and_windows_shapes() {
-        for yes in [".", "..", "/abs", "./rel", "../rel", "~", "~/p", "a/b", ".\\rel", "a\\b", "C:\\x"] {
+        for yes in [
+            ".", "..", "/abs", "./rel", "../rel", "~", "~/p", "a/b", ".\\rel", "a\\b", "C:\\x",
+        ] {
             assert!(looks_like_path(yes), "{yes:?} should look like a path");
         }
         for no in ["...", "a.b", "foo.txt", "open", "-h", "version"] {
@@ -389,8 +703,14 @@ mod tests {
         let cwd = Path::new("/w");
         let always = |_: &Path| true;
         let never = |_: &Path| false;
-        let env_exists = ClassifyEnv { cwd, path_exists: &always };
-        let env_missing = ClassifyEnv { cwd, path_exists: &never };
+        let env_exists = ClassifyEnv {
+            cwd,
+            path_exists: &always,
+        };
+        let env_missing = ClassifyEnv {
+            cwd,
+            path_exists: &never,
+        };
 
         // Path-shaped token short-circuits before the command guard.
         assert!(should_open_as_path_argument("./open", &env_missing));
@@ -405,80 +725,140 @@ mod tests {
 
     #[test]
     fn version_precedes_help_gate() {
-        assert_eq!(classify("version", &["--help"], None, false), PreSocketAction::BareVersion);
+        assert_eq!(
+            classify("version", &["--help"], None, false),
+            PreSocketAction::BareVersion
+        );
     }
 
     #[test]
     fn help_gate_routes_known_and_unknown() {
         assert_eq!(
             classify("docs", &["--help"], None, false),
-            PreSocketAction::SubcommandHelp { command: "docs".to_owned() }
+            PreSocketAction::SubcommandHelp {
+                command: "docs".to_owned()
+            }
         );
         assert_eq!(
             classify("send", &["-h"], None, false),
-            PreSocketAction::SubcommandHelp { command: "send".to_owned() }
+            PreSocketAction::SubcommandHelp {
+                command: "send".to_owned()
+            }
         );
         assert_eq!(
             classify("bogus", &["--help"], None, false),
-            PreSocketAction::UnknownCommandHelp { command: "bogus".to_owned() }
+            PreSocketAction::UnknownCommandHelp {
+                command: "bogus".to_owned()
+            }
         );
     }
 
     #[test]
     fn help_gate_excludes_tmux_compat_and_after_separator_and_inexact() {
         // __tmux-compat is excluded from the gate.
-        assert_eq!(classify("__tmux-compat", &["--help"], None, false), PreSocketAction::NeedsSocket);
+        assert_eq!(
+            classify("__tmux-compat", &["--help"], None, false),
+            PreSocketAction::NeedsSocket
+        );
         // A help flag after `--` does not fire the gate (docs has no other pre-`--` route here).
-        assert_eq!(classify("send", &["--", "--help"], None, false), PreSocketAction::NeedsSocket);
+        assert_eq!(
+            classify("send", &["--", "--help"], None, false),
+            PreSocketAction::NeedsSocket
+        );
         // Inexact flag does not match (docs falls to its name route).
-        assert_eq!(classify("docs", &["--help=true"], None, false), PreSocketAction::Docs);
+        assert_eq!(
+            classify("docs", &["--help=true"], None, false),
+            PreSocketAction::Docs
+        );
     }
 
     #[test]
     fn settings_no_socket_predicate_and_routing() {
         assert!(!settings_command_does_not_need_socket(&args(&[]))); // default "open"
         assert!(settings_command_does_not_need_socket(&args(&["path"])));
-        assert!(settings_command_does_not_need_socket(&args(&["--", "docs"]))); // subcommand from tail
-        assert_eq!(classify("settings", &[], None, false), PreSocketAction::NeedsSocket);
-        assert_eq!(classify("settings", &["path"], None, false), PreSocketAction::SettingsNoSocket);
+        assert!(settings_command_does_not_need_socket(&args(&[
+            "--", "docs"
+        ]))); // subcommand from tail
+        assert_eq!(
+            classify("settings", &[], None, false),
+            PreSocketAction::NeedsSocket
+        );
+        assert_eq!(
+            classify("settings", &["path"], None, false),
+            PreSocketAction::SettingsNoSocket
+        );
         // Help gate precedes the predicate.
         assert_eq!(
             classify("settings", &["--help"], None, false),
-            PreSocketAction::SubcommandHelp { command: "settings".to_owned() }
+            PreSocketAction::SubcommandHelp {
+                command: "settings".to_owned()
+            }
         );
-        assert_eq!(classify("settings", &["account"], None, false), PreSocketAction::NeedsSocket);
+        assert_eq!(
+            classify("settings", &["account"], None, false),
+            PreSocketAction::NeedsSocket
+        );
     }
 
     #[test]
     fn config_no_socket_predicate_and_routing() {
         assert!(config_command_does_not_need_socket(&args(&[]))); // default "help"
         assert!(config_command_does_not_need_socket(&args(&["get", "k"])));
-        assert!(config_command_does_not_need_socket(&args(&["--json", "get"]))); // --json stripped
-        assert!(config_command_does_not_need_socket(&args(&["sidebar-font-size"]))); // one-arg get
-        assert!(!config_command_does_not_need_socket(&args(&["sidebar-font-size", "14"]))); // set
-        assert!(!config_command_does_not_need_socket(&args(&["set", "k", "v"])));
+        assert!(config_command_does_not_need_socket(&args(&[
+            "--json", "get"
+        ]))); // --json stripped
+        assert!(config_command_does_not_need_socket(&args(&[
+            "sidebar-font-size"
+        ]))); // one-arg get
+        assert!(!config_command_does_not_need_socket(&args(&[
+            "sidebar-font-size",
+            "14"
+        ]))); // set
+        assert!(!config_command_does_not_need_socket(&args(&[
+            "set", "k", "v"
+        ])));
         assert!(config_command_does_not_need_socket(&args(&["--", "help"])));
 
-        assert_eq!(classify("config", &[], None, false), PreSocketAction::ConfigNoSocket);
-        assert_eq!(classify("config", &["set", "k", "v"], None, false), PreSocketAction::NeedsSocket);
+        assert_eq!(
+            classify("config", &[], None, false),
+            PreSocketAction::ConfigNoSocket
+        );
+        assert_eq!(
+            classify("config", &["set", "k", "v"], None, false),
+            PreSocketAction::NeedsSocket
+        );
     }
 
     #[test]
     fn font_size_help_gate_wins_over_predicate() {
         // Predicate in isolation: font-size + extra arg → needs socket.
-        assert!(!config_command_does_not_need_socket(&args(&["sidebar-font-size", "--help"])));
+        assert!(!config_command_does_not_need_socket(&args(&[
+            "sidebar-font-size",
+            "--help"
+        ])));
         // Integrated: the help gate fires first → SubcommandHelp (config has a usage entry).
         assert_eq!(
             classify("config", &["sidebar-font-size", "--help"], None, false),
-            PreSocketAction::SubcommandHelp { command: "config".to_owned() }
+            PreSocketAction::SubcommandHelp {
+                command: "config".to_owned()
+            }
         );
     }
 
     #[test]
     fn window_default_display_is_between_settings_and_config() {
-        assert_eq!(classify("window", &["default-display"], None, false), PreSocketAction::WindowDefaultDisplay);
-        assert_eq!(classify("window", &["Default-Display"], None, false), PreSocketAction::WindowDefaultDisplay);
-        assert_eq!(classify("window", &["list"], None, false), PreSocketAction::NeedsSocket);
+        assert_eq!(
+            classify("window", &["default-display"], None, false),
+            PreSocketAction::WindowDefaultDisplay
+        );
+        assert_eq!(
+            classify("window", &["Default-Display"], None, false),
+            PreSocketAction::WindowDefaultDisplay
+        );
+        assert_eq!(
+            classify("window", &["list"], None, false),
+            PreSocketAction::NeedsSocket
+        );
     }
 
     #[test]
@@ -486,28 +866,61 @@ mod tests {
         // Existing path with no --socket → OpenPath.
         assert_eq!(
             classify("myproj", &[], None, true),
-            PreSocketAction::OpenPath { path: "myproj".to_owned() }
+            PreSocketAction::OpenPath {
+                path: "myproj".to_owned()
+            }
         );
         // Same with --socket present → NeedsSocket (path-open suppressed).
-        assert_eq!(classify("myproj", &[], Some("\\\\.\\pipe\\x"), true), PreSocketAction::NeedsSocket);
+        assert_eq!(
+            classify("myproj", &[], Some("\\\\.\\pipe\\x"), true),
+            PreSocketAction::NeedsSocket
+        );
         // Path-shaped token opens even when it doesn't exist (no --socket).
         assert_eq!(
             classify("./open", &[], None, false),
-            PreSocketAction::OpenPath { path: "./open".to_owned() }
+            PreSocketAction::OpenPath {
+                path: "./open".to_owned()
+            }
         );
         // ...but with --socket, even a path-shaped token needs the socket path.
-        assert_eq!(classify("./x", &[], Some("/s"), false), PreSocketAction::NeedsSocket);
+        assert_eq!(
+            classify("./x", &[], Some("/s"), false),
+            PreSocketAction::NeedsSocket
+        );
     }
 
     #[test]
     fn sessions_debug_flag() {
-        assert_eq!(classify("sessions", &[], None, false), PreSocketAction::Sessions { debug: false });
-        assert_eq!(classify("session-debug", &[], None, false), PreSocketAction::Sessions { debug: true });
+        assert_eq!(
+            classify("sessions", &[], None, false),
+            PreSocketAction::Sessions { debug: false }
+        );
+        assert_eq!(
+            classify("session-debug", &[], None, false),
+            PreSocketAction::Sessions { debug: true }
+        );
     }
 
     #[test]
-    fn unknown_command_needs_socket_when_not_a_path() {
-        assert_eq!(classify("list-workspaces", &[], None, false), PreSocketAction::NeedsSocket);
+    fn mapped_control_commands_need_socket_even_when_a_same_named_path_exists() {
+        assert_eq!(
+            classify("list-workspaces", &[], None, false),
+            PreSocketAction::NeedsSocket
+        );
+        for command in [
+            "close-workspaces",
+            "new-browser-workspace",
+            "new-terminal-tab",
+            "reopen-closed-browser-tab",
+            "restore-previous-launch",
+            "split-browser",
+        ] {
+            assert_eq!(
+                classify(command, &[], None, true),
+                PreSocketAction::NeedsSocket,
+                "{command}"
+            );
+        }
     }
 
     #[test]

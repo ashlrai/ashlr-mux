@@ -339,11 +339,7 @@ pub fn gitdir_pattern_matches(
 
     for candidate in candidates {
         if crate::git_config_glob_matches(&candidate, &expanded, case_insensitive)
-            || crate::git_config_glob_matches(
-                &format!("{candidate}/"),
-                &expanded,
-                case_insensitive,
-            )
+            || crate::git_config_glob_matches(&format!("{candidate}/"), &expanded, case_insensitive)
         {
             return true;
         }
@@ -378,11 +374,7 @@ pub fn include_if_condition_matches(
 /// If `lowercased` (the lowercased `condition`) starts with the ASCII
 /// `keyword`, returns the remainder of the *original* `condition` after the
 /// keyword (case preserved), mirroring Swift's `condition.dropFirst(keyword.count)`.
-fn strip_prefix_by_len<'a>(
-    condition: &'a str,
-    lowercased: &str,
-    keyword: &str,
-) -> Option<&'a str> {
+fn strip_prefix_by_len<'a>(condition: &'a str, lowercased: &str, keyword: &str) -> Option<&'a str> {
     if lowercased.starts_with(keyword) {
         // keyword is ASCII, so its char count equals its byte count.
         Some(&condition[keyword.len()..])
@@ -483,8 +475,14 @@ mod tests {
     /// A missing prefix or an empty extracted path yields `None`.
     #[test]
     fn dot_git_file_rejects_non_pointer_and_empty() {
-        assert_eq!(git_directory_from_dot_git_file("not a pointer", "/a/wt"), None);
-        assert_eq!(git_directory_from_dot_git_file("gitdir:   \n", "/a/wt"), None);
+        assert_eq!(
+            git_directory_from_dot_git_file("not a pointer", "/a/wt"),
+            None
+        );
+        assert_eq!(
+            git_directory_from_dot_git_file("gitdir:   \n", "/a/wt"),
+            None
+        );
         assert_eq!(git_directory_from_dot_git_file("", "/a/wt"), None);
     }
 
@@ -495,7 +493,10 @@ mod tests {
     fn common_directory_falls_back_without_file() {
         assert_eq!(git_common_directory(None, "/a/repo/.git"), "/a/repo/.git");
         // Empty (whitespace-only) contents also fall back.
-        assert_eq!(git_common_directory(Some("  \n"), "/a/repo/.git"), "/a/repo/.git");
+        assert_eq!(
+            git_common_directory(Some("  \n"), "/a/repo/.git"),
+            "/a/repo/.git"
+        );
     }
 
     /// A `commondir` with an absolute path standardizes it directly; a relative

@@ -75,7 +75,8 @@ pub fn build_sidebar_unread_summaries(
     let mut result: HashMap<String, SidebarWorkspaceUnreadSummary> = HashMap::new();
     for id in ids {
         let has_indicator = workspace_unread_indicator_ids.contains(id);
-        let count = unread_count_by_tab_id.get(id).copied().unwrap_or(0) + usize::from(has_indicator);
+        let count =
+            unread_count_by_tab_id.get(id).copied().unwrap_or(0) + usize::from(has_indicator);
         let latest_text = latest_by_tab_id.get(id).and_then(|notification| {
             let text = if notification.body.is_empty() {
                 &notification.title
@@ -465,7 +466,10 @@ mod tests {
 
         assert_eq!(model.total_unread_count(), 5);
         assert_eq!(model.unread_count("t1"), 2);
-        assert_eq!(model.latest_notification_text("t1").as_deref(), Some("body"));
+        assert_eq!(
+            model.latest_notification_text("t1").as_deref(),
+            Some("body")
+        );
         assert!(model.workspace_is_unread("t1"));
         assert!(!model.workspace_is_unread("t2"));
         assert!(!model.workspace_is_unread("absent"));

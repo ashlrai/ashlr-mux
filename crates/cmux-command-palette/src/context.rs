@@ -150,7 +150,10 @@ impl CommandPaletteContextSnapshot {
 
     /// Reads a boolean context value (false when absent).
     pub fn bool(&self, key: &CommandPaletteContextKeys) -> bool {
-        self.bool_values.get(&key.raw_value).copied().unwrap_or(false)
+        self.bool_values
+            .get(&key.raw_value)
+            .copied()
+            .unwrap_or(false)
     }
 
     /// Reads a string context value.
@@ -182,7 +185,11 @@ impl CommandPaletteContextSnapshot {
         bool_keys.sort();
         for key in bool_keys {
             key.hash(&mut hasher);
-            bool_values.get(key).copied().unwrap_or(false).hash(&mut hasher);
+            bool_values
+                .get(key)
+                .copied()
+                .unwrap_or(false)
+                .hash(&mut hasher);
         }
         let mut string_keys: Vec<&String> = string_values.keys().collect();
         string_keys.sort();
@@ -233,7 +240,10 @@ mod tests {
     #[test]
     fn empty_or_none_string_removes_the_key() {
         let mut snapshot = CommandPaletteContextSnapshot::new();
-        snapshot.set_string(&CommandPaletteContextKeys::workspace_name(), Some("Phoenix"));
+        snapshot.set_string(
+            &CommandPaletteContextKeys::workspace_name(),
+            Some("Phoenix"),
+        );
         assert_eq!(
             snapshot.string(&CommandPaletteContextKeys::workspace_name()),
             Some("Phoenix")
@@ -243,7 +253,10 @@ mod tests {
             snapshot.string(&CommandPaletteContextKeys::workspace_name()),
             None
         );
-        snapshot.set_string(&CommandPaletteContextKeys::workspace_name(), Some("Phoenix"));
+        snapshot.set_string(
+            &CommandPaletteContextKeys::workspace_name(),
+            Some("Phoenix"),
+        );
         snapshot.set_string(&CommandPaletteContextKeys::workspace_name(), None);
         assert_eq!(
             snapshot.string(&CommandPaletteContextKeys::workspace_name()),
@@ -255,11 +268,17 @@ mod tests {
     fn fingerprint_is_order_insensitive_and_value_sensitive() {
         let mut a = CommandPaletteContextSnapshot::new();
         a.set_bool(&CommandPaletteContextKeys::has_workspace(), true);
-        a.set_string(&CommandPaletteContextKeys::workspace_name(), Some("Phoenix"));
+        a.set_string(
+            &CommandPaletteContextKeys::workspace_name(),
+            Some("Phoenix"),
+        );
 
         let mut b = CommandPaletteContextSnapshot::new();
         // Same values inserted in the opposite order.
-        b.set_string(&CommandPaletteContextKeys::workspace_name(), Some("Phoenix"));
+        b.set_string(
+            &CommandPaletteContextKeys::workspace_name(),
+            Some("Phoenix"),
+        );
         b.set_bool(&CommandPaletteContextKeys::has_workspace(), true);
 
         // Equal content -> equal fingerprint (do not assert the exact number).

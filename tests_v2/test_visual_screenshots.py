@@ -116,6 +116,20 @@ def capture_state(client: cmux) -> str:
     except Exception as e:
         return f"Error: {e}"
 
+
+def surface_ref_ordinal(row: dict) -> Optional[int]:
+    ref = str(row.get("ref") or row.get("surface_ref") or "")
+    kind, sep, raw = ref.partition(":")
+    if sep and kind == "surface" and raw.isdigit():
+        ordinal = int(raw)
+        return ordinal - 1 if ordinal > 0 else None
+    return None
+
+
+def surface_handle(row: dict) -> Optional[Union[str, int]]:
+    return row.get("ref") or row.get("surface_ref") or row.get("id") or surface_ref_ordinal(row)
+
+
 def stamp_terminals(client: cmux, label: str) -> None:
     """Emit a visible marker line in each terminal surface for screenshots."""
     safe = label.replace("\n", " ").replace("\r", " ").strip()
@@ -127,12 +141,12 @@ def stamp_terminals(client: cmux, label: str) -> None:
         return
     terminal_surfaces = [h for h in health if h.get("type") == "terminal"]
     for h in terminal_surfaces:
-        idx = h.get("index")
-        if idx is None:
+        handle = surface_handle(h)
+        if handle is None:
             continue
         try:
             # Keep it simple to avoid shell quoting issues.
-            client.send_surface(idx, f"echo CMUX_VIS {safe} surf={idx}\n")
+            client.send_surface(handle, f"echo CMUX_VIS {safe} surf={handle}\n")
         except Exception:
             pass
 
@@ -309,7 +323,9 @@ def verify_all_responsive(client: cmux, label: str = "") -> Optional[str]:
 
     blanks = []
     for idx, h in enumerate(terminal_surfaces):
-        surface_idx = h["index"]
+        surface_idx = surface_handle(h)
+        if surface_idx is None:
+            continue
         marker = Path(tempfile.gettempdir()) / f"cmux_vis_{os.getpid()}_{idx}"
         try:
             if not _verify_surface_responsive(client, surface_idx, marker, retries=3):

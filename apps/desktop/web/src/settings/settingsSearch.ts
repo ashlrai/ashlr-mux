@@ -669,6 +669,10 @@ const SETTING_ALIASES: Record<string, string> = {
     "automation.socketPassword auth token credential secret password access key",
   "automation:claude-code":
     "automation.claudeCodeIntegration claude code hooks agent integration status notifications",
+  "automation:codex":
+    "automation.codexIntegration codex hooks agent integration status notifications",
+  "automation:opencode":
+    "automation.opencodeIntegration opencode open code hooks agent integration status notifications",
   "automation:claude-path":
     "automation.claudeBinaryPath claude binary executable path cli command custom",
   "automation:workspace-auto-naming":
@@ -1288,6 +1292,8 @@ const SETTING_ROWS: readonly SettingRow[] = [
   ["automation", "socket-mode", "Socket Control Mode", "unix socket api access password auth"],
   ["automation", "socket-password", "Socket Password", "socket auth credential"],
   ["automation", "claude-code", "Claude Code Integration", "agent hooks notifications"],
+  ["automation", "codex", "Codex Integration", "agent hooks notifications"],
+  ["automation", "opencode", "OpenCode Integration", "agent hooks notifications"],
   ["automation", "claude-path", "Claude Binary Path", "custom claude executable"],
   ["automation", "workspace-auto-naming", "Workspace Auto-Naming", WORKSPACE_AUTO_NAMING_SEARCH_TEXT],
   [

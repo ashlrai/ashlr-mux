@@ -36,7 +36,10 @@ mod tests {
     #[test]
     fn escapes_angle_target_delimiters() {
         let link = link("@Docs/[draft].md", "Docs/roadmap <draft>.md");
-        assert_eq!(link, "[@Docs/\\[draft\\].md](<Docs/roadmap %3Cdraft%3E.md>)");
+        assert_eq!(
+            link,
+            "[@Docs/\\[draft\\].md](<Docs/roadmap %3Cdraft%3E.md>)"
+        );
     }
 
     #[test]

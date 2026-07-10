@@ -45,7 +45,11 @@ pub struct MissingAsset {
 
 impl std::fmt::Display for MissingAsset {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "missing bundled markdown viewer asset {}.{}", self.name, self.ext)
+        write!(
+            f,
+            "missing bundled markdown viewer asset {}.{}",
+            self.name, self.ext
+        )
     }
 }
 
@@ -98,10 +102,7 @@ impl MarkdownViewerAssets {
             return Some(cached.clone());
         }
         let source = load_asset(&self.viewer_dir, name, ext).ok()?;
-        self.lazy_cache
-            .lock()
-            .unwrap()
-            .insert(key, source.clone());
+        self.lazy_cache.lock().unwrap().insert(key, source.clone());
         Some(source)
     }
 
@@ -262,7 +263,11 @@ mod tests {
             ("highlight-github", "css", "LIGHTCSS"),
             ("highlight-github-dark", "css", "DARKCSS"),
             ("github-markdown", "css", "GHCSS"),
-            ("shell", "html", "{{githubMarkdownCSS}}|{{markedJS}}|{{localizedStringsJSON}}"),
+            (
+                "shell",
+                "html",
+                "{{githubMarkdownCSS}}|{{markedJS}}|{{localizedStringsJSON}}",
+            ),
         ] {
             std::fs::write(viewer.join(format!("{name}.{ext}")), body).unwrap();
         }
@@ -299,7 +304,10 @@ mod tests {
         }
         let assets = MarkdownViewerAssets::load(dir.path()).unwrap();
         let html = assets.shell_html(false);
-        assert!(html.starts_with("DEFLATED:"), "deflate variant should win: {html}");
+        assert!(
+            html.starts_with("DEFLATED:"),
+            "deflate variant should win: {html}"
+        );
     }
 
     #[test]
@@ -309,7 +317,9 @@ mod tests {
         let result = MarkdownViewerAssets::load(dir.path());
         assert!(result.is_err());
         let err = result.err().unwrap();
-        assert!(err.to_string().contains("missing bundled markdown viewer asset"));
+        assert!(err
+            .to_string()
+            .contains("missing bundled markdown viewer asset"));
     }
 
     #[test]
@@ -329,7 +339,10 @@ mod tests {
         }
         std::fs::write(viewer.join("mermaid.min.js"), "MERMAID").unwrap();
         let assets = MarkdownViewerAssets::load(dir.path()).unwrap();
-        assert_eq!(assets.lazy_asset("mermaid.min", "js").as_deref(), Some("MERMAID"));
+        assert_eq!(
+            assets.lazy_asset("mermaid.min", "js").as_deref(),
+            Some("MERMAID")
+        );
         assert_eq!(assets.lazy_asset("missing", "js"), None);
     }
 }

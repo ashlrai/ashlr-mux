@@ -184,11 +184,17 @@ impl CanvasMinimapSnapshot {
     /// Inverse-maps a minimap-space point back into canvas coordinates.
     ///
     /// Port of `CanvasMinimapSnapshot.swift:86-92`.
-    pub fn canvas_point(&self, minimap_point: CanvasPoint, drawing_rect: CanvasRect) -> CanvasPoint {
+    pub fn canvas_point(
+        &self,
+        minimap_point: CanvasPoint,
+        drawing_rect: CanvasRect,
+    ) -> CanvasPoint {
         let projection = self.projection(drawing_rect);
         CanvasPoint::new(
-            self.navigation_bounds.min_x() + (minimap_point.x - projection.origin.x) / projection.scale,
-            self.navigation_bounds.min_y() + (minimap_point.y - projection.origin.y) / projection.scale,
+            self.navigation_bounds.min_x()
+                + (minimap_point.x - projection.origin.x) / projection.scale,
+            self.navigation_bounds.min_y()
+                + (minimap_point.y - projection.origin.y) / projection.scale,
         )
     }
 }

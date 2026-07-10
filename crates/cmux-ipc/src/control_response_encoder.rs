@@ -1,6 +1,5 @@
 use crate::{
-    control_call_result::ControlCallResult,
-    control_request_parse_error::ControlRequestParseError,
+    control_call_result::ControlCallResult, control_request_parse_error::ControlRequestParseError,
     json_value::JsonValue,
 };
 
@@ -27,7 +26,10 @@ impl ControlResponseEncoder {
         data: Option<JsonValue>,
     ) -> String {
         let mut error = serde_json::Map::from_iter([
-            ("code".to_owned(), serde_json::Value::String(code.to_owned())),
+            (
+                "code".to_owned(),
+                serde_json::Value::String(code.to_owned()),
+            ),
             (
                 "message".to_owned(),
                 serde_json::Value::String(message.to_owned()),
@@ -40,7 +42,8 @@ impl ControlResponseEncoder {
         self.encode_value(serde_json::Value::Object(serde_json::Map::from_iter([
             (
                 "id".to_owned(),
-                id.map(serde_json::Value::from).unwrap_or(serde_json::Value::Null),
+                id.map(serde_json::Value::from)
+                    .unwrap_or(serde_json::Value::Null),
             ),
             ("ok".to_owned(), serde_json::Value::Bool(false)),
             ("error".to_owned(), serde_json::Value::Object(error)),

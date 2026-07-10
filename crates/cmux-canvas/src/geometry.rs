@@ -452,7 +452,10 @@ mod tests {
             rect.offset_by(5.0, -5.0),
             CanvasRect::new(5.0, -5.0, 10.0, 10.0)
         );
-        assert_eq!(rect.expanded_by(2.0), CanvasRect::new(-2.0, -2.0, 14.0, 14.0));
+        assert_eq!(
+            rect.expanded_by(2.0),
+            CanvasRect::new(-2.0, -2.0, 14.0, 14.0)
+        );
         assert_eq!(rect.expanded_by(-2.0), CanvasRect::new(2.0, 2.0, 6.0, 6.0));
     }
 

@@ -35,6 +35,14 @@ export interface CommandRowProps {
   titleMatchIndices: readonly number[];
   /** Whether this is the highlighted row (driven by the selection reducer). */
   active: boolean;
+  /** Stable DOM id for aria-activedescendant wiring. */
+  rowId?: string;
+  /** DOM ref so the active row can be scrolled into view. */
+  rowRef?: React.Ref<HTMLDivElement>;
+  /** Hovering a row should move the live selection to it. */
+  onMouseEnter?: () => void;
+  /** Clicking a row activates it. */
+  onClick?: () => void;
 }
 
 /**
@@ -58,14 +66,27 @@ function renderTitle(title: string, matchIndices: readonly number[]): React.Reac
 }
 
 /** Renders a single command-palette row. */
-export function CommandRow({ command, titleMatchIndices, active }: CommandRowProps): React.JSX.Element {
+export function CommandRow({
+  command,
+  titleMatchIndices,
+  active,
+  rowId,
+  rowRef,
+  onMouseEnter,
+  onClick,
+}: CommandRowProps): React.JSX.Element {
   return (
     <div
+      id={rowId}
+      ref={rowRef}
       className="cmux-palette-row"
       role="option"
       aria-selected={active}
       data-active={active ? "true" : "false"}
       data-command-id={command.id}
+      onMouseEnter={onMouseEnter}
+      onMouseDown={(event) => event.preventDefault()}
+      onClick={onClick}
     >
       <div className="cmux-palette-row-main">
         <span className="cmux-palette-row-title">{renderTitle(command.title, titleMatchIndices)}</span>

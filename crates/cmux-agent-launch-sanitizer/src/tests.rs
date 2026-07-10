@@ -85,7 +85,12 @@ fn claude_injected_hook_settings_object_is_dropped_entirely() {
     assert_eq!(
         preserved_arguments(
             "claude",
-            &v(&["--model", "sonnet", "--settings", r#"{"hooks":"claude-hook"}"#])
+            &v(&[
+                "--model",
+                "sonnet",
+                "--settings",
+                r#"{"hooks":"claude-hook"}"#
+            ])
         ),
         some(&["--model", "sonnet"])
     );
@@ -107,7 +112,10 @@ fn claude_disabled_notif_channel_only_object_is_dropped() {
     assert_eq!(
         preserved_arguments(
             "claude",
-            &v(&["--settings", r#"{"preferredNotifChannel":"notifications_disabled"}"#])
+            &v(&[
+                "--settings",
+                r#"{"preferredNotifChannel":"notifications_disabled"}"#
+            ])
         ),
         some(&[])
     );
@@ -153,7 +161,10 @@ fn claude_non_hook_settings_object_passes_through() {
 #[test]
 fn double_dash_terminates_option_scanning() {
     assert_eq!(
-        preserved_arguments("claude", &v(&["--model", "opus", "--", "--allowedTools", "x"])),
+        preserved_arguments(
+            "claude",
+            &v(&["--model", "opus", "--", "--allowedTools", "x"])
+        ),
         some(&["--model", "opus"])
     );
 }
@@ -161,7 +172,10 @@ fn double_dash_terminates_option_scanning() {
 #[test]
 fn prompt_positional_terminates_option_scanning() {
     assert_eq!(
-        preserved_arguments("claude", &v(&["--model", "opus", "hello", "--allowedTools", "x"])),
+        preserved_arguments(
+            "claude",
+            &v(&["--model", "opus", "hello", "--allowedTools", "x"])
+        ),
         some(&["--model", "opus"])
     );
 }
@@ -181,7 +195,10 @@ fn codex_strips_resume_subcommand_and_its_positional() {
 #[test]
 fn codex_drops_image_variadic_option() {
     assert_eq!(
-        preserved_arguments("codex", &v(&["--image", "a.png", "b.png", "--model", "gpt"])),
+        preserved_arguments(
+            "codex",
+            &v(&["--image", "a.png", "b.png", "--model", "gpt"])
+        ),
         some(&["--model", "gpt"])
     );
 }
@@ -190,7 +207,10 @@ fn codex_drops_image_variadic_option() {
 fn codex_fork_is_non_restorable_via_plain_preserved_arguments() {
     // `fork` is a non-restorable codex subcommand for the plain entrypoint.
     assert_eq!(
-        preserved_arguments("codex", &v(&["fork", "0199abcd-1234-5678-9abc-def012345678"])),
+        preserved_arguments(
+            "codex",
+            &v(&["fork", "0199abcd-1234-5678-9abc-def012345678"])
+        ),
         None
     );
 }
@@ -306,7 +326,12 @@ fn claude_teams_preserves_worktree_as_greedy_optional_value() {
     // Unlike base claude (which drops --worktree), Teams keeps it as a greedy
     // optional-value option.
     assert_eq!(
-        preserved_claude_teams_launch_arguments(&v(&["--worktree", "/some/path", "--model", "opus"])),
+        preserved_claude_teams_launch_arguments(&v(&[
+            "--worktree",
+            "/some/path",
+            "--model",
+            "opus"
+        ])),
         some(&["--worktree", "/some/path", "--model", "opus"])
     );
 }
@@ -314,7 +339,12 @@ fn claude_teams_preserves_worktree_as_greedy_optional_value() {
 #[test]
 fn claude_teams_prompt_suggestions_uses_choice_set() {
     assert_eq!(
-        preserved_claude_teams_launch_arguments(&v(&["--prompt-suggestions", "true", "--model", "opus"])),
+        preserved_claude_teams_launch_arguments(&v(&[
+            "--prompt-suggestions",
+            "true",
+            "--model",
+            "opus"
+        ])),
         some(&["--prompt-suggestions", "true", "--model", "opus"])
     );
     // A non-choice value ⇒ boolean flag (width 1); the stray positional terminates.
@@ -383,7 +413,10 @@ fn amp_strips_threads_continue_id_prefix() {
         some(&["-m", "gpt"])
     );
     assert_eq!(
-        preserved_arguments("amp", &v(&["threads", "continue", "id-1", "--mode", "fast"])),
+        preserved_arguments(
+            "amp",
+            &v(&["threads", "continue", "id-1", "--mode", "fast"])
+        ),
         some(&["--mode", "fast"])
     );
 }
@@ -423,7 +456,13 @@ fn opencode_strips_internal_bunfs_worker_and_keeps_first_positional() {
     assert_eq!(
         preserved_arguments(
             "opencode",
-            &v(&["/tmp/$bunfs/root/tui/worker.js", "hello", "--model", "gpt", "world"])
+            &v(&[
+                "/tmp/$bunfs/root/tui/worker.js",
+                "hello",
+                "--model",
+                "gpt",
+                "world"
+            ])
         ),
         some(&["hello", "--model", "gpt"])
     );
@@ -432,14 +471,23 @@ fn opencode_strips_internal_bunfs_worker_and_keeps_first_positional() {
 #[test]
 fn hermes_replaces_openai_codex_provider() {
     assert_eq!(
-        preserved_arguments("hermes-agent", &v(&["--provider", "openai-codex", "--model", "x"])),
+        preserved_arguments(
+            "hermes-agent",
+            &v(&["--provider", "openai-codex", "--model", "x"])
+        ),
         some(&["--provider", "custom", "--model", "x"])
     );
     assert_eq!(
-        preserved_arguments("hermes-agent", &v(&["--provider=openai-codex", "--model", "x"])),
+        preserved_arguments(
+            "hermes-agent",
+            &v(&["--provider=openai-codex", "--model", "x"])
+        ),
         some(&["--provider=custom", "--model", "x"])
     );
-    assert_eq!(preserved_arguments("hermes-agent", &v(&["--oneshot"])), None);
+    assert_eq!(
+        preserved_arguments("hermes-agent", &v(&["--oneshot"])),
+        None
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -484,7 +532,10 @@ fn qoder_smoke() {
 
 #[test]
 fn unknown_kind_is_not_restorable() {
-    assert_eq!(preserved_arguments("totally-unknown", &v(&["--model", "x"])), None);
+    assert_eq!(
+        preserved_arguments("totally-unknown", &v(&["--model", "x"])),
+        None
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -493,7 +544,10 @@ fn unknown_kind_is_not_restorable() {
 
 #[test]
 fn sanitized_requires_non_empty_executable() {
-    assert_eq!(sanitized_launch_arguments(&v(&[]), "default", "claude"), None);
+    assert_eq!(
+        sanitized_launch_arguments(&v(&[]), "default", "claude"),
+        None
+    );
     assert_eq!(
         sanitized_launch_arguments(&v(&["", "--model", "x"]), "default", "claude"),
         None
@@ -504,7 +558,14 @@ fn sanitized_requires_non_empty_executable() {
 fn sanitized_claude_teams_prepends_wrapper_verb() {
     assert_eq!(
         sanitized_launch_arguments(
-            &v(&["/bin/claude", "claude-teams", "--tmux", "classic", "--model", "opus"]),
+            &v(&[
+                "/bin/claude",
+                "claude-teams",
+                "--tmux",
+                "classic",
+                "--model",
+                "opus"
+            ]),
             "claudeTeams",
             "claude"
         ),
@@ -538,15 +599,27 @@ fn sanitized_omo_routes_to_opencode() {
 
 #[test]
 fn sanitized_omx_and_omc_are_never_restorable() {
-    assert_eq!(sanitized_launch_arguments(&v(&["/x", "a"]), "omx", "claude"), None);
-    assert_eq!(sanitized_launch_arguments(&v(&["/x", "a"]), "omc", "claude"), None);
+    assert_eq!(
+        sanitized_launch_arguments(&v(&["/x", "a"]), "omx", "claude"),
+        None
+    );
+    assert_eq!(
+        sanitized_launch_arguments(&v(&["/x", "a"]), "omc", "claude"),
+        None
+    );
 }
 
 #[test]
 fn sanitized_codex_fallback_preserves_fork() {
     assert_eq!(
         sanitized_launch_arguments(
-            &v(&["/bin/codex", "fork", "0199abcd-1234-5678-9abc-def012345678", "--model", "gpt"]),
+            &v(&[
+                "/bin/codex",
+                "fork",
+                "0199abcd-1234-5678-9abc-def012345678",
+                "--model",
+                "gpt"
+            ]),
             "unknown-launcher",
             "codex"
         ),
@@ -589,7 +662,10 @@ fn sanitized_returns_none_when_tail_is_not_restorable() {
 #[test]
 fn removes_matching_cd_option_pair() {
     assert_eq!(
-        removing_saved_working_directory_options(&v(&["--cd", "/repo", "--model", "x"]), Some("/repo")),
+        removing_saved_working_directory_options(
+            &v(&["--cd", "/repo", "--model", "x"]),
+            Some("/repo")
+        ),
         v(&["--model", "x"])
     );
 }
@@ -597,7 +673,10 @@ fn removes_matching_cd_option_pair() {
 #[test]
 fn removes_matching_equals_form() {
     assert_eq!(
-        removing_saved_working_directory_options(&v(&["--cwd=/repo", "--model", "x"]), Some("/repo")),
+        removing_saved_working_directory_options(
+            &v(&["--cwd=/repo", "--model", "x"]),
+            Some("/repo")
+        ),
         v(&["--model", "x"])
     );
 }
@@ -605,7 +684,10 @@ fn removes_matching_equals_form() {
 #[test]
 fn keeps_non_matching_working_directory_option() {
     assert_eq!(
-        removing_saved_working_directory_options(&v(&["--cd", "/other", "--model", "x"]), Some("/repo")),
+        removing_saved_working_directory_options(
+            &v(&["--cd", "/other", "--model", "x"]),
+            Some("/repo")
+        ),
         v(&["--cd", "/other", "--model", "x"])
     );
 }

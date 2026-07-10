@@ -177,7 +177,10 @@ pub struct SessionNavigationHistorySnapshot {
 impl SessionNavigationHistorySnapshot {
     /// Creates a snapshot. Port of
     /// `init(backHistoryURLStrings:forwardHistoryURLStrings:)`.
-    pub fn new(back_history_url_strings: Vec<String>, forward_history_url_strings: Vec<String>) -> Self {
+    pub fn new(
+        back_history_url_strings: Vec<String>,
+        forward_history_url_strings: Vec<String>,
+    ) -> Self {
         Self {
             back_history_url_strings,
             forward_history_url_strings,
@@ -261,7 +264,11 @@ impl RestoredSessionHistory {
     /// pass through unchanged.
     ///
     /// Port of `availability(nativeCanGoBack:nativeCanGoForward:)`.
-    pub fn availability(&self, native_can_go_back: bool, native_can_go_forward: bool) -> NavigationAvailability {
+    pub fn availability(
+        &self,
+        native_can_go_back: bool,
+        native_can_go_forward: bool,
+    ) -> NavigationAvailability {
         if self.uses_restored_session_history {
             return NavigationAvailability::new(
                 native_can_go_back || !self.back.is_empty(),
@@ -285,7 +292,9 @@ impl RestoredSessionHistory {
     ///
     /// Port of `isLiveAligned(withLiveCurrentURL:)`.
     pub fn is_live_aligned(&self, live_current_url: Option<&Url>) -> bool {
-        let live_current = self.sanitizer.serializable_session_history_url_string(live_current_url);
+        let live_current = self
+            .sanitizer
+            .serializable_session_history_url_string(live_current_url);
         let restored_current = self
             .sanitizer
             .serializable_session_history_url_string(self.current.as_ref());
@@ -312,11 +321,15 @@ impl RestoredSessionHistory {
         forward_history_url_strings: &[S],
         current_url_string: Option<&str>,
     ) -> bool {
-        let restored_back = self.sanitizer.sanitized_session_history_urls(back_history_url_strings);
+        let restored_back = self
+            .sanitizer
+            .sanitized_session_history_urls(back_history_url_strings);
         let restored_forward = self
             .sanitizer
             .sanitized_session_history_urls(forward_history_url_strings);
-        let restored_current = self.sanitizer.sanitized_session_history_url(current_url_string);
+        let restored_current = self
+            .sanitizer
+            .sanitized_session_history_url(current_url_string);
         if restored_back.is_empty() && restored_forward.is_empty() && restored_current.is_none() {
             return false;
         }
@@ -333,8 +346,11 @@ impl RestoredSessionHistory {
     /// sanitizer rejects. The caller controls ordering (e.g. `.iter()` vs
     /// `.iter().rev()`) so this preserves each call site's behavior exactly.
     fn serialize<'a>(&self, urls: impl Iterator<Item = &'a Url>) -> Vec<String> {
-        urls.filter_map(|url| self.sanitizer.serializable_session_history_url_string(Some(url)))
-            .collect()
+        urls.filter_map(|url| {
+            self.sanitizer
+                .serializable_session_history_url_string(Some(url))
+        })
+        .collect()
     }
 
     /// Captures the current back/forward URLs for persistence, given the native
@@ -387,7 +403,10 @@ impl RestoredSessionHistory {
         if !self.uses_restored_session_history {
             return RealignOutcome::NoChange;
         }
-        let live_current_string = match self.sanitizer.serializable_session_history_url_string(live_current_url) {
+        let live_current_string = match self
+            .sanitizer
+            .serializable_session_history_url_string(live_current_url)
+        {
             Some(value) => value,
             None => return RealignOutcome::NoChange,
         };
@@ -408,7 +427,10 @@ impl RestoredSessionHistory {
             .serializable_session_history_url_string(self.current.as_ref());
 
         // Swift: `restoredBack.lastIndex(of: liveCurrentString)`.
-        if let Some(back_index) = restored_back.iter().rposition(|value| value == &live_current_string) {
+        if let Some(back_index) = restored_back
+            .iter()
+            .rposition(|value| value == &live_current_string)
+        {
             let new_back: Vec<String> = restored_back[..back_index].to_vec();
             let mut new_forward: Vec<String> = restored_back[back_index + 1..].to_vec();
             if let Some(current) = &restored_current {
@@ -428,7 +450,10 @@ impl RestoredSessionHistory {
         }
 
         // Swift: `restoredForward.firstIndex(of: liveCurrentString)`.
-        if let Some(forward_index) = restored_forward.iter().position(|value| value == &live_current_string) {
+        if let Some(forward_index) = restored_forward
+            .iter()
+            .position(|value| value == &live_current_string)
+        {
             let mut new_back: Vec<String> = restored_back;
             if let Some(current) = &restored_current {
                 new_back.push(current.clone());
@@ -451,7 +476,9 @@ impl RestoredSessionHistory {
             return RealignOutcome::NoChange;
         }
         self.forward.clear();
-        RealignOutcome::ClearedForward { live_current_string }
+        RealignOutcome::ClearedForward {
+            live_current_string,
+        }
     }
 
     /// Decides how to satisfy a back request while replay is active.
@@ -556,7 +583,10 @@ mod tests {
         assert!(history.uses_restored_session_history());
         assert_eq!(history.back(), &[u("https://a.test"), u("https://b.test")]);
         // forward stored nearest-forward-last
-        assert_eq!(history.forward(), &[u("https://e.test"), u("https://d.test")]);
+        assert_eq!(
+            history.forward(),
+            &[u("https://e.test"), u("https://d.test")]
+        );
         assert_eq!(history.current(), Some(&u("https://c.test")));
     }
 
@@ -604,9 +634,16 @@ mod tests {
     #[test]
     fn go_back_pops_restored_back_and_pushes_current_to_forward() {
         let mut history = RestoredSessionHistory::new(make_sanitizer());
-        history.restore(&["https://a.test", "https://b.test"], &[], Some("https://c.test"));
+        history.restore(
+            &["https://a.test", "https://b.test"],
+            &[],
+            Some("https://c.test"),
+        );
         let decision = history.decide_go_back(true, false, Some(&u("https://c.test")));
-        assert_eq!(decision, SessionHistoryTraversalDecision::Navigate(u("https://b.test")));
+        assert_eq!(
+            decision,
+            SessionHistoryTraversalDecision::Navigate(u("https://b.test"))
+        );
         assert_eq!(history.current(), Some(&u("https://b.test")));
         assert_eq!(history.back(), &[u("https://a.test")]);
         assert_eq!(history.forward(), &[u("https://c.test")]);
@@ -645,10 +682,17 @@ mod tests {
     #[test]
     fn go_forward_pops_restored_forward_and_pushes_current_to_back() {
         let mut history = RestoredSessionHistory::new(make_sanitizer());
-        history.restore(&[], &["https://d.test", "https://e.test"], Some("https://c.test"));
+        history.restore(
+            &[],
+            &["https://d.test", "https://e.test"],
+            Some("https://c.test"),
+        );
         // forward stack: [e, d] (d is nearest-forward, last)
         let decision = history.decide_go_forward(false, Some(&u("https://c.test")));
-        assert_eq!(decision, SessionHistoryTraversalDecision::Navigate(u("https://d.test")));
+        assert_eq!(
+            decision,
+            SessionHistoryTraversalDecision::Navigate(u("https://d.test"))
+        );
         assert_eq!(history.current(), Some(&u("https://d.test")));
         assert_eq!(history.back(), &[u("https://c.test")]);
         assert_eq!(history.forward(), &[u("https://e.test")]);
@@ -658,7 +702,11 @@ mod tests {
     #[test]
     fn snapshot_when_aligned_returns_restored_back_and_forward() {
         let mut history = RestoredSessionHistory::new(make_sanitizer());
-        history.restore(&["https://a.test"], &["https://d.test"], Some("https://c.test"));
+        history.restore(
+            &["https://a.test"],
+            &["https://d.test"],
+            Some("https://c.test"),
+        );
         let snap = history.snapshot(
             &[u("https://native-b.test")],
             &[u("https://native-f.test")],
@@ -679,7 +727,11 @@ mod tests {
     #[test]
     fn snapshot_when_not_aligned_concatenates_restored_back_with_native_back() {
         let mut history = RestoredSessionHistory::new(make_sanitizer());
-        history.restore(&["https://a.test"], &["https://d.test"], Some("https://c.test"));
+        history.restore(
+            &["https://a.test"],
+            &["https://d.test"],
+            Some("https://c.test"),
+        );
         let snap = history.snapshot(
             &[u("https://native-b.test")],
             &[u("https://native-f.test")],
@@ -689,7 +741,10 @@ mod tests {
         assert_eq!(
             snap,
             SessionNavigationHistorySnapshot::new(
-                vec!["https://a.test/".to_string(), "https://native-b.test/".to_string()],
+                vec![
+                    "https://a.test/".to_string(),
+                    "https://native-b.test/".to_string()
+                ],
                 vec!["https://native-f.test/".to_string()],
             )
         );
@@ -718,21 +773,32 @@ mod tests {
     #[test]
     fn realign_moves_entries_after_a_back_list_match_into_forward() {
         let mut history = RestoredSessionHistory::new(make_sanitizer());
-        history.restore(&["https://a.test", "https://b.test"], &[], Some("https://c.test"));
+        history.restore(
+            &["https://a.test", "https://b.test"],
+            &[],
+            Some("https://c.test"),
+        );
         // live navigated back to a.test
         let outcome = history.realign(Some(&u("https://a.test")));
         assert_eq!(outcome, RealignOutcome::Rebalanced);
         assert!(history.back().is_empty());
         assert_eq!(history.current(), Some(&u("https://a.test")));
         // forward (nearest-last) should hold b then c: stored reversed -> [c, b]
-        assert_eq!(history.forward(), &[u("https://c.test"), u("https://b.test")]);
+        assert_eq!(
+            history.forward(),
+            &[u("https://c.test"), u("https://b.test")]
+        );
     }
 
     // Port of `realignClearsForward`.
     #[test]
     fn realign_clears_stale_forward_when_live_current_not_found() {
         let mut history = RestoredSessionHistory::new(make_sanitizer());
-        history.restore(&["https://a.test"], &["https://d.test"], Some("https://c.test"));
+        history.restore(
+            &["https://a.test"],
+            &["https://d.test"],
+            Some("https://c.test"),
+        );
         let outcome = history.realign(Some(&u("https://elsewhere.test")));
         // DIVERGENCE: trailing-slash normalization on the serialized payload.
         assert_eq!(
@@ -757,7 +823,11 @@ mod tests {
     #[test]
     fn abandon_clears_all_restored_state() {
         let mut history = RestoredSessionHistory::new(make_sanitizer());
-        history.restore(&["https://a.test"], &["https://d.test"], Some("https://c.test"));
+        history.restore(
+            &["https://a.test"],
+            &["https://d.test"],
+            Some("https://c.test"),
+        );
         let abandoned = history.abandon();
         assert!(abandoned);
         assert!(!history.uses_restored_session_history());
@@ -779,14 +849,22 @@ mod tests {
     fn realign_from_forward_moves_earlier_entries_into_back() {
         let mut history = RestoredSessionHistory::new(make_sanitizer());
         // forward supplied nearest-forward-first [d, e]; stored reversed -> [e, d].
-        history.restore(&["https://a.test"], &["https://d.test", "https://e.test"], Some("https://c.test"));
+        history.restore(
+            &["https://a.test"],
+            &["https://d.test", "https://e.test"],
+            Some("https://c.test"),
+        );
         // restoredForward (reversed back to nearest-first) = [d, e]; live nav to e.
         let outcome = history.realign(Some(&u("https://e.test")));
         assert_eq!(outcome, RealignOutcome::Rebalanced);
         // newBack = restoredBack[a] + current[c] + restoredForward[..e]=[d] -> [a, c, d]
         assert_eq!(
             history.back(),
-            &[u("https://a.test"), u("https://c.test"), u("https://d.test")]
+            &[
+                u("https://a.test"),
+                u("https://c.test"),
+                u("https://d.test")
+            ]
         );
         // newForward = restoredForward[after e] = [] -> stored reversed = []
         assert!(history.forward().is_empty());
@@ -798,7 +876,10 @@ mod tests {
     #[test]
     fn realign_is_no_op_when_inactive() {
         let mut history = RestoredSessionHistory::new(make_sanitizer());
-        assert_eq!(history.realign(Some(&u("https://a.test"))), RealignOutcome::NoChange);
+        assert_eq!(
+            history.realign(Some(&u("https://a.test"))),
+            RealignOutcome::NoChange
+        );
     }
 
     /// `realign` with a non-serializable (temporary) live current is a no-op.
@@ -806,8 +887,15 @@ mod tests {
     #[test]
     fn realign_is_no_op_when_live_current_not_serializable() {
         let mut history = RestoredSessionHistory::new(make_sanitizer());
-        history.restore(&["https://a.test"], &["https://d.test"], Some("https://c.test"));
-        assert_eq!(history.realign(Some(&u("cmux-diff://x"))), RealignOutcome::NoChange);
+        history.restore(
+            &["https://a.test"],
+            &["https://d.test"],
+            Some("https://c.test"),
+        );
+        assert_eq!(
+            history.realign(Some(&u("cmux-diff://x"))),
+            RealignOutcome::NoChange
+        );
         // forward untouched
         assert_eq!(history.forward(), &[u("https://d.test")]);
     }
@@ -856,7 +944,10 @@ mod tests {
         let mut history = RestoredSessionHistory::new(make_sanitizer());
         history.restore(&["https://a.test"], &[], Some("https://c.test"));
         let decision = history.decide_go_back(true, true, Some(&u("https://c.test")));
-        assert_eq!(decision, SessionHistoryTraversalDecision::Navigate(u("https://a.test")));
+        assert_eq!(
+            decision,
+            SessionHistoryTraversalDecision::Navigate(u("https://a.test"))
+        );
     }
 
     /// `decide_go_back` with a `None` resolved current still pops but pushes
@@ -866,7 +957,10 @@ mod tests {
         let mut history = RestoredSessionHistory::new(make_sanitizer());
         history.restore(&["https://a.test"], &[], Some("https://c.test"));
         let decision = history.decide_go_back(true, false, None);
-        assert_eq!(decision, SessionHistoryTraversalDecision::Navigate(u("https://a.test")));
+        assert_eq!(
+            decision,
+            SessionHistoryTraversalDecision::Navigate(u("https://a.test"))
+        );
         assert!(history.forward().is_empty());
     }
 

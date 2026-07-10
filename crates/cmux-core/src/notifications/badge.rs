@@ -36,7 +36,11 @@ pub fn normalized_tag(raw: Option<&str>) -> Option<String> {
 /// - with a normalized tag present, the label becomes `"<tag>:<unread>"` (or
 ///   just `"<tag>"` when there is no unread label).
 /// - with no tag, the result is just the unread label (possibly `None`).
-pub fn dock_badge_label(unread_count: usize, is_enabled: bool, run_tag: Option<&str>) -> Option<String> {
+pub fn dock_badge_label(
+    unread_count: usize,
+    is_enabled: bool,
+    run_tag: Option<&str>,
+) -> Option<String> {
     let unread_label: Option<String> = if is_enabled && unread_count > 0 {
         Some(if unread_count > 99 {
             "99+".to_string()
@@ -82,9 +86,15 @@ mod tests {
             Some("mytag:4".to_string())
         );
         // tag present, no unread → just the tag
-        assert_eq!(dock_badge_label(0, true, Some("mytag")), Some("mytag".to_string()));
+        assert_eq!(
+            dock_badge_label(0, true, Some("mytag")),
+            Some("mytag".to_string())
+        );
         // tag present, badges disabled → just the tag
-        assert_eq!(dock_badge_label(4, false, Some("mytag")), Some("mytag".to_string()));
+        assert_eq!(
+            dock_badge_label(4, false, Some("mytag")),
+            Some("mytag".to_string())
+        );
         // tag present, 99+ unread
         assert_eq!(
             dock_badge_label(150, true, Some("mytag")),

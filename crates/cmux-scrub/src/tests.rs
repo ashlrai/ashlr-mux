@@ -132,7 +132,8 @@ mod scrubber_tests {
 
     #[test]
     fn redacts_json_web_token() {
-        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
+        let jwt =
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
         assert_eq!(
             scrubber().scrub(&format!("session {jwt} expired")),
             "session <redacted-secret> expired"
@@ -215,7 +216,10 @@ mod scrubber_tests {
         let token_data = ScrubValue::Data(b"token=secretvalue123".to_vec());
         assert_eq!(scrubber().scrub_value(&token_data), s("<redacted-data>"));
         let dict = obj(vec![
-            ("payload", ScrubValue::Data(b"token=secretvalue123".to_vec())),
+            (
+                "payload",
+                ScrubValue::Data(b"token=secretvalue123".to_vec()),
+            ),
             ("count", ScrubValue::Int(2)),
         ]);
         let output = scrubber().scrub_dictionary(&dict);
@@ -261,7 +265,10 @@ mod scrubber_tests {
             scrubber().scrub("build dir /Users/buildbot"),
             "build dir /Users/<redacted>"
         );
-        assert_eq!(scrubber().scrub("file:///Users/alice"), "file:///Users/<redacted>");
+        assert_eq!(
+            scrubber().scrub("file:///Users/alice"),
+            "file:///Users/<redacted>"
+        );
         assert_eq!(
             scrubber().scrub("at /Users/bob in frame"),
             "at /Users/<redacted> in frame"
@@ -275,8 +282,14 @@ mod scrubber_tests {
     #[test]
     fn exact_home_directory_is_bounded_to_a_path_component() {
         let prefix_scrubber = SentryScrubber::new("/Users/al");
-        assert_eq!(prefix_scrubber.scrub("/Users/alice/x"), "/Users/<redacted>/x");
-        assert_eq!(prefix_scrubber.scrub("/Users/al/cfg"), "/Users/<redacted>/cfg");
+        assert_eq!(
+            prefix_scrubber.scrub("/Users/alice/x"),
+            "/Users/<redacted>/x"
+        );
+        assert_eq!(
+            prefix_scrubber.scrub("/Users/al/cfg"),
+            "/Users/<redacted>/cfg"
+        );
         assert_eq!(
             prefix_scrubber.scrub("at /Users/al done"),
             "at /Users/<redacted> done"
@@ -295,7 +308,10 @@ mod scrubber_tests {
             scrubber().scrub_query_string("su=rootcookie&phpsessid=deadbeef&sid=sessionval"),
             "su=<redacted-secret>&phpsessid=<redacted-secret>&sid=<redacted-secret>"
         );
-        assert_eq!(scrubber().scrub_query_string("page=2&sort=asc"), "page=2&sort=asc");
+        assert_eq!(
+            scrubber().scrub_query_string("page=2&sort=asc"),
+            "page=2&sort=asc"
+        );
     }
 
     #[test]
@@ -393,7 +409,10 @@ mod scrubber_tests {
         assert_eq!(get(&output, "password"), Some(&s("<redacted-secret>")));
         assert_eq!(get(&output, "api_key"), Some(&s("<redacted-secret>")));
         assert_eq!(get(&output, "Authorization"), Some(&s("<redacted-secret>")));
-        assert_eq!(get(&output, "note"), Some(&s("/Users/<redacted>/readme.txt")));
+        assert_eq!(
+            get(&output, "note"),
+            Some(&s("/Users/<redacted>/readme.txt"))
+        );
         assert_eq!(get(&output, "count"), Some(&ScrubValue::Int(5)));
     }
 
@@ -426,7 +445,10 @@ mod scrubber_tests {
             ("auth".to_string(), obj(vec![("bearer", s("opaquetoken"))])),
             (
                 "device".to_string(),
-                obj(vec![("cwd", s("/Users/alice/dev")), ("model", s("MacBookPro"))]),
+                obj(vec![
+                    ("cwd", s("/Users/alice/dev")),
+                    ("model", s("MacBookPro")),
+                ]),
             ),
         ];
         let output = scrubber().scrub_context(&input);
@@ -477,12 +499,18 @@ mod scrubber_tests {
             ScrubValue::Url("file:///Users/bob/x".to_string()),
         )]);
         let output = scrubber().scrub_dictionary(&input);
-        assert_eq!(get(&output, "where"), Some(&s("file:///Users/<redacted>/x")));
+        assert_eq!(
+            get(&output, "where"),
+            Some(&s("file:///Users/<redacted>/x"))
+        );
     }
 
     #[test]
     fn preserves_numeric_and_bool_scalars() {
-        assert_eq!(scrubber().scrub_value(&ScrubValue::Int(7)), ScrubValue::Int(7));
+        assert_eq!(
+            scrubber().scrub_value(&ScrubValue::Int(7)),
+            ScrubValue::Int(7)
+        );
         assert_eq!(
             scrubber().scrub_value(&ScrubValue::Double(3.5)),
             ScrubValue::Double(3.5)
@@ -540,21 +568,55 @@ mod denylists_tests {
     /// that must be treated as sensitive dictionary keys.
     const SENSITIVE_KEYS: &[&str] = &[
         // core
-        "password", "passwd", "secret", "api_key", "apikey", "auth",
-        "credentials", "mysql_pwd", "privatekey", "private_key", "token",
+        "password",
+        "passwd",
+        "secret",
+        "api_key",
+        "apikey",
+        "auth",
+        "credentials",
+        "mysql_pwd",
+        "privatekey",
+        "private_key",
+        "token",
         "session",
         // django / framework
-        "csrftoken", "sessionid", "x_csrftoken", "set_cookie", "cookie",
-        "authorization", "proxy-authorization", "x_api_key",
+        "csrftoken",
+        "sessionid",
+        "x_csrftoken",
+        "set_cookie",
+        "cookie",
+        "authorization",
+        "proxy-authorization",
+        "x_api_key",
         // in the wild
-        "aiohttp_session", "connect.sid", "csrf_token", "csrf", "_csrf",
-        "_csrf_token", "PHPSESSID", "_session", "symfony", "user_session",
-        "_xsrf", "XSRF-TOKEN",
+        "aiohttp_session",
+        "connect.sid",
+        "csrf_token",
+        "csrf",
+        "_csrf",
+        "_csrf_token",
+        "PHPSESSID",
+        "_session",
+        "symfony",
+        "user_session",
+        "_xsrf",
+        "XSRF-TOKEN",
         // PII (cmux runs sendDefaultPii = false)
-        "x_forwarded_for", "x_real_ip", "ip_address", "remote_addr",
+        "x_forwarded_for",
+        "x_real_ip",
+        "ip_address",
+        "remote_addr",
         // relay SENSITIVE_COOKIES aliases
-        "sentrysid", "su", "fasthttpsessionid", "irissessionid", "_vercel_jwt",
-        "fastcsrf", "_iris_csrf", "__session", "phpsessid",
+        "sentrysid",
+        "su",
+        "fasthttpsessionid",
+        "irissessionid",
+        "_vercel_jwt",
+        "fastcsrf",
+        "_iris_csrf",
+        "__session",
+        "phpsessid",
     ];
 
     #[test]
@@ -564,7 +626,8 @@ mod denylists_tests {
                 SentryScrubber::is_sensitive_key(key),
                 "expected '{key}' to be a sensitive key"
             );
-            let output = scrubber().scrub_dictionary(&obj(vec![(key, s("plainvalue123notapattern"))]));
+            let output =
+                scrubber().scrub_dictionary(&obj(vec![(key, s("plainvalue123notapattern"))]));
             assert_eq!(
                 get(&output, key),
                 Some(&s(REDACTED_SECRET)),
@@ -574,8 +637,15 @@ mod denylists_tests {
     }
 
     const NON_SENSITIVE_KEYS: &[&str] = &[
-        "username", "count", "path", "inside", "aside", "presidency", "issue",
-        "consumer", "describe",
+        "username",
+        "count",
+        "path",
+        "inside",
+        "aside",
+        "presidency",
+        "issue",
+        "consumer",
+        "describe",
     ];
 
     #[test]
@@ -653,9 +723,8 @@ mod denylists_tests {
     #[test]
     fn pem_key_body_does_not_survive() {
         let body = "MIIEpAIBAAKCAQEAsecretkeymaterialdoesnotleak";
-        let input = format!(
-            "leak? -----BEGIN RSA PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY-----"
-        );
+        let input =
+            format!("leak? -----BEGIN RSA PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY-----");
         let output = scrubber().scrub(&input);
         assert!(!output.contains(body), "PEM body leaked: {output}");
         assert!(

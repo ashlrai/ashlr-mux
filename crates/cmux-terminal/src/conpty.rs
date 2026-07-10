@@ -180,6 +180,12 @@ impl ConPty {
         self.size
     }
 
+    /// PID of the root process spawned inside the pseudo console, when the
+    /// backend exposes it. Used by port attribution on Windows.
+    pub fn process_id(&self) -> Option<u32> {
+        self.child.process_id()
+    }
+
     /// Forcibly terminate the child.
     pub fn kill(&mut self) -> Result<(), ConPtyError> {
         self.child

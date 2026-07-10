@@ -3,12 +3,15 @@
 //! resulting [`DispatchPlan`] — printing version/help, running the `rpc`
 //! control-socket round-trip, or failing with the correct exit code.
 
-use std::path::Path;
+use std::net::TcpListener;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Duration;
+use std::{io::Write, thread};
 
 use cmux_cli::{
-    classify_command, parse_global_options, plan, ClassifyEnv, CliError, DispatchPlan,
-    GlobalOptions, ParseOutcome,
+    classify_command, parse_global_options, plan_with_args, ClassifyEnv, CliError, DispatchPlan,
+    GlobalOptions, ParseOutcome, CMUX_WORKSPACE_ID_ENV,
 };
 
 fn main() -> ExitCode {
@@ -45,7 +48,11 @@ fn run(args: &[String]) -> Result<(), CliError> {
 /// the library); this function is the thin I/O executor — it reads the current
 /// directory and path existence for path-open classification, prints, or hands
 /// off to the `rpc` round-trip.
-fn dispatch(options: &GlobalOptions, command: &str, command_args: &[String]) -> Result<(), CliError> {
+fn dispatch(
+    options: &GlobalOptions,
+    command: &str,
+    command_args: &[String],
+) -> Result<(), CliError> {
     let cwd = std::env::current_dir().unwrap_or_default();
     let path_exists = |path: &Path| path.exists();
     let env = ClassifyEnv {
@@ -59,7 +66,7 @@ fn dispatch(options: &GlobalOptions, command: &str, command_args: &[String]) -> 
         &env,
     );
 
-    match plan(&action, command) {
+    match plan_with_args(&action, command, command_args) {
         DispatchPlan::PrintVersion => {
             print_version();
             Ok(())
@@ -73,6 +80,28 @@ fn dispatch(options: &GlobalOptions, command: &str, command_args: &[String]) -> 
             Ok(())
         }
         DispatchPlan::RunRpc => run_rpc_command(options, command_args),
+        DispatchPlan::RunSsh(args) => run_ssh_command(options, &args),
+        DispatchPlan::RunControl(control) => {
+            let ambient_workspace_id = std::env::var(CMUX_WORKSPACE_ID_ENV).ok();
+            let control = control.with_ambient_workspace_id(ambient_workspace_id.as_deref());
+            run_control_command(options, &control.method, &control.params)
+        }
+        DispatchPlan::RunEvents(args) => run_events_command(options, &args),
+        DispatchPlan::RunDiffViewerRefs(args) => {
+            let output = cmux_cli::diff_viewer_cli::run_diff_viewer_refs_command(&args, &cwd)?;
+            println!("{output}");
+            Ok(())
+        }
+        DispatchPlan::RunDiffViewerBranch(args) => {
+            let output = cmux_cli::diff_viewer_cli::run_diff_viewer_branch_command(&args, &cwd)?;
+            println!("{output}");
+            Ok(())
+        }
+        DispatchPlan::RunHooksInstaller { command, args } => {
+            let output = cmux_cli::hooks_installer::run_hooks_command(&command, &args)?;
+            print!("{output}");
+            Ok(())
+        }
         DispatchPlan::Fail(error) => Err(error),
     }
 }
@@ -103,6 +132,616 @@ fn run_rpc_command(options: &GlobalOptions, command_args: &[String]) -> Result<(
         .ok_or_else(|| CliError::new("Usage: cmux rpc <method> [json-params]"))?;
     let params = cmux_cli::parse_rpc_params(&command_args[1..])?;
 
+    run_control_command(options, method, &params)
+}
+
+#[cfg(windows)]
+fn run_control_command(
+    options: &GlobalOptions,
+    method: &str,
+    params: &serde_json::Value,
+) -> Result<(), CliError> {
+    let result = call_control_command(options, method, params)?;
+    if options.json_output {
+        println!("{}", serde_json::to_string(&result).unwrap_or_default());
+    } else {
+        println!("{}", format_control_result(method, &result));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn run_events_command(options: &GlobalOptions, command_args: &[String]) -> Result<(), CliError> {
+    let mut command = events_stream_options(command_args)?;
+    let mut printed_events = 0usize;
+    let mut last_seq = command
+        .params
+        .get("after_seq")
+        .and_then(serde_json::Value::as_u64);
+
+    loop {
+        let mut stopped_by_limit = false;
+        let mut saw_frame = false;
+        stream_control_command(options, "events.stream", &command.params, |frame| {
+            saw_frame = true;
+            let keep_reading =
+                handle_events_frame(frame, &command, &mut printed_events, &mut last_seq)?;
+            if !keep_reading {
+                stopped_by_limit = true;
+            }
+            Ok(keep_reading)
+        })?;
+
+        if stopped_by_limit || !command.reconnect {
+            break;
+        }
+        if let Some(seq) = last_seq {
+            command
+                .params
+                .as_object_mut()
+                .expect("events params are an object")
+                .insert("after_seq".to_string(), serde_json::json!(seq));
+        }
+        if !saw_frame {
+            thread::sleep(Duration::from_millis(500));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+struct EventsCommandOptions {
+    params: serde_json::Value,
+    print_ack: bool,
+    cursor_file: Option<PathBuf>,
+    event_limit: Option<usize>,
+    reconnect: bool,
+}
+
+#[cfg(windows)]
+fn events_stream_options(command_args: &[String]) -> Result<EventsCommandOptions, CliError> {
+    let mut params = serde_json::Map::new();
+    let mut names = Vec::new();
+    let mut categories = Vec::new();
+    let mut print_ack = true;
+    let mut cursor_file = None;
+    let mut event_limit = None;
+    let mut reconnect = false;
+    let mut index = 0;
+    while index < command_args.len() {
+        let arg = command_args[index].as_str();
+        match arg {
+            "--after" | "--after-seq" => {
+                index += 1;
+                let value = command_args
+                    .get(index)
+                    .ok_or_else(|| CliError::new(format!("{arg} requires a value")))?;
+                let seq = value
+                    .parse::<u64>()
+                    .map_err(|_| CliError::new(format!("{arg} requires an integer")))?;
+                params.insert("after_seq".to_string(), serde_json::json!(seq));
+            }
+            "--cursor-file" => {
+                index += 1;
+                let path = command_args
+                    .get(index)
+                    .ok_or_else(|| CliError::new("--cursor-file requires a path"))?;
+                cursor_file = Some(PathBuf::from(path));
+                if let Ok(raw) = std::fs::read_to_string(path) {
+                    if let Ok(seq) = raw.trim().parse::<u64>() {
+                        params.insert("after_seq".to_string(), serde_json::json!(seq));
+                    }
+                }
+            }
+            "--name" => {
+                index += 1;
+                let value = command_args
+                    .get(index)
+                    .ok_or_else(|| CliError::new("--name requires a value"))?;
+                names.push(value.clone());
+            }
+            "--category" => {
+                index += 1;
+                let value = command_args
+                    .get(index)
+                    .ok_or_else(|| CliError::new("--category requires a value"))?;
+                categories.push(value.clone());
+            }
+            "--limit" => {
+                index += 1;
+                let value = command_args
+                    .get(index)
+                    .ok_or_else(|| CliError::new("--limit requires a value"))?;
+                let limit = value
+                    .parse::<usize>()
+                    .map_err(|_| CliError::new("--limit requires an integer"))?;
+                if limit == 0 {
+                    return Err(CliError::new("--limit must be greater than zero"));
+                }
+                event_limit = Some(limit);
+                params.insert("limit".to_string(), serde_json::json!(limit));
+            }
+            "--no-ack" => {
+                print_ack = false;
+            }
+            "--no-heartbeat" | "--no-heartbeats" => {
+                params.insert("include_heartbeats".to_string(), serde_json::json!(false));
+            }
+            "--reconnect" => {
+                reconnect = true;
+            }
+            other => {
+                return Err(CliError::new(format!("unknown events option: {other}")));
+            }
+        }
+        index += 1;
+    }
+    if !names.is_empty() {
+        params.insert("names".to_string(), serde_json::json!(names));
+    }
+    if !categories.is_empty() {
+        params.insert("categories".to_string(), serde_json::json!(categories));
+    }
+    Ok(EventsCommandOptions {
+        params: serde_json::Value::Object(params),
+        print_ack,
+        cursor_file,
+        event_limit,
+        reconnect,
+    })
+}
+
+#[cfg(windows)]
+fn handle_events_frame(
+    frame: &str,
+    command: &EventsCommandOptions,
+    printed_events: &mut usize,
+    last_seq: &mut Option<u64>,
+) -> Result<bool, CliError> {
+    let value = serde_json::from_str::<serde_json::Value>(frame).ok();
+    let frame_type = value
+        .as_ref()
+        .and_then(|value| value.get("type"))
+        .and_then(serde_json::Value::as_str);
+    let is_event = frame_type == Some("event");
+    if is_event {
+        if command
+            .event_limit
+            .is_some_and(|limit| *printed_events >= limit)
+        {
+            return Ok(false);
+        }
+    }
+    if !(frame_type == Some("ack") && !command.print_ack) {
+        println!("{frame}");
+        std::io::stdout()
+            .flush()
+            .map_err(|error| CliError::new(format!("failed to flush stdout: {error}")))?;
+    }
+    if is_event {
+        *printed_events = (*printed_events).saturating_add(1);
+        if let Some(seq) = value
+            .as_ref()
+            .and_then(|value| value.get("seq"))
+            .and_then(serde_json::Value::as_u64)
+        {
+            *last_seq = Some(seq);
+            if let Some(path) = command.cursor_file.as_ref() {
+                write_event_cursor(path, seq)?;
+            }
+        }
+        if command
+            .event_limit
+            .is_some_and(|limit| *printed_events >= limit)
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+#[cfg(windows)]
+fn write_event_cursor(path: &Path, seq: u64) -> Result<(), CliError> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                CliError::new(format!(
+                    "failed to create cursor-file directory {}: {error}",
+                    parent.display()
+                ))
+            })?;
+        }
+    }
+    std::fs::write(path, seq.to_string()).map_err(|error| {
+        CliError::new(format!(
+            "failed to write cursor file {}: {error}",
+            path.display()
+        ))
+    })
+}
+
+fn format_control_result(method: &str, result: &serde_json::Value) -> String {
+    match method {
+        "workspace.set_progress"
+        | "workspace.clear_progress"
+        | "workspace.set_status"
+        | "workspace.clear_status"
+        | "workspace.set_agent_pid"
+        | "workspace.clear_agent_pid"
+        | "workspace.report_pr"
+        | "workspace.report_review"
+        | "workspace.clear_pr"
+        | "workspace.report_meta"
+        | "workspace.clear_meta"
+        | "workspace.report_meta_block"
+        | "workspace.clear_meta_block"
+        | "workspace.reset_sidebar"
+        | "workspace.log"
+        | "workspace.clear_log" => "OK".to_string(),
+        "surface.report_tty" | "surface.report_shell_state" => "OK".to_string(),
+        "workspace.list_status" => format_status_entries(result),
+        "workspace.list_meta" => format_metadata_entries(result),
+        "workspace.list_meta_blocks" => format_metadata_blocks(result),
+        "workspace.list_log" => format_log_entries(result),
+        "workspace.sidebar_state" => format_sidebar_state(result),
+        _ => serde_json::to_string(result).unwrap_or_default(),
+    }
+}
+
+fn format_status_entries(result: &serde_json::Value) -> String {
+    result
+        .get("status_entries")
+        .and_then(serde_json::Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .map(|entry| {
+                    let mut line = format!(
+                        "{}={}",
+                        string_field(entry, "key"),
+                        string_field(entry, "value")
+                    );
+                    append_i64_field(&mut line, entry, "priority");
+                    line
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
+}
+
+fn format_metadata_entries(result: &serde_json::Value) -> String {
+    result
+        .get("metadata_entries")
+        .and_then(serde_json::Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .map(|entry| {
+                    let mut line = format!(
+                        "{}={}",
+                        string_field(entry, "key"),
+                        string_field(entry, "value")
+                    );
+                    append_string_field(&mut line, entry, "icon");
+                    append_string_field(&mut line, entry, "color");
+                    append_string_field(&mut line, entry, "url");
+                    append_i64_field(&mut line, entry, "priority");
+                    append_string_field(&mut line, entry, "format");
+                    line
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
+}
+
+fn format_metadata_blocks(result: &serde_json::Value) -> String {
+    result
+        .get("metadata_blocks")
+        .and_then(serde_json::Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .map(|entry| {
+                    let mut line = format!(
+                        "{}={}",
+                        string_field(entry, "key"),
+                        string_field(entry, "markdown")
+                    );
+                    append_i64_field(&mut line, entry, "priority");
+                    line
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
+}
+
+fn format_log_entries(result: &serde_json::Value) -> String {
+    result
+        .get("log_entries")
+        .and_then(serde_json::Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .map(|entry| {
+                    format!(
+                        "[{}] {}",
+                        string_field(entry, "level"),
+                        string_field(entry, "message")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
+}
+
+fn format_sidebar_state(result: &serde_json::Value) -> String {
+    let mut lines = Vec::new();
+    if let Some(workspace_id) = result
+        .get("workspace_id")
+        .and_then(serde_json::Value::as_str)
+    {
+        lines.push(format!("workspace_id={workspace_id}"));
+    }
+    if let Some(workspace_ref) = result
+        .get("workspace_ref")
+        .and_then(serde_json::Value::as_str)
+    {
+        lines.push(format!("workspace_ref={workspace_ref}"));
+    }
+    lines.push(format!("ports={}", format_ports(result.get("ports"))));
+    lines.push(format!(
+        "agent_pid_count={}",
+        usize_field(result, "agent_pid_count")
+    ));
+    lines.push(format!(
+        "status_count={}",
+        usize_field(result, "status_count")
+    ));
+    lines.push(format!(
+        "metadata_count={}",
+        usize_field(result, "metadata_count")
+    ));
+    lines.push(format!(
+        "metadata_block_count={}",
+        usize_field(result, "metadata_block_count")
+    ));
+    lines.push(format!("log_count={}", usize_field(result, "log_count")));
+    lines.push(format!(
+        "progress={}",
+        format_progress(result.get("progress"))
+    ));
+
+    let status_lines = format_status_entries(result);
+    if !status_lines.is_empty() {
+        lines.push(status_lines);
+    }
+    let metadata_lines = format_metadata_entries(result);
+    if !metadata_lines.is_empty() {
+        lines.push(metadata_lines);
+    }
+    let block_lines = format_metadata_blocks(result);
+    if !block_lines.is_empty() {
+        lines.push(block_lines);
+    }
+    let log_lines = format_log_entries(result);
+    if !log_lines.is_empty() {
+        lines.push(log_lines);
+    }
+    lines.join("\n")
+}
+
+fn format_ports(ports: Option<&serde_json::Value>) -> String {
+    let Some(values) = ports.and_then(serde_json::Value::as_array) else {
+        return "none".to_string();
+    };
+    let ports: Vec<String> = values
+        .iter()
+        .filter_map(serde_json::Value::as_u64)
+        .map(|value| value.to_string())
+        .collect();
+    if ports.is_empty() {
+        "none".to_string()
+    } else {
+        ports.join(",")
+    }
+}
+
+fn format_progress(progress: Option<&serde_json::Value>) -> String {
+    let Some(progress) = progress else {
+        return "none".to_string();
+    };
+    if progress.is_null() {
+        return "none".to_string();
+    }
+    let value = progress
+        .get("value")
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(0.0)
+        .clamp(0.0, 1.0);
+    let label = progress
+        .get("label")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match label {
+        Some(label) => format!("{value:.2} {label}"),
+        None => format!("{value:.2}"),
+    }
+}
+
+fn string_field<'a>(entry: &'a serde_json::Value, key: &str) -> &'a str {
+    entry
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+}
+
+fn usize_field(entry: &serde_json::Value, key: &str) -> usize {
+    entry
+        .get(key)
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(0)
+}
+
+fn append_string_field(line: &mut String, entry: &serde_json::Value, key: &str) {
+    if let Some(value) = entry
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        line.push_str(&format!(" {key}={value}"));
+    }
+}
+
+fn append_i64_field(line: &mut String, entry: &serde_json::Value, key: &str) {
+    if let Some(value) = entry.get(key).and_then(serde_json::Value::as_i64) {
+        line.push_str(&format!(" {key}={value}"));
+    }
+}
+
+#[cfg(windows)]
+fn run_ssh_command(options: &GlobalOptions, command_args: &[String]) -> Result<(), CliError> {
+    let unique_id = uuid::Uuid::new_v4().to_string();
+    let remote_relay_port = generated_relay_port(&unique_id);
+    let local_proxy_port = reserve_loopback_port()?;
+    let startup_script_path = startup_script_path(&unique_id);
+    let plan = cmux_cli::build_ssh_command_plan(
+        command_args,
+        cmux_cli::SshCommandBuildOptions {
+            unique_id: unique_id.clone(),
+            remote_relay_port,
+            startup_script_path: startup_script_path.to_string_lossy().to_string(),
+            existing_ghostty_shell_features: std::env::var("GHOSTTY_SHELL_FEATURES").ok(),
+        },
+    )?;
+    if let Some(parent) = startup_script_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            CliError::new(format!(
+                "failed to create cmux ssh startup directory: {error}"
+            ))
+        })?;
+    }
+    std::fs::write(&startup_script_path, &plan.ssh_startup_script).map_err(|error| {
+        CliError::new(format!("failed to write cmux ssh startup script: {error}"))
+    })?;
+
+    let workspace_create_params = serde_json::json!({
+        "initial_terminal_command": plan.ssh_terminal_command,
+        "initial_terminal_environment": plan.ssh_env_overrides,
+    });
+    let created = call_control_command(options, "workspace.create", &workspace_create_params)?;
+    let workspace_id = created
+        .get("workspace_id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let workspace_ref = created
+        .get("workspace_ref")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let workspace_selector = if workspace_id.trim().is_empty() {
+        serde_json::json!({ "workspace_ref": workspace_ref })
+    } else {
+        serde_json::json!({ "workspace_id": workspace_id })
+    };
+    let mut remote_params = serde_json::Map::new();
+    if let Some(object) = workspace_selector.as_object() {
+        remote_params.extend(object.clone());
+    }
+    remote_params.insert("transport".to_string(), serde_json::json!("ssh"));
+    remote_params.insert(
+        "destination".to_string(),
+        serde_json::json!(plan.destination),
+    );
+    remote_params.insert(
+        "port".to_string(),
+        plan.port
+            .map_or(serde_json::Value::Null, serde_json::Value::from),
+    );
+    remote_params.insert(
+        "local_proxy_port".to_string(),
+        serde_json::json!(local_proxy_port),
+    );
+    remote_params.insert(
+        "persistent_daemon_slot".to_string(),
+        serde_json::json!(plan.persistent_daemon_slot),
+    );
+    remote_params.insert(
+        "remoteDaemonRelayPort".to_string(),
+        serde_json::json!(plan.remote_relay_port),
+    );
+    if let Some(identity_file) = plan.identity_file.as_ref() {
+        remote_params.insert(
+            "identity_file".to_string(),
+            serde_json::json!(identity_file),
+        );
+    }
+    remote_params.insert(
+        "ssh_options".to_string(),
+        serde_json::json!(plan.effective_ssh_options),
+    );
+    remote_params.insert("auto_connect".to_string(), serde_json::json!(true));
+    let configured = call_control_command(
+        options,
+        "workspace.remote.configure",
+        &serde_json::Value::Object(remote_params),
+    )?;
+
+    let mut output = match created {
+        serde_json::Value::Object(object) => object,
+        _ => serde_json::Map::new(),
+    };
+    output.insert(
+        "remote_relay_port".to_string(),
+        serde_json::json!(plan.remote_relay_port),
+    );
+    output.insert(
+        "local_proxy_port".to_string(),
+        serde_json::json!(local_proxy_port),
+    );
+    output.insert(
+        "ssh_command".to_string(),
+        serde_json::json!(plan.ssh_command),
+    );
+    output.insert(
+        "ssh_terminal_command".to_string(),
+        serde_json::json!(plan.ssh_terminal_command),
+    );
+    output.insert(
+        "ssh_startup_command".to_string(),
+        serde_json::json!(plan.ssh_startup_command),
+    );
+    output.insert(
+        "ssh_startup_command_text".to_string(),
+        serde_json::json!(plan.ssh_startup_command_text),
+    );
+    output.insert(
+        "ssh_env_overrides".to_string(),
+        serde_json::json!(plan.ssh_env_overrides),
+    );
+    if let Some(remote) = configured.get("remote") {
+        output.insert("remote".to_string(), remote.clone());
+    }
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::Value::Object(output)).unwrap_or_default()
+    );
+    Ok(())
+}
+
+#[cfg(windows)]
+fn call_control_command(
+    options: &GlobalOptions,
+    method: &str,
+    params: &serde_json::Value,
+) -> Result<serde_json::Value, CliError> {
     let default_addr = cmux_ipc::control_pipe_path("cmux")
         .map_err(|error| CliError::new(format!("invalid default socket name: {error}")))?;
     let env_socket_path = std::env::var("CMUX_SOCKET_PATH").ok();
@@ -134,10 +773,76 @@ fn run_rpc_command(options: &GlobalOptions, command_args: &[String]) -> Result<(
         &resolution.path,
         password.as_deref(),
         method,
-        &params,
+        params,
     ))?;
-    println!("{}", serde_json::to_string(&result).unwrap_or_default());
-    Ok(())
+    Ok(result)
+}
+
+#[cfg(windows)]
+fn stream_control_command(
+    options: &GlobalOptions,
+    method: &str,
+    params: &serde_json::Value,
+    on_frame: impl FnMut(&str) -> Result<bool, CliError>,
+) -> Result<(), CliError> {
+    let default_addr = cmux_ipc::control_pipe_path("cmux")
+        .map_err(|error| CliError::new(format!("invalid default socket name: {error}")))?;
+    let env_socket_path = std::env::var("CMUX_SOCKET_PATH").ok();
+    let env_socket = std::env::var("CMUX_SOCKET").ok();
+    let resolution = cmux_cli::resolve_socket_path(
+        options.explicit_socket_path.as_deref(),
+        cmux_cli::EnvView {
+            socket_path: env_socket_path.as_deref(),
+            socket: env_socket.as_deref(),
+        },
+        &default_addr,
+    )?;
+
+    let env_password = std::env::var("CMUX_SOCKET_PASSWORD").ok();
+    let local_app_data = std::env::var("LOCALAPPDATA").ok();
+    let file_password = cmux_cli::read_password_file(local_app_data.as_deref());
+    let password = cmux_ipc::resolve_password(cmux_ipc::PasswordSources {
+        explicit: options.socket_password.as_deref(),
+        env: env_password.as_deref(),
+        file: file_password.as_deref(),
+        keychain: None,
+    });
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| CliError::new(format!("failed to start async runtime: {error}")))?;
+    runtime.block_on(cmux_cli::transport::stream_rpc_with_handler(
+        &resolution.path,
+        password.as_deref(),
+        method,
+        params,
+        on_frame,
+    ))
+}
+
+#[cfg(windows)]
+fn reserve_loopback_port() -> Result<u16, CliError> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .map_err(|error| CliError::new(format!("failed to reserve local proxy port: {error}")))?;
+    listener
+        .local_addr()
+        .map(|addr| addr.port())
+        .map_err(|error| CliError::new(format!("failed to inspect local proxy port: {error}")))
+}
+
+#[cfg(windows)]
+fn startup_script_path(unique_id: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("cmux-ssh-startup-{unique_id}.sh"))
+}
+
+#[cfg(windows)]
+fn generated_relay_port(unique_id: &str) -> u16 {
+    let mut hash = 0u32;
+    for byte in unique_id.as_bytes() {
+        hash = hash.wrapping_mul(33).wrapping_add(u32::from(*byte));
+    }
+    20_000 + (hash % 30_000) as u16
 }
 
 /// On non-Windows targets the named-pipe transport is unavailable, so socket
@@ -148,4 +853,111 @@ fn run_rpc_command(_options: &GlobalOptions, _command_args: &[String]) -> Result
     Err(CliError::new(
         "socket commands are only supported on Windows in this build",
     ))
+}
+
+#[cfg(not(windows))]
+fn run_control_command(
+    _options: &GlobalOptions,
+    _method: &str,
+    _params: &serde_json::Value,
+) -> Result<(), CliError> {
+    Err(CliError::new(
+        "socket commands are only supported on Windows in this build",
+    ))
+}
+
+#[cfg(not(windows))]
+fn run_events_command(_options: &GlobalOptions, _command_args: &[String]) -> Result<(), CliError> {
+    Err(CliError::new(
+        "socket commands are only supported on Windows in this build",
+    ))
+}
+
+#[cfg(not(windows))]
+fn run_ssh_command(_options: &GlobalOptions, _command_args: &[String]) -> Result<(), CliError> {
+    Err(CliError::new(
+        "ssh workspace bootstrap is only supported on Windows in this build",
+    ))
+}
+
+#[cfg(all(test, windows))]
+mod events_command_tests {
+    use super::*;
+
+    #[test]
+    fn events_stream_options_reads_cursor_and_tracks_client_semantics() {
+        let cursor = std::env::temp_dir().join(format!(
+            "cmux-events-cursor-test-{}.seq",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&cursor, "41").expect("cursor seed");
+        let args = vec![
+            "--cursor-file".to_string(),
+            cursor.to_string_lossy().to_string(),
+            "--limit".to_string(),
+            "2".to_string(),
+            "--category".to_string(),
+            "workspace".to_string(),
+            "--no-ack".to_string(),
+            "--no-heartbeats".to_string(),
+            "--reconnect".to_string(),
+        ];
+
+        let options = events_stream_options(&args).expect("options");
+
+        assert_eq!(options.params["after_seq"], serde_json::json!(41));
+        assert_eq!(options.params["limit"], serde_json::json!(2));
+        assert_eq!(
+            options.params["categories"],
+            serde_json::json!(["workspace"])
+        );
+        assert_eq!(
+            options.params["include_heartbeats"],
+            serde_json::json!(false)
+        );
+        assert_eq!(options.event_limit, Some(2));
+        assert!(!options.print_ack);
+        assert!(options.reconnect);
+        assert_eq!(options.cursor_file, Some(cursor.clone()));
+        let _ = std::fs::remove_file(cursor);
+    }
+
+    #[test]
+    fn handle_events_frame_updates_cursor_and_stops_at_event_limit() {
+        let cursor = std::env::temp_dir().join(format!(
+            "cmux-events-cursor-write-test-{}.seq",
+            uuid::Uuid::new_v4()
+        ));
+        let command = EventsCommandOptions {
+            params: serde_json::json!({}),
+            print_ack: false,
+            cursor_file: Some(cursor.clone()),
+            event_limit: Some(1),
+            reconnect: false,
+        };
+        let mut printed_events = 0usize;
+        let mut last_seq = None;
+
+        assert!(handle_events_frame(
+            r#"{"type":"ack","resume":{"latest_seq":9}}"#,
+            &command,
+            &mut printed_events,
+            &mut last_seq,
+        )
+        .expect("ack"));
+        assert_eq!(printed_events, 0);
+        assert_eq!(last_seq, None);
+
+        assert!(!handle_events_frame(
+            r#"{"type":"event","seq":42,"name":"workspace.selected"}"#,
+            &command,
+            &mut printed_events,
+            &mut last_seq,
+        )
+        .expect("event"));
+        assert_eq!(printed_events, 1);
+        assert_eq!(last_seq, Some(42));
+        assert_eq!(std::fs::read_to_string(&cursor).expect("cursor"), "42");
+        let _ = std::fs::remove_file(cursor);
+    }
 }

@@ -16,11 +16,7 @@ pub struct ShortcutStroke {
     // codec (`ShortcutStroke` in CmuxSettings uses synthesized Codable, so the
     // on-disk `cmux.json` shortcut bindings carry `keyCode`). The Rust field stays
     // snake_case idiomatically; only the serialized key is renamed.
-    #[serde(
-        rename = "keyCode",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "keyCode", default, skip_serializing_if = "Option::is_none")]
     pub key_code: Option<u16>,
 }
 
@@ -163,8 +159,10 @@ impl ShortcutContext {
     }
 
     pub fn set_string(&mut self, key: &str, value: &str) {
-        self.values
-            .insert(key.to_owned(), ShortcutContextValue::String(value.to_owned()));
+        self.values.insert(
+            key.to_owned(),
+            ShortcutContextValue::String(value.to_owned()),
+        );
     }
 
     pub fn set_int(&mut self, key: &str, value: i64) {
@@ -287,19 +285,27 @@ impl ShortcutWhenClause {
                     matches!(operand, ShortcutContextOperand::Regex(regex) if context.string(key).is_some_and(|value| regex.matches(value)))
                 }
                 ShortcutComparisonOperator::LessThan => match operand {
-                    ShortcutContextOperand::Int(rhs) => context.int(key).is_some_and(|lhs| lhs < *rhs),
+                    ShortcutContextOperand::Int(rhs) => {
+                        context.int(key).is_some_and(|lhs| lhs < *rhs)
+                    }
                     _ => false,
                 },
                 ShortcutComparisonOperator::LessThanOrEqual => match operand {
-                    ShortcutContextOperand::Int(rhs) => context.int(key).is_some_and(|lhs| lhs <= *rhs),
+                    ShortcutContextOperand::Int(rhs) => {
+                        context.int(key).is_some_and(|lhs| lhs <= *rhs)
+                    }
                     _ => false,
                 },
                 ShortcutComparisonOperator::GreaterThan => match operand {
-                    ShortcutContextOperand::Int(rhs) => context.int(key).is_some_and(|lhs| lhs > *rhs),
+                    ShortcutContextOperand::Int(rhs) => {
+                        context.int(key).is_some_and(|lhs| lhs > *rhs)
+                    }
                     _ => false,
                 },
                 ShortcutComparisonOperator::GreaterThanOrEqual => match operand {
-                    ShortcutContextOperand::Int(rhs) => context.int(key).is_some_and(|lhs| lhs >= *rhs),
+                    ShortcutContextOperand::Int(rhs) => {
+                        context.int(key).is_some_and(|lhs| lhs >= *rhs)
+                    }
                     _ => false,
                 },
                 ShortcutComparisonOperator::InList => match operand {
@@ -358,7 +364,11 @@ impl ShortcutWhenClause {
         if lhs_has_priority == rhs_has_priority {
             return true;
         }
-        let (winner, loser) = if lhs_has_priority { (lhs, rhs) } else { (rhs, lhs) };
+        let (winner, loser) = if lhs_has_priority {
+            (lhs, rhs)
+        } else {
+            (rhs, lhs)
+        };
         !Self::can_coexist(loser, &Self::Not(Box::new(winner.clone())))
     }
 
@@ -405,8 +415,12 @@ impl ShortcutWhenClause {
                 .get(&format!("cmp:{key}{op:?}{operand:?}"))
                 .unwrap_or(&false),
             Self::Not(clause) => !clause.satisfies(focus, free_terms),
-            Self::And(lhs, rhs) => lhs.satisfies(focus, free_terms) && rhs.satisfies(focus, free_terms),
-            Self::Or(lhs, rhs) => lhs.satisfies(focus, free_terms) || rhs.satisfies(focus, free_terms),
+            Self::And(lhs, rhs) => {
+                lhs.satisfies(focus, free_terms) && rhs.satisfies(focus, free_terms)
+            }
+            Self::Or(lhs, rhs) => {
+                lhs.satisfies(focus, free_terms) || rhs.satisfies(focus, free_terms)
+            }
         }
     }
 }
@@ -632,7 +646,9 @@ impl Parser {
             Some(Token::Lte) => Some(ShortcutComparisonOperator::LessThanOrEqual),
             Some(Token::Gt) => Some(ShortcutComparisonOperator::GreaterThan),
             Some(Token::Gte) => Some(ShortcutComparisonOperator::GreaterThanOrEqual),
-            Some(Token::Identifier(value)) if value == "in" => Some(ShortcutComparisonOperator::InList),
+            Some(Token::Identifier(value)) if value == "in" => {
+                Some(ShortcutComparisonOperator::InList)
+            }
             _ => None,
         };
         let Some(op) = op else { return Some(lhs) };
@@ -683,7 +699,9 @@ impl Parser {
                 if name == "true" {
                     Some(ShortcutWhenClause::Always)
                 } else if name == "false" {
-                    Some(ShortcutWhenClause::Not(Box::new(ShortcutWhenClause::Always)))
+                    Some(ShortcutWhenClause::Not(Box::new(
+                        ShortcutWhenClause::Always,
+                    )))
                 } else if let Some(atom) = ShortcutFocusAtom::from_identifier(&name) {
                     Some(ShortcutWhenClause::Atom(atom))
                 } else {
@@ -706,13 +724,15 @@ impl Parser {
             ShortcutComparisonOperator::LessThan
             | ShortcutComparisonOperator::LessThanOrEqual
             | ShortcutComparisonOperator::GreaterThan
-            | ShortcutComparisonOperator::GreaterThanOrEqual => match self.tokens.get(self.index)?.clone() {
-                Token::Number(value) => {
-                    self.index += 1;
-                    Some(ShortcutContextOperand::Int(value))
+            | ShortcutComparisonOperator::GreaterThanOrEqual => {
+                match self.tokens.get(self.index)?.clone() {
+                    Token::Number(value) => {
+                        self.index += 1;
+                        Some(ShortcutContextOperand::Int(value))
+                    }
+                    _ => None,
                 }
-                _ => None,
-            },
+            }
             ShortcutComparisonOperator::InList => self.parse_list_operand(),
             ShortcutComparisonOperator::Equals | ShortcutComparisonOperator::NotEquals => {
                 match self.tokens.get(self.index)?.clone() {
@@ -779,8 +799,14 @@ mod tests {
 
     #[test]
     fn empty_clause_parses_to_always() {
-        assert_eq!(ShortcutWhenClause::parse(""), Some(ShortcutWhenClause::Always));
-        assert_eq!(ShortcutWhenClause::parse("   "), Some(ShortcutWhenClause::Always));
+        assert_eq!(
+            ShortcutWhenClause::parse(""),
+            Some(ShortcutWhenClause::Always)
+        );
+        assert_eq!(
+            ShortcutWhenClause::parse("   "),
+            Some(ShortcutWhenClause::Always)
+        );
     }
 
     #[test]
@@ -799,10 +825,15 @@ mod tests {
 
     #[test]
     fn parses_boolean_literals_and_unknown_keys() {
-        assert_eq!(ShortcutWhenClause::parse("true"), Some(ShortcutWhenClause::Always));
+        assert_eq!(
+            ShortcutWhenClause::parse("true"),
+            Some(ShortcutWhenClause::Always)
+        );
         assert_eq!(
             ShortcutWhenClause::parse("false"),
-            Some(ShortcutWhenClause::Not(Box::new(ShortcutWhenClause::Always)))
+            Some(ShortcutWhenClause::Not(Box::new(
+                ShortcutWhenClause::Always
+            )))
         );
         assert_eq!(
             ShortcutWhenClause::parse("commandPaletteVisible"),
@@ -826,12 +857,10 @@ mod tests {
 
     #[test]
     fn focus_overload_matches_terminal_behavior() {
-        assert!(ShortcutWhenClause::Atom(ShortcutFocusAtom::TerminalFocus).evaluate_focus(&state(
-            false, false, false
-        )));
-        assert!(!ShortcutWhenClause::Atom(ShortcutFocusAtom::SidebarFocus).evaluate_focus(&state(
-            false, false, false
-        )));
+        assert!(ShortcutWhenClause::Atom(ShortcutFocusAtom::TerminalFocus)
+            .evaluate_focus(&state(false, false, false)));
+        assert!(!ShortcutWhenClause::Atom(ShortcutFocusAtom::SidebarFocus)
+            .evaluate_focus(&state(false, false, false)));
     }
 
     #[test]
@@ -1209,7 +1238,7 @@ pub fn function_key_display_string(key: &str) -> Option<String> {
 /// English display label for a stored key token. Swift `keyDisplayString(_:)`.
 pub fn key_display_string(key: &str) -> String {
     match key {
-        "\t" => "Tab".to_string(),  // i18n: shortcut.key.tab
+        "\t" => "Tab".to_string(),      // i18n: shortcut.key.tab
         "space" => "Space".to_string(), // i18n: shortcut.key.space
         "\r" => "↩".to_string(),
         "media.brightnessDown" => "Brightness Down".to_string(), // i18n: shortcut.key.mediaBrightnessDown
@@ -1554,14 +1583,26 @@ impl Action {
             | SwitchRightSidebarToDock
             | FileExplorerOpenSelection
             | FileExplorerOpenSelectionFinderAlias => wc_atom(ShortcutFocusAtom::SidebarFocus),
-            RenameTab | RenameWorkspace | SendCtrlFToTerminal | ClearScreenKeepScrollback => wc_and(
-                wc_not(wc_atom(ShortcutFocusAtom::BrowserFocus)),
-                wc_not(wc_atom(ShortcutFocusAtom::SidebarFocus)),
-            ),
-            BrowserBack | BrowserForward | BrowserReload | BrowserHardReload
-            | ToggleBrowserDeveloperTools | ShowBrowserJavaScriptConsole | BrowserZoomIn
-            | BrowserZoomOut | BrowserZoomReset | ToggleBrowserFocusMode | DiffViewerScrollDown
-            | DiffViewerScrollUp | DiffViewerScrollToBottom | DiffViewerScrollToTop
+            RenameTab | RenameWorkspace | SendCtrlFToTerminal | ClearScreenKeepScrollback => {
+                wc_and(
+                    wc_not(wc_atom(ShortcutFocusAtom::BrowserFocus)),
+                    wc_not(wc_atom(ShortcutFocusAtom::SidebarFocus)),
+                )
+            }
+            BrowserBack
+            | BrowserForward
+            | BrowserReload
+            | BrowserHardReload
+            | ToggleBrowserDeveloperTools
+            | ShowBrowserJavaScriptConsole
+            | BrowserZoomIn
+            | BrowserZoomOut
+            | BrowserZoomReset
+            | ToggleBrowserFocusMode
+            | DiffViewerScrollDown
+            | DiffViewerScrollUp
+            | DiffViewerScrollToBottom
+            | DiffViewerScrollToTop
             | DiffViewerOpenFileSearch => wc_atom(ShortcutFocusAtom::BrowserFocus),
             MarkdownZoomIn | MarkdownZoomOut | MarkdownZoomReset => {
                 wc_atom(ShortcutFocusAtom::MarkdownFocus)
@@ -1573,9 +1614,18 @@ impl Action {
                     wc_not(wc_atom(ShortcutFocusAtom::MarkdownFocus)),
                 ),
             ),
-            CanvasRevealFocusedPane | CanvasOverview | CanvasZoomIn | CanvasZoomOut | CanvasTidy
-            | CanvasAlignLeft | CanvasAlignRight | CanvasAlignTop | CanvasAlignBottom
-            | CanvasEqualizeWidths | CanvasEqualizeHeights | CanvasDistributeHorizontally
+            CanvasRevealFocusedPane
+            | CanvasOverview
+            | CanvasZoomIn
+            | CanvasZoomOut
+            | CanvasTidy
+            | CanvasAlignLeft
+            | CanvasAlignRight
+            | CanvasAlignTop
+            | CanvasAlignBottom
+            | CanvasEqualizeWidths
+            | CanvasEqualizeHeights
+            | CanvasDistributeHorizontally
             | CanvasDistributeVertically => wc_key("workspaceCanvasLayout"),
             _ => ShortcutWhenClause::Always,
         }
@@ -1671,7 +1721,10 @@ pub fn shortcuts_conflict(
     let proposed_first_mode = proposed_mode(proposed_uses_numbered_digit_matching);
     let configured_first_mode = proposed_mode(configured_uses_numbered_digit_matching);
 
-    match (proposed_shortcut.has_chord(), configured_shortcut.has_chord()) {
+    match (
+        proposed_shortcut.has_chord(),
+        configured_shortcut.has_chord(),
+    ) {
         (false, false) => shortcut_stroke_matchers_conflict(
             &proposed_shortcut.first,
             proposed_first_mode,
@@ -1960,7 +2013,8 @@ mod config_and_metadata_tests {
             Some("cmd+shift+space".to_string())
         );
         assert_eq!(
-            StoredShortcut::parse_config("cmd+shift+spacebar", false).map(|s| s.config_identifier()),
+            StoredShortcut::parse_config("cmd+shift+spacebar", false)
+                .map(|s| s.config_identifier()),
             Some("cmd+shift+space".to_string())
         );
         assert_eq!(
@@ -1977,9 +2031,8 @@ mod config_and_metadata_tests {
         assert_eq!(StoredShortcut::parse_config("j", false), None);
         assert!(StoredShortcut::parse_config("j", true).is_some());
         // Chord round-trip via explicit stroke list (allow bare).
-        let chord =
-            StoredShortcut::parse_config_strokes(&["g".to_string(), "g".to_string()], true)
-                .expect("chord");
+        let chord = StoredShortcut::parse_config_strokes(&["g".to_string(), "g".to_string()], true)
+            .expect("chord");
         assert!(chord.has_chord());
         assert_eq!(chord.config_identifier(), "g g");
         // >2 strokes rejected.
@@ -2029,7 +2082,9 @@ mod config_and_metadata_tests {
             "cmd+opt+ctrl+."
         );
         assert_eq!(
-            Action::OpenDiffViewer.default_shortcut().config_identifier(),
+            Action::OpenDiffViewer
+                .default_shortcut()
+                .config_identifier(),
             "cmd+shift+ctrl+d"
         );
     }
@@ -2062,8 +2117,20 @@ mod config_and_metadata_tests {
             display_string(&Action::ToggleSplitZoom.default_shortcut(), false),
             "⇧⌘↩"
         );
-        assert_eq!(display_string(&StoredShortcut::single("space", false, false, false, false), false), "Space");
-        assert_eq!(display_string(&StoredShortcut::single("f7", false, false, false, false), true), "F7");
+        assert_eq!(
+            display_string(
+                &StoredShortcut::single("space", false, false, false, false),
+                false
+            ),
+            "Space"
+        );
+        assert_eq!(
+            display_string(
+                &StoredShortcut::single("f7", false, false, false, false),
+                true
+            ),
+            "F7"
+        );
         assert_eq!(display_string(&StoredShortcut::unbound(), false), "None");
     }
 
@@ -2099,7 +2166,9 @@ mod config_and_metadata_tests {
         let back = Action::BrowserBack.default_shortcut();
         assert!(Action::FocusHistoryBack.conflicts(&back, Action::BrowserBack, &back));
         // conflicting_action finds a colliding default for a fresh binding.
-        assert!(conflicting_action(&Action::NewTab.default_shortcut(), Action::NewSurface).is_some());
+        assert!(
+            conflicting_action(&Action::NewTab.default_shortcut(), Action::NewSurface).is_some()
+        );
         // An unbound proposal never conflicts.
         assert_eq!(
             conflicting_action(&StoredShortcut::unbound(), Action::NewTab),

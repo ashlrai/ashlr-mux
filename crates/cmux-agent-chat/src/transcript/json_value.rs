@@ -172,7 +172,9 @@ mod tests {
         assert_eq!(root.get("f").and_then(|v| v.int()), Some(1));
         assert_eq!(root.get("arr").and_then(|v| v.array()).unwrap().len(), 2);
         assert_eq!(
-            root.get("obj").and_then(|v| v.get("k")).and_then(|v| v.string()),
+            root.get("obj")
+                .and_then(|v| v.get("k"))
+                .and_then(|v| v.string()),
             Some("v")
         );
         // Subscripting a non-object reads as None, like the Swift walker.

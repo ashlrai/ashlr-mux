@@ -266,7 +266,10 @@ mod tests {
         let a = id(1);
         layout.add(CanvasPane::new(a, CanvasRect::new(0.0, 0.0, 100.0, 100.0)));
         assert!(layout.contains(a));
-        assert_eq!(layout.frame(a), Some(CanvasRect::new(0.0, 0.0, 100.0, 100.0)));
+        assert_eq!(
+            layout.frame(a),
+            Some(CanvasRect::new(0.0, 0.0, 100.0, 100.0))
+        );
         layout.remove(a);
         assert!(!layout.contains(a));
         assert_eq!(layout.frame(a), None);
@@ -282,7 +285,10 @@ mod tests {
         layout.add(CanvasPane::new(a, CanvasRect::new(40.0, 0.0, 10.0, 10.0)));
         assert_eq!(layout.panes().len(), 2);
         assert_eq!(layout.pane_ids(), vec![b, a]);
-        assert_eq!(layout.frame(a), Some(CanvasRect::new(40.0, 0.0, 10.0, 10.0)));
+        assert_eq!(
+            layout.frame(a),
+            Some(CanvasRect::new(40.0, 0.0, 10.0, 10.0))
+        );
     }
 
     #[test]
@@ -292,7 +298,10 @@ mod tests {
         let b = id(2);
         let c = id(3);
         for (pane_id, x) in [(a, 0.0), (b, 10.0), (c, 20.0)] {
-            layout.add(CanvasPane::new(pane_id, CanvasRect::new(x, 0.0, 10.0, 10.0)));
+            layout.add(CanvasPane::new(
+                pane_id,
+                CanvasRect::new(x, 0.0, 10.0, 10.0),
+            ));
         }
         layout.bring_to_front(a);
         assert_eq!(layout.pane_ids(), vec![b, c, a]);
@@ -306,8 +315,14 @@ mod tests {
         let mut layout = CanvasLayout::default();
         let back = id(1);
         let front = id(2);
-        layout.add(CanvasPane::new(back, CanvasRect::new(0.0, 0.0, 100.0, 100.0)));
-        layout.add(CanvasPane::new(front, CanvasRect::new(50.0, 50.0, 100.0, 100.0)));
+        layout.add(CanvasPane::new(
+            back,
+            CanvasRect::new(0.0, 0.0, 100.0, 100.0),
+        ));
+        layout.add(CanvasPane::new(
+            front,
+            CanvasRect::new(50.0, 50.0, 100.0, 100.0),
+        ));
         assert_eq!(layout.top_pane(CanvasPoint::new(75.0, 75.0)), Some(front));
         assert_eq!(layout.top_pane(CanvasPoint::new(10.0, 10.0)), Some(back));
         assert_eq!(layout.top_pane(CanvasPoint::new(500.0, 500.0)), None);
@@ -317,8 +332,14 @@ mod tests {
     fn content_bounds_unions_all_panes() {
         let mut layout = CanvasLayout::default();
         assert_eq!(layout.content_bounds(), None);
-        layout.add(CanvasPane::new(id(1), CanvasRect::new(-10.0, 0.0, 20.0, 20.0)));
-        layout.add(CanvasPane::new(id(2), CanvasRect::new(100.0, -50.0, 30.0, 30.0)));
+        layout.add(CanvasPane::new(
+            id(1),
+            CanvasRect::new(-10.0, 0.0, 20.0, 20.0),
+        ));
+        layout.add(CanvasPane::new(
+            id(2),
+            CanvasRect::new(100.0, -50.0, 30.0, 30.0),
+        ));
         assert_eq!(
             layout.content_bounds(),
             Some(CanvasRect::new(-10.0, -50.0, 140.0, 70.0))
@@ -345,7 +366,10 @@ mod tests {
             id(3),
             CanvasRect::new(1.5, -2.25, 320.0, 240.0),
         ));
-        layout.add(CanvasPane::new(id(1), CanvasRect::new(400.0, 0.0, 100.0, 100.0)));
+        layout.add(CanvasPane::new(
+            id(1),
+            CanvasRect::new(400.0, 0.0, 100.0, 100.0),
+        ));
         let data = serde_json::to_string(&layout).unwrap();
         let decoded: CanvasLayout = serde_json::from_str(&data).unwrap();
         assert_eq!(decoded, layout);
@@ -380,10 +404,7 @@ mod tests {
     #[test]
     fn single_tab_pane_hosts_its_founding_panel() {
         let pane = single_tab_pane(0.0);
-        assert_eq!(
-            pane.panel_ids(),
-            &[CanvasPanelID::new(pane.id.raw_value)]
-        );
+        assert_eq!(pane.panel_ids(), &[CanvasPanelID::new(pane.id.raw_value)]);
         assert_eq!(pane.selected_panel_id().raw_value, pane.id.raw_value);
     }
 
@@ -403,10 +424,7 @@ mod tests {
         assert_eq!(layout.panes().len(), 2);
         assert_eq!(layout.pane_containing(joining), Some(destination));
         assert_eq!(layout.selected_panel_id_in(destination), Some(joining));
-        assert_eq!(
-            layout.panel_ids_in(destination).map(|p| p.len()),
-            Some(2)
-        );
+        assert_eq!(layout.panel_ids_in(destination).map(|p| p.len()), Some(2));
     }
 
     #[test]
@@ -499,7 +517,10 @@ mod tests {
             CanvasRect::new(400.0, 0.0, 300.0, 200.0),
         ));
         layout.add_panel(joined, destination, None, false);
-        assert_eq!(layout.panel_ids_in(destination), Some(vec![founding, joined]));
+        assert_eq!(
+            layout.panel_ids_in(destination),
+            Some(vec![founding, joined])
+        );
 
         let new_pane_id = CanvasPaneID::new(fresh_uuid());
         let frame = CanvasRect::new(1200.0, 0.0, 300.0, 200.0);

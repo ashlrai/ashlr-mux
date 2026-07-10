@@ -58,10 +58,15 @@ pub struct PasswordSources<'a> {
 /// reads are the composition root's job (see [`PasswordSources`]), keeping the
 /// precedence policy pure and testable.
 pub fn resolve_password(sources: PasswordSources<'_>) -> Option<String> {
-    [sources.explicit, sources.env, sources.file, sources.keychain]
-        .into_iter()
-        .flatten()
-        .find_map(normalized)
+    [
+        sources.explicit,
+        sources.env,
+        sources.file,
+        sources.keychain,
+    ]
+    .into_iter()
+    .flatten()
+    .find_map(normalized)
 }
 
 /// Perform the client auth handshake on a connection: send `auth <password>` as
@@ -185,7 +190,11 @@ pub fn interpret_v2_response(raw: &str) -> Result<serde_json::Value, V2ResponseE
 fn shell_quote(value: &str) -> String {
     let is_safe = !value.is_empty()
         && value.bytes().all(|b| {
-            b.is_ascii_alphanumeric() || matches!(b, b'_' | b'@' | b'%' | b'+' | b'=' | b':' | b',' | b'.' | b'/' | b'-')
+            b.is_ascii_alphanumeric()
+                || matches!(
+                    b,
+                    b'_' | b'@' | b'%' | b'+' | b'=' | b':' | b',' | b'.' | b'/' | b'-'
+                )
         });
     if is_safe {
         value.to_owned()
@@ -354,9 +363,11 @@ mod tests {
     async fn handshake_tolerates_v2_parse_error_from_no_auth_server() {
         // A v2-only server answers the non-JSON `auth` line with a JSON error,
         // which does not start with "ERROR:" → not a handshake failure.
-        assert!(run_handshake(r#"{"ok":false,"error":{"code":"parse_error"}}"#)
-            .await
-            .is_ok());
+        assert!(
+            run_handshake(r#"{"ok":false,"error":{"code":"parse_error"}}"#)
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]
@@ -400,13 +411,17 @@ mod tests {
 
     #[test]
     fn v2_error_response_formats_code_and_message() {
-        let error =
-            interpret_v2_response(r#"{"ok":false,"error":{"code":"auth_required","message":"need auth"}}"#)
-                .unwrap_err();
-        assert_eq!(error, V2ResponseError::Failed {
-            code: "auth_required".to_owned(),
-            message: "need auth".to_owned(),
-        });
+        let error = interpret_v2_response(
+            r#"{"ok":false,"error":{"code":"auth_required","message":"need auth"}}"#,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            V2ResponseError::Failed {
+                code: "auth_required".to_owned(),
+                message: "need auth".to_owned(),
+            }
+        );
         assert_eq!(error.to_string(), "auth_required: need auth");
     }
 
@@ -438,7 +453,17 @@ mod tests {
 
     #[test]
     fn shell_quote_passes_safe_tokens_verbatim() {
-        for safe in ["list_windows", "ws-1", "a.b/c", "user@host", "k=v", "100%", "a,b", "x:y", "_"] {
+        for safe in [
+            "list_windows",
+            "ws-1",
+            "a.b/c",
+            "user@host",
+            "k=v",
+            "100%",
+            "a,b",
+            "x:y",
+            "_",
+        ] {
             assert_eq!(shell_quote(safe), safe, "{safe:?} should pass verbatim");
         }
     }
@@ -465,7 +490,10 @@ mod tests {
 
     #[test]
     fn interpret_v1_response_passes_body_and_flags_error() {
-        assert_eq!(interpret_v1_response("OK: 3 windows").unwrap(), "OK: 3 windows");
+        assert_eq!(
+            interpret_v1_response("OK: 3 windows").unwrap(),
+            "OK: 3 windows"
+        );
         // A bare success body is returned as-is (not JSON-parsed, unlike v2).
         assert_eq!(interpret_v1_response("[1,2]").unwrap(), "[1,2]");
         let error = interpret_v1_response("ERROR: no such window").unwrap_err();

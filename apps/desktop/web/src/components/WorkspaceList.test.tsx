@@ -9,6 +9,7 @@ import {
 import {
   clickModifiers,
   renameActionForKey,
+  SIDEBAR_DRAG_CLEAR_EVENTS,
   WorkspaceList,
 } from "./WorkspaceList";
 
@@ -24,8 +25,9 @@ function row(
   id: string,
   group: string | undefined,
   pinned: boolean,
+  customColor?: string,
 ): WorkspaceRow {
-  return { id, groupId: group, isPinned: pinned };
+  return { id, groupId: group, isPinned: pinned, customColor };
 }
 
 function group(
@@ -33,6 +35,7 @@ function group(
   anchor: string,
   collapsed: boolean,
   pinned = false,
+  customColor?: string,
 ): WorkspaceGroup {
   return {
     id,
@@ -40,11 +43,16 @@ function group(
     isCollapsed: collapsed,
     isPinned: pinned,
     anchorWorkspaceId: anchor,
+    customColor,
   };
 }
 
 function groupsMap(groups: WorkspaceGroup[]): Map<string, WorkspaceGroup> {
   return new Map(groups.map((g) => [g.id, g]));
+}
+
+function count(haystack: string, needle: string): number {
+  return haystack.split(needle).length - 1;
 }
 
 describe("WorkspaceList", () => {
@@ -74,8 +82,9 @@ describe("WorkspaceList", () => {
     // The chevron is an interactive collapse-toggle button (canonical: a
     // separate tap target from the header body), not a decorative span.
     expect(markup).toContain(
-      '<button type="button" class="cmux-sidebar-group-chevron" aria-label="Collapse group"',
+      '<button type="button" class="cmux-sidebar-group-chevron"',
     );
+    expect(markup).toContain('aria-label="Collapse group"');
     expect(markup).not.toContain('cmux-sidebar-group-chevron" aria-hidden');
     // Structural: an <svg> is emitted from the reused Icon.
     expect(markup).toContain("<svg");
@@ -124,6 +133,252 @@ describe("WorkspaceList", () => {
     );
   });
 
+  test("renders an optional workspace description under the title", () => {
+    const { solo } = UUID;
+    const items = renderItems([row(solo, undefined, false)], groupsMap([]));
+    const markup = renderToStaticMarkup(
+      <WorkspaceList
+        items={items}
+        titleForWorkspace={() => "zsh"}
+        descriptionForWorkspace={() => "Build is red"}
+      />,
+    );
+    expect(markup).toContain("cmux-sidebar-row-text has-description");
+    expect(markup).toContain('<span class="cmux-sidebar-row-label">zsh</span>');
+    expect(markup).toContain(
+      '<span class="cmux-sidebar-row-description">Build is red</span>',
+    );
+  });
+
+  test("renders workspace progress as a compact progressbar", () => {
+    const { solo } = UUID;
+    const items = renderItems([row(solo, undefined, false)], groupsMap([]));
+    const markup = renderToStaticMarkup(
+      <WorkspaceList
+        items={items}
+        progressForWorkspace={() => ({ value: 0.375, label: "Building" })}
+      />,
+    );
+
+    expect(markup).toContain('role="progressbar"');
+    expect(markup).toContain('aria-valuenow="38"');
+    expect(markup).toContain("Building 38%");
+    expect(markup).toContain("width:38%");
+  });
+
+  test("renders workspace status and log details", () => {
+    const { solo } = UUID;
+    const items = renderItems([row(solo, undefined, false)], groupsMap([]));
+    const markup = renderToStaticMarkup(
+      <WorkspaceList
+        items={items}
+        detailsForWorkspace={() => ({
+          statusEntries: [{ key: "build", value: "green", priority: 80 }],
+          metadataEntries: [
+            {
+              key: "task",
+              value: "review",
+              icon: "text:CTX",
+              url: "https://example.test/pr",
+              format: "markdown",
+              priority: 70,
+            },
+          ],
+          metadataBlocks: [
+            { key: "notes", markdown: "**Ready** to ship", priority: 10 },
+          ],
+          logEntries: [{ level: "info", message: "ship it", createdAt: 42 }],
+        })}
+      />,
+    );
+
+    expect(markup).toContain("cmux-sidebar-row-status");
+    expect(markup).toContain("build");
+    expect(markup).toContain("green");
+    expect(markup).toContain("cmux-sidebar-row-meta");
+    expect(markup).toContain("task");
+    expect(markup).toContain("review");
+    expect(markup).toContain("href=\"https://example.test/pr\"");
+    expect(markup).toContain("cmux-sidebar-row-meta-block");
+    expect(markup).toContain("notes");
+    expect(markup).toContain("**Ready** to ship");
+    expect(markup).toContain("cmux-sidebar-row-log");
+    expect(markup).toContain("[info]");
+    expect(markup).toContain("ship it");
+  });
+
+  test("wrapWorkspaceTitles marks row labels as wrappable", () => {
+    const { solo } = UUID;
+    const items = renderItems([row(solo, undefined, false)], groupsMap([]));
+    const markup = renderToStaticMarkup(
+      <WorkspaceList
+        items={items}
+        titleForWorkspace={() => "A very long workspace title"}
+        wrapWorkspaceTitles
+      />,
+    );
+
+    expect(markup).toContain("cmux-sidebar-row-text can-wrap-title");
+    expect(markup).toContain(">A very long workspace title<");
+  });
+
+  test("renders branch and pull-request badges for workspace rows", () => {
+    const { solo } = UUID;
+    const items = renderItems([row(solo, undefined, false)], groupsMap([]));
+    const markup = renderToStaticMarkup(
+      <WorkspaceList
+        items={items}
+        titleForWorkspace={() => "zsh"}
+        badgesForWorkspace={() => ({
+          branchSummaryText: "feature*",
+          badges: [
+            {
+              kind: "branch",
+              id: "branch:feature",
+              label: "feature*",
+              tone: "secondary",
+              name: "feature",
+              isDirty: true,
+            },
+            {
+              kind: "pullRequest",
+              id: "owner/repo#12|https://github.com/owner/repo/pull/12",
+              label: "owner/repo #12",
+              tone: "secondaryStale",
+              statusLabel: "open",
+              status: "open",
+              url: "https://github.com/owner/repo/pull/12",
+              number: 12,
+              repoLabel: "owner/repo",
+              isStale: true,
+            },
+            {
+              kind: "shellActivity",
+              id: "shell-activity:running",
+              label: "shell",
+              tone: "secondary",
+              status: "running",
+              statusLabel: "running",
+              runningPanelCount: 1,
+              title: "Running command in surface-1",
+            },
+            {
+              kind: "port",
+              id: "port:5173",
+              label: ":5173",
+              tone: "secondary",
+              port: 5173,
+              url: "http://localhost:5173",
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(markup).toContain("cmux-sidebar-row-badges");
+    expect(markup).toContain(
+      'class="cmux-sidebar-row-badge cmux-sidebar-row-badge--branch"',
+    );
+    expect(markup).toContain("feature*");
+    expect(markup).toContain(
+      'class="cmux-sidebar-row-badge cmux-sidebar-row-badge--pull-request is-stale"',
+    );
+    expect(markup).toContain('href="https://github.com/owner/repo/pull/12"');
+    expect(markup).toContain("owner/repo #12");
+    expect(markup).toContain(
+      '<span class="cmux-sidebar-row-badge-status">open</span>',
+    );
+    expect(markup).toContain(
+      'class="cmux-sidebar-row-badge cmux-sidebar-row-badge--port"',
+    );
+    expect(markup).toContain(
+      'class="cmux-sidebar-row-badge cmux-sidebar-row-badge--shell-activity"',
+    );
+    expect(markup).toContain(
+      '<span class="cmux-sidebar-row-badge-status">running</span>',
+    );
+    expect(markup).toContain('href="http://localhost:5173"');
+    expect(markup).toContain(":5173");
+  });
+
+  test("inline branch layout renders the compact branch summary once", () => {
+    const { solo } = UUID;
+    const items = renderItems([row(solo, undefined, false)], groupsMap([]));
+    const markup = renderToStaticMarkup(
+      <WorkspaceList
+        items={items}
+        titleForWorkspace={() => "zsh"}
+        branchLayout="inline"
+        badgesForWorkspace={() => ({
+          branchSummaryText: "main* | feature",
+          badges: [
+            {
+              kind: "branch",
+              id: "branch:main",
+              label: "main*",
+              tone: "secondary",
+              name: "main",
+              isDirty: true,
+            },
+            {
+              kind: "branch",
+              id: "branch:feature",
+              label: "feature",
+              tone: "secondary",
+              name: "feature",
+              isDirty: false,
+            },
+            {
+              kind: "port",
+              id: "port:5173",
+              label: ":5173",
+              tone: "secondary",
+              port: 5173,
+              url: "http://localhost:5173",
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(markup).toContain("main* | feature");
+    expect(count(markup, "cmux-sidebar-row-badge--branch")).toBe(1);
+    expect(markup).toContain(":5173");
+  });
+
+  test("pull-request badges render as inert pills when clickability is disabled", () => {
+    const { solo } = UUID;
+    const items = renderItems([row(solo, undefined, false)], groupsMap([]));
+    const markup = renderToStaticMarkup(
+      <WorkspaceList
+        items={items}
+        titleForWorkspace={() => "zsh"}
+        makePullRequestsClickable={false}
+        badgesForWorkspace={() => ({
+          branchSummaryText: null,
+          badges: [
+            {
+              kind: "pullRequest",
+              id: "owner/repo#12|https://github.com/owner/repo/pull/12",
+              label: "owner/repo #12",
+              tone: "secondary",
+              statusLabel: "open",
+              status: "open",
+              url: "https://github.com/owner/repo/pull/12",
+              number: 12,
+              repoLabel: "owner/repo",
+              isStale: false,
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(markup).toContain("owner/repo #12");
+    expect(markup).toContain("cmux-sidebar-row-badge--pull-request");
+    expect(markup).not.toContain('href="https://github.com/owner/repo/pull/12"');
+  });
+
   test("close affordance renders only when canCloseWorkspaces", () => {
     const { solo } = UUID;
     const items = renderItems([row(solo, undefined, false)], groupsMap([]));
@@ -138,6 +393,89 @@ describe("WorkspaceList", () => {
     );
     expect(withClose).toContain("cmux-sidebar-row-close");
     expect(withClose).toContain('aria-label="Close zsh"');
+  });
+
+  test("selected workspace close affordance is visible without hover", () => {
+    const { solo } = UUID;
+    const items = renderItems([row(solo, undefined, false)], groupsMap([]));
+    const markup = renderToStaticMarkup(
+      <WorkspaceList
+        items={items}
+        canCloseWorkspaces
+        selectedWorkspaceIds={new Set([solo])}
+        titleForWorkspace={() => "zsh"}
+      />,
+    );
+
+    expect(markup).toContain(
+      'class="cmux-sidebar-row-close is-visible"',
+    );
+    expect(markup).toContain('aria-label="Close zsh"');
+  });
+
+  test("rows and group headers become draggable when reorder is enabled", () => {
+    const { gid, anchor, member, solo } = UUID;
+    const tabs = [
+      row(anchor, gid, false),
+      row(member, gid, false),
+      row(solo, undefined, false),
+    ];
+    const items = renderItems(tabs, groupsMap([group(gid, anchor, false)]));
+    const markup = renderToStaticMarkup(
+      <WorkspaceList items={items} onReorderWorkspace={() => {}} />,
+    );
+
+    expect(markup).toContain(`data-group-id="${gid}"`);
+    expect(markup).toContain(`data-workspace-id="${member}"`);
+    expect(markup).toContain(`data-workspace-id="${solo}"`);
+    // One header + two visible rows = three draggable list items.
+    expect((markup.match(/draggable="true"/g) ?? []).length).toBe(3);
+  });
+
+  test("sidebar drag cleanup covers cancelled and outside-drop paths", () => {
+    expect(SIDEBAR_DRAG_CLEAR_EVENTS.windowImmediate).toEqual([
+      "dragend",
+      "blur",
+    ]);
+    expect(SIDEBAR_DRAG_CLEAR_EVENTS.windowDeferred).toEqual(["drop"]);
+    expect(SIDEBAR_DRAG_CLEAR_EVENTS.documentImmediate).toEqual([
+      "visibilitychange",
+    ]);
+  });
+
+  test("group custom colors tint the header and member rows", () => {
+    const { gid, anchor, member } = UUID;
+    const tabs = [row(anchor, gid, false), row(member, gid, false)];
+    const items = renderItems(
+      tabs,
+      groupsMap([group(gid, anchor, false, false, "#33AA77")]),
+    );
+    const markup = renderToStaticMarkup(<WorkspaceList items={items} />);
+
+    expect(markup).toContain('class="cmux-sidebar-group-header has-accent');
+    expect(markup).toContain('class="cmux-sidebar-row has-accent"');
+    expect(markup).toContain('--cmux-sidebar-accent:#33AA77');
+    expect((markup.match(/cmux-sidebar-accent-pill/g) ?? []).length).toBe(2);
+  });
+
+  test("workspace custom color overrides inherited group tint", () => {
+    const { gid, anchor, member } = UUID;
+    const tabs = [
+      row(anchor, gid, false),
+      row(member, gid, false, "#1565C0"),
+    ];
+    const items = renderItems(
+      tabs,
+      groupsMap([group(gid, anchor, false, false, "#C0392B")]),
+    );
+    const markup = renderToStaticMarkup(<WorkspaceList items={items} />);
+
+    expect(markup).toContain(
+      `style="--cmux-sidebar-accent:#C0392B" data-group-id="${gid}" data-collapsed="false"`,
+    );
+    expect(markup).toContain(
+      `style="--cmux-sidebar-accent:#1565C0" data-workspace-id="${member}"`,
+    );
   });
 
   test("applies selected and pinned classes to workspace rows", () => {
@@ -258,6 +596,53 @@ describe("WorkspaceList", () => {
     expect(markup).not.toContain("cmux-sidebar-row-pin");
   });
 
+  test("renders an opened workspace context menu with shared row actions", () => {
+    const { solo, member } = UUID;
+    const items = renderItems(
+      [row(solo, undefined, true), row(member, undefined, false)],
+      groupsMap([]),
+    );
+    const markup = renderToStaticMarkup(
+      <WorkspaceList
+        items={items}
+        titleForWorkspace={(id) => (id === solo ? "Pinned" : "Other")}
+        canCloseWorkspaces
+        onRenameWorkspace={() => {}}
+        onSetWorkspacePinned={() => {}}
+        onContextMenuAction={() => {}}
+        defaultContextMenuTarget={{ kind: "workspace", workspaceId: solo }}
+      />,
+    );
+
+    expect(markup).toContain('role="menu"');
+    expect(markup).toContain('aria-label="More actions for Pinned"');
+    expect(markup).toContain('aria-expanded="true"');
+    expect(markup).toContain("New Workspace");
+    expect(markup).toContain("Rename Workspace");
+    expect(markup).toContain("Unpin Workspace");
+    expect(markup).toContain("Close Workspace");
+    expect(markup).toContain("Close Other Workspaces");
+  });
+
+  test("workspace context menu disables unavailable row actions", () => {
+    const { solo } = UUID;
+    const items = renderItems([row(solo, undefined, false)], groupsMap([]));
+    const markup = renderToStaticMarkup(
+      <WorkspaceList
+        items={items}
+        onContextMenuAction={() => {}}
+        defaultContextMenuTarget={{ kind: "workspace", workspaceId: solo }}
+      />,
+    );
+
+    expect(markup).toContain("Rename Workspace");
+    expect(markup).toContain("Pin Workspace");
+    expect(markup).toContain("Close Workspace");
+    // Rename, pin, close, and close-others are disabled. New Workspace stays
+    // enabled through the shared sidebar action sink.
+    expect((markup.match(/disabled=""/g) ?? []).length).toBe(4);
+  });
+
   test("group header markup carries no pin toggle", () => {
     // Collapsed group: only the header renders (member rows suppressed), so
     // the whole markup must be pin-toggle-free even with the handler wired
@@ -270,6 +655,27 @@ describe("WorkspaceList", () => {
     );
     expect(markup).toContain("cmux-sidebar-group-header");
     expect(markup).not.toContain("cmux-sidebar-row-pin");
+  });
+
+  test("renders an opened group context menu with group actions", () => {
+    const { gid, anchor, member } = UUID;
+    const tabs = [row(anchor, gid, false), row(member, gid, false)];
+    const items = renderItems(tabs, groupsMap([group(gid, anchor, false)]));
+    const markup = renderToStaticMarkup(
+      <WorkspaceList
+        items={items}
+        canCloseWorkspaces
+        onToggleGroupCollapsed={() => {}}
+        onContextMenuAction={() => {}}
+        defaultContextMenuTarget={{ kind: "group", groupId: gid }}
+      />,
+    );
+
+    expect(markup).toContain('aria-label="More actions for group G"');
+    expect(markup).toContain("New Workspace");
+    expect(markup).toContain("Collapse Group");
+    expect(markup).toContain("Close Group");
+    expect(markup).not.toContain("Rename Workspace");
   });
 
   test("clickModifiers: shift, ctrl, meta, none", () => {
