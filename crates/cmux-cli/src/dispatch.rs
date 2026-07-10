@@ -61,6 +61,8 @@ pub enum DispatchPlan {
     RunSettings(Vec<String>),
     /// Render local config help and reference modes without a socket.
     RunConfig(Vec<String>),
+    /// Edit a supported Ghostty config key, then best-effort reload the app.
+    RunConfigMutation(Vec<String>),
     /// Run a local hooks installer/uninstaller command.
     RunHooksInstaller { command: String, args: Vec<String> },
     /// Read one agent hook payload from stdin and bridge it through `feed.push`.
@@ -420,6 +422,15 @@ pub fn plan_with_args(action: &PreSocketAction, command: &str, args: &[String]) 
                     command: command.to_owned(),
                     args: args.to_vec(),
                 }
+            } else if command == "config"
+                && args.first().is_some_and(|argument| {
+                    matches!(
+                        argument.to_lowercase().as_str(),
+                        "set" | "sidebar-font-size" | "surface-tab-bar-font-size"
+                    )
+                })
+            {
+                DispatchPlan::RunConfigMutation(args.to_vec())
             } else if let Some(control) = match control_command_for(command, args) {
                 Ok(control) => control,
                 Err(error) => return DispatchPlan::Fail(error),
@@ -824,9 +835,22 @@ mod tests {
             "14".to_string(),
         ];
         match plan_with_args(&PreSocketAction::NeedsSocket, "config", &set) {
-            DispatchPlan::Fail(error) => assert!(error.message.contains("not yet ported")),
-            other => panic!("expected Fail, got {other:?}"),
+            DispatchPlan::RunConfigMutation(planned) => assert_eq!(planned, set),
+            other => panic!("expected RunConfigMutation, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn config_set_routes_to_the_local_mutation_executor() {
+        let args = vec![
+            "set".to_string(),
+            "sidebar-font-size".to_string(),
+            "14".to_string(),
+        ];
+        assert_eq!(
+            plan_with_args(&PreSocketAction::NeedsSocket, "config", &args),
+            DispatchPlan::RunConfigMutation(args)
+        );
     }
 
     #[test]

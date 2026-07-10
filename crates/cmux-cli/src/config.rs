@@ -149,18 +149,10 @@ fn run_config_get_font_size(
 fn parsed_font_size(contents: &str, descriptor: FontSizeDescriptor) -> Option<f64> {
     let mut latest = None;
     for line in contents.lines() {
-        let mut trimmed = line.trim();
-        if let Some(without_bom) = trimmed.strip_prefix('\u{feff}') {
-            trimmed = without_bom.trim();
-        }
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        let Some((key, value)) = trimmed.split_once('=') else {
-            continue;
-        };
-        if key.trim() == descriptor.key {
-            latest = Some(value.trim());
+        if let Some((key, value)) = parsed_setting(line) {
+            if key == descriptor.key {
+                latest = Some(value);
+            }
         }
     }
     let value = latest?.trim_matches('"').parse::<f64>().ok()?;
@@ -179,6 +171,190 @@ fn format_font_size(value: f64) -> String {
         format!("{whole}.{}", fraction / 10)
     } else {
         format!("{whole}.{fraction:02}")
+    }
+}
+
+fn parsed_setting(line: &str) -> Option<(&str, &str)> {
+    let mut trimmed = line.trim();
+    if let Some(without_bom) = trimmed.strip_prefix('\u{feff}') {
+        trimmed = without_bom.trim();
+    }
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return None;
+    }
+    let (key, value) = trimmed.split_once('=')?;
+    let key = key.trim();
+    (!key.is_empty()).then(|| (key, value.trim()))
+}
+
+pub fn run_config_mutation<F>(
+    command_args: &[String],
+    global_json: bool,
+    reload: F,
+) -> Result<ConfigCommandOutput, CliError>
+where
+    F: FnOnce() -> Result<String, CliError>,
+{
+    let ghostty_path = cmux_config::ghostty_config_path();
+    run_config_mutation_at(command_args, global_json, ghostty_path.as_deref(), reload)
+}
+
+fn run_config_mutation_at<F>(
+    command_args: &[String],
+    global_json: bool,
+    ghostty_path: Option<&Path>,
+    reload: F,
+) -> Result<ConfigCommandOutput, CliError>
+where
+    F: FnOnce() -> Result<String, CliError>,
+{
+    let parsed = crate::docs::parse_docs_settings_args(command_args, global_json);
+    let args = &parsed.arguments;
+    let subcommand = args.first().map(|argument| argument.to_lowercase());
+    let (descriptor, raw_value) = match subcommand.as_deref() {
+        Some("set") => {
+            if args.len() != 3 {
+                return Err(CliError::new(
+                    "Usage: cmux config set <sidebar-font-size|surface-tab-bar-font-size> <points>",
+                ));
+            }
+            let descriptor = font_size_descriptor(args[1]).ok_or_else(|| {
+                CliError::new(
+                    "Usage: cmux config set <sidebar-font-size|surface-tab-bar-font-size> <points>",
+                )
+            })?;
+            (descriptor, args[2])
+        }
+        Some(key @ ("sidebar-font-size" | "surface-tab-bar-font-size")) => {
+            if args.len() != 2 {
+                return Err(CliError::new(format!("Usage: cmux config {key} [points]")));
+            }
+            let descriptor = font_size_descriptor(key).ok_or_else(font_size_get_usage)?;
+            (descriptor, args[1])
+        }
+        Some(other) => {
+            return Err(CliError::new(format!(
+                "Unknown config subcommand '{other}'. Run 'cmux config --help'."
+            )));
+        }
+        None => return Err(CliError::new(CONFIG_USAGE)),
+    };
+    let requested_value = raw_value
+        .parse::<f64>()
+        .map_err(|_| CliError::new(format!("{} requires a numeric point size", descriptor.key)))?;
+    if !requested_value.is_finite() {
+        return Err(CliError::new(format!(
+            "{} requires a numeric point size",
+            descriptor.key
+        )));
+    }
+    let value = requested_value.clamp(descriptor.min_value, descriptor.max_value);
+    let formatted = format_font_size(value);
+    let path = ghostty_path
+        .ok_or_else(|| CliError::new("unable to determine Ghostty config directory"))?;
+    write_font_size_setting(path, descriptor.key, &formatted)?;
+
+    let (reload_status, reload_message) = match reload() {
+        Ok(_) => ("reloaded", None),
+        Err(error) => ("failed", Some(error.message)),
+    };
+    let output = if parsed.wants_json {
+        let mut payload = serde_json::json!({
+            "clamped": value != requested_value,
+            "formatted": formatted,
+            "key": descriptor.key,
+            "ok": true,
+            "path": path.to_string_lossy(),
+            "reload": reload_status,
+            "value": value,
+        });
+        if let (Some(message), Some(object)) = (reload_message.as_ref(), payload.as_object_mut()) {
+            object.insert("reload_message".into(), serde_json::json!(message));
+        }
+        serde_json::to_string_pretty(&payload).map_err(|error| {
+            CliError::new(format!("failed to encode config font-size JSON: {error}"))
+        })?
+    } else {
+        let mut lines = match reload_status {
+            "reloaded" => vec![format!("OK {} = {} (reloaded)", descriptor.key, formatted)],
+            _ => {
+                let mut lines = vec![format!(
+                    "OK {} = {} (saved; reload failed)",
+                    descriptor.key, formatted
+                )];
+                if let Some(message) = reload_message {
+                    lines.push(format!("reload: {message}"));
+                }
+                lines.push("Run `cmux config reload` after cmux is running to apply it.".into());
+                lines
+            }
+        };
+        lines.push(format!("path: {}", tilde_path(path)));
+        lines.join("\n")
+    };
+    Ok(ConfigCommandOutput::success(output))
+}
+
+fn write_font_size_setting(path: &Path, key: &str, value: &str) -> Result<(), CliError> {
+    let write_path = config_write_path(path);
+    let contents = std::fs::read_to_string(&write_path)
+        .or_else(|_| std::fs::read_to_string(path))
+        .unwrap_or_default();
+    let updated = updated_setting_contents(&contents, key, value);
+    let parent = write_path.parent().ok_or_else(|| {
+        CliError::new(format!(
+            "Ghostty config path has no parent: {}",
+            write_path.display()
+        ))
+    })?;
+    std::fs::create_dir_all(parent).map_err(|error| {
+        CliError::new(format!(
+            "failed to create Ghostty config directory {}: {error}",
+            parent.display()
+        ))
+    })?;
+    std::fs::write(&write_path, updated).map_err(|error| {
+        CliError::new(format!(
+            "failed to write Ghostty config {}: {error}",
+            write_path.display()
+        ))
+    })
+}
+
+fn updated_setting_contents(contents: &str, key: &str, value: &str) -> String {
+    let mut lines: Vec<String> = contents.split('\n').map(str::to_string).collect();
+    if contents.ends_with('\n') {
+        lines.pop();
+    }
+    if lines.len() == 1 && lines[0].is_empty() {
+        lines.clear();
+    }
+    let mut replaced = false;
+    for line in &mut lines {
+        if parsed_setting(line).is_some_and(|(candidate, _)| candidate == key) {
+            *line = format!("{key} = {value}");
+            replaced = true;
+        }
+    }
+    if !replaced {
+        lines.push(format!("{key} = {value}"));
+    }
+    lines.join("\n") + "\n"
+}
+
+fn config_write_path(path: &Path) -> PathBuf {
+    let Ok(destination) = std::fs::read_link(path) else {
+        return path.to_path_buf();
+    };
+    if destination.is_absolute() {
+        normalize_path(&destination)
+    } else {
+        normalize_path(
+            &path
+                .parent()
+                .unwrap_or_else(|| Path::new(""))
+                .join(destination),
+        )
     }
 }
 
@@ -742,6 +918,74 @@ mod tests {
         assert_eq!(missing_json["value"], 12.5);
         assert_eq!(missing_json["configured"], false);
         assert!(missing_json.get("configured_value").is_none());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn font_size_mutation_preserves_config_and_reports_reload_outcome() {
+        let root = std::env::temp_dir().join(format!("cmux-config-set-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let config_path = root.join("config.ghostty");
+        std::fs::write(
+            &config_path,
+            b"# keep\nfont-family = Mono\nsidebar-font-size = 11\nsidebar-font-size=12\n",
+        )
+        .unwrap();
+
+        let saved = run_config_mutation_at(
+            &string_args(&["set", "sidebar-font-size", "99"]),
+            true,
+            Some(&config_path),
+            || Err(CliError::new("desktop is offline")),
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&config_path).unwrap(),
+            "# keep\nfont-family = Mono\nsidebar-font-size = 20\nsidebar-font-size = 20\n"
+        );
+        let saved_json: serde_json::Value = serde_json::from_str(&saved.output).unwrap();
+        assert_eq!(saved_json["value"], 20.0);
+        assert_eq!(saved_json["clamped"], true);
+        assert_eq!(saved_json["reload"], "failed");
+        assert_eq!(saved_json["reload_message"], "desktop is offline");
+
+        let reloaded = run_config_mutation_at(
+            &string_args(&["surface-tab-bar-font-size", "13.50"]),
+            false,
+            Some(&config_path),
+            || Ok("OK".to_string()),
+        )
+        .unwrap();
+        assert!(reloaded
+            .output
+            .starts_with("OK surface-tab-bar-font-size = 13.5 (reloaded)\npath: "));
+        assert!(std::fs::read_to_string(&config_path)
+            .unwrap()
+            .ends_with("surface-tab-bar-font-size = 13.5\n"));
+
+        let invalid = run_config_mutation_at(
+            &string_args(&["set", "sidebar-font-size", "nan"]),
+            false,
+            None,
+            || panic!("invalid values must fail before reload"),
+        )
+        .unwrap_err();
+        assert_eq!(
+            invalid.message,
+            "sidebar-font-size requires a numeric point size"
+        );
+        let unknown = run_config_mutation_at(
+            &string_args(&["set", "font-size", "12"]),
+            false,
+            None,
+            || panic!("invalid keys must fail before reload"),
+        )
+        .unwrap_err();
+        assert_eq!(
+            unknown.message,
+            "Usage: cmux config set <sidebar-font-size|surface-tab-bar-font-size> <points>"
+        );
 
         std::fs::remove_dir_all(root).unwrap();
     }

@@ -122,6 +122,7 @@ fn dispatch(
             println!("{}", result.output);
             result.failure.map_or(Ok(()), Err)
         }
+        DispatchPlan::RunConfigMutation(args) => run_config_mutation_command(options, &args),
         DispatchPlan::RunHooksInstaller { command, args } => {
             let output = cmux_cli::hooks_installer::run_hooks_command(&command, &args)?;
             print!("{output}");
@@ -534,6 +535,33 @@ fn print_version() {
 /// adapted slice; for now this is the one-line synopsis.
 fn print_top_level_help() {
     println!("Usage: cmux <path>|<command> [options]");
+}
+
+#[cfg(windows)]
+fn run_config_mutation_command(
+    options: &GlobalOptions,
+    command_args: &[String],
+) -> Result<(), CliError> {
+    let result = cmux_cli::config::run_config_mutation(command_args, options.json_output, || {
+        call_control_command(options, "config.reload", &serde_json::json!({}))
+            .map(|value| format_control_result("config.reload", &value))
+    })?;
+    println!("{}", result.output);
+    result.failure.map_or(Ok(()), Err)
+}
+
+#[cfg(not(windows))]
+fn run_config_mutation_command(
+    options: &GlobalOptions,
+    command_args: &[String],
+) -> Result<(), CliError> {
+    let result = cmux_cli::config::run_config_mutation(command_args, options.json_output, || {
+        Err(CliError::new(
+            "socket commands are only supported on Windows in this build",
+        ))
+    })?;
+    println!("{}", result.output);
+    result.failure.map_or(Ok(()), Err)
 }
 
 /// `cmux rpc <method> [json-params]` — resolve the socket address and password
