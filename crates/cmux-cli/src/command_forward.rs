@@ -148,6 +148,10 @@ pub fn control_command_for(
 ) -> Result<Option<ControlCommand>, CliError> {
     let mapped = match command {
         "ping" => Some(ControlCommand::new("ping", serde_json::json!({}))),
+        "capabilities" => Some(ControlCommand::new(
+            "system.capabilities",
+            serde_json::json!({}),
+        )),
         "identify" => Some(ControlCommand::new(
             "system.identify",
             serde_json::json!({}),
@@ -3181,6 +3185,13 @@ mod tests {
         let command = mapped("list-workspaces", &[]).with_ambient_workspace_id(Some("workspace-2"));
         assert_eq!(command.method, "workspace.list");
         assert_eq!(command.params, serde_json::json!({}));
+    }
+
+    #[test]
+    fn maps_system_commands() {
+        assert_eq!(mapped("ping", &[]).method, "ping");
+        assert_eq!(mapped("capabilities", &[]).method, "system.capabilities");
+        assert_eq!(mapped("identify", &[]).method, "system.identify");
     }
 
     #[test]

@@ -82,6 +82,9 @@ pub fn subcommand_help_text(command: &str) -> String {
 fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
     match command {
         "ping" => Some("Usage:\n  cmux ping\n\nSends a ping to the control socket."),
+        "capabilities" => Some(
+            "Usage:\n  cmux capabilities\n\nPrints the control socket's supported methods and platform metadata as JSON.",
+        ),
         "identify" => Some(
             "Usage:\n  cmux identify\n\nPrints desktop/control-socket identity metadata.",
         ),
@@ -435,6 +438,21 @@ mod tests {
                 assert!(!text.contains("not yet ported"));
             }
             other => panic!("expected PrintLine, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn capabilities_help_and_route_are_concrete() {
+        let help = subcommand_help_text("capabilities");
+        assert!(help.contains("Usage:\n  cmux capabilities"));
+        assert!(!help.contains("not yet ported"));
+
+        match plan(&PreSocketAction::NeedsSocket, "capabilities") {
+            DispatchPlan::RunControl(control) => {
+                assert_eq!(control.method, "system.capabilities");
+                assert_eq!(control.params, serde_json::json!({}));
+            }
+            other => panic!("expected RunControl, got {other:?}"),
         }
     }
 
