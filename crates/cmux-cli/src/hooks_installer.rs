@@ -20,14 +20,32 @@ pub struct ClaudeIntegrationPlan {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum HooksRequest {
-    InstallClaude { yes: bool },
-    InstallKiro { yes: bool },
+    Claude { yes: bool },
+    Kiro { yes: bool },
+    Nested { agent: String, yes: bool },
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NestedAgentDef {
+    name: &'static str,
+    display_name: &'static str,
+    config_dir: &'static str,
+    config_file: &'static str,
+    env_override: Option<&'static str>,
+    env_subdir: Option<&'static str>,
+    lifecycle_timeout: u64,
+    feed_timeout: u64,
+    events: &'static [(&'static str, &'static str)],
+    feed_events: &'static [&'static str],
 }
 
 pub fn run_hooks_command(command: &str, args: &[String]) -> Result<String, CliError> {
     match parse_hooks_request(command, args)? {
-        HooksRequest::InstallClaude { yes } => install_claude_code_integration(yes),
-        HooksRequest::InstallKiro { yes } => install_kiro_hooks(yes),
+        HooksRequest::Claude { yes } => install_claude_code_integration(yes),
+        HooksRequest::Kiro { yes } => install_kiro_hooks(yes),
+        HooksRequest::Nested { agent, yes } => {
+            install_nested_hooks(nested_agent(&agent).expect("parsed nested agent"), yes)
+        }
     }
 }
 
@@ -46,25 +64,33 @@ fn parse_hooks_request(command: &str, args: &[String]) -> Result<HooksRequest, C
 fn parse_hooks_subcommand(tokens: &[String], yes: bool) -> Result<HooksRequest, CliError> {
     match tokens.first().map(String::as_str) {
         Some("claude") | Some("claude-code") => match tokens.get(1).map(String::as_str) {
-            None | Some("install") | Some("setup") => Ok(HooksRequest::InstallClaude { yes }),
+            None | Some("install") | Some("setup") => Ok(HooksRequest::Claude { yes }),
             Some("uninstall") => Err(unsupported_hooks_command("hooks claude uninstall")),
             Some(other) => Err(CliError::new(format!(
                 "unsupported Claude hooks action '{other}'; use 'cmux hooks claude install'"
             ))),
         },
         Some("kiro") => match tokens.get(1).map(String::as_str) {
-            None | Some("install") | Some("setup") => Ok(HooksRequest::InstallKiro { yes }),
+            None | Some("install") | Some("setup") => Ok(HooksRequest::Kiro { yes }),
             Some(other) => Err(CliError::new(format!(
                 "unsupported Kiro hooks action '{other}'; use 'cmux hooks kiro install'"
+            ))),
+        },
+        Some(agent) if nested_agent(agent).is_some() => match tokens.get(1).map(String::as_str) {
+            None | Some("install") | Some("setup") => Ok(HooksRequest::Nested {
+                agent: agent.to_string(),
+                yes,
+            }),
+            Some(other) => Err(CliError::new(format!(
+                "unsupported {agent} hooks action '{other}'; use 'cmux hooks {agent} install'"
             ))),
         },
         Some("setup") => parse_setup_tokens(&tokens[1..], yes),
         Some("uninstall") => Err(unsupported_hooks_command("hooks uninstall")),
         Some(other) => Err(CliError::new(format!(
-            "only Claude Code hook installation is available in this Windows port slice; \
-             use 'cmux hooks claude install' instead of 'cmux hooks {other}'"
+            "hook installation for '{other}' is not available yet"
         ))),
-        None => Err(CliError::new("Usage: cmux hooks claude install [--yes|-y]")),
+        None => Err(CliError::new("Usage: cmux hooks AGENT install [--yes|-y]")),
     }
 }
 
@@ -96,16 +122,279 @@ fn parse_setup_tokens(tokens: &[String], yes: bool) -> Result<HooksRequest, CliE
     }
 
     match agent {
-        Some("claude") | Some("claude-code") => Ok(HooksRequest::InstallClaude { yes }),
-        Some("kiro") => Ok(HooksRequest::InstallKiro { yes }),
+        Some("claude") | Some("claude-code") => Ok(HooksRequest::Claude { yes }),
+        Some("kiro") => Ok(HooksRequest::Kiro { yes }),
+        Some(agent) if nested_agent(agent).is_some() => Ok(HooksRequest::Nested {
+            agent: agent.to_string(),
+            yes,
+        }),
         Some(other) => Err(CliError::new(format!(
-            "only Claude Code hook installation is available in this Windows port slice; \
-             '{other}' is not installed by this command yet"
+            "hook installation for '{other}' is not available yet"
         ))),
-        None => Err(CliError::new(
-            "cmux hooks setup requires --agent claude in the Windows port today",
-        )),
+        None => Err(CliError::new("cmux hooks setup requires --agent AGENT")),
     }
+}
+
+fn nested_agent(name: &str) -> Option<&'static NestedAgentDef> {
+    static AGENTS: &[NestedAgentDef] = &[
+        NestedAgentDef {
+            name: "gemini",
+            display_name: "Gemini",
+            config_dir: ".gemini",
+            config_file: "settings.json",
+            env_override: None,
+            env_subdir: None,
+            lifecycle_timeout: 10_000,
+            feed_timeout: 120_000,
+            events: &[
+                ("SessionStart", "session-start"),
+                ("BeforeAgent", "prompt-submit"),
+                ("AfterAgent", "stop"),
+                ("SessionEnd", "session-end"),
+            ],
+            feed_events: &["PreToolUse"],
+        },
+        NestedAgentDef {
+            name: "grok",
+            display_name: "Grok",
+            config_dir: ".grok/hooks",
+            config_file: "cmux-session.json",
+            env_override: Some("GROK_HOME"),
+            env_subdir: Some("hooks"),
+            lifecycle_timeout: 5,
+            feed_timeout: 120,
+            events: &[
+                ("SessionStart", "session-start"),
+                ("UserPromptSubmit", "prompt-submit"),
+                ("Stop", "stop"),
+                ("Notification", "notification"),
+                ("SessionEnd", "session-end"),
+            ],
+            feed_events: &["PreToolUse"],
+        },
+        NestedAgentDef {
+            name: "copilot",
+            display_name: "Copilot",
+            config_dir: ".copilot",
+            config_file: "config.json",
+            env_override: Some("COPILOT_HOME"),
+            env_subdir: None,
+            lifecycle_timeout: 5_000,
+            feed_timeout: 120_000,
+            events: &[
+                ("SessionStart", "session-start"),
+                ("Stop", "stop"),
+                ("Notification", "stop"),
+                ("SessionEnd", "session-end"),
+            ],
+            feed_events: &["PreToolUse"],
+        },
+        NestedAgentDef {
+            name: "codebuddy",
+            display_name: "CodeBuddy",
+            config_dir: ".codebuddy",
+            config_file: "settings.json",
+            env_override: Some("CODEBUDDY_CONFIG_DIR"),
+            env_subdir: None,
+            lifecycle_timeout: 5_000,
+            feed_timeout: 120_000,
+            events: &[
+                ("SessionStart", "session-start"),
+                ("Stop", "stop"),
+                ("Notification", "stop"),
+                ("SessionEnd", "session-end"),
+            ],
+            feed_events: &["PreToolUse"],
+        },
+        NestedAgentDef {
+            name: "factory",
+            display_name: "Factory",
+            config_dir: ".factory",
+            config_file: "settings.json",
+            env_override: None,
+            env_subdir: None,
+            lifecycle_timeout: 5_000,
+            feed_timeout: 120_000,
+            events: &[
+                ("SessionStart", "session-start"),
+                ("Stop", "stop"),
+                ("Notification", "stop"),
+                ("SessionEnd", "session-end"),
+            ],
+            feed_events: &["PreToolUse"],
+        },
+        NestedAgentDef {
+            name: "qoder",
+            display_name: "Qoder",
+            config_dir: ".qoder",
+            config_file: "settings.json",
+            env_override: Some("QODER_CONFIG_DIR"),
+            env_subdir: None,
+            lifecycle_timeout: 5_000,
+            feed_timeout: 120_000,
+            events: &[
+                ("SessionStart", "session-start"),
+                ("Stop", "stop"),
+                ("SessionEnd", "session-end"),
+            ],
+            feed_events: &["PreToolUse"],
+        },
+    ];
+    AGENTS.iter().find(|agent| agent.name == name)
+}
+
+fn install_nested_hooks(agent: &NestedAgentDef, yes: bool) -> Result<String, CliError> {
+    let path = nested_hooks_path(agent)?;
+    let before = read_config_or_empty_object(&path)?;
+    let plan = plan_nested_hooks_update(&before, &path, agent)?;
+    if !plan.changed {
+        return Ok(format!(
+            "{} hooks already up to date at {}\n",
+            agent.display_name,
+            path.display()
+        ));
+    }
+    if !confirm_hook_change(&plan.diff, yes)? {
+        return Ok("Cancelled. No files were changed.\n".to_string());
+    }
+    write_config(&path, &plan.after)?;
+    Ok(format!(
+        "{} hooks installed at {}\n",
+        agent.display_name,
+        path.display()
+    ))
+}
+
+fn nested_hooks_path(agent: &NestedAgentDef) -> Result<PathBuf, CliError> {
+    let home = || {
+        std::env::var_os("USERPROFILE")
+            .or_else(|| std::env::var_os("HOME"))
+            .map(PathBuf::from)
+    };
+    let override_directory = agent
+        .env_override
+        .and_then(std::env::var_os)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let used_override = override_directory.is_some();
+    let mut directory = match override_directory {
+        Some(directory) => directory,
+        None => home()
+            .ok_or_else(|| {
+                CliError::new(format!(
+                    "unable to determine {} config directory",
+                    agent.display_name
+                ))
+            })?
+            .join(agent.config_dir),
+    };
+    if used_override {
+        if let Some(subdir) = agent.env_subdir {
+            directory.push(subdir);
+        }
+    }
+    Ok(directory.join(agent.config_file))
+}
+
+fn plan_nested_hooks_update(
+    before: &str,
+    path: &Path,
+    agent: &NestedAgentDef,
+) -> Result<ClaudeIntegrationPlan, CliError> {
+    let before = normalize_config_text(before)?;
+    let mut value: serde_json::Value = serde_json::from_str(&before).map_err(|error| {
+        CliError::new(format!(
+            "failed to parse {} config: {error}",
+            agent.display_name
+        ))
+    })?;
+    let object = value.as_object_mut().ok_or_else(|| {
+        CliError::new(format!(
+            "{} config must be a JSON object",
+            agent.display_name
+        ))
+    })?;
+    let hooks = object
+        .entry("hooks")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .ok_or_else(|| {
+            CliError::new(format!(
+                "{} config key 'hooks' must be an object",
+                agent.display_name
+            ))
+        })?;
+    for (event, action, timeout, feed) in agent
+        .events
+        .iter()
+        .map(|(event, action)| (*event, *action, agent.lifecycle_timeout, false))
+        .chain(
+            agent
+                .feed_events
+                .iter()
+                .map(|event| (*event, *event, agent.feed_timeout, true)),
+        )
+    {
+        let groups = hooks
+            .entry(event)
+            .or_insert_with(|| serde_json::json!([]))
+            .as_array_mut()
+            .ok_or_else(|| {
+                CliError::new(format!(
+                    "{} hook '{event}' must be an array",
+                    agent.display_name
+                ))
+            })?;
+        groups.retain(|group| !nested_group_is_owned(group, agent.name));
+        let command = if feed {
+            format!("cmux hooks feed --source {} --event {event}", agent.name)
+        } else {
+            format!("cmux hooks {} {action}", agent.name)
+        };
+        groups.push(serde_json::json!({
+            "hooks":[{"type":"command","command":command,"timeout":timeout}]
+        }));
+    }
+    let after = serde_json::to_string_pretty(&value).map_err(|error| {
+        CliError::new(format!(
+            "failed to encode {} config: {error}",
+            agent.display_name
+        ))
+    })?;
+    Ok(ClaudeIntegrationPlan {
+        changed: before != after,
+        diff: unified_diff(path, &before, &after),
+        before,
+        after,
+    })
+}
+
+fn nested_group_is_owned(group: &serde_json::Value, agent: &str) -> bool {
+    group
+        .get("hooks")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|hook| hook.get("command").and_then(serde_json::Value::as_str))
+        .any(|command| {
+            command.contains(&format!("cmux hooks {agent}"))
+                || command.contains(&format!("hooks feed --source {agent}"))
+        })
+}
+
+fn confirm_hook_change(diff: &str, yes: bool) -> Result<bool, CliError> {
+    if yes {
+        return Ok(true);
+    }
+    print!("{diff}\nType y to apply this change: ");
+    io::stdout()
+        .flush()
+        .map_err(|error| CliError::new(format!("failed to flush stdout: {error}")))?;
+    let mut answer = String::new();
+    io::stdin()
+        .read_line(&mut answer)
+        .map_err(|error| CliError::new(format!("failed to read confirmation: {error}")))?;
+    Ok(matches!(answer.trim(), "y" | "Y"))
 }
 
 fn install_kiro_hooks(yes: bool) -> Result<String, CliError> {
@@ -118,18 +407,8 @@ fn install_kiro_hooks(yes: bool) -> Result<String, CliError> {
             path.display()
         ));
     }
-    if !yes {
-        print!("{}\nType y to apply this change: ", plan.diff);
-        io::stdout()
-            .flush()
-            .map_err(|error| CliError::new(format!("failed to flush stdout: {error}")))?;
-        let mut answer = String::new();
-        io::stdin()
-            .read_line(&mut answer)
-            .map_err(|error| CliError::new(format!("failed to read confirmation: {error}")))?;
-        if !matches!(answer.trim(), "y" | "Y") {
-            return Ok("Cancelled. No files were changed.\n".to_string());
-        }
+    if !confirm_hook_change(&plan.diff, yes)? {
+        return Ok("Cancelled. No files were changed.\n".to_string());
     }
     write_config(&path, &plan.after)?;
     Ok(format!(
@@ -460,7 +739,7 @@ mod tests {
             let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
             assert_eq!(
                 parse_hooks_request(command, &args).expect("request"),
-                HooksRequest::InstallClaude {
+                HooksRequest::Claude {
                     yes: args.iter().any(|arg| arg == "--yes" || arg == "-y")
                 }
             );
@@ -477,7 +756,7 @@ mod tests {
             let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
             assert_eq!(
                 parse_hooks_request(command, &args).expect("request"),
-                HooksRequest::InstallKiro {
+                HooksRequest::Kiro {
                     yes: args.iter().any(|arg| arg == "--yes" || arg == "-y")
                 }
             );
@@ -513,5 +792,66 @@ mod tests {
 
         let repeated = plan_kiro_hooks_update(&plan.after, &path()).unwrap();
         assert!(!repeated.changed);
+    }
+
+    #[test]
+    fn parses_nested_json_agent_install_spellings() {
+        for agent in ["gemini", "grok", "copilot", "codebuddy", "factory", "qoder"] {
+            let request = parse_hooks_request(
+                "hooks",
+                &[
+                    agent.to_string(),
+                    "install".to_string(),
+                    "--yes".to_string(),
+                ],
+            )
+            .unwrap();
+            assert_eq!(
+                request,
+                HooksRequest::Nested {
+                    agent: agent.to_string(),
+                    yes: true,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn nested_json_plan_preserves_user_groups_and_agent_timeout_units() {
+        let before = r#"{"theme":"dark","hooks":{"PreToolUse":[{"matcher":"user","hooks":[{"type":"command","command":"user-check","timeout":7}]}]}}"#;
+        let gemini = nested_agent("gemini").unwrap();
+        let plan = plan_nested_hooks_update(before, &path(), gemini).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&plan.after).unwrap();
+        assert_eq!(value["theme"], "dark");
+        assert_eq!(value["hooks"]["PreToolUse"][0]["matcher"], "user");
+        assert_eq!(
+            value["hooks"]["SessionStart"][0]["hooks"][0]["timeout"],
+            10_000
+        );
+        assert_eq!(
+            value["hooks"]["PreToolUse"][1]["hooks"][0]["timeout"],
+            120_000
+        );
+        assert!(value["hooks"]["PreToolUse"][1]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .contains("hooks feed --source gemini --event PreToolUse"));
+        assert!(
+            !plan_nested_hooks_update(&plan.after, &path(), gemini)
+                .unwrap()
+                .changed
+        );
+
+        let grok = nested_agent("grok").unwrap();
+        let grok_plan = plan_nested_hooks_update("{}", &path(), grok).unwrap();
+        let grok_value: serde_json::Value = serde_json::from_str(&grok_plan.after).unwrap();
+        assert_eq!(
+            grok_value["hooks"]["SessionStart"][0]["hooks"][0]["timeout"],
+            5
+        );
+        assert_eq!(
+            grok_value["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"],
+            120
+        );
     }
 }
