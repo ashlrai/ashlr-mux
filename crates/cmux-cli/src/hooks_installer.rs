@@ -31,8 +31,11 @@ enum HooksRequest {
     Antigravity { yes: bool },
     OpenCode { yes: bool, project: bool },
     Pi { yes: bool },
+    PiUninstall,
     Omp { yes: bool },
+    OmpUninstall,
     Amp { yes: bool },
+    AmpUninstall,
     Rovo { yes: bool },
     Hermes { yes: bool },
     Kimi { yes: bool },
@@ -77,8 +80,11 @@ pub fn run_hooks_command(command: &str, args: &[String]) -> Result<String, CliEr
         HooksRequest::Antigravity { yes } => install_antigravity_hooks(yes),
         HooksRequest::OpenCode { yes, project } => install_opencode_hooks(yes, project),
         HooksRequest::Pi { yes } => install_pi_hooks(yes),
+        HooksRequest::PiUninstall => uninstall_pi_hooks(),
         HooksRequest::Omp { yes } => install_omp_hooks(yes),
+        HooksRequest::OmpUninstall => uninstall_omp_hooks(),
         HooksRequest::Amp { yes } => install_amp_hooks(yes),
+        HooksRequest::AmpUninstall => uninstall_amp_hooks(),
         HooksRequest::Rovo { yes } => install_rovo_hooks(yes),
         HooksRequest::Hermes { yes } => install_hermes_hooks(yes),
         HooksRequest::Kimi { yes } => install_kimi_hooks(yes),
@@ -128,20 +134,23 @@ fn parse_hooks_subcommand(tokens: &[String], yes: bool) -> Result<HooksRequest, 
         Some("opencode") => parse_opencode_tokens(&tokens[1..], yes),
         Some("pi") => match tokens.get(1).map(String::as_str) {
             None | Some("install") | Some("setup") => Ok(HooksRequest::Pi { yes }),
+            Some("uninstall") => Ok(HooksRequest::PiUninstall),
             Some(other) => Err(CliError::new(format!(
-                "unsupported Pi hooks action '{other}'; use 'cmux hooks pi install'"
+                "unsupported Pi hooks action '{other}'; use 'cmux hooks pi install|uninstall'"
             ))),
         },
         Some("omp") => match tokens.get(1).map(String::as_str) {
             None | Some("install") | Some("setup") => Ok(HooksRequest::Omp { yes }),
+            Some("uninstall") => Ok(HooksRequest::OmpUninstall),
             Some(other) => Err(CliError::new(format!(
-                "unsupported OMP hooks action '{other}'; use 'cmux hooks omp install'"
+                "unsupported OMP hooks action '{other}'; use 'cmux hooks omp install|uninstall'"
             ))),
         },
         Some("amp") => match tokens.get(1).map(String::as_str) {
             None | Some("install") | Some("setup") => Ok(HooksRequest::Amp { yes }),
+            Some("uninstall") => Ok(HooksRequest::AmpUninstall),
             Some(other) => Err(CliError::new(format!(
-                "unsupported Amp hooks action '{other}'; use 'cmux hooks amp install'"
+                "unsupported Amp hooks action '{other}'; use 'cmux hooks amp install|uninstall'"
             ))),
         },
         Some("rovodev") | Some("rovo") => match tokens.get(1).map(String::as_str) {
@@ -262,6 +271,11 @@ fn install_pi_hooks(yes: bool) -> Result<String, CliError> {
     install_marked_extension("Pi", &path, PI_EXTENSION_SOURCE, PI_EXTENSION_MARKER, yes)
 }
 
+fn uninstall_pi_hooks() -> Result<String, CliError> {
+    let path = pi_extension_path(&pi_config_dir()?);
+    remove_marked_extension("Pi", "extension", &path, PI_EXTENSION_MARKER)
+}
+
 fn pi_config_dir() -> Result<PathBuf, CliError> {
     if let Ok(raw) = std::env::var("PI_CODING_AGENT_DIR") {
         let trimmed = raw.trim();
@@ -289,6 +303,11 @@ fn install_omp_hooks(yes: bool) -> Result<String, CliError> {
     )
 }
 
+fn uninstall_omp_hooks() -> Result<String, CliError> {
+    let path = omp_extension_path(&omp_config_dir()?);
+    remove_marked_extension("OMP", "extension", &path, OMP_EXTENSION_MARKER)
+}
+
 fn install_marked_extension(
     display_name: &str,
     path: &Path,
@@ -313,6 +332,58 @@ fn install_marked_extension(
         "{display_name} hooks installed at {}\n",
         path.display()
     ))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MarkedRemoval {
+    Missing,
+    Refuse,
+    Remove,
+}
+
+fn marked_removal(existing: Option<&str>, marker: &str) -> MarkedRemoval {
+    match existing {
+        None => MarkedRemoval::Missing,
+        Some(contents) if contents.contains(marker) => MarkedRemoval::Remove,
+        Some(_) => MarkedRemoval::Refuse,
+    }
+}
+
+fn remove_marked_extension(
+    display_name: &str,
+    noun: &str,
+    path: &Path,
+    marker: &str,
+) -> Result<String, CliError> {
+    let existing = match fs::read_to_string(path) {
+        Ok(contents) => Some(contents),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(CliError::new(format!(
+                "failed to read {}: {error}",
+                path.display()
+            )))
+        }
+    };
+    match marked_removal(existing.as_deref(), marker) {
+        MarkedRemoval::Missing => Ok(format!(
+            "No {display_name} cmux {noun} found at {}\n",
+            path.display()
+        )),
+        MarkedRemoval::Refuse => Ok(format!(
+            "Refusing to remove {}: missing cmux marker\n",
+            path.display()
+        )),
+        MarkedRemoval::Remove => {
+            fs::remove_file(path).map_err(|error| {
+                CliError::new(format!("failed to remove {}: {error}", path.display()))
+            })?;
+            Ok(format!(
+                "Removed {display_name} cmux {noun} from {}\n",
+                path.display()
+            ))
+        }
+    }
 }
 
 fn omp_config_dir() -> Result<PathBuf, CliError> {
@@ -346,11 +417,19 @@ fn omp_extension_path(config_dir: &Path) -> PathBuf {
 }
 
 fn install_amp_hooks(yes: bool) -> Result<String, CliError> {
-    let config_dir = home_dir()
-        .map(|home| home.join(".config").join("amp"))
-        .ok_or_else(|| CliError::new("unable to determine Amp config directory"))?;
-    let path = amp_plugin_path(&config_dir);
+    let path = amp_plugin_path(&amp_config_dir()?);
     install_marked_extension("Amp", &path, AMP_PLUGIN_SOURCE, AMP_PLUGIN_MARKER, yes)
+}
+
+fn uninstall_amp_hooks() -> Result<String, CliError> {
+    let path = amp_plugin_path(&amp_config_dir()?);
+    remove_marked_extension("Amp", "plugin", &path, AMP_PLUGIN_MARKER)
+}
+
+fn amp_config_dir() -> Result<PathBuf, CliError> {
+    home_dir()
+        .map(|home| home.join(".config").join("amp"))
+        .ok_or_else(|| CliError::new("unable to determine Amp config directory"))
 }
 
 fn amp_plugin_path(config_dir: &Path) -> PathBuf {
@@ -2818,6 +2897,34 @@ mod tests {
             !plan_codex_config_update(&config.after, &hooks.after, hooks_path, &path())
                 .unwrap()
                 .changed
+        );
+    }
+
+    #[test]
+    fn marker_owned_agents_parse_uninstall_and_refuse_user_files() {
+        assert_eq!(
+            parse_hooks_request("hooks", &["pi".into(), "uninstall".into()]).unwrap(),
+            HooksRequest::PiUninstall
+        );
+        assert_eq!(
+            parse_hooks_request("hooks", &["omp".into(), "uninstall".into()]).unwrap(),
+            HooksRequest::OmpUninstall
+        );
+        assert_eq!(
+            parse_hooks_request("hooks", &["amp".into(), "uninstall".into()]).unwrap(),
+            HooksRequest::AmpUninstall
+        );
+        assert_eq!(
+            marked_removal(Some("user extension"), PI_EXTENSION_MARKER),
+            MarkedRemoval::Refuse
+        );
+        assert_eq!(
+            marked_removal(Some(PI_EXTENSION_SOURCE), PI_EXTENSION_MARKER),
+            MarkedRemoval::Remove
+        );
+        assert_eq!(
+            marked_removal(None, PI_EXTENSION_MARKER),
+            MarkedRemoval::Missing
         );
     }
 
