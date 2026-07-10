@@ -23,7 +23,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/creack/pty"
 	"nhooyr.io/websocket"
 )
 
@@ -63,8 +62,8 @@ func TestAttachRPCSurfacesPTYAllocationFailure(t *testing.T) {
 	t.Cleanup(hub.closeAll)
 
 	denied := &os.PathError{Op: "open", Path: "/dev/ptmx", Err: syscall.EACCES}
-	hub.openPTY = func() (*os.File, *os.File, error) {
-		return nil, nil, denied
+	hub.startPTY = func(_ string, _ string, _ int, _ int, _ []string) (io.ReadWriteCloser, wsPTYProcess, string, error) {
+		return nil, nil, "", newPTYAllocationError(denied)
 	}
 
 	_, _, _, err := hub.attachRPC(context.Background(), "sess-1", "att-1", 80, 24, "", "", false, false)
@@ -1558,11 +1557,9 @@ func (h *wsPTYHub) sessionPTYSize(sessionID string) (cols int, rows int, ok bool
 
 	session.ptyWriteMu.Lock()
 	defer session.ptyWriteMu.Unlock()
-	sizeFile := session.ptyFile
-
-	size, err := pty.GetsizeFull(sizeFile)
+	cols, rows, err = sizePlatformPTY(session.ptyFile)
 	if err != nil {
 		return 0, 0, true, err
 	}
-	return int(size.Cols), int(size.Rows), true, nil
+	return cols, rows, true, nil
 }

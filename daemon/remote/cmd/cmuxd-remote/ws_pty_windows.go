@@ -3,151 +3,156 @@
 package main
 
 import (
-	"context"
-	"encoding/base64"
-	"errors"
+	"fmt"
 	"io"
-	"time"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"syscall"
+
+	"github.com/charmbracelet/x/conpty"
+	"golang.org/x/sys/windows"
 )
 
-type wsPTYServerConfig struct {
-	ListenAddr          string
-	PTYAuthLeaseFile    string
-	RPCAuthLeaseFile    string
-	AdminTokenSHA256    string
-	AdminEd25519PubKey  string
-	CLIBridgeSocketPath string
-	CLIBridge           *cloudCLIBridge
-	Shell               string
-	PTYHub              *wsPTYHub
-	ScrollbackLimit     int
-	SessionIdleTTL      time.Duration
+const windowsPTYCommandLimit = 24 * 1024
+
+type windowsPTYProcess struct {
+	handle windows.Handle
+	once   sync.Once
 }
 
-type wsPTYOutgoingFrame struct {
-	payload []byte
+func (p *windowsPTYProcess) Wait() error {
+	_, err := windows.WaitForSingleObject(p.handle, windows.INFINITE)
+	p.close()
+	return err
 }
 
-type wsPTYInputWriteStatus uint8
-
-const (
-	wsPTYInputWriteOK wsPTYInputWriteStatus = iota
-	wsPTYInputWriteNotFound
-	wsPTYInputWriteQueueFull
-	wsPTYInputWriteSeqGap
-)
-
-type wsPTYInputWriteResult struct {
-	status wsPTYInputWriteStatus
-	got    uint64
-	want   uint64
-}
-
-type wsPTYSessionKind uint8
-
-type wsPTYSessionKey struct {
-	kind        wsPTYSessionKind
-	sessionID   string
-	anonymousID uint64
-}
-
-type wsPTYAttachment struct {
-	sessionKey  wsPTYSessionKey
-	id          string
-	clientToken string
-	send        chan wsPTYOutgoingFrame
-}
-
-type wsPTYHub struct{}
-
-type wsPTYEventFrame struct {
-	Type         string `json:"type"`
-	SessionID    string `json:"session_id,omitempty"`
-	AttachmentID string `json:"attachment_id,omitempty"`
-	Message      string `json:"message,omitempty"`
-}
-
-func newWebSocketPTYHub(_ wsPTYServerConfig, _ io.Writer) *wsPTYHub {
-	return &wsPTYHub{}
-}
-
-func runWebSocketPTYServer(_ context.Context, _ wsPTYServerConfig, _ io.Writer) error {
-	return errors.New("websocket PTY transport is not implemented on Windows in M0")
-}
-
-func (h *wsPTYHub) attachRPC(
-	_ context.Context,
-	sessionID string,
-	attachmentID string,
-	_ int,
-	_ int,
-	_ string,
-	attachmentToken string,
-	_ bool,
-	_ bool,
-) (*wsPTYAttachment, context.Context, <-chan struct{}, error) {
-	return &wsPTYAttachment{
-		sessionKey:  wsPTYSessionKey{sessionID: sessionID},
-		id:          attachmentID,
-		clientToken: attachmentToken,
-		send:        make(chan wsPTYOutgoingFrame),
-	}, context.Background(), make(chan struct{}), errors.New("PTY attach is not implemented on Windows in M0")
-}
-
-func (h *wsPTYHub) closeAll() {}
-
-func (h *wsPTYHub) activeSessionCount() int { return 0 }
-
-func (h *wsPTYHub) dropAttachment(_ *wsPTYAttachment) {}
-
-func (h *wsPTYHub) writeInputByID(_ string, _ string, _ string, _ []byte) wsPTYInputWriteStatus {
-	return wsPTYInputWriteNotFound
-}
-
-func (h *wsPTYHub) writeInputByIDWithSeq(
-	_ string,
-	_ string,
-	_ string,
-	_ []byte,
-	_ uint64,
-	_ bool,
-) wsPTYInputWriteResult {
-	return wsPTYInputWriteResult{status: wsPTYInputWriteNotFound}
-}
-
-func (h *wsPTYHub) resizeByID(_ string, _ string, _ string, _ int, _ int) bool {
-	return false
-}
-
-func (h *wsPTYHub) detachByID(_ string, _ string, _ string) bool {
-	return false
-}
-
-func (h *wsPTYHub) closeSessionByID(_ string) bool {
-	return false
-}
-
-func (h *wsPTYHub) sessionSnapshots() []map[string]any {
-	return []map[string]any{}
-}
-
-func rpcPTYEventForFrame(attachment *wsPTYAttachment, frame wsPTYOutgoingFrame) rpcEvent {
-	return rpcEvent{
-		Event:           "pty.data",
-		SessionID:       attachment.sessionKey.sessionID,
-		AttachmentID:    attachment.id,
-		AttachmentToken: attachment.clientToken,
-		DataBase64:      base64.StdEncoding.EncodeToString(frame.payload),
+func (p *windowsPTYProcess) Kill() error {
+	err := windows.TerminateProcess(p.handle, 1)
+	if err == windows.ERROR_ACCESS_DENIED {
+		return nil
 	}
+	return err
 }
 
-func rpcPTYExitEvent(attachment *wsPTYAttachment) rpcEvent {
-	return rpcEvent{
-		Event:           "pty.exit",
-		SessionID:       attachment.sessionKey.sessionID,
-		AttachmentID:    attachment.id,
-		AttachmentToken: attachment.clientToken,
+func (p *windowsPTYProcess) close() {
+	p.once.Do(func() {
+		_ = windows.CloseHandle(p.handle)
+	})
+}
+
+func startPlatformPTY(shellPath string, command string, cols int, rows int, env []string) (io.ReadWriteCloser, wsPTYProcess, string, error) {
+	program, args, tmpScript, err := windowsPTYCommand(shellPath, command)
+	if err != nil {
+		return nil, nil, "", err
 	}
+	cleanupScript := true
+	defer func() {
+		if cleanupScript && tmpScript != "" {
+			_ = os.Remove(tmpScript)
+		}
+	}()
+
+	console, err := conpty.New(cols, rows, 0)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("could not allocate a Windows ConPTY: %w", err)
+	}
+	started := false
+	defer func() {
+		if !started {
+			_ = console.Close()
+		}
+	}()
+
+	_, processHandle, err := console.Spawn(program, args, &syscall.ProcAttr{Env: env})
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("could not start Windows PTY shell: %w", err)
+	}
+	started = true
+	cleanupScript = false
+	return console, &windowsPTYProcess{handle: windows.Handle(processHandle)}, tmpScript, nil
 }
 
-func (a *wsPTYAttachment) closeNow() {}
+func windowsPTYCommand(shellPath string, command string) (string, []string, string, error) {
+	base := strings.ToLower(filepath.Base(shellPath))
+	isPowerShell := base == "powershell.exe" || base == "powershell" || base == "pwsh.exe" || base == "pwsh"
+	isCmd := base == "cmd.exe" || base == "cmd"
+	if command == "" {
+		if isPowerShell {
+			return shellPath, []string{shellPath, "-NoLogo"}, "", nil
+		}
+		if isCmd {
+			return shellPath, []string{shellPath, "/Q"}, "", nil
+		}
+		return shellPath, []string{shellPath}, "", nil
+	}
+
+	if len(command) > windowsPTYCommandLimit {
+		ext := ".sh"
+		switch {
+		case isPowerShell:
+			ext = ".ps1"
+		case isCmd:
+			ext = ".cmd"
+		}
+		file, err := os.CreateTemp("", "cmuxd-startup-*"+ext)
+		if err != nil {
+			return "", nil, "", fmt.Errorf("could not create startup script temp file: %w", err)
+		}
+		tmpScript := file.Name()
+		if _, err := file.WriteString(command); err != nil {
+			_ = file.Close()
+			_ = os.Remove(tmpScript)
+			return "", nil, "", fmt.Errorf("could not write startup script: %w", err)
+		}
+		_ = file.Close()
+		if isPowerShell {
+			return shellPath, []string{shellPath, "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", tmpScript}, tmpScript, nil
+		}
+		if isCmd {
+			return shellPath, []string{shellPath, "/D", "/Q", "/C", tmpScript}, tmpScript, nil
+		}
+		return shellPath, []string{shellPath, tmpScript}, tmpScript, nil
+	}
+
+	if isPowerShell {
+		return shellPath, []string{shellPath, "-NoLogo", "-NoProfile", "-Command", command}, "", nil
+	}
+	if isCmd {
+		return shellPath, []string{shellPath, "/D", "/Q", "/S", "/C", command}, "", nil
+	}
+	return shellPath, []string{shellPath, "-c", command}, "", nil
+}
+
+func resizePlatformPTY(file io.ReadWriteCloser, cols int, rows int) error {
+	console, ok := file.(*conpty.ConPty)
+	if !ok {
+		return fmt.Errorf("unsupported Windows PTY type %T", file)
+	}
+	return console.Resize(cols, rows)
+}
+
+func sizePlatformPTY(file io.ReadWriteCloser) (int, int, error) {
+	console, ok := file.(*conpty.ConPty)
+	if !ok {
+		return 0, 0, fmt.Errorf("unsupported Windows PTY type %T", file)
+	}
+	return console.Size()
+}
+
+func resolvePTYShell(explicit string) string {
+	if shell := strings.TrimSpace(explicit); shell != "" {
+		return shell
+	}
+	if root := strings.TrimSpace(os.Getenv("SystemRoot")); root != "" {
+		powershell := filepath.Join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+		if _, err := os.Stat(powershell); err == nil {
+			return powershell
+		}
+	}
+	if shell := strings.TrimSpace(os.Getenv("COMSPEC")); shell != "" {
+		return shell
+	}
+	return `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`
+}

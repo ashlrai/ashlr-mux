@@ -1,5 +1,3 @@
-//go:build !windows
-
 package main
 
 import (
@@ -17,16 +15,13 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 	"unicode/utf8"
 
-	"github.com/creack/pty"
 	"nhooyr.io/websocket"
 )
 
@@ -174,10 +169,9 @@ func anonymousPTYSessionKey(sessionID string, anonymousID uint64) wsPTYSessionKe
 type wsPTYSession struct {
 	id             string
 	key            wsPTYSessionKey
-	cmd            *exec.Cmd
+	process        wsPTYProcess
 	tmpScript      string // temp file path for large startup scripts; cleaned up on exit
-	ptyFile        *os.File
-	ttyFile        *os.File
+	ptyFile        io.ReadWriteCloser
 	attachments    map[string]*wsPTYAttachment
 	effectiveCols  int
 	effectiveRows  int
@@ -191,9 +185,15 @@ type wsPTYSession struct {
 	idleTimer      *time.Timer
 	closed         bool
 	ptyWriteMu     sync.Mutex
-	closeTTYOnce   sync.Once
 	closePTYOnce   sync.Once
 }
+
+type wsPTYProcess interface {
+	Wait() error
+	Kill() error
+}
+
+type wsPTYStarter func(shellPath string, command string, cols int, rows int, env []string) (io.ReadWriteCloser, wsPTYProcess, string, error)
 
 type wsPTYHub struct {
 	mu               sync.Mutex
@@ -204,15 +204,8 @@ type wsPTYHub struct {
 	stderr           io.Writer
 	scrollbackLimit  int
 	sessionIdleTTL   time.Duration
-	// openPTY allocates a PTY master/slave pair. It defaults to creack/pty.Open
-	// (which opens /dev/ptmx) and exists as a field so tests can simulate a
-	// hardened devpts where allocation is denied.
-	openPTY ptyOpener
+	startPTY         wsPTYStarter
 }
-
-// ptyOpener allocates a PTY master/slave pair, returning the master (ptmx) and
-// slave (tty) ends. The production implementation is creack/pty.Open.
-type ptyOpener func() (ptmx *os.File, tty *os.File, err error)
 
 func newWebSocketPTYHub(cfg wsPTYServerConfig, stderr io.Writer) *wsPTYHub {
 	limit := cfg.ScrollbackLimit
@@ -229,7 +222,7 @@ func newWebSocketPTYHub(cfg wsPTYServerConfig, stderr io.Writer) *wsPTYHub {
 		stderr:          stderr,
 		scrollbackLimit: limit,
 		sessionIdleTTL:  idleTTL,
-		openPTY:         pty.Open,
+		startPTY:        startPlatformPTY,
 	}
 }
 
@@ -889,36 +882,12 @@ func (h *wsPTYHub) prepareAttachment(
 
 func (h *wsPTYHub) startSessionLocked(sessionKey wsPTYSessionKey, sessionID string, cols int, rows int, command string) (*wsPTYSession, error) {
 	shellPath := resolvePTYShell(h.shell)
-	trimmedCommand := strings.TrimSpace(command)
-	var cmd *exec.Cmd
-	var tmpScript string
-	if trimmedCommand == "" {
-		cmd = exec.Command(shellPath)
-	} else if len(trimmedCommand) > 120*1024 {
-		// Startup script exceeds Linux's MAX_ARG_STRLEN (~128KB). Write to a
-		// temp file and exec /bin/sh <file> to avoid E2BIG from execve.
-		f, err := os.CreateTemp("", "cmuxd-startup-*.sh")
-		if err != nil {
-			return nil, fmt.Errorf("could not create startup script temp file: %w", err)
-		}
-		tmpScript = f.Name()
-		if _, err := f.WriteString(trimmedCommand); err != nil {
-			_ = f.Close()
-			_ = os.Remove(tmpScript)
-			return nil, fmt.Errorf("could not write startup script: %w", err)
-		}
-		_ = f.Chmod(0o400)
-		_ = f.Close()
-		cmd = exec.Command("/bin/sh", tmpScript)
-	} else {
-		cmd = exec.Command("/bin/sh", "-c", trimmedCommand)
+	startPTY := h.startPTY
+	if startPTY == nil {
+		startPTY = startPlatformPTY
 	}
-	cmd.Env = defaultWebSocketPTYEnv(shellPath)
-	ptyFile, ttyFile, err := h.startPTYCommand(cmd, cols, rows)
+	ptyFile, process, tmpScript, err := startPTY(shellPath, strings.TrimSpace(command), cols, rows, defaultWebSocketPTYEnv(shellPath))
 	if err != nil {
-		if tmpScript != "" {
-			_ = os.Remove(tmpScript)
-		}
 		if h.stderr != nil {
 			_, _ = fmt.Fprintf(h.stderr, "pty session start failed session=%s: %v\n", sessionID, err)
 		}
@@ -927,10 +896,9 @@ func (h *wsPTYHub) startSessionLocked(sessionKey wsPTYSessionKey, sessionID stri
 	session := &wsPTYSession{
 		id:            sessionID,
 		key:           sessionKey,
-		cmd:           cmd,
+		process:       process,
 		tmpScript:     tmpScript,
 		ptyFile:       ptyFile,
-		ttyFile:       ttyFile,
 		attachments:   map[string]*wsPTYAttachment{},
 		effectiveCols: cols,
 		effectiveRows: rows,
@@ -943,119 +911,6 @@ func (h *wsPTYHub) startSessionLocked(sessionKey wsPTYSessionKey, sessionID stri
 	go h.pumpSession(session)
 	go h.writeInputLoop(session)
 	return session, nil
-}
-
-func (h *wsPTYHub) startPTYCommand(cmd *exec.Cmd, cols int, rows int) (*os.File, *os.File, error) {
-	open := h.openPTY
-	if open == nil {
-		open = pty.Open
-	}
-	ptyFile, ttyFile, err := open()
-	if err != nil {
-		return nil, nil, newPTYAllocationError(err)
-	}
-	closeFiles := true
-	defer func() {
-		if closeFiles {
-			_ = ptyFile.Close()
-			_ = ttyFile.Close()
-		}
-	}()
-
-	if err := pty.Setsize(ttyFile, &pty.Winsize{
-		Cols: uint16(cols),
-		Rows: uint16(rows),
-	}); err != nil {
-		return nil, nil, err
-	}
-	if cmd.Stdout == nil {
-		cmd.Stdout = ttyFile
-	}
-	if cmd.Stderr == nil {
-		cmd.Stderr = ttyFile
-	}
-	if cmd.Stdin == nil {
-		cmd.Stdin = ttyFile
-	}
-	if cmd.SysProcAttr == nil {
-		cmd.SysProcAttr = &syscall.SysProcAttr{}
-	}
-	cmd.SysProcAttr.Setsid = true
-	cmd.SysProcAttr.Setctty = true
-
-	if err := cmd.Start(); err != nil {
-		return nil, nil, err
-	}
-	closeFiles = false
-	_ = ttyFile.Close()
-	return ptyFile, nil, nil
-}
-
-// newPTYAllocationError wraps a raw PTY-allocation failure with actionable
-// diagnostics about the remote devpts. Without this, a hardened mount
-// (ptmxmode=000) or a non-writable /dev/ptmx surfaced only a generic
-// "remote PTY attach failed" with a 0-byte daemon log, leaving the operator no
-// way to tell why the terminal would not open. See issue #5185.
-func newPTYAllocationError(err error) error {
-	suffix := ""
-	if detail := describeDevPTS(); detail != "" {
-		suffix = "; " + detail
-	}
-	hint := ""
-	if isPermissionDeniedErr(err) {
-		hint = "; the remote devpts denies /dev/ptmx (e.g. mounted ptmxmode=000): remount it writable with `sudo mount -o remount,ptmxmode=0666 /dev/pts` or expose a writable /dev/ptmx so the cmux daemon can open a terminal"
-	}
-	return fmt.Errorf("could not allocate a remote PTY: %w%s%s", err, suffix, hint)
-}
-
-// describeDevPTS reports the current /dev/ptmx mode and the /dev/pts devpts
-// mount options (which carry ptmxmode) on a best-effort basis. It never errors;
-// missing data is simply omitted from the returned summary.
-func describeDevPTS() string {
-	var parts []string
-	if info, statErr := os.Stat("/dev/ptmx"); statErr == nil {
-		parts = append(parts, fmt.Sprintf("/dev/ptmx mode=%04o", info.Mode().Perm()))
-	} else {
-		parts = append(parts, fmt.Sprintf("/dev/ptmx stat error: %v", statErr))
-	}
-	if opts := devptsMountOptions(); opts != "" {
-		parts = append(parts, "devpts ("+opts+")")
-	}
-	return strings.Join(parts, "; ")
-}
-
-// devptsMountOptions returns the super-block options of the devpts filesystem
-// mounted at /dev/pts (e.g. "rw,gid=5,mode=620,ptmxmode=000"), or "" if it
-// cannot be determined. It parses /proc/self/mountinfo, whose per-line layout
-// places the optional fields and the " - <fstype> <source> <superopts>" tail
-// after a literal " - " separator.
-func devptsMountOptions() string {
-	data, err := os.ReadFile("/proc/self/mountinfo")
-	if err != nil {
-		return ""
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.Fields(line)
-		// mount point is field index 4 (0-based) in the pre-separator section.
-		if len(fields) < 5 || fields[4] != "/dev/pts" {
-			continue
-		}
-		sep := -1
-		for i, f := range fields {
-			if f == "-" {
-				sep = i
-				break
-			}
-		}
-		if sep < 0 || sep+3 >= len(fields) {
-			continue
-		}
-		if fields[sep+1] != "devpts" {
-			continue
-		}
-		return fields[sep+3]
-	}
-	return ""
 }
 
 // truncateWebSocketCloseReason clamps a close reason to the 123-byte limit a
@@ -1071,14 +926,6 @@ func truncateWebSocketCloseReason(reason string) string {
 		truncated = truncated[:len(truncated)-1]
 	}
 	return truncated
-}
-
-// isPermissionDeniedErr reports whether err is an EACCES/EPERM-class failure,
-// the signature of a devpts that refuses /dev/ptmx.
-func isPermissionDeniedErr(err error) bool {
-	return errors.Is(err, os.ErrPermission) ||
-		errors.Is(err, syscall.EACCES) ||
-		errors.Is(err, syscall.EPERM)
 }
 
 func (h *wsPTYHub) detach(attachment *wsPTYAttachment) bool {
@@ -1136,8 +983,8 @@ func (h *wsPTYHub) closeSessionForAttachment(attachment *wsPTYAttachment) {
 	attachment.cancel()
 	h.mu.Unlock()
 
-	if session.cmd != nil && session.cmd.Process != nil {
-		_ = session.cmd.Process.Kill()
+	if session.process != nil {
+		_ = session.process.Kill()
 	}
 	session.closePTYFiles()
 }
@@ -1153,8 +1000,8 @@ func (h *wsPTYHub) closeAll() {
 	h.mu.Unlock()
 
 	for _, session := range sessions {
-		if session.cmd != nil && session.cmd.Process != nil {
-			_ = session.cmd.Process.Kill()
+		if session.process != nil {
+			_ = session.process.Kill()
 		}
 		session.closePTYFiles()
 	}
@@ -1213,8 +1060,8 @@ func (h *wsPTYHub) closeSessionByID(sessionID string) bool {
 	session.closed = true
 	h.mu.Unlock()
 
-	if session.cmd != nil && session.cmd.Process != nil {
-		_ = session.cmd.Process.Kill()
+	if session.process != nil {
+		_ = session.process.Kill()
 	}
 	session.closePTYFiles()
 	return true
@@ -1295,27 +1142,16 @@ func (h *wsPTYHub) sessionSnapshotLocked(session *wsPTYSession) map[string]any {
 }
 
 func (h *wsPTYHub) waitSessionProcess(session *wsPTYSession) {
-	if session.cmd != nil {
-		_ = session.cmd.Wait()
+	if session.process != nil {
+		_ = session.process.Wait()
 	}
 	if session.tmpScript != "" {
 		_ = os.Remove(session.tmpScript)
 	}
-	session.closeTTYFile()
 }
 
 func (session *wsPTYSession) closePTYFiles() {
-	session.closeTTYFile()
 	session.closePTYFile()
-}
-
-func (session *wsPTYSession) closeTTYFile() {
-	session.closeTTYOnce.Do(func() {
-		if session.ttyFile != nil {
-			_ = session.ttyFile.Close()
-			session.ttyFile = nil
-		}
-	})
 }
 
 func (session *wsPTYSession) closePTYFile() {
@@ -1490,8 +1326,8 @@ func (h *wsPTYHub) reapIdleSession(session *wsPTYSession) {
 	session.idleTimer = nil
 	h.mu.Unlock()
 
-	if session.cmd != nil && session.cmd.Process != nil {
-		_ = session.cmd.Process.Kill()
+	if session.process != nil {
+		_ = session.process.Kill()
 	}
 	session.closePTYFiles()
 }
@@ -1526,26 +1362,21 @@ func (h *wsPTYHub) applyCurrentPTYSize(session *wsPTYSession) bool {
 }
 
 func (h *wsPTYHub) applyPTYSizeWithWriteLock(session *wsPTYSession, cols int, rows int) bool {
-	desired := &pty.Winsize{
-		Cols: uint16(cols),
-		Rows: uint16(rows),
-	}
 	var lastErr error
 	for attempt := 0; attempt < 8; attempt++ {
-		resizeFile := session.ptyFile
-		lastErr = pty.Setsize(resizeFile, desired)
+		lastErr = resizePlatformPTY(session.ptyFile, cols, rows)
 		if lastErr != nil {
 			continue
 		}
-		actual, err := pty.GetsizeFull(resizeFile)
+		actualCols, actualRows, err := sizePlatformPTY(session.ptyFile)
 		if err != nil {
 			lastErr = err
 			continue
 		}
-		if int(actual.Cols) == cols && int(actual.Rows) == rows {
+		if actualCols == cols && actualRows == rows {
 			return true
 		}
-		lastErr = fmt.Errorf("pty size remained %dx%d after resize to %dx%d", actual.Cols, actual.Rows, cols, rows)
+		lastErr = fmt.Errorf("pty size remained %dx%d after resize to %dx%d", actualCols, actualRows, cols, rows)
 	}
 	if h.stderr != nil && lastErr != nil {
 		_, _ = fmt.Fprintf(h.stderr, "ws pty resize failed session=%s: %v\n", session.id, lastErr)
@@ -1680,7 +1511,7 @@ func (h *wsPTYHub) writeInputChunkLocked(session *wsPTYSession, chunk wsPTYInput
 	return h.writeInputChunkWithPTYFile(ptyFile, chunk)
 }
 
-func (h *wsPTYHub) writeInputChunkWithPTYFile(ptyFile *os.File, chunk wsPTYInputChunk) (written bool, ackOK bool) {
+func (h *wsPTYHub) writeInputChunkWithPTYFile(ptyFile io.Writer, chunk wsPTYInputChunk) (written bool, ackOK bool) {
 	total := 0
 	for total < len(chunk.payload) {
 		n, err := ptyFile.Write(chunk.payload[total:])
@@ -1962,21 +1793,4 @@ func normalizePTYSize(cols int, rows int) (int, int) {
 		rows = maxPTYDimension
 	}
 	return cols, rows
-}
-
-func resolvePTYShell(explicit string) string {
-	if strings.TrimSpace(explicit) != "" {
-		return explicit
-	}
-	if shell := strings.TrimSpace(os.Getenv("SHELL")); shell != "" {
-		if _, err := os.Stat(shell); err == nil {
-			return shell
-		}
-	}
-	for _, candidate := range []string{"/bin/bash", "/usr/bin/bash", "/bin/sh"} {
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate
-		}
-	}
-	return filepath.Clean("/bin/sh")
 }
