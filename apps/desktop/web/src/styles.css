@@ -408,6 +408,73 @@ body,
   flex: 1;
 }
 
+.cmux-feed-list {
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.cmux-feed-item + .cmux-feed-item {
+  border-top: 1px solid color-mix(in srgb, currentColor 9%, transparent);
+}
+
+.cmux-feed-card {
+  display: grid;
+  gap: 7px;
+  padding: 11px 12px;
+}
+
+.cmux-feed-card-header,
+.cmux-feed-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cmux-feed-kind {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.cmux-feed-source {
+  color: #8995aa;
+  font-size: 11px;
+  text-transform: capitalize;
+}
+
+.cmux-feed-detail {
+  max-height: 180px;
+  margin: 0;
+  overflow: auto;
+  color: #8995aa;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.cmux-feed-actions {
+  flex-wrap: wrap;
+}
+
+.cmux-feed-actions button {
+  border: 1px solid #2b3548;
+  border-radius: 999px;
+  background: #151b27;
+  color: #dce2ee;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 5px 8px;
+}
+
+.cmux-feed-actions button:hover {
+  background: #1c2433;
+}
+
 .cmux-file-explorer-empty button {
   border: 1px solid #2b3548;
   border-radius: 999px;

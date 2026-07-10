@@ -801,6 +801,11 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "notification.jump_to_unread",
     "notification.create",
     "right_sidebar",
+    "feed.push",
+    "feed.list",
+    "feed.permission.reply",
+    "feed.question.reply",
+    "feed.exit_plan.reply",
     "events.stream",
     "extension.sidebar.snapshot",
     "sidebar.snapshot",
@@ -1041,6 +1046,11 @@ fn handle_control_request(app: &AppHandle, request: ControlRequest) -> ControlCa
         "notification.jump_to_unread" => notification_jump_to_unread(app),
         "notification.create" => notification_create(app, &request.params),
         "right_sidebar" => right_sidebar_control(app, &request.params),
+        "feed.push" => feed_push(app, &request.params, request.id.is_some()),
+        "feed.list" => feed_list(app),
+        "feed.permission.reply" => feed_permission_reply(app, &request.params),
+        "feed.question.reply" => feed_question_reply(app, &request.params),
+        "feed.exit_plan.reply" => feed_exit_plan_reply(app, &request.params),
         "events.stream" => ok(events_snapshot_payload(app, &request.params)),
         "extension.sidebar.snapshot" | "sidebar.snapshot" => {
             let snapshot = snapshot(app);
@@ -2735,6 +2745,141 @@ fn right_sidebar_target_exists(
     }
     string_param(params, &["window_id"])
         .is_some_and(|id| window.window_id.as_deref() == Some(id.as_str()))
+}
+
+fn feed_push(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+    has_request_id: bool,
+) -> ControlCallResult {
+    let Some(event_value) = params.get("event") else {
+        return invalid_params("feed.push requires an event object");
+    };
+    let event: cmux_agent::WorkstreamEvent = match serde_json::from_value(event_value.clone()) {
+        Ok(event) => event,
+        Err(error) => return invalid_params(&format!("feed.push event failed to decode: {error}")),
+    };
+    let wait_timeout = match params.get("wait_timeout_seconds") {
+        None => 0.0,
+        Some(value) => match value.as_f64() {
+            Some(value) => value,
+            None => return invalid_params("feed.push wait_timeout_seconds must be numeric"),
+        },
+    };
+    if !(0.0..=120.0).contains(&wait_timeout) {
+        return invalid_params("feed.push wait_timeout_seconds must be between 0 and 120");
+    }
+    if !has_request_id && wait_timeout > 0.0 {
+        return invalid_params("feed.push without an id requires wait_timeout_seconds 0");
+    }
+    let state = app.state::<crate::feed::FeedState>();
+    let insert = match state.ingest(event) {
+        Ok(insert) => insert,
+        Err(message) => {
+            return ControlCallResult::Err {
+                code: "feed_unavailable".to_string(),
+                message,
+                data: None,
+            }
+        }
+    };
+    if let Ok(reply) = state.list() {
+        let _ = app.emit(crate::feed::FEED_CHANGED_EVENT, &reply);
+    }
+    match state.wait_for_decision(&insert, Duration::from_secs_f64(wait_timeout)) {
+        Ok(reply) => {
+            if reply.status == "timed_out" {
+                if let Ok(list) = state.list() {
+                    let _ = app.emit(crate::feed::FEED_CHANGED_EVENT, &list);
+                }
+            }
+            ok(json!(reply))
+        }
+        Err(message) => ControlCallResult::Err {
+            code: "feed_unavailable".to_string(),
+            message,
+            data: None,
+        },
+    }
+}
+
+fn feed_list(app: &AppHandle) -> ControlCallResult {
+    let state = app.state::<crate::feed::FeedState>();
+    match state.list() {
+        Ok(reply) => ok(json!(reply)),
+        Err(message) => ControlCallResult::Err {
+            code: "feed_unavailable".to_string(),
+            message,
+            data: None,
+        },
+    }
+}
+
+fn feed_permission_reply(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(request_id) = string_param(params, &["request_id"]) else {
+        return invalid_params("feed.permission.reply requires request_id");
+    };
+    let Some(mode) = string_param(params, &["mode"]) else {
+        return invalid_params("feed.permission.reply requires mode");
+    };
+    let decision = match crate::feed::permission_decision(&mode) {
+        Ok(decision) => decision,
+        Err(message) => return invalid_params(&format!("feed.permission.reply {message}")),
+    };
+    feed_resolve_control(app, &request_id, decision)
+}
+
+fn feed_question_reply(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(request_id) = string_param(params, &["request_id"]) else {
+        return invalid_params("feed.question.reply requires request_id");
+    };
+    let Some(selections) = string_vec_param(params, &["selections"]) else {
+        return invalid_params("feed.question.reply requires selections: [string]");
+    };
+    feed_resolve_control(app, &request_id, crate::feed::question_decision(selections))
+}
+
+fn feed_exit_plan_reply(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(request_id) = string_param(params, &["request_id"]) else {
+        return invalid_params("feed.exit_plan.reply requires request_id");
+    };
+    let Some(mode) = string_param(params, &["mode"]) else {
+        return invalid_params("feed.exit_plan.reply requires mode");
+    };
+    let decision = match crate::feed::exit_plan_decision(&mode, string_param(params, &["feedback"]))
+    {
+        Ok(decision) => decision,
+        Err(message) => return invalid_params(&format!("feed.exit_plan.reply {message}")),
+    };
+    feed_resolve_control(app, &request_id, decision)
+}
+
+fn feed_resolve_control(
+    app: &AppHandle,
+    request_id: &str,
+    decision: cmux_agent::WorkstreamDecision,
+) -> ControlCallResult {
+    let state = app.state::<crate::feed::FeedState>();
+    match state.resolve(request_id, decision) {
+        Ok(reply) => {
+            let _ = app.emit(crate::feed::FEED_CHANGED_EVENT, &reply);
+            ok(json!({"status": "resolved", "request_id": request_id}))
+        }
+        Err(message) => ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn notification_list(app: &AppHandle) -> ControlCallResult {
@@ -11368,6 +11513,11 @@ mod tests {
             "notification.jump_to_unread",
             "notification.create",
             "right_sidebar",
+            "feed.push",
+            "feed.list",
+            "feed.permission.reply",
+            "feed.question.reply",
+            "feed.exit_plan.reply",
             "session.restore_previous",
             "events.stream",
             "extension.sidebar.snapshot",

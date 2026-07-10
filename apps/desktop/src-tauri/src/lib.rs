@@ -10,6 +10,7 @@ mod control_socket;
 mod default_terminal;
 mod diff;
 mod directory_search;
+mod feed;
 mod file_explorer;
 mod global_hotkey;
 mod markdown;
@@ -260,6 +261,7 @@ pub fn run() {
         .manage(control_socket::ControlEventState::default())
         .manage(agent_session::AgentSessionState::default())
         .manage(notifications::NotificationCommandState::default())
+        .manage(feed::FeedState::default())
         .manage(right_sidebar::RightSidebarState::default())
         .manage(markdown::MarkdownState::default())
         .manage(open_folder::VSCodeInlineState::default())
@@ -403,6 +405,8 @@ pub fn run() {
             right_sidebar::right_sidebar_update_state,
             right_sidebar::right_sidebar_beta_settings,
             right_sidebar::right_sidebar_set_beta_feature,
+            feed::feed_list,
+            feed::feed_resolve,
             open_file::pick_markdown_file,
             open_folder::pick_workspace_folder,
             open_folder::open_folder_in_vscode_inline,
