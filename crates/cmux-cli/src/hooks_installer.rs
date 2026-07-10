@@ -34,6 +34,7 @@ enum HooksRequest {
     Amp { yes: bool },
     Rovo { yes: bool },
     Hermes { yes: bool },
+    Kimi { yes: bool },
 }
 
 const OPENCODE_SESSION_PLUGIN_SOURCE: &str =
@@ -78,6 +79,7 @@ pub fn run_hooks_command(command: &str, args: &[String]) -> Result<String, CliEr
         HooksRequest::Amp { yes } => install_amp_hooks(yes),
         HooksRequest::Rovo { yes } => install_rovo_hooks(yes),
         HooksRequest::Hermes { yes } => install_hermes_hooks(yes),
+        HooksRequest::Kimi { yes } => install_kimi_hooks(yes),
     }
 }
 
@@ -151,6 +153,12 @@ fn parse_hooks_subcommand(tokens: &[String], yes: bool) -> Result<HooksRequest, 
                 "unsupported Hermes Agent hooks action '{other}'; use 'cmux hooks hermes-agent install'"
             ))),
         },
+        Some("kimi") => match tokens.get(1).map(String::as_str) {
+            None | Some("install") | Some("setup") => Ok(HooksRequest::Kimi { yes }),
+            Some(other) => Err(CliError::new(format!(
+                "unsupported Kimi Code hooks action '{other}'; use 'cmux hooks kimi install'"
+            ))),
+        },
         Some(agent) if nested_agent(agent).is_some() => match tokens.get(1).map(String::as_str) {
             None | Some("install") | Some("setup") => Ok(HooksRequest::Nested {
                 agent: agent.to_string(),
@@ -210,6 +218,7 @@ fn parse_setup_tokens(tokens: &[String], yes: bool) -> Result<HooksRequest, CliE
         Some("amp") => Ok(HooksRequest::Amp { yes }),
         Some("rovodev") | Some("rovo") => Ok(HooksRequest::Rovo { yes }),
         Some("hermes-agent") | Some("hermes") => Ok(HooksRequest::Hermes { yes }),
+        Some("kimi") => Ok(HooksRequest::Kimi { yes }),
         Some(agent) if nested_agent(agent).is_some() => Ok(HooksRequest::Nested {
             agent: agent.to_string(),
             yes,
@@ -910,6 +919,145 @@ fn current_rfc3339() -> String {
         (day_seconds % 3_600) / 60,
         day_seconds % 60
     )
+}
+
+const KIMI_BEGIN_MARKER: &str = "# cmux-kimi-hooks-7c3a9f12-4e8b-4d2a-9f15-6b8c0d1e2a3f begin";
+const KIMI_END_MARKER: &str = "# cmux-kimi-hooks-7c3a9f12-4e8b-4d2a-9f15-6b8c0d1e2a3f end";
+
+fn install_kimi_hooks(yes: bool) -> Result<String, CliError> {
+    let config_dir = if let Some(path) = nonempty_env("KIMI_CODE_HOME") {
+        expand_home_path(PathBuf::from(path))?
+    } else {
+        home_dir()
+            .map(|home| home.join(".kimi-code"))
+            .ok_or_else(|| CliError::new("unable to determine Kimi Code config directory"))?
+    };
+    let path = config_dir.join("config.toml");
+    let before = read_optional_text(&path)?;
+    let plan = plan_kimi_hooks_update(&before, &path);
+    if !plan.changed {
+        return Ok(format!(
+            "Kimi Code hooks already up to date at {}\n",
+            path.display()
+        ));
+    }
+    if !confirm_hook_change(&plan.diff, yes)? {
+        return Ok("Aborted.\n".to_string());
+    }
+    write_text_exact(&path, &plan.after)?;
+    Ok(format!("Kimi Code hooks installed at {}\n", path.display()))
+}
+
+fn plan_kimi_hooks_update(before: &str, path: &Path) -> ClaudeIntegrationPlan {
+    let before = toml_content(&toml_lines(before));
+    let mut lines = remove_kimi_blocks(toml_lines(&before));
+    if lines.last().is_some_and(|line| !line.is_empty()) {
+        lines.push(String::new());
+    }
+    lines.push(KIMI_BEGIN_MARKER.to_string());
+    for (event, command, timeout) in kimi_events() {
+        lines.extend([
+            "[[hooks]]".to_string(),
+            format!("event = \"{}\"", toml_basic_string(event)),
+            format!("command = \"{}\"", toml_basic_string(&command)),
+            format!("timeout = {timeout}"),
+            String::new(),
+        ]);
+    }
+    lines.push(KIMI_END_MARKER.to_string());
+    let after = toml_content(&lines);
+    ClaudeIntegrationPlan {
+        changed: before != after,
+        diff: unified_diff(path, &before, &after),
+        before,
+        after,
+    }
+}
+
+fn kimi_events() -> Vec<(&'static str, String, u64)> {
+    let mut events = Vec::new();
+    for (event, action) in [
+        ("SessionStart", "session-start"),
+        ("UserPromptSubmit", "prompt-submit"),
+        ("PermissionRequest", "notification"),
+        ("Stop", "stop"),
+        ("StopFailure", "notification"),
+        ("Interrupt", "stop"),
+        ("SessionEnd", "session-end"),
+    ] {
+        events.push((event, format!("cmux hooks kimi {action}"), 10));
+    }
+    for event in ["PreToolUse", "PostToolUse", "PermissionRequest"] {
+        events.push((
+            event,
+            format!("cmux hooks feed --source kimi --event {event}"),
+            120,
+        ));
+    }
+    events
+}
+
+fn toml_lines(content: &str) -> Vec<String> {
+    if content.is_empty() {
+        return Vec::new();
+    }
+    let normalized = content.replace("\r\n", "\n").replace('\r', "\n");
+    let mut lines: Vec<_> = normalized.split('\n').map(str::to_string).collect();
+    if normalized.ends_with('\n') && lines.last().is_some_and(String::is_empty) {
+        lines.pop();
+    }
+    lines
+}
+
+fn toml_content(lines: &[String]) -> String {
+    if lines.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", lines.join("\n"))
+    }
+}
+
+fn remove_kimi_blocks(mut lines: Vec<String>) -> Vec<String> {
+    let mut index = 0;
+    while index < lines.len() {
+        if lines[index].trim() != KIMI_BEGIN_MARKER {
+            index += 1;
+            continue;
+        }
+        if let Some(end) =
+            (index..lines.len()).find(|candidate| lines[*candidate].trim() == KIMI_END_MARKER)
+        {
+            lines.drain(index..=end);
+        } else {
+            lines.remove(index);
+        }
+    }
+    lines
+}
+
+fn toml_basic_string(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '\u{0008}' => escaped.push_str("\\b"),
+            '\t' => escaped.push_str("\\t"),
+            '\n' => escaped.push_str("\\n"),
+            '\u{000C}' => escaped.push_str("\\f"),
+            '\r' => escaped.push_str("\\r"),
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            value if value.is_control() => {
+                let scalar = value as u32;
+                if scalar <= 0xFFFF {
+                    escaped.push_str(&format!("\\u{scalar:04X}"));
+                } else {
+                    escaped.push_str(&format!("\\U{scalar:08X}"));
+                }
+            }
+            value => escaped.push(value),
+        }
+    }
+    escaped
 }
 
 fn install_opencode_hooks(yes: bool, project: bool) -> Result<String, CliError> {
@@ -2238,6 +2386,40 @@ mod tests {
             !plan_hermes_allowlist_update(&allowlist.after)
                 .unwrap()
                 .changed
+        );
+    }
+
+    #[test]
+    fn kimi_toml_plan_preserves_user_config_and_replaces_owned_block() {
+        assert_eq!(
+            parse_hooks_request("hooks", &["kimi".into(), "install".into(), "--yes".into()])
+                .unwrap(),
+            HooksRequest::Kimi { yes: true }
+        );
+        let plan = plan_kimi_hooks_update(
+            "model = \"kimi-k2\"\ntelemetry = false\n",
+            Path::new("C:/Users/me/.kimi-code/config.toml"),
+        );
+        assert!(plan
+            .after
+            .starts_with("model = \"kimi-k2\"\ntelemetry = false\n\n"));
+        assert_eq!(plan.after.matches("[[hooks]]").count(), 10);
+        assert!(plan.after.contains("event = \"PermissionRequest\""));
+        assert!(plan
+            .after
+            .contains("cmux hooks feed --source kimi --event PermissionRequest"));
+        assert!(plan.after.contains("timeout = 120"));
+        assert!(!plan_kimi_hooks_update(&plan.after, &path()).changed);
+
+        let orphan = plan_kimi_hooks_update(
+            &format!("model = \"kimi\"\n{KIMI_BEGIN_MARKER}\ntelemetry = false\n"),
+            &path(),
+        );
+        assert!(orphan.after.contains("telemetry = false"));
+        assert_eq!(orphan.after.matches(KIMI_BEGIN_MARKER).count(), 1);
+        assert_eq!(
+            toml_basic_string("cmux hooks \"kimi\" \\\tpermission"),
+            "cmux hooks \\\"kimi\\\" \\\\\\tpermission"
         );
     }
 }
