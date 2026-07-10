@@ -52,6 +52,7 @@ impl ControlCommand {
                 | "surface.trigger_flash"
                 | "notification.clear"
                 | "notification.create"
+                | "right_sidebar"
         ) {
             return self;
         }
@@ -131,6 +132,7 @@ fn workspace_scoped_method(method: &str) -> bool {
             | "surface.trigger_flash"
             | "notification.clear"
             | "notification.create"
+            | "right_sidebar"
             | "debug.terminals"
             | "surface.send_text"
             | "surface.send_key"
@@ -208,6 +210,10 @@ pub fn control_command_for(
         "notify" => Some(ControlCommand::new(
             "notification.create",
             notification_create_params(args)?,
+        )),
+        "right-sidebar" => Some(ControlCommand::new(
+            "right_sidebar",
+            right_sidebar_params(args)?,
         )),
         "sidebar-snapshot" | "extension-sidebar-snapshot" => Some(ControlCommand::new(
             "extension.sidebar.snapshot",
@@ -1286,6 +1292,101 @@ fn notification_create_params(args: &[String]) -> Result<serde_json::Value, CliE
     apply_surface_selector(&parsed, &mut params)?;
     apply_window_scope_selector(&parsed, &mut params);
     Ok(serde_json::Value::Object(params))
+}
+
+fn right_sidebar_params(args: &[String]) -> Result<serde_json::Value, CliError> {
+    for (index, arg) in args.iter().enumerate() {
+        if arg == "--workspace" && args.get(index + 1).is_none() {
+            return Err(CliError::new("right-sidebar: --workspace requires an id"));
+        }
+        if arg == "--window" && args.get(index + 1).is_none() {
+            return Err(CliError::new("right-sidebar: --window requires an id"));
+        }
+    }
+    for arg in args.iter().filter(|arg| arg.starts_with("--")) {
+        let name = arg.split_once('=').map_or(arg.as_str(), |(name, _)| name);
+        let valid = matches!(name, "--workspace" | "--window")
+            || (name == "--no-focus" && arg == "--no-focus");
+        if !valid {
+            return Err(CliError::new(format!(
+                "right-sidebar: unknown flag '{arg}'"
+            )));
+        }
+    }
+
+    let parsed = ParsedArgs::parse(args)?;
+    let Some(action) = parsed.first_positional().map(str::to_ascii_lowercase) else {
+        return Err(CliError::new("right-sidebar requires a subcommand"));
+    };
+    let no_focus = parsed.has_flag("--no-focus");
+    let mut params = serde_json::Map::new();
+
+    match action.as_str() {
+        "toggle" | "show" | "hide" | "focus" | "mode" => {
+            if parsed.positionals.len() != 1 {
+                return Err(CliError::new(format!(
+                    "right-sidebar {action} received unexpected arguments"
+                )));
+            }
+            if no_focus {
+                return Err(CliError::new(
+                    "right-sidebar: --no-focus is only valid with set",
+                ));
+            }
+            params.insert("action".to_string(), serde_json::json!(action));
+        }
+        "set" => {
+            if parsed.positionals.len() != 2 {
+                return Err(CliError::new(
+                    "right-sidebar set requires a mode: files, find, vault, sessions, feed, or dock",
+                ));
+            }
+            let raw_mode = &parsed.positionals[1];
+            let mode = canonical_right_sidebar_mode(raw_mode)
+                .ok_or_else(|| CliError::new(format!("Unknown right-sidebar mode '{raw_mode}'")))?;
+            params.insert("action".to_string(), serde_json::json!("set"));
+            params.insert("mode".to_string(), serde_json::json!(mode));
+            params.insert("focus".to_string(), serde_json::json!(!no_focus));
+        }
+        "files" | "find" | "vault" | "sessions" | "feed" | "dock" => {
+            if parsed.positionals.len() != 1 {
+                return Err(CliError::new(format!(
+                    "right-sidebar {action} received unexpected arguments"
+                )));
+            }
+            if no_focus {
+                return Err(CliError::new(
+                    "right-sidebar: --no-focus is only valid with set",
+                ));
+            }
+            params.insert("action".to_string(), serde_json::json!("set"));
+            params.insert(
+                "mode".to_string(),
+                serde_json::json!(canonical_right_sidebar_mode(&action).expect("known mode")),
+            );
+            params.insert("focus".to_string(), serde_json::json!(true));
+        }
+        _ => {
+            return Err(CliError::new(format!(
+                "Unknown right-sidebar command '{action}'"
+            )));
+        }
+    }
+
+    apply_workspace_scope_selector(&parsed, &mut params);
+    apply_window_scope_selector(&parsed, &mut params);
+    Ok(serde_json::Value::Object(params))
+}
+
+fn canonical_right_sidebar_mode(mode: &str) -> Option<&'static str> {
+    match mode.trim().to_ascii_lowercase().as_str() {
+        "files" => Some("files"),
+        "find" => Some("find"),
+        "vault" | "sessions" => Some("sessions"),
+        "feed" => Some("feed"),
+        "dock" => Some("dock"),
+        _ => None,
+    }
 }
 
 fn workspace_description_params(args: &[String]) -> Result<serde_json::Value, CliError> {
@@ -3502,6 +3603,80 @@ mod tests {
             mapped("notify", &[]).params,
             serde_json::json!({"title": "Notification", "subtitle": "", "body": ""})
         );
+    }
+
+    #[test]
+    fn maps_right_sidebar_commands_with_canonical_validation() {
+        assert_eq!(
+            mapped("right-sidebar", &["toggle"]).params,
+            serde_json::json!({"action": "toggle"})
+        );
+        assert_eq!(
+            mapped("right-sidebar", &["mode"]).params,
+            serde_json::json!({"action": "mode"})
+        );
+        assert_eq!(
+            mapped("right-sidebar", &["vault"]).params,
+            serde_json::json!({"action": "set", "mode": "sessions", "focus": true})
+        );
+        assert_eq!(
+            mapped("right-sidebar", &["set", "find", "--no-focus"]).params,
+            serde_json::json!({"action": "set", "mode": "find", "focus": false})
+        );
+        assert_eq!(
+            mapped(
+                "right-sidebar",
+                &["set", "files", "--workspace", "2", "--window", "window:3"]
+            )
+            .params,
+            serde_json::json!({
+                "action": "set",
+                "mode": "files",
+                "focus": true,
+                "workspace_ref": "workspace:2",
+                "window_ref": "window:3"
+            })
+        );
+
+        for (tokens, message) in [
+            (vec![], "right-sidebar requires a subcommand"),
+            (
+                vec!["set"],
+                "right-sidebar set requires a mode: files, find, vault, sessions, feed, or dock",
+            ),
+            (vec!["set", "bogus"], "Unknown right-sidebar mode 'bogus'"),
+            (
+                vec!["show", "extra"],
+                "right-sidebar show received unexpected arguments",
+            ),
+            (
+                vec!["hide", "--no-focus"],
+                "right-sidebar: --no-focus is only valid with set",
+            ),
+            (
+                vec!["mode", "--unknown"],
+                "right-sidebar: unknown flag '--unknown'",
+            ),
+            (
+                vec!["show", "--workspace"],
+                "right-sidebar: --workspace requires an id",
+            ),
+            (
+                vec!["show", "--window"],
+                "right-sidebar: --window requires an id",
+            ),
+            (
+                vec!["set", "files", "--no-focus=false"],
+                "right-sidebar: unknown flag '--no-focus=false'",
+            ),
+        ] {
+            assert_eq!(
+                control_command_for("right-sidebar", &args(&tokens))
+                    .unwrap_err()
+                    .message,
+                message
+            );
+        }
     }
 
     #[test]

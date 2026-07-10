@@ -220,6 +220,7 @@ export function FileExplorerPanel({
     <aside
       className="cmux-file-explorer"
       aria-label="Right Sidebar"
+      tabIndex={-1}
       style={widthStyle}
       onKeyDown={(event) => {
         if (mode !== "files") {

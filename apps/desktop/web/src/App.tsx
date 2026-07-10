@@ -35,6 +35,11 @@ import { host } from "./host/host";
 import { useAppearance } from "./hooks/useAppearance";
 import { useWindowChrome } from "./hooks/useWindowChrome";
 import {
+  rightSidebarStateFromRemote,
+  type RightSidebarRemotePayload,
+  type RightSidebarState,
+} from "./rightSidebarModes";
+import {
   configReducer,
   type ConfigAction,
 } from "./settings/configReducer";
@@ -138,6 +143,10 @@ export function App(): React.JSX.Element {
   const [fileExplorerOpen, setFileExplorerOpen] = useState(false);
   const [rightSidebarMode, setRightSidebarMode] =
     useState<RightSidebarMode>("files");
+  const rightSidebarStateRef = useRef<RightSidebarState>({
+    visible: false,
+    mode: "files",
+  });
   const [settingsConfig, setSettingsConfig] = useState<Config | null>(null);
   const [settingsSearchQuery, setSettingsSearchQuery] = useState("");
   const [settingsLoading, setSettingsLoading] = useState(false);
@@ -651,6 +660,58 @@ export function App(): React.JSX.Element {
   const openFindInDirectory = useCallback(() => {
     openRightSidebarMode("find");
   }, [openRightSidebarMode]);
+
+  useEffect(() => {
+    const next = { visible: fileExplorerOpen, mode: rightSidebarMode };
+    rightSidebarStateRef.current = next;
+    void host
+      .invoke("right_sidebar_update_state", next)
+      .catch((error) => console.warn("right sidebar state sync failed", error));
+  }, [fileExplorerOpen, rightSidebarMode]);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void host
+      .on<RightSidebarRemotePayload>("cmux://right-sidebar-changed", (payload) => {
+        if (disposed) {
+          return;
+        }
+        const next = rightSidebarStateFromRemote(
+          rightSidebarStateRef.current,
+          payload,
+        );
+        rightSidebarStateRef.current = next;
+        setFileExplorerOpen(next.visible);
+        setRightSidebarMode(next.mode);
+        if (next.visible && next.mode === "find") {
+          setDirectorySearchOpen(true);
+        }
+        if (payload.focus) {
+          requestAnimationFrame(() => {
+            document
+              .querySelector<HTMLElement>(".cmux-file-explorer")
+              ?.focus({ preventScroll: true });
+          });
+        }
+      })
+      .then((off) => {
+        if (disposed) {
+          off();
+        } else {
+          unlisten = off;
+        }
+      })
+      .catch((error) => {
+        if (!disposed) {
+          console.warn("right sidebar subscription failed", error);
+        }
+      });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   const handleSettingsAction = useCallback(
     (action: ConfigAction, nextConfig: Config) => {

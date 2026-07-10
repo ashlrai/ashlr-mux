@@ -20,6 +20,7 @@ mod open_folder;
 mod opencode_http;
 mod pick_files;
 mod remote_proxy;
+mod right_sidebar;
 mod schemes;
 mod session;
 mod sidebar_render;
@@ -259,6 +260,7 @@ pub fn run() {
         .manage(control_socket::ControlEventState::default())
         .manage(agent_session::AgentSessionState::default())
         .manage(notifications::NotificationCommandState::default())
+        .manage(right_sidebar::RightSidebarState::default())
         .manage(markdown::MarkdownState::default())
         .manage(open_folder::VSCodeInlineState::default())
         // `DiffState` needs the resolved `app_data_dir`, so it is constructed with
@@ -394,6 +396,7 @@ pub fn run() {
             control_socket::control_socket_status,
             control_socket::restart_control_socket_listener,
             control_socket::custom_sidebar_action_invoke,
+            right_sidebar::right_sidebar_update_state,
             open_file::pick_markdown_file,
             open_folder::pick_workspace_folder,
             open_folder::open_folder_in_vscode_inline,

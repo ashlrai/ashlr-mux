@@ -800,6 +800,7 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "notification.open",
     "notification.jump_to_unread",
     "notification.create",
+    "right_sidebar",
     "events.stream",
     "extension.sidebar.snapshot",
     "sidebar.snapshot",
@@ -1039,6 +1040,7 @@ fn handle_control_request(app: &AppHandle, request: ControlRequest) -> ControlCa
         "notification.open" => notification_open(app, &request.params),
         "notification.jump_to_unread" => notification_jump_to_unread(app),
         "notification.create" => notification_create(app, &request.params),
+        "right_sidebar" => right_sidebar_control(app, &request.params),
         "events.stream" => ok(events_snapshot_payload(app, &request.params)),
         "extension.sidebar.snapshot" | "sidebar.snapshot" => {
             let snapshot = snapshot(app);
@@ -2669,6 +2671,70 @@ fn window_current(app: &AppHandle) -> ControlCallResult {
         "window_id": window_id,
         "window_ref": "window:1",
     }))
+}
+
+fn right_sidebar_control(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    if !right_sidebar_target_exists(&current, params) {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Right sidebar target not found".to_string(),
+            data: None,
+        };
+    }
+
+    let Some(action) = string_param(params, &["action"]) else {
+        return invalid_params("right_sidebar requires action");
+    };
+    let mode = string_param(params, &["mode"]);
+    let focus = bool_param(params, &["focus"]).unwrap_or(true);
+    let state = app.state::<crate::right_sidebar::RightSidebarState>();
+    match state.apply_control(&action, mode.as_deref(), focus) {
+        Ok(crate::right_sidebar::RightSidebarControlOutcome::State(snapshot)) => {
+            ok(json!(snapshot))
+        }
+        Ok(crate::right_sidebar::RightSidebarControlOutcome::Changed(change)) => {
+            if let Err(error) = app.emit(
+                crate::right_sidebar::RIGHT_SIDEBAR_CHANGED_EVENT,
+                change.clone(),
+            ) {
+                return ControlCallResult::Err {
+                    code: "right_sidebar_unavailable".to_string(),
+                    message: error.to_string(),
+                    data: None,
+                };
+            }
+            ok(json!({"ok": true}))
+        }
+        Err(message) => invalid_params(&message),
+    }
+}
+
+fn right_sidebar_target_exists(
+    snapshot: &AppSessionSnapshot,
+    params: &serde_json::Map<String, Value>,
+) -> bool {
+    let has_workspace_target =
+        params.contains_key("workspace_ref") || params.contains_key("workspace_id");
+    if has_workspace_target && workspace_index_from_params(snapshot, params).is_none() {
+        return false;
+    }
+
+    let has_window_target = params.contains_key("window_ref") || params.contains_key("window_id");
+    if !has_window_target {
+        return true;
+    }
+    let Some(window) = snapshot.windows.first() else {
+        return false;
+    };
+    if let Some(reference) = string_param(params, &["window_ref"]) {
+        return one_based_ref_index(&reference, "window") == Some(0);
+    }
+    string_param(params, &["window_id"])
+        .is_some_and(|id| window.window_id.as_deref() == Some(id.as_str()))
 }
 
 fn notification_list(app: &AppHandle) -> ControlCallResult {
@@ -11301,6 +11367,7 @@ mod tests {
             "notification.open",
             "notification.jump_to_unread",
             "notification.create",
+            "right_sidebar",
             "session.restore_previous",
             "events.stream",
             "extension.sidebar.snapshot",

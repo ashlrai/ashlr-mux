@@ -119,6 +119,9 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
         "notify" => Some(
             "Usage:\n  cmux notify [--title TITLE] [--subtitle SUBTITLE] [--body BODY] [--workspace WORKSPACE] [--surface SURFACE]\n\nCreates and delivers a notification for the selected target.",
         ),
+        "right-sidebar" => Some(
+            "Usage:\n  cmux right-sidebar <toggle|show|hide|focus|set|mode|files|find|vault|sessions|feed|dock> [--workspace WORKSPACE] [--window WINDOW] [--no-focus]\n\nControls right-sidebar visibility, mode, and focus. The mode command prints its current state.",
+        ),
         "list-workspaces" => Some(
             "Usage:\n  cmux list-workspaces\n\nLists workspaces from the active desktop session.",
         ),
@@ -533,6 +536,7 @@ mod tests {
             "notify",
             "reload-config",
             "refresh-surfaces",
+            "right-sidebar",
             "rename-window",
             "reopen-closed-browser-tab",
             "restore-session",

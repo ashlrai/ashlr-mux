@@ -417,6 +417,13 @@ fn format_control_result(method: &str, result: &serde_json::Value) -> String {
         "notification.open" | "notification.jump_to_unread" => {
             format_notification_navigation(result)
         }
+        "right_sidebar" => {
+            if result.get("mode").is_some() {
+                serde_json::to_string(result).unwrap_or_default()
+            } else {
+                "OK".to_string()
+            }
+        }
         "workspace.list_status" => format_status_entries(result),
         "workspace.list_meta" => format_metadata_entries(result),
         "workspace.list_meta_blocks" => format_metadata_blocks(result),
@@ -670,6 +677,21 @@ mod control_result_tests {
                 "notification.jump_to_unread",
                 &serde_json::json!({"opened": false})
             ),
+            "OK"
+        );
+    }
+
+    #[test]
+    fn right_sidebar_prints_state_only_for_mode_queries() {
+        assert_eq!(
+            format_control_result(
+                "right_sidebar",
+                &serde_json::json!({"visible": true, "mode": "sessions"})
+            ),
+            r#"{"mode":"sessions","visible":true}"#
+        );
+        assert_eq!(
+            format_control_result("right_sidebar", &serde_json::json!({"ok": true})),
             "OK"
         );
     }
