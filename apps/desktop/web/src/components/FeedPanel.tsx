@@ -18,6 +18,85 @@ export interface FeedQuestionView {
   options: FeedQuestionOptionView[];
 }
 
+export interface QuestionDraft {
+  selectedOptionIds: Readonly<Record<string, readonly string[]>>;
+  freeTextByQuestion: Readonly<Record<string, string>>;
+}
+
+const CUSTOM_QUESTION_ANSWER_ID = "__cmux_custom_answer__";
+
+export function emptyQuestionDraft(): QuestionDraft {
+  return { selectedOptionIds: {}, freeTextByQuestion: {} };
+}
+
+export function toggleQuestionOption(
+  draft: QuestionDraft,
+  question: FeedQuestionView,
+  optionId: string,
+): QuestionDraft {
+  const current = draft.selectedOptionIds[question.id] ?? [];
+  const selected = question.multi_select
+    ? current.includes(optionId)
+      ? current.filter((id) => id !== optionId)
+      : [...current, optionId]
+    : [optionId];
+  return {
+    ...draft,
+    selectedOptionIds: { ...draft.selectedOptionIds, [question.id]: selected },
+  };
+}
+
+export function setQuestionFreeText(
+  draft: QuestionDraft,
+  question: FeedQuestionView,
+  value: string,
+): QuestionDraft {
+  const current = draft.selectedOptionIds[question.id] ?? [];
+  const hasText = value.trim() !== "";
+  const presetSelections = current.filter((id) => id !== CUSTOM_QUESTION_ANSWER_ID);
+  const selected = !hasText
+    ? presetSelections
+    : question.multi_select
+      ? [...presetSelections, CUSTOM_QUESTION_ANSWER_ID]
+      : [CUSTOM_QUESTION_ANSWER_ID];
+  return {
+    selectedOptionIds: { ...draft.selectedOptionIds, [question.id]: selected },
+    freeTextByQuestion: { ...draft.freeTextByQuestion, [question.id]: value },
+  };
+}
+
+export function composeQuestionAnswers(
+  questions: readonly FeedQuestionView[],
+  draft: QuestionDraft,
+): string[] {
+  const answers: string[] = [];
+  for (const question of questions) {
+    const selected = draft.selectedOptionIds[question.id] ?? [];
+    const freeText = (draft.freeTextByQuestion[question.id] ?? "").trim();
+    if (freeText !== "" && selected.includes(CUSTOM_QUESTION_ANSWER_ID)) {
+      answers.push(freeText);
+      continue;
+    }
+    const labels = question.options
+      .filter((option) => selected.includes(option.id))
+      .map((option) => option.label);
+    if (labels.length > 0) {
+      answers.push(labels.join(", "));
+    }
+  }
+  return answers;
+}
+
+export function canSubmitQuestionAnswers(
+  questions: readonly FeedQuestionView[],
+  draft: QuestionDraft,
+): boolean {
+  return (
+    composeQuestionAnswers(questions, draft).length > 0 ||
+    (questions.length > 0 && questions.every((question) => question.options.length === 0))
+  );
+}
+
 export interface FeedItemView {
   id: string;
   workstream_id: string;
@@ -199,8 +278,7 @@ function FeedItemCard({
   onResolve: FeedPanelContentProps["onResolve"];
 }): React.JSX.Element {
   const pending = item.status === "pending" && item.request_id != null;
-  const detail =
-    item.tool_input ?? item.plan ?? item.questions[0]?.prompt ?? item.cwd ?? "";
+  const detail = item.tool_input ?? item.plan ?? item.cwd ?? "";
   return (
     <article className="cmux-feed-card" data-feed-kind={item.kind} data-feed-status={item.status}>
       <div className="cmux-feed-card-header">
@@ -255,28 +333,97 @@ function FeedItemCard({
           </button>
         </div>
       )}
-      {pending && item.kind === "question" && (
-        <div className="cmux-feed-actions">
-          {item.questions.flatMap((question) =>
-            question.options.map((option) => (
-              <button
-                key={`${question.id}:${option.id}`}
-                type="button"
-                title={option.description ?? undefined}
-                onClick={() =>
-                  onResolve(item.request_id!, {
-                    kind: "question",
-                    selections: [option.label],
-                  })
-                }
-              >
-                {option.label}
-              </button>
-            )),
-          )}
-        </div>
+      {item.kind === "question" && (
+        <QuestionActionArea
+          key={item.request_id ?? item.id}
+          questions={item.questions}
+          pending={pending}
+          onReply={(selections) =>
+            onResolve(item.request_id!, { kind: "question", selections })
+          }
+        />
       )}
     </article>
+  );
+}
+
+function QuestionActionArea({
+  questions,
+  pending,
+  onReply,
+}: {
+  questions: readonly FeedQuestionView[];
+  pending: boolean;
+  onReply: (selections: string[]) => void;
+}): React.JSX.Element {
+  const [draft, setDraft] = useState<QuestionDraft>(emptyQuestionDraft);
+  const answers = composeQuestionAnswers(questions, draft);
+  const canSubmit = pending && canSubmitQuestionAnswers(questions, draft);
+
+  return (
+    <div className="cmux-feed-question-area">
+      {questions.map((question, index) => {
+        const selected = draft.selectedOptionIds[question.id] ?? [];
+        return (
+          <section key={question.id} className="cmux-feed-question-block">
+            <div className="cmux-feed-question-heading">
+              <span>{index + 1}.</span>
+              <div>
+                {question.header != null && question.header !== "" && (
+                  <strong>{question.header}</strong>
+                )}
+                <p>{question.prompt}</p>
+              </div>
+            </div>
+            {question.multi_select && (
+              <span className="cmux-feed-question-multi">Multi-select</span>
+            )}
+            {question.options.length === 0 ? (
+              <span className="cmux-feed-question-empty">Agent provided no options.</span>
+            ) : (
+              <div className="cmux-feed-question-options">
+                {question.options.map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    aria-pressed={selected.includes(option.id)}
+                    disabled={!pending}
+                    onClick={() =>
+                      setDraft((current) => toggleQuestionOption(current, question, option.id))
+                    }
+                  >
+                    <span>{option.label}</span>
+                    {option.description != null && option.description !== "" && (
+                      <small>{option.description}</small>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+            {pending && (
+              <input
+                className="cmux-feed-question-free-text"
+                type="text"
+                value={draft.freeTextByQuestion[question.id] ?? ""}
+                placeholder="Type something..."
+                aria-label={`Custom answer for ${question.header || question.prompt}`}
+                onChange={(event) =>
+                  setDraft((current) => setQuestionFreeText(current, question, event.target.value))
+                }
+              />
+            )}
+          </section>
+        );
+      })}
+      <button
+        className="cmux-feed-question-submit"
+        type="button"
+        disabled={!canSubmit}
+        onClick={() => onReply(answers)}
+      >
+        {pending ? "Submit All Answers" : "Submitted"}
+      </button>
+    </div>
   );
 }
 
