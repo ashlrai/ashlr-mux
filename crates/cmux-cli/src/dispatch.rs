@@ -239,6 +239,9 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
         "clear-history" => Some(
             "Usage:\n  cmux clear-history [--workspace WORKSPACE] [--surface SURFACE] [--window WINDOW]\n\nClears retained scrollback for the selected terminal surface.",
         ),
+        "trigger-flash" => Some(
+            "Usage:\n  cmux trigger-flash [--workspace WORKSPACE] [--surface SURFACE] [--window WINDOW]\n\nFlashes the selected surface to draw attention to it.",
+        ),
         "send" => Some(
             "Usage:\n  cmux send [--workspace WORKSPACE] [--surface SURFACE] [--] TEXT\n\nSends literal text to a terminal surface.",
         ),
@@ -491,6 +494,7 @@ mod tests {
             "rename-window",
             "reopen-closed-browser-tab",
             "restore-session",
+            "trigger-flash",
             "read-screen",
             "capture-pane",
             "restore-previous-launch",

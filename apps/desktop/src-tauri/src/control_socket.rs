@@ -65,6 +65,7 @@ use crate::terminal::{
 
 const CONTROL_PIPE_BASE_NAME: &str = "cmux";
 const CONTROL_EVENTS_CHANGED_EVENT: &str = "cmux://events-changed";
+const PANEL_FLASH_EVENT: &str = "cmux://panel-flash";
 const CUSTOM_SIDEBAR_RELOAD_EVENT: &str = "cmux://custom-sidebar-reload";
 const CUSTOM_SIDEBAR_SELECT_EVENT: &str = "cmux://custom-sidebar-select";
 const CUSTOM_SIDEBAR_ACTION_POLICY: &str = "cmux-custom-sidebar-safe-default";
@@ -874,6 +875,7 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "surface.focus",
     "surface.health",
     "surface.clear_history",
+    "surface.trigger_flash",
     "surface.read_text",
     "surface.send_text",
     "surface.send_key",
@@ -1143,6 +1145,7 @@ fn handle_control_request(app: &AppHandle, request: ControlRequest) -> ControlCa
         "surface.focus" => surface_focus(app, &request.params),
         "surface.health" => surface_health(app, &request.params),
         "surface.clear_history" => surface_clear_history(app, &request.params),
+        "surface.trigger_flash" => surface_trigger_flash(app, &request.params),
         "surface.read_text" => surface_read_text(app, &request.params),
         "surface.send_text" => surface_send_text(app, &request.params),
         "surface.send_key" => surface_send_key(app, &request.params),
@@ -3931,6 +3934,41 @@ fn surface_clear_history(
                     .try_into()
                     .unwrap_or(JsonValue::Null),
             ),
+        };
+    }
+    ok(json!({
+        "workspace_id": window.tab_manager.workspaces[workspace_index].workspace_id,
+        "workspace_ref": workspace_ref(workspace_index),
+        "surface_id": panel_id,
+        "surface_ref": surface_ref_for_panel(&current, workspace_index, &panel_id),
+        "window_id": window.window_id,
+        "window_ref": window.window_id.as_ref().map(|_| "window:1"),
+    }))
+}
+
+fn surface_trigger_flash(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(window) = current.windows.first() else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let Some(workspace_index) = workspace_index_from_workspace_scope_or_selected(&current, params)
+    else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let Some(panel_id) =
+        surface_id_from_params_or_workspace_focused(&current, workspace_index, params)
+    else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    let payload = json!({"panelId": panel_id.clone()});
+    if let Err(error) = app.emit(PANEL_FLASH_EVENT, payload) {
+        return ControlCallResult::Err {
+            code: "internal_error".to_string(),
+            message: format!("Failed to emit panel flash event: {error}"),
+            data: None,
         };
     }
     ok(json!({
@@ -10877,6 +10915,7 @@ mod tests {
             "surface.report_tty",
             "surface.report_shell_state",
             "surface.clear_history",
+            "surface.trigger_flash",
             "surface.read_text",
             "workspace.report_pr",
             "workspace.report_review",

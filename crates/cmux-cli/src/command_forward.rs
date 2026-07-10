@@ -47,7 +47,7 @@ impl ControlCommand {
     pub fn with_window_id(mut self, window_id: Option<&str>) -> Self {
         if !matches!(
             self.method.as_str(),
-            "surface.read_text" | "surface.clear_history"
+            "surface.read_text" | "surface.clear_history" | "surface.trigger_flash"
         ) {
             return self;
         }
@@ -124,6 +124,7 @@ fn workspace_scoped_method(method: &str) -> bool {
             | "surface.health"
             | "surface.read_text"
             | "surface.clear_history"
+            | "surface.trigger_flash"
             | "debug.terminals"
             | "surface.send_text"
             | "surface.send_key"
@@ -352,6 +353,10 @@ pub fn control_command_for(
         )),
         "clear-history" => Some(ControlCommand::new(
             "surface.clear_history",
+            surface_selector_params(args)?,
+        )),
+        "trigger-flash" => Some(ControlCommand::new(
+            "surface.trigger_flash",
             surface_selector_params(args)?,
         )),
         "debug-terminals" => Some(ControlCommand::new(
@@ -3225,6 +3230,9 @@ mod tests {
         let command = mapped("clear-history", &[]).with_window_id(Some("2"));
         assert_eq!(command.params["window_ref"], serde_json::json!("window:2"));
 
+        let command = mapped("trigger-flash", &[]).with_window_id(Some("2"));
+        assert_eq!(command.params["window_ref"], serde_json::json!("window:2"));
+
         let command =
             mapped("read-screen", &["--window", "window:3"]).with_window_id(Some("window:2"));
         assert_eq!(command.params["window_ref"], serde_json::json!("window:3"));
@@ -3262,6 +3270,7 @@ mod tests {
             ("focus-panel", vec!["--panel", "surface:1"]),
             ("surface-health", vec![]),
             ("clear-history", vec![]),
+            ("trigger-flash", vec![]),
         ] {
             let control = mapped(command, &tokens).with_ambient_workspace_id(Some("workspace-2"));
             assert_eq!(
@@ -4437,6 +4446,16 @@ mod tests {
         assert_eq!(clear.method, "surface.clear_history");
         assert_eq!(
             clear.params,
+            serde_json::json!({"workspace_ref": "workspace:2", "surface_ref": "surface:3"})
+        );
+
+        let flash = mapped(
+            "trigger-flash",
+            &["--workspace", "workspace:2", "--surface", "surface:3"],
+        );
+        assert_eq!(flash.method, "surface.trigger_flash");
+        assert_eq!(
+            flash.params,
             serde_json::json!({"workspace_ref": "workspace:2", "surface_ref": "surface:3"})
         );
     }

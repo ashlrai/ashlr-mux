@@ -72,6 +72,7 @@ interface PaneTerminalStartup {
 }
 
 const PANEL_FLASH_EVENT = "cmux:panel-flash";
+const NATIVE_PANEL_FLASH_EVENT = "cmux://panel-flash";
 
 interface PanelFlashDetail {
   panelId: string;
@@ -86,6 +87,17 @@ export function dispatchPanelFlash(panelId: string): void {
       detail: { panelId },
     }),
   );
+}
+
+export function dispatchNativePanelFlash(payload: unknown): void {
+  if (typeof payload !== "object" || payload === null || !("panelId" in payload)) {
+    return;
+  }
+  const panelId = (payload as { panelId?: unknown }).panelId;
+  if (typeof panelId !== "string" || panelId.trim() === "") {
+    return;
+  }
+  dispatchPanelFlash(panelId);
 }
 
 export function dispatchPanelFlashSequence(
@@ -224,6 +236,27 @@ export function Workspace({
     };
     window.addEventListener(PANEL_FLASH_EVENT, onPanelFlash);
     return () => window.removeEventListener(PANEL_FLASH_EVENT, onPanelFlash);
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void host
+      .on<PanelFlashDetail>(NATIVE_PANEL_FLASH_EVENT, dispatchNativePanelFlash)
+      .then((nextUnlisten) => {
+        if (disposed) {
+          nextUnlisten();
+        } else {
+          unlisten = nextUnlisten;
+        }
+      })
+      .catch((error) => {
+        console.error("panel flash listener failed", error);
+      });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, []);
 
   useEffect(() => {

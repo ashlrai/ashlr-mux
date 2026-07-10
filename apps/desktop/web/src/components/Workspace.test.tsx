@@ -161,6 +161,7 @@ mock.module("react/jsx-dev-runtime", () => ({
 const {
   Workspace,
   browserHistoryNavigationAvailability,
+  dispatchNativePanelFlash,
   dispatchPanelFlash,
   dispatchPanelFlashSequence,
   isSerializableBrowserHistoryUrl,
@@ -242,6 +243,33 @@ describe("dispatchPanelFlash", () => {
       dispatchPanelFlashSequence("surface-1");
 
       expect(events).toEqual(["surface-1", "surface-1"]);
+    } finally {
+      Object.defineProperty(globalThis, "window", {
+        configurable: true,
+        value: previousWindow,
+      });
+    }
+  });
+
+  test("bridges valid native flash payloads and ignores malformed ones", () => {
+    const previousWindow = globalThis.window;
+    const events: string[] = [];
+    try {
+      Object.defineProperty(globalThis, "window", {
+        configurable: true,
+        value: {
+          dispatchEvent(event: Event) {
+            events.push((event as CustomEvent<{ panelId: string }>).detail.panelId);
+            return true;
+          },
+        },
+      });
+
+      dispatchNativePanelFlash({ panelId: "surface-2" });
+      dispatchNativePanelFlash({ panelId: "" });
+      dispatchNativePanelFlash({});
+
+      expect(events).toEqual(["surface-2"]);
     } finally {
       Object.defineProperty(globalThis, "window", {
         configurable: true,
