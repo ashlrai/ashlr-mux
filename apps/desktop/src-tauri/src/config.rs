@@ -17,9 +17,10 @@ use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
 use cmux_config::{
-    AppConfig, AutomationConfig, BrowserConfig, CanvasConfig, Config, DiffViewerConfig,
-    FileEditorConfig, FileExplorerConfig, JsonPath, MarkdownConfig, NotificationsConfig,
-    ShortcutsConfig, SidebarAppearanceConfig, SidebarConfig, TerminalConfig, WorkspaceColorsConfig,
+    ghostty_config_path, AppConfig, AutomationConfig, BrowserConfig, CanvasConfig, Config,
+    DiffViewerConfig, FileEditorConfig, FileExplorerConfig, JsonPath, MarkdownConfig,
+    NotificationsConfig, ShortcutsConfig, SidebarAppearanceConfig, SidebarConfig, TerminalConfig,
+    WorkspaceColorsConfig,
 };
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -439,62 +440,8 @@ fn open_path_in_editor(path: &Path) -> Result<(), String> {
         .map_err(|error| format!("failed to open {}: {error}", path.display()))
 }
 
-fn nonempty_env_path(name: &str) -> Option<PathBuf> {
-    std::env::var_os(name)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-}
-
-fn ghostty_config_candidates_from(
-    xdg_config_home: Option<&Path>,
-    home: Option<&Path>,
-    local_app_data: Option<&Path>,
-) -> Vec<PathBuf> {
-    let mut candidates = Vec::new();
-    let xdg_base = xdg_config_home
-        .map(Path::to_path_buf)
-        .or_else(|| home.map(|home| home.join(".config")));
-    if let Some(base) = xdg_base {
-        candidates.push(base.join("ghostty").join("config.ghostty"));
-        candidates.push(base.join("ghostty").join("config"));
-    }
-
-    #[cfg(target_os = "macos")]
-    if let Some(home) = home {
-        let base = home
-            .join("Library")
-            .join("Application Support")
-            .join("com.mitchellh.ghostty");
-        candidates.push(base.join("config.ghostty"));
-        candidates.push(base.join("config"));
-    }
-
-    #[cfg(target_os = "windows")]
-    if let Some(base) = local_app_data {
-        candidates.push(base.join("ghostty").join("config.ghostty"));
-        candidates.push(base.join("ghostty").join("config"));
-    }
-
-    candidates
-}
-
-fn ghostty_config_candidates() -> Vec<PathBuf> {
-    let xdg = nonempty_env_path("XDG_CONFIG_HOME");
-    let home = nonempty_env_path("HOME").or_else(|| nonempty_env_path("USERPROFILE"));
-    let local_app_data = nonempty_env_path("LOCALAPPDATA");
-    ghostty_config_candidates_from(xdg.as_deref(), home.as_deref(), local_app_data.as_deref())
-}
-
 fn ghostty_config_file_path() -> Result<PathBuf, String> {
-    let candidates = ghostty_config_candidates();
-    if candidates.is_empty() {
-        return Err("unable to determine Ghostty config directory".to_owned());
-    }
-    Ok(candidates
-        .iter()
-        .find(|path| path.exists())
-        .cloned()
-        .unwrap_or_else(|| candidates[0].clone()))
+    ghostty_config_path().ok_or_else(|| "unable to determine Ghostty config directory".to_owned())
 }
 
 /// Load the user's `cmux.json`, returning a Settings-ready typed config.
@@ -946,29 +893,5 @@ mod tests {
         let path = dir.path().join("ghostty").join("config.ghostty");
         ensure_text_file_exists(&path).expect("ensure");
         assert_eq!(std::fs::read_to_string(&path).expect("read"), "");
-    }
-
-    #[test]
-    fn ghostty_config_candidates_prefer_xdg_config_home() {
-        let xdg = Path::new("/xdg");
-        let home = Path::new("/home/user");
-        let local = Path::new("C:/Users/User/AppData/Local");
-        let candidates = ghostty_config_candidates_from(Some(xdg), Some(home), Some(local));
-        assert_eq!(candidates[0], xdg.join("ghostty").join("config.ghostty"));
-        assert_eq!(candidates[1], xdg.join("ghostty").join("config"));
-    }
-
-    #[test]
-    fn ghostty_config_candidates_default_xdg_to_home_config() {
-        let home = Path::new("/home/user");
-        let candidates = ghostty_config_candidates_from(None, Some(home), None);
-        assert_eq!(
-            candidates[0],
-            home.join(".config").join("ghostty").join("config.ghostty")
-        );
-        assert_eq!(
-            candidates[1],
-            home.join(".config").join("ghostty").join("config")
-        );
     }
 }

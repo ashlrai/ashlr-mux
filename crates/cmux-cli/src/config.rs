@@ -25,6 +25,15 @@ pub fn run_config_no_socket(
     command_args: &[String],
     global_json: bool,
 ) -> Result<ConfigCommandOutput, CliError> {
+    let ghostty_path = cmux_config::ghostty_config_path();
+    run_config_no_socket_at(command_args, global_json, ghostty_path.as_deref())
+}
+
+fn run_config_no_socket_at(
+    command_args: &[String],
+    global_json: bool,
+    ghostty_path: Option<&Path>,
+) -> Result<ConfigCommandOutput, CliError> {
     let parsed = crate::docs::parse_docs_settings_args(command_args, global_json);
     if parsed.help_requested() || parsed.arguments.is_empty() {
         return Ok(ConfigCommandOutput::success(CONFIG_USAGE.to_string()));
@@ -44,12 +53,132 @@ pub fn run_config_no_socket(
                 .map(ConfigCommandOutput::success)
         }
         "doctor" | "check" | "validate" => run_config_doctor(&args[1..], parsed.wants_json),
-        "get" | "sidebar-font-size" | "surface-tab-bar-font-size" => Err(CliError::new(format!(
-            "'config {subcommand}' is not yet available in the Windows port"
-        ))),
+        "get" => {
+            if args.len() != 2 {
+                return Err(font_size_get_usage());
+            }
+            let descriptor = font_size_descriptor(args[1]).ok_or_else(font_size_get_usage)?;
+            run_config_get_font_size(descriptor, ghostty_path, parsed.wants_json)
+        }
+        "sidebar-font-size" | "surface-tab-bar-font-size" => {
+            if args.len() != 1 {
+                return Err(CliError::new(format!(
+                    "Usage: cmux config {subcommand} [points]"
+                )));
+            }
+            let descriptor = font_size_descriptor(&subcommand).ok_or_else(font_size_get_usage)?;
+            run_config_get_font_size(descriptor, ghostty_path, parsed.wants_json)
+        }
         _ => Err(CliError::new(format!(
             "Unknown config subcommand '{subcommand}'. Run 'cmux config --help'."
         ))),
+    }
+}
+
+#[derive(Clone, Copy)]
+struct FontSizeDescriptor {
+    key: &'static str,
+    default_value: f64,
+    min_value: f64,
+    max_value: f64,
+}
+
+fn font_size_descriptor(key: &str) -> Option<FontSizeDescriptor> {
+    match key.to_lowercase().as_str() {
+        "sidebar-font-size" => Some(FontSizeDescriptor {
+            key: "sidebar-font-size",
+            default_value: 12.5,
+            min_value: 10.0,
+            max_value: 20.0,
+        }),
+        "surface-tab-bar-font-size" => Some(FontSizeDescriptor {
+            key: "surface-tab-bar-font-size",
+            default_value: 11.0,
+            min_value: 8.0,
+            max_value: 14.0,
+        }),
+        _ => None,
+    }
+}
+
+fn font_size_get_usage() -> CliError {
+    CliError::new("Usage: cmux config get <sidebar-font-size|surface-tab-bar-font-size>")
+}
+
+fn run_config_get_font_size(
+    descriptor: FontSizeDescriptor,
+    ghostty_path: Option<&Path>,
+    wants_json: bool,
+) -> Result<ConfigCommandOutput, CliError> {
+    let path = ghostty_path
+        .ok_or_else(|| CliError::new("unable to determine Ghostty config directory"))?;
+    let contents = std::fs::read_to_string(path).unwrap_or_default();
+    let configured_value = parsed_font_size(&contents, descriptor);
+    let value = configured_value.unwrap_or(descriptor.default_value);
+    let formatted = format_font_size(value);
+    let output = if wants_json {
+        let mut payload = serde_json::json!({
+            "configured": configured_value.is_some(),
+            "formatted": formatted,
+            "key": descriptor.key,
+            "path": path.to_string_lossy(),
+            "value": value,
+        });
+        if let Some(configured_value) = configured_value {
+            if let Some(object) = payload.as_object_mut() {
+                object.insert(
+                    "configured_value".into(),
+                    serde_json::json!(configured_value),
+                );
+            }
+        }
+        serde_json::to_string_pretty(&payload).map_err(|error| {
+            CliError::new(format!("failed to encode config font-size JSON: {error}"))
+        })?
+    } else {
+        format!(
+            "{} = {}\npath: {}",
+            descriptor.key,
+            formatted,
+            tilde_path(path)
+        )
+    };
+    Ok(ConfigCommandOutput::success(output))
+}
+
+fn parsed_font_size(contents: &str, descriptor: FontSizeDescriptor) -> Option<f64> {
+    let mut latest = None;
+    for line in contents.lines() {
+        let mut trimmed = line.trim();
+        if let Some(without_bom) = trimmed.strip_prefix('\u{feff}') {
+            trimmed = without_bom.trim();
+        }
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = trimmed.split_once('=') else {
+            continue;
+        };
+        if key.trim() == descriptor.key {
+            latest = Some(value.trim());
+        }
+    }
+    let value = latest?.trim_matches('"').parse::<f64>().ok()?;
+    value
+        .is_finite()
+        .then(|| value.clamp(descriptor.min_value, descriptor.max_value))
+}
+
+fn format_font_size(value: f64) -> String {
+    let scaled = (value * 100.0).round() as i64;
+    let whole = scaled / 100;
+    let fraction = (scaled % 100).abs();
+    if fraction == 0 {
+        whole.to_string()
+    } else if fraction % 10 == 0 {
+        format!("{whole}.{}", fraction / 10)
+    } else {
+        format!("{whole}.{fraction:02}")
     }
 }
 
@@ -566,6 +695,53 @@ mod tests {
             find_project_config_path_from(root.clone(), Some(&root)),
             None
         );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn font_size_reads_use_last_value_defaults_clamps_and_aliases() {
+        let root = std::env::temp_dir().join(format!("cmux-config-read-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let config_path = root.join("config.ghostty");
+        std::fs::write(
+            &config_path,
+            b"sidebar-font-size = 10\nsidebar-font-size = \"13.50\"\nsurface-tab-bar-font-size = 99\n",
+        )
+        .unwrap();
+
+        let sidebar = run_config_no_socket_at(
+            &string_args(&["get", "sidebar-font-size"]),
+            true,
+            Some(&config_path),
+        )
+        .unwrap();
+        let sidebar_json: serde_json::Value = serde_json::from_str(&sidebar.output).unwrap();
+        assert_eq!(sidebar_json["value"], 13.5);
+        assert_eq!(sidebar_json["configured_value"], 13.5);
+        assert_eq!(sidebar_json["formatted"], "13.5");
+        assert_eq!(sidebar_json["configured"], true);
+
+        let surface = run_config_no_socket_at(
+            &string_args(&["surface-tab-bar-font-size"]),
+            false,
+            Some(&config_path),
+        )
+        .unwrap();
+        assert!(surface
+            .output
+            .starts_with("surface-tab-bar-font-size = 14\npath: "));
+
+        let missing = run_config_no_socket_at(
+            &string_args(&["sidebar-font-size"]),
+            true,
+            Some(&root.join("missing")),
+        )
+        .unwrap();
+        let missing_json: serde_json::Value = serde_json::from_str(&missing.output).unwrap();
+        assert_eq!(missing_json["value"], 12.5);
+        assert_eq!(missing_json["configured"], false);
+        assert!(missing_json.get("configured_value").is_none());
 
         std::fs::remove_dir_all(root).unwrap();
     }

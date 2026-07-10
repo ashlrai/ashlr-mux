@@ -19,10 +19,9 @@
 //! - The remaining **generic socket command forward** surface still needs
 //!   explicit server-contract entries for each command with bespoke argument
 //!   shapes. Unmapped commands do not send guessed frames.
-//! - The remaining **side-effecting no-socket commands** (`sessions`, config
-//!   doctor/font-size inspection, the sigpipe/diff-viewer probes,
-//!   `open <path>`, …) each need a subsystem that is not part of the headless
-//!   core yet.
+//! - The remaining **side-effecting no-socket commands** (`sessions`, the
+//!   sigpipe/diff-viewer probes, `open <path>`, …) each need a subsystem that is
+//!   not part of the headless core yet.
 
 use crate::classify::PreSocketAction;
 use crate::command_forward::{control_command_for, ControlCommand};

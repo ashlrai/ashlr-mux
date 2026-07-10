@@ -2677,6 +2677,67 @@ pub fn config_path() -> Option<PathBuf> {
     dirs::config_dir().map(|dir| config_path_in(&dir))
 }
 
+/// Ordered Ghostty configuration candidates shared by the desktop and CLI.
+///
+/// XDG-style paths take precedence. Windows also falls back to Local AppData;
+/// macOS also checks Ghostty's Application Support directory.
+pub fn ghostty_config_candidates_from(
+    xdg_config_home: Option<&Path>,
+    home: Option<&Path>,
+    local_app_data: Option<&Path>,
+) -> Vec<PathBuf> {
+    #[cfg(not(target_os = "windows"))]
+    let _ = local_app_data;
+    let mut candidates = Vec::new();
+    let xdg_base = xdg_config_home
+        .map(Path::to_path_buf)
+        .or_else(|| home.map(|home| home.join(".config")));
+    if let Some(base) = xdg_base {
+        candidates.push(base.join("ghostty").join("config.ghostty"));
+        candidates.push(base.join("ghostty").join("config"));
+    }
+
+    #[cfg(target_os = "macos")]
+    if let Some(home) = home {
+        let base = home
+            .join("Library")
+            .join("Application Support")
+            .join("com.mitchellh.ghostty");
+        candidates.push(base.join("config.ghostty"));
+        candidates.push(base.join("config"));
+    }
+
+    #[cfg(target_os = "windows")]
+    if let Some(base) = local_app_data {
+        candidates.push(base.join("ghostty").join("config.ghostty"));
+        candidates.push(base.join("ghostty").join("config"));
+    }
+
+    candidates
+}
+
+/// Resolve the Ghostty config the desktop and CLI should inspect or edit.
+/// Prefers the first existing candidate, falling back to the first candidate
+/// when no config exists yet.
+pub fn ghostty_config_path() -> Option<PathBuf> {
+    fn nonempty_env_path(name: &str) -> Option<PathBuf> {
+        std::env::var_os(name)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    }
+
+    let xdg = nonempty_env_path("XDG_CONFIG_HOME");
+    let home = nonempty_env_path("HOME").or_else(|| nonempty_env_path("USERPROFILE"));
+    let local_app_data = nonempty_env_path("LOCALAPPDATA");
+    let candidates =
+        ghostty_config_candidates_from(xdg.as_deref(), home.as_deref(), local_app_data.as_deref());
+    candidates
+        .iter()
+        .find(|path| path.exists())
+        .cloned()
+        .or_else(|| candidates.into_iter().next())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3640,5 +3701,31 @@ mod tests {
                 Some(CONFIG_DIR_NAME)
             );
         }
+    }
+
+    #[test]
+    fn ghostty_config_candidates_prefer_xdg_config_home() {
+        let xdg = Path::new("C:/xdg");
+        let home = Path::new("C:/Users/example");
+        let local = Path::new("C:/Users/example/AppData/Local");
+        let candidates = ghostty_config_candidates_from(Some(xdg), Some(home), Some(local));
+        assert_eq!(candidates[0], xdg.join("ghostty").join("config.ghostty"));
+        assert_eq!(candidates[1], xdg.join("ghostty").join("config"));
+        #[cfg(target_os = "windows")]
+        assert_eq!(candidates[2], local.join("ghostty").join("config.ghostty"));
+    }
+
+    #[test]
+    fn ghostty_config_candidates_default_xdg_to_home_config() {
+        let home = Path::new("C:/Users/example");
+        let candidates = ghostty_config_candidates_from(None, Some(home), None);
+        assert_eq!(
+            candidates[0],
+            home.join(".config").join("ghostty").join("config.ghostty")
+        );
+        assert_eq!(
+            candidates[1],
+            home.join(".config").join("ghostty").join("config")
+        );
     }
 }
