@@ -8,10 +8,12 @@ license.workspace = true
 path = "src/lib.rs"
 
 [dependencies]
+cmux-jsonc = { path = "../cmux-jsonc" }
 dirs = "6"
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.10"
+tempfile = "3"
 ts-rs = { version = "10.1", optional = true }
 
 [features]

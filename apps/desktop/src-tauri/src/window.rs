@@ -7,12 +7,68 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(debug_assertions)]
+use cmux_core::window_display::{centered_window_geometry, matching_monitor_index};
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow, WindowEvent};
+#[cfg(debug_assertions)]
+use tauri::{PhysicalPosition, PhysicalSize};
 
 const MAIN_WINDOW_LABEL: &str = "main";
 const AUX_WINDOW_LABEL_PREFIX: &str = "window-";
 const WINDOW_STATE_CHANGED_EVENT: &str = "cmux://window-state-changed";
 static NEXT_WINDOW_NUMBER: AtomicU64 = AtomicU64::new(2);
+
+#[cfg(debug_assertions)]
+fn apply_default_display(window: &WebviewWindow) -> Result<(), String> {
+    let Some(config_path) = cmux_config::config_path() else {
+        return Ok(());
+    };
+    let Some(query) = cmux_config::dev_window_display_at(&config_path)
+        .ok()
+        .flatten()
+    else {
+        return Ok(());
+    };
+    let monitors = window
+        .available_monitors()
+        .map_err(|error| error.to_string())?;
+    let names: Vec<_> = monitors
+        .iter()
+        .map(|monitor| monitor.name().cloned())
+        .collect();
+    let Some(index) = matching_monitor_index(&names, &query) else {
+        return Ok(());
+    };
+    let monitor = &monitors[index];
+    let work_area = monitor.work_area();
+    let window_size = window.outer_size().map_err(|error| error.to_string())?;
+    let (position, size) = centered_window_geometry(
+        (work_area.position.x, work_area.position.y),
+        (work_area.size.width, work_area.size.height),
+        (window_size.width, window_size.height),
+    );
+    if size != (window_size.width, window_size.height) {
+        window
+            .set_size(PhysicalSize::new(size.0, size.1))
+            .map_err(|error| error.to_string())?;
+    }
+    window
+        .set_position(PhysicalPosition::new(position.0, position.1))
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(not(debug_assertions))]
+fn apply_default_display(_window: &WebviewWindow) -> Result<(), String> {
+    Ok(())
+}
+
+pub fn apply_default_display_to_existing_windows(app: &AppHandle) {
+    for window in app.webview_windows().into_values() {
+        if let Err(error) = apply_default_display(&window) {
+            eprintln!("[window] failed to apply default display: {error}");
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -125,6 +181,9 @@ pub async fn window_new(app: AppHandle, window: WebviewWindow) -> Result<String,
         .map_err(|error| error.to_string())?
         .build()
         .map_err(|error| error.to_string())?;
+    if let Err(error) = apply_default_display(&new_window) {
+        eprintln!("[window] failed to apply default display: {error}");
+    }
     if let Ok(title) = window.title() {
         let _ = new_window.set_title(&title);
     }

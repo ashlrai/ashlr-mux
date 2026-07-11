@@ -278,6 +278,7 @@ pub fn run() {
             );
             feed::bootstrap_feed_history(app.state::<feed::FeedState>().inner());
             install_native_menu(&handle)?;
+            window::apply_default_display_to_existing_windows(&handle);
             window::install_window_state_listeners(&handle);
             session::bootstrap_session_persistence(&handle, app.state::<session::SessionState>());
             #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]

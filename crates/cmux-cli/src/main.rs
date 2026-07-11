@@ -123,6 +123,14 @@ fn dispatch(
             result.failure.map_or(Ok(()), Err)
         }
         DispatchPlan::RunConfigMutation(args) => run_config_mutation_command(options, &args),
+        DispatchPlan::RunWindowDefaultDisplay(args) => {
+            let output = cmux_cli::window_default_display::run_window_default_display(
+                &args,
+                options.json_output,
+            )?;
+            println!("{output}");
+            Ok(())
+        }
         DispatchPlan::RunHooksInstaller { command, args } => {
             let output = cmux_cli::hooks_installer::run_hooks_command(&command, &args)?;
             print!("{output}");

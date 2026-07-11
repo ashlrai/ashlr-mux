@@ -3,6 +3,7 @@ pub mod session;
 pub mod session_ops;
 pub mod shortcuts;
 pub mod shortcuts_action;
+pub mod window_display;
 
 pub use shortcuts_action::Action;
 

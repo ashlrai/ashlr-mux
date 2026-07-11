@@ -2677,6 +2677,129 @@ pub fn config_path() -> Option<PathBuf> {
     dirs::config_dir().map(|dir| config_path_in(&dir))
 }
 
+/// Read the shared DEBUG-window display default from `app.devWindowDisplay`.
+/// Missing/empty files and missing/blank values resolve to `None`; malformed
+/// JSONC is reported so callers never silently overwrite a corrupt config.
+pub fn dev_window_display_at(path: &Path) -> Result<Option<String>, String> {
+    let root = read_jsonc_object(path)?;
+    Ok(root
+        .get("app")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|app| app.get("devWindowDisplay"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string))
+}
+
+/// Set or clear `app.devWindowDisplay` in the shared JSONC config.
+///
+/// Writes sorted, pretty JSON just like canonical `JSONConfigStore`, follows a
+/// configured symlink to preserve it, atomically replaces the resolved target,
+/// and prunes `app` when clearing its final child.
+pub fn set_dev_window_display_at(
+    path: &Path,
+    value: Option<&str>,
+) -> Result<Option<String>, String> {
+    let normalized = value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let mut root = read_jsonc_object(path)?;
+    if let Some(value) = &normalized {
+        let app = root
+            .entry("app".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        if !app.is_object() {
+            *app = serde_json::json!({});
+        }
+        if let Some(app) = app.as_object_mut() {
+            app.insert("devWindowDisplay".into(), serde_json::json!(value));
+        }
+    } else if let Some(app) = root
+        .get_mut("app")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        app.remove("devWindowDisplay");
+        if app.is_empty() {
+            root.remove("app");
+        }
+    }
+    write_json_object_atomically(path, &root)?;
+    Ok(normalized)
+}
+
+fn read_jsonc_object(path: &Path) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Default::default()),
+        Err(error) => return Err(format!("failed to read {}: {error}", path.display())),
+    };
+    if bytes.is_empty() {
+        return Ok(Default::default());
+    }
+    let sanitized = cmux_jsonc::preprocess(&bytes)
+        .map_err(|error| format!("failed to parse {}: {error}", path.display()))?;
+    let value: serde_json::Value = serde_json::from_slice(&sanitized)
+        .map_err(|error| format!("failed to parse {}: {error}", path.display()))?;
+    value
+        .as_object()
+        .cloned()
+        .ok_or_else(|| format!("{} must contain a top-level JSON object", path.display()))
+}
+
+fn write_json_object_atomically(
+    path: &Path,
+    root: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    use std::io::Write;
+
+    let write_path = resolved_config_write_path(path);
+    let parent = write_path
+        .parent()
+        .ok_or_else(|| format!("config path {} has no parent", write_path.display()))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(|error| {
+        format!(
+            "failed to create temporary config in {}: {error}",
+            parent.display()
+        )
+    })?;
+    serde_json::to_writer_pretty(temporary.as_file_mut(), root)
+        .map_err(|error| format!("failed to encode {}: {error}", write_path.display()))?;
+    temporary
+        .as_file_mut()
+        .write_all(b"\n")
+        .map_err(|error| format!("failed to write {}: {error}", write_path.display()))?;
+    temporary
+        .as_file_mut()
+        .sync_all()
+        .map_err(|error| format!("failed to sync {}: {error}", write_path.display()))?;
+    temporary.persist(&write_path).map_err(|error| {
+        format!(
+            "failed to replace {}: {}",
+            write_path.display(),
+            error.error
+        )
+    })?;
+    Ok(())
+}
+
+fn resolved_config_write_path(path: &Path) -> PathBuf {
+    let Ok(destination) = std::fs::read_link(path) else {
+        return path.to_path_buf();
+    };
+    let target = if destination.is_absolute() {
+        destination
+    } else {
+        path.parent()
+            .unwrap_or_else(|| Path::new(""))
+            .join(destination)
+    };
+    std::fs::canonicalize(&target).unwrap_or(target)
+}
+
 /// Ordered Ghostty configuration candidates shared by the desktop and CLI.
 ///
 /// XDG-style paths take precedence. Windows also falls back to Local AppData;
@@ -3727,5 +3850,47 @@ mod tests {
             candidates[1],
             home.join(".config").join("ghostty").join("config")
         );
+    }
+
+    #[test]
+    fn dev_window_display_round_trips_jsonc_and_prunes_empty_app() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("cmux-default-display-{unique}"));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("cmux.json");
+        std::fs::write(
+            &path,
+            b"{ // keep readable\n  \"app\": { \"keep\": true, \"devWindowDisplay\": \"Old\", },\n  \"browser\": {},\n}",
+        )
+        .unwrap();
+
+        assert_eq!(
+            dev_window_display_at(&path).unwrap().as_deref(),
+            Some("Old")
+        );
+        assert_eq!(
+            set_dev_window_display_at(&path, Some("  Display 2  ")).unwrap(),
+            Some("Display 2".to_string())
+        );
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(value["app"]["devWindowDisplay"], "Display 2");
+        assert_eq!(value["app"]["keep"], true);
+        assert_eq!(value["browser"], serde_json::json!({}));
+
+        set_dev_window_display_at(&path, None).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(value["app"].get("devWindowDisplay").is_none());
+        assert_eq!(value["app"]["keep"], true);
+
+        std::fs::write(&path, b"{\"app\":{\"devWindowDisplay\":\"Only\"}}").unwrap();
+        set_dev_window_display_at(&path, Some(" ")).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{}\n");
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

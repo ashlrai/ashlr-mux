@@ -599,10 +599,12 @@ dependencies = [
 name = "cmux-config"
 version = "0.1.0"
 dependencies = [
+ "cmux-jsonc",
  "dirs",
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "ts-rs",
 ]
 
