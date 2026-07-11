@@ -2389,6 +2389,10 @@ pub fn new_workspace_with_placement(
         .and_then(|i| tabs.workspaces.get(i))
         .map(|w| w.is_pinned == Some(true))
         .unwrap_or(false);
+    let inherited_directory = selected_index
+        .and_then(|index| usize::try_from(index).ok())
+        .and_then(|index| tabs.workspaces.get(index))
+        .and_then(|workspace| workspace.current_directory.clone());
 
     let idx = insertion_index(
         placement,
@@ -2401,8 +2405,9 @@ pub fn new_workspace_with_placement(
     // defensively before the unsigned cast (Swift's `insert` also falls back to
     // an append when the index is out of range, `TabManager.swift:1126-1132`).
     let at = idx.clamp(0, total_count) as usize;
-    tabs.workspaces
-        .insert(at, fresh_terminal_workspace(panel_id));
+    let mut workspace = fresh_terminal_workspace(panel_id);
+    workspace.current_directory = inherited_directory;
+    tabs.workspaces.insert(at, workspace);
     // Canonical selects the newly created workspace (`TabManager.swift:1156`).
     tabs.selected_workspace_index = Some(at as i64);
     normalize_workspace_groups_in_snapshot(tabs);

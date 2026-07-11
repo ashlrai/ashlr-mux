@@ -157,6 +157,21 @@ pub fn current_control_window(
         .map(|summary| summary.identity.clone())
 }
 
+/// Focus a scriptable window without activating another application. The
+/// caller supplies the same UUID/ref/label selector accepted by window.list.
+pub fn focus_control_window(app: &AppHandle, selector: &str) -> Result<(), String> {
+    let windows = ordered_control_windows(app);
+    let identities: Vec<_> = windows
+        .iter()
+        .map(|(identity, _)| identity.clone())
+        .collect();
+    let index = resolve_window_selector(&identities, selector)
+        .ok_or_else(|| format!("Window not found: {selector}"))?;
+    let window = &windows[index].1;
+    window.show().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())
+}
+
 fn ordered_control_windows(app: &AppHandle) -> Vec<(WindowControlIdentity, WebviewWindow)> {
     let mut windows = app.webview_windows();
     ordered_window_identities(windows.keys().cloned())

@@ -173,11 +173,69 @@ pub struct ControlEventState {
     inner: Mutex<ControlEventLog>,
 }
 
+#[derive(Default)]
+pub struct ControlHandleRegistryState {
+    inner: Mutex<ControlHandleRegistry>,
+}
+
+#[derive(Default)]
+struct ControlHandleRegistry {
+    refs: HashMap<(&'static str, String), u64>,
+    next: HashMap<&'static str, u64>,
+}
+
+impl ControlHandleRegistry {
+    fn mint(&mut self, kind: &'static str, id: &str) -> String {
+        let key = (kind, id.to_string());
+        let number = if let Some(number) = self.refs.get(&key) {
+            *number
+        } else {
+            let next = self.next.entry(kind).or_insert(1);
+            let number = *next;
+            *next = next.saturating_add(1);
+            self.refs.insert(key, number);
+            number
+        };
+        format!("{kind}:{number}")
+    }
+
+    fn resolve(&self, kind: &'static str, reference: &str) -> Option<String> {
+        let number = one_based_ref_index(reference, kind)? as u64 + 1;
+        self.refs
+            .iter()
+            .find_map(|((entry_kind, id), entry_number)| {
+                (*entry_kind == kind && *entry_number == number).then(|| id.clone())
+            })
+    }
+}
+
+fn control_handle_ref(app: &AppHandle, kind: &'static str, id: &str) -> String {
+    let state = app.state::<ControlHandleRegistryState>();
+    let reference = state
+        .inner
+        .lock()
+        .expect("control handle registry mutex poisoned")
+        .mint(kind, id);
+    reference
+}
+
+fn resolve_control_handle_ref(
+    app: &AppHandle,
+    kind: &'static str,
+    reference: &str,
+) -> Option<String> {
+    app.state::<ControlHandleRegistryState>()
+        .inner
+        .lock()
+        .expect("control handle registry mutex poisoned")
+        .resolve(kind, reference)
+}
+
 struct ControlEventLog {
     boot_id: String,
     next_seq: u64,
     events: VecDeque<Value>,
-    last_session_summary: Option<SessionEventSummary>,
+    last_session_summaries: BTreeMap<String, SessionEventSummary>,
     subscribers: Vec<EventSubscriber>,
 }
 
@@ -188,7 +246,7 @@ impl Default for ControlEventState {
                 boot_id: Uuid::new_v4().to_string(),
                 next_seq: 1,
                 events: VecDeque::new(),
-                last_session_summary: None,
+                last_session_summaries: BTreeMap::new(),
                 subscribers: Vec::new(),
             }),
         }
@@ -1042,7 +1100,21 @@ impl cmux_ipc::ControlRequestHandler for DesktopControlHandler {
     }
 }
 
-fn handle_control_request(app: &AppHandle, request: ControlRequest) -> ControlCallResult {
+fn handle_control_request(app: &AppHandle, mut request: ControlRequest) -> ControlCallResult {
+    if request.method.starts_with("workspace.") && request.params.contains_key("window") {
+        return ControlCallResult::Err {
+            code: "invalid_params".to_string(),
+            message: "Unsupported parameter `window`; use `window_id` with a window UUID or ref from `window.list`.".to_string(),
+            data: json!({
+                "method": request.method,
+                "unsupported_param": "window",
+                "supported_param": "window_id",
+            })
+            .try_into()
+            .ok(),
+        };
+    }
+    resolve_request_handle_refs(app, &mut request.params);
     match request.method.as_str() {
         "ping" | "system.ping" => ok(json!("pong")),
         "system.identify" => ok(json!({
@@ -1095,8 +1167,12 @@ fn handle_control_request(app: &AppHandle, request: ControlRequest) -> ControlCa
         "sidebar.open" => sidebar_open(app, &request.params),
         "sidebar.reload" => sidebar_reload(app, &request.params),
         "sidebar.select" => sidebar_select(app, &request.params),
-        "workspace.list" => workspace_list_from_params(&snapshot(app), &request.params),
-        "workspace.current" => workspace_current_from_params(&snapshot(app), &request.params),
+        "workspace.list" => {
+            workspace_list_from_params_for_app(app, &snapshot(app), &request.params)
+        }
+        "workspace.current" => {
+            workspace_current_from_params_for_app(app, &snapshot(app), &request.params)
+        }
         "workspace.create" => workspace_create(app, &request.params),
         "workspace.create_browser" | "browser.new_workspace" => {
             workspace_create_browser(app, &request.params)
@@ -1379,45 +1455,112 @@ fn handle_control_request(app: &AppHandle, request: ControlRequest) -> ControlCa
     }
 }
 
+fn resolve_request_handle_refs(app: &AppHandle, params: &mut serde_json::Map<String, Value>) {
+    for (key, kind) in [
+        ("window_id", "window"),
+        ("group_id", "workspace_group"),
+        ("workspace_id", "workspace"),
+        ("group_reference_workspace_id", "workspace"),
+        ("reference_workspace_id", "workspace"),
+        ("surface_id", "surface"),
+        ("terminal_id", "surface"),
+        ("tab_id", "surface"),
+        ("pane_id", "pane"),
+    ] {
+        let Some(reference) = params.get(key).and_then(Value::as_str) else {
+            continue;
+        };
+        if let Some(id) = resolve_control_handle_ref(app, kind, reference) {
+            params.insert(key.to_string(), json!(id));
+        }
+    }
+}
+
 pub(crate) fn record_session_changed_event(app: &AppHandle, snapshot: &AppSessionSnapshot) {
     let Some(state) = app.try_state::<ControlEventState>() else {
         return;
     };
-    let current = session_event_summary(snapshot);
+    let current = session_event_summaries(snapshot);
     let previous = {
         let mut guard = state
             .inner
             .lock()
             .expect("control event log mutex poisoned");
-        let previous = guard.last_session_summary.clone();
-        guard.last_session_summary = Some(current.clone());
+        let previous = guard.last_session_summaries.clone();
+        guard.last_session_summaries = current.clone();
         previous
     };
-    for event in derived_session_event_specs(previous.as_ref(), &current) {
-        record_event(
-            app,
-            event.name,
-            event.category,
-            event.source,
-            event.window_id,
-            event.workspace_id,
-            event.surface_id,
-            event.payload,
-        );
+    for (key, summary) in &current {
+        for event in derived_session_event_specs(previous.get(key), summary) {
+            record_event(
+                app,
+                event.name,
+                event.category,
+                event.source,
+                event.window_id,
+                event.workspace_id,
+                event.surface_id,
+                event.payload,
+            );
+        }
     }
-}
-
-fn session_event_summary(snapshot: &AppSessionSnapshot) -> SessionEventSummary {
-    let Some(window) = snapshot.windows.first() else {
-        return SessionEventSummary {
-            window_id: None,
+    for (key, previous_summary) in &previous {
+        if current.contains_key(key) {
+            continue;
+        }
+        let empty = SessionEventSummary {
+            window_id: previous_summary.window_id.clone(),
             selected_workspace_id: None,
             selected_workspace_index: None,
             workspaces: Vec::new(),
         };
-    };
-    let selected_index = (!window.tab_manager.workspaces.is_empty())
-        .then(|| selected_workspace_index(snapshot).min(window.tab_manager.workspaces.len() - 1));
+        for event in derived_session_event_specs(Some(previous_summary), &empty) {
+            record_event(
+                app,
+                event.name,
+                event.category,
+                event.source,
+                event.window_id,
+                event.workspace_id,
+                event.surface_id,
+                event.payload,
+            );
+        }
+    }
+}
+
+fn session_event_summaries(snapshot: &AppSessionSnapshot) -> BTreeMap<String, SessionEventSummary> {
+    snapshot
+        .windows
+        .iter()
+        .enumerate()
+        .map(|(index, window)| {
+            let key = window
+                .window_id
+                .clone()
+                .unwrap_or_else(|| format!("window-index:{index}"));
+            (key, session_event_summary_for_window(window, index))
+        })
+        .collect()
+}
+
+fn session_event_summary_for_window(
+    window: &cmux_core::session::SessionWindowSnapshot,
+    window_index: usize,
+) -> SessionEventSummary {
+    if window.tab_manager.workspaces.is_empty() {
+        return SessionEventSummary {
+            window_id: window.window_id.clone(),
+            selected_workspace_id: None,
+            selected_workspace_index: None,
+            workspaces: Vec::new(),
+        };
+    }
+    let selected_index = window
+        .tab_manager
+        .selected_workspace_index
+        .and_then(|index| usize::try_from(index).ok())
+        .filter(|index| *index < window.tab_manager.workspaces.len());
     let workspaces: Vec<WorkspaceEventSummary> = window
         .tab_manager
         .workspaces
@@ -1447,7 +1590,7 @@ fn session_event_summary(snapshot: &AppSessionSnapshot) -> SessionEventSummary {
                 key: workspace
                     .workspace_id
                     .clone()
-                    .unwrap_or_else(|| workspace_ref(index)),
+                    .unwrap_or_else(|| format!("{}:{index}", window_ref(window_index))),
                 id: workspace.workspace_id.clone(),
                 title: workspace_display_name(workspace),
                 index,
@@ -2658,7 +2801,11 @@ fn workspace_create(app: &AppHandle, params: &serde_json::Map<String, Value>) ->
     let title = string_param(params, &["title"]);
     let description = raw_string_param(params, &["description"]);
     let group_id = string_param(params, &["group_id"]);
-    if params.contains_key("group_id") && group_id.is_none() {
+    if params.contains_key("group_id")
+        && group_id
+            .as_deref()
+            .is_none_or(|group_id| Uuid::parse_str(group_id).is_err())
+    {
         return invalid_params("Missing or invalid group_id");
     }
     if let Some(group_id) = group_id.as_deref() {
@@ -2683,32 +2830,94 @@ fn workspace_create(app: &AppHandle, params: &serde_json::Map<String, Value>) ->
     {
         return invalid_params("layout must be a valid JSON object");
     }
+    let layout = match params.get("layout") {
+        Some(layout) => match serde_json::from_value::<cmux_config::CmuxLayoutNode>(layout.clone()) {
+            Ok(layout) if canonical_layout_is_valid(&layout) => Some(layout),
+            Ok(_) => return invalid_params("Invalid layout: every split requires exactly two children and every pane requires a surface"),
+            Err(error) => return invalid_params(&format!("Invalid layout: {error}")),
+        },
+        None => None,
+    };
+    let placement = raw_string_param(params, &["group_placement", "placement"]);
     if params.contains_key("group_placement") || params.contains_key("placement") {
         if string_param(params, &["group_id"]).is_none() {
             return invalid_params("group_id is required for group placement");
         }
-        let placement =
-            raw_string_param(params, &["group_placement", "placement"]).unwrap_or_default();
-        if !matches!(placement.as_str(), "afterCurrent" | "top" | "end") {
+        let placement_value = placement.clone().unwrap_or_default();
+        if !matches!(placement_value.as_str(), "afterCurrent" | "top" | "end") {
             return ControlCallResult::Err {
                 code: "invalid_params".to_string(),
                 message: "Invalid group_placement".to_string(),
-                data: json!({"group_placement": placement}).try_into().ok(),
+                data: json!({"group_placement": placement_value}).try_into().ok(),
             };
         }
     }
+    let reference_key_present = params.contains_key("group_reference_workspace_id")
+        || params.contains_key("reference_workspace_id");
+    let reference_selector = raw_string_param(
+        params,
+        &["group_reference_workspace_id", "reference_workspace_id"],
+    );
+    if reference_key_present && reference_selector.is_none() {
+        return invalid_params("Missing or invalid group_reference_workspace_id");
+    }
+    if reference_selector
+        .as_deref()
+        .is_some_and(|reference| Uuid::parse_str(reference).is_err())
+    {
+        return invalid_params("Missing or invalid group_reference_workspace_id");
+    }
+    let reference_index = reference_selector.as_deref().and_then(|selector| {
+        resolve_workspace_identity_in_window(app, &current, window_index, selector)
+    });
+    if let (Some(group_id), Some(reference_selector)) =
+        (group_id.as_deref(), reference_selector.as_deref())
+    {
+        let belongs = reference_index.is_some_and(|index| {
+            current.windows[window_index].tab_manager.workspaces[index]
+                .group_id
+                .as_deref()
+                == Some(group_id)
+        });
+        if !belongs {
+            return ControlCallResult::Err {
+                code: "invalid_params".to_string(),
+                message: "Reference workspace must be a member of the target group".to_string(),
+                data: json!({"group_reference_workspace_id": reference_selector})
+                    .try_into()
+                    .ok(),
+            };
+        }
+    }
+    if placement.as_deref() == Some("afterCurrent") && reference_index.is_none() {
+        return invalid_params("Missing or invalid group_reference_workspace_id");
+    }
+    let group_insert_index = group_id.as_deref().and_then(|group_id| {
+        workspace_group_insert_index(
+            &current.windows[window_index].tab_manager,
+            group_id,
+            placement.as_deref().unwrap_or("top"),
+            reference_index,
+        )
+    });
     let state = app.state::<SessionState>();
     let Some((result, created_index)) = new_workspace_in_window_for_control(
         app,
         &state,
         window_index,
         current_directory.as_deref(),
-        initial_command.as_deref(),
-        initial_environment,
+        layout
+            .is_none()
+            .then_some(initial_command)
+            .flatten()
+            .as_deref(),
+        layout.is_none().then_some(initial_environment).flatten(),
         title.as_deref(),
         description.as_deref(),
         workspace_environment,
         group_id.as_deref(),
+        layout,
+        group_insert_index,
         false,
     ) else {
         return ControlCallResult::Err {
@@ -2726,14 +2935,65 @@ fn workspace_create(app: &AppHandle, params: &serde_json::Map<String, Value>) ->
         .unwrap_or(Value::Null);
     ok(json!({
         "window_id": window.window_id,
-        "window_ref": window.window_id.as_ref().map(|_| window_ref(window_index)),
+        "window_ref": window.window_id.as_deref().map(|id| control_handle_ref(app, "window", id)),
         "workspace_id": workspace.workspace_id,
-        "workspace_ref": workspace_ref(created_index),
+        "workspace_ref": workspace.workspace_id.as_deref().map(|id| control_handle_ref(app, "workspace", id)),
         "group_id": workspace.group_id,
-        "group_ref": Value::Null,
+        "group_ref": workspace.group_id.as_deref().map(|id| control_handle_ref(app, "workspace_group", id)),
         "surface_id": surface_id,
-        "surface_ref": if surface_id.is_null() { Value::Null } else { json!(surface_ref(0)) },
+        "surface_ref": surface_id.as_str().map(|id| control_handle_ref(app, "surface", id)),
     }))
+}
+
+fn canonical_layout_is_valid(layout: &cmux_config::CmuxLayoutNode) -> bool {
+    match layout {
+        cmux_config::CmuxLayoutNode::Pane(pane) => !pane.surfaces.is_empty(),
+        cmux_config::CmuxLayoutNode::Split(split) => {
+            split.children.len() == 2 && split.children.iter().all(canonical_layout_is_valid)
+        }
+    }
+}
+
+fn resolve_workspace_identity_in_window(
+    app: &AppHandle,
+    snapshot: &AppSessionSnapshot,
+    window_index: usize,
+    selector: &str,
+) -> Option<usize> {
+    let id = if one_based_ref_index(selector, "workspace").is_some() {
+        resolve_control_handle_ref(app, "workspace", selector)?
+    } else {
+        selector.to_string()
+    };
+    snapshot
+        .windows
+        .get(window_index)?
+        .tab_manager
+        .workspaces
+        .iter()
+        .position(|workspace| workspace.workspace_id.as_deref() == Some(id.as_str()))
+}
+
+fn workspace_group_insert_index(
+    tabs: &cmux_core::session::SessionTabManagerSnapshot,
+    group_id: &str,
+    placement: &str,
+    reference_index: Option<usize>,
+) -> Option<usize> {
+    let members: Vec<usize> = tabs
+        .workspaces
+        .iter()
+        .enumerate()
+        .filter_map(|(index, workspace)| {
+            (workspace.group_id.as_deref() == Some(group_id)).then_some(index)
+        })
+        .collect();
+    match placement {
+        "top" => members.first().copied(),
+        "end" => members.last().map(|index| index + 1),
+        "afterCurrent" => reference_index.map(|index| index + 1),
+        _ => None,
+    }
 }
 
 fn workspace_create_browser(
@@ -2787,15 +3047,19 @@ fn window_list(app: &AppHandle) -> ControlCallResult {
             let selected_workspace_id = tab_manager
                 .and_then(|tab_manager| tab_manager.workspaces.get(selected_index))
                 .and_then(|workspace| workspace.workspace_id.clone());
+            let window_reference = control_handle_ref(app, "window", &window.identity.label);
+            let selected_workspace_reference = selected_workspace_id
+                .as_deref()
+                .map(|id| control_handle_ref(app, "workspace", id));
             json!({
                 "index": index,
                 "id": window.identity.id,
-                "ref": window.identity.reference,
+                "ref": window_reference,
                 "key": window.is_key,
                 "visible": window.is_visible,
                 "workspace_count": tab_manager.map_or(0, |tab_manager| tab_manager.workspaces.len()),
                 "selected_workspace_id": selected_workspace_id,
-                "selected_workspace_ref": selected_workspace_id.as_ref().map(|_| workspace_ref(selected_index)),
+                "selected_workspace_ref": selected_workspace_reference,
             })
         })
         .collect::<Vec<_>>() }))
@@ -3390,16 +3654,19 @@ fn workspace_close(app: &AppHandle, params: &serde_json::Map<String, Value>) -> 
             data: None,
         };
     };
-    if raw_string_param(params, &["workspace_id"]).is_none() {
+    if raw_string_param(params, &["workspace_id"])
+        .as_deref()
+        .is_none_or(|workspace_id| Uuid::parse_str(workspace_id).is_err())
+    {
         return invalid_params("Missing or invalid workspace_id");
     }
     let Some(index) = canonical_workspace_target_index(&current, window_index, params) else {
-        return workspace_not_found(params);
+        return workspace_not_found(app, params);
     };
     let window = &current.windows[window_index];
     let workspace = &window.tab_manager.workspaces[index];
     let workspace_id = workspace.workspace_id.clone().unwrap_or_default();
-    let identity = workspace_identity_payload(window, window_index, index, &workspace_id);
+    let identity = workspace_identity_payload(app, window, &workspace_id);
     if workspace.is_pinned == Some(true) {
         let mut data = identity;
         data["pinned"] = json!(true);
@@ -3444,14 +3711,17 @@ fn workspace_rename(app: &AppHandle, params: &serde_json::Map<String, Value>) ->
             data: None,
         };
     };
-    if raw_string_param(params, &["workspace_id"]).is_none() {
+    if raw_string_param(params, &["workspace_id"])
+        .as_deref()
+        .is_none_or(|workspace_id| Uuid::parse_str(workspace_id).is_err())
+    {
         return invalid_params("Missing or invalid workspace_id");
     }
     let Some(title) = string_param(params, &["title"]) else {
         return invalid_params("Missing or invalid title");
     };
     let Some(index) = canonical_workspace_target_index(&current, window_index, params) else {
-        return workspace_not_found(params);
+        return workspace_not_found(app, params);
     };
     let workspace_id = current.windows[window_index].tab_manager.workspaces[index]
         .workspace_id
@@ -3467,12 +3737,7 @@ fn workspace_rename(app: &AppHandle, params: &serde_json::Map<String, Value>) ->
             data: None,
         };
     };
-    let mut payload = workspace_identity_payload(
-        &result.windows[window_index],
-        window_index,
-        index,
-        &workspace_id,
-    );
+    let mut payload = workspace_identity_payload(app, &result.windows[window_index], &workspace_id);
     payload["title"] = json!(title);
     ok(payload)
 }
@@ -3486,11 +3751,14 @@ fn workspace_select(app: &AppHandle, params: &serde_json::Map<String, Value>) ->
             data: None,
         };
     };
-    if raw_string_param(params, &["workspace_id"]).is_none() {
+    if raw_string_param(params, &["workspace_id"])
+        .as_deref()
+        .is_none_or(|workspace_id| Uuid::parse_str(workspace_id).is_err())
+    {
         return invalid_params("Missing or invalid workspace_id");
     }
     let Some(index) = canonical_workspace_target_index(&current, window_index, params) else {
-        return workspace_not_found(params);
+        return workspace_not_found(app, params);
     };
     let workspace_id = current.windows[window_index].tab_manager.workspaces[index]
         .workspace_id
@@ -3505,26 +3773,46 @@ fn workspace_select(app: &AppHandle, params: &serde_json::Map<String, Value>) ->
             data: None,
         };
     };
+    if let Some(window_id) = workspace_select_focus_selector(&result, window_index) {
+        let _ = crate::window::focus_control_window(app, window_id);
+    }
     ok(workspace_identity_payload(
+        app,
         &result.windows[window_index],
-        window_index,
-        index,
         &workspace_id,
     ))
 }
 
-fn workspace_not_found(params: &serde_json::Map<String, Value>) -> ControlCallResult {
+fn workspace_select_focus_selector(
+    snapshot: &AppSessionSnapshot,
+    window_index: usize,
+) -> Option<&str> {
+    snapshot.windows.get(window_index)?.window_id.as_deref()
+}
+
+fn workspace_not_found(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
     let workspace_id = raw_string_param(params, &["workspace_id"]).unwrap_or_default();
+    let workspace_reference = if one_based_ref_index(&workspace_id, "workspace").is_some() {
+        workspace_id.clone()
+    } else {
+        control_handle_ref(app, "workspace", &workspace_id)
+    };
+    workspace_not_found_with_ref(&workspace_id, &workspace_reference)
+}
+
+fn workspace_not_found_with_ref(
+    workspace_id: &str,
+    workspace_reference: &str,
+) -> ControlCallResult {
     ControlCallResult::Err {
         code: "not_found".to_string(),
         message: "Workspace not found".to_string(),
         data: json!({
             "workspace_id": workspace_id,
-            "workspace_ref": if one_based_ref_index(&workspace_id, "workspace").is_some() {
-                Value::String(workspace_id)
-            } else {
-                Value::Null
-            },
+            "workspace_ref": workspace_reference,
         })
         .try_into()
         .ok(),
@@ -3532,16 +3820,15 @@ fn workspace_not_found(params: &serde_json::Map<String, Value>) -> ControlCallRe
 }
 
 fn workspace_identity_payload(
+    app: &AppHandle,
     window: &cmux_core::session::SessionWindowSnapshot,
-    window_index: usize,
-    workspace_index: usize,
     workspace_id: &str,
 ) -> Value {
     json!({
         "window_id": window.window_id,
-        "window_ref": window.window_id.as_ref().map(|_| window_ref(window_index)),
+        "window_ref": window.window_id.as_deref().map(|id| control_handle_ref(app, "window", id)),
         "workspace_id": workspace_id,
-        "workspace_ref": workspace_ref(workspace_index),
+        "workspace_ref": control_handle_ref(app, "workspace", workspace_id),
     })
 }
 
@@ -10514,7 +10801,8 @@ fn workspace_list_payload(snapshot: &AppSessionSnapshot) -> Value {
     })
 }
 
-fn workspace_list_from_params(
+fn workspace_list_from_params_for_app(
+    app: &AppHandle,
     snapshot: &AppSessionSnapshot,
     params: &serde_json::Map<String, Value>,
 ) -> ControlCallResult {
@@ -10525,7 +10813,9 @@ fn workspace_list_from_params(
             data: None,
         };
     };
-    ok(workspace_list_payload_for_window(snapshot, window_index))
+    let mut payload = workspace_list_payload_for_window(snapshot, window_index);
+    apply_workspace_handle_refs(app, &mut payload);
+    ok(payload)
 }
 
 fn workspace_list_payload_for_window(snapshot: &AppSessionSnapshot, window_index: usize) -> Value {
@@ -11839,7 +12129,13 @@ fn workspace_current_from_params(
             data: None,
         };
     };
-    let Some(workspace) = window.tab_manager.workspaces.get(index) else {
+    let workspace = window.tab_manager.workspaces.get(index);
+    // The Windows snapshot currently stores selected identity as an index.
+    // Preserve a stable identity for the canonical stale-index edge by using
+    // the last selected workspace witness still present in this manager while
+    // intentionally returning a null summary.
+    let identity_index = workspace.map(|_| index).unwrap_or(0);
+    let Some(identity) = workspace.or_else(|| window.tab_manager.workspaces.first()) else {
         return ControlCallResult::Err {
             code: "not_found".to_string(),
             message: "No workspace selected".to_string(),
@@ -11849,10 +12145,58 @@ fn workspace_current_from_params(
     ok(json!({
         "window_id": window.window_id,
         "window_ref": window.window_id.as_ref().map(|_| window_ref(window_index)),
-        "workspace_id": workspace.workspace_id,
-        "workspace_ref": workspace_ref(index),
-        "workspace": canonical_workspace_summary(workspace, index, true),
+        "workspace_id": identity.workspace_id,
+        "workspace_ref": workspace_ref(identity_index),
+        "workspace": workspace.map(|workspace| canonical_workspace_summary(workspace, index, true)),
     }))
+}
+
+fn workspace_current_from_params_for_app(
+    app: &AppHandle,
+    snapshot: &AppSessionSnapshot,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    match workspace_current_from_params(snapshot, params) {
+        ControlCallResult::Ok(value) => {
+            let mut payload: Value = value.into();
+            apply_workspace_handle_refs(app, &mut payload);
+            ok(payload)
+        }
+        error => error,
+    }
+}
+
+fn apply_workspace_handle_refs(app: &AppHandle, payload: &mut Value) {
+    if let Some(window_id) = payload.get("window_id").and_then(Value::as_str) {
+        payload["window_ref"] = json!(control_handle_ref(app, "window", window_id));
+    }
+    if let Some(workspaces) = payload.get_mut("workspaces").and_then(Value::as_array_mut) {
+        for workspace in workspaces {
+            if let Some(id) = workspace
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+            {
+                workspace["ref"] = json!(control_handle_ref(app, "workspace", &id));
+            }
+        }
+    }
+    if let Some(workspace) = payload.get_mut("workspace") {
+        if let Some(id) = workspace
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+        {
+            workspace["ref"] = json!(control_handle_ref(app, "workspace", &id));
+        }
+    }
+    if let Some(id) = payload
+        .get("workspace_id")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    {
+        payload["workspace_ref"] = json!(control_handle_ref(app, "workspace", &id));
+    }
 }
 
 fn workspace_from_params_or_selected<'a>(
@@ -11948,7 +12292,11 @@ fn workspace_routed_window_index(
     snapshot: &AppSessionSnapshot,
     params: &serde_json::Map<String, Value>,
 ) -> Option<usize> {
-    if params.contains_key("window_id") || params.contains_key("window_ref") {
+    let has_non_null_window_selector = params
+        .get("window_id")
+        .or_else(|| params.get("window_ref"))
+        .is_some_and(|value| !value.is_null());
+    if has_non_null_window_selector {
         let selector = raw_string_param(params, &["window_id", "window_ref"])?;
         if let Some(index) = one_based_ref_index(&selector, "window") {
             return (index < snapshot.windows.len()).then_some(index);
@@ -11960,43 +12308,51 @@ fn workspace_routed_window_index(
     }
 
     if let Some(group_id) = string_param(params, &["group_id"]) {
-        return snapshot.windows.iter().position(|window| {
+        if let Some(index) = snapshot.windows.iter().position(|window| {
             window
                 .tab_manager
                 .workspaces
                 .iter()
                 .any(|workspace| workspace.group_id.as_deref() == Some(group_id.as_str()))
-        });
+        }) {
+            return Some(index);
+        }
     }
 
     if let Some(workspace_id) = string_param(params, &["workspace_id"]) {
         if one_based_ref_index(&workspace_id, "workspace").is_none() {
-            return snapshot.windows.iter().position(|window| {
+            if let Some(index) = snapshot.windows.iter().position(|window| {
                 window.tab_manager.workspaces.iter().any(|workspace| {
                     workspace.workspace_id.as_deref() == Some(workspace_id.as_str())
                 })
-            });
+            }) {
+                return Some(index);
+            }
         }
     }
 
     if let Some(surface_id) = string_param(params, &["surface_id", "terminal_id", "tab_id"]) {
-        return snapshot.windows.iter().position(|window| {
+        if let Some(index) = snapshot.windows.iter().position(|window| {
             window.tab_manager.workspaces.iter().any(|workspace| {
                 surfaces_for_workspace(workspace).iter().any(|surface| {
                     surface.get("id").and_then(Value::as_str) == Some(surface_id.as_str())
                 })
             })
-        });
+        }) {
+            return Some(index);
+        }
     }
 
     if let Some(pane_id) = string_param(params, &["pane_id"]) {
-        return snapshot.windows.iter().position(|window| {
+        if let Some(index) = snapshot.windows.iter().position(|window| {
             window.tab_manager.workspaces.iter().any(|workspace| {
                 pane_event_summaries(workspace)
                     .iter()
                     .any(|pane| pane.id.as_deref() == Some(pane_id.as_str()))
             })
-        });
+        }) {
+            return Some(index);
+        }
     }
 
     (!snapshot.windows.is_empty()).then_some(0)
@@ -16113,10 +16469,9 @@ mod tests {
     #[test]
     fn workspace_v2_not_found_mints_workspace_ref_for_uuid_identity() {
         let workspace_id = "00000000-0000-0000-0000-000000000099";
-        let result = workspace_not_found(&serde_json::Map::from_iter([(
-            "workspace_id".to_string(),
-            json!(workspace_id),
-        )]));
+        let mut registry = ControlHandleRegistry::default();
+        let reference = registry.mint("workspace", workspace_id);
+        let result = workspace_not_found_with_ref(workspace_id, &reference);
         let ControlCallResult::Err {
             data: Some(data), ..
         } = result
@@ -16126,6 +16481,66 @@ mod tests {
         let data: Value = data.into();
         assert_eq!(data["workspace_id"], json!(workspace_id));
         assert!(data["workspace_ref"].as_str().is_some());
+    }
+
+    #[test]
+    fn workspace_handle_registry_is_stable_and_resolves_by_kind() {
+        let mut registry = ControlHandleRegistry::default();
+        let first = registry.mint("workspace", "workspace-a");
+        let repeated = registry.mint("workspace", "workspace-a");
+        let window = registry.mint("window", "window-a");
+
+        assert_eq!(first, repeated);
+        assert_eq!(
+            registry.resolve("workspace", &first).as_deref(),
+            Some("workspace-a")
+        );
+        assert_eq!(
+            registry.resolve("window", &window).as_deref(),
+            Some("window-a")
+        );
+        assert_eq!(registry.resolve("window", &first), None);
+    }
+
+    #[test]
+    fn workspace_group_placement_uses_group_boundaries_and_reference() {
+        let mut snapshot = test_snapshot();
+        let first = &mut snapshot.windows[0].tab_manager.workspaces[0];
+        first.group_id = Some("group-a".to_string());
+        let mut second = first.clone();
+        second.workspace_id = Some("workspace-2".to_string());
+        let mut ungrouped = first.clone();
+        ungrouped.workspace_id = Some("workspace-3".to_string());
+        ungrouped.group_id = None;
+        let tabs = &mut snapshot.windows[0].tab_manager;
+        tabs.workspaces.extend([second, ungrouped]);
+
+        assert_eq!(
+            workspace_group_insert_index(tabs, "group-a", "top", None),
+            Some(0)
+        );
+        assert_eq!(
+            workspace_group_insert_index(tabs, "group-a", "end", None),
+            Some(2)
+        );
+        assert_eq!(
+            workspace_group_insert_index(tabs, "group-a", "afterCurrent", Some(0)),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn workspace_select_focus_intent_targets_owning_window_only() {
+        let mut snapshot = test_snapshot();
+        let mut background = snapshot.windows[0].clone();
+        background.window_id = Some("window-b".to_string());
+        snapshot.windows.push(background);
+
+        assert_eq!(
+            workspace_select_focus_selector(&snapshot, 1),
+            Some("window-b")
+        );
+        assert_eq!(workspace_select_focus_selector(&snapshot, 9), None);
     }
 
     #[test]
@@ -16140,8 +16555,8 @@ mod tests {
         current.windows[1].tab_manager.workspaces[0].custom_title = Some("Renamed".to_string());
 
         assert_ne!(
-            session_event_summary(&previous_with_background),
-            session_event_summary(&current),
+            session_event_summaries(&previous_with_background),
+            session_event_summaries(&current),
             "background changes must reach lifecycle event derivation"
         );
     }

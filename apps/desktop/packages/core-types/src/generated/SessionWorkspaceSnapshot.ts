@@ -36,7 +36,12 @@ initial_terminal_input?: string,
 /**
  * Environment overrides for the initial terminal process.
  */
-initial_terminal_environment?: { [key in string]?: string }, layout: SessionWorkspaceLayoutSnapshot | null, layout_mode?: string,
+initial_terminal_environment?: { [key in string]?: string },
+/**
+ * Persistent environment inherited by every terminal surface created in
+ * this workspace. This is distinct from the initial surface's overrides.
+ */
+workspace_environment?: { [key in string]?: string }, layout: SessionWorkspaceLayoutSnapshot | null, layout_mode?: string,
 /**
  * The panel id currently zoomed to fill the workspace split area, if any.
  * Omitted when no pane zoom is active.

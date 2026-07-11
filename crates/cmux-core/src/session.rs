@@ -630,6 +630,11 @@ pub struct SessionWorkspaceSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub initial_terminal_environment: Option<std::collections::BTreeMap<String, String>>,
+    /// Persistent environment inherited by every terminal surface created in
+    /// this workspace. This is distinct from the initial surface's overrides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub workspace_environment: Option<std::collections::BTreeMap<String, String>>,
     // `layout` has `#[serde(default)]` but NO `skip_serializing_if`, so it is
     // serialized as `"layout": null` when absent — keep it nullable, not optional.
     #[serde(default)]

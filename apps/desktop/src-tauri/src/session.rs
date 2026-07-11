@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use cmux_config::{CmuxLayoutNode, CmuxSplitDirection, CmuxSurfaceType};
 use cmux_core::session::{
     AgentLaunchCommandSnapshot, AppSessionSnapshot, SessionGitBranchSnapshot,
     SessionPanelGitBranchSnapshot, SessionPanelListeningPortsSnapshot,
@@ -53,8 +54,10 @@ pub struct SessionState {
     snapshot: Mutex<AppSessionSnapshot>,
     next_panel: AtomicU64,
     closed_browser_tabs: Mutex<Vec<ClosedBrowserTabSnapshot>>,
+    closed_workspaces: Mutex<Vec<ClosedWorkspaceSnapshot>>,
     remote_configs: Mutex<HashMap<String, WorkspaceRemoteControlConfig>>,
     workspace_focus_history: Mutex<HashMap<String, WorkspaceFocusHistory>>,
+    remote_workspace_renames: Mutex<Vec<(String, String)>>,
 }
 
 impl Default for SessionState {
@@ -65,8 +68,10 @@ impl Default for SessionState {
             snapshot: Mutex::new(snapshot),
             next_panel: AtomicU64::new(2),
             closed_browser_tabs: Mutex::new(Vec::new()),
+            closed_workspaces: Mutex::new(Vec::new()),
             remote_configs: Mutex::new(HashMap::new()),
             workspace_focus_history: Mutex::new(workspace_focus_history),
+            remote_workspace_renames: Mutex::new(Vec::new()),
         }
     }
 }
@@ -557,13 +562,17 @@ fn set_panel_terminal_startup(
     initial_terminal_input: Option<&str>,
     initial_terminal_environment: Option<BTreeMap<String, String>>,
 ) {
+    let mut environment = active_workspace(snapshot)
+        .and_then(|workspace| workspace.workspace_environment.clone())
+        .unwrap_or_default();
+    environment.extend(initial_terminal_environment.unwrap_or_default());
     let command = initial_terminal_command
         .and_then(normalize_nonempty)
         .map(str::to_string);
     let input = initial_terminal_input
         .and_then(normalize_nonempty)
         .map(str::to_string);
-    let environment = initial_terminal_environment.filter(|entries| !entries.is_empty());
+    let environment = (!environment.is_empty()).then_some(environment);
     if command.is_none() && input.is_none() && environment.is_none() {
         return;
     }
@@ -1677,9 +1686,9 @@ fn apply_new_workspace(
                 .ok()
                 .and_then(|index| window.tab_manager.workspaces.get_mut(index))
             {
-                workspace.current_directory = current_directory
-                    .filter(|path| !path.is_empty())
-                    .map(str::to_owned);
+                if let Some(current_directory) = current_directory.filter(|path| !path.is_empty()) {
+                    workspace.current_directory = Some(current_directory.to_owned());
+                }
                 workspace.initial_terminal_command = initial_terminal_command
                     .filter(|command| !command.trim().is_empty())
                     .map(str::to_owned);
@@ -3789,6 +3798,8 @@ pub(crate) fn new_workspace_in_window_for_control(
     description: Option<&str>,
     workspace_environment: Option<BTreeMap<String, String>>,
     group_id: Option<&str>,
+    layout: Option<CmuxLayoutNode>,
+    group_insert_index: Option<usize>,
     focus: bool,
 ) -> Option<(AppSessionSnapshot, usize)> {
     let new_panel_id = format!(
@@ -3801,11 +3812,25 @@ pub(crate) fn new_workspace_in_window_for_control(
             .lock()
             .expect("session snapshot mutex poisoned");
         let tabs = &mut guard.windows.get_mut(window_index)?.tab_manager;
-        let previous_selected = tabs.selected_workspace_index;
+        let previous_selected_id = tabs
+            .selected_workspace_index
+            .and_then(|index| usize::try_from(index).ok())
+            .and_then(|index| tabs.workspaces.get(index))
+            .and_then(|workspace| workspace.workspace_id.clone());
+        let previous_selected_index = tabs.selected_workspace_index;
         session_ops::new_workspace(tabs, &new_panel_id);
-        let created_index = usize::try_from(tabs.selected_workspace_index?).ok()?;
+        let mut created_index = usize::try_from(tabs.selected_workspace_index?).ok()?;
+        if let Some(insert_index) = group_insert_index {
+            let workspace = tabs.workspaces.remove(created_index);
+            let insert_index = insert_index.min(tabs.workspaces.len());
+            tabs.workspaces.insert(insert_index, workspace);
+            created_index = insert_index;
+            tabs.selected_workspace_index = Some(created_index as i64);
+        }
         let workspace = tabs.workspaces.get_mut(created_index)?;
-        workspace.current_directory = current_directory.map(str::to_owned);
+        if let Some(current_directory) = current_directory {
+            workspace.current_directory = Some(current_directory.to_owned());
+        }
         workspace.initial_terminal_command = initial_terminal_command.map(str::to_owned);
         let mut effective_environment = workspace_environment.clone().unwrap_or_default();
         effective_environment.extend(initial_terminal_environment.unwrap_or_default());
@@ -3815,10 +3840,39 @@ pub(crate) fn new_workspace_in_window_for_control(
         workspace.custom_title_source = title.map(|_| "user".to_string());
         workspace.custom_description = description.map(str::to_owned);
         workspace.group_id = group_id.map(str::to_owned);
-        // The persistent workspace environment shares the snapshot's terminal
-        // environment carrier until the dedicated Windows shell model lands.
+        workspace.workspace_environment =
+            workspace_environment.filter(|environment| !environment.is_empty());
+        if let Some(layout) = layout {
+            let (layout, focused_panel_id, mut terminal_startups) =
+                session_layout_from_cmux(layout, &state.next_panel)?;
+            for startup in &mut terminal_startups {
+                let mut environment = workspace.workspace_environment.clone().unwrap_or_default();
+                environment.extend(
+                    startup
+                        .initial_terminal_environment
+                        .take()
+                        .unwrap_or_default(),
+                );
+                startup.initial_terminal_environment =
+                    (!environment.is_empty()).then_some(environment);
+            }
+            workspace.layout = Some(layout);
+            workspace.focused_panel_id = focused_panel_id;
+            workspace.panel_terminal_startups =
+                (!terminal_startups.is_empty()).then_some(terminal_startups);
+            workspace.initial_terminal_command = None;
+            workspace.initial_terminal_environment = None;
+        }
         if !focus {
-            tabs.selected_workspace_index = previous_selected;
+            tabs.selected_workspace_index = previous_selected_id
+                .as_deref()
+                .and_then(|workspace_id| {
+                    tabs.workspaces.iter().position(|workspace| {
+                        workspace.workspace_id.as_deref() == Some(workspace_id)
+                    })
+                })
+                .map(|index| index as i64)
+                .or(previous_selected_index);
         }
         ensure_workspace_ids(&mut guard);
         ensure_pane_ids(&mut guard);
@@ -3826,6 +3880,137 @@ pub(crate) fn new_workspace_in_window_for_control(
     };
     notify_session_changed(app, &snapshot);
     Some((snapshot, created_index))
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ClosedWorkspaceSnapshot {
+    window_id: Option<String>,
+    workspace: SessionWorkspaceSnapshot,
+    original_index: usize,
+}
+
+fn closed_workspace_snapshot(
+    snapshot: &AppSessionSnapshot,
+    window_index: usize,
+    workspace_index: usize,
+) -> Option<ClosedWorkspaceSnapshot> {
+    let window = snapshot.windows.get(window_index)?;
+    Some(ClosedWorkspaceSnapshot {
+        window_id: window.window_id.clone(),
+        workspace: window.tab_manager.workspaces.get(workspace_index)?.clone(),
+        original_index: workspace_index,
+    })
+}
+
+fn remote_workspace_rename_intent(
+    workspace: &SessionWorkspaceSnapshot,
+    title: &str,
+) -> Option<(String, String)> {
+    if !workspace
+        .remote
+        .as_ref()
+        .is_some_and(|remote| remote.enabled)
+    {
+        return None;
+    }
+    workspace
+        .workspace_id
+        .clone()
+        .map(|workspace_id| (workspace_id, title.trim().to_string()))
+}
+
+fn session_layout_from_cmux(
+    node: CmuxLayoutNode,
+    next_panel: &AtomicU64,
+) -> Option<(
+    SessionWorkspaceLayoutSnapshot,
+    Option<String>,
+    Vec<SessionPanelTerminalStartupSnapshot>,
+)> {
+    fn build(
+        node: CmuxLayoutNode,
+        next_panel: &AtomicU64,
+        focused: &mut Option<String>,
+        startups: &mut Vec<SessionPanelTerminalStartupSnapshot>,
+    ) -> Option<SessionWorkspaceLayoutSnapshot> {
+        match node {
+            CmuxLayoutNode::Pane(pane) => {
+                if pane.surfaces.is_empty() {
+                    return None;
+                }
+                let mut panel_ids = Vec::with_capacity(pane.surfaces.len());
+                let mut selected_panel_id = None;
+                let mut selected_kind = None;
+                let mut selected_url = None;
+                for surface in pane.surfaces {
+                    let panel_id =
+                        format!("surface-{}", next_panel.fetch_add(1, Ordering::Relaxed));
+                    let is_terminal = surface.surface_type == CmuxSurfaceType::Terminal;
+                    if selected_panel_id.is_none() || surface.focus == Some(true) {
+                        selected_panel_id = Some(panel_id.clone());
+                        selected_kind = Some(surface.surface_type);
+                        selected_url = surface.url.clone();
+                    }
+                    if surface.focus == Some(true) {
+                        *focused = Some(panel_id.clone());
+                    }
+                    if is_terminal {
+                        startups.push(SessionPanelTerminalStartupSnapshot {
+                            panel_id: panel_id.clone(),
+                            initial_terminal_command: surface.command,
+                            initial_terminal_input: None,
+                            initial_terminal_environment: surface.env,
+                        });
+                    }
+                    panel_ids.push(panel_id);
+                }
+                let selected_panel_id = selected_panel_id.or_else(|| panel_ids.first().cloned());
+                if focused.is_none() {
+                    *focused = selected_panel_id.clone();
+                }
+                let first_panel = panel_ids.first()?.clone();
+                let Some(SessionWorkspaceLayoutSnapshot::Pane(mut pane)) =
+                    session_ops::fresh_terminal_workspace(&first_panel).layout
+                else {
+                    return None;
+                };
+                pane.panel_ids = panel_ids;
+                pane.selected_panel_id = selected_panel_id;
+                pane.surface_kind = selected_kind.and_then(|kind| match kind {
+                    CmuxSurfaceType::Terminal => None,
+                    CmuxSurfaceType::Browser => Some("browser".to_string()),
+                    CmuxSurfaceType::Project => Some("project".to_string()),
+                });
+                pane.browser_url = selected_url;
+                Some(SessionWorkspaceLayoutSnapshot::Pane(pane))
+            }
+            CmuxLayoutNode::Split(split) => {
+                let mut children = split.children.into_iter();
+                let first = build(children.next()?, next_panel, focused, startups)?;
+                let second = build(children.next()?, next_panel, focused, startups)?;
+                if children.next().is_some() {
+                    return None;
+                }
+                Some(SessionWorkspaceLayoutSnapshot::Split(
+                    cmux_core::session::SessionSplitLayoutSnapshot {
+                        split_id: None,
+                        orientation: match split.direction {
+                            CmuxSplitDirection::Horizontal => SessionSplitOrientation::Horizontal,
+                            CmuxSplitDirection::Vertical => SessionSplitOrientation::Vertical,
+                        },
+                        divider_position: split.split.unwrap_or(0.5).clamp(0.0, 1.0),
+                        first: Box::new(first),
+                        second: Box::new(second),
+                    },
+                ))
+            }
+        }
+    }
+
+    let mut focused = None;
+    let mut startups = Vec::new();
+    let layout = build(node, next_panel, &mut focused, &mut startups)?;
+    Some((layout, focused, startups))
 }
 
 pub(crate) fn new_browser_workspace_for_control(
@@ -3885,7 +4070,7 @@ pub(crate) fn close_workspace_in_window_for_control(
     window_index: usize,
     workspace_index: usize,
 ) -> Option<(AppSessionSnapshot, bool)> {
-    let (closed_browser_tabs, changed, snapshot) = {
+    let (closed_browser_tabs, closed_workspace, changed, snapshot) = {
         let mut guard = state
             .snapshot
             .lock()
@@ -3898,11 +4083,17 @@ pub(crate) fn close_workspace_in_window_for_control(
             .get(workspace_index)
             .map(closed_browser_tabs_for_workspace)
             .unwrap_or_default();
+        let closed_workspace = closed_workspace_snapshot(&guard, window_index, workspace_index);
         let changed = session_ops::close_workspace(
             &mut guard.windows.get_mut(window_index)?.tab_manager,
             workspace_index as i64,
         );
-        (closed_browser_tabs, changed, guard.clone())
+        (
+            closed_browser_tabs,
+            closed_workspace,
+            changed,
+            guard.clone(),
+        )
     };
     if changed && !closed_browser_tabs.is_empty() {
         let mut history = state
@@ -3910,6 +4101,15 @@ pub(crate) fn close_workspace_in_window_for_control(
             .lock()
             .expect("closed browser history mutex poisoned");
         push_closed_browser_tabs(&mut history, closed_browser_tabs);
+    }
+    if changed {
+        if let Some(closed_workspace) = closed_workspace {
+            state
+                .closed_workspaces
+                .lock()
+                .expect("closed workspace history mutex poisoned")
+                .push(closed_workspace);
+        }
     }
     if changed {
         notify_session_changed(app, &snapshot);
@@ -3984,19 +4184,27 @@ pub(crate) fn rename_workspace_in_window_for_control(
     workspace_index: usize,
     title: &str,
 ) -> Option<AppSessionSnapshot> {
-    let (changed, snapshot) = {
+    let (changed, remote_workspace_id, snapshot) = {
         let mut guard = state
             .snapshot
             .lock()
             .expect("session snapshot mutex poisoned");
-        let changed = session_ops::rename_workspace(
-            &mut guard.windows.get_mut(window_index)?.tab_manager,
-            workspace_index as i64,
-            title,
-        );
-        (changed, guard.clone())
+        let tabs = &mut guard.windows.get_mut(window_index)?.tab_manager;
+        let remote_rename = tabs
+            .workspaces
+            .get(workspace_index)
+            .and_then(|workspace| remote_workspace_rename_intent(workspace, title));
+        let changed = session_ops::rename_workspace(tabs, workspace_index as i64, title);
+        (changed, remote_rename, guard.clone())
     };
     if changed {
+        if let Some(rename) = remote_workspace_id {
+            state
+                .remote_workspace_renames
+                .lock()
+                .expect("remote workspace rename queue mutex poisoned")
+                .push(rename);
+        }
         notify_session_changed(app, &snapshot);
     }
     Some(snapshot)
@@ -8302,7 +8510,6 @@ mod tests {
         let workspace = &tab_manager(&snapshot).workspaces[1];
         assert_eq!(workspace.current_directory.as_deref(), Some("C:/repo"));
     }
-
     #[test]
     fn apply_new_workspace_inherits_selected_workspace_directory_when_unspecified() {
         let mut snapshot = initial_snapshot("surface-1");
@@ -8317,6 +8524,126 @@ mod tests {
                 .as_deref(),
             Some("C:/inherited")
         );
+    }
+
+    #[test]
+    fn cmux_layout_builds_split_tree_and_surface_startups() {
+        let layout: CmuxLayoutNode = serde_json::from_value(serde_json::json!({
+            "direction": "horizontal",
+            "split": 0.4,
+            "children": [
+                {"pane": {"surfaces": [{"type": "terminal", "command": "cargo test", "env": {"RUST_LOG": "debug"}}]}},
+                {"pane": {"surfaces": [{"type": "browser", "url": "https://example.test", "focus": true}]}}
+            ]
+        }))
+        .unwrap();
+        let next = AtomicU64::new(10);
+
+        let (layout, focused, startups) =
+            session_layout_from_cmux(layout, &next).expect("valid canonical layout");
+
+        assert!(matches!(layout, SessionWorkspaceLayoutSnapshot::Split(_)));
+        assert_eq!(focused.as_deref(), Some("surface-11"));
+        assert_eq!(startups.len(), 1);
+        assert_eq!(
+            startups[0].initial_terminal_command.as_deref(),
+            Some("cargo test")
+        );
+        assert_eq!(
+            startups[0]
+                .initial_terminal_environment
+                .as_ref()
+                .and_then(|env| env.get("RUST_LOG"))
+                .map(String::as_str),
+            Some("debug")
+        );
+    }
+
+    #[test]
+    fn workspace_environment_is_inherited_by_later_terminal_surfaces_and_round_trips() {
+        let mut snapshot = initial_snapshot("surface-1");
+        snapshot.windows[0].tab_manager.workspaces[0].workspace_environment = Some(BTreeMap::from(
+            [("CMUX_SCOPE".to_string(), "workspace".to_string())],
+        ));
+
+        assert!(apply_new_terminal_tab(
+            &mut snapshot,
+            "surface-1",
+            "surface-2",
+            None,
+            None,
+            None,
+        ));
+        let workspace = &snapshot.windows[0].tab_manager.workspaces[0];
+        assert_eq!(
+            workspace.panel_terminal_startups.as_ref().unwrap()[0]
+                .initial_terminal_environment
+                .as_ref()
+                .and_then(|env| env.get("CMUX_SCOPE"))
+                .map(String::as_str),
+            Some("workspace")
+        );
+        let restored: AppSessionSnapshot =
+            serde_json::from_value(serde_json::to_value(&snapshot).unwrap()).unwrap();
+        assert_eq!(restored, snapshot);
+    }
+
+    #[test]
+    fn closed_workspace_history_snapshot_keeps_restorable_state() {
+        let mut snapshot = initial_snapshot("surface-1");
+        let workspace = &mut snapshot.windows[0].tab_manager.workspaces[0];
+        workspace.custom_title = Some("Restorable".to_string());
+        workspace.workspace_environment = Some(BTreeMap::from([(
+            "TOKEN".to_string(),
+            "preserved".to_string(),
+        )]));
+
+        let closed = closed_workspace_snapshot(&snapshot, 0, 0).unwrap();
+
+        assert_eq!(closed.window_id.as_deref(), Some("main"));
+        assert_eq!(closed.original_index, 0);
+        assert_eq!(closed.workspace.custom_title.as_deref(), Some("Restorable"));
+        assert!(closed.workspace.layout.is_some());
+        assert_eq!(
+            closed
+                .workspace
+                .workspace_environment
+                .as_ref()
+                .and_then(|env| env.get("TOKEN"))
+                .map(String::as_str),
+            Some("preserved")
+        );
+    }
+
+    #[test]
+    fn remote_workspace_rename_intent_is_exactly_once_for_enabled_remote() {
+        let mut workspace = session_ops::fresh_terminal_workspace("surface-1");
+        workspace.workspace_id = Some("workspace-remote".to_string());
+        workspace.remote = Some(SessionWorkspaceRemoteSnapshot {
+            enabled: true,
+            state: "connected".to_string(),
+            connected: true,
+            transport: Some("tmux".to_string()),
+            destination: Some("remote".to_string()),
+            port: None,
+            local_proxy_port: None,
+            persistent_daemon_slot: None,
+            has_ssh_options: false,
+            detail: None,
+            daemon: None,
+            proxy: None,
+            detected_ports: Vec::new(),
+            forwarded_ports: Vec::new(),
+            conflicted_ports: Vec::new(),
+            active_terminal_sessions: Some(1),
+        });
+
+        assert_eq!(
+            remote_workspace_rename_intent(&workspace, "  Build  "),
+            Some(("workspace-remote".to_string(), "Build".to_string()))
+        );
+        workspace.remote.as_mut().unwrap().enabled = false;
+        assert_eq!(remote_workspace_rename_intent(&workspace, "Build"), None);
     }
 
     #[test]

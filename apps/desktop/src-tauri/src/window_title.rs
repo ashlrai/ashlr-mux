@@ -164,6 +164,7 @@ mod tests {
             initial_terminal_command: None,
             initial_terminal_input: None,
             initial_terminal_environment: None,
+            workspace_environment: None,
             layout: Some(SessionWorkspaceLayoutSnapshot::Pane(
                 cmux_core::session::SessionPaneLayoutSnapshot {
                     pane_id: None,

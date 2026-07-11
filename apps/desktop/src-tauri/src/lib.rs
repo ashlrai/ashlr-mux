@@ -278,6 +278,7 @@ pub fn run() {
         .manage(config::ConfigState::default())
         .manage(control_socket::ControlSocketState::default())
         .manage(control_socket::ControlEventState::default())
+        .manage(control_socket::ControlHandleRegistryState::default())
         .manage(agent_session::AgentSessionState::default())
         .manage(notifications::NotificationCommandState::default())
         .manage(feed::FeedState::default())
