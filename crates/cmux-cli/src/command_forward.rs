@@ -274,6 +274,10 @@ pub fn control_command_for(
             "workspace.reorder_many",
             canonical_workspaces_reorder_params(args)?,
         )),
+        "reorder-surface" => Some(ControlCommand::new(
+            "surface.reorder",
+            canonical_surface_reorder_params(args)?,
+        )),
         "select-workspace" => Some(ControlCommand::new(
             "workspace.select",
             workspace_selector_params(args)?,
@@ -1267,6 +1271,42 @@ fn canonical_workspaces_reorder_params(args: &[String]) -> Result<serde_json::Va
     if parsed.has_flag("--dry-run") {
         params.insert("dry_run".to_string(), serde_json::json!(true));
     }
+    Ok(serde_json::Value::Object(params))
+}
+
+fn canonical_surface_reorder_params(args: &[String]) -> Result<serde_json::Value, CliError> {
+    let parsed = ParsedArgs::parse(args)?;
+    let surface = parsed
+        .value(&["--surface"])
+        .cloned()
+        .or_else(|| parsed.positionals.first().cloned())
+        .ok_or_else(|| CliError::new("reorder-surface requires --surface <id|ref|index>"))?;
+    let mut params = serde_json::Map::new();
+    apply_surface_target_selector(&surface, "surface", &mut params);
+    apply_workspace_scope_selector(&parsed, &mut params);
+    apply_window_scope_selector(&parsed, &mut params);
+    if let Some(before) = parsed.value(&["--before", "--before-surface"]) {
+        apply_surface_target_selector(before, "before_surface", &mut params);
+    }
+    if let Some(after) = parsed.value(&["--after", "--after-surface"]) {
+        apply_surface_target_selector(after, "after_surface", &mut params);
+    }
+    if let Some(index) = parsed.value(&["--index"]) {
+        let index = index
+            .parse::<i64>()
+            .map_err(|_| CliError::new("--index must be an integer"))?;
+        params.insert("index".to_string(), serde_json::json!(index));
+    }
+    let focus_value = parsed
+        .value(&["--focus"])
+        .map(|value| value.to_ascii_lowercase());
+    let focus = match focus_value.as_deref() {
+        None => false,
+        Some("1" | "true" | "yes" | "on") => true,
+        Some("0" | "false" | "no" | "off") => false,
+        Some(_) => return Err(CliError::new("--focus must be true|false")),
+    };
+    params.insert("focus".to_string(), serde_json::json!(focus));
     Ok(serde_json::Value::Object(params))
 }
 
@@ -3270,6 +3310,23 @@ fn apply_surface_selector_value(
     }
 }
 
+fn apply_surface_target_selector(
+    value: &str,
+    key_prefix: &str,
+    params: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    if value.chars().all(|character| character.is_ascii_digit()) {
+        params.insert(
+            format!("{key_prefix}_ref"),
+            serde_json::json!(format!("surface:{value}")),
+        );
+    } else if value.starts_with("surface:") {
+        params.insert(format!("{key_prefix}_ref"), serde_json::json!(value));
+    } else {
+        params.insert(format!("{key_prefix}_id"), serde_json::json!(value));
+    }
+}
+
 fn apply_surface_selector_or_positional(
     parsed: &ParsedArgs,
     params: &mut serde_json::Map<String, serde_json::Value>,
@@ -3454,8 +3511,10 @@ fn takes_value(arg: &str) -> bool {
     matches!(
         arg,
         "--after"
+            | "--after-surface"
             | "--after-workspace"
             | "--before"
+            | "--before-surface"
             | "--before-workspace"
             | "--branch"
             | "--command"
@@ -3475,6 +3534,7 @@ fn takes_value(arg: &str) -> bool {
             | "--environment"
             | "--file"
             | "--format"
+            | "--focus"
             | "--from"
             | "--function"
             | "--group"
@@ -4432,6 +4492,35 @@ mod tests {
                 .unwrap_err()
                 .message,
             "reorder-workspaces --order cannot contain empty workspace refs"
+        );
+    }
+
+    #[test]
+    fn maps_canonical_reorder_surface_command() {
+        let reorder = mapped(
+            "reorder-surface",
+            &[
+                "surface:3",
+                "--before-surface",
+                "surface:1",
+                "--workspace",
+                "workspace:2",
+                "--window",
+                "window:1",
+                "--focus",
+                "true",
+            ],
+        );
+        assert_eq!(reorder.method, "surface.reorder");
+        assert_eq!(
+            reorder.params,
+            serde_json::json!({
+                "surface_ref": "surface:3",
+                "before_surface_ref": "surface:1",
+                "workspace_ref": "workspace:2",
+                "window_ref": "window:1",
+                "focus": true,
+            })
         );
     }
 

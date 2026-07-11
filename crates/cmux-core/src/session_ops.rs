@@ -2214,6 +2214,89 @@ pub fn set_panel_pinned(
     true
 }
 
+/// Reorder a surface within its existing pane using bonsplit's insertion-offset
+/// contract. The destination is clamped to `0...count`; forward moves subtract
+/// one after removal; self/self+1 drops are order no-ops; and the moved tab is
+/// clamped to its pinned or unpinned tier. `focus=false` preserves selection,
+/// while `focus=true` selects the moved surface. Returns `None` when the surface
+/// is absent, otherwise whether persisted order or selection changed.
+pub fn reorder_surface(
+    workspace: &mut SessionWorkspaceSnapshot,
+    panel_id: &str,
+    destination_index: i64,
+    focus: bool,
+) -> Option<bool> {
+    let pinned: HashSet<&str> = workspace
+        .panel_pins
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .filter(|entry| entry.is_pinned)
+        .map(|entry| entry.panel_id.as_str())
+        .collect();
+    let layout = workspace.layout.as_mut()?;
+
+    fn reorder_in_layout(
+        layout: &mut Layout,
+        panel_id: &str,
+        destination_index: i64,
+        focus: bool,
+        pinned: &HashSet<&str>,
+    ) -> Option<bool> {
+        match layout {
+            Layout::Pane(pane) => {
+                let source_index = pane.panel_ids.iter().position(|id| id == panel_id)?;
+                let destination_index =
+                    destination_index.clamp(0, pane.panel_ids.len() as i64) as usize;
+                let previous_selection = pane.selected_panel_id.clone();
+                let mut order_changed = false;
+                if destination_index != source_index && destination_index != source_index + 1 {
+                    let moved = pane.panel_ids.remove(source_index);
+                    let requested_index = if destination_index > source_index {
+                        destination_index - 1
+                    } else {
+                        destination_index
+                    };
+                    let pinned_count = pane
+                        .panel_ids
+                        .iter()
+                        .filter(|id| pinned.contains(id.as_str()))
+                        .count();
+                    let tier_index = if pinned.contains(panel_id) {
+                        requested_index.min(pinned_count)
+                    } else {
+                        requested_index.max(pinned_count)
+                    };
+                    let safe_index = tier_index.min(pane.panel_ids.len());
+                    pane.panel_ids.insert(safe_index, moved);
+                    order_changed = pane
+                        .panel_ids
+                        .get(source_index)
+                        .is_none_or(|id| id != panel_id);
+                }
+                if focus {
+                    pane.selected_panel_id = Some(panel_id.to_string());
+                }
+                Some(order_changed || pane.selected_panel_id != previous_selection)
+            }
+            Layout::Split(split) => {
+                reorder_in_layout(&mut split.first, panel_id, destination_index, focus, pinned)
+                    .or_else(|| {
+                        reorder_in_layout(
+                            &mut split.second,
+                            panel_id,
+                            destination_index,
+                            focus,
+                            pinned,
+                        )
+                    })
+            }
+        }
+    }
+
+    reorder_in_layout(layout, panel_id, destination_index, focus, &pinned)
+}
+
 /// Set or clear a panel/tab manual unread indicator within `workspace`. The
 /// target panel must exist in the workspace layout. Read panels are represented
 /// by absence, so clearing the last unread entry removes `panel_unreads`.
@@ -4675,6 +4758,41 @@ mod tests {
         workspace.layout = None;
         assert!(!set_panel_pinned(&mut workspace, "surface-1", true));
         assert_eq!(workspace.panel_pins, None);
+    }
+
+    #[test]
+    fn reorder_surface_matches_bonsplit_offsets_pin_tiers_and_focus_policy() {
+        let mut workspace = fresh_terminal_workspace("a");
+        let Layout::Pane(pane) = workspace.layout.as_mut().unwrap() else {
+            panic!("expected pane");
+        };
+        pane.panel_ids = vec!["a".into(), "b".into(), "c".into()];
+        pane.selected_panel_id = Some("b".into());
+        workspace.panel_pins = Some(vec![SessionPanelPinSnapshot {
+            panel_id: "a".into(),
+            is_pinned: true,
+        }]);
+
+        assert_eq!(reorder_surface(&mut workspace, "c", 0, false), Some(true));
+        assert_eq!(
+            panel_ids(workspace.layout.as_ref().unwrap()),
+            ["a", "c", "b"]
+        );
+        let Layout::Pane(pane) = workspace.layout.as_ref().unwrap() else {
+            panic!("expected pane");
+        };
+        assert_eq!(pane.selected_panel_id.as_deref(), Some("b"));
+
+        assert_eq!(reorder_surface(&mut workspace, "c", 3, true), Some(true));
+        assert_eq!(
+            panel_ids(workspace.layout.as_ref().unwrap()),
+            ["a", "b", "c"]
+        );
+        let Layout::Pane(pane) = workspace.layout.as_ref().unwrap() else {
+            panic!("expected pane");
+        };
+        assert_eq!(pane.selected_panel_id.as_deref(), Some("c"));
+        assert_eq!(reorder_surface(&mut workspace, "missing", 0, false), None);
     }
 
     #[test]

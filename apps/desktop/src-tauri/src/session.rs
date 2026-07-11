@@ -4213,6 +4213,34 @@ pub(crate) fn reorder_workspaces_for_control(
     snapshot
 }
 
+pub(crate) fn reorder_surface_for_control(
+    app: &AppHandle,
+    state: &SessionState,
+    workspace_index: usize,
+    panel_id: &str,
+    destination_index: i64,
+    focus: bool,
+) -> Option<AppSessionSnapshot> {
+    let (changed, snapshot) = {
+        let mut guard = state
+            .snapshot
+            .lock()
+            .expect("session snapshot mutex poisoned");
+        let workspace = guard
+            .windows
+            .first_mut()?
+            .tab_manager
+            .workspaces
+            .get_mut(workspace_index)?;
+        let changed = session_ops::reorder_surface(workspace, panel_id, destination_index, focus)?;
+        (changed, guard.clone())
+    };
+    if changed {
+        notify_session_changed(app, &snapshot);
+    }
+    Some(snapshot)
+}
+
 pub(crate) fn reorder_workspaces_many_for_control(
     app: &AppHandle,
     state: &SessionState,

@@ -191,6 +191,9 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
         "reorder-workspaces" => Some(
             "Usage:\n  cmux reorder-workspaces --order <id|ref|index>,<id|ref|index>,... [flags]\n\nAtomically reorders workspaces within pinned and unpinned groups. Unmentioned workspaces keep their relative order after listed peers in the same group.\n\nFlags:\n  --order <refs>               Comma-separated workspace order\n  --window <id|ref|index>      Window context\n  --dry-run                    Print resolved final indexes without applying",
         ),
+        "reorder-surface" => Some(
+            "Usage:\n  cmux reorder-surface [--surface <id|ref|index> | <id|ref|index>] [flags]\n\nReorders a surface within its pane.\n\nFlags:\n  --surface <id|ref|index>     Surface to reorder\n  --workspace <id|ref|index>   Workspace context\n  --window <id|ref|index>      Window context\n  --index <n>                  Place at this insertion index\n  --before <id|ref|index>      Place before this surface\n  --before-surface <handle>    Alias for --before\n  --after <id|ref|index>       Place after this surface\n  --after-surface <handle>     Alias for --after\n  --focus <true|false>         Focus after reordering (default: false)",
+        ),
         "select-workspace" => Some(
             "Usage:\n  cmux select-workspace WORKSPACE\n\nSelects a workspace by workspace:N ref or workspace id. Bare numbers are normalized to workspace:N refs.",
         ),
@@ -622,6 +625,7 @@ mod tests {
             "refresh-surfaces",
             "reorder-workspace",
             "reorder-workspaces",
+            "reorder-surface",
             "right-sidebar",
             "rename-window",
             "reopen-closed-browser-tab",

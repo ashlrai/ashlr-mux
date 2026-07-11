@@ -43,23 +43,24 @@ use crate::session::{
     open_browser_url_in_panel, open_custom_sidebar_in_panel, open_diff_viewer_in_panel,
     open_file_in_panel, open_markdown_file_in_panel, reconnect_workspace_remote_for_control,
     rename_workspace_for_control, reopen_closed_browser_tab_for_control,
-    reorder_workspaces_for_control, reorder_workspaces_many_for_control,
-    reset_workspace_color_for_control, reset_workspace_sidebar_metadata_for_control,
-    restore_previous_launch_for_control, select_adjacent_panel_for_control,
-    select_workspace_for_control, select_workspace_surface, set_browser_zoom_for_control,
-    set_group_collapsed_for_control, set_panel_listening_ports_for_control,
-    set_panel_pinned_for_control, set_panel_shell_activity_for_control,
-    set_panel_title_for_control, set_panel_tty_for_control, set_panel_unread_for_control,
-    set_surface_kind_for_control, set_workspace_agent_listening_ports_for_control,
-    set_workspace_agent_pid_for_control, set_workspace_description_for_control,
-    set_workspace_panel_pull_request_for_control, set_workspace_pinned_for_control,
-    set_workspace_sidebar_metadata_block_for_control, set_workspace_sidebar_metadata_for_control,
-    set_workspace_sidebar_progress_for_control, set_workspace_sidebar_status_for_control,
-    set_workspace_unread_for_control, show_browser_developer_tools_for_control,
-    split_browser_for_control, split_panel_for_control, start_direct_browser_proxy_for_control,
-    toggle_browser_developer_tools_for_control, toggle_browser_focus_mode_for_control,
-    toggle_browser_omnibar_for_control, toggle_split_zoom_for_control,
-    ReorderWorkspacesManyControlError, SessionState, WorkspaceRemoteControlConfig,
+    reorder_surface_for_control, reorder_workspaces_for_control,
+    reorder_workspaces_many_for_control, reset_workspace_color_for_control,
+    reset_workspace_sidebar_metadata_for_control, restore_previous_launch_for_control,
+    select_adjacent_panel_for_control, select_workspace_for_control, select_workspace_surface,
+    set_browser_zoom_for_control, set_group_collapsed_for_control,
+    set_panel_listening_ports_for_control, set_panel_pinned_for_control,
+    set_panel_shell_activity_for_control, set_panel_title_for_control, set_panel_tty_for_control,
+    set_panel_unread_for_control, set_surface_kind_for_control,
+    set_workspace_agent_listening_ports_for_control, set_workspace_agent_pid_for_control,
+    set_workspace_description_for_control, set_workspace_panel_pull_request_for_control,
+    set_workspace_pinned_for_control, set_workspace_sidebar_metadata_block_for_control,
+    set_workspace_sidebar_metadata_for_control, set_workspace_sidebar_progress_for_control,
+    set_workspace_sidebar_status_for_control, set_workspace_unread_for_control,
+    show_browser_developer_tools_for_control, split_browser_for_control, split_panel_for_control,
+    start_direct_browser_proxy_for_control, toggle_browser_developer_tools_for_control,
+    toggle_browser_focus_mode_for_control, toggle_browser_omnibar_for_control,
+    toggle_split_zoom_for_control, ReorderWorkspacesManyControlError, SessionState,
+    WorkspaceRemoteControlConfig,
 };
 use crate::terminal::{
     scan_listening_ports_for_root_pid, scan_panel_listening_ports, terminal_clear_history_panel,
@@ -889,6 +890,7 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "report_tty",
     "report-tty",
     "surface.report_shell_state",
+    "surface.reorder",
     "report_shell_state",
     "report-shell-state",
     "surface.clear_ports",
@@ -1174,6 +1176,7 @@ fn handle_control_request(app: &AppHandle, request: ControlRequest) -> ControlCa
         "surface.rename" | "surface.set_title" => surface_set_title(app, &request.params),
         "surface.set_pinned" => surface_set_pinned(app, &request.params),
         "surface.set_unread" => surface_set_unread(app, &request.params),
+        "surface.reorder" => surface_reorder(app, &request.params),
         "surface.report_ports" | "surface.set_ports" | "report_ports" => {
             surface_report_ports(app, &request.params)
         }
@@ -4471,6 +4474,188 @@ fn surface_set_unread(
         &set_panel_unread_for_control(app, &state, &panel_id, unread),
         params,
     )
+}
+
+fn surface_reorder(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let current = snapshot(app);
+    if !workspace_reorder_window_matches(&current, params) {
+        return ControlCallResult::Err {
+            code: "unavailable".to_string(),
+            message: "TabManager not available".to_string(),
+            data: None,
+        };
+    }
+    let Some((workspace_index, panel_id)) = surface_reorder_source(&current, params) else {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Surface not found".to_string(),
+            data: None,
+        };
+    };
+    let workspace = &current.windows[0].tab_manager.workspaces[workspace_index];
+    let Some((pane_index, pane_id, _source_index)) = surface_pane_details(workspace, &panel_id)
+    else {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Surface not found".to_string(),
+            data: None,
+        };
+    };
+    let index = i64_param(params, &["index"]);
+    let before = surface_id_from_selector_keys(
+        workspace,
+        params,
+        &["before_surface_ref"],
+        &["before_surface_id"],
+    );
+    let after = surface_id_from_selector_keys(
+        workspace,
+        params,
+        &["after_surface_ref"],
+        &["after_surface_id"],
+    );
+    let target_count =
+        usize::from(index.is_some()) + usize::from(before.is_some()) + usize::from(after.is_some());
+    if target_count != 1 {
+        return invalid_params(
+            "Specify exactly one of index, before_surface_id, or after_surface_id",
+        );
+    }
+    let destination_index = if let Some(index) = index {
+        index
+    } else {
+        let (anchor, after_anchor) = match (before.as_deref(), after.as_deref()) {
+            (Some(anchor), None) => (anchor, false),
+            (None, Some(anchor)) => (anchor, true),
+            _ => {
+                return invalid_params(
+                    "Specify exactly one of index, before_surface_id, or after_surface_id",
+                );
+            }
+        };
+        let Some((anchor_pane_index, _, anchor_index)) = surface_pane_details(workspace, anchor)
+        else {
+            return invalid_params("Anchor surface must be in the same pane");
+        };
+        if anchor_pane_index != pane_index {
+            return invalid_params("Anchor surface must be in the same pane");
+        }
+        anchor_index as i64 + i64::from(after_anchor)
+    };
+    let focus = bool_param(params, &["focus"]).unwrap_or(false);
+    let state = app.state::<SessionState>();
+    let Some(result) = reorder_surface_for_control(
+        app,
+        &state,
+        workspace_index,
+        &panel_id,
+        destination_index,
+        focus,
+    ) else {
+        return ControlCallResult::Err {
+            code: "internal_error".to_string(),
+            message: "Failed to reorder surface".to_string(),
+            data: None,
+        };
+    };
+    let window = &result.windows[0];
+    let workspace = &window.tab_manager.workspaces[workspace_index];
+    let surface_ref_value = surfaces_for_workspace(workspace)
+        .iter()
+        .position(|surface| surface.get("id").and_then(Value::as_str) == Some(panel_id.as_str()))
+        .map(surface_ref);
+    ok(json!({
+        "window_id": window.window_id,
+        "window_ref": window.window_id.as_ref().map(|_| "window:1"),
+        "workspace_id": workspace.workspace_id,
+        "workspace_ref": workspace_ref(workspace_index),
+        "pane_id": pane_id,
+        "pane_ref": pane_ref(pane_index),
+        "surface_id": panel_id,
+        "surface_ref": surface_ref_value,
+    }))
+}
+
+fn surface_reorder_source(
+    snapshot: &AppSessionSnapshot,
+    params: &serde_json::Map<String, Value>,
+) -> Option<(usize, String)> {
+    let window = snapshot.windows.first()?;
+    let has_workspace_scope =
+        params.contains_key("workspace_id") || params.contains_key("workspace_ref");
+    if has_workspace_scope || params.contains_key("surface_ref") {
+        let workspace_index = workspace_index_from_workspace_scope_or_selected(snapshot, params)?;
+        let workspace = window.tab_manager.workspaces.get(workspace_index)?;
+        return surface_id_from_selector_keys(
+            workspace,
+            params,
+            &["surface_ref"],
+            &["surface_id", "panel_id"],
+        )
+        .map(|panel_id| (workspace_index, panel_id));
+    }
+    let surface_id = string_param(params, &["surface_id", "panel_id"])?;
+    window
+        .tab_manager
+        .workspaces
+        .iter()
+        .enumerate()
+        .find(|(_, workspace)| {
+            surfaces_for_workspace(workspace).iter().any(|surface| {
+                surface.get("id").and_then(Value::as_str) == Some(surface_id.as_str())
+            })
+        })
+        .map(|(index, _)| (index, surface_id))
+}
+
+fn surface_id_from_selector_keys(
+    workspace: &SessionWorkspaceSnapshot,
+    params: &serde_json::Map<String, Value>,
+    ref_keys: &[&str],
+    id_keys: &[&str],
+) -> Option<String> {
+    let surfaces = surfaces_for_workspace(workspace);
+    if let Some(reference) = string_param(params, ref_keys) {
+        let index = one_based_ref_index(&reference, "surface")?;
+        return surfaces
+            .get(index)
+            .and_then(|surface| surface.get("id"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+    }
+    let id = string_param(params, id_keys)?;
+    surfaces
+        .iter()
+        .any(|surface| surface.get("id").and_then(Value::as_str) == Some(id.as_str()))
+        .then_some(id)
+}
+
+fn surface_pane_details(
+    workspace: &SessionWorkspaceSnapshot,
+    panel_id: &str,
+) -> Option<(usize, Option<String>, usize)> {
+    fn visit(
+        layout: &SessionWorkspaceLayoutSnapshot,
+        panel_id: &str,
+        pane_index: &mut usize,
+    ) -> Option<(usize, Option<String>, usize)> {
+        match layout {
+            SessionWorkspaceLayoutSnapshot::Pane(pane) => {
+                let current = *pane_index;
+                *pane_index += 1;
+                pane.panel_ids
+                    .iter()
+                    .position(|id| id == panel_id)
+                    .map(|index| (current, pane.pane_id.clone(), index))
+            }
+            SessionWorkspaceLayoutSnapshot::Split(split) => {
+                visit(&split.first, panel_id, pane_index)
+                    .or_else(|| visit(&split.second, panel_id, pane_index))
+            }
+        }
+    }
+    let mut pane_index = 0;
+    visit(workspace.layout.as_ref()?, panel_id, &mut pane_index)
 }
 
 fn surface_report_ports(
