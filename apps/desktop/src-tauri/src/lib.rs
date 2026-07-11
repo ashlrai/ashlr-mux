@@ -1,3 +1,7 @@
+#[cfg(all(test, windows, target_env = "msvc"))]
+#[link(name = "cmux_test_manifest", kind = "static")]
+extern "C" {}
+
 mod agent_session;
 mod app_settings;
 mod auth_environment;

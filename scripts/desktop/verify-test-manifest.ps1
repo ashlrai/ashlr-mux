@@ -81,7 +81,7 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "dumpbin could not inspect imports for $TestExecutable (exit $LASTEXITCODE)"
     }
-    if ($imports -notmatch '(?m)^\s*TaskDialogIndirect\s*$') {
+    if ($imports -notmatch '(?m)^\s+.*\bTaskDialogIndirect\s*$') {
         throw "test executable does not import TaskDialogIndirect"
     }
 

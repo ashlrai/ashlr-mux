@@ -654,6 +654,7 @@ dependencies = [
  "cmux-terminal",
  "cmux-window-title",
  "cmux-workspaces",
+ "embed-resource",
  "mime_guess",
  "native-tls",
  "serde",
