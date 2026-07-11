@@ -5300,6 +5300,17 @@ mod tests {
     }
 
     #[test]
+    fn close_workspace_rejects_pinned_workspace_without_mutation() {
+        let mut tabs = one_workspace_tabs("surface-1");
+        new_workspace(&mut tabs, "surface-2");
+        tabs.workspaces[0].is_pinned = Some(true);
+        let before = tabs.clone();
+
+        assert!(!close_workspace(&mut tabs, 0));
+        assert_eq!(tabs, before);
+    }
+
+    #[test]
     fn close_anchor_workspace_dissolves_its_group() {
         let mut tabs = SessionTabManagerSnapshot {
             selected_workspace_index: Some(0),

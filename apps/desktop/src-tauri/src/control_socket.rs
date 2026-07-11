@@ -15630,8 +15630,82 @@ mod tests {
                 &snapshot,
                 &serde_json::Map::from_iter([("workspace_ref".to_string(), json!("workspace:1"),)])
             ),
-            Some(0)
+            None
         );
+    }
+
+    #[test]
+    fn workspace_v2_list_has_canonical_shape_only() {
+        let payload = workspace_list_payload(&test_snapshot());
+        let object = payload.as_object().expect("workspace.list object");
+        assert_eq!(
+            object.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+            BTreeSet::from(["window_id", "window_ref", "workspaces"])
+        );
+        let row = object["workspaces"][0]
+            .as_object()
+            .expect("workspace summary object");
+        assert_eq!(
+            row.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                "id",
+                "ref",
+                "title",
+                "custom_title",
+                "has_custom_title",
+                "description",
+                "selected",
+                "pinned",
+                "listening_ports",
+                "remote",
+                "current_directory",
+                "custom_color",
+                "latest_conversation_message",
+                "latest_submitted_message",
+                "latest_submitted_at",
+                "index",
+            ])
+        );
+    }
+
+    #[test]
+    fn workspace_v2_current_routes_by_workspace_but_returns_owner_selection() {
+        let mut snapshot = test_snapshot();
+        snapshot.windows[0].window_id = Some("window-a".to_string());
+        let mut background = snapshot.windows[0].clone();
+        background.window_id = Some("window-b".to_string());
+        background.tab_manager.workspaces[0].workspace_id = Some("workspace-b1".to_string());
+        let mut requested = background.tab_manager.workspaces[0].clone();
+        requested.workspace_id = Some("workspace-b2".to_string());
+        background.tab_manager.workspaces.push(requested);
+        background.tab_manager.selected_workspace_index = Some(0);
+        snapshot.windows.push(background);
+
+        let params = serde_json::Map::from_iter([(
+            "workspace_id".to_string(),
+            json!("workspace-b2"),
+        )]);
+        let ControlCallResult::Ok(result) = workspace_current_from_params(&snapshot, &params) else {
+            panic!("workspace.current should resolve the owning window");
+        };
+        let result: Value = result.into();
+        assert_eq!(result["window_id"], json!("window-b"));
+        assert_eq!(result["workspace_id"], json!("workspace-b1"));
+        assert_eq!(result["workspace"]["selected"], json!(true));
+    }
+
+    #[test]
+    fn workspace_v2_current_invalid_explicit_window_never_falls_back() {
+        let params = serde_json::Map::from_iter([
+            ("window_id".to_string(), json!("missing-window")),
+            ("workspace_id".to_string(), json!("workspace-1")),
+        ]);
+        let result = workspace_current_from_params(&test_snapshot(), &params);
+        assert!(matches!(
+            result,
+            ControlCallResult::Err { code, message, .. }
+                if code == "unavailable" && message == "TabManager not available"
+        ));
     }
 
     #[test]
