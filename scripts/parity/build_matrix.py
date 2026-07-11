@@ -107,7 +107,12 @@ def windows_cli_is_implemented(item: dict[str, Any]) -> bool:
     return item.get("classification") in {"local_or_no_socket", "hybrid_local_and_socket"}
 
 
-def cli_entries(catalog: dict[str, Any], windows: dict[str, Any], commit: str) -> list[dict[str, Any]]:
+def cli_entries(
+    catalog: dict[str, Any],
+    windows: dict[str, Any],
+    commit: str,
+    canonical_v2_ids: set[str],
+) -> list[dict[str, Any]]:
     windows_by_name = {item["command"]: item for item in windows.get("cli_commands", [])}
     entries = []
     for item in catalog["commands"]:
@@ -121,7 +126,11 @@ def cli_entries(catalog: dict[str, Any], windows: dict[str, Any], commit: str) -
                 canonical_sources.append(normalized_source(location, commit))
         windows_sources = collect_locations(evidence.get("source_locations")) if evidence else []
         status = "implemented_unverified" if evidence and windows_cli_is_implemented(evidence) else "missing"
-        dependencies = [f"v2:{method}" for method in (evidence or {}).get("control_methods", [])]
+        dependencies = [
+            f"v2:{method}"
+            for method in (evidence or {}).get("control_methods", [])
+            if f"v2:{method}" in canonical_v2_ids
+        ]
         entries.append(
             {
                 "id": f"cli:{name}",
@@ -274,6 +283,7 @@ def validate_entries(entries: list[dict[str, Any]]) -> None:
     duplicates = sorted(name for name, count in Counter(ids).items() if count > 1)
     if duplicates:
         raise ValueError(f"duplicate matrix IDs: {', '.join(duplicates)}")
+    known_ids = set(ids)
     for entry in entries:
         status = entry["status"]
         if status not in ALLOWED_STATUSES:
@@ -282,6 +292,11 @@ def validate_entries(entries: list[dict[str, Any]]) -> None:
             raise ValueError(f"{entry['id']} has no canonical source")
         if not entry["acceptance_tests"]:
             raise ValueError(f"{entry['id']} has no acceptance tests")
+        dangling = sorted(set(entry["dependencies"]) - known_ids)
+        if dangling:
+            raise ValueError(
+                f"{entry['id']} has unknown dependencies: {', '.join(dangling)}"
+            )
         commit = entry.get("latest_verifying_commit")
         if status in STRICT_RESOLVED:
             if not isinstance(commit, str) or len(commit) != 40:
@@ -344,7 +359,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("canonical public CLI count does not match frozen expectation")
     if v2["counts"]["release"] != expected_v2:
         raise ValueError("canonical release-v2 count does not match frozen expectation")
-    entries = cli_entries(cli, windows, canonical_commit)
+    canonical_v2_ids = {f"v2:{item['method']}" for item in v2["methods"]}
+    entries = cli_entries(cli, windows, canonical_commit, canonical_v2_ids)
     entries.extend(v2_entries(v2, windows, canonical_commit))
     entries.extend(product_entries(products, canonical_commit))
     entries.sort(key=lambda entry: entry["id"])

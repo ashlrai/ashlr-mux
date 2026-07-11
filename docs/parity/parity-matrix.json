@@ -2924,9 +2924,7 @@
           "symbol": null
         }
       ],
-      "dependencies": [
-        "v2:workspace.clear_log"
-      ],
+      "dependencies": [],
       "domain": "metadata",
       "family": "metadata",
       "id": "cli:clear-log",
@@ -3239,9 +3237,7 @@
           "symbol": null
         }
       ],
-      "dependencies": [
-        "v2:workspace.clear_progress"
-      ],
+      "dependencies": [],
       "domain": "metadata",
       "family": "metadata",
       "id": "cli:clear-progress",
@@ -3386,9 +3382,7 @@
           "symbol": null
         }
       ],
-      "dependencies": [
-        "v2:workspace.clear_status"
-      ],
+      "dependencies": [],
       "domain": "metadata",
       "family": "metadata",
       "id": "cli:clear-status",
@@ -4584,9 +4578,7 @@
           "symbol": null
         }
       ],
-      "dependencies": [
-        "v2:config.reload"
-      ],
+      "dependencies": [],
       "domain": "configuration",
       "family": "configuration",
       "id": "cli:config",
@@ -5376,9 +5368,7 @@
           "symbol": null
         }
       ],
-      "dependencies": [
-        "v2:surface.open_diff"
-      ],
+      "dependencies": [],
       "domain": "content",
       "family": "content",
       "id": "cli:diff",
@@ -9557,9 +9547,7 @@
           "symbol": null
         }
       ],
-      "dependencies": [
-        "v2:workspace.list_log"
-      ],
+      "dependencies": [],
       "domain": "metadata",
       "family": "metadata",
       "id": "cli:list-log",
@@ -10270,9 +10258,7 @@
           "symbol": null
         }
       ],
-      "dependencies": [
-        "v2:workspace.list_status"
-      ],
+      "dependencies": [],
       "domain": "metadata",
       "family": "metadata",
       "id": "cli:list-status",
@@ -10711,9 +10697,7 @@
           "symbol": null
         }
       ],
-      "dependencies": [
-        "v2:workspace.log"
-      ],
+      "dependencies": [],
       "domain": "metadata",
       "family": "metadata",
       "id": "cli:log",
@@ -11281,9 +11265,7 @@
           "symbol": null
         }
       ],
-      "dependencies": [
-        "v2:surface.open_markdown"
-      ],
+      "dependencies": [],
       "domain": "content",
       "family": "content",
       "id": "cli:markdown",
@@ -11783,9 +11765,7 @@
           "symbol": null
         }
       ],
-      "dependencies": [
-        "v2:surface.move_to_new_workspace"
-      ],
+      "dependencies": [],
       "domain": "workspace",
       "family": "workspace",
       "id": "cli:move-tab-to-new-workspace",
@@ -12049,9 +12029,7 @@
           "symbol": null
         }
       ],
-      "dependencies": [
-        "v2:surface.open_browser"
-      ],
+      "dependencies": [],
       "domain": "browser",
       "family": "browser",
       "id": "cli:navigate",
@@ -12505,9 +12483,7 @@
           "symbol": null
         }
       ],
-      "dependencies": [
-        "v2:surface.new_terminal_tab"
-      ],
+      "dependencies": [],
       "domain": "surface",
       "family": "surface",
       "id": "cli:new-surface",
@@ -13771,9 +13747,7 @@
           "symbol": null
         }
       ],
-      "dependencies": [
-        "v2:surface.open_browser"
-      ],
+      "dependencies": [],
       "domain": "browser",
       "family": "browser",
       "id": "cli:open-browser",
@@ -14179,9 +14153,7 @@
           "symbol": null
         }
       ],
-      "dependencies": [
-        "v2:ping"
-      ],
+      "dependencies": [],
       "domain": "introspection",
       "family": "introspection",
       "id": "cli:ping",
@@ -14905,9 +14877,7 @@
           "symbol": null
         }
       ],
-      "dependencies": [
-        "v2:surface.refresh_all"
-      ],
+      "dependencies": [],
       "domain": "surface",
       "family": "surface",
       "id": "cli:refresh-surfaces",
@@ -15050,9 +15020,7 @@
           "symbol": null
         }
       ],
-      "dependencies": [
-        "v2:config.reload"
-      ],
+      "dependencies": [],
       "domain": "configuration",
       "family": "configuration",
       "id": "cli:reload-config",
@@ -15472,9 +15440,7 @@
           "symbol": null
         }
       ],
-      "dependencies": [
-        "v2:surface.rename"
-      ],
+      "dependencies": [],
       "domain": "surface",
       "family": "surface",
       "id": "cli:rename-tab",
@@ -16722,9 +16688,7 @@
           "symbol": null
         }
       ],
-      "dependencies": [
-        "v2:right_sidebar"
-      ],
+      "dependencies": [],
       "domain": "sidebar",
       "family": "sidebar",
       "id": "cli:right-sidebar",
@@ -18153,9 +18117,7 @@
           "symbol": null
         }
       ],
-      "dependencies": [
-        "v2:workspace.set_progress"
-      ],
+      "dependencies": [],
       "domain": "metadata",
       "family": "metadata",
       "id": "cli:set-progress",
@@ -18301,9 +18263,7 @@
           "symbol": null
         }
       ],
-      "dependencies": [
-        "v2:workspace.set_status"
-      ],
+      "dependencies": [],
       "domain": "metadata",
       "family": "metadata",
       "id": "cli:set-status",
@@ -18974,9 +18934,7 @@
           "symbol": null
         }
       ],
-      "dependencies": [
-        "v2:workspace.sidebar_state"
-      ],
+      "dependencies": [],
       "domain": "sidebar",
       "family": "sidebar",
       "id": "cli:sidebar-state",

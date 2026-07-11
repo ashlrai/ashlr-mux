@@ -14,6 +14,7 @@ def entry(status="missing"):
         "id": "cli:test",
         "canonical_sources": [{"path": "CLI/cmux.swift"}],
         "acceptance_tests": ["differential.cli.test"],
+        "dependencies": [],
         "status": status,
         "latest_verifying_commit": None,
         "rationale": None,
@@ -55,6 +56,12 @@ class MatrixBuilderTests(unittest.TestCase):
     def test_unknown_override_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "unknown entries"):
             apply_overrides([entry()], {"entries": {"cli:missing": {"status": "red"}}})
+
+    def test_dangling_dependency_is_rejected(self):
+        value = entry()
+        value["dependencies"] = ["v2:not.canonical"]
+        with self.assertRaisesRegex(ValueError, "unknown dependencies"):
+            validate_entries([value])
 
     def test_ratio_reports_numerator_and_denominator(self):
         self.assertEqual(ratio(1, 4), {"numerator": 1, "denominator": 4, "percentage": 25.0})
