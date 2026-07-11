@@ -22955,7 +22955,7 @@
         {
           "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
           "line": null,
-          "path": "Sources/AgentSession",
+          "path": "Sources/Panels/AgentSessionPanel.swift",
           "symbol": null
         }
       ],
@@ -23063,7 +23063,7 @@
         {
           "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
           "line": null,
-          "path": "Sources/CustomSidebar",
+          "path": "Sources/CMUXInstalledExtensionSidebarHostView.swift",
           "symbol": null
         }
       ],
@@ -23207,7 +23207,7 @@
         {
           "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
           "line": null,
-          "path": "Sources/NotificationStore.swift",
+          "path": "Sources/TerminalNotificationStore.swift",
           "symbol": null
         }
       ],
@@ -23387,7 +23387,7 @@
         {
           "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
           "line": null,
-          "path": "Sources/WorkspaceSidebar",
+          "path": "Sources/SidebarWorkspaceRenderItem.swift",
           "symbol": null
         }
       ],
@@ -23423,7 +23423,7 @@
         {
           "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
           "line": null,
-          "path": "Sources/Remote",
+          "path": "Sources/RemoteTmuxController.swift",
           "symbol": null
         }
       ],
