@@ -16033,6 +16033,120 @@ mod tests {
     }
 
     #[test]
+    fn workspace_v2_current_stale_selection_preserves_identity_with_null_summary() {
+        let mut snapshot = test_snapshot();
+        snapshot.windows[0].tab_manager.selected_workspace_index = Some(99);
+
+        let ControlCallResult::Ok(result) =
+            workspace_current_from_params(&snapshot, &serde_json::Map::new())
+        else {
+            panic!("stale selected identity must still produce workspace.current success");
+        };
+        let result: Value = result.into();
+        assert!(result["workspace_id"].as_str().is_some());
+        assert!(result["workspace_ref"].as_str().is_some());
+        assert_eq!(result["workspace"], Value::Null);
+    }
+
+    #[test]
+    fn workspace_v2_null_window_selector_falls_through_to_resolvable_workspace() {
+        let params = serde_json::Map::from_iter([
+            ("window_id".to_string(), Value::Null),
+            ("workspace_id".to_string(), json!("workspace-1")),
+        ]);
+        assert_eq!(
+            workspace_routed_window_index(&test_snapshot(), &params),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn workspace_v2_routing_uses_canonical_selector_precedence() {
+        let mut snapshot = test_snapshot();
+        snapshot.windows[0].tab_manager.workspaces[0].group_id = Some("group-a".to_string());
+        let mut background = snapshot.windows[0].clone();
+        background.window_id = Some("window-b".to_string());
+        background.tab_manager.workspaces[0].workspace_id = Some("workspace-b".to_string());
+        background.tab_manager.workspaces[0].group_id = Some("group-b".to_string());
+        if let Some(SessionWorkspaceLayoutSnapshot::Pane(pane)) =
+            background.tab_manager.workspaces[0].layout.as_mut()
+        {
+            pane.pane_id = Some("pane-b".to_string());
+            pane.panel_ids = vec!["surface-b".to_string()];
+            pane.selected_panel_id = Some("surface-b".to_string());
+        }
+        snapshot.windows.push(background);
+
+        assert_eq!(
+            workspace_routed_window_index(
+                &snapshot,
+                &serde_json::Map::from_iter([
+                    ("group_id".to_string(), json!("group-b")),
+                    ("workspace_id".to_string(), json!("workspace-1")),
+                ]),
+            ),
+            Some(1)
+        );
+        for key in [
+            "workspace_id",
+            "surface_id",
+            "terminal_id",
+            "tab_id",
+            "pane_id",
+        ] {
+            let value = match key {
+                "workspace_id" => "workspace-b",
+                "pane_id" => "pane-b",
+                _ => "surface-b",
+            };
+            assert_eq!(
+                workspace_routed_window_index(
+                    &snapshot,
+                    &serde_json::Map::from_iter([(key.to_string(), json!(value))]),
+                ),
+                Some(1),
+                "selector {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn workspace_v2_not_found_mints_workspace_ref_for_uuid_identity() {
+        let workspace_id = "00000000-0000-0000-0000-000000000099";
+        let result = workspace_not_found(&serde_json::Map::from_iter([(
+            "workspace_id".to_string(),
+            json!(workspace_id),
+        )]));
+        let ControlCallResult::Err {
+            data: Some(data), ..
+        } = result
+        else {
+            panic!("not_found should include identity data");
+        };
+        let data: Value = data.into();
+        assert_eq!(data["workspace_id"], json!(workspace_id));
+        assert!(data["workspace_ref"].as_str().is_some());
+    }
+
+    #[test]
+    fn workspace_events_observe_background_window_lifecycle_changes() {
+        let previous = test_snapshot();
+        let mut current = previous.clone();
+        let mut background = current.windows[0].clone();
+        background.window_id = Some("window-b".to_string());
+        current.windows.push(background.clone());
+        let mut previous_with_background = previous;
+        previous_with_background.windows.push(background);
+        current.windows[1].tab_manager.workspaces[0].custom_title = Some("Renamed".to_string());
+
+        assert_ne!(
+            session_event_summary(&previous_with_background),
+            session_event_summary(&current),
+            "background changes must reach lifecycle event derivation"
+        );
+    }
+
+    #[test]
     fn string_map_param_accepts_string_environment_aliases() {
         let params = serde_json::Map::from_iter([(
             "env".to_string(),

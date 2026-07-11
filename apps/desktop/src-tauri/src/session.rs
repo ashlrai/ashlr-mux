@@ -8304,6 +8304,22 @@ mod tests {
     }
 
     #[test]
+    fn apply_new_workspace_inherits_selected_workspace_directory_when_unspecified() {
+        let mut snapshot = initial_snapshot("surface-1");
+        snapshot.windows[0].tab_manager.workspaces[0].current_directory =
+            Some("C:/inherited".to_string());
+
+        apply_new_workspace(&mut snapshot, "surface-2", None, None, None, None);
+
+        assert_eq!(
+            snapshot.windows[0].tab_manager.workspaces[1]
+                .current_directory
+                .as_deref(),
+            Some("C:/inherited")
+        );
+    }
+
+    #[test]
     fn apply_new_workspace_carries_initial_terminal_startup_metadata() {
         let mut snapshot = initial_snapshot("surface-1");
         apply_new_workspace(

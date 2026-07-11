@@ -5314,6 +5314,19 @@ mod tests {
     }
 
     #[test]
+    fn new_workspace_inherits_selected_workspace_directory() {
+        let mut tabs = one_workspace_tabs("surface-1");
+        tabs.workspaces[0].current_directory = Some("C:/inherited".to_string());
+
+        new_workspace(&mut tabs, "surface-2");
+
+        assert_eq!(
+            tabs.workspaces[1].current_directory.as_deref(),
+            Some("C:/inherited")
+        );
+    }
+
+    #[test]
     fn close_anchor_workspace_dissolves_its_group() {
         let mut tabs = SessionTabManagerSnapshot {
             selected_workspace_index: Some(0),
