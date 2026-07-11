@@ -1,0 +1,132 @@
+{
+  "schema_version": 1,
+  "audit_id": "runtime_workspace_current",
+  "audit_base_commit": "e9cbbd41f35ad79af412649a7d497c8beffa7952",
+  "canonical_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+  "scope": [
+    "control_socket::workspace_current_can_be_scoped_to_background_workspace",
+    "control_socket::workspace_v2_current_stale_selection_preserves_identity_with_null_summary"
+  ],
+  "verdict": {
+    "production": "correct for both audited semantics on the app-facing workspace.current path",
+    "tests": "both reds are test/fixture defects introduced by expectations that do not represent the frozen canonical contract",
+    "implementation_change_required": false
+  },
+  "reproduction": {
+    "environment": "Windows, cmux-desktop lib tests, isolated audit worktree and Cargo target; required ignored Tauri sidecars were staged from previously built matching workspace artifacts",
+    "commands": [
+      "cargo test -p cmux-desktop control_socket::tests::workspace_current_can_be_scoped_to_background_workspace --lib -- --exact --nocapture",
+      "cargo test -p cmux-desktop control_socket::tests::workspace_v2_current_stale_selection_preserves_identity_with_null_summary --lib -- --exact --nocapture",
+      "cargo test -p cmux-desktop control_socket::tests::workspace_v2_current_routes_by_workspace_but_returns_owner_selection --lib -- --exact --nocapture",
+      "cargo test -p cmux-desktop session::tests::selected_workspace_identity_witness_survives_stale_index_and_restore --lib -- --exact --nocapture"
+    ],
+    "results": [
+      "RED: background test expected workspace-2 but production returned workspace-1 at control_socket.rs:15727",
+      "RED: stale test reached its else panic because the synthetic fixture had no stable selected identity witness at control_socket.rs:16550",
+      "GREEN: cross-window routing test passed and confirms selector-routes-manager/return-owner-selection behavior",
+      "GREEN: session stale-index restore test passed and confirms selected_workspace_id witness persistence"
+    ]
+  },
+  "canonical_contract": {
+    "selector_routing": {
+      "rule": "workspace_id is a TabManager routing selector for workspace.current; it does not select the response workspace. After routing, workspace.current returns that manager's selectedTabId.",
+      "precedence": [
+        "present non-null window_id, with unresolved explicit window terminal",
+        "resolvable group_id",
+        "resolvable workspace_id",
+        "resolvable surface_id (including terminal_id/tab_id aliases before typed routing)",
+        "resolvable pane_id",
+        "caller TabManager",
+        "active scriptable window TabManager"
+      ],
+      "selected_summary": "When selectedTabId resolves to a workspace in tabs, workspace_id and workspace_ref identify that selected workspace, workspace.selected is true, and workspace.index is its zero-based manager index.",
+      "sources": [
+        "Sources/TerminalController.swift:3644-3680",
+        "Sources/TerminalController+ControlWorkspaceContext.swift:94-112",
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Workspace/ControlCommandCoordinator+Workspace.swift:188-248"
+      ]
+    },
+    "stale_selected_identity": {
+      "rule": "selectedTabId is the stable identity witness. If it is non-null but no longer appears in tabs, workspace.current still succeeds.",
+      "response": {
+        "window_id": "owning window UUID or null",
+        "window_ref": "stable ref minted from window_id, or null",
+        "workspace_id": "the stale selectedTabId UUID",
+        "workspace_ref": "stable workspace ref minted from that same stale UUID",
+        "workspace": null
+      },
+      "distinction": "Only a null selectedTabId returns not_found / No workspace selected. A stale non-null identity is success with a null summary and therefore no summary index.",
+      "sources": [
+        "Sources/TerminalController+ControlWorkspaceContext.swift:94-112",
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Workspace/ControlCommandCoordinator+Workspace.swift:188-248"
+      ]
+    }
+  },
+  "windows_trace": {
+    "routing": "workspace_routed_window_index resolves workspace_id to the owning window, then workspace_current_from_params reads selected_workspace_index_for_window for that window. It does not use the routed workspace as the response target.",
+    "stable_witness": "SessionWindowSnapshot.selected_workspace_id is maintained by the stateful session layer and intentionally survives a stale selected_workspace_index. workspace_current_from_params falls back to this witness only when the indexed workspace is absent.",
+    "app_facing_refs": "workspace_current_from_params_for_app calls apply_workspace_handle_refs, which replaces provisional index refs with handle-registry refs keyed by window_id/workspace_id. Thus a stale result's public workspace_ref is minted from the stable selected_workspace_id, not from stale index 99.",
+    "sources": [
+      "apps/desktop/src-tauri/src/control_socket.rs:12241-12334",
+      "apps/desktop/src-tauri/src/control_socket.rs:12409-12489",
+      "apps/desktop/src-tauri/src/session.rs:381-408",
+      "apps/desktop/src-tauri/src/session.rs:9022-9060",
+      "crates/cmux-core/src/session.rs:807-820"
+    ]
+  },
+  "failures": [
+    {
+      "test": "workspace_current_can_be_scoped_to_background_workspace",
+      "classification": "obsolete test expectation",
+      "introduced_at": "bc71908679",
+      "root_cause": "The test treats workspace_id as the object to return and expects workspace-2 with selected=false. Frozen canonical uses workspace_id only to route to the owning manager and then returns that manager's selected workspace. With workspace-1 selected, the correct result is workspace-1/workspace:1 with selected=true.",
+      "conflicting_local_witness": "workspace_v2_current_routes_by_workspace_but_returns_owner_selection already pins the correct multi-window canonical behavior.",
+      "minimal_fix": [
+        "Rename the test to workspace_current_workspace_selector_routes_manager_and_returns_selection (or remove it as redundant).",
+        "Keep workspace-1 selected and workspace-2 as the routing selector.",
+        "Expect workspace_id=workspace-1, workspace_ref=workspace:1, and workspace.selected=true."
+      ],
+      "production_change": "none"
+    },
+    {
+      "test": "workspace_v2_current_stale_selection_preserves_identity_with_null_summary",
+      "classification": "inconsistent synthetic fixture",
+      "introduced_at": "03142a44c5",
+      "root_cause": "test_snapshot was later extended with SessionWindowSnapshot.selected_workspace_id=None. The stale test mutates only selected_workspace_index to 99, so it constructs a state that has neither canonical selectedTabId nor the Windows stable witness. Production correctly returns No workspace selected for that state.",
+      "fixture_inconsistency": "Real initialized/restored state first synchronizes selected_workspace_id to workspace-1. Changing the legacy index to 99 must leave that witness untouched to model canonical stale selectedTabId behavior.",
+      "minimal_fix": [
+        "Before making the index stale, set snapshot.windows[0].selected_workspace_id=Some(\"workspace-1\").",
+        "Then set selected_workspace_index=Some(99).",
+        "Assert workspace_id=workspace-1 and workspace=null; keep public stable-ref identity covered through the app-facing handle-registry path rather than asserting the pure helper's provisional index ref."
+      ],
+      "production_change": "none"
+    }
+  ],
+  "exact_red_green_plan": [
+    "Run each named test individually at audit_base_commit and retain its distinct assertion/panic output.",
+    "Apply only the two test corrections above; do not alter routing, payload, session witness, or handle-registry production code.",
+    "Run each corrected test individually, then all control_socket workspace_v2_current tests.",
+    "Run session::selected_workspace_identity_witness_survives_stale_index_and_restore to guard witness persistence.",
+    "Simplify duplicate coverage: retain one same-manager selector case and the stronger existing cross-window owner-selection case.",
+    "Repeat the focused test set after simplification."
+  ],
+  "adversarial_cases": [
+    "A workspace_id naming an unselected workspace in a background window routes to that window but returns its different selected workspace with selected=true.",
+    "A workspace_id naming an unselected workspace in the current window likewise returns the current selected workspace, not the selector target.",
+    "An invalid explicit non-null window_id is terminal and must not fall through to a valid workspace_id in another window.",
+    "A null window_id falls through to workspace_id routing.",
+    "A resolvable group_id outranks a conflicting workspace_id.",
+    "A stale selected_workspace_index plus a retained selected_workspace_id succeeds with exact identity fields and workspace=null.",
+    "A stale selected_workspace_index with no selected_workspace_id returns not_found / No workspace selected.",
+    "A valid selected index whose workspace lacks workspace_id falls back to selected_workspace_id; if both are absent it returns not_found.",
+    "The app-facing stale workspace_ref is stable for repeated calls and is keyed by selected_workspace_id, independent of the stale numeric index.",
+    "Serialization and restore preserve selected_workspace_id while leaving a stale selected_workspace_index unchanged until reconciliation."
+  ],
+  "scope_guard": {
+    "files_changed_by_audit": [
+      "docs/parity/contracts/runtime_workspace_current.json"
+    ],
+    "implementation_edited": false,
+    "pushed": false
+  }
+}
