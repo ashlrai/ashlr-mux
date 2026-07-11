@@ -24,7 +24,9 @@ use serde_json::{json, Value};
 
 pub(crate) const MAX_HANDSHAKE_BYTES: usize = 64 * 1024;
 const MAX_PROXY_OBSERVATION_BYTES: usize = 256 * 1024;
-const DEFAULT_DAEMON_RPC_TIMEOUT: Duration = Duration::from_secs(10);
+const DEFAULT_DAEMON_OPEN_TIMEOUT: Duration = Duration::from_secs(10);
+const DAEMON_PROXY_WRITE_TIMEOUT: Duration = Duration::from_secs(8);
+const DAEMON_PROXY_CLOSE_TIMEOUT: Duration = Duration::from_secs(4);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProxyTarget {
@@ -654,7 +656,6 @@ impl DaemonProxyRpcClient {
         let (id, line) =
             self.request_response(|id| daemon_proxy_close_request(id, stream_id), timeout)?;
         daemon_rpc_success_result(&line, id)?;
-        self.unsubscribe_stream(stream_id);
         Ok(())
     }
 }
@@ -668,7 +669,7 @@ impl DaemonProxyConnector {
     pub(crate) fn new(client: Arc<DaemonProxyRpcClient>) -> Self {
         Self {
             client,
-            timeout: DEFAULT_DAEMON_RPC_TIMEOUT,
+            timeout: DEFAULT_DAEMON_OPEN_TIMEOUT,
         }
     }
 
@@ -831,6 +832,14 @@ struct DaemonProxyStreamInner {
     closed: AtomicBool,
 }
 
+impl Drop for DaemonProxyStreamInner {
+    fn drop(&mut self) {
+        if !self.closed.swap(true, Ordering::SeqCst) {
+            self.client.unsubscribe_stream(&self.stream_id);
+        }
+    }
+}
+
 pub(crate) struct DaemonProxyStream {
     inner: Arc<DaemonProxyStreamInner>,
 }
@@ -840,9 +849,10 @@ impl DaemonProxyStream {
         if self.inner.closed.swap(true, Ordering::SeqCst) {
             return Ok(());
         }
+        self.inner.client.unsubscribe_stream(&self.inner.stream_id);
         self.inner
             .client
-            .proxy_close_stream(&self.inner.stream_id, DEFAULT_DAEMON_RPC_TIMEOUT)
+            .proxy_close_stream(&self.inner.stream_id, DAEMON_PROXY_CLOSE_TIMEOUT)
     }
 }
 
@@ -901,7 +911,7 @@ impl Write for DaemonProxyStream {
         self.inner.client.proxy_write_stream(
             &self.inner.stream_id,
             data,
-            DEFAULT_DAEMON_RPC_TIMEOUT,
+            DAEMON_PROXY_WRITE_TIMEOUT,
         )
     }
 
@@ -918,18 +928,10 @@ impl ProxyStream for DaemonProxyStream {
     }
 
     fn shutdown(&self, how: Shutdown) -> io::Result<()> {
-        if matches!(how, Shutdown::Write | Shutdown::Both) {
+        if matches!(how, Shutdown::Both) {
             self.close_once().map_err(io_other)?;
         }
         Ok(())
-    }
-}
-
-impl Drop for DaemonProxyStream {
-    fn drop(&mut self) {
-        if !self.inner.closed.swap(true, Ordering::SeqCst) {
-            self.inner.client.unsubscribe_stream(&self.inner.stream_id);
-        }
     }
 }
 
@@ -1344,11 +1346,11 @@ fn relay_bidirectional(
     let downstream_result = copy_with_capture(&mut remote, &mut client, &downstream_capture);
     let _ = client.flush();
     let _ = client.shutdown(Shutdown::Write);
-    let _ = client.shutdown(Shutdown::Read);
-    let _ = remote.shutdown(Shutdown::Both);
     let upstream_result = upstream
         .join()
         .map_err(|_| io_other("proxy upstream relay panicked"));
+    let _ = client.shutdown(Shutdown::Read);
+    let _ = remote.shutdown(Shutdown::Both);
     if let Some(observer) = observer {
         let completed_at_ms = now_ms();
         let upstream = upstream_capture
