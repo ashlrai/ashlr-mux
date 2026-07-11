@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "batch": "desktop-loader-runtime",
+  "contract": "docs/parity/contracts/desktop_loader_runtime.json",
+  "implementation_commit": "f4642e63920e9f39b616da837fdb8f9b20b4541b",
+  "root_cause": "The implicit Rust lib test harness imported comctl32.dll!TaskDialogIndirect without a Common-Controls v6 activation manifest, so Windows loaded base comctl32 v5.82 and exited before the test harness with 0xc0000139.",
+  "red_green_commits": [
+    ["51388ab18", "97d4a2bf0"],
+    ["d507250f6", "f4642e639"]
+  ],
+  "independent_verification": {
+    "result": "pass",
+    "test_count_enumerated": 448,
+    "manifest_identity_count": 1,
+    "task_dialog_import_count": 1,
+    "powershell_hosts": ["Windows PowerShell 5.1", "PowerShell Core"],
+    "targeted_runtime_tests": "1 passed, 0 failed",
+    "normal_desktop_manifest": "unchanged single Common-Controls v6 identity"
+  },
+  "release_gate": {
+    "result": "pass",
+    "fresh_cargo_target": true,
+    "included": [
+      "real Windows sidecar staging without placeholders",
+      "cmux-core, cmux-config, cmux-cli, and cmux-golden test suites",
+      "desktop all-target check and fresh unit-harness link",
+      "Windows PowerShell 5.1 and PowerShell Core manifest/import/--list checks",
+      "actual targeted cmux-desktop unit-test execution",
+      "normal cmux-desktop build without duplicate manifest resources",
+      "Rust 1.97 strict core/agent/terminal/ipc/CLI/golden Clippy",
+      "all 1,337 desktop web/webview tests, typecheck, and build",
+      "generated core-types, desktop contracts, and all parity validators/tests",
+      "cargo fmt and git diff checks"
+    ]
+  },
+  "remaining_runtime_red": {
+    "full_desktop_suite": "440 passed, 7 failed, 1 ignored",
+    "failures": [
+      "browser network reply text-vs-binary assertion",
+      "browser proxy tunnel text-vs-binary assertion",
+      "workspace.current routing assertion",
+      "workspace.current stale-selection assertion",
+      "remote proxy daemon request timeout",
+      "relay bidirectional Windows socket error 10053",
+      "session panel-proxy text-vs-binary assertion"
+    ],
+    "next_batch": "Fix these deterministic runtime assertions in coherent domain slices before using the desktop suite as live parity evidence."
+  },
+  "matrix_promotions": 0
+}
