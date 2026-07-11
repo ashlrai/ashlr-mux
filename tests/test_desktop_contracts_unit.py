@@ -88,6 +88,48 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def local_tauri_command_names(source: str) -> list[str]:
+    pattern = re.compile(
+        r"#\[tauri::command(?:\([^\]]*\))?\]\s*"
+        r"(?:#\[[^\]]+\]\s*)*"
+        r"(?:pub(?:\([^)]*\))?\s+)?"
+        r"(?:async\s+)?(?:unsafe\s+)?"
+        r"fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+        re.MULTILINE,
+    )
+    return pattern.findall(source)
+
+
+def generate_handler_entries(source: str) -> set[str]:
+    match = re.search(r"tauri::generate_handler!\[(.*?)\]", source, re.DOTALL)
+    assert match, "tauri::generate_handler! invocation not found"
+    return {
+        re.sub(r"\s+", "", entry)
+        for entry in match.group(1).split(",")
+        if entry.strip()
+    }
+
+
+def test_tauri_command_parser_handles_variants_and_exact_registrations() -> None:
+    source = """
+#[tauri::command]
+fn ping() {}
+
+#[tauri::command(rename_all = "snake_case")]
+#[allow(clippy::unused_async)]
+pub(crate) async fn attributed_command(value: String) {}
+
+tauri::generate_handler![
+    module::ping_status,
+    attributed_command,
+]
+"""
+    assert local_tauri_command_names(source) == ["ping", "attributed_command"]
+    entries = generate_handler_entries(source)
+    assert "ping" not in entries
+    assert "attributed_command" in entries
+
+
 def test_desktop_lib_registers_its_lib_local_tauri_commands() -> None:
     lib = _read(DESKTOP_TAURI_LIB)
     # These are the commands defined in lib.rs itself
@@ -99,17 +141,13 @@ def test_desktop_lib_registers_its_lib_local_tauri_commands() -> None:
         "agent_provider_status",
         "active_callback_scheme",
     }
-    local_commands = re.findall(
-        r"#\[tauri::command\]\s*(?:pub\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
-        lib,
-    )
+    local_commands = local_tauri_command_names(lib)
     assert required_commands <= set(local_commands)
     assert len(local_commands) == len(set(local_commands)), "duplicate local Tauri command"
     # All are registered in the invoke handler. Check per-command containment
     # inside the handler block rather than an exact command-list string, so adding a
     # module command does not bitrot this contract test.
-    handler_start = lib.index("tauri::generate_handler![")
-    handler = lib[handler_start : lib.index("]", handler_start)]
+    handler = generate_handler_entries(lib)
     for command in local_commands:
         assert command in handler, f"invoke handler missing {command!r}"
 
