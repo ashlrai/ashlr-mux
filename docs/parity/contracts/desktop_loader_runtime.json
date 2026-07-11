@@ -1,0 +1,136 @@
+{
+  "schema_version": 1,
+  "contract_id": "desktop_loader_runtime",
+  "audit_commit": "1cf68ddd2858a5aba06f84802809f2d8bc9d775f",
+  "platform": {
+    "os": "Windows",
+    "architecture": "x86_64-pc-windows-msvc",
+    "windows_sdk_tools": "10.0.26100.0",
+    "msvc_tools": "14.44.35207"
+  },
+  "result": {
+    "classification": "Common-Controls v6 activation-context manifest missing from Rust unit-test executable",
+    "status": "reproduced_and_root_caused",
+    "failure_code_hex": "0xc0000139",
+    "failure_code_name": "STATUS_ENTRYPOINT_NOT_FOUND",
+    "missing_entrypoint": "TaskDialogIndirect",
+    "requested_dll": "comctl32.dll",
+    "loaded_without_manifest": "C:\\Windows\\System32\\comctl32.dll",
+    "working_v6_dll_pattern": "C:\\Windows\\WinSxS\\amd64_microsoft.windows.common-controls_6595b64144ccf1df_6.0.*\\comctl32.dll"
+  },
+  "reproduction": {
+    "sidecar_staging": {
+      "command": "powershell -File scripts/desktop/stage-sidecars.ps1",
+      "result": "pass",
+      "artifacts": [
+        "apps/desktop/src-tauri/binaries/cmux-x86_64-pc-windows-msvc.exe",
+        "apps/desktop/src-tauri/binaries/cmuxd-remote-x86_64-pc-windows-msvc.exe"
+      ],
+      "note": "-SkipGo is insufficient in a clean worktree because tauri-build requires the cmuxd-remote externalBin resource too."
+    },
+    "compile_only": {
+      "command": "cargo test -p cmux-desktop --lib --no-run",
+      "result": "pass",
+      "executable": "target/debug/deps/cmux_desktop_lib-8cb1c7b358e559c6.exe"
+    },
+    "loader_failure": {
+      "commands": [
+        "target/debug/deps/cmux_desktop_lib-8cb1c7b358e559c6.exe --list",
+        "cargo test -p cmux-desktop --lib"
+      ],
+      "result": "both exit -1073741511 (0xc0000139) before Rust test enumeration"
+    },
+    "working_binary": {
+      "command": "cargo build -p cmux-desktop",
+      "result": "pass",
+      "executable": "target/debug/cmux-desktop.exe",
+      "runtime_observation": "process remained alive and its loaded-module list contained the WinSxS Common-Controls v6 comctl32.dll"
+    }
+  },
+  "pe_evidence": {
+    "test_import": {
+      "command": "dumpbin /imports target/debug/deps/cmux_desktop_lib-8cb1c7b358e559c6.exe",
+      "observation": "comctl32.dll import table contains TaskDialogIndirect"
+    },
+    "test_manifest": {
+      "command": "mt.exe -inputresource:target/debug/deps/cmux_desktop_lib-8cb1c7b358e559c6.exe;#1 -out:target/test.manifest",
+      "observation": "c101008c: image did not contain a resource section"
+    },
+    "base_dll": {
+      "commands": [
+        "dumpbin /exports C:/Windows/System32/comctl32.dll",
+        "Get-Item C:/Windows/System32/comctl32.dll"
+      ],
+      "observation": "base Common-Controls v5.82 does not export TaskDialogIndirect"
+    },
+    "v6_dll": {
+      "command": "dumpbin /exports C:/Windows/WinSxS/amd64_microsoft.windows.common-controls_6595b64144ccf1df_6.0.26100.8521_none_3e08b75ce33403b3/comctl32.dll",
+      "observation": "WinSxS Common-Controls v6 exports TaskDialogIndirect"
+    },
+    "desktop_manifest": {
+      "command": "mt.exe -inputresource:target/debug/cmux-desktop.exe;#1 -out:target/bin.manifest",
+      "observation": "resource #1 requests Microsoft.Windows.Common-Controls version 6.0.0.0, processorArchitecture *, publicKeyToken 6595b64144ccf1df, language *"
+    }
+  },
+  "source_chain": [
+    {
+      "source": "apps/desktop/src-tauri/Cargo.toml",
+      "fact": "cmux-desktop links tauri with the wry runtime and tauri-plugin-dialog; both Windows implementations can reference TaskDialogIndirect"
+    },
+    {
+      "source": "apps/desktop/src-tauri/build.rs",
+      "fact": "the build script only calls tauri_build::build()"
+    },
+    {
+      "source": "tauri-build 2.6.3 src/windows-app-manifest.xml",
+      "fact": "the default Tauri manifest requests Microsoft.Windows.Common-Controls v6"
+    },
+    {
+      "source": "tauri-build 2.6.3 src/lib.rs:624-625,682",
+      "fact": "Tauri assigns that manifest to tauri-winres and calls WindowsResource::compile"
+    },
+    {
+      "source": "tauri-winres 0.3.6 src/lib.rs:530-542",
+      "fact": "WindowsResource::compile delegates to embed_resource::compile"
+    },
+    {
+      "source": "embed-resource 3.0.9 src/lib.rs:428-452",
+      "fact": "because this crate has src/main.rs, compile emits cargo:rustc-link-arg-bins for the resource object, so the application bin receives it but the lib unit-test harness does not"
+    },
+    {
+      "source": "tauri-runtime-wry 2.11.3 src/dialog/windows.rs:90 and rfd 0.16.0 src/backend/win_cid/message_dialog.rs:76-167",
+      "fact": "the Windows dialog implementations reference TaskDialogIndirect"
+    }
+  ],
+  "excluded_causes": {
+    "system_runtime_mismatch": "not a corrupt or obsolete runtime: the installed WinSxS v6 DLL exports the symbol and is loaded by the manifested desktop binary",
+    "webview2_or_windows_sdk": "not the missing import: the sole observed unresolved direct import is comctl32.dll!TaskDialogIndirect; no WebView2Loader failure occurs",
+    "sidecar_artifact": "not causal: failure occurs in the Windows PE loader before Rust main/test enumeration, after both required sidecars are staged",
+    "native_tls_or_schannel": "not causal: the missing entrypoint belongs to comctl32, not secur32/crypt32/schannel",
+    "tauri_test_harness": "not a Rust harness assertion: direct --list fails before the harness starts; Tauri's bin-only resource-linking behavior is the build-time trigger",
+    "path_dll_shadowing": "not observed: no local comctl32.dll is staged; the unmanifested loader resolves the system base DLL while the normal binary activates the WinSxS v6 assembly"
+  },
+  "minimal_fix_plan": {
+    "red_test": "On Windows, stage both sidecars, run cargo test -p cmux-desktop --lib --no-run, locate the emitted cmux_desktop_lib-*.exe, assert mt.exe can extract resource #1 and that it names Microsoft.Windows.Common-Controls version 6.0.0.0; then run the executable with --list and require exit 0.",
+    "implementation": "In apps/desktop/src-tauri/build.rs on MSVC Windows, add the Common-Controls v6 linker manifest dependency for test targets (cargo:rustc-link-arg-tests=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'). Keep tauri_build::build() for the normal application resources.",
+    "fallback_if_unit_lib_test_is_not_classified_as_a_test_target": "Generate a tiny Common-Controls v6 .manifest/.rc resource in OUT_DIR and explicitly link its compiled .res into the lib unit-test harness, or move desktop unit-testable logic into a non-Tauri crate; do not copy or preload a comctl32.dll.",
+    "simplification": "Prefer the single /MANIFESTDEPENDENCY test-target linker argument over duplicating the entire Tauri icon/version resource pipeline."
+  },
+  "acceptance": {
+    "local_pe_checks": [
+      "test executable still imports comctl32.dll!TaskDialogIndirect",
+      "mt.exe extracts resource #1 from the test executable",
+      "manifest resource requests Common-Controls 6.0.0.0",
+      "test executable --list exits 0",
+      "cargo test -p cmux-desktop --lib passes",
+      "cargo build -p cmux-desktop passes and its existing manifest remains unchanged"
+    ],
+    "hosted_windows_ci": [
+      "stage real CLI and Go sidecars with scripts/desktop/stage-sidecars.ps1",
+      "run the PE manifest/import assertions on the emitted test executable",
+      "run cargo test -p cmux-desktop --lib (not only --no-run)",
+      "run python scripts/desktop/run_desktop_test_matrix.py unit",
+      "record exact test executable exit code and archive extracted test manifest as evidence"
+    ]
+  }
+}
