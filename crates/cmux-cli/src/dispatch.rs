@@ -191,6 +191,9 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
         "reorder-workspaces" => Some(
             "Usage:\n  cmux reorder-workspaces --order <id|ref|index>,<id|ref|index>,... [flags]\n\nAtomically reorders workspaces within pinned and unpinned groups. Unmentioned workspaces keep their relative order after listed peers in the same group.\n\nFlags:\n  --order <refs>               Comma-separated workspace order\n  --window <id|ref|index>      Window context\n  --dry-run                    Print resolved final indexes without applying",
         ),
+        "move-surface" => Some(
+            "Usage:\n  cmux move-surface [--surface <id|ref|index> | <id|ref|index>] [flags]\n\nMoves a surface to a pane, workspace, or window.\n\nFlags:\n  --surface <id|ref|index>     Surface to move\n  --pane <id|ref|index>        Destination pane\n  --workspace <id|ref|index>   Destination workspace\n  --window <id|ref|index>      Destination window\n  --index <n>                  Destination insertion index\n  --before <id|ref|index>      Place before this surface\n  --before-surface <handle>    Alias for --before\n  --after <id|ref|index>       Place after this surface\n  --after-surface <handle>     Alias for --after\n  --focus <true|false>         Focus after moving",
+        ),
         "reorder-surface" => Some(
             "Usage:\n  cmux reorder-surface [--surface <id|ref|index> | <id|ref|index>] [flags]\n\nReorders a surface within its pane.\n\nFlags:\n  --surface <id|ref|index>     Surface to reorder\n  --workspace <id|ref|index>   Workspace context\n  --window <id|ref|index>      Window context\n  --index <n>                  Place at this insertion index\n  --before <id|ref|index>      Place before this surface\n  --before-surface <handle>    Alias for --before\n  --after <id|ref|index>       Place after this surface\n  --after-surface <handle>     Alias for --after\n  --focus <true|false>         Focus after reordering (default: false)",
         ),
@@ -623,6 +626,7 @@ mod tests {
             "notify",
             "reload-config",
             "refresh-surfaces",
+            "move-surface",
             "reorder-workspace",
             "reorder-workspaces",
             "reorder-surface",

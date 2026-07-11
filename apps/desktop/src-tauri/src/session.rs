@@ -4241,6 +4241,39 @@ pub(crate) fn reorder_surface_for_control(
     Some(snapshot)
 }
 
+pub(crate) fn move_surface_for_control(
+    app: &AppHandle,
+    state: &SessionState,
+    source_workspace_index: usize,
+    panel_id: &str,
+    target_workspace_index: usize,
+    target_pane_id: &str,
+    destination_index: Option<i64>,
+    focus: bool,
+) -> Option<AppSessionSnapshot> {
+    let (changed, snapshot) = {
+        let mut guard = state
+            .snapshot
+            .lock()
+            .expect("session snapshot mutex poisoned");
+        let tabs = &mut guard.windows.first_mut()?.tab_manager;
+        let changed = session_ops::move_surface(
+            tabs,
+            source_workspace_index,
+            panel_id,
+            target_workspace_index,
+            target_pane_id,
+            destination_index,
+            focus,
+        )?;
+        (changed, guard.clone())
+    };
+    if changed {
+        notify_session_changed(app, &snapshot);
+    }
+    Some(snapshot)
+}
+
 pub(crate) fn reorder_workspaces_many_for_control(
     app: &AppHandle,
     state: &SessionState,

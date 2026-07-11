@@ -39,28 +39,28 @@ use crate::session::{
     close_workspace_for_control, close_workspaces_for_control,
     configure_workspace_remote_for_control, current_session_snapshot,
     equalize_dividers_for_control, move_panel_to_new_workspace_for_control,
-    new_browser_workspace_for_control, new_terminal_tab_for_control, new_workspace_for_control,
-    open_browser_url_in_panel, open_custom_sidebar_in_panel, open_diff_viewer_in_panel,
-    open_file_in_panel, open_markdown_file_in_panel, reconnect_workspace_remote_for_control,
-    rename_workspace_for_control, reopen_closed_browser_tab_for_control,
-    reorder_surface_for_control, reorder_workspaces_for_control,
-    reorder_workspaces_many_for_control, reset_workspace_color_for_control,
-    reset_workspace_sidebar_metadata_for_control, restore_previous_launch_for_control,
-    select_adjacent_panel_for_control, select_workspace_for_control, select_workspace_surface,
-    set_browser_zoom_for_control, set_group_collapsed_for_control,
-    set_panel_listening_ports_for_control, set_panel_pinned_for_control,
-    set_panel_shell_activity_for_control, set_panel_title_for_control, set_panel_tty_for_control,
-    set_panel_unread_for_control, set_surface_kind_for_control,
-    set_workspace_agent_listening_ports_for_control, set_workspace_agent_pid_for_control,
-    set_workspace_description_for_control, set_workspace_panel_pull_request_for_control,
-    set_workspace_pinned_for_control, set_workspace_sidebar_metadata_block_for_control,
-    set_workspace_sidebar_metadata_for_control, set_workspace_sidebar_progress_for_control,
-    set_workspace_sidebar_status_for_control, set_workspace_unread_for_control,
-    show_browser_developer_tools_for_control, split_browser_for_control, split_panel_for_control,
-    start_direct_browser_proxy_for_control, toggle_browser_developer_tools_for_control,
-    toggle_browser_focus_mode_for_control, toggle_browser_omnibar_for_control,
-    toggle_split_zoom_for_control, ReorderWorkspacesManyControlError, SessionState,
-    WorkspaceRemoteControlConfig,
+    move_surface_for_control, new_browser_workspace_for_control, new_terminal_tab_for_control,
+    new_workspace_for_control, open_browser_url_in_panel, open_custom_sidebar_in_panel,
+    open_diff_viewer_in_panel, open_file_in_panel, open_markdown_file_in_panel,
+    reconnect_workspace_remote_for_control, rename_workspace_for_control,
+    reopen_closed_browser_tab_for_control, reorder_surface_for_control,
+    reorder_workspaces_for_control, reorder_workspaces_many_for_control,
+    reset_workspace_color_for_control, reset_workspace_sidebar_metadata_for_control,
+    restore_previous_launch_for_control, select_adjacent_panel_for_control,
+    select_workspace_for_control, select_workspace_surface, set_browser_zoom_for_control,
+    set_group_collapsed_for_control, set_panel_listening_ports_for_control,
+    set_panel_pinned_for_control, set_panel_shell_activity_for_control,
+    set_panel_title_for_control, set_panel_tty_for_control, set_panel_unread_for_control,
+    set_surface_kind_for_control, set_workspace_agent_listening_ports_for_control,
+    set_workspace_agent_pid_for_control, set_workspace_description_for_control,
+    set_workspace_panel_pull_request_for_control, set_workspace_pinned_for_control,
+    set_workspace_sidebar_metadata_block_for_control, set_workspace_sidebar_metadata_for_control,
+    set_workspace_sidebar_progress_for_control, set_workspace_sidebar_status_for_control,
+    set_workspace_unread_for_control, show_browser_developer_tools_for_control,
+    split_browser_for_control, split_panel_for_control, start_direct_browser_proxy_for_control,
+    toggle_browser_developer_tools_for_control, toggle_browser_focus_mode_for_control,
+    toggle_browser_omnibar_for_control, toggle_split_zoom_for_control,
+    ReorderWorkspacesManyControlError, SessionState, WorkspaceRemoteControlConfig,
 };
 use crate::terminal::{
     scan_listening_ports_for_root_pid, scan_panel_listening_ports, terminal_clear_history_panel,
@@ -890,6 +890,7 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "report_tty",
     "report-tty",
     "surface.report_shell_state",
+    "surface.move",
     "surface.reorder",
     "report_shell_state",
     "report-shell-state",
@@ -1176,6 +1177,7 @@ fn handle_control_request(app: &AppHandle, request: ControlRequest) -> ControlCa
         "surface.rename" | "surface.set_title" => surface_set_title(app, &request.params),
         "surface.set_pinned" => surface_set_pinned(app, &request.params),
         "surface.set_unread" => surface_set_unread(app, &request.params),
+        "surface.move" => surface_move(app, &request.params),
         "surface.reorder" => surface_reorder(app, &request.params),
         "surface.report_ports" | "surface.set_ports" | "report_ports" => {
             surface_report_ports(app, &request.params)
@@ -4474,6 +4476,353 @@ fn surface_set_unread(
         &set_panel_unread_for_control(app, &state, &panel_id, unread),
         params,
     )
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct SurfaceMoveResolution {
+    source_workspace_index: usize,
+    panel_id: String,
+    target_workspace_index: usize,
+    target_pane_id: String,
+    destination_index: Option<i64>,
+    focus: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum SurfaceMoveResolveError {
+    ConflictingAnchors,
+    SourceNotFound,
+    DestinationNotFound,
+}
+
+fn pane_at_index(
+    workspace: &SessionWorkspaceSnapshot,
+    target_index: usize,
+) -> Option<(usize, String)> {
+    fn visit(
+        layout: &SessionWorkspaceLayoutSnapshot,
+        target_index: usize,
+        index: &mut usize,
+    ) -> Option<(usize, String)> {
+        match layout {
+            SessionWorkspaceLayoutSnapshot::Pane(pane) => {
+                let current = *index;
+                *index += 1;
+                (current == target_index)
+                    .then(|| pane.pane_id.clone().map(|id| (current, id)))
+                    .flatten()
+            }
+            SessionWorkspaceLayoutSnapshot::Split(split) => {
+                visit(&split.first, target_index, index)
+                    .or_else(|| visit(&split.second, target_index, index))
+            }
+        }
+    }
+    let mut index = 0;
+    visit(workspace.layout.as_ref()?, target_index, &mut index)
+}
+
+fn pane_location_by_id(
+    snapshot: &AppSessionSnapshot,
+    pane_id: &str,
+) -> Option<(usize, usize, String)> {
+    fn visit(
+        layout: &SessionWorkspaceLayoutSnapshot,
+        pane_id: &str,
+        index: &mut usize,
+    ) -> Option<(usize, String)> {
+        match layout {
+            SessionWorkspaceLayoutSnapshot::Pane(pane) => {
+                let current = *index;
+                *index += 1;
+                (pane.pane_id.as_deref() == Some(pane_id)).then(|| (current, pane_id.to_string()))
+            }
+            SessionWorkspaceLayoutSnapshot::Split(split) => {
+                visit(&split.first, pane_id, index).or_else(|| visit(&split.second, pane_id, index))
+            }
+        }
+    }
+    snapshot
+        .windows
+        .first()?
+        .tab_manager
+        .workspaces
+        .iter()
+        .enumerate()
+        .find_map(|(workspace_index, workspace)| {
+            let mut pane_index = 0;
+            visit(workspace.layout.as_ref()?, pane_id, &mut pane_index)
+                .map(|(pane_index, pane_id)| (workspace_index, pane_index, pane_id))
+        })
+}
+
+fn first_or_focused_pane(workspace: &SessionWorkspaceSnapshot) -> Option<(usize, String)> {
+    if let Some(panel_id) = workspace.zoomed_panel_id.as_deref() {
+        if let Some((pane_index, Some(pane_id), _)) = surface_pane_details(workspace, panel_id) {
+            return Some((pane_index, pane_id));
+        }
+    }
+    pane_at_index(workspace, 0)
+}
+
+fn surface_location_by_id(
+    snapshot: &AppSessionSnapshot,
+    panel_id: &str,
+) -> Option<(usize, String)> {
+    snapshot
+        .windows
+        .first()?
+        .tab_manager
+        .workspaces
+        .iter()
+        .enumerate()
+        .find(|(_, workspace)| {
+            surfaces_for_workspace(workspace)
+                .iter()
+                .any(|surface| surface.get("id").and_then(Value::as_str) == Some(panel_id))
+        })
+        .map(|(workspace_index, _)| (workspace_index, panel_id.to_string()))
+}
+
+fn surface_location_from_keys(
+    snapshot: &AppSessionSnapshot,
+    params: &serde_json::Map<String, Value>,
+    ref_keys: &[&str],
+    id_keys: &[&str],
+    reference_workspace_index: usize,
+) -> Option<(usize, String)> {
+    if string_param(params, ref_keys).is_some() {
+        let workspace = snapshot
+            .windows
+            .first()?
+            .tab_manager
+            .workspaces
+            .get(reference_workspace_index)?;
+        return surface_id_from_selector_keys(workspace, params, ref_keys, id_keys)
+            .map(|panel_id| (reference_workspace_index, panel_id));
+    }
+    let panel_id = string_param(params, id_keys)?;
+    surface_location_by_id(snapshot, &panel_id)
+}
+
+fn resolve_surface_move(
+    snapshot: &AppSessionSnapshot,
+    params: &serde_json::Map<String, Value>,
+) -> Result<SurfaceMoveResolution, SurfaceMoveResolveError> {
+    let window = snapshot
+        .windows
+        .first()
+        .ok_or(SurfaceMoveResolveError::SourceNotFound)?;
+    let selected_workspace_index = window
+        .tab_manager
+        .selected_workspace_index
+        .and_then(|index| usize::try_from(index).ok())
+        .filter(|index| *index < window.tab_manager.workspaces.len())
+        .unwrap_or(0);
+    let (source_workspace_index, panel_id) = surface_location_from_keys(
+        snapshot,
+        params,
+        &["surface_ref"],
+        &["surface_id", "panel_id"],
+        selected_workspace_index,
+    )
+    .ok_or(SurfaceMoveResolveError::SourceNotFound)?;
+    let source_workspace = &window.tab_manager.workspaces[source_workspace_index];
+    let (source_pane_index, source_pane_id, _) = surface_pane_details(source_workspace, &panel_id)
+        .ok_or(SurfaceMoveResolveError::SourceNotFound)?;
+    let source_pane_id = source_pane_id.ok_or(SurfaceMoveResolveError::DestinationNotFound)?;
+
+    let before_specified = ["before_surface_ref", "before_surface_id"]
+        .iter()
+        .any(|key| params.contains_key(*key));
+    let after_specified = ["after_surface_ref", "after_surface_id"]
+        .iter()
+        .any(|key| params.contains_key(*key));
+    if before_specified && after_specified {
+        return Err(SurfaceMoveResolveError::ConflictingAnchors);
+    }
+
+    let has_workspace = params.contains_key("workspace_ref") || params.contains_key("workspace_id");
+    let requested_workspace_index = has_workspace
+        .then(|| workspace_index_from_workspace_scope_or_selected(snapshot, params))
+        .flatten();
+    let anchor_reference_workspace = requested_workspace_index.unwrap_or(source_workspace_index);
+    let anchor = if before_specified {
+        surface_location_from_keys(
+            snapshot,
+            params,
+            &["before_surface_ref"],
+            &["before_surface_id"],
+            anchor_reference_workspace,
+        )
+        .map(|location| (location, false))
+    } else if after_specified {
+        surface_location_from_keys(
+            snapshot,
+            params,
+            &["after_surface_ref"],
+            &["after_surface_id"],
+            anchor_reference_workspace,
+        )
+        .map(|location| (location, true))
+    } else {
+        None
+    };
+
+    let (target_workspace_index, _target_pane_index, target_pane_id, destination_index) =
+        if before_specified || after_specified {
+            let ((workspace_index, anchor_id), after_anchor) =
+                anchor.ok_or(SurfaceMoveResolveError::DestinationNotFound)?;
+            let workspace = &window.tab_manager.workspaces[workspace_index];
+            let (pane_index, pane_id, anchor_index) =
+                surface_pane_details(workspace, &anchor_id)
+                    .ok_or(SurfaceMoveResolveError::DestinationNotFound)?;
+            (
+                workspace_index,
+                pane_index,
+                pane_id.ok_or(SurfaceMoveResolveError::DestinationNotFound)?,
+                Some(anchor_index as i64 + i64::from(after_anchor)),
+            )
+        } else if params.contains_key("pane_ref") || params.contains_key("pane_id") {
+            if let Some(pane_id) = string_param(params, &["pane_id"]) {
+                let (workspace_index, pane_index, pane_id) =
+                    pane_location_by_id(snapshot, &pane_id)
+                        .ok_or(SurfaceMoveResolveError::DestinationNotFound)?;
+                (
+                    workspace_index,
+                    pane_index,
+                    pane_id,
+                    i64_param(params, &["index"]),
+                )
+            } else {
+                let reference = string_param(params, &["pane_ref"])
+                    .ok_or(SurfaceMoveResolveError::DestinationNotFound)?;
+                let pane_index = one_based_ref_index(&reference, "pane")
+                    .ok_or(SurfaceMoveResolveError::DestinationNotFound)?;
+                let workspace_index = requested_workspace_index.unwrap_or(source_workspace_index);
+                let workspace = window
+                    .tab_manager
+                    .workspaces
+                    .get(workspace_index)
+                    .ok_or(SurfaceMoveResolveError::DestinationNotFound)?;
+                let (pane_index, pane_id) = pane_at_index(workspace, pane_index)
+                    .ok_or(SurfaceMoveResolveError::DestinationNotFound)?;
+                (
+                    workspace_index,
+                    pane_index,
+                    pane_id,
+                    i64_param(params, &["index"]),
+                )
+            }
+        } else if has_workspace {
+            let workspace_index =
+                requested_workspace_index.ok_or(SurfaceMoveResolveError::DestinationNotFound)?;
+            let workspace = &window.tab_manager.workspaces[workspace_index];
+            let (pane_index, pane_id) = first_or_focused_pane(workspace)
+                .ok_or(SurfaceMoveResolveError::DestinationNotFound)?;
+            (
+                workspace_index,
+                pane_index,
+                pane_id,
+                i64_param(params, &["index"]),
+            )
+        } else if params.contains_key("window_ref") || params.contains_key("window_id") {
+            if !workspace_reorder_window_matches(snapshot, params) {
+                return Err(SurfaceMoveResolveError::DestinationNotFound);
+            }
+            let workspace = &window.tab_manager.workspaces[selected_workspace_index];
+            let (pane_index, pane_id) = first_or_focused_pane(workspace)
+                .ok_or(SurfaceMoveResolveError::DestinationNotFound)?;
+            (
+                selected_workspace_index,
+                pane_index,
+                pane_id,
+                i64_param(params, &["index"]),
+            )
+        } else {
+            (
+                source_workspace_index,
+                source_pane_index,
+                source_pane_id,
+                i64_param(params, &["index"]),
+            )
+        };
+
+    Ok(SurfaceMoveResolution {
+        source_workspace_index,
+        panel_id,
+        target_workspace_index,
+        target_pane_id,
+        destination_index,
+        focus: bool_param(params, &["focus"]).unwrap_or(false),
+    })
+}
+
+fn surface_move(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let current = snapshot(app);
+    let resolution = match resolve_surface_move(&current, params) {
+        Ok(resolution) => resolution,
+        Err(SurfaceMoveResolveError::ConflictingAnchors) => {
+            return invalid_params("Specify at most one of before_surface_id or after_surface_id");
+        }
+        Err(SurfaceMoveResolveError::SourceNotFound) => {
+            return ControlCallResult::Err {
+                code: "not_found".to_string(),
+                message: "Surface not found".to_string(),
+                data: None,
+            };
+        }
+        Err(SurfaceMoveResolveError::DestinationNotFound) => {
+            return ControlCallResult::Err {
+                code: "not_found".to_string(),
+                message: "Destination pane not found".to_string(),
+                data: None,
+            };
+        }
+    };
+    let state = app.state::<SessionState>();
+    let Some(result) = move_surface_for_control(
+        app,
+        &state,
+        resolution.source_workspace_index,
+        &resolution.panel_id,
+        resolution.target_workspace_index,
+        &resolution.target_pane_id,
+        resolution.destination_index,
+        resolution.focus,
+    ) else {
+        return ControlCallResult::Err {
+            code: "internal_error".to_string(),
+            message: "Failed to move surface".to_string(),
+            data: None,
+        };
+    };
+    let window = &result.windows[0];
+    let workspace = &window.tab_manager.workspaces[resolution.target_workspace_index];
+    let Some((pane_index, pane_id, _)) = surface_pane_details(workspace, &resolution.panel_id)
+    else {
+        return ControlCallResult::Err {
+            code: "internal_error".to_string(),
+            message: "Moved surface unavailable".to_string(),
+            data: None,
+        };
+    };
+    let surface_ref_value = surfaces_for_workspace(workspace)
+        .iter()
+        .position(|surface| {
+            surface.get("id").and_then(Value::as_str) == Some(resolution.panel_id.as_str())
+        })
+        .map(surface_ref);
+    ok(json!({
+        "window_id": window.window_id,
+        "window_ref": window.window_id.as_ref().map(|_| "window:1"),
+        "workspace_id": workspace.workspace_id,
+        "workspace_ref": workspace_ref(resolution.target_workspace_index),
+        "pane_id": pane_id,
+        "pane_ref": pane_ref(pane_index),
+        "surface_id": resolution.panel_id,
+        "surface_ref": surface_ref_value,
+    }))
 }
 
 fn surface_reorder(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
@@ -10913,6 +11262,84 @@ mod tests {
         }
     }
 
+    fn surface_move_snapshot() -> AppSessionSnapshot {
+        let mut snapshot = test_snapshot();
+        let source = &mut snapshot.windows[0].tab_manager.workspaces[0];
+        let SessionWorkspaceLayoutSnapshot::Pane(source_pane) =
+            source.layout.as_mut().expect("source layout")
+        else {
+            unreachable!();
+        };
+        source_pane.panel_ids.push("surface-2".to_string());
+
+        let mut destination = source.clone();
+        destination.workspace_id = Some("workspace-2".to_string());
+        let SessionWorkspaceLayoutSnapshot::Pane(destination_pane) =
+            destination.layout.as_mut().expect("destination layout")
+        else {
+            unreachable!();
+        };
+        destination_pane.pane_id = Some("pane-2".to_string());
+        destination_pane.panel_ids = vec!["surface-3".to_string(), "surface-4".to_string()];
+        destination_pane.selected_panel_id = Some("surface-3".to_string());
+        snapshot.windows[0].tab_manager.workspaces.push(destination);
+        snapshot
+    }
+
+    #[test]
+    fn surface_move_resolver_matches_canonical_destination_precedence() {
+        let snapshot = surface_move_snapshot();
+        let params = serde_json::json!({
+            "surface_id": "surface-1",
+            "before_surface_id": "surface-4",
+            "pane_id": "pane-1",
+            "workspace_id": "workspace-1",
+            "index": 99,
+            "focus": true,
+        });
+        let resolved = resolve_surface_move(&snapshot, params.as_object().unwrap()).unwrap();
+        assert_eq!(
+            resolved,
+            SurfaceMoveResolution {
+                source_workspace_index: 0,
+                panel_id: "surface-1".to_string(),
+                target_workspace_index: 1,
+                target_pane_id: "pane-2".to_string(),
+                destination_index: Some(1),
+                focus: true,
+            }
+        );
+
+        let params = serde_json::json!({
+            "surface_id": "surface-1",
+            "pane_id": "pane-2",
+            "workspace_id": "workspace-1",
+            "index": 2,
+        });
+        let resolved = resolve_surface_move(&snapshot, params.as_object().unwrap()).unwrap();
+        assert_eq!(resolved.target_workspace_index, 1);
+        assert_eq!(resolved.target_pane_id, "pane-2");
+        assert_eq!(resolved.destination_index, Some(2));
+
+        let params = serde_json::json!({
+            "surface_id": "surface-1",
+            "workspace_id": "workspace-2",
+        });
+        let resolved = resolve_surface_move(&snapshot, params.as_object().unwrap()).unwrap();
+        assert_eq!(resolved.target_workspace_index, 1);
+        assert_eq!(resolved.target_pane_id, "pane-2");
+
+        let conflict = serde_json::json!({
+            "surface_id": "surface-1",
+            "before_surface_id": "surface-3",
+            "after_surface_id": "surface-4",
+        });
+        assert_eq!(
+            resolve_surface_move(&snapshot, conflict.as_object().unwrap()),
+            Err(SurfaceMoveResolveError::ConflictingAnchors)
+        );
+    }
+
     #[test]
     fn custom_sidebar_action_reply_uses_native_bridge_envelope() {
         let ok_reply = custom_sidebar_action_reply(ControlCallResult::Ok(
@@ -12065,6 +12492,7 @@ mod tests {
             "workspace.clear_agent_pid",
             "surface.report_tty",
             "surface.report_shell_state",
+            "surface.move",
             "surface.clear_history",
             "surface.trigger_flash",
             "surface.refresh_all",

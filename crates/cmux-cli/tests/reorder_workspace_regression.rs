@@ -215,3 +215,54 @@ fn executable_routes_reorder_surface_and_formats_result() {
         })
     );
 }
+
+#[test]
+fn executable_routes_move_surface_and_formats_result() {
+    let (pipe, request_rx) = spawn_server(
+        "move-surface",
+        serde_json::json!({
+            "window_ref": "window:1",
+            "workspace_ref": "workspace:2",
+            "pane_ref": "pane:1",
+            "surface_ref": "surface:2",
+        }),
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_cmux"))
+        .args([
+            "move-surface",
+            "surface:3",
+            "--workspace",
+            "workspace:2",
+            "--pane",
+            "pane:1",
+            "--index",
+            "0",
+            "--focus",
+            "true",
+        ])
+        .env("CMUX_SOCKET_PATH", &pipe)
+        .env_remove("CMUX_SOCKET")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "OK surface=surface:2 pane=pane:1 workspace=workspace:2 window=window:1\n"
+    );
+    let (method, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(method, "surface.move");
+    assert_eq!(
+        serde_json::Value::Object(params),
+        serde_json::json!({
+            "surface_ref": "surface:3",
+            "workspace_ref": "workspace:2",
+            "pane_ref": "pane:1",
+            "index": 0,
+            "focus": true,
+        })
+    );
+}

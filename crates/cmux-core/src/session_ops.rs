@@ -1575,6 +1575,99 @@ fn take_panel_shell_activity(
     Some(entry)
 }
 
+#[derive(Default)]
+struct DetachedPanelMetadata {
+    title: Option<SessionPanelTitleSnapshot>,
+    pin: Option<SessionPanelPinSnapshot>,
+    unread: Option<SessionPanelUnreadSnapshot>,
+    restorable_agent: Option<SessionPanelRestorableAgentSnapshot>,
+    terminal_startup: Option<SessionPanelTerminalStartupSnapshot>,
+    listening_ports: Option<SessionPanelListeningPortsSnapshot>,
+    tty: Option<SessionPanelTtySnapshot>,
+    shell_activity: Option<SessionPanelShellActivitySnapshot>,
+}
+
+fn detach_panel_metadata(
+    workspace: &mut SessionWorkspaceSnapshot,
+    panel_id: &str,
+) -> DetachedPanelMetadata {
+    let metadata = DetachedPanelMetadata {
+        title: take_panel_title(&mut workspace.panel_titles, panel_id),
+        pin: take_panel_pin(&mut workspace.panel_pins, panel_id),
+        unread: take_panel_unread(&mut workspace.panel_unreads, panel_id),
+        restorable_agent: take_panel_restorable_agent(
+            &mut workspace.restorable_agent_snapshots,
+            panel_id,
+        ),
+        terminal_startup: take_panel_terminal_startup(
+            &mut workspace.panel_terminal_startups,
+            panel_id,
+        ),
+        listening_ports: take_panel_listening_ports(&mut workspace.panel_listening_ports, panel_id),
+        tty: take_panel_tty(&mut workspace.panel_ttys, panel_id),
+        shell_activity: take_panel_shell_activity(&mut workspace.panel_shell_activity, panel_id),
+    };
+    if metadata.listening_ports.is_some() {
+        recompute_workspace_listening_ports(workspace);
+    }
+    metadata
+}
+
+fn attach_panel_metadata(
+    workspace: &mut SessionWorkspaceSnapshot,
+    metadata: DetachedPanelMetadata,
+) {
+    if let Some(entry) = metadata.title {
+        workspace
+            .panel_titles
+            .get_or_insert_with(Vec::new)
+            .push(entry);
+    }
+    if let Some(entry) = metadata.pin {
+        workspace
+            .panel_pins
+            .get_or_insert_with(Vec::new)
+            .push(entry);
+    }
+    if let Some(entry) = metadata.unread {
+        workspace
+            .panel_unreads
+            .get_or_insert_with(Vec::new)
+            .push(entry);
+    }
+    if let Some(entry) = metadata.restorable_agent {
+        workspace
+            .restorable_agent_snapshots
+            .get_or_insert_with(Vec::new)
+            .push(entry);
+    }
+    if let Some(entry) = metadata.terminal_startup {
+        workspace
+            .panel_terminal_startups
+            .get_or_insert_with(Vec::new)
+            .push(entry);
+    }
+    if let Some(entry) = metadata.listening_ports {
+        workspace
+            .panel_listening_ports
+            .get_or_insert_with(Vec::new)
+            .push(entry);
+        recompute_workspace_listening_ports(workspace);
+    }
+    if let Some(entry) = metadata.tty {
+        workspace
+            .panel_ttys
+            .get_or_insert_with(Vec::new)
+            .push(entry);
+    }
+    if let Some(entry) = metadata.shell_activity {
+        workspace
+            .panel_shell_activity
+            .get_or_insert_with(Vec::new)
+            .push(entry);
+    }
+}
+
 fn recompute_workspace_listening_ports(workspace: &mut SessionWorkspaceSnapshot) {
     let ports: Vec<u16> = workspace
         .agent_listening_ports
@@ -1674,22 +1767,9 @@ pub fn move_panel_to_new_workspace(tabs: &mut SessionTabManagerSnapshot, panel_i
     .clamp(0, total_count) as usize;
 
     let source = &mut tabs.workspaces[source_index];
-    let panel_title = take_panel_title(&mut source.panel_titles, panel_id);
-    let panel_pin = take_panel_pin(&mut source.panel_pins, panel_id);
-    let panel_unread = take_panel_unread(&mut source.panel_unreads, panel_id);
-    let panel_restorable_agent =
-        take_panel_restorable_agent(&mut source.restorable_agent_snapshots, panel_id);
-    let panel_terminal_startup =
-        take_panel_terminal_startup(&mut source.panel_terminal_startups, panel_id);
-    let panel_listening_ports =
-        take_panel_listening_ports(&mut source.panel_listening_ports, panel_id);
-    let panel_tty = take_panel_tty(&mut source.panel_ttys, panel_id);
-    let panel_shell_activity =
-        take_panel_shell_activity(&mut source.panel_shell_activity, panel_id);
-    if panel_listening_ports.is_some() {
-        recompute_workspace_listening_ports(source);
-    }
-    let process_title = panel_title
+    let metadata = detach_panel_metadata(source, panel_id);
+    let process_title = metadata
+        .title
         .as_ref()
         .and_then(|entry| entry.custom_title.clone())
         .unwrap_or_else(|| source.process_title.clone());
@@ -1716,31 +1796,7 @@ pub fn move_panel_to_new_workspace(tabs: &mut SessionTabManagerSnapshot, panel_i
         layout: Some(Layout::Pane(detached_pane)),
         ..Default::default()
     };
-    if let Some(title) = panel_title {
-        detached.panel_titles = Some(vec![title]);
-    }
-    if let Some(pin) = panel_pin {
-        detached.panel_pins = Some(vec![pin]);
-    }
-    if let Some(unread) = panel_unread {
-        detached.panel_unreads = Some(vec![unread]);
-    }
-    if let Some(agent) = panel_restorable_agent {
-        detached.restorable_agent_snapshots = Some(vec![agent]);
-    }
-    if let Some(startup) = panel_terminal_startup {
-        detached.panel_terminal_startups = Some(vec![startup]);
-    }
-    if let Some(ports) = panel_listening_ports {
-        detached.listening_ports = (!ports.ports.is_empty()).then(|| ports.ports.clone());
-        detached.panel_listening_ports = Some(vec![ports]);
-    }
-    if let Some(tty) = panel_tty {
-        detached.panel_ttys = Some(vec![tty]);
-    }
-    if let Some(shell_activity) = panel_shell_activity {
-        detached.panel_shell_activity = Some(vec![shell_activity]);
-    }
+    attach_panel_metadata(&mut detached, metadata);
 
     tabs.workspaces.insert(insert_index, detached);
     tabs.selected_workspace_index = Some(insert_index as i64);
@@ -2295,6 +2351,161 @@ pub fn reorder_surface(
     }
 
     reorder_in_layout(layout, panel_id, destination_index, focus, &pinned)
+}
+
+fn pane_containing_panel<'a>(
+    layout: &'a Layout,
+    panel_id: &str,
+) -> Option<&'a SessionPaneLayoutSnapshot> {
+    match layout {
+        Layout::Pane(pane) => pane
+            .panel_ids
+            .iter()
+            .any(|id| id == panel_id)
+            .then_some(pane),
+        Layout::Split(split) => pane_containing_panel(&split.first, panel_id)
+            .or_else(|| pane_containing_panel(&split.second, panel_id)),
+    }
+}
+
+fn pane_by_id_mut<'a>(
+    layout: &'a mut Layout,
+    pane_id: &str,
+) -> Option<&'a mut SessionPaneLayoutSnapshot> {
+    match layout {
+        Layout::Pane(pane) => (pane.pane_id.as_deref() == Some(pane_id)).then_some(pane),
+        Layout::Split(split) => pane_by_id_mut(&mut split.first, pane_id)
+            .or_else(|| pane_by_id_mut(&mut split.second, pane_id)),
+    }
+}
+
+fn pane_by_id<'a>(layout: &'a Layout, pane_id: &str) -> Option<&'a SessionPaneLayoutSnapshot> {
+    match layout {
+        Layout::Pane(pane) => (pane.pane_id.as_deref() == Some(pane_id)).then_some(pane),
+        Layout::Split(split) => {
+            pane_by_id(&split.first, pane_id).or_else(|| pane_by_id(&split.second, pane_id))
+        }
+    }
+}
+
+fn insert_surface_into_pane(
+    workspace: &mut SessionWorkspaceSnapshot,
+    panel_id: &str,
+    pane_id: &str,
+    destination_index: Option<i64>,
+    moved_is_pinned: bool,
+    focus: bool,
+) -> bool {
+    let pinned: HashSet<&str> = workspace
+        .panel_pins
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .filter(|entry| entry.is_pinned)
+        .map(|entry| entry.panel_id.as_str())
+        .collect();
+    let Some(layout) = workspace.layout.as_mut() else {
+        return false;
+    };
+    let Some(pane) = pane_by_id_mut(layout, pane_id) else {
+        return false;
+    };
+    let requested_index = destination_index
+        .unwrap_or(pane.panel_ids.len() as i64)
+        .clamp(0, pane.panel_ids.len() as i64) as usize;
+    let pinned_count = pane
+        .panel_ids
+        .iter()
+        .filter(|id| pinned.contains(id.as_str()))
+        .count();
+    let tier_index = if moved_is_pinned {
+        requested_index.min(pinned_count)
+    } else {
+        requested_index.max(pinned_count)
+    };
+    pane.panel_ids.insert(tier_index, panel_id.to_string());
+    if focus {
+        pane.selected_panel_id = Some(panel_id.to_string());
+    }
+    true
+}
+
+/// Move a surface to a pane in the same or another workspace. Destination
+/// indexes are bonsplit insertion offsets: omitted means append, bounds clamp,
+/// and pinned/unpinned surfaces remain within their tier. The mutation is
+/// transactional; an invalid source, workspace, or pane leaves `tabs`
+/// unchanged. Returns `None` for an invalid request, otherwise whether state
+/// changed.
+pub fn move_surface(
+    tabs: &mut SessionTabManagerSnapshot,
+    source_workspace_index: usize,
+    panel_id: &str,
+    target_workspace_index: usize,
+    target_pane_id: &str,
+    destination_index: Option<i64>,
+    focus: bool,
+) -> Option<bool> {
+    let source_workspace = tabs.workspaces.get(source_workspace_index)?;
+    let source_pane = pane_containing_panel(source_workspace.layout.as_ref()?, panel_id)?;
+    let target_workspace = tabs.workspaces.get(target_workspace_index)?;
+    pane_by_id(target_workspace.layout.as_ref()?, target_pane_id)?;
+
+    if source_workspace_index == target_workspace_index
+        && source_pane.pane_id.as_deref() == Some(target_pane_id)
+    {
+        let destination_index = destination_index.unwrap_or(source_pane.panel_ids.len() as i64);
+        return reorder_surface(
+            tabs.workspaces.get_mut(source_workspace_index)?,
+            panel_id,
+            destination_index,
+            focus,
+        );
+    }
+
+    let moved_is_pinned = source_workspace
+        .panel_pins
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .any(|entry| entry.panel_id == panel_id && entry.is_pinned);
+    let mut next = tabs.clone();
+    let metadata = if source_workspace_index == target_workspace_index {
+        None
+    } else {
+        Some(detach_panel_metadata(
+            next.workspaces.get_mut(source_workspace_index)?,
+            panel_id,
+        ))
+    };
+    let source = next.workspaces.get_mut(source_workspace_index)?;
+    if matches!(
+        close_panel(&mut source.layout, panel_id),
+        CloseOutcome::NotFound
+    ) {
+        return None;
+    }
+    if source.zoomed_panel_id.as_deref() == Some(panel_id) {
+        source.zoomed_panel_id = None;
+    }
+    let target = next.workspaces.get_mut(target_workspace_index)?;
+    if !insert_surface_into_pane(
+        target,
+        panel_id,
+        target_pane_id,
+        destination_index,
+        moved_is_pinned,
+        focus,
+    ) {
+        return None;
+    }
+    if let Some(metadata) = metadata {
+        attach_panel_metadata(target, metadata);
+    }
+    if focus {
+        next.selected_workspace_index = Some(target_workspace_index as i64);
+    }
+    *tabs = next;
+    Some(true)
 }
 
 /// Set or clear a panel/tab manual unread indicator within `workspace`. The
@@ -4793,6 +5004,116 @@ mod tests {
         };
         assert_eq!(pane.selected_panel_id.as_deref(), Some("c"));
         assert_eq!(reorder_surface(&mut workspace, "missing", 0, false), None);
+    }
+
+    #[test]
+    fn move_surface_cross_pane_collapses_source_and_honors_pin_tier() {
+        let mut tabs = one_workspace_tabs("a");
+        let mut source = pane("a");
+        let Layout::Pane(source_pane) = &mut source else {
+            unreachable!();
+        };
+        source_pane.pane_id = Some("pane-source".into());
+        let mut target = pane("b");
+        let Layout::Pane(target_pane) = &mut target else {
+            unreachable!();
+        };
+        target_pane.pane_id = Some("pane-target".into());
+        target_pane.panel_ids.push("c".into());
+        target_pane.selected_panel_id = Some("b".into());
+        tabs.workspaces[0].layout = Some(split(
+            SessionSplitOrientation::Horizontal,
+            0.5,
+            source,
+            target,
+        ));
+        tabs.workspaces[0].panel_pins = Some(vec![
+            SessionPanelPinSnapshot {
+                panel_id: "a".into(),
+                is_pinned: true,
+            },
+            SessionPanelPinSnapshot {
+                panel_id: "b".into(),
+                is_pinned: true,
+            },
+        ]);
+
+        assert_eq!(
+            move_surface(&mut tabs, 0, "a", 0, "pane-target", Some(99), false),
+            Some(true)
+        );
+        let Layout::Pane(target) = tabs.workspaces[0].layout.as_ref().unwrap() else {
+            panic!("emptied source split should collapse to the target pane");
+        };
+        assert_eq!(target.pane_id.as_deref(), Some("pane-target"));
+        assert_eq!(target.panel_ids, ["b", "a", "c"]);
+        assert_eq!(target.selected_panel_id.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn move_surface_cross_workspace_transfers_metadata_and_focuses_destination() {
+        let mut tabs = one_workspace_tabs("a");
+        let Layout::Pane(source) = tabs.workspaces[0].layout.as_mut().unwrap() else {
+            unreachable!();
+        };
+        source.pane_id = Some("pane-source".into());
+        source.panel_ids.push("b".into());
+        assert!(set_panel_title(&mut tabs.workspaces[0], "b", "build"));
+        assert!(set_panel_pinned(&mut tabs.workspaces[0], "b", true));
+        assert!(set_panel_unread(&mut tabs.workspaces[0], "b", true));
+        tabs.workspaces[0].listening_ports = Some(vec![3000]);
+        tabs.workspaces[0].panel_listening_ports = Some(vec![SessionPanelListeningPortsSnapshot {
+            panel_id: "b".into(),
+            ports: vec![3000],
+        }]);
+        let mut destination = fresh_terminal_workspace("c");
+        destination.workspace_id = Some("workspace-destination".into());
+        let Layout::Pane(target) = destination.layout.as_mut().unwrap() else {
+            unreachable!();
+        };
+        target.pane_id = Some("pane-target".into());
+        tabs.workspaces.push(destination);
+
+        assert_eq!(
+            move_surface(&mut tabs, 0, "b", 1, "pane-target", None, true),
+            Some(true)
+        );
+        assert_eq!(tabs.selected_workspace_index, Some(1));
+        assert_eq!(tabs.workspaces[0].panel_titles, None);
+        assert_eq!(tabs.workspaces[0].panel_pins, None);
+        assert_eq!(tabs.workspaces[0].panel_unreads, None);
+        assert_eq!(tabs.workspaces[0].listening_ports, None);
+        assert_eq!(tabs.workspaces[0].panel_listening_ports, None);
+        let target = match tabs.workspaces[1].layout.as_ref().unwrap() {
+            Layout::Pane(target) => target,
+            Layout::Split(_) => panic!("expected destination pane"),
+        };
+        assert_eq!(target.panel_ids, ["b", "c"]);
+        assert_eq!(target.selected_panel_id.as_deref(), Some("b"));
+        assert_eq!(
+            tabs.workspaces[1].panel_titles.as_ref().unwrap()[0]
+                .custom_title
+                .as_deref(),
+            Some("build")
+        );
+        assert!(tabs.workspaces[1].panel_pins.as_ref().unwrap()[0].is_pinned);
+        assert!(tabs.workspaces[1].panel_unreads.as_ref().unwrap()[0].is_unread);
+        assert_eq!(tabs.workspaces[1].listening_ports, Some(vec![3000]));
+        assert_eq!(
+            tabs.workspaces[1].panel_listening_ports.as_ref().unwrap()[0].ports,
+            [3000]
+        );
+    }
+
+    #[test]
+    fn move_surface_invalid_destination_is_atomic() {
+        let mut tabs = one_workspace_tabs("a");
+        let before = tabs.clone();
+        assert_eq!(
+            move_surface(&mut tabs, 0, "a", 0, "missing-pane", Some(0), false),
+            None
+        );
+        assert_eq!(tabs, before);
     }
 
     #[test]

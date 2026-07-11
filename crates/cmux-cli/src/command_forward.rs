@@ -274,6 +274,10 @@ pub fn control_command_for(
             "workspace.reorder_many",
             canonical_workspaces_reorder_params(args)?,
         )),
+        "move-surface" => Some(ControlCommand::new(
+            "surface.move",
+            canonical_surface_move_params(args)?,
+        )),
         "reorder-surface" => Some(ControlCommand::new(
             "surface.reorder",
             canonical_surface_reorder_params(args)?,
@@ -1307,6 +1311,43 @@ fn canonical_surface_reorder_params(args: &[String]) -> Result<serde_json::Value
         Some(_) => return Err(CliError::new("--focus must be true|false")),
     };
     params.insert("focus".to_string(), serde_json::json!(focus));
+    Ok(serde_json::Value::Object(params))
+}
+
+fn canonical_surface_move_params(args: &[String]) -> Result<serde_json::Value, CliError> {
+    let parsed = ParsedArgs::parse(args)?;
+    let surface = parsed
+        .value(&["--surface"])
+        .cloned()
+        .or_else(|| parsed.positionals.first().cloned())
+        .ok_or_else(|| CliError::new("move-surface requires --surface <id|ref|index>"))?;
+    let mut params = serde_json::Map::new();
+    apply_surface_target_selector(&surface, "surface", &mut params);
+    apply_workspace_scope_selector(&parsed, &mut params);
+    apply_window_scope_selector(&parsed, &mut params);
+    if let Some(pane) = parsed.value(&["--pane"]) {
+        apply_pane_target_selector(pane, &mut params);
+    }
+    if let Some(before) = parsed.value(&["--before", "--before-surface"]) {
+        apply_surface_target_selector(before, "before_surface", &mut params);
+    }
+    if let Some(after) = parsed.value(&["--after", "--after-surface"]) {
+        apply_surface_target_selector(after, "after_surface", &mut params);
+    }
+    if let Some(index) = parsed.value(&["--index"]) {
+        let index = index
+            .parse::<i64>()
+            .map_err(|_| CliError::new("--index must be an integer"))?;
+        params.insert("index".to_string(), serde_json::json!(index));
+    }
+    if let Some(value) = parsed.value(&["--focus"]) {
+        let focus = match value.to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => true,
+            "0" | "false" | "no" | "off" => false,
+            _ => return Err(CliError::new("--focus must be true|false")),
+        };
+        params.insert("focus".to_string(), serde_json::json!(focus));
+    }
     Ok(serde_json::Value::Object(params))
 }
 
@@ -3327,6 +3368,22 @@ fn apply_surface_target_selector(
     }
 }
 
+fn apply_pane_target_selector(
+    value: &str,
+    params: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    if value.chars().all(|character| character.is_ascii_digit()) {
+        params.insert(
+            "pane_ref".to_string(),
+            serde_json::json!(format!("pane:{value}")),
+        );
+    } else if value.starts_with("pane:") {
+        params.insert("pane_ref".to_string(), serde_json::json!(value));
+    } else {
+        params.insert("pane_id".to_string(), serde_json::json!(value));
+    }
+}
+
 fn apply_surface_selector_or_positional(
     parsed: &ParsedArgs,
     params: &mut serde_json::Map<String, serde_json::Value>,
@@ -3567,6 +3624,7 @@ fn takes_value(arg: &str) -> bool {
             | "--orientation"
             | "--order"
             | "--out"
+            | "--pane"
             | "--panel"
             | "--panel-id"
             | "--path"
@@ -4521,6 +4579,47 @@ mod tests {
                 "window_ref": "window:1",
                 "focus": true,
             })
+        );
+    }
+
+    #[test]
+    fn maps_canonical_move_surface_command() {
+        let moved = mapped(
+            "move-surface",
+            &[
+                "surface:3",
+                "--pane",
+                "pane:2",
+                "--workspace",
+                "workspace:2",
+                "--window",
+                "window:1",
+                "--after-surface",
+                "surface:1",
+                "--index",
+                "9",
+                "--focus",
+                "yes",
+            ],
+        );
+        assert_eq!(moved.method, "surface.move");
+        assert_eq!(
+            moved.params,
+            serde_json::json!({
+                "surface_ref": "surface:3",
+                "pane_ref": "pane:2",
+                "workspace_ref": "workspace:2",
+                "window_ref": "window:1",
+                "after_surface_ref": "surface:1",
+                "index": 9,
+                "focus": true,
+            })
+        );
+        assert_eq!(
+            control_command_for("move-surface", &args(&["surface:1", "--focus", "maybe"]))
+                .unwrap_err()
+                .message,
+            "--focus must be true|false"
         );
     }
 
