@@ -59,10 +59,10 @@ use crate::session::{
     set_workspace_sidebar_progress_for_control, set_workspace_sidebar_status_for_control,
     set_workspace_unread_for_control, show_browser_developer_tools_for_control,
     split_browser_for_control, split_off_surface_for_control, split_panel_for_control,
-    start_direct_browser_proxy_for_control, toggle_browser_developer_tools_for_control,
-    toggle_browser_focus_mode_for_control, toggle_browser_omnibar_for_control,
-    toggle_split_zoom_for_control, ReorderWorkspacesManyControlError, SessionState,
-    WorkspaceRemoteControlConfig,
+    start_direct_browser_proxy_for_control, swap_panes_for_control,
+    toggle_browser_developer_tools_for_control, toggle_browser_focus_mode_for_control,
+    toggle_browser_omnibar_for_control, toggle_split_zoom_for_control,
+    ReorderWorkspacesManyControlError, SessionState, WorkspaceRemoteControlConfig,
 };
 use crate::terminal::{
     scan_listening_ports_for_root_pid, scan_panel_listening_ports, terminal_clear_history_panel,
@@ -919,6 +919,7 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "surface.next",
     "surface.previous",
     "surface.toggle_split_zoom",
+    "pane.swap",
     "browser.open_split",
     "browser.navigate",
     "browser.back",
@@ -1213,6 +1214,7 @@ fn handle_control_request(app: &AppHandle, request: ControlRequest) -> ControlCa
         "surface.next" => surface_select_adjacent(app, &request.params, true),
         "surface.previous" => surface_select_adjacent(app, &request.params, false),
         "surface.toggle_split_zoom" => surface_toggle_split_zoom(app, &request.params),
+        "pane.swap" => pane_swap(app, &request.params),
         "browser.navigate" => browser_navigate(app, &request.params),
         "browser.back" => browser_back(app, &request.params),
         "browser.forward" => browser_forward(app, &request.params),
@@ -4788,6 +4790,159 @@ fn surface_split_off(
     }))
 }
 
+fn global_pane_location(
+    snapshot: &AppSessionSnapshot,
+    pane_id: &str,
+) -> Option<(usize, usize, usize)> {
+    snapshot
+        .windows
+        .iter()
+        .enumerate()
+        .find_map(|(window_index, window)| {
+            window.tab_manager.workspaces.iter().enumerate().find_map(
+                |(workspace_index, workspace)| {
+                    pane_index_by_id(workspace, pane_id)
+                        .map(|pane_index| (window_index, workspace_index, pane_index))
+                },
+            )
+        })
+}
+
+fn pane_swap(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    if !params.contains_key("pane_id") && !params.contains_key("pane_ref") {
+        return invalid_params("Missing or invalid pane_id");
+    }
+    if !params.contains_key("target_pane_id") && !params.contains_key("target_pane_ref") {
+        return invalid_params("Missing or invalid target_pane_id");
+    }
+    let current = snapshot(app);
+    let source = if let Some(pane_id) = string_param(params, &["pane_id"]) {
+        global_pane_location(&current, &pane_id).map(|location| (location, pane_id))
+    } else {
+        (|| {
+            let requested_window = split_off_window_index(app, &current, params)?;
+            let window_index = requested_window.unwrap_or(0);
+            let requested_workspace = split_off_workspace_index(&current, params, window_index)?;
+            let workspace_index = requested_workspace.unwrap_or_else(|| {
+                current.windows[window_index]
+                    .tab_manager
+                    .selected_workspace_index
+                    .and_then(|index| usize::try_from(index).ok())
+                    .unwrap_or(0)
+            });
+            let pane_index = string_param(params, &["pane_ref"])
+                .and_then(|reference| one_based_ref_index(&reference, "pane"))?;
+            let workspace = current
+                .windows
+                .get(window_index)?
+                .tab_manager
+                .workspaces
+                .get(workspace_index)?;
+            pane_at_index(workspace, pane_index)
+                .map(|(_, pane_id)| ((window_index, workspace_index, pane_index), pane_id))
+        })()
+    };
+    let Some(((window_index, workspace_index, source_pane_index), source_pane_id)) = source else {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Source pane not found".to_string(),
+            data: None,
+        };
+    };
+    let workspace = &current.windows[window_index].tab_manager.workspaces[workspace_index];
+    let target = if let Some(target_pane_id) = string_param(params, &["target_pane_id"]) {
+        global_pane_location(&current, &target_pane_id)
+            .filter(|(target_window, target_workspace, _)| {
+                *target_window == window_index && *target_workspace == workspace_index
+            })
+            .map(|(_, _, pane_index)| (pane_index, target_pane_id))
+    } else {
+        string_param(params, &["target_pane_ref"])
+            .and_then(|reference| one_based_ref_index(&reference, "pane"))
+            .and_then(|pane_index| pane_at_index(workspace, pane_index))
+    };
+    let Some((target_pane_index, target_pane_id)) = target else {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Target pane not found in source workspace".to_string(),
+            data: None,
+        };
+    };
+    if source_pane_id == target_pane_id {
+        return invalid_params("pane_id and target_pane_id must be different");
+    }
+    let focus = bool_param(params, &["focus"]).unwrap_or(false);
+    let state = app.state::<SessionState>();
+    let (swap, result) = match swap_panes_for_control(
+        app,
+        &state,
+        window_index,
+        workspace_index,
+        &source_pane_id,
+        &target_pane_id,
+        focus,
+    ) {
+        Ok(result) => result,
+        Err(session_ops::PaneSwapError::SamePane) => {
+            return invalid_params("pane_id and target_pane_id must be different");
+        }
+        Err(session_ops::PaneSwapError::SourcePaneNotFound) => {
+            return ControlCallResult::Err {
+                code: "not_found".to_string(),
+                message: "Source pane not found".to_string(),
+                data: None,
+            };
+        }
+        Err(session_ops::PaneSwapError::TargetPaneNotFound) => {
+            return ControlCallResult::Err {
+                code: "not_found".to_string(),
+                message: "Target pane not found in source workspace".to_string(),
+                data: None,
+            };
+        }
+        Err(session_ops::PaneSwapError::BothPanesNeedSurface) => {
+            return ControlCallResult::Err {
+                code: "invalid_state".to_string(),
+                message: "Both panes must have a selected surface".to_string(),
+                data: None,
+            };
+        }
+    };
+    let window = &result.windows[window_index];
+    let workspace = &window.tab_manager.workspaces[workspace_index];
+    let surface_ref_value = |panel_id: &str| {
+        surfaces_for_workspace(workspace)
+            .iter()
+            .position(|surface| surface.get("id").and_then(Value::as_str) == Some(panel_id))
+            .map(surface_ref)
+    };
+    let window_identity = crate::window::control_window_summaries(app)
+        .into_iter()
+        .find(|summary| summary.identity.label == window.window_id.as_deref().unwrap_or("main"))
+        .map(|summary| summary.identity);
+    if focus {
+        if let Some(identity) = window_identity.as_ref() {
+            if let Some(window) = app.get_webview_window(&identity.label) {
+                let _ = window.set_focus();
+            }
+        }
+    }
+    ok(json!({
+        "window_id": window_identity.as_ref().map(|identity| identity.id.clone()),
+        "window_ref": window_identity.as_ref().map(|identity| identity.reference.clone()),
+        "workspace_id": workspace.workspace_id,
+        "workspace_ref": workspace_ref(workspace_index),
+        "pane_id": source_pane_id,
+        "pane_ref": pane_ref(source_pane_index),
+        "target_pane_id": target_pane_id,
+        "target_pane_ref": pane_ref(target_pane_index),
+        "source_surface_id": swap.source_surface_id,
+        "source_surface_ref": surface_ref_value(&swap.source_surface_id),
+        "target_surface_id": swap.target_surface_id,
+        "target_surface_ref": surface_ref_value(&swap.target_surface_id),
+    }))
+}
+
 fn surface_close(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
     let current = snapshot(app);
     let Some(panel_id) = surface_id_from_params_or_focused(&current, params) else {
@@ -4911,26 +5066,31 @@ fn pane_at_index(
     visit(workspace.layout.as_ref()?, target_index, &mut index)
 }
 
-fn pane_location_by_id(
-    snapshot: &AppSessionSnapshot,
-    pane_id: &str,
-) -> Option<(usize, usize, String)> {
+fn pane_index_by_id(workspace: &SessionWorkspaceSnapshot, pane_id: &str) -> Option<usize> {
     fn visit(
         layout: &SessionWorkspaceLayoutSnapshot,
         pane_id: &str,
         index: &mut usize,
-    ) -> Option<(usize, String)> {
+    ) -> Option<usize> {
         match layout {
             SessionWorkspaceLayoutSnapshot::Pane(pane) => {
                 let current = *index;
                 *index += 1;
-                (pane.pane_id.as_deref() == Some(pane_id)).then(|| (current, pane_id.to_string()))
+                (pane.pane_id.as_deref() == Some(pane_id)).then_some(current)
             }
             SessionWorkspaceLayoutSnapshot::Split(split) => {
                 visit(&split.first, pane_id, index).or_else(|| visit(&split.second, pane_id, index))
             }
         }
     }
+    let mut index = 0;
+    visit(workspace.layout.as_ref()?, pane_id, &mut index)
+}
+
+fn pane_location_by_id(
+    snapshot: &AppSessionSnapshot,
+    pane_id: &str,
+) -> Option<(usize, usize, String)> {
     snapshot
         .windows
         .first()?
@@ -4939,9 +5099,8 @@ fn pane_location_by_id(
         .iter()
         .enumerate()
         .find_map(|(workspace_index, workspace)| {
-            let mut pane_index = 0;
-            visit(workspace.layout.as_ref()?, pane_id, &mut pane_index)
-                .map(|(pane_index, pane_id)| (workspace_index, pane_index, pane_id))
+            pane_index_by_id(workspace, pane_id)
+                .map(|pane_index| (workspace_index, pane_index, pane_id.to_string()))
         })
 }
 
@@ -11762,6 +11921,7 @@ mod tests {
             global_surface_location(&snapshot, "surface-3"),
             Some((1, 0))
         );
+        assert_eq!(global_pane_location(&snapshot, "pane-2"), Some((1, 0, 0)));
         assert_eq!(
             split_off_workspace_index(&snapshot, by_ref.as_object().unwrap(), 0),
             Some(Some(0))
@@ -12923,6 +13083,7 @@ mod tests {
             "surface.report_shell_state",
             "surface.split_off",
             "surface.drag_to_split",
+            "pane.swap",
             "surface.move",
             "surface.clear_history",
             "surface.trigger_flash",

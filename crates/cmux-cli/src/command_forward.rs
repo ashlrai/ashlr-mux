@@ -290,6 +290,7 @@ pub fn control_command_for(
             },
             split_off_params(args, command)?,
         )),
+        "swap-pane" => Some(ControlCommand::new("pane.swap", swap_pane_params(args)?)),
         "reorder-surface" => Some(ControlCommand::new(
             "surface.reorder",
             canonical_surface_reorder_params(args)?,
@@ -1405,6 +1406,32 @@ fn split_off_params(args: &[String], command_name: &str) -> Result<serde_json::V
     apply_workspace_scope_selector(&parsed, &mut params);
     apply_window_scope_selector(&parsed, &mut params);
     params.insert("direction".to_string(), serde_json::json!(direction));
+    let focus = match parsed
+        .value(&["--focus"])
+        .map(|value| value.to_ascii_lowercase())
+    {
+        None => false,
+        Some(value) if matches!(value.as_str(), "1" | "true" | "yes" | "on") => true,
+        Some(value) if matches!(value.as_str(), "0" | "false" | "no" | "off") => false,
+        Some(_) => return Err(CliError::new("--focus must be true|false")),
+    };
+    params.insert("focus".to_string(), serde_json::json!(focus));
+    Ok(serde_json::Value::Object(params))
+}
+
+fn swap_pane_params(args: &[String]) -> Result<serde_json::Value, CliError> {
+    let parsed = ParsedArgs::parse(args)?;
+    let pane = parsed
+        .value(&["--pane"])
+        .ok_or_else(|| CliError::new("swap-pane requires --pane"))?;
+    let target_pane = parsed
+        .value(&["--target-pane"])
+        .ok_or_else(|| CliError::new("swap-pane requires --target-pane"))?;
+    let mut params = serde_json::Map::new();
+    apply_named_pane_target_selector(pane, "pane", &mut params);
+    apply_named_pane_target_selector(target_pane, "target_pane", &mut params);
+    apply_workspace_scope_selector(&parsed, &mut params);
+    apply_window_scope_selector(&parsed, &mut params);
     let focus = match parsed
         .value(&["--focus"])
         .map(|value| value.to_ascii_lowercase())
@@ -3439,15 +3466,23 @@ fn apply_pane_target_selector(
     value: &str,
     params: &mut serde_json::Map<String, serde_json::Value>,
 ) {
+    apply_named_pane_target_selector(value, "pane", params);
+}
+
+fn apply_named_pane_target_selector(
+    value: &str,
+    key_prefix: &str,
+    params: &mut serde_json::Map<String, serde_json::Value>,
+) {
     if value.chars().all(|character| character.is_ascii_digit()) {
         params.insert(
-            "pane_ref".to_string(),
+            format!("{key_prefix}_ref"),
             serde_json::json!(format!("pane:{value}")),
         );
     } else if value.starts_with("pane:") {
-        params.insert("pane_ref".to_string(), serde_json::json!(value));
+        params.insert(format!("{key_prefix}_ref"), serde_json::json!(value));
     } else {
-        params.insert("pane_id".to_string(), serde_json::json!(value));
+        params.insert(format!("{key_prefix}_id"), serde_json::json!(value));
     }
 }
 
@@ -3746,6 +3781,7 @@ fn takes_value(arg: &str) -> bool {
             | "--expression"
             | "--role"
             | "--target"
+            | "--target-pane"
             | "--tab"
             | "--value"
             | "--progress"
@@ -4774,6 +4810,42 @@ mod tests {
                 "direction": "u",
                 "focus": true,
             })
+        );
+    }
+
+    #[test]
+    fn maps_canonical_swap_pane_command() {
+        let swap = mapped(
+            "swap-pane",
+            &[
+                "--pane",
+                "pane:1",
+                "--target-pane",
+                "2",
+                "--workspace",
+                "workspace:3",
+                "--window",
+                "window:1",
+                "--focus",
+                "true",
+            ],
+        );
+        assert_eq!(swap.method, "pane.swap");
+        assert_eq!(
+            swap.params,
+            serde_json::json!({
+                "pane_ref": "pane:1",
+                "target_pane_ref": "pane:2",
+                "workspace_ref": "workspace:3",
+                "window_ref": "window:1",
+                "focus": true,
+            })
+        );
+        assert_eq!(
+            control_command_for("swap-pane", &args(&["--target-pane", "pane:2"]))
+                .unwrap_err()
+                .message,
+            "swap-pane requires --pane"
         );
     }
 

@@ -203,6 +203,9 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
         "drag-surface-to-split" => Some(
             "Usage:\n  cmux drag-surface-to-split --surface <id|ref|index> <left|right|up|down> [flags]\n\nDrags a surface into a new split in the given direction.\n\nFlags:\n  --surface <id|ref|index>     Surface to drag (required)\n  --panel <id|ref|index>       Alias for --surface\n  --workspace <id|ref|index>   Workspace context\n  --window <id|ref|index>      Window context\n  --focus <true|false>         Focus the split-off surface (default: false)",
         ),
+        "swap-pane" => Some(
+            "Usage:\n  cmux swap-pane --pane <id|ref|index> --target-pane <id|ref|index> [flags]\n\nSwaps the selected surfaces of two panes.\n\nFlags:\n  --pane <id|ref|index>         Source pane (required)\n  --target-pane <id|ref|index>  Target pane (required)\n  --workspace <id|ref|index>    Workspace context\n  --window <id|ref|index>       Window context\n  --focus <true|false>          Focus the target pane (default: false)",
+        ),
         "reorder-surface" => Some(
             "Usage:\n  cmux reorder-surface [--surface <id|ref|index> | <id|ref|index>] [flags]\n\nReorders a surface within its pane.\n\nFlags:\n  --surface <id|ref|index>     Surface to reorder\n  --workspace <id|ref|index>   Workspace context\n  --window <id|ref|index>      Window context\n  --index <n>                  Place at this insertion index\n  --before <id|ref|index>      Place before this surface\n  --before-surface <handle>    Alias for --before\n  --after <id|ref|index>       Place after this surface\n  --after-surface <handle>     Alias for --after\n  --focus <true|false>         Focus after reordering (default: false)",
         ),
@@ -651,6 +654,7 @@ mod tests {
             "split-browser",
             "split-off",
             "drag-surface-to-split",
+            "swap-pane",
         ] {
             let plan = plan(
                 &PreSocketAction::SubcommandHelp {

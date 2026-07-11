@@ -1394,6 +1394,115 @@ pub fn split_off_surface(
     )
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneSwapResult {
+    pub source_surface_id: String,
+    pub target_surface_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneSwapError {
+    SamePane,
+    SourcePaneNotFound,
+    TargetPaneNotFound,
+    BothPanesNeedSurface,
+}
+
+fn remove_surface_from_pane(layout: &mut Layout, pane_id: &str, panel_id: &str) -> bool {
+    let Some(pane) = pane_by_id_mut(layout, pane_id) else {
+        return false;
+    };
+    let Some(index) = pane.panel_ids.iter().position(|id| id == panel_id) else {
+        return false;
+    };
+    pane.panel_ids.remove(index);
+    if pane.selected_panel_id.as_deref() == Some(panel_id) {
+        pane.selected_panel_id = pane
+            .panel_ids
+            .get(index)
+            .or_else(|| pane.panel_ids.last())
+            .cloned();
+    }
+    true
+}
+
+fn append_surface_to_pane(
+    layout: &mut Layout,
+    pane_id: &str,
+    panel_id: &str,
+    pinned: &HashSet<&str>,
+) -> bool {
+    let Some(pane) = pane_by_id_mut(layout, pane_id) else {
+        return false;
+    };
+    let pinned_count = pane
+        .panel_ids
+        .iter()
+        .filter(|id| pinned.contains(id.as_str()))
+        .count();
+    let index = if pinned.contains(panel_id) {
+        pinned_count
+    } else {
+        pane.panel_ids.len()
+    };
+    pane.panel_ids.insert(index, panel_id.to_string());
+    if pane.selected_panel_id.is_none() {
+        pane.selected_panel_id = Some(panel_id.to_string());
+    }
+    true
+}
+
+/// Swap the selected surfaces of two panes while preserving both pane IDs.
+/// This directly models canonical's placeholder-assisted two-move sequence:
+/// selected tabs leave their panes, each enters the other pane at the end of
+/// its pin tier, and a singleton pane selects the arriving surface.
+pub fn swap_selected_pane_surfaces(
+    workspace: &mut SessionWorkspaceSnapshot,
+    source_pane_id: &str,
+    target_pane_id: &str,
+) -> Result<PaneSwapResult, PaneSwapError> {
+    if source_pane_id == target_pane_id {
+        return Err(PaneSwapError::SamePane);
+    }
+    let layout = workspace
+        .layout
+        .as_ref()
+        .ok_or(PaneSwapError::SourcePaneNotFound)?;
+    let source = pane_by_id(layout, source_pane_id).ok_or(PaneSwapError::SourcePaneNotFound)?;
+    let target = pane_by_id(layout, target_pane_id).ok_or(PaneSwapError::TargetPaneNotFound)?;
+    let source_surface_id = source
+        .selected_panel_id
+        .clone()
+        .filter(|id| source.panel_ids.contains(id))
+        .ok_or(PaneSwapError::BothPanesNeedSurface)?;
+    let target_surface_id = target
+        .selected_panel_id
+        .clone()
+        .filter(|id| target.panel_ids.contains(id))
+        .ok_or(PaneSwapError::BothPanesNeedSurface)?;
+    let pinned: HashSet<&str> = workspace
+        .panel_pins
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .filter(|entry| entry.is_pinned)
+        .map(|entry| entry.panel_id.as_str())
+        .collect();
+    let mut next = workspace.layout.clone().expect("layout validated above");
+    if !remove_surface_from_pane(&mut next, source_pane_id, &source_surface_id)
+        || !remove_surface_from_pane(&mut next, target_pane_id, &target_surface_id)
+        || !append_surface_to_pane(&mut next, target_pane_id, &source_surface_id, &pinned)
+        || !append_surface_to_pane(&mut next, source_pane_id, &target_surface_id, &pinned)
+    {
+        return Err(PaneSwapError::BothPanesNeedSurface);
+    }
+    workspace.layout = Some(next);
+    Ok(PaneSwapResult {
+        source_surface_id,
+        target_surface_id,
+    })
+}
+
 fn split_pane_impl(
     node: &mut Layout,
     target_panel_id: &str,
@@ -5535,6 +5644,116 @@ mod tests {
         assert_eq!(
             split_off_surface(&mut workspace, "a", SessionSplitOrientation::Vertical, true,),
             Err(SplitOffSurfaceError::WouldEmptySourcePane)
+        );
+        assert_eq!(workspace, before);
+    }
+
+    #[test]
+    fn swap_selected_pane_surfaces_matches_canonical_move_order() {
+        let mut source = pane("a");
+        let Layout::Pane(source_pane) = &mut source else {
+            unreachable!();
+        };
+        source_pane.pane_id = Some("pane-source".into());
+        source_pane.panel_ids.push("b".into());
+        source_pane.selected_panel_id = Some("b".into());
+        let mut target = pane("c");
+        let Layout::Pane(target_pane) = &mut target else {
+            unreachable!();
+        };
+        target_pane.pane_id = Some("pane-target".into());
+        target_pane.panel_ids.push("d".into());
+        target_pane.selected_panel_id = Some("c".into());
+        let mut workspace = fresh_terminal_workspace("unused");
+        workspace.layout = Some(split(
+            SessionSplitOrientation::Horizontal,
+            0.5,
+            source,
+            target,
+        ));
+        workspace.panel_pins = Some(vec![
+            SessionPanelPinSnapshot {
+                panel_id: "b".into(),
+                is_pinned: true,
+            },
+            SessionPanelPinSnapshot {
+                panel_id: "d".into(),
+                is_pinned: true,
+            },
+        ]);
+
+        assert_eq!(
+            swap_selected_pane_surfaces(&mut workspace, "pane-source", "pane-target"),
+            Ok(PaneSwapResult {
+                source_surface_id: "b".into(),
+                target_surface_id: "c".into(),
+            })
+        );
+        let Layout::Split(split) = workspace.layout.as_ref().unwrap() else {
+            panic!("expected split");
+        };
+        let Layout::Pane(source) = split.first.as_ref() else {
+            panic!("expected source pane");
+        };
+        let Layout::Pane(target) = split.second.as_ref() else {
+            panic!("expected target pane");
+        };
+        assert_eq!(source.pane_id.as_deref(), Some("pane-source"));
+        assert_eq!(target.pane_id.as_deref(), Some("pane-target"));
+        assert_eq!(source.panel_ids, ["a", "c"]);
+        assert_eq!(target.panel_ids, ["d", "b"]);
+        assert_eq!(source.selected_panel_id.as_deref(), Some("a"));
+        assert_eq!(target.selected_panel_id.as_deref(), Some("d"));
+    }
+
+    #[test]
+    fn swap_selected_singleton_panes_preserves_identities_and_selection() {
+        let mut source = pane("a");
+        let Layout::Pane(source_pane) = &mut source else {
+            unreachable!();
+        };
+        source_pane.pane_id = Some("pane-source".into());
+        let mut target = pane("b");
+        let Layout::Pane(target_pane) = &mut target else {
+            unreachable!();
+        };
+        target_pane.pane_id = Some("pane-target".into());
+        let mut workspace = fresh_terminal_workspace("unused");
+        workspace.layout = Some(split(
+            SessionSplitOrientation::Vertical,
+            0.5,
+            source,
+            target,
+        ));
+
+        assert!(swap_selected_pane_surfaces(&mut workspace, "pane-source", "pane-target").is_ok());
+        let Layout::Split(split) = workspace.layout.as_ref().unwrap() else {
+            panic!("expected split");
+        };
+        let Layout::Pane(source) = split.first.as_ref() else {
+            panic!("expected source pane");
+        };
+        let Layout::Pane(target) = split.second.as_ref() else {
+            panic!("expected target pane");
+        };
+        assert_eq!(source.panel_ids, ["b"]);
+        assert_eq!(target.panel_ids, ["a"]);
+        assert_eq!(source.selected_panel_id.as_deref(), Some("b"));
+        assert_eq!(target.selected_panel_id.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn swap_selected_pane_surfaces_rejects_invalid_target_atomically() {
+        let mut workspace = fresh_terminal_workspace("a");
+        let Layout::Pane(pane) = workspace.layout.as_mut().unwrap() else {
+            unreachable!();
+        };
+        pane.pane_id = Some("pane-source".into());
+        let before = workspace.clone();
+
+        assert_eq!(
+            swap_selected_pane_surfaces(&mut workspace, "pane-source", "pane-missing"),
+            Err(PaneSwapError::TargetPaneNotFound)
         );
         assert_eq!(workspace, before);
     }

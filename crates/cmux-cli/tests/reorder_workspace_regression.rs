@@ -398,3 +398,44 @@ fn executable_routes_drag_surface_to_split_and_formats_result() {
         })
     );
 }
+
+#[test]
+fn executable_routes_swap_pane_and_formats_result() {
+    let (pipe, request_rx) = spawn_server(
+        "swap-pane",
+        serde_json::json!({
+            "pane_ref": "pane:1",
+            "target_pane_ref": "pane:2",
+        }),
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_cmux"))
+        .args([
+            "swap-pane",
+            "--pane",
+            "pane:1",
+            "--target-pane",
+            "pane:2",
+            "--focus",
+            "false",
+        ])
+        .env("CMUX_SOCKET_PATH", &pipe)
+        .env_remove("CMUX_SOCKET")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "OK\n");
+    let (method, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(method, "pane.swap");
+    assert_eq!(
+        serde_json::Value::Object(params),
+        serde_json::json!({
+            "pane_ref": "pane:1",
+            "target_pane_ref": "pane:2",
+            "focus": false,
+        })
+    );
+}

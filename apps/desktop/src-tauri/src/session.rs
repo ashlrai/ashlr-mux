@@ -3847,6 +3847,38 @@ pub(crate) fn split_off_surface_for_control(
     Ok(snapshot)
 }
 
+pub(crate) fn swap_panes_for_control(
+    app: &AppHandle,
+    state: &SessionState,
+    window_index: usize,
+    workspace_index: usize,
+    source_pane_id: &str,
+    target_pane_id: &str,
+    focus: bool,
+) -> Result<(session_ops::PaneSwapResult, AppSessionSnapshot), session_ops::PaneSwapError> {
+    let (swap, snapshot) = {
+        let mut guard = state
+            .snapshot
+            .lock()
+            .expect("session snapshot mutex poisoned");
+        let workspace = guard
+            .windows
+            .get_mut(window_index)
+            .and_then(|window| window.tab_manager.workspaces.get_mut(workspace_index))
+            .ok_or(session_ops::PaneSwapError::SourcePaneNotFound)?;
+        let swap =
+            session_ops::swap_selected_pane_surfaces(workspace, source_pane_id, target_pane_id)?;
+        if focus {
+            guard.windows[window_index]
+                .tab_manager
+                .selected_workspace_index = Some(workspace_index as i64);
+        }
+        (swap, guard.clone())
+    };
+    notify_session_changed(app, &snapshot);
+    Ok((swap, snapshot))
+}
+
 pub(crate) fn new_terminal_tab_for_control(
     app: &AppHandle,
     state: &SessionState,
