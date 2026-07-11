@@ -405,6 +405,21 @@ pub(crate) fn terminal_runtime_snapshots(state: &TerminalState) -> Vec<TerminalR
         .collect()
 }
 
+pub(crate) fn terminal_grid_size_for_panel(
+    state: &TerminalState,
+    panel_id: &str,
+) -> Option<GridSize> {
+    let grid = state
+        .sessions
+        .lock()
+        .ok()?
+        .values()
+        .find(|session| session.panel_id.as_deref() == Some(panel_id))?
+        .grid
+        .clone();
+    grid.lock().ok().map(|grid| grid.size())
+}
+
 /// Resize a session's pseudo console (the explicit Windows analogue of SIGWINCH).
 #[tauri::command]
 pub fn terminal_resize(
