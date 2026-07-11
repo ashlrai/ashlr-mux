@@ -282,6 +282,10 @@ pub fn control_command_for(
             "surface.move",
             canonical_surface_move_params(args)?,
         )),
+        "split-off" => Some(ControlCommand::new(
+            "surface.split_off",
+            split_off_params(args, "split-off")?,
+        )),
         "reorder-surface" => Some(ControlCommand::new(
             "surface.reorder",
             canonical_surface_reorder_params(args)?,
@@ -1366,6 +1370,47 @@ fn move_workspace_to_window_params(args: &[String]) -> Result<serde_json::Value,
     let mut params = serde_json::Map::new();
     apply_workspace_target_selector(workspace, "workspace", &mut params);
     apply_window_selector_value(window, &mut params);
+    Ok(serde_json::Value::Object(params))
+}
+
+fn split_off_params(args: &[String], command_name: &str) -> Result<serde_json::Value, CliError> {
+    let parsed = ParsedArgs::parse(args)?;
+    let surface = parsed.value(&["--surface", "--panel"]).ok_or_else(|| {
+        CliError::new(format!("{command_name} requires --surface <id|ref|index>"))
+    })?;
+    let direction = parsed
+        .positionals
+        .first()
+        .filter(|direction| !direction.starts_with("--"))
+        .ok_or_else(|| CliError::new(format!("{command_name} requires a direction")))?;
+    if !matches!(
+        direction.to_ascii_lowercase().as_str(),
+        "left" | "right" | "up" | "down" | "l" | "r" | "u" | "d"
+    ) {
+        return Err(CliError::new(format!(
+            "{command_name}: direction must be left|right|up|down"
+        )));
+    }
+    if let Some(unknown) = parsed.flags.first() {
+        return Err(CliError::new(format!(
+            "{command_name}: unknown flag '{unknown}'"
+        )));
+    }
+    let mut params = serde_json::Map::new();
+    apply_surface_target_selector(surface, "surface", &mut params);
+    apply_workspace_scope_selector(&parsed, &mut params);
+    apply_window_scope_selector(&parsed, &mut params);
+    params.insert("direction".to_string(), serde_json::json!(direction));
+    let focus = match parsed
+        .value(&["--focus"])
+        .map(|value| value.to_ascii_lowercase())
+    {
+        None => false,
+        Some(value) if matches!(value.as_str(), "1" | "true" | "yes" | "on") => true,
+        Some(value) if matches!(value.as_str(), "0" | "false" | "no" | "off") => false,
+        Some(_) => return Err(CliError::new("--focus must be true|false")),
+    };
+    params.insert("focus".to_string(), serde_json::json!(focus));
     Ok(serde_json::Value::Object(params))
 }
 
@@ -4669,6 +4714,45 @@ mod tests {
             .unwrap_err()
             .message,
             "move-workspace-to-window requires --window"
+        );
+    }
+
+    #[test]
+    fn maps_canonical_split_off_command() {
+        let split = mapped(
+            "split-off",
+            &[
+                "--surface",
+                "surface:2",
+                "--workspace",
+                "workspace:3",
+                "--window",
+                "window:1",
+                "right",
+            ],
+        );
+        assert_eq!(split.method, "surface.split_off");
+        assert_eq!(
+            split.params,
+            serde_json::json!({
+                "surface_ref": "surface:2",
+                "workspace_ref": "workspace:3",
+                "window_ref": "window:1",
+                "direction": "right",
+                "focus": false,
+            })
+        );
+        assert_eq!(
+            control_command_for("split-off", &args(&["--surface", "surface:1"]))
+                .unwrap_err()
+                .message,
+            "split-off requires a direction"
+        );
+        assert_eq!(
+            control_command_for("split-off", &args(&["--surface", "surface:1", "diagonal"]))
+                .unwrap_err()
+                .message,
+            "split-off: direction must be left|right|up|down"
         );
     }
 

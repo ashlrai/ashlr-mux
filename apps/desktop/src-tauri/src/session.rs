@@ -3814,6 +3814,39 @@ pub(crate) fn split_panel_for_control(
     Ok(snapshot)
 }
 
+pub(crate) fn split_off_surface_for_control(
+    app: &AppHandle,
+    state: &SessionState,
+    window_index: usize,
+    workspace_index: usize,
+    panel_id: &str,
+    orientation: SessionSplitOrientation,
+    insert_first: bool,
+    focus: bool,
+) -> Result<AppSessionSnapshot, session_ops::SplitOffSurfaceError> {
+    let snapshot = {
+        let mut guard = state
+            .snapshot
+            .lock()
+            .expect("session snapshot mutex poisoned");
+        let workspace = guard
+            .windows
+            .get_mut(window_index)
+            .and_then(|window| window.tab_manager.workspaces.get_mut(workspace_index))
+            .ok_or(session_ops::SplitOffSurfaceError::SurfaceNotFound)?;
+        session_ops::split_off_surface(workspace, panel_id, orientation, insert_first)?;
+        if focus {
+            guard.windows[window_index]
+                .tab_manager
+                .selected_workspace_index = Some(workspace_index as i64);
+        }
+        ensure_pane_ids(&mut guard);
+        guard.clone()
+    };
+    notify_session_changed(app, &snapshot);
+    Ok(snapshot)
+}
+
 pub(crate) fn new_terminal_tab_for_control(
     app: &AppHandle,
     state: &SessionState,

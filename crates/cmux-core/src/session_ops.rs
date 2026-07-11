@@ -1320,6 +1320,80 @@ pub fn split_pane(
     )
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitOffSurfaceError {
+    SurfaceNotFound,
+    WouldEmptySourcePane,
+}
+
+/// Move an existing surface tab into a new split adjacent to its source pane.
+/// The source must retain at least one tab. Pane-local presentation state is
+/// copied to the new leaf because the Windows snapshot currently stores that
+/// state on panes; the stateful layer assigns the new pane identity.
+pub fn split_off_surface(
+    workspace: &mut SessionWorkspaceSnapshot,
+    panel_id: &str,
+    orientation: SessionSplitOrientation,
+    insert_first: bool,
+) -> Result<(), SplitOffSurfaceError> {
+    fn split_off(
+        layout: &mut Layout,
+        panel_id: &str,
+        orientation: &SessionSplitOrientation,
+        insert_first: bool,
+    ) -> Result<(), SplitOffSurfaceError> {
+        match layout {
+            Layout::Pane(pane) => {
+                let Some(index) = pane.panel_ids.iter().position(|id| id == panel_id) else {
+                    return Err(SplitOffSurfaceError::SurfaceNotFound);
+                };
+                if pane.panel_ids.len() <= 1 {
+                    return Err(SplitOffSurfaceError::WouldEmptySourcePane);
+                }
+                let mut source = pane.clone();
+                source.panel_ids.remove(index);
+                if source.selected_panel_id.as_deref() == Some(panel_id) {
+                    source.selected_panel_id = source.panel_ids.first().cloned();
+                }
+                let mut moved = pane.clone();
+                moved.pane_id = None;
+                moved.panel_ids = vec![panel_id.to_string()];
+                moved.selected_panel_id = Some(panel_id.to_string());
+                let (first, second) = if insert_first {
+                    (Layout::Pane(moved), Layout::Pane(source))
+                } else {
+                    (Layout::Pane(source), Layout::Pane(moved))
+                };
+                *layout = Layout::Split(SessionSplitLayoutSnapshot {
+                    orientation: orientation.clone(),
+                    divider_position: 0.5,
+                    first: Box::new(first),
+                    second: Box::new(second),
+                });
+                Ok(())
+            }
+            Layout::Split(split) => {
+                match split_off(&mut split.first, panel_id, orientation, insert_first) {
+                    Err(SplitOffSurfaceError::SurfaceNotFound) => {
+                        split_off(&mut split.second, panel_id, orientation, insert_first)
+                    }
+                    result => result,
+                }
+            }
+        }
+    }
+
+    split_off(
+        workspace
+            .layout
+            .as_mut()
+            .ok_or(SplitOffSurfaceError::SurfaceNotFound)?,
+        panel_id,
+        &orientation,
+        insert_first,
+    )
+}
+
 fn split_pane_impl(
     node: &mut Layout,
     target_panel_id: &str,
@@ -5415,6 +5489,54 @@ mod tests {
             Err(MoveWorkspaceToWindowError::WindowNotFound)
         );
         assert_eq!(snapshot, before);
+    }
+
+    #[test]
+    fn split_off_surface_moves_tab_into_adjacent_pane() {
+        let mut workspace = fresh_terminal_workspace("a");
+        let Layout::Pane(pane) = workspace.layout.as_mut().unwrap() else {
+            unreachable!();
+        };
+        pane.pane_id = Some("pane-source".to_string());
+        pane.panel_ids = vec!["a".into(), "b".into(), "c".into()];
+        pane.selected_panel_id = Some("a".into());
+
+        assert_eq!(
+            split_off_surface(
+                &mut workspace,
+                "b",
+                SessionSplitOrientation::Horizontal,
+                false,
+            ),
+            Ok(())
+        );
+        let Layout::Split(split) = workspace.layout.as_ref().unwrap() else {
+            panic!("expected split");
+        };
+        assert_eq!(split.orientation, SessionSplitOrientation::Horizontal);
+        let Layout::Pane(source) = split.first.as_ref() else {
+            panic!("expected source pane first");
+        };
+        let Layout::Pane(moved) = split.second.as_ref() else {
+            panic!("expected moved pane second");
+        };
+        assert_eq!(source.pane_id.as_deref(), Some("pane-source"));
+        assert_eq!(source.panel_ids, ["a", "c"]);
+        assert_eq!(source.selected_panel_id.as_deref(), Some("a"));
+        assert_eq!(moved.pane_id, None);
+        assert_eq!(moved.panel_ids, ["b"]);
+        assert_eq!(moved.selected_panel_id.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn split_off_surface_rejects_single_tab_pane_atomically() {
+        let mut workspace = fresh_terminal_workspace("a");
+        let before = workspace.clone();
+        assert_eq!(
+            split_off_surface(&mut workspace, "a", SessionSplitOrientation::Vertical, true,),
+            Err(SplitOffSurfaceError::WouldEmptySourcePane)
+        );
+        assert_eq!(workspace, before);
     }
 
     #[test]

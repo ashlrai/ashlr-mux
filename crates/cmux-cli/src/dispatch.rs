@@ -197,6 +197,9 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
         "move-surface" => Some(
             "Usage:\n  cmux move-surface [--surface <id|ref|index> | <id|ref|index>] [flags]\n\nMoves a surface to a pane, workspace, or window.\n\nFlags:\n  --surface <id|ref|index>     Surface to move\n  --pane <id|ref|index>        Destination pane\n  --workspace <id|ref|index>   Destination workspace\n  --window <id|ref|index>      Destination window\n  --index <n>                  Destination insertion index\n  --before <id|ref|index>      Place before this surface\n  --before-surface <handle>    Alias for --before\n  --after <id|ref|index>       Place after this surface\n  --after-surface <handle>     Alias for --after\n  --focus <true|false>         Focus after moving",
         ),
+        "split-off" => Some(
+            "Usage:\n  cmux split-off --surface <id|ref|index> <left|right|up|down> [flags]\n\nMoves an existing surface into a new split without changing focus by default.\n\nFlags:\n  --surface <id|ref|index>     Surface to move (required)\n  --panel <id|ref|index>       Alias for --surface\n  --workspace <id|ref|index>   Workspace context\n  --window <id|ref|index>      Window context\n  --focus <true|false>         Focus the split-off surface (default: false)",
+        ),
         "reorder-surface" => Some(
             "Usage:\n  cmux reorder-surface [--surface <id|ref|index> | <id|ref|index>] [flags]\n\nReorders a surface within its pane.\n\nFlags:\n  --surface <id|ref|index>     Surface to reorder\n  --workspace <id|ref|index>   Workspace context\n  --window <id|ref|index>      Window context\n  --index <n>                  Place at this insertion index\n  --before <id|ref|index>      Place before this surface\n  --before-surface <handle>    Alias for --before\n  --after <id|ref|index>       Place after this surface\n  --after-surface <handle>     Alias for --after\n  --focus <true|false>         Focus after reordering (default: false)",
         ),
@@ -643,6 +646,7 @@ mod tests {
             "capture-pane",
             "restore-previous-launch",
             "split-browser",
+            "split-off",
         ] {
             let plan = plan(
                 &PreSocketAction::SubcommandHelp {

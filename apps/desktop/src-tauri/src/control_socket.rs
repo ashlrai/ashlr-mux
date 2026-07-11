@@ -58,10 +58,11 @@ use crate::session::{
     set_workspace_sidebar_metadata_block_for_control, set_workspace_sidebar_metadata_for_control,
     set_workspace_sidebar_progress_for_control, set_workspace_sidebar_status_for_control,
     set_workspace_unread_for_control, show_browser_developer_tools_for_control,
-    split_browser_for_control, split_panel_for_control, start_direct_browser_proxy_for_control,
-    toggle_browser_developer_tools_for_control, toggle_browser_focus_mode_for_control,
-    toggle_browser_omnibar_for_control, toggle_split_zoom_for_control,
-    ReorderWorkspacesManyControlError, SessionState, WorkspaceRemoteControlConfig,
+    split_browser_for_control, split_off_surface_for_control, split_panel_for_control,
+    start_direct_browser_proxy_for_control, toggle_browser_developer_tools_for_control,
+    toggle_browser_focus_mode_for_control, toggle_browser_omnibar_for_control,
+    toggle_split_zoom_for_control, ReorderWorkspacesManyControlError, SessionState,
+    WorkspaceRemoteControlConfig,
 };
 use crate::terminal::{
     scan_listening_ports_for_root_pid, scan_panel_listening_ports, terminal_clear_history_panel,
@@ -878,6 +879,7 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "surface.new_terminal_tab",
     "surface.new_tab",
     "surface.split_browser",
+    "surface.split_off",
     "surface.close",
     "surface.set_type",
     "surface.set_kind",
@@ -1174,6 +1176,7 @@ fn handle_control_request(app: &AppHandle, request: ControlRequest) -> ControlCa
             surface_new_terminal_tab(app, &request.params)
         }
         "surface.split_browser" => surface_split_browser(app, &request.params),
+        "surface.split_off" => surface_split_off(app, &request.params),
         "browser.open_split" => browser_open_split(app, &request.params),
         "surface.close" => surface_close(app, &request.params),
         "surface.set_type" | "surface.set_kind" => surface_set_kind(app, &request.params),
@@ -4528,6 +4531,260 @@ fn surface_split_browser(
             data: None,
         },
     }
+}
+
+fn global_surface_location(
+    snapshot: &AppSessionSnapshot,
+    panel_id: &str,
+) -> Option<(usize, usize)> {
+    snapshot
+        .windows
+        .iter()
+        .enumerate()
+        .find_map(|(window_index, window)| {
+            window
+                .tab_manager
+                .workspaces
+                .iter()
+                .enumerate()
+                .find(|(_, workspace)| {
+                    surfaces_for_workspace(workspace)
+                        .iter()
+                        .any(|surface| surface.get("id").and_then(Value::as_str) == Some(panel_id))
+                })
+                .map(|(workspace_index, _)| (window_index, workspace_index))
+        })
+}
+
+fn split_off_window_index(
+    app: &AppHandle,
+    snapshot: &AppSessionSnapshot,
+    params: &serde_json::Map<String, Value>,
+) -> Option<Option<usize>> {
+    let Some(selector) = raw_string_param(params, &["window_ref", "window_id"]) else {
+        return Some(None);
+    };
+    let identity = crate::window::current_control_window(app, Some(&selector))?;
+    snapshot
+        .windows
+        .iter()
+        .position(|window| window.window_id.as_deref() == Some(identity.label.as_str()))
+        .map(Some)
+}
+
+fn split_off_workspace_index(
+    snapshot: &AppSessionSnapshot,
+    params: &serde_json::Map<String, Value>,
+    window_index: usize,
+) -> Option<Option<usize>> {
+    let window = snapshot.windows.get(window_index)?;
+    if let Some(reference) = string_param(params, &["workspace_ref"]) {
+        return one_based_ref_index(&reference, "workspace")
+            .filter(|index| *index < window.tab_manager.workspaces.len())
+            .map(Some);
+    }
+    if let Some(workspace_id) = string_param(params, &["workspace_id"]) {
+        return window
+            .tab_manager
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.workspace_id.as_deref() == Some(workspace_id.as_str()))
+            .map(Some);
+    }
+    Some(None)
+}
+
+fn surface_split_off(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(direction) = string_param(params, &["direction"]) else {
+        return invalid_params("Missing or invalid direction (left|right|up|down)");
+    };
+    let Some(orientation) = split_orientation_from_params(params) else {
+        return invalid_params("Missing or invalid direction (left|right|up|down)");
+    };
+    let normalized_direction = direction.to_ascii_lowercase();
+    let insert_first = matches!(normalized_direction.as_str(), "left" | "up" | "l" | "u");
+    let current = snapshot(app);
+    let requested_window_resolution = split_off_window_index(app, &current, params);
+    let requested_window_index = requested_window_resolution.flatten();
+
+    let direct_panel_id = string_param(params, &["surface_id", "panel_id"]);
+    let (window_index, workspace_index, panel_id) = if let Some(panel_id) = direct_panel_id {
+        let Some((window_index, workspace_index)) = global_surface_location(&current, &panel_id)
+        else {
+            return ControlCallResult::Err {
+                code: "not_found".to_string(),
+                message: "Surface not found".to_string(),
+                data: Some(
+                    json!({"surface_id": panel_id})
+                        .try_into()
+                        .unwrap_or(JsonValue::Null),
+                ),
+            };
+        };
+        (window_index, workspace_index, panel_id)
+    } else if let Some(surface_reference) = string_param(params, &["surface_ref"]) {
+        if requested_window_resolution.is_none() {
+            return ControlCallResult::Err {
+                code: "not_found".to_string(),
+                message: "Surface not found in window".to_string(),
+                data: None,
+            };
+        }
+        let window_index = requested_window_index.unwrap_or(0);
+        let requested_workspace_index =
+            match split_off_workspace_index(&current, params, window_index) {
+                Some(index) => index,
+                None => {
+                    return ControlCallResult::Err {
+                        code: "not_found".to_string(),
+                        message: "Surface not found in workspace".to_string(),
+                        data: None,
+                    };
+                }
+            };
+        let window = &current.windows[window_index];
+        let workspace_index = requested_workspace_index.unwrap_or_else(|| {
+            window
+                .tab_manager
+                .selected_workspace_index
+                .and_then(|index| usize::try_from(index).ok())
+                .unwrap_or(0)
+        });
+        let Some(workspace) = window.tab_manager.workspaces.get(workspace_index) else {
+            return ControlCallResult::Err {
+                code: "not_found".to_string(),
+                message: "Surface not found in workspace".to_string(),
+                data: None,
+            };
+        };
+        let Some(surface_index) = one_based_ref_index(&surface_reference, "surface") else {
+            return invalid_params("Missing or invalid surface_id");
+        };
+        let Some(panel_id) = surfaces_for_workspace(workspace)
+            .get(surface_index)
+            .and_then(|surface| surface.get("id"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+        else {
+            return ControlCallResult::Err {
+                code: "not_found".to_string(),
+                message: "Surface not found".to_string(),
+                data: None,
+            };
+        };
+        (window_index, workspace_index, panel_id)
+    } else {
+        return invalid_params("Missing or invalid surface_id");
+    };
+
+    if requested_window_resolution.is_none()
+        || requested_window_index.is_some_and(|requested| requested != window_index)
+    {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Surface not found in window".to_string(),
+            data: None,
+        };
+    }
+    let requested_workspace_index = match split_off_workspace_index(
+        &current,
+        params,
+        requested_window_index.unwrap_or(window_index),
+    ) {
+        Some(index) => index,
+        None => {
+            return ControlCallResult::Err {
+                code: "not_found".to_string(),
+                message: "Surface not found in workspace".to_string(),
+                data: None,
+            };
+        }
+    };
+    if requested_workspace_index.is_some_and(|requested| requested != workspace_index) {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Surface not found in workspace".to_string(),
+            data: None,
+        };
+    }
+
+    let workspace = &current.windows[window_index].tab_manager.workspaces[workspace_index];
+    let Some((_, source_pane_id, _)) = surface_pane_details(workspace, &panel_id) else {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Source pane not found".to_string(),
+            data: None,
+        };
+    };
+    let state = app.state::<SessionState>();
+    let focus = bool_param(params, &["focus"]).unwrap_or(false);
+    let result = match split_off_surface_for_control(
+        app,
+        &state,
+        window_index,
+        workspace_index,
+        &panel_id,
+        orientation,
+        insert_first,
+        focus,
+    ) {
+        Ok(result) => result,
+        Err(session_ops::SplitOffSurfaceError::WouldEmptySourcePane) => {
+            return ControlCallResult::Err {
+                code: "invalid_state".to_string(),
+                message: "splitting off would leave the source pane empty".to_string(),
+                data: Some(
+                    json!({"surface_id": panel_id, "pane_id": source_pane_id})
+                        .try_into()
+                        .unwrap_or(JsonValue::Null),
+                ),
+            };
+        }
+        Err(session_ops::SplitOffSurfaceError::SurfaceNotFound) => {
+            return ControlCallResult::Err {
+                code: "not_found".to_string(),
+                message: "Surface not found".to_string(),
+                data: None,
+            };
+        }
+    };
+    let window = &result.windows[window_index];
+    let workspace = &window.tab_manager.workspaces[workspace_index];
+    let Some((pane_index, pane_id, _)) = surface_pane_details(workspace, &panel_id) else {
+        return ControlCallResult::Err {
+            code: "internal_error".to_string(),
+            message: "Failed to split pane".to_string(),
+            data: None,
+        };
+    };
+    let window_identity = crate::window::control_window_summaries(app)
+        .into_iter()
+        .find(|summary| summary.identity.label == window.window_id.as_deref().unwrap_or("main"))
+        .map(|summary| summary.identity);
+    if focus {
+        if let Some(identity) = window_identity.as_ref() {
+            if let Some(window) = app.get_webview_window(&identity.label) {
+                let _ = window.set_focus();
+            }
+        }
+    }
+    let surface_ref_value = surfaces_for_workspace(workspace)
+        .iter()
+        .position(|surface| surface.get("id").and_then(Value::as_str) == Some(panel_id.as_str()))
+        .map(surface_ref);
+    ok(json!({
+        "window_id": window_identity.as_ref().map(|identity| identity.id.clone()),
+        "window_ref": window_identity.as_ref().map(|identity| identity.reference.clone()),
+        "workspace_id": workspace.workspace_id,
+        "workspace_ref": workspace_ref(workspace_index),
+        "surface_id": panel_id,
+        "surface_ref": surface_ref_value,
+        "pane_id": pane_id,
+        "pane_ref": pane_ref(pane_index),
+    }))
 }
 
 fn surface_close(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
@@ -10665,8 +10922,10 @@ fn split_orientation_from_params(
         .to_ascii_lowercase()
         .as_str()
     {
-        "horizontal" | "h" | "right" | "left" => Some(SessionSplitOrientation::Horizontal),
-        "vertical" | "v" | "down" | "up" => Some(SessionSplitOrientation::Vertical),
+        "horizontal" | "h" | "right" | "left" | "r" | "l" => {
+            Some(SessionSplitOrientation::Horizontal)
+        }
+        "vertical" | "v" | "down" | "up" | "d" | "u" => Some(SessionSplitOrientation::Vertical),
         _ => None,
     }
 }
@@ -11497,6 +11756,14 @@ mod tests {
         assert_eq!(
             workspace_id_for_window_move(&snapshot, by_id.as_object().unwrap()).as_deref(),
             Some("workspace-2")
+        );
+        assert_eq!(
+            global_surface_location(&snapshot, "surface-3"),
+            Some((1, 0))
+        );
+        assert_eq!(
+            split_off_workspace_index(&snapshot, by_ref.as_object().unwrap(), 0),
+            Some(Some(0))
         );
     }
 
@@ -12653,6 +12920,7 @@ mod tests {
             "workspace.move_to_window",
             "surface.report_tty",
             "surface.report_shell_state",
+            "surface.split_off",
             "surface.move",
             "surface.clear_history",
             "surface.trigger_flash",
@@ -14096,6 +14364,13 @@ mod tests {
                 json!("right"),
             )])),
             Some(SessionSplitOrientation::Horizontal)
+        );
+        assert_eq!(
+            split_orientation_from_params(&serde_json::Map::from_iter([(
+                "direction".to_string(),
+                json!("u"),
+            )])),
+            Some(SessionSplitOrientation::Vertical)
         );
         assert_eq!(
             split_orientation_from_params(&serde_json::Map::from_iter([(
