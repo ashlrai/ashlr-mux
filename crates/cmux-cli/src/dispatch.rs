@@ -49,6 +49,8 @@ pub enum DispatchPlan {
     RunEvents(Vec<String>),
     /// Run the multi-step SSH workspace bootstrap/control flow.
     RunSsh(Vec<String>),
+    /// Inspect the remote-daemon release manifest and local cache.
+    RunRemoteDaemonStatus(Vec<String>),
     /// Run hidden local git-ref discovery for the diff-viewer branch picker.
     RunDiffViewerRefs(Vec<String>),
     /// Regenerate a branch-base diff page and manifest entries.
@@ -111,6 +113,7 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
     match command {
         "config" => Some(crate::config::CONFIG_USAGE),
         "docs" => Some(crate::docs::DOCS_USAGE),
+        "remote-daemon-status" => Some(crate::remote_daemon_status::REMOTE_DAEMON_STATUS_USAGE),
         "sessions" | "session-debug" => Some(crate::sessions::SESSIONS_USAGE),
         "settings" => Some(crate::settings::SETTINGS_USAGE),
         "ping" => Some("Usage:\n  cmux ping\n\nSends a ping to the control socket."),
@@ -455,7 +458,9 @@ pub fn plan_with_args(action: &PreSocketAction, command: &str, args: &[String]) 
                 DispatchPlan::Fail(socket_command_not_ported(command))
             }
         }
-        PreSocketAction::RemoteDaemonStatus => "remote-daemon-status",
+        PreSocketAction::RemoteDaemonStatus => {
+            return DispatchPlan::RunRemoteDaemonStatus(args.to_vec());
+        }
         PreSocketAction::VmPtyConnect => "vm-pty-connect",
         PreSocketAction::Docs => return DispatchPlan::RunDocs(args.to_vec()),
         PreSocketAction::Welcome => return DispatchPlan::RunWelcome,
@@ -818,6 +823,27 @@ mod tests {
             ),
             DispatchPlan::RunDiffViewerServer(args)
         );
+    }
+
+    #[test]
+    fn remote_daemon_status_runs_locally_with_all_arguments() {
+        let args = vec![
+            "--os".to_string(),
+            "linux".to_string(),
+            "--arch=arm64".to_string(),
+        ];
+        assert_eq!(
+            plan_with_args(
+                &PreSocketAction::RemoteDaemonStatus,
+                "remote-daemon-status",
+                &args,
+            ),
+            DispatchPlan::RunRemoteDaemonStatus(args)
+        );
+        let help = subcommand_help_text("remote-daemon-status");
+        assert!(help.contains("Usage: cmux remote-daemon-status"));
+        assert!(help.contains("checksum verification state"));
+        assert!(!help.contains("not yet ported"));
     }
 
     #[test]

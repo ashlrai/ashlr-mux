@@ -24,6 +24,7 @@ pub mod hooks_installer;
 pub mod invocation;
 pub mod password;
 pub mod path_open;
+pub mod remote_daemon_status;
 pub mod rpc;
 pub mod sessions;
 pub mod settings;

@@ -105,6 +105,14 @@ fn dispatch(
         }
         DispatchPlan::RunRpc => run_rpc_command(options, command_args),
         DispatchPlan::RunSsh(args) => run_ssh_command(options, &args),
+        DispatchPlan::RunRemoteDaemonStatus(args) => {
+            let output = cmux_cli::remote_daemon_status::run_remote_daemon_status(
+                &args,
+                options.json_output,
+            )?;
+            println!("{output}");
+            Ok(())
+        }
         DispatchPlan::RunControl(control) => {
             let ambient_workspace_id = std::env::var(CMUX_WORKSPACE_ID_ENV).ok();
             let control = control
