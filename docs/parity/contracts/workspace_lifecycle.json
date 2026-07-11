@@ -1,0 +1,532 @@
+{
+  "schema_version": 1,
+  "contract_id": "workspace_lifecycle",
+  "canonical_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+  "windows_audit_commit": "eb77096f42cafa6180946e56a860141f32500d49",
+  "scope": [
+    "workspace.close",
+    "workspace.create",
+    "workspace.current",
+    "workspace.list",
+    "workspace.rename",
+    "workspace.select",
+    "close-workspace",
+    "new-workspace",
+    "current-workspace",
+    "list-workspaces",
+    "rename-workspace",
+    "select-workspace"
+  ],
+  "shared_canonical_rules": {
+    "wire": {
+      "ids": "UUID strings; any *_id selector also accepts a previously minted kind:N ref through the handle registry",
+      "object_key_order": "not contractual; array order and CLI line/field order are contractual",
+      "unsupported_window_alias": {
+        "condition": "any workspace.* request contains window",
+        "error": {
+          "code": "invalid_params",
+          "message_en": "Unsupported parameter `window`; use `window_id` with a window UUID or ref from `window.list`.",
+          "data": {
+            "method": "<request method>",
+            "unsupported_param": "window",
+            "supported_param": "window_id"
+          }
+        },
+        "source": "Sources/TerminalController.swift:3494-3507"
+      }
+    },
+    "routing": {
+      "precedence": [
+        "present non-null window_id (invalid/unresolved is terminal; never falls through)",
+        "resolvable group_id",
+        "resolvable workspace_id",
+        "surface_id, then terminal_id, then tab_id",
+        "pane_id",
+        "controller/caller TabManager",
+        "active scriptable window TabManager"
+      ],
+      "source": [
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/ControlCommandCoordinator.swift:197-240",
+        "Sources/TerminalController.swift:3644-3680"
+      ]
+    },
+    "workspace_summary": {
+      "ordered_fields_for_documentation_only": [
+        "id",
+        "ref",
+        "title",
+        "custom_title",
+        "has_custom_title",
+        "description",
+        "selected",
+        "pinned",
+        "listening_ports",
+        "remote",
+        "current_directory",
+        "custom_color",
+        "latest_conversation_message",
+        "latest_submitted_message",
+        "latest_submitted_at",
+        "index"
+      ],
+      "types": {
+        "id": "string(UUID)",
+        "ref": "string(workspace:N)",
+        "title": "string",
+        "custom_title": "string|null",
+        "has_custom_title": "boolean",
+        "description": "string|null",
+        "selected": "boolean",
+        "pinned": "boolean",
+        "listening_ports": "integer[]",
+        "remote": "object",
+        "current_directory": "string|null (live app supplies string, possibly empty)",
+        "custom_color": "string|null",
+        "latest_conversation_message": "string|null",
+        "latest_submitted_message": "string|null",
+        "latest_submitted_at": "string(ISO-8601)|null",
+        "index": "integer, omitted only when the selected id is stale/missing"
+      },
+      "source": "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Workspace/ControlCommandCoordinator+Workspace.swift:71-104"
+    },
+    "focus_and_threading": {
+      "list_current": "socket worker; one controlResolveOnMain hop; JSON shaping/encoding off-main; main-thread callable",
+      "mutations": "main actor",
+      "focus_intent_methods_in_scope": ["workspace.select"],
+      "non_focus_methods_in_scope": ["workspace.list", "workspace.current", "workspace.create", "workspace.close", "workspace.rename"],
+      "implication": "workspace.create focus=true is gated false on the control socket because create is not focus-intent; workspace.select may focus/raise its owning window without activating another app",
+      "source": [
+        "Sources/TerminalController.swift:240-275",
+        "Sources/TerminalController.swift:407-438",
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Wire/ControlCommandExecutionPolicy.swift",
+        "Packages/macOS/CmuxControlSocket/Tests/CmuxControlSocketTests/ControlCommandExecutionPolicyTests.swift:55-96"
+      ]
+    },
+    "cli_globals": {
+      "id_format": "--id-format refs|uuids|both; default refs for text and JSON",
+      "json": "--json recursively removes paired ids or refs according to id format; legacy new-workspace intentionally ignores --json",
+      "legacy_warning": "list-workspaces, new-workspace, close-workspace, rename-workspace, and select-workspace emit a once-per-process stderr deprecation notice unless CMUX_QUIET is set; current-workspace does not",
+      "source": [
+        "CLI/cmux.swift:1585-1597",
+        "CLI/cmux.swift:5944-6006",
+        "CLI/cmux.swift:8270-8275"
+      ]
+    }
+  },
+  "entries": [
+    {
+      "name": "workspace.list",
+      "kind": "v2",
+      "sources": [
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Workspace/ControlCommandCoordinator+Workspace.swift:19-25,122-168",
+        "Sources/TerminalController+ControlWorkspaceContext.swift:75-91"
+      ],
+      "selectors_aliases_flags": ["window_id", "group_id", "workspace_id", "surface_id", "terminal_id", "tab_id", "pane_id"],
+      "precedence_defaults": "shared routing; no selector resolves caller/active window",
+      "errors": [
+        {"code": "unavailable", "message": "TabManager not available", "data": null}
+      ],
+      "response": {
+        "window_id": "string(UUID)|null",
+        "window_ref": "string(window:N)|null",
+        "workspaces": "workspace_summary[] in TabManager tab order; zero-based index; exactly one selected when selectedTabId matches"
+      },
+      "state_mutation": "none except refreshing/minting stable handle refs",
+      "window_focus_multiwindow": "returns only the resolved window and never changes window/workspace focus",
+      "events": [],
+      "persistence_restore": "read-only; restored workspaces are listed in restored tab order and refs are re-minted",
+      "threading_focus_policy": "worker read with one main-actor snapshot hop; non-focus",
+      "dependencies": ["handle registry", "TabManager", "AppDelegate window ownership", "remoteStatusPayload"],
+      "canonical_tests": [
+        "Packages/macOS/CmuxControlSocket/Tests/CmuxControlSocketTests/ControlCommandCoordinatorWorkspaceTests.swift:35-55",
+        "cmuxTests/AppDelegateIssue2907RoutingTests.swift:360-426,934-1005"
+      ],
+      "adversarial_acceptance": [
+        "An unresolved explicit window_id returns unavailable and does not fall back.",
+        "A surface in a background window routes the list to that window.",
+        "Rows preserve tab order, zero-based index, null custom title, and selected identity."
+      ],
+      "windows_discrepancies": [
+        "apps/desktop/src-tauri/src/control_socket.rs:1098 and 10297-10318 always use snapshot.windows.first and ignore selectors/multiwindow routing.",
+        "Windows adds workspace_groups and many noncanonical per-row keys; canonical response has only window_id/window_ref/workspaces and the canonical summary fields.",
+        "Windows returns an empty success when no window; canonical returns unavailable when no TabManager."
+      ]
+    },
+    {
+      "name": "workspace.current",
+      "kind": "v2",
+      "sources": [
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Workspace/ControlCommandCoordinator+Workspace.swift:170-230",
+        "Sources/TerminalController+ControlWorkspaceContext.swift:93-110"
+      ],
+      "selectors_aliases_flags": ["window_id", "group_id", "workspace_id", "surface_id", "terminal_id", "tab_id", "pane_id"],
+      "precedence_defaults": "selectors choose a window/TabManager, then the method returns that manager's selectedTabId; workspace_id does not mean return that workspace",
+      "errors": [
+        {"code": "unavailable", "message": "TabManager not available", "data": null},
+        {"code": "not_found", "message": "No workspace selected", "data": null}
+      ],
+      "response": {
+        "window_id": "string(UUID)|null",
+        "window_ref": "string(window:N)|null",
+        "workspace_id": "string(UUID)",
+        "workspace_ref": "string(workspace:N)",
+        "workspace": "workspace_summary|null; null is a preserved edge case when selectedTabId is stale"
+      },
+      "state_mutation": "none except handle-ref refresh/mint",
+      "window_focus_multiwindow": "reads the selected workspace of the resolved background window without focusing it",
+      "events": [],
+      "persistence_restore": "reflects restored selectedTabId; stale selected ids still return ok with workspace:null",
+      "threading_focus_policy": "worker read with one main-actor snapshot hop; non-focus",
+      "dependencies": ["handle registry", "TabManager.selectedTabId", "AppDelegate window ownership"],
+      "canonical_tests": [
+        "Packages/macOS/CmuxControlSocket/Tests/CmuxControlSocketTests/ControlCommandCoordinatorWorkspaceTests.swift:57-78",
+        "cmuxTests/AppDelegateIssue2907RoutingTests.swift:326-358,998-1005,1030-1084"
+      ],
+      "adversarial_acceptance": [
+        "workspace_id for a non-selected workspace routes to its owner but returns the owner's selected workspace.",
+        "Explicit invalid window_id beats every otherwise valid selector.",
+        "A stale selectedTabId returns identifiers plus workspace:null, not not_found."
+      ],
+      "windows_discrepancies": [
+        "apps/desktop/src-tauri/src/control_socket.rs:11589-11620 treats workspace selectors as the workspace to return, contrary to canonical window-routing semantics.",
+        "Only the first Windows window is considered; unavailable versus not_found behavior differs.",
+        "Windows marks nested selected according to global selection but can return an explicitly requested non-selected row."
+      ]
+    },
+    {
+      "name": "workspace.create",
+      "kind": "v2",
+      "sources": [
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Workspace/ControlCommandCoordinator+Workspace.swift:232-245",
+        "Sources/TerminalController+WorkspaceCreate.swift:8-171",
+        "Sources/TabManager.swift:1023-1166"
+      ],
+      "selectors_aliases_flags": [
+        "routing: window_id, group_id, workspace_id, surface_id|terminal_id|tab_id, pane_id",
+        "working_directory (trimmed; precedence over cwd)",
+        "cwd (must be string only when working_directory absent)",
+        "initial_command (trimmed)",
+        "initial_env (string map; blank keys dropped)",
+        "workspace_env (sanitized persistent string map)",
+        "title (trimmed)",
+        "description",
+        "group_id",
+        "group_placement|placement",
+        "group_reference_workspace_id|reference_workspace_id",
+        "layout (CmuxLayoutNode JSON object)",
+        "focus=false",
+        "eager_load_terminal=not effective focus",
+        "auto_refresh_metadata=true"
+      ],
+      "precedence_defaults": "resolve TabManager first; validate group/layout before mutation; grouped default placement top; layout suppresses initial command/env and applies custom layout after creation",
+      "errors": [
+        {"code": "unavailable", "message": "TabManager not available", "data": null},
+        {"code": "invalid_params", "message": "cwd must be a string", "data": null},
+        {"code": "invalid_params", "message": "Missing or invalid group_id", "data": null},
+        {"code": "invalid_params", "message": "group_id is required for group placement", "data": null},
+        {"code": "invalid_params", "message": "Invalid group_placement", "data": {"group_placement": "<raw>"}},
+        {"code": "invalid_params", "message": "Missing or invalid group_reference_workspace_id", "data": null},
+        {"code": "not_found", "message": "Group not found", "data": {"group_id": "<UUID>"}},
+        {"code": "invalid_params", "message": "Reference workspace must be a member of the target group", "data": {"group_reference_workspace_id": "<UUID>"}},
+        {"code": "invalid_params", "message": "layout must be a valid JSON object", "data": null},
+        {"code": "invalid_params", "message": "Invalid layout: <localized decoder error>", "data": null},
+        {"code": "internal_error", "message": "Failed to create workspace", "data": null}
+      ],
+      "response": {
+        "window_id": "string(UUID)|null",
+        "window_ref": "string(window:N)|null",
+        "workspace_id": "string(UUID)",
+        "workspace_ref": "string(workspace:N)",
+        "group_id": "string(UUID)|null",
+        "group_ref": "string(workspace_group:N)|null",
+        "surface_id": "string(UUID)|null",
+        "surface_ref": "string(surface:N)|null"
+      },
+      "state_mutation": "creates one workspace/initial surface, inherits cwd/chrome/config from the pre-create selected workspace when not overridden, inserts per placement, applies title/description/layout/environment/group, schedules metadata, and selects only when effective focus is allowed",
+      "window_focus_multiwindow": "routes creation to any resolved window; control-socket create is non-focus-intent so focus=true is suppressed and existing selection/window focus is preserved",
+      "events": [
+        "workspace.created (workspace.lifecycle)",
+        "surface.created origin=workspace_initial",
+        "workspace.selected only if selection actually changes (normally suppressed on control socket)"
+      ],
+      "persistence_restore": "regular workspaces, custom title/description/color, layout, cwd, panels, and workspace_env round-trip session snapshots; remote tmux mirrors/cloud-loading workspaces can be excluded by restorable policy",
+      "threading_focus_policy": "main actor; non-focus method; v2FocusAllowed gates requested focus",
+      "dependencies": ["TabManager.addWorkspace", "CmuxLayoutNode", "CmuxSettings WorkspaceGroupNewPlacement", "Workspace session snapshot", "handle registry"],
+      "canonical_tests": [
+        "cmuxTests/AppDelegateIssue2907RoutingTests.swift:428-490,1193-1235",
+        "Packages/macOS/CmuxControlSocket/Tests/CmuxControlSocketTests/ControlCommandExecutionPolicyTests.swift:55-70"
+      ],
+      "adversarial_acceptance": [
+        "focus=true over the control socket creates in the target background window without changing selected workspace or foreground app.",
+        "working_directory wins over invalid cwd; invalid cwd fails only when it is the active cwd input.",
+        "Malformed layout/group reference fails before any workspace is created.",
+        "workspace_env reaches the initial shell, later surfaces, and survives restart.",
+        "layout ignores initial_command/initial_env and creates the declared pane/surface tree."
+      ],
+      "windows_discrepancies": [
+        "apps/desktop/src-tauri/src/control_socket.rs:2630-2651 supports a different small parameter set and returns workspace.current shape instead of the canonical create response.",
+        "Canonical title, description, workspace_env, layout, group placement/reference, effective focus/eager-load, and multiwindow routing are absent or differently named.",
+        "Windows accepts current_directory/initial_terminal_command aliases not canonical for this method and lacks pre-mutation validation/error fidelity."
+      ]
+    },
+    {
+      "name": "workspace.select",
+      "kind": "v2",
+      "sources": [
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Workspace/ControlCommandCoordinator+Workspace.swift:247-280",
+        "Sources/TerminalController+ControlWorkspaceContext.swift:129-148"
+      ],
+      "selectors_aliases_flags": ["required workspace_id", "routing selectors including window_id"],
+      "precedence_defaults": "routing is resolved before workspace_id validation; target must exist in the resolved TabManager",
+      "errors": [
+        {"code": "unavailable", "message": "TabManager not available", "data": null},
+        {"code": "invalid_params", "message": "Missing or invalid workspace_id", "data": null},
+        {"code": "not_found", "message": "Workspace not found", "data": {"workspace_id": "<UUID>", "workspace_ref": "<workspace ref>"}}
+      ],
+      "response": {"window_id": "string(UUID)|null", "window_ref": "string(window:N)|null", "workspace_id": "string(UUID)", "workspace_ref": "string(workspace:N)"},
+      "state_mutation": "focuses owning main window when known, sets it active, selects workspace, records focus history, restores panel focus asynchronously, dismisses active-focus notifications",
+      "window_focus_multiwindow": "explicit focus-intent; selecting a workspace in another window brings that window forward and makes its TabManager active, but socket policy suppresses macOS app activation",
+      "events": ["workspace.selected with previous_workspace_id and lifecycle payload when selection changes"],
+      "persistence_restore": "selected workspace/focus history becomes current session state and is represented on later snapshots/restores",
+      "threading_focus_policy": "main actor; explicit focus-intent",
+      "dependencies": ["AppDelegate.focusMainWindow", "TabManager.selectWorkspace", "focus history", "handle registry"],
+      "canonical_tests": ["cmuxTests/TerminalControllerSocketSecurityTests.swift:300-320", "Sources/TabManager.swift:289-350"],
+      "adversarial_acceptance": [
+        "Invalid routing plus missing workspace_id returns unavailable, not invalid_params.",
+        "A workspace UUID from another window fails when an explicit mismatching window_id is supplied.",
+        "Successful cross-window selection changes the owning window only and emits one selection event if identity changed."
+      ],
+      "windows_discrepancies": [
+        "apps/desktop/src-tauri/src/control_socket.rs:3338-3345 accepts workspace_ref/id aliases through first-window indexes and returns workspace.current shape.",
+        "Canonical unavailable/not_found ordering, exact data, cross-window ownership, window focus, and response shape are missing."
+      ]
+    },
+    {
+      "name": "workspace.close",
+      "kind": "v2",
+      "sources": [
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Workspace/ControlCommandCoordinator+Workspace.swift:282-322",
+        "Sources/TerminalController+ControlWorkspaceContext.swift:150-166",
+        "Sources/TabManager.swift:1993-2054"
+      ],
+      "selectors_aliases_flags": ["required workspace_id", "routing selectors including window_id"],
+      "precedence_defaults": "routing resolves before workspace_id validation; no confirmation UI; pinned workspaces are protected",
+      "errors": [
+        {"code": "unavailable", "message": "TabManager not available", "data": null},
+        {"code": "invalid_params", "message": "Missing or invalid workspace_id", "data": null},
+        {"code": "not_found", "message": "Workspace not found", "data": {"workspace_id": "<UUID>", "workspace_ref": "<workspace ref>"}},
+        {"code": "protected", "message_en": "Pinned workspaces can't be closed while pinned. Unpin the workspace first.", "data": {"window_id": "<UUID|null>", "window_ref": "<window ref|null>", "workspace_id": "<UUID>", "workspace_ref": "<workspace ref>", "pinned": true}}
+      ],
+      "response": {"window_id": "string(UUID)|null", "window_ref": "string(window:N)|null", "workspace_id": "string(UUID)", "workspace_ref": "string(workspace:N)"},
+      "state_mutation": "for >1 tabs: records restorable closed-workspace history with scrollback, clears notifications/metadata/history, tears down panels/remote connection, removes workspace, dissolves a group if it was anchor, and selects same index or previous last when closing selected; sole-tab close is a canonical quirk: reports success but TabManager.closeWorkspace is a no-op",
+      "window_focus_multiwindow": "routes by owning/resolved window and does not raise/activate it; closing a selected workspace changes in-app selection as a necessary lifecycle side effect",
+      "events": ["workspace.closed after actual removal", "workspace.selected if removing the selected workspace changes selectedTabId", "surface/pane teardown lifecycle events as applicable"],
+      "persistence_restore": "actual close removes it from future session snapshots and pushes a reopenable ClosedWorkspaceHistoryEntry when restorable; ephemeral mirrors/cloud-loading can skip history",
+      "threading_focus_policy": "main actor; non-focus",
+      "dependencies": ["TabManager.canCloseWorkspace", "ClosedItemHistoryStore", "notification store", "remote tmux controller", "handle registry"],
+      "canonical_tests": ["cmuxTests/TerminalControllerSocketSecurityTests.swift:1356-1392"],
+      "adversarial_acceptance": [
+        "Pinned close returns protected with pinned=true and performs no teardown.",
+        "Close in a background window leaves key window unchanged.",
+        "Close selected middle versus last workspace follows stable-index selection rule.",
+        "Close sole workspace returns success but preserves it and emits no close event.",
+        "Closed regular workspace can be reopened with layout/scrollback/title/environment."
+      ],
+      "windows_discrepancies": [
+        "apps/desktop/src-tauri/src/control_socket.rs:3298-3307 has a different missing-target error and returns the post-close current workspace rather than the closed identity.",
+        "Windows accepts workspace_ref/ref top-level aliases while canonical raw v2 requires workspace_id (whose value may itself be a ref).",
+        "Pinned protection payload/message, multiwindow routing, lifecycle-event fidelity, and closed-history/sole-tab quirks require live verification and are not represented by this handler."
+      ]
+    },
+    {
+      "name": "workspace.rename",
+      "kind": "v2",
+      "sources": [
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Workspace/ControlCommandCoordinator+Workspace.swift:631-667",
+        "Sources/TerminalController+ControlWorkspaceContext.swift:310-324",
+        "Sources/TabManager+WorkspaceCustomTitle.swift:3-40"
+      ],
+      "selectors_aliases_flags": ["required workspace_id", "required title (trimmed non-empty)", "routing selectors including window_id"],
+      "precedence_defaults": "routing resolves before workspace_id/title validation; name is not a v2 alias",
+      "errors": [
+        {"code": "unavailable", "message": "TabManager not available", "data": null},
+        {"code": "invalid_params", "message": "Missing or invalid workspace_id", "data": null},
+        {"code": "invalid_params", "message": "Missing or invalid title", "data": null},
+        {"code": "not_found", "message": "Workspace not found", "data": {"workspace_id": "<UUID>", "workspace_ref": "<workspace ref>"}}
+      ],
+      "response": {"workspace_id": "string(UUID)", "workspace_ref": "string(workspace:N)", "window_id": "string(UUID)|null", "window_ref": "string(window:N)|null", "title": "trimmed string"},
+      "state_mutation": "sets/replaces user custom title; updates selected window title, posts workspaceTitleDidChange when display title changed, and propagates remote tmux mirror rename-session",
+      "window_focus_multiwindow": "mutates the resolved background window without selecting or raising it",
+      "events": ["workspace.renamed socket-domain event with unchanged request params/result", "workspaceTitleDidChange NotificationCenter notification on display-title change"],
+      "persistence_restore": "custom title and source persist in session snapshots; blank titles are rejected by v2 rather than clearing",
+      "threading_focus_policy": "main actor; non-focus",
+      "dependencies": ["TabManager.setCustomTitle", "Workspace custom-title state", "remote tmux controller", "CmuxSocketEventMapper"],
+      "canonical_tests": ["Packages/macOS/CmuxControlSocket/Tests/CmuxControlSocketTests/ControlCommandCoordinatorWorkspaceTests.swift:35-78"],
+      "adversarial_acceptance": [
+        "Whitespace-only title returns invalid_params without clearing an existing title.",
+        "name without title returns invalid_params.",
+        "Rename in a non-key window preserves selection/key window and survives restart.",
+        "Remote tmux mirror rename is propagated exactly once."
+      ],
+      "windows_discrepancies": [
+        "apps/desktop/src-tauri/src/control_socket.rs:3321-3336 accepts name and selected-workspace fallback, both noncanonical for raw v2.",
+        "It returns workspace.current shape instead of rename identity/title and only searches the first window.",
+        "Exact error ordering/data and remote rename/title-change event behavior differ or are unproven."
+      ]
+    },
+    {
+      "name": "list-workspaces",
+      "kind": "cli",
+      "sources": ["CLI/cmux.swift:4391-4399", "CLI/cmux.swift:7349-7390"],
+      "selectors_aliases_flags": ["--window <UUID|window:N|zero-based index>", "global --json", "global --id-format"],
+      "precedence_defaults": "explicit --window/global window override; otherwise inject valid CMUX_WORKSPACE_ID and CMUX_SURFACE_ID as routing context; server returns that window's full list",
+      "errors": ["normalizer errors: Window not found, Invalid window handle, Window index not found", "v2 workspace.list errors"],
+      "response_output": {
+        "stderr": "one-time legacy alias warning to cmux workspace list unless CMUX_QUIET",
+        "empty_text": "No workspaces",
+        "row_text": "<*|two spaces> <handle>[  <title>][  [transport:state]][  [selected]]",
+        "row_order": "canonical workspace array order",
+        "json": "formatted workspace.list result"
+      },
+      "state_mutation": "none",
+      "window_focus_multiwindow": "explicit window scopes read without focus",
+      "events": [],
+      "persistence_restore": "read-only",
+      "threading_focus_policy": "synchronous CLI round trip; backend worker read; non-focus",
+      "dependencies": ["window.list for index/ref normalization", "workspace.list", "CMUX_WORKSPACE_ID", "CMUX_SURFACE_ID"],
+      "canonical_tests": ["cmuxTests/AppDelegateIssue2907RoutingTests.swift:360-426"],
+      "adversarial_acceptance": ["Ambient workspace in another window scopes output to caller window.", "--window suppresses ambient workspace/surface.", "Remote tag defaults missing transport/state to remote/unknown."],
+      "windows_discrepancies": ["crates/cmux-cli/src/command_forward.rs:239 sends empty params, treats list as global, and does not implement canonical context/window normalization.", "crates/cmux-cli/src/main.rs:943-1049 falls back to raw JSON for workspace.list; no canonical rows or empty text/deprecation warning."]
+    },
+    {
+      "name": "current-workspace",
+      "kind": "cli",
+      "sources": ["CLI/cmux.swift:4832-4843", "CLI/cmux.swift:17168-17183"],
+      "selectors_aliases_flags": ["--window <UUID|window:N|zero-based index>", "global --json", "global --id-format"],
+      "precedence_defaults": "explicit window; otherwise ambient workspace+surface route to caller window; absent context uses active window",
+      "errors": ["window normalization errors", "v2 workspace.current errors"],
+      "response_output": {"stderr": "no deprecation warning", "text": "workspace handle only plus newline", "json": "formatted workspace.current result"},
+      "state_mutation": "none",
+      "window_focus_multiwindow": "read-only and does not focus",
+      "events": [],
+      "persistence_restore": "read-only",
+      "threading_focus_policy": "synchronous CLI round trip; backend worker read; non-focus",
+      "dependencies": ["workspace.current", "window.list normalization", "ambient context"],
+      "canonical_tests": ["cmuxTests/AppDelegateIssue2907RoutingTests.swift:326-358,998-1005"],
+      "adversarial_acceptance": ["A background terminal reports its window's selected workspace, not necessarily CMUX_WORKSPACE_ID itself.", "--window ignores foreign ambient context.", "Default refs, uuids, and both formats print exactly one line."],
+      "windows_discrepancies": ["crates/cmux-cli/src/command_forward.rs:240-243 sends empty params and lacks --window/ambient routing.", "Windows formatter prints raw JSON rather than a handle-only line."]
+    },
+    {
+      "name": "new-workspace",
+      "kind": "cli",
+      "sources": ["CLI/cmux.swift:4447-4457", "CLI/cmux.swift:7392-7480", "CLI/cmux.swift:7482-7565"],
+      "selectors_aliases_flags": ["--name", "--description", "--cwd", "--command", "--env KEY=VALUE repeatable", "--env-file path repeatable", "--layout JSON object", "--window", "--focus true|false", "--group", "--group-placement afterCurrent|top|end", "--group-reference", "global --json/--id-format"],
+      "precedence_defaults": "explicit window else ambient caller context; env files apply in order then --env overrides; cwd path expands; focus defaults false; bare extra positionals are ignored but unknown flags fail",
+      "errors": ["--env/--env-file missing value", "invalid KEY=VALUE or empty key", "unreadable env file", "unknown flag exact known-flags message", "invalid --layout JSON object", "--focus must be true|false", "workspace.create and optional surface.send_text errors"],
+      "response_output": {"stderr": "one-time alias warning to cmux workspace create", "text": "OK <workspace_ref preferred, else workspace_id>", "json": "intentionally ignored for this legacy verb; still text", "post_create_command": "when no layout and --command is present, send command plus carriage return via surface.send_text to created workspace; command is not workspace.create initial_command"},
+      "state_mutation": "workspace.create plus optional surface input",
+      "window_focus_multiwindow": "routes target window without focus by default; even requested focus is suppressed by canonical control-socket focus policy",
+      "events": ["backend create/input lifecycle events"],
+      "persistence_restore": "inherits backend create persistence",
+      "threading_focus_policy": "synchronous CLI; backend create main actor/non-focus",
+      "dependencies": ["workspace.create", "surface.send_text", "filesystem env files", "path expansion"],
+      "canonical_tests": ["cmuxTests/CMUXCLIErrorOutputRegressionTests.swift:1260 vicinity", "cmuxTests/WorkspaceEnvironmentTests.swift"],
+      "adversarial_acceptance": ["--env overrides --env-file and values containing '=' split on first only.", "--command with --layout does not send text.", "--json still prints OK text.", "Invalid layout/env fails before workspace.create."],
+      "windows_discrepancies": ["crates/cmux-cli/src/command_forward.rs:1124-1148 supports only cwd/command/input/environment with different wire keys.", "Missing canonical name/description/env-file/workspace_env/layout/window/focus/group flags and post-create send_text semantics.", "Windows formatter emits raw JSON and does not match legacy warning/output behavior."]
+    },
+    {
+      "name": "close-workspace",
+      "kind": "cli",
+      "sources": ["CLI/cmux.swift:4794-4804", "CLI/cmux.swift:7706-7737", "CLI/cmux.swift:6072-6183,14863-14929"],
+      "selectors_aliases_flags": ["required --workspace <UUID|workspace:N|zero-based index>", "--window <UUID|window:N|zero-based index>", "global --json/--id-format"],
+      "precedence_defaults": "legacy form requires the flag (no positional); normalize window first, then workspace within that window; UUID passes through, refs are verified/resolved, indexes use workspace.list",
+      "errors": ["close-workspace requires --workspace", "workspace/window normalization errors", "workspace.close errors"],
+      "response_output": {"stderr": "one-time alias warning to cmux workspace close", "text": "OK <workspace handle>", "json": "formatted close result", "side_effect": "best-effort prune tmux compatibility state for closed workspace"},
+      "state_mutation": "workspace.close plus local tmux compatibility-state prune",
+      "window_focus_multiwindow": "does not focus target window",
+      "events": ["backend close lifecycle events"],
+      "persistence_restore": "inherits close history semantics; prunes CLI tmux state",
+      "threading_focus_policy": "synchronous CLI; backend main actor/non-focus",
+      "dependencies": ["window.list", "workspace.list", "workspace.close", "tmux compatibility state"],
+      "canonical_tests": ["cmuxTests/TerminalControllerSocketSecurityTests.swift:1356-1392"],
+      "adversarial_acceptance": ["A positional-only target fails before socket call.", "--workspace 0 resolves zero-based index in --window.", "A ref not present in explicit window fails client-side."],
+      "windows_discrepancies": ["crates/cmux-cli/src/command_forward.rs:1158-1175 accepts positionals, rejects --index syntax wholesale, and sends workspace_ref rather than normalizing to canonical workspace_id.", "No canonical --window normalization/deprecation/OK-or-JSON formatting; backend response is also wrong shape."]
+    },
+    {
+      "name": "select-workspace",
+      "kind": "cli",
+      "sources": ["CLI/cmux.swift:4806-4816", "CLI/cmux.swift:7739-7774", "CLI/cmux.swift:6072-6183"],
+      "selectors_aliases_flags": ["required --workspace <UUID|workspace:N|zero-based index>", "--window", "global --json/--id-format"],
+      "precedence_defaults": "legacy flag required; normalize window then workspace; send workspace_id",
+      "errors": ["select-workspace requires --workspace", "normalizer errors", "workspace.select errors"],
+      "response_output": {"stderr": "one-time alias warning to cmux workspace select", "text": "OK <workspace handle>", "json": "formatted select result"},
+      "state_mutation": "workspace.select",
+      "window_focus_multiwindow": "explicit focus-intent; cross-window target is brought forward in-app",
+      "events": ["workspace.selected if changed"],
+      "persistence_restore": "inherits selection state semantics",
+      "threading_focus_policy": "synchronous CLI; backend main actor/focus-intent",
+      "dependencies": ["window.list", "workspace.list", "workspace.select"],
+      "canonical_tests": ["Sources/TerminalController.swift:253-275"],
+      "adversarial_acceptance": ["Positional-only target fails.", "Explicit window scopes ref/index and prevents cross-window accidental selection.", "Selecting already selected workspace succeeds without duplicate selection event."],
+      "windows_discrepancies": ["crates/cmux-cli/src/command_forward.rs:315-318 and 1151-1155 allow positional/ref-shaped selectors and omit canonical window normalization.", "Raw JSON output replaces canonical OK/JSON formatting and no deprecation notice is emitted."]
+    },
+    {
+      "name": "rename-workspace",
+      "kind": "cli",
+      "sources": ["CLI/cmux.swift:4818-4830", "CLI/cmux.swift:7776-7824", "CLI/cmux.swift:14852-14929"],
+      "selectors_aliases_flags": ["optional --workspace <UUID|workspace:N|zero-based index>", "optional --window", "optional leading -- before title", "remaining tokens form required title", "alias rename-window", "global --json/--id-format"],
+      "precedence_defaults": "--workspace; else valid CMUX_WORKSPACE_ID only when no window; else resolved selected workspace; positionals are all title text and never a legacy workspace selector",
+      "errors": ["rename-workspace requires a title", "Workspace not found/ref not found/index not found/no workspace selected normalizer errors", "workspace.rename errors"],
+      "response_output": {"stderr": "one-time alias warning only for rename-workspace, not rename-window", "text": "OK <workspace handle>", "json": "formatted rename result"},
+      "state_mutation": "workspace.rename",
+      "window_focus_multiwindow": "background rename preserves focus",
+      "events": ["workspace.renamed and title-change notification"],
+      "persistence_restore": "custom title persists",
+      "threading_focus_policy": "synchronous CLI; backend main actor/non-focus",
+      "dependencies": ["window.list", "workspace.list/current", "workspace.rename", "CMUX_WORKSPACE_ID"],
+      "canonical_tests": ["Sources/TabManager+WorkspaceCustomTitle.swift:3-40"],
+      "adversarial_acceptance": ["rename-workspace 2 Build names the default workspace '2 Build'; it does not select workspace index 2.", "--window with no --workspace renames that window's selected workspace and ignores ambient foreign workspace.", "Whitespace-only joined title fails client-side."],
+      "windows_discrepancies": ["crates/cmux-cli/src/command_forward.rs:1578-1591 and 2138-2169 treats a selector-looking first positional as the workspace target, directly contradicting canonical legacy behavior.", "Ambient/current/window resolution, deprecation notice, and canonical output formatting are absent; backend accepts noncanonical name/fallback semantics."]
+    }
+  ],
+  "proposed_red_test_build_scopes": [
+    {
+      "scope": "backend_reads",
+      "entries": ["workspace.list", "workspace.current"],
+      "red_tests": ["multiwindow routing precedence", "invalid explicit window no fallback", "current routes by workspace but returns selected", "stale selected workspace:null", "exact canonical summary keys/types"],
+      "build_target": "apps/desktop/src-tauri control_socket pure resolver/payload tests plus cargo check -p cmux-desktop --all-targets"
+    },
+    {
+      "scope": "backend_mutations",
+      "entries": ["workspace.create", "workspace.select", "workspace.close", "workspace.rename"],
+      "red_tests": ["exact error precedence/data", "cross-window focus preservation/intent", "pinned and sole-tab close", "create validation/layout/env/group", "canonical result identities", "lifecycle events and restart/closed-history behavior"],
+      "build_target": "cmux-core session operation tests, desktop control_socket tests, desktop check/no-run/build"
+    },
+    {
+      "scope": "cli_legacy_six",
+      "entries": ["list-workspaces", "current-workspace", "new-workspace", "close-workspace", "select-workspace", "rename-workspace"],
+      "red_tests": ["exact request sequence/normalization", "ambient versus --window precedence", "legacy required flags", "rename positional-title trap", "new command post-send", "stdout/stderr/JSON/id-format/deprecation"],
+      "build_target": "cmux-cli unit tests plus real named-pipe executable regression tests"
+    }
+  ],
+  "differential_live_runner_plan": {
+    "why": "compile-only and pure payload tests cannot verify key-window focus, terminal startup/environment, lifecycle events, close history, or restart persistence",
+    "canonical_fixture": "Build/launch frozen canonical e1825d40 in an isolated tagged macOS app/socket. Create two windows with at least three workspaces each, one pinned workspace, one group, one layout workspace, and event stream subscription.",
+    "windows_fixture": "Launch the matching Windows build with an isolated named pipe and equivalent state via public v2/CLI operations.",
+    "runner": "A manifest-driven Python runner sends v2 JSON and invokes each CLI executable, records request/response, stdout, stderr, exit code, normalized state snapshots, event frames, selected/key window, and terminal-observed cwd/env/command. Dynamic UUID/ref fields are symbolized by creation order before comparison; arrays and text remain order-sensitive; object keys are compared as sets with exact values.",
+    "phases": [
+      "read matrix across every routing selector and invalid explicit window",
+      "create matrix for cwd/command/env/layout/group/focus and terminal probe",
+      "select/rename/close across foreground/background/pinned/sole-tab cases while watching focus and events",
+      "quit/relaunch then compare list/current/title/layout/env and reopen-closed history",
+      "run six CLI verbs under empty, ambient caller, explicit window, refs, UUIDs, indexes, --json, and all id formats"
+    ],
+    "artifacts": ["canonical.ndjson", "windows.ndjson", "normalized-diff.json", "focus-event-timeline.json"],
+    "pass_condition": "No unexplained normalized response, output, state, focus, event, or restore delta for any adversarial case"
+  },
+  "batch_assessment": {
+    "coherent": true,
+    "single_patch_recommended": false,
+    "reason": "The six CLI verbs are direct façades over the six v2 methods and share routing/identity semantics, so the 12-entry audit batch is coherent. Implementation should be staged into the three disjoint scopes above because read routing, mutation lifecycle, and CLI normalization/output have independent red/green gates and substantially different risk."
+  }
+}
