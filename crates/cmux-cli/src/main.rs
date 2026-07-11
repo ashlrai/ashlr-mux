@@ -815,17 +815,26 @@ fn filter_id_format(value: &mut serde_json::Value, id_format: &str) {
                 filter_id_format(child, id_format);
             }
             let keys = object.keys().cloned().collect::<Vec<_>>();
+            let (plain_remove, singular_remove, singular_keep, plural_remove, plural_keep) =
+                match id_format {
+                    "refs" => ("id", "_id", "_ref", "_ids", "_refs"),
+                    "uuids" => ("ref", "_ref", "_id", "_refs", "_ids"),
+                    _ => return,
+                };
+            let plain_keep = if plain_remove == "id" { "ref" } else { "id" };
+            if object.contains_key(plain_remove) && object.contains_key(plain_keep) {
+                object.remove(plain_remove);
+            }
             for key in keys {
-                if id_format == "refs" && key.ends_with("_id") {
-                    let ref_key = format!("{}_ref", key.trim_end_matches("_id"));
-                    if object.contains_key(&ref_key) {
-                        object.remove(&key);
-                    }
-                } else if id_format == "uuids" && key.ends_with("_ref") {
-                    let id_key = format!("{}_id", key.trim_end_matches("_ref"));
-                    if object.contains_key(&id_key) {
-                        object.remove(&key);
-                    }
+                let paired = key
+                    .strip_suffix(plural_remove)
+                    .map(|prefix| format!("{prefix}{plural_keep}"))
+                    .or_else(|| {
+                        key.strip_suffix(singular_remove)
+                            .map(|prefix| format!("{prefix}{singular_keep}"))
+                    });
+                if paired.is_some_and(|paired| object.contains_key(&paired)) {
+                    object.remove(&key);
                 }
             }
         }
@@ -1334,16 +1343,12 @@ fn format_workspace_entries_with_mode(result: &serde_json::Value, id_format: &st
     workspaces
         .iter()
         .map(|workspace| {
-            let prefix = if workspace
+            let selected = workspace
                 .get("selected")
                 .and_then(serde_json::Value::as_bool)
-                == Some(true)
-            {
-                "*"
-            } else {
-                "  "
-            };
-            let mut line = format!("{prefix} {}", workspace_row_handle(workspace, id_format));
+                == Some(true);
+            let prefix = if selected { "* " } else { "  " };
+            let mut line = format!("{prefix}{}", workspace_row_handle(workspace, id_format));
             if let Some(title) = workspace
                 .get("title")
                 .and_then(serde_json::Value::as_str)
@@ -1368,6 +1373,9 @@ fn format_workspace_entries_with_mode(result: &serde_json::Value, id_format: &st
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("unknown");
                 line.push_str(&format!("  [{transport}:{state}]"));
+            }
+            if selected {
+                line.push_str("  [selected]");
             }
             line
         })
