@@ -920,8 +920,8 @@ pub(crate) fn record_proxy_tunnel_observation_with_attribution(
     completed_at_ms: u64,
     proxy_attribution: Option<&str>,
 ) -> Result<(), String> {
-    let request_body = network_body_text(upstream_prefix);
-    let response_body = network_body_text(downstream_prefix);
+    let request_body = network_opaque_tunnel_body(upstream_prefix);
+    let response_body = network_opaque_tunnel_body(downstream_prefix);
     let id = state.next_network_record_id.fetch_add(1, Ordering::Relaxed);
     push_network_record(
         state,
@@ -1117,13 +1117,35 @@ struct NetworkBodyText {
     truncated: bool,
 }
 
-fn network_body_text(body: &[u8]) -> NetworkBodyText {
-    if body.is_empty() {
-        return NetworkBodyText {
+impl NetworkBodyText {
+    fn empty() -> Self {
+        Self {
             body: None,
             preview_kind: "empty".to_string(),
             truncated: false,
-        };
+        }
+    }
+
+    fn binary(body: &[u8]) -> Self {
+        Self {
+            body: Some(format!("<binary body: {} bytes>", body.len())),
+            preview_kind: "binary".to_string(),
+            truncated: body.len() > NETWORK_BODY_CAPTURE_LIMIT_BYTES,
+        }
+    }
+}
+
+fn network_opaque_tunnel_body(body: &[u8]) -> NetworkBodyText {
+    if body.is_empty() {
+        NetworkBodyText::empty()
+    } else {
+        NetworkBodyText::binary(body)
+    }
+}
+
+fn network_body_text(body: &[u8]) -> NetworkBodyText {
+    if body.is_empty() {
+        return NetworkBodyText::empty();
     }
     let truncated = body.len() > NETWORK_BODY_CAPTURE_LIMIT_BYTES;
     let captured = if truncated {
@@ -1137,11 +1159,7 @@ fn network_body_text(body: &[u8]) -> NetworkBodyText {
             preview_kind: "text".to_string(),
             truncated,
         },
-        Err(_) => NetworkBodyText {
-            body: Some(format!("<binary body: {} bytes>", body.len())),
-            preview_kind: "binary".to_string(),
-            truncated,
-        },
+        Err(_) => NetworkBodyText::binary(body),
     }
 }
 
