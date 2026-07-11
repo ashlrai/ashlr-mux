@@ -1,0 +1,216 @@
+{
+  "schema_version": 1,
+  "contract_id": "runtime_proxy_body_classification",
+  "audit_base_commit": "e9cbbd41f35ad79af412649a7d497c8beffa7952",
+  "canonical_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+  "scope": {
+    "deterministic_red_tests": [
+      "browser::tests::network_reply_serializes_tunnel_record_for_control_socket_clients",
+      "browser::tests::proxy_tunnel_observation_records_opaque_https_metadata",
+      "session::tests::panel_proxy_observer_bridge_records_opaque_tunnel_metadata"
+    ],
+    "production_path": [
+      "apps/desktop/src-tauri/src/session.rs:3560-3594",
+      "apps/desktop/src-tauri/src/browser.rs:909-955",
+      "apps/desktop/src-tauri/src/browser.rs:1114-1146",
+      "apps/desktop/src-tauri/src/browser.rs:38-71"
+    ],
+    "out_of_scope": [
+      "TLS interception or decryption",
+      "origin request or response headers inside an opaque tunnel",
+      "changing the public BrowserNetworkRecord JSON shape",
+      "implementing the fix in this audit commit"
+    ]
+  },
+  "reproduction": {
+    "test_binary": {
+      "built_from_commit": "f4642e63920e9f39b616da837fdb8f9b20b4541b",
+      "sha256": "7BB84BAA122B9896936A5FC4A98FE14ABC80B6CC7C861AB6BD15C02EE64AD743",
+      "source_equivalence": "git diff --quiet f4642e63920e9f39b616da837fdb8f9b20b4541b..e9cbbd41f35ad79af412649a7d497c8beffa7952 -- apps/desktop/src-tauri/src/browser.rs apps/desktop/src-tauri/src/session.rs exited 0"
+    },
+    "results": [
+      {
+        "test": "browser::tests::proxy_tunnel_observation_records_opaque_https_metadata",
+        "result": "red",
+        "failure": "apps/desktop/src-tauri/src/browser.rs:1722; requestBodyPreviewKind actual text, expected binary"
+      },
+      {
+        "test": "browser::tests::network_reply_serializes_tunnel_record_for_control_socket_clients",
+        "result": "red",
+        "failure": "apps/desktop/src-tauri/src/browser.rs:1781; serialized requestBodyPreviewKind actual text, expected binary"
+      },
+      {
+        "test": "session::tests::panel_proxy_observer_bridge_records_opaque_tunnel_metadata",
+        "result": "red",
+        "failure": "apps/desktop/src-tauri/src/session.rs:8454; requestBodyPreviewKind actual text, expected binary"
+      }
+    ],
+    "fixture_bytes": {
+      "upstream": [
+        "16 03 01 00 2a",
+        "16 03 01"
+      ],
+      "downstream": [
+        "16 03 03 00 31",
+        "16 03 03"
+      ],
+      "interpretation": "The prefixes resemble TLS record framing. Every byte is below 0x80, so Rust accepts the sequence as UTF-8 even though it begins with control characters and is not human-readable text."
+    }
+  },
+  "canonical_comparison": {
+    "result": "no canonical body-classification oracle",
+    "frozen_behavior": {
+      "method": "browser.network.requests",
+      "result": "not_supported",
+      "code": "not_supported",
+      "message": "browser.network.requests is not supported on WKWebView",
+      "details": "Request interception logs are unavailable without CDP network hooks",
+      "sources": [
+        "Sources/TerminalController.swift:10374-10383 at the frozen canonical commit",
+        "CLI/cmux.swift:14689-14692 at the frozen canonical commit"
+      ]
+    },
+    "parity_interpretation": "Windows proxy-stream capture is a platform-equivalent extension beyond the frozen WKWebView implementation. Canonical cmux therefore neither requires nor supports labeling opaque bytes as text. The Windows result must be judged by the advertised proxy observer semantics and internal wire consistency."
+  },
+  "decision": {
+    "expected_binary_is_correct": true,
+    "actual_text_is_correct": false,
+    "reasons": [
+      "A successful CONNECT establishes a byte tunnel; bytes after the broker handshake are not an HTTP entity body and have no origin MIME metadata at this observation layer.",
+      "For HTTPS, captured prefixes are encrypted TLS records. Treating UTF-8 decodability as proof of text leaks control characters into a field advertised as a text preview and misrepresents opaque ciphertext.",
+      "The record itself declares source proxy-stream-tunnel, method CONNECT, empty headers, and a note that encrypted origin headers remain unavailable without interception; binary is the only classification consistent with those fields.",
+      "The same BrowserNetworkRecord is returned directly and serialized to camelCase JSON. Classification must not differ between browser, session bridge, and control-socket clients."
+    ]
+  },
+  "exact_contract": {
+    "opaque_connect_tunnel": {
+      "non_empty_prefix": {
+        "preview_kind": "binary",
+        "body": "<binary body: N bytes>",
+        "size": "N, the captured prefix length supplied to the recorder",
+        "truncated": "true when N exceeds the body preview limit or the proxy observation says more bytes existed; otherwise false"
+      },
+      "empty_prefix": {
+        "preview_kind": "empty",
+        "body": null,
+        "size": 0,
+        "truncated": "the proxy observation's truncation flag; an empty captured prefix can still represent omitted bytes"
+      },
+      "headers": "requestHeaders and responseHeaders remain empty because origin headers are encrypted or otherwise opaque",
+      "status": "responseStatus 200 means the proxy/broker tunnel handshake succeeded; it is not an origin HTTPS response status",
+      "mime_rule": "Never infer text from MIME for an opaque tunnel. No origin Content-Type is observable without interception.",
+      "transport_rule": "The rule applies equally to SOCKS5 and HTTP CONNECT because transport selection does not make post-handshake bytes textual.",
+      "url_rule": "Port 443 uses https://host/; other ports use tcp://host:port/. The classification rule is based on the opaque-tunnel production path, not the URL scheme alone."
+    },
+    "cleartext_http_and_custom_scheme": {
+      "separation_rule": "Do not force cleartext HTTP or Tauri custom-scheme bodies to binary; those paths carry entity bodies and may expose Content-Type.",
+      "content_type_precedence": [
+        "An explicit binary media type is binary even when its bytes happen to be valid UTF-8.",
+        "Textual media types include text/*, application/json and *+json, application/xml and *+xml, application/javascript, application/x-www-form-urlencoded, and application/graphql.",
+        "A textual media type is previewable as text only when the captured bytes decode as UTF-8; unsupported or invalid charsets fall back to binary rather than lossy decoding.",
+        "With absent or ambiguous Content-Type, require valid UTF-8 and no disallowed control characters before labeling text."
+      ],
+      "utf8_control_heuristic": {
+        "necessary": "captured bytes are valid UTF-8",
+        "not_sufficient": true,
+        "allowed_controls": [
+          "U+0009 TAB",
+          "U+000A LF",
+          "U+000D CR"
+        ],
+        "disallowed_controls": "Other Unicode control characters, including NUL, C0 framing bytes, DEL, and C1 controls, make an untyped body binary."
+      },
+      "audit_note": "The current generic network_body_text helper ignores Content-Type and uses UTF-8 validity alone. That is an adjacent classifier weakness, but broadening the three-red fix to MIME policy would change established cleartext output without dedicated red coverage."
+    },
+    "wire_serialization": {
+      "single_model": "BrowserNetworkRecord with serde rename_all=camelCase",
+      "required_keys": [
+        "requestBody",
+        "requestBodyPreviewKind",
+        "requestBodySize",
+        "requestBodyTruncated",
+        "responseBody",
+        "responseBodyPreviewKind",
+        "responseBodySize",
+        "responseBodyTruncated"
+      ],
+      "consistency": "In-memory browser replies, session-bridged observations, and control-socket JSON must expose identical preview classifications and truncation values. No session-specific reclassification or second serializer is permitted."
+    }
+  },
+  "root_cause": {
+    "primary": "record_proxy_tunnel_observation_with_attribution calls network_body_text for upstream and downstream prefixes. network_body_text classifies every non-empty valid UTF-8 sequence as text and checks neither semantic source nor control characters.",
+    "why_all_three_fail": "The direct browser record test, JSON serializer test, and session bridge test all converge on the same browser tunnel recorder. Their three failures are one classifier defect, not three independent runtime defects.",
+    "why_tls_fixture_is_text_today": "0x16, 0x03, 0x01/0x03, and the short length bytes are valid single-byte UTF-8 code points, despite being C0 controls.",
+    "not_root_causes": [
+      "serde camelCase serialization",
+      "session proxy attribution",
+      "SOCKS5 versus HTTP CONNECT selection",
+      "test loader or DLL availability",
+      "capture truncation propagation"
+    ]
+  },
+  "red_test_plan": {
+    "retain_exact_existing_reds": true,
+    "add_before_fix": [
+      {
+        "name": "opaque_tunnel_printable_ascii_prefix_is_binary",
+        "purpose": "Prove classification follows tunnel semantics rather than content appearance."
+      },
+      {
+        "name": "opaque_tunnel_empty_prefix_is_empty_and_preserves_external_truncation",
+        "purpose": "Pin the zero-byte edge and omitted-byte signal."
+      },
+      {
+        "name": "opaque_tunnel_capture_limit_preserves_total_observation_truncation",
+        "purpose": "Pin helper truncation OR proxy-observer truncation behavior."
+      },
+      {
+        "name": "opaque_tunnel_binary_wire_shape_matches_in_memory_record",
+        "purpose": "Pin camelCase control-socket serialization for both request and response fields."
+      }
+    ],
+    "separate_follow_up_reds_for_generic_http_classifier": [
+      "image/png with an all-ASCII captured prefix remains binary because MIME is authoritative",
+      "application/json UTF-8 body is text",
+      "missing Content-Type plus valid UTF-8 containing NUL is binary",
+      "missing Content-Type plus TAB/LF/CR remains text",
+      "text/plain with invalid UTF-8 is binary",
+      "application/problem+json is text"
+    ]
+  },
+  "minimal_shared_fix": {
+    "location": "apps/desktop/src-tauri/src/browser.rs",
+    "design": [
+      "Add a small tunnel-body preview constructor that returns empty for a zero-length prefix and binary for every non-empty prefix, while applying the same 4096-byte preview bound and placeholder format.",
+      "Use it for both upstream and downstream in record_proxy_tunnel_observation_with_attribution.",
+      "Keep the existing OR with upstream_truncated/downstream_truncated so observer-level omission is preserved.",
+      "Do not edit session.rs: record_proxy_observation_for_browser_panel already delegates parse failures to the shared browser tunnel recorder.",
+      "Do not alter BrowserNetworkRecord or serde attributes, so direct and control-socket results stay on one serializer."
+    ],
+    "simplification_after_green": "If duplication is undesirable, refactor body preview creation around an explicit semantic enum such as EntityBody versus OpaqueTunnel; do not infer tunnel semantics from byte contents, URL, or MIME.",
+    "risk": "low and localized; only proxy-stream-tunnel body preview values change, matching existing assertions and the observer note"
+  },
+  "adversarial_cases": [
+    "TLS prefix made only of ASCII-range control bytes",
+    "opaque encrypted prefix that happens to be printable ASCII or valid JSON",
+    "invalid UTF-8 opaque prefix",
+    "empty upstream with non-empty downstream and the reverse",
+    "empty captured prefix with observer truncation true",
+    "prefix exactly 4096 bytes and one byte over the limit",
+    "external truncation false versus true independent of local preview truncation",
+    "SOCKS5 and HTTP CONNECT transports",
+    "port 443 and non-443 targets, including bracketed IPv6",
+    "binary cleartext HTTP response whose MIME is image/png but prefix is ASCII",
+    "UTF-8 text containing TAB/LF/CR versus NUL/DEL/C1 controls",
+    "camelCase JSON contains no snake_case duplicate fields"
+  ],
+  "verification_sequence": [
+    "red: run each of the three existing tests independently and the new tunnel adversarial tests",
+    "implement: apply the one shared browser tunnel-preview fix",
+    "green: rerun the focused browser and session tests",
+    "simplify: remove duplication only if the semantic OpaqueTunnel input remains explicit",
+    "green again: rerun focused tests plus the complete cmux-desktop library test binary",
+    "runtime: exercise a live proxied HTTPS browser request and inspect browser.network.requests JSON; local compilation alone is insufficient",
+    "gate: run the repository release gate before parity promotion or push"
+  ]
+}
