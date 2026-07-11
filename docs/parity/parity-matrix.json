@@ -1573,7 +1573,7 @@
       "name": "browser",
       "priority": 2,
       "rationale": null,
-      "status": "missing",
+      "status": "implemented_unverified",
       "user_approval": null,
       "windows_sources": [
         {
@@ -6218,7 +6218,7 @@
       "name": "drag-surface-to-split",
       "priority": 0,
       "rationale": null,
-      "status": "missing",
+      "status": "implemented_unverified",
       "user_approval": null,
       "windows_sources": [
         {
@@ -18912,7 +18912,7 @@
       "name": "sidebar",
       "priority": 1,
       "rationale": null,
-      "status": "missing",
+      "status": "implemented_unverified",
       "user_approval": null,
       "windows_sources": [
         {
@@ -19379,7 +19379,7 @@
       "name": "split-off",
       "priority": 0,
       "rationale": null,
-      "status": "missing",
+      "status": "implemented_unverified",
       "user_approval": null,
       "windows_sources": [
         {
@@ -20333,7 +20333,7 @@
       "name": "surface",
       "priority": 0,
       "rationale": null,
-      "status": "missing",
+      "status": "implemented_unverified",
       "user_approval": null,
       "windows_sources": [
         {
@@ -22632,7 +22632,7 @@
       "name": "workspace",
       "priority": 0,
       "rationale": null,
-      "status": "missing",
+      "status": "implemented_unverified",
       "user_approval": null,
       "windows_sources": [
         {
@@ -37481,7 +37481,7 @@
         "windows_evidence": null
       },
       "name": "mobile.dev_stack_auth.configure",
-      "priority": 2,
+      "priority": 3,
       "rationale": null,
       "status": "missing",
       "user_approval": null,
@@ -37751,7 +37751,7 @@
         "windows_evidence": null
       },
       "name": "mobile.terminal.create",
-      "priority": 0,
+      "priority": 3,
       "rationale": null,
       "status": "missing",
       "user_approval": null,
@@ -37808,7 +37808,7 @@
         "windows_evidence": null
       },
       "name": "mobile.terminal.input",
-      "priority": 0,
+      "priority": 3,
       "rationale": null,
       "status": "missing",
       "user_approval": null,
@@ -37859,7 +37859,7 @@
         "windows_evidence": null
       },
       "name": "mobile.terminal.paste",
-      "priority": 0,
+      "priority": 3,
       "rationale": null,
       "status": "missing",
       "user_approval": null,
@@ -37922,7 +37922,7 @@
         "windows_evidence": null
       },
       "name": "mobile.terminal.replay",
-      "priority": 0,
+      "priority": 3,
       "rationale": null,
       "status": "missing",
       "user_approval": null,
@@ -37961,7 +37961,7 @@
         "windows_evidence": null
       },
       "name": "mobile.terminal.set_font",
-      "priority": 0,
+      "priority": 3,
       "rationale": null,
       "status": "missing",
       "user_approval": null,
@@ -38018,7 +38018,7 @@
         "windows_evidence": null
       },
       "name": "mobile.terminal.viewport",
-      "priority": 0,
+      "priority": 3,
       "rationale": null,
       "status": "missing",
       "user_approval": null,
@@ -38081,7 +38081,7 @@
         "windows_evidence": null
       },
       "name": "mobile.workspace.list",
-      "priority": 0,
+      "priority": 3,
       "rationale": null,
       "status": "missing",
       "user_approval": null,
@@ -54337,8 +54337,8 @@
         "missing": 6
       },
       "browser": {
-        "implemented_unverified": 80,
-        "missing": 23
+        "implemented_unverified": 81,
+        "missing": 22
       },
       "certification": {
         "missing": 1
@@ -54401,8 +54401,8 @@
         "missing": 1
       },
       "pane": {
-        "implemented_unverified": 23,
-        "missing": 4
+        "implemented_unverified": 24,
+        "missing": 3
       },
       "pane_surface": {
         "missing": 1
@@ -54421,15 +54421,15 @@
         "missing": 2
       },
       "sidebar": {
-        "implemented_unverified": 2,
-        "missing": 3
+        "implemented_unverified": 3,
+        "missing": 2
       },
       "ssh_remote": {
         "missing": 1
       },
       "surface": {
-        "implemented_unverified": 28,
-        "missing": 13
+        "implemented_unverified": 30,
+        "missing": 11
       },
       "system": {
         "implemented_unverified": 10,
@@ -54459,8 +54459,8 @@
         "missing": 8
       },
       "workspace": {
-        "implemented_unverified": 28,
-        "missing": 38
+        "implemented_unverified": 29,
+        "missing": 37
       }
     },
     "by_kind": {
@@ -54470,8 +54470,8 @@
       "v2_method": 293
     },
     "by_status": {
-      "implemented_unverified": 227,
-      "missing": 259
+      "implemented_unverified": 233,
+      "missing": 253
     },
     "canonical_targets": {
       "debug_only_v2_methods": 42,

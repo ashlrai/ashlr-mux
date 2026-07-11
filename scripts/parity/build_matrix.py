@@ -82,22 +82,26 @@ def collect_locations(value: Any) -> list[dict[str, Any]]:
 
 def priority_for(family: str) -> int:
     family = family.lower()
+    if "debug" in family:
+        return 4
+    if "mobile" in family:
+        return 3
     if any(token in family for token in ("workspace", "pane", "surface", "window", "session", "terminal", "system")):
         return 0
     if any(token in family for token in ("tmux", "agent", "feed", "hook", "notification", "sidebar", "config", "setting", "remote", "ssh")):
         return 1
     if any(token in family for token in ("browser", "auth", "account", "cloud", "vm", "file", "project")):
         return 2
-    if "mobile" in family:
-        return 3
-    if "debug" in family:
-        return 4
     return 2
 
 
 def windows_cli_is_implemented(item: dict[str, Any]) -> bool:
     if not item.get("top_level_known"):
         return False
+    if item.get("dispatch_outcome") == "explicit_socket_command_not_ported":
+        return False
+    if item.get("dispatch_outcome") == "control_mapping":
+        return True
     if item.get("executor") or item.get("control_methods"):
         return True
     return item.get("classification") in {"local_or_no_socket", "hybrid_local_and_socket"}

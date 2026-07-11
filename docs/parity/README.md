@@ -35,6 +35,11 @@ Generated source catalogs and the matrix must be regenerated rather than
 hand-edited. The generator validates pinned counts, unique IDs, source
 locations, status evidence and percentage numerators/denominators.
 
+```powershell
+python scripts/parity/build_matrix.py --check
+python scripts/parity/validate_matrix_sources.py
+```
+
 ## Differential protocol
 
 `scripts/parity/differential_harness.py` sends each case to canonical and

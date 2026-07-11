@@ -27,6 +27,17 @@ class MatrixBuilderTests(unittest.TestCase):
         self.assertTrue(windows_cli_is_implemented(evidence))
         self.assertIn("implemented_unverified", ALLOWED_STATUSES)
 
+    def test_conditional_control_mapping_is_implemented_but_unverified(self):
+        evidence = {
+            "top_level_known": True,
+            "dispatch_outcome": "control_mapping",
+            "control_mapping_kind": "conditional",
+            "control_methods": [],
+        }
+        self.assertTrue(windows_cli_is_implemented(evidence))
+        evidence["dispatch_outcome"] = "explicit_socket_command_not_ported"
+        self.assertFalse(windows_cli_is_implemented(evidence))
+
     def test_resolved_status_requires_commit_and_equivalence_rationale(self):
         with self.assertRaisesRegex(ValueError, "verifying commit"):
             validate_entries([entry("verified")])
