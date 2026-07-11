@@ -65,6 +65,8 @@ pub enum DispatchPlan {
     RunConfigMutation(Vec<String>),
     /// Read or edit the shared DEBUG-window display setting without a socket.
     RunWindowDefaultDisplay(Vec<String>),
+    /// Launch the packaged desktop with a validated directory path.
+    RunOpenPath(String),
     /// Run a local hooks installer/uninstaller command.
     RunHooksInstaller { command: String, args: Vec<String> },
     /// Read one agent hook payload from stdin and bridge it through `feed.push`.
@@ -468,7 +470,7 @@ pub fn plan_with_args(action: &PreSocketAction, command: &str, args: &[String]) 
             return DispatchPlan::RunWindowDefaultDisplay(args.to_vec());
         }
         PreSocketAction::ConfigNoSocket => return DispatchPlan::RunConfig(args.to_vec()),
-        PreSocketAction::OpenPath { .. } => "open",
+        PreSocketAction::OpenPath { path } => return DispatchPlan::RunOpenPath(path.clone()),
     };
     DispatchPlan::Fail(not_yet_ported(label))
 }
@@ -867,6 +869,20 @@ mod tests {
     }
 
     #[test]
+    fn bare_path_runs_the_local_desktop_launcher() {
+        assert_eq!(
+            plan_with_args(
+                &PreSocketAction::OpenPath {
+                    path: "project".to_string(),
+                },
+                "project",
+                &[]
+            ),
+            DispatchPlan::RunOpenPath("project".to_string())
+        );
+    }
+
+    #[test]
     fn mapped_socket_commands_can_use_command_args() {
         let args = vec!["2".to_string()];
         match plan_with_args(&PreSocketAction::NeedsSocket, "select-workspace", &args) {
@@ -917,12 +933,6 @@ mod tests {
         for (action, needle) in [
             (PreSocketAction::Sessions { debug: false }, "sessions"),
             (PreSocketAction::Sessions { debug: true }, "session-debug"),
-            (
-                PreSocketAction::OpenPath {
-                    path: "p".to_owned(),
-                },
-                "open",
-            ),
         ] {
             match plan(&action, "x") {
                 DispatchPlan::Fail(error) => {

@@ -171,6 +171,27 @@ fn route_deep_link_url(app: &tauri::AppHandle, url: &str) {
     }
 }
 
+fn route_launch_arguments(app: &tauri::AppHandle, args: &[String], cwd: &Path) {
+    for argument in args {
+        route_deep_link_url(app, argument);
+    }
+    for directory in cmux_core::launch_arguments::launch_open_directories(args, cwd) {
+        let directory = directory.to_string_lossy().into_owned();
+        session::new_workspace_for_control(
+            app,
+            app.state::<session::SessionState>().inner(),
+            Some(&directory),
+            None,
+            None,
+            None,
+        );
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    }
+}
+
 const INSTALL_CLAUDE_CODE_INTEGRATION_MENU_ID: &str = "install_claude_code_integration";
 
 fn install_native_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
@@ -243,10 +264,8 @@ pub fn run() {
     let mut builder = tauri::Builder::default();
     #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
     {
-        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            for arg in argv {
-                route_deep_link_url(app, &arg);
-            }
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+            route_launch_arguments(app, &argv, Path::new(&cwd));
         }));
     }
 
@@ -281,6 +300,9 @@ pub fn run() {
             window::apply_default_display_to_existing_windows(&handle);
             window::install_window_state_listeners(&handle);
             session::bootstrap_session_persistence(&handle, app.state::<session::SessionState>());
+            let startup_args: Vec<String> = std::env::args().collect();
+            let startup_cwd = std::env::current_dir().unwrap_or_default();
+            route_launch_arguments(&handle, &startup_args, &startup_cwd);
             #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
             if let Err(error) = app.deep_link().register_all() {
                 eprintln!("[deep-link] failed to register configured schemes: {error}");

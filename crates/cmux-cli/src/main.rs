@@ -131,6 +131,11 @@ fn dispatch(
             println!("{output}");
             Ok(())
         }
+        DispatchPlan::RunOpenPath(path) => {
+            let output = cmux_cli::path_open::run_open_path(&path, &cwd)?;
+            println!("{output}");
+            Ok(())
+        }
         DispatchPlan::RunHooksInstaller { command, args } => {
             let output = cmux_cli::hooks_installer::run_hooks_command(&command, &args)?;
             print!("{output}");

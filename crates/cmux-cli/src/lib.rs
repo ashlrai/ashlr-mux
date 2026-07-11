@@ -22,6 +22,7 @@ pub mod feed_tui;
 pub mod hooks_installer;
 pub mod invocation;
 pub mod password;
+pub mod path_open;
 pub mod rpc;
 pub mod settings;
 pub mod socket;
