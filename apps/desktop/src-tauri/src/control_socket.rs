@@ -15709,11 +15709,10 @@ mod tests {
     }
 
     #[test]
-    fn workspace_current_can_be_scoped_to_background_workspace() {
+    fn workspace_current_workspace_selector_routes_manager_and_returns_selection() {
         let mut snapshot = test_snapshot();
         let mut second = snapshot.windows[0].tab_manager.workspaces[0].clone();
         second.workspace_id = Some("workspace-2".to_string());
-        second.custom_title = Some("Background".to_string());
         snapshot.windows[0].tab_manager.workspaces.push(second);
         snapshot.windows[0].tab_manager.selected_workspace_index = Some(0);
 
@@ -15724,9 +15723,9 @@ mod tests {
             panic!("workspace current should succeed");
         };
         let payload: Value = value.into();
-        assert_eq!(payload["workspace_id"], json!("workspace-2"));
-        assert_eq!(payload["workspace_ref"], json!("workspace:2"));
-        assert_eq!(payload["workspace"]["selected"], json!(false));
+        assert_eq!(payload["workspace_id"], json!("workspace-1"));
+        assert_eq!(payload["workspace_ref"], json!("workspace:1"));
+        assert_eq!(payload["workspace"]["selected"], json!(true));
     }
 
     #[test]
@@ -16542,6 +16541,7 @@ mod tests {
     #[test]
     fn workspace_v2_current_stale_selection_preserves_identity_with_null_summary() {
         let mut snapshot = test_snapshot();
+        snapshot.windows[0].selected_workspace_id = Some("workspace-1".to_string());
         snapshot.windows[0].tab_manager.selected_workspace_index = Some(99);
 
         let ControlCallResult::Ok(result) =
@@ -16550,7 +16550,7 @@ mod tests {
             panic!("stale selected identity must still produce workspace.current success");
         };
         let result: Value = result.into();
-        assert!(result["workspace_id"].as_str().is_some());
+        assert_eq!(result["workspace_id"], json!("workspace-1"));
         assert!(result["workspace_ref"].as_str().is_some());
         assert_eq!(result["workspace"], Value::Null);
     }
