@@ -16580,6 +16580,67 @@ mod tests {
     }
 
     #[test]
+    fn workspace_create_cwd_preserves_raw_fallback_but_trims_working_directory() {
+        let inherited = Some("C:/inherited");
+        assert_eq!(
+            workspace_create_cwd_param(
+                &serde_json::Map::from_iter([("cwd".to_string(), json!("  C:/raw  "))]),
+                inherited,
+            )
+            .unwrap(),
+            Some("  C:/raw  ".to_string())
+        );
+        assert_eq!(
+            workspace_create_cwd_param(
+                &serde_json::Map::from_iter([
+                    ("working_directory".to_string(), json!("  C:/trimmed  ")),
+                    ("cwd".to_string(), json!({"invalid": true})),
+                ]),
+                inherited,
+            )
+            .unwrap(),
+            Some("C:/trimmed".to_string())
+        );
+        assert!(workspace_create_cwd_param(
+            &serde_json::Map::from_iter([("cwd".to_string(), json!(42))]),
+            inherited,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn workspace_create_environment_sanitizers_preserve_values_and_differ() {
+        let params = serde_json::Map::from_iter([
+            (
+                "initial_env".to_string(),
+                json!({"  KEEP  ": "  value  ", "EMPTY": "", " ": "drop", "NUMBER": 7}),
+            ),
+            (
+                "workspace_env".to_string(),
+                json!({
+                    "  KEEP  ": "  value  ",
+                    "EMPTY": "",
+                    "BAD=KEY": "drop",
+                    "NUL\u{0000}KEY": "drop",
+                    "NUL_VALUE": "bad\u{0000}value"
+                }),
+            ),
+        ]);
+
+        assert_eq!(
+            workspace_create_initial_env(&params),
+            BTreeMap::from([
+                ("EMPTY".to_string(), "".to_string()),
+                ("KEEP".to_string(), "  value  ".to_string()),
+            ])
+        );
+        assert_eq!(
+            workspace_create_workspace_env(&params),
+            BTreeMap::from([("KEEP".to_string(), "  value  ".to_string())])
+        );
+    }
+
+    #[test]
     fn raw_string_param_preserves_empty_strings_for_clearing_metadata() {
         let params = serde_json::Map::from_iter([("title".to_string(), json!(""))]);
         assert_eq!(raw_string_param(&params, &["title"]).as_deref(), Some(""));

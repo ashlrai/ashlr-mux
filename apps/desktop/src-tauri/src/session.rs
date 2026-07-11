@@ -6972,6 +6972,18 @@ pub fn session_reorder_workspaces(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct FakeRemoteWorkspaceRenameController {
+        calls: Mutex<Vec<RemoteWorkspaceRenameRequest>>,
+    }
+
+    impl RemoteWorkspaceRenameController for FakeRemoteWorkspaceRenameController {
+        fn rename(&self, request: &RemoteWorkspaceRenameRequest) -> Result<(), String> {
+            self.calls.lock().unwrap().push(request.clone());
+            Ok(())
+        }
+    }
     use cmux_core::session_ops::count_leaves;
 
     fn active_layout(snapshot: &AppSessionSnapshot) -> &SessionWorkspaceLayoutSnapshot {
@@ -8644,6 +8656,95 @@ mod tests {
         );
         workspace.remote.as_mut().unwrap().enabled = false;
         assert_eq!(remote_workspace_rename_intent(&workspace, "Build"), None);
+    }
+
+    #[test]
+    fn remote_workspace_rename_dispatches_and_acknowledges_exactly_once() {
+        let controller = FakeRemoteWorkspaceRenameController::default();
+        let request = RemoteWorkspaceRenameRequest {
+            workspace_id: "workspace-remote".to_string(),
+            destination: "dev.example.com".to_string(),
+            port: Some(2222),
+            identity_file: None,
+            ssh_options: Vec::new(),
+            session: Some("cmux-remote".to_string()),
+            title: "Build".to_string(),
+        };
+
+        dispatch_remote_workspace_rename(&controller, &request).unwrap();
+
+        assert_eq!(controller.calls.lock().unwrap().as_slice(), &[request]);
+    }
+
+    #[test]
+    fn selected_workspace_identity_witness_survives_stale_index_and_restore() {
+        let mut snapshot = initial_snapshot("surface-1");
+        let selected_id = snapshot.windows[0]
+            .selected_workspace_id
+            .clone()
+            .expect("selected identity witness");
+        snapshot.windows[0].tab_manager.selected_workspace_index = Some(99);
+
+        let restored: AppSessionSnapshot =
+            serde_json::from_value(serde_json::to_value(&snapshot).unwrap()).unwrap();
+
+        assert_eq!(restored.windows[0].selected_workspace_id, Some(selected_id));
+        assert_eq!(restored.windows[0].tab_manager.selected_workspace_index, Some(99));
+    }
+
+    #[test]
+    fn close_then_reopen_workspace_restores_complete_snapshot() {
+        let mut snapshot = initial_snapshot("surface-1");
+        let workspace = &mut snapshot.windows[0].tab_manager.workspaces[0];
+        workspace.custom_title = Some("Restored".to_string());
+        workspace.initial_terminal_input = Some("scrollback fixture".to_string());
+        workspace.workspace_environment = Some(BTreeMap::from([(
+            "TOKEN".to_string(),
+            "preserved".to_string(),
+        )]));
+        let closed = closed_workspace_snapshot(&snapshot, 0, 0).unwrap();
+        snapshot.windows[0].tab_manager.workspaces.clear();
+
+        assert!(apply_reopen_closed_workspace(&mut snapshot, closed));
+        let reopened = &snapshot.windows[0].tab_manager.workspaces[0];
+        assert_eq!(reopened.custom_title.as_deref(), Some("Restored"));
+        assert_eq!(reopened.initial_terminal_input.as_deref(), Some("scrollback fixture"));
+        assert_eq!(
+            reopened
+                .workspace_environment
+                .as_ref()
+                .and_then(|env| env.get("TOKEN"))
+                .map(String::as_str),
+            Some("preserved")
+        );
+        assert!(reopened.layout.is_some());
+    }
+
+    #[test]
+    fn close_teardown_plan_covers_workspace_owned_state() {
+        let workspace_id = "workspace-a";
+        assert_eq!(
+            workspace_close_teardown_plan(workspace_id, true),
+            WorkspaceCloseTeardownPlan {
+                workspace_id: workspace_id.to_string(),
+                clear_notifications: true,
+                clear_metadata: true,
+                clear_focus_history: true,
+                stop_remote: true,
+            }
+        );
+    }
+
+    #[test]
+    fn same_title_rename_is_resolved_without_model_change() {
+        let mut tabs = initial_snapshot("surface-1").windows.remove(0).tab_manager;
+        tabs.workspaces[0].custom_title = Some("Build".to_string());
+        tabs.workspaces[0].custom_title_source = Some("user".to_string());
+
+        assert_eq!(
+            rename_workspace_resolution(&mut tabs, 0, "Build"),
+            WorkspaceRenameResolution::ResolvedUnchanged
+        );
     }
 
     #[test]
