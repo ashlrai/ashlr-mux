@@ -5,7 +5,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-if (-not $IsWindows) {
+$isWindowsDesktop = $PSVersionTable.PSEdition -eq "Desktop" -and $env:OS -eq "Windows_NT"
+$isWindowsCore = $PSVersionTable.PSEdition -eq "Core" -and $IsWindows
+if (-not ($isWindowsDesktop -or $isWindowsCore)) {
     Write-Host "Skipping desktop test manifest verification on non-Windows."
     exit 0
 }
