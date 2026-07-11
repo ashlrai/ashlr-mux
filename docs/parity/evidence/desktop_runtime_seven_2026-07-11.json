@@ -92,11 +92,21 @@
     "release_gate": "pass",
     "desktop_matrix": "453 passed, 0 failed, 1 ignored; contracts/integration/e2e passed; e2e skipped=0"
   },
-  "hosted_windows_green": null,
+  "hosted_windows_green": {
+    "commit": "9685ad43ce75fc5682e5d1c195d2c95b99834259",
+    "workflow_run": "https://github.com/ashlrai/ashlr-mux/actions/runs/29171597399",
+    "desktop_job": 86593651884,
+    "result": "pass",
+    "bridge_tests": "25 passed, 0 failed",
+    "native_summary": "453 passed, 0 failed, 1 ignored; finished in 0.80s",
+    "desktop_contracts": "pass",
+    "desktop_integration": "pass",
+    "desktop_e2e": "pass, skipped=0",
+    "desktop_matrix": "pass (all)"
+  },
   "matrix_status": "implemented_unverified",
   "matrix_promotions": 0,
   "promotion_blockers": [
-    "The native runtime suite is hosted-Windows green, but the exact contract-gate correction commit has not yet completed a hosted Windows desktop job.",
     "No frozen canonical macOS versus Windows differential run covers the affected observable behavior."
   ]
 }
