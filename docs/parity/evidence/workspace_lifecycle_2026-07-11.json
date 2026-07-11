@@ -40,8 +40,25 @@
       "cargo fmt and git diff checks"
     ]
   },
+  "hosted_windows_ci": {
+    "commit": "fb0d52023c125c2abdefa2e2e904c95fb259ec67",
+    "workflow_run": "https://github.com/ashlrai/ashlr-mux/actions/runs/29166101367",
+    "desktop_job": 86579431148,
+    "passed_before_runtime": [
+      "frozen Bun dependency installation",
+      "desktop contracts and web production build",
+      "Windows icon and sidecar staging",
+      "bootstrap Rust tests",
+      "Rust 1.97 strict Clippy",
+      "full desktop workspace check",
+      "core-types drift check",
+      "24 desktop bridge web tests"
+    ],
+    "runtime_result": "blocked_before_test_harness",
+    "runtime_error": "cmux_desktop_lib test executable exited 0xc0000139 STATUS_ENTRYPOINT_NOT_FOUND"
+  },
   "runtime_limitations": [
-    "Desktop test execution is blocked before the harness by STATUS_ENTRYPOINT_NOT_FOUND on this host.",
+    "Desktop test execution is blocked before the harness by STATUS_ENTRYPOINT_NOT_FOUND both locally and on hosted Windows CI.",
     "No live canonical-macOS versus Windows differential run has yet covered focus, event ordering, PTY-observed cwd/environment/command, restart persistence, multiwindow selection, or remote tmux transport.",
     "Therefore no entry is verified or platform_equivalent."
   ],
