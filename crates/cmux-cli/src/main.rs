@@ -136,6 +136,13 @@ fn dispatch(
             println!("{output}");
             Ok(())
         }
+        DispatchPlan::RunSessions(args) => {
+            let environment = std::env::vars().collect();
+            let output =
+                cmux_cli::sessions::run_sessions_command(&args, options.json_output, &environment)?;
+            println!("{output}");
+            Ok(())
+        }
         DispatchPlan::RunHooksInstaller { command, args } => {
             let output = cmux_cli::hooks_installer::run_hooks_command(&command, &args)?;
             print!("{output}");

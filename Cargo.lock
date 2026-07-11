@@ -574,16 +574,23 @@ name = "cmux-cli"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "cmux-agent",
+ "cmux-agent-launch-sanitizer",
  "cmux-config",
  "cmux-diff",
  "cmux-ipc",
  "cmux-jsonc",
+ "cmux-process",
  "cmux-ssh",
  "crossterm",
+ "serde",
  "serde_json",
  "sha2",
+ "tempfile",
+ "time",
  "tokio",
  "uuid",
+ "windows",
 ]
 
 [[package]]

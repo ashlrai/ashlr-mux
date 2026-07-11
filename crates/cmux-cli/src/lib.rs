@@ -24,6 +24,7 @@ pub mod invocation;
 pub mod password;
 pub mod path_open;
 pub mod rpc;
+pub mod sessions;
 pub mod settings;
 pub mod socket;
 pub mod ssh;

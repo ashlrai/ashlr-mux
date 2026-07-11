@@ -67,6 +67,8 @@ pub enum DispatchPlan {
     RunWindowDefaultDisplay(Vec<String>),
     /// Launch the packaged desktop with a validated directory path.
     RunOpenPath(String),
+    /// Inspect persisted agent hook sessions without a control socket.
+    RunSessions(Vec<String>),
     /// Run a local hooks installer/uninstaller command.
     RunHooksInstaller { command: String, args: Vec<String> },
     /// Read one agent hook payload from stdin and bridge it through `feed.push`.
@@ -101,6 +103,7 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
     match command {
         "config" => Some(crate::config::CONFIG_USAGE),
         "docs" => Some(crate::docs::DOCS_USAGE),
+        "sessions" | "session-debug" => Some(crate::sessions::SESSIONS_USAGE),
         "settings" => Some(crate::settings::SETTINGS_USAGE),
         "ping" => Some("Usage:\n  cmux ping\n\nSends a ping to the control socket."),
         "capabilities" => Some(
@@ -449,11 +452,11 @@ pub fn plan_with_args(action: &PreSocketAction, command: &str, args: &[String]) 
         PreSocketAction::Docs => return DispatchPlan::RunDocs(args.to_vec()),
         PreSocketAction::Welcome => return DispatchPlan::RunWelcome,
         PreSocketAction::Sessions { debug } => {
+            let mut session_args = args.to_vec();
             if *debug {
-                "session-debug"
-            } else {
-                "sessions"
+                session_args.insert(0, "debug".to_string());
             }
+            return DispatchPlan::RunSessions(session_args);
         }
         PreSocketAction::SigpipeProbe => "__sigpipe-probe",
         PreSocketAction::SigpipeStdinPipeProbe => "__sigpipe-stdin-pipe-probe",
@@ -929,22 +932,22 @@ mod tests {
     }
 
     #[test]
-    fn side_effecting_no_socket_actions_fail_with_not_ported() {
-        for (action, needle) in [
-            (PreSocketAction::Sessions { debug: false }, "sessions"),
-            (PreSocketAction::Sessions { debug: true }, "session-debug"),
+    fn sessions_commands_run_locally_without_a_socket() {
+        for (action, command, expected_args) in [
+            (
+                PreSocketAction::Sessions { debug: false },
+                "sessions",
+                Vec::<String>::new(),
+            ),
+            (
+                PreSocketAction::Sessions { debug: true },
+                "session-debug",
+                vec!["debug".to_string()],
+            ),
         ] {
-            match plan(&action, "x") {
-                DispatchPlan::Fail(error) => {
-                    assert_eq!(error.exit_code, 1, "{action:?}");
-                    assert!(
-                        error.message.contains(needle),
-                        "{action:?}: {}",
-                        error.message
-                    );
-                    assert!(error.message.contains("not yet available"), "{action:?}");
-                }
-                other => panic!("expected Fail for {action:?}, got {other:?}"),
+            match plan_with_args(&action, command, &[]) {
+                DispatchPlan::RunSessions(args) => assert_eq!(args, expected_args),
+                other => panic!("expected RunSessions for {action:?}, got {other:?}"),
             }
         }
     }
