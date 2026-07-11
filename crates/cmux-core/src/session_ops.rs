@@ -1929,9 +1929,43 @@ pub fn move_panel_to_new_workspace(tabs: &mut SessionTabManagerSnapshot, panel_i
     if panel_count(source_layout) <= 1 {
         return false;
     }
-    let Some(detached_pane) = pane_for_panel(source_layout, panel_id) else {
-        return false;
-    };
+    break_surface_to_new_workspace(tabs, source_index, panel_id, true).is_ok()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneBreakResult {
+    pub workspace_index: usize,
+    pub surface_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneBreakError {
+    WorkspaceNotFound,
+    SurfaceNotFound,
+    DetachFailed,
+}
+
+/// Detach one surface into a fresh workspace in the same window. The source
+/// workspace may become empty, matching canonical `pane.break`; panel metadata
+/// follows the surface and the destination receives a new pane identity from
+/// the stateful desktop layer. Invalid requests leave `tabs` byte-identical.
+pub fn break_surface_to_new_workspace(
+    tabs: &mut SessionTabManagerSnapshot,
+    source_workspace_index: usize,
+    panel_id: &str,
+    focus: bool,
+) -> Result<PaneBreakResult, PaneBreakError> {
+    let source = tabs
+        .workspaces
+        .get(source_workspace_index)
+        .ok_or(PaneBreakError::WorkspaceNotFound)?;
+    let source_layout = source
+        .layout
+        .as_ref()
+        .ok_or(PaneBreakError::SurfaceNotFound)?;
+    let mut detached_pane =
+        pane_for_panel(source_layout, panel_id).ok_or(PaneBreakError::SurfaceNotFound)?;
+    detached_pane.pane_id = None;
 
     let total_count = tabs.workspaces.len() as i64;
     let pinned_count = tabs
@@ -1939,51 +1973,73 @@ pub fn move_panel_to_new_workspace(tabs: &mut SessionTabManagerSnapshot, panel_i
         .iter()
         .filter(|workspace| workspace.is_pinned == Some(true))
         .count() as i64;
-    let selected_is_pinned = tabs.workspaces[source_index].is_pinned == Some(true);
+    let selected_index = tabs.selected_workspace_index;
+    let selected_is_pinned = selected_index
+        .and_then(|index| usize::try_from(index).ok())
+        .and_then(|index| tabs.workspaces.get(index))
+        .is_some_and(|workspace| workspace.is_pinned == Some(true));
     let insert_index = insertion_index(
         NewWorkspacePlacement::default(),
-        Some(source_index as i64),
+        selected_index,
         selected_is_pinned,
         pinned_count,
         total_count,
     )
     .clamp(0, total_count) as usize;
 
-    let source = &mut tabs.workspaces[source_index];
+    let mut next = tabs.clone();
+    let source = &mut next.workspaces[source_workspace_index];
     let metadata = detach_panel_metadata(source, panel_id);
     let process_title = metadata
         .title
         .as_ref()
         .and_then(|entry| entry.custom_title.clone())
         .unwrap_or_else(|| source.process_title.clone());
-    let current_directory = source.current_directory.clone();
-    let initial_terminal_command = source.initial_terminal_command.clone();
-    let initial_terminal_input = source.initial_terminal_input.clone();
-    let initial_terminal_environment = source.initial_terminal_environment.clone();
-    if !matches!(
+    let mut detached = SessionWorkspaceSnapshot {
+        process_title,
+        current_directory: source.current_directory.clone(),
+        initial_terminal_command: source.initial_terminal_command.clone(),
+        initial_terminal_input: source.initial_terminal_input.clone(),
+        initial_terminal_environment: source.initial_terminal_environment.clone(),
+        layout: Some(Layout::Pane(detached_pane)),
+        ..Default::default()
+    };
+    if matches!(
         close_panel(&mut source.layout, panel_id),
-        CloseOutcome::Removed
+        CloseOutcome::NotFound
     ) {
-        return false;
+        return Err(PaneBreakError::DetachFailed);
     }
     if source.zoomed_panel_id.as_deref() == Some(panel_id) {
         source.zoomed_panel_id = None;
     }
-
-    let mut detached = SessionWorkspaceSnapshot {
-        process_title,
-        current_directory,
-        initial_terminal_command,
-        initial_terminal_input,
-        initial_terminal_environment,
-        layout: Some(Layout::Pane(detached_pane)),
-        ..Default::default()
-    };
     attach_panel_metadata(&mut detached, metadata);
 
-    tabs.workspaces.insert(insert_index, detached);
-    tabs.selected_workspace_index = Some(insert_index as i64);
-    true
+    next.workspaces.insert(insert_index, detached);
+    if focus {
+        next.selected_workspace_index = Some(insert_index as i64);
+    } else if selected_index.is_some_and(|selected| selected >= insert_index as i64) {
+        next.selected_workspace_index = selected_index.map(|selected| selected + 1);
+    }
+    normalize_workspace_groups_in_snapshot(&mut next);
+    let destination_index = next
+        .workspaces
+        .iter()
+        .position(|workspace| {
+            workspace
+                .layout
+                .as_ref()
+                .is_some_and(|layout| contains_panel(layout, panel_id))
+        })
+        .ok_or(PaneBreakError::DetachFailed)?;
+    if focus {
+        next.selected_workspace_index = Some(destination_index as i64);
+    }
+    *tabs = next;
+    Ok(PaneBreakResult {
+        workspace_index: destination_index,
+        surface_id: panel_id.to_string(),
+    })
 }
 
 /// Insert a fresh single-pane workspace into `tabs` at the position dictated by
@@ -5756,6 +5812,62 @@ mod tests {
             Err(PaneSwapError::TargetPaneNotFound)
         );
         assert_eq!(workspace, before);
+    }
+
+    #[test]
+    fn break_surface_to_new_workspace_transfers_state_without_forcing_focus() {
+        let mut tabs = one_workspace_tabs("a");
+        let Layout::Pane(pane) = tabs.workspaces[0].layout.as_mut().unwrap() else {
+            unreachable!();
+        };
+        pane.pane_id = Some("pane-source".into());
+        pane.panel_ids.push("b".into());
+        pane.selected_panel_id = Some("b".into());
+        assert!(set_panel_title(&mut tabs.workspaces[0], "b", "Build"));
+
+        let result = break_surface_to_new_workspace(&mut tabs, 0, "b", false).unwrap();
+
+        assert_eq!(result.surface_id, "b");
+        assert_eq!(result.workspace_index, 1);
+        assert_eq!(tabs.selected_workspace_index, Some(0));
+        assert_eq!(
+            panel_ids(tabs.workspaces[0].layout.as_ref().unwrap()),
+            ["a"]
+        );
+        let destination = &tabs.workspaces[1];
+        assert_eq!(panel_ids(destination.layout.as_ref().unwrap()), ["b"]);
+        let Layout::Pane(destination_pane) = destination.layout.as_ref().unwrap() else {
+            unreachable!();
+        };
+        assert_eq!(destination_pane.pane_id, None);
+        assert_eq!(destination.process_title, "Build");
+        assert_eq!(destination.panel_titles.as_ref().unwrap()[0].panel_id, "b");
+    }
+
+    #[test]
+    fn break_surface_to_new_workspace_is_atomic_for_missing_surface() {
+        let mut tabs = one_workspace_tabs("a");
+        let before = tabs.clone();
+        assert_eq!(
+            break_surface_to_new_workspace(&mut tabs, 0, "missing", true),
+            Err(PaneBreakError::SurfaceNotFound)
+        );
+        assert_eq!(tabs, before);
+    }
+
+    #[test]
+    fn break_only_surface_leaves_empty_source_and_focuses_new_workspace() {
+        let mut tabs = one_workspace_tabs("a");
+
+        let result = break_surface_to_new_workspace(&mut tabs, 0, "a", true).unwrap();
+
+        assert_eq!(result.workspace_index, 1);
+        assert_eq!(tabs.workspaces[0].layout, None);
+        assert_eq!(
+            panel_ids(tabs.workspaces[1].layout.as_ref().unwrap()),
+            ["a"]
+        );
+        assert_eq!(tabs.selected_workspace_index, Some(1));
     }
 
     #[test]

@@ -29,7 +29,7 @@ use crate::browser::{
 };
 use crate::diff::DiffState;
 use crate::session::{
-    append_workspace_sidebar_log_for_control, browser_go_back_for_control,
+    append_workspace_sidebar_log_for_control, break_pane_for_control, browser_go_back_for_control,
     browser_go_forward_for_control, clear_browser_history_for_control,
     clear_workspace_agent_pid_for_control, clear_workspace_panel_pull_request_for_control,
     clear_workspace_remote_for_control, clear_workspace_sidebar_log_for_control,
@@ -920,6 +920,7 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "surface.previous",
     "surface.toggle_split_zoom",
     "pane.swap",
+    "pane.break",
     "browser.open_split",
     "browser.navigate",
     "browser.back",
@@ -1215,6 +1216,7 @@ fn handle_control_request(app: &AppHandle, request: ControlRequest) -> ControlCa
         "surface.previous" => surface_select_adjacent(app, &request.params, false),
         "surface.toggle_split_zoom" => surface_toggle_split_zoom(app, &request.params),
         "pane.swap" => pane_swap(app, &request.params),
+        "pane.break" => pane_break(app, &request.params),
         "browser.navigate" => browser_navigate(app, &request.params),
         "browser.back" => browser_back(app, &request.params),
         "browser.forward" => browser_forward(app, &request.params),
@@ -4940,6 +4942,179 @@ fn pane_swap(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Contro
         "source_surface_ref": surface_ref_value(&swap.source_surface_id),
         "target_surface_id": swap.target_surface_id,
         "target_surface_ref": surface_ref_value(&swap.target_surface_id),
+    }))
+}
+
+fn pane_break(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(requested_window) = split_off_window_index(app, &current, params) else {
+        return ControlCallResult::Err {
+            code: "unavailable".to_string(),
+            message: "TabManager not available".to_string(),
+            data: None,
+        };
+    };
+    let window_index = requested_window.unwrap_or(0);
+    let Some(requested_workspace) = split_off_workspace_index(&current, params, window_index)
+    else {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Workspace not found".to_string(),
+            data: None,
+        };
+    };
+    let Some(window) = current.windows.get(window_index) else {
+        return ControlCallResult::Err {
+            code: "unavailable".to_string(),
+            message: "TabManager not available".to_string(),
+            data: None,
+        };
+    };
+    let workspace_index = requested_workspace.unwrap_or_else(|| {
+        window
+            .tab_manager
+            .selected_workspace_index
+            .and_then(|index| usize::try_from(index).ok())
+            .unwrap_or(0)
+    });
+    let Some(workspace) = window.tab_manager.workspaces.get(workspace_index) else {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Workspace not found".to_string(),
+            data: None,
+        };
+    };
+    let surfaces = surfaces_for_workspace(workspace);
+    let source_pane_id = if let Some(pane_id) = string_param(params, &["pane_id"]) {
+        pane_index_by_id(workspace, &pane_id).map(|_| pane_id)
+    } else if let Some(pane_reference) = string_param(params, &["pane_ref"]) {
+        one_based_ref_index(&pane_reference, "pane")
+            .and_then(|pane_index| pane_at_index(workspace, pane_index))
+            .map(|(_, pane_id)| pane_id)
+    } else {
+        first_or_focused_pane(workspace).map(|(_, pane_id)| pane_id)
+    };
+    let explicit_surface_id = string_param(params, &["surface_id"]);
+    let panel_id = if let Some(panel_id) = explicit_surface_id.as_ref() {
+        surfaces
+            .iter()
+            .any(|surface| surface.get("id").and_then(Value::as_str) == Some(panel_id.as_str()))
+            .then(|| panel_id.clone())
+    } else if let Some(surface_reference) = string_param(params, &["surface_ref"]) {
+        one_based_ref_index(&surface_reference, "surface").and_then(|surface_index| {
+            surfaces
+                .get(surface_index)
+                .and_then(|surface| surface.get("id"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+    } else if let Some(pane_id) = source_pane_id.as_deref() {
+        surfaces
+            .iter()
+            .find(|surface| {
+                surface.get("pane_id").and_then(Value::as_str) == Some(pane_id)
+                    && surface
+                        .get("selected_in_pane")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+            })
+            .and_then(|surface| surface.get("id"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    } else {
+        surfaces
+            .iter()
+            .find(|surface| {
+                surface
+                    .get("focused")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            })
+            .or_else(|| surfaces.first())
+            .and_then(|surface| surface.get("id"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    let Some(panel_id) = panel_id else {
+        if let Some(surface_id) = explicit_surface_id {
+            return ControlCallResult::Err {
+                code: "not_found".to_string(),
+                message: "Surface not found".to_string(),
+                data: Some(
+                    json!({"surface_id": surface_id})
+                        .try_into()
+                        .unwrap_or(JsonValue::Null),
+                ),
+            };
+        }
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "No source surface to break".to_string(),
+            data: None,
+        };
+    };
+    let focus = bool_param(params, &["focus"]).unwrap_or(false);
+    let state = app.state::<SessionState>();
+    let (broken, result) = match break_pane_for_control(
+        app,
+        &state,
+        window_index,
+        workspace_index,
+        &panel_id,
+        focus,
+    ) {
+        Ok(result) => result,
+        Err(session_ops::PaneBreakError::WorkspaceNotFound) => {
+            return ControlCallResult::Err {
+                code: "not_found".to_string(),
+                message: "Workspace not found".to_string(),
+                data: None,
+            };
+        }
+        Err(session_ops::PaneBreakError::SurfaceNotFound) => {
+            return ControlCallResult::Err {
+                code: "not_found".to_string(),
+                message: "Surface not found".to_string(),
+                data: Some(
+                    json!({"surface_id": panel_id})
+                        .try_into()
+                        .unwrap_or(JsonValue::Null),
+                ),
+            };
+        }
+        Err(session_ops::PaneBreakError::DetachFailed) => {
+            return ControlCallResult::Err {
+                code: "internal_error".to_string(),
+                message: "Failed to detach source surface".to_string(),
+                data: None,
+            };
+        }
+    };
+    let window = &result.windows[window_index];
+    let workspace = &window.tab_manager.workspaces[broken.workspace_index];
+    let pane_id = surface_pane_details(workspace, &broken.surface_id)
+        .and_then(|(_, pane_id, _)| pane_id)
+        .expect("state layer mints destination pane ids");
+    let window_identity = crate::window::control_window_summaries(app)
+        .into_iter()
+        .find(|summary| summary.identity.label == window.window_id.as_deref().unwrap_or("main"))
+        .map(|summary| summary.identity);
+    if focus {
+        if let Some(identity) = window_identity.as_ref() {
+            if let Some(window) = app.get_webview_window(&identity.label) {
+                let _ = window.set_focus();
+            }
+        }
+    }
+    ok(json!({
+        "window_id": window_identity.as_ref().map(|identity| identity.id.clone()),
+        "window_ref": window_identity.as_ref().map(|identity| identity.reference.clone()),
+        "workspace_id": workspace.workspace_id,
+        "workspace_ref": workspace_ref(broken.workspace_index),
+        "pane_id": pane_id,
+        "pane_ref": pane_ref(0),
+        "surface_id": broken.surface_id,
+        "surface_ref": surface_ref(0),
     }))
 }
 
@@ -13084,6 +13259,7 @@ mod tests {
             "surface.split_off",
             "surface.drag_to_split",
             "pane.swap",
+            "pane.break",
             "surface.move",
             "surface.clear_history",
             "surface.trigger_flash",

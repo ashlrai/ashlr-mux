@@ -961,7 +961,8 @@ fn format_control_result(method: &str, result: &serde_json::Value) -> String {
         | "surface.clear_history"
         | "surface.refresh_all"
         | "surface.trigger_flash"
-        | "pane.swap" => "OK".to_string(),
+        | "pane.swap"
+        | "pane.break" => "OK".to_string(),
         "window.list" => format_window_entries(result),
         "window.displays" => format_display_entries(result),
         "window.display" => format_window_display_result(result),
@@ -1371,6 +1372,17 @@ mod control_result_tests {
     fn swap_pane_keeps_canonical_plain_output() {
         assert_eq!(
             format_control_result("pane.swap", &serde_json::json!({"pane_ref": "pane:1"})),
+            "OK"
+        );
+    }
+
+    #[test]
+    fn break_pane_keeps_canonical_plain_output() {
+        assert_eq!(
+            format_control_result(
+                "pane.break",
+                &serde_json::json!({"surface_ref": "surface:1"})
+            ),
             "OK"
         );
     }

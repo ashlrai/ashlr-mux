@@ -291,6 +291,7 @@ pub fn control_command_for(
             split_off_params(args, command)?,
         )),
         "swap-pane" => Some(ControlCommand::new("pane.swap", swap_pane_params(args)?)),
+        "break-pane" => Some(ControlCommand::new("pane.break", break_pane_params(args)?)),
         "reorder-surface" => Some(ControlCommand::new(
             "surface.reorder",
             canonical_surface_reorder_params(args)?,
@@ -1430,6 +1431,35 @@ fn swap_pane_params(args: &[String]) -> Result<serde_json::Value, CliError> {
     let mut params = serde_json::Map::new();
     apply_named_pane_target_selector(pane, "pane", &mut params);
     apply_named_pane_target_selector(target_pane, "target_pane", &mut params);
+    apply_workspace_scope_selector(&parsed, &mut params);
+    apply_window_scope_selector(&parsed, &mut params);
+    let focus = match parsed
+        .value(&["--focus"])
+        .map(|value| value.to_ascii_lowercase())
+    {
+        None => false,
+        Some(value) if matches!(value.as_str(), "1" | "true" | "yes" | "on") => true,
+        Some(value) if matches!(value.as_str(), "0" | "false" | "no" | "off") => false,
+        Some(_) => return Err(CliError::new("--focus must be true|false")),
+    };
+    params.insert("focus".to_string(), serde_json::json!(focus));
+    Ok(serde_json::Value::Object(params))
+}
+
+fn break_pane_params(args: &[String]) -> Result<serde_json::Value, CliError> {
+    let parsed = ParsedArgs::parse(args)?;
+    if parsed.value(&["--focus"]).is_some() && parsed.has_flag("--no-focus") {
+        return Err(CliError::new(
+            "--focus and --no-focus cannot be used together",
+        ));
+    }
+    let mut params = serde_json::Map::new();
+    if let Some(pane) = parsed.value(&["--pane"]) {
+        apply_pane_target_selector(pane, &mut params);
+    }
+    if let Some(surface) = parsed.value(&["--surface"]) {
+        apply_surface_target_selector(surface, "surface", &mut params);
+    }
     apply_workspace_scope_selector(&parsed, &mut params);
     apply_window_scope_selector(&parsed, &mut params);
     let focus = match parsed
@@ -4846,6 +4876,45 @@ mod tests {
                 .unwrap_err()
                 .message,
             "swap-pane requires --pane"
+        );
+    }
+
+    #[test]
+    fn maps_canonical_break_pane_command_and_focus_alias() {
+        let broken = mapped(
+            "break-pane",
+            &[
+                "--pane",
+                "2",
+                "--surface",
+                "surface:3",
+                "--workspace",
+                "workspace:1",
+                "--window",
+                "window:2",
+                "--no-focus",
+            ],
+        );
+        assert_eq!(broken.method, "pane.break");
+        assert_eq!(
+            broken.params,
+            serde_json::json!({
+                "pane_ref": "pane:2",
+                "surface_ref": "surface:3",
+                "workspace_ref": "workspace:1",
+                "window_ref": "window:2",
+                "focus": false,
+            })
+        );
+        assert_eq!(
+            mapped("break-pane", &[]).params,
+            serde_json::json!({"focus": false})
+        );
+        assert_eq!(
+            control_command_for("break-pane", &args(&["--focus", "true", "--no-focus"]),)
+                .unwrap_err()
+                .message,
+            "--focus and --no-focus cannot be used together"
         );
     }
 

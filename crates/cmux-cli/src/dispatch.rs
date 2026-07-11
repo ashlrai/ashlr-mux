@@ -206,6 +206,9 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
         "swap-pane" => Some(
             "Usage:\n  cmux swap-pane --pane <id|ref|index> --target-pane <id|ref|index> [flags]\n\nSwaps the selected surfaces of two panes.\n\nFlags:\n  --pane <id|ref|index>         Source pane (required)\n  --target-pane <id|ref|index>  Target pane (required)\n  --workspace <id|ref|index>    Workspace context\n  --window <id|ref|index>       Window context\n  --focus <true|false>          Focus the target pane (default: false)",
         ),
+        "break-pane" => Some(
+            "Usage:\n  cmux break-pane [--workspace <id|ref|index>] [--pane <id|ref|index>] [--surface <id|ref|index>] [--window <id|ref|index>] [--focus <true|false>] [--no-focus]\n\nMove a pane/surface out into its own pane context.\n\nFlags:\n  --workspace <id|ref|index>   Workspace context\n  --pane <id|ref|index>        Source pane\n  --surface <id|ref|index>     Source surface\n  --window <id|ref|index>      Window context\n  --focus <true|false>         Focus the result (default: false)\n  --no-focus                   Compatibility alias for --focus false",
+        ),
         "reorder-surface" => Some(
             "Usage:\n  cmux reorder-surface [--surface <id|ref|index> | <id|ref|index>] [flags]\n\nReorders a surface within its pane.\n\nFlags:\n  --surface <id|ref|index>     Surface to reorder\n  --workspace <id|ref|index>   Workspace context\n  --window <id|ref|index>      Window context\n  --index <n>                  Place at this insertion index\n  --before <id|ref|index>      Place before this surface\n  --before-surface <handle>    Alias for --before\n  --after <id|ref|index>       Place after this surface\n  --after-surface <handle>     Alias for --after\n  --focus <true|false>         Focus after reordering (default: false)",
         ),
@@ -655,6 +658,7 @@ mod tests {
             "split-off",
             "drag-surface-to-split",
             "swap-pane",
+            "break-pane",
         ] {
             let plan = plan(
                 &PreSocketAction::SubcommandHelp {
