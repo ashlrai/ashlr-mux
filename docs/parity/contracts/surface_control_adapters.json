@@ -1,0 +1,744 @@
+{
+  "schema_version": 1,
+  "contract_id": "surface_control_adapters",
+  "canonical_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+  "windows_audit_commit": "b39157f25c19e5032ba6ae6570865823ab1e09f3",
+  "scope": [
+    "v2:surface.action",
+    "v2:surface.current",
+    "v2:surface.refresh",
+    "v2:surface.report_pwd",
+    "cli:tab-action"
+  ],
+  "out_of_scope": {
+    "entries": [
+      "v2:surface.create",
+      "v2:surface.respawn",
+      "cli:respawn-pane"
+    ],
+    "reason": "Independent coherence review split process/surface construction and terminal process replacement from this adapter batch. surface.create, surface.respawn, and respawn-pane share terminal startup, working-directory, environment, shell invocation, process replacement, and terminal-runtime verification requirements; they belong in one terminal-lifecycle batch. Mixing them here would prevent one family-sized red/green/simplify/green gate and would make a passing adapter gate look like proof of terminal runtime behavior.",
+    "required_follow_up_contract": "surface_terminal_lifecycle"
+  },
+  "shared_canonical_rules": {
+    "wire": {
+      "envelope": "JSON v2 request; successful result is returned under result, failures under error with exact code/message/data",
+      "ids_and_refs": "Every *_id string accepts either a UUID or a previously minted kind:N ref. Successful payloads mint/echo UUID and ref pairs. tab_ref is the tab:N spelling for the same UUID carried by surface_id/tab_id.",
+      "nulls": "Canonical payloads contain explicit JSON null for absent window/pane/surface identities where documented; omission is not equivalent.",
+      "object_key_order": "not contractual; array order, CLI token order, stdout/stderr text, and event order are contractual",
+      "unknown_params": "ignored unless a method explicitly validates a conflicting alias or value",
+      "sources": [
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/ControlCommandCoordinator+Params.swift:1-110",
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/ControlCommandCoordinator.swift:197-240"
+      ]
+    },
+    "routing": {
+      "tab_manager_precedence": [
+        "present non-null window_id; an invalid or unresolved value is terminal and never falls through",
+        "resolvable group_id",
+        "resolvable workspace_id",
+        "surface_id, then terminal_id, then tab_id",
+        "pane_id",
+        "the socket controller/caller TabManager",
+        "the active scriptable window TabManager"
+      ],
+      "workspace_precedence_after_tab_manager": [
+        "workspace_id inside the resolved TabManager",
+        "surface_id|terminal_id|tab_id owner inside the resolved TabManager",
+        "pane_id owner inside the resolved TabManager",
+        "resolved TabManager selected workspace"
+      ],
+      "multiwindow_invariant": "A selector may route to a background window. Reads and non-focus mutations do not select or raise it. Explicit window mismatch/invalidity must not silently target the first or active window.",
+      "sources": [
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/ControlRoutingSelectors.swift:1-62",
+        "Sources/TerminalController.swift:3644-3680",
+        "Sources/TerminalController+ControlSurfaceContext.swift:28-76"
+      ]
+    },
+    "action_normalization": {
+      "rule": "Trim surrounding whitespace, lowercase, and replace '-' with '_'. Non-string or empty/whitespace-only becomes missing action.",
+      "canonical_supported_error_list": [
+        "rename",
+        "clear_name",
+        "close_left",
+        "close_right",
+        "close_others",
+        "new_terminal_right",
+        "new_browser_right",
+        "reload",
+        "duplicate",
+        "move_to_new_workspace",
+        "detach_to_workspace",
+        "detach_to_new_workspace",
+        "pin",
+        "unpin",
+        "mark_read",
+        "mark_unread",
+        "toggle_full_width_tab"
+      ],
+      "accepted_compatibility_aliases_not_all_advertised": {
+        "mark_as_unread": "mark_unread",
+        "toggle_full_width": "toggle_full_width_tab",
+        "toggle_full_width_tab_mode": "toggle_full_width_tab",
+        "reload_tab": "reload",
+        "duplicate_tab": "duplicate",
+        "new_terminal_to_right": "new_terminal_right",
+        "new_terminal_tab_to_right": "new_terminal_right",
+        "new_browser_to_right": "new_browser_right",
+        "new_browser_tab_to_right": "new_browser_right",
+        "close_to_left": "close_left",
+        "close_to_right": "close_right",
+        "close_other_tabs": "close_others"
+      }
+    },
+    "focus_threading": {
+      "surface.current": "socket-worker read; exactly one synchronous main-actor resolution/snapshot/ref-mint hop; reply shaping and encoding off-main; safe from a main-thread in-process caller; never focus-intent",
+      "surface.report_pwd": "telemetry worker lane; parse off-main and perform one synchronous main-actor resolution/write/ref-mint hop so success is returned only after the write path ran; safe from a main-thread in-process caller; never focus-intent",
+      "surface.refresh": "main actor because Ghostty forceRefresh is UI/runtime-bound; never changes selection or application/window focus",
+      "surface.action_tab.action": "main actor. Default focus is false. focus=true is an explicit per-request authorization only for action branches that create or move a destination; it does not make rename/pin/read markers or reload focus-intent and must not activate another application.",
+      "sources": [
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Wire/ControlCommandExecutionPolicy.swift:190-304",
+        "Sources/TerminalController+MoveTabToNewWorkspace.swift:84-118"
+      ]
+    },
+    "event_model": {
+      "command_completion": "Only successful surface.action/tab.action calls publish the socket-domain event surface.action (category surface, source socket.v2). Its payload is {method, params: unchanged request params, result: exact success result}; routing ids are lifted from result then params. Failed calls publish no command-completion event.",
+      "lifecycle": "Action branches may additionally publish ordinary workspace/surface lifecycle events from the shared model path (for example surface.created, surface.selected, surface.closed, workspace.created/selected) when the corresponding state actually changes. current, refresh, and report_pwd have no CmuxSocketEventMapper completion mapping at the frozen commit.",
+      "sources": [
+        "Sources/CmuxSocketEventMapper.swift:1-103,154-180",
+        "Sources/CmuxEventPublishing.swift:165-230"
+      ]
+    }
+  },
+  "entries": [
+    {
+      "id": "v2:surface.current",
+      "method": "surface.current",
+      "kind": "v2_method",
+      "sources": [
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/ControlCommandCoordinator.swift:121-122",
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Surface/ControlCommandCoordinator+Surface.swift:186-238",
+        "Sources/TerminalController+ControlSurfaceContext.swift:201-229"
+      ],
+      "request": {
+        "selectors": [
+          "window_id",
+          "group_id",
+          "workspace_id",
+          "surface_id",
+          "terminal_id",
+          "tab_id",
+          "pane_id"
+        ],
+        "required": [],
+        "defaults": "shared routing; then return the resolved workspace's focused panel, falling back to that workspace's first ordered panel"
+      },
+      "selector_semantics": "Unlike workspace.current, workspace_id chooses the workspace whose current surface is returned. A surface selector chooses its owner workspace for this read but does not make the requested surface current; the response is still that workspace's focused panel, falling back to its first ordered panel. Dock routing returns the Dock focused/first panel and Dock-scoped pane/workspace identity.",
+      "errors": [
+        {
+          "code": "unavailable",
+          "message": "TabManager not available",
+          "data": null,
+          "when": "no TabManager resolves, including an invalid explicit window_id"
+        },
+        {
+          "code": "not_found",
+          "message": "Workspace not found",
+          "data": null,
+          "when": "a TabManager resolves but the requested/selected workspace does not"
+        }
+      ],
+      "response": {
+        "window_id": "string(UUID)|null",
+        "window_ref": "string(window:N)|null",
+        "workspace_id": "string(UUID)",
+        "workspace_ref": "string(workspace:N)",
+        "pane_id": "string(UUID)|null",
+        "pane_ref": "string(pane:N)|null",
+        "surface_id": "string(UUID)|null",
+        "surface_ref": "string(surface:N)|null",
+        "surface_type": "string|null"
+      },
+      "state": "read-only except stable handle refresh/minting",
+      "events": [],
+      "persistence_restore": "Reflects the restored focused panel and pane topology. An empty workspace/Dock succeeds with null pane/surface/type fields rather than returning not_found.",
+      "multiwindow": "Reads a background window without selecting it or changing the key/active window.",
+      "platform_equivalence": "Windows pane/surface ids may be native string identities rather than UUID storage internally, but the public canonical v2 contract still requires UUID/ref-shaped identities or an explicitly approved platform-equivalent identity mapping. Merely returning the first window is not equivalent.",
+      "windows_gap": {
+        "classification": "missing_with_reusable_primitives",
+        "evidence": [
+          "apps/desktop/src-tauri/src/control_socket.rs:937-980 does not advertise surface.current",
+          "apps/desktop/src-tauri/src/control_socket.rs:1270-1301 has no surface.current dispatch",
+          "apps/desktop/src-tauri/src/control_socket.rs:12366-12405 already resolves workspace-scoped surface.list",
+          "apps/desktop/src-tauri/src/control_socket.rs:1924-2007 and session snapshots already track selected_surface_id"
+        ],
+        "gap": "No method, response shaper, exact unavailable/not_found split, empty-workspace null behavior, or hosted multiwindow verification. Existing surface.list/current-selection helpers are implementation inputs, not parity proof."
+      },
+      "adversarial_cases": [
+        "A valid background workspace_id returns that workspace's focused surface without changing either window's selection.",
+        "An invalid explicit window_id plus a valid surface_id returns unavailable and never falls through.",
+        "surface_id, terminal_id, and tab_id precedence is exact when conflicting values are supplied.",
+        "A workspace with no surfaces returns success with pane_id/surface_id/surface_type and refs null.",
+        "A selected/focused surface restored after restart produces the same normalized identity and type."
+      ]
+    },
+    {
+      "id": "v2:surface.refresh",
+      "method": "surface.refresh",
+      "kind": "v2_method",
+      "sources": [
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Surface/ControlCommandCoordinator+Surface2.swift:77-99",
+        "Sources/TerminalController+ControlSurfaceContext3.swift:77-111",
+        "tests_v2/cmux.py:699-700"
+      ],
+      "request": {
+        "selectors": [
+          "window_id",
+          "group_id",
+          "workspace_id",
+          "surface_id",
+          "terminal_id",
+          "tab_id",
+          "pane_id"
+        ],
+        "required": [],
+        "defaults": "shared routing and workspace resolution"
+      },
+      "selector_semantics": "Selectors choose one workspace or Dock container. The method refreshes every terminal surface in that container, not one selected surface, not browsers, and not every app window.",
+      "errors": [
+        {
+          "code": "unavailable",
+          "message": "TabManager not available",
+          "data": null
+        },
+        {
+          "code": "not_found",
+          "message": "Workspace not found",
+          "data": null
+        }
+      ],
+      "response": {
+        "window_id": "string(UUID)|null",
+        "window_ref": "string(window:N)|null",
+        "workspace_id": "string(UUID)",
+        "workspace_ref": "string(workspace:N)",
+        "refreshed": "integer count of terminal surfaces on which forceRefresh ran; zero is success"
+      },
+      "state": "Forces a redraw/wakeup on each terminal runtime surface; does not alter topology, selection, title, input, browser state, or persisted model state.",
+      "events": [],
+      "persistence_restore": "No persisted mutation. A later restart must show unchanged session state.",
+      "multiwindow": "Only the resolved background/foreground container is refreshed and no window is raised or selected.",
+      "platform_equivalence": "On Windows, emitting the frontend refresh signal is acceptable only if live evidence proves it refreshes exactly all terminal surfaces in the routed workspace and yields the exact count. A global broadcast with accepted/event response is not equivalent.",
+      "windows_gap": {
+        "classification": "wrong_existing_analogue",
+        "evidence": [
+          "apps/desktop/src-tauri/src/control_socket.rs:977 advertises only surface.refresh_all",
+          "apps/desktop/src-tauri/src/control_socket.rs:1299 dispatches only surface.refresh_all",
+          "apps/desktop/src-tauri/src/control_socket.rs:7751-7762 emits one global cmux://refresh-surfaces event and returns {accepted,event}"
+        ],
+        "gap": "The canonical name is absent; existing refresh_all ignores routing, refreshes globally, does not exclude/count non-terminals at the backend boundary, and returns the wrong payload/error contract."
+      },
+      "adversarial_cases": [
+        "Two windows with terminal and browser surfaces: only terminals in the selected background workspace increment refreshed.",
+        "A browser-only workspace returns refreshed=0.",
+        "An invalid explicit window_id does not broadcast and returns unavailable.",
+        "No focus, selection, event-stream, or session snapshot delta occurs except renderer-observable refresh activity."
+      ]
+    },
+    {
+      "id": "v2:surface.report_pwd",
+      "method": "surface.report_pwd",
+      "kind": "v2_method",
+      "sources": [
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Surface/ControlCommandCoordinator+Surface3.swift:215-267",
+        "Sources/TerminalController+ControlSurfaceContext4.swift:319-356,441-480",
+        "Sources/Workspace.swift:4420-4507,6287-6306"
+      ],
+      "request": {
+        "required": [
+          "workspace_id: UUID/ref string",
+          "at least one non-whitespace string among path, directory, cwd"
+        ],
+        "optional": [
+          "surface_id: UUID/ref string"
+        ],
+        "path_alias_precedence": [
+          "path",
+          "directory",
+          "cwd"
+        ],
+        "path_alias_rule": "Blank/whitespace-only aliases are ignored. The first remaining alias supplies the exact untrimmed path. Every other remaining alias must be byte-for-byte equal; whitespace is preserved in request echo even though the model normalizes for storage.",
+        "routing": "This telemetry method does not use shared window routing. It resolves workspace_id in the controller's manager first, then any window's manager. Explicit surface_id must belong to that workspace."
+      },
+      "surface_resolution_without_surface_id": [
+        "focused valid surface, provided a remote workspace's focus is a remote terminal surface",
+        "for a remote workspace only: its sole remote-terminal surface",
+        "for a remote workspace only: its sole surface of any type",
+        "otherwise unresolved"
+      ],
+      "errors": [
+        {
+          "code": "invalid_params",
+          "message": "Missing or invalid workspace_id",
+          "data": null
+        },
+        {
+          "code": "invalid_params",
+          "message": "Missing or invalid surface_id",
+          "data": null,
+          "when": "surface_id is present and non-null but does not parse as UUID/ref"
+        },
+        {
+          "code": "invalid_params",
+          "message": "Missing path",
+          "data": null
+        },
+        {
+          "code": "invalid_params",
+          "message": "Conflicting path parameters",
+          "data": null
+        },
+        {
+          "code": "not_found",
+          "message": "Workspace not found",
+          "data": {
+            "workspace_id": "requested UUID",
+            "workspace_ref": "workspace ref",
+            "surface_id": "requested UUID|null",
+            "surface_ref": "surface ref|null"
+          }
+        },
+        {
+          "code": "not_found",
+          "message": "Surface not found",
+          "data": {
+            "workspace_id": "requested UUID",
+            "workspace_ref": "workspace ref",
+            "surface_id": "requested UUID|null",
+            "surface_ref": "surface ref|null"
+          }
+        }
+      ],
+      "response_variants": {
+        "recorded": {
+          "workspace_id": "string(UUID)",
+          "workspace_ref": "string(workspace:N)",
+          "surface_id": "resolved string(UUID)",
+          "surface_ref": "resolved string(surface:N)",
+          "path": "exact chosen request string"
+        },
+        "pending_remote_empty_workspace": {
+          "workspace_id": "string(UUID)",
+          "workspace_ref": "string(workspace:N)",
+          "surface_id": "requested string(UUID)|null",
+          "surface_ref": "requested string(surface:N)|null",
+          "path": "exact chosen request string",
+          "pending": true
+        }
+      },
+      "state": "Prunes stale surface metadata, records panel directory/provenance, updates the workspace current directory only when the resolved panel is focused and local fallback is allowed, updates sidebar/config/git projections, or queues an exact pending PWD for an empty remote workspace to apply when its matching surface appears.",
+      "events": [],
+      "persistence_restore": "The accepted directory feeds the canonical workspace/panel directory snapshot path and remote provenance/restore guards. Pending empty-remote PWD is runtime state that must apply once and clear when a matching surface arrives; restart behavior must match canonical live evidence rather than being inferred from a local unit model.",
+      "multiwindow": "workspace_id directly locates its owning window without selecting/raising it; no window selector is accepted or needed.",
+      "platform_equivalence": "Windows paths remain Windows-native (for example C:\\repo) and must not be rewritten to POSIX. Equivalence requires exact alias/error/pending behavior plus the analogous panel/workspace directory projections and restart behavior.",
+      "windows_gap": {
+        "classification": "missing_model_and_handler",
+        "evidence": [
+          "apps/desktop/src-tauri/src/control_socket.rs:937-980 and 1270-1301 omit surface.report_pwd",
+          "apps/desktop/src-tauri/src/control_socket.rs:7339-7390 implement related TTY/shell reports but not PWD",
+          "crates/cmux-core/src/session.rs:620 has workspace current_directory but no audited per-panel reported-directory/provenance/pending-remote representation"
+        ],
+        "gap": "No wire method, path-alias conflict validation, cross-window workspace lookup, per-surface directory metadata, empty-remote pending queue, or verified persistence/application path."
+      },
+      "adversarial_cases": [
+        "path='/repo ' is echoed with its trailing space while canonical storage normalization is observed separately.",
+        "path and cwd with unequal whitespace fail as conflicting; a whitespace-only path plus valid cwd uses cwd.",
+        "An explicit surface from another workspace returns Surface not found with requested ids in data.",
+        "An empty remote workspace accepts pending=true, later applies once to the requested/sole arriving surface, and clears pending state.",
+        "A report to a non-focused panel updates panel metadata without replacing the workspace current directory.",
+        "A report to a workspace in a background window preserves all window/workspace focus."
+      ]
+    },
+    {
+      "id": "v2:surface.action",
+      "method": "surface.action",
+      "method_alias": "tab.action",
+      "kind": "v2_method",
+      "sources": [
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/System/ControlCommandCoordinator+System.swift:41-42",
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/System/ControlCommandCoordinator+SystemTabAction.swift:3-119",
+        "Sources/TerminalController+ControlSystemContext2.swift:29-322",
+        "Sources/TerminalController+MoveTabToNewWorkspace.swift:35-82"
+      ],
+      "request": {
+        "required": [
+          "action: non-empty string after normalization"
+        ],
+        "selectors": [
+          "window_id",
+          "group_id",
+          "workspace_id",
+          "surface_id",
+          "terminal_id",
+          "tab_id",
+          "pane_id"
+        ],
+        "target_surface_precedence": [
+          "surface_id",
+          "tab_id",
+          "focused panel in resolved workspace"
+        ],
+        "action_inputs": {
+          "title": "rename title and optional destination workspace title for move-to-new-workspace family",
+          "url": "new-browser-right URL",
+          "focus": "bool/number/bool-token string; defaults false; relevant to create/duplicate/move branches"
+        }
+      },
+      "errors": [
+        {
+          "code": "unavailable",
+          "message": "TabManager not available",
+          "data": null
+        },
+        {
+          "code": "invalid_params",
+          "message": "Missing action",
+          "data": null
+        },
+        {
+          "code": "not_found",
+          "message": "Workspace not found",
+          "data": null
+        },
+        {
+          "code": "not_found",
+          "message": "No focused tab",
+          "data": null
+        },
+        {
+          "code": "not_found",
+          "message": "Tab not found",
+          "data": {
+            "surface_id": "requested UUID",
+            "surface_ref": "surface ref",
+            "tab_id": "same UUID",
+            "tab_ref": "tab ref"
+          }
+        },
+        {
+          "code": "invalid_params",
+          "message": "Unknown tab action",
+          "data": {
+            "action": "normalized string|null",
+            "supported_actions": "shared canonical advertised list in exact order"
+          }
+        },
+        {
+          "code": "invalid_params",
+          "message": "Missing or invalid title",
+          "data": null
+        },
+        {
+          "code": "invalid_params",
+          "message": "Invalid URL",
+          "data": {
+            "url": "raw URL string"
+          }
+        },
+        {
+          "code": "invalid_state",
+          "message": "Reload is only available for browser tabs",
+          "data": null
+        },
+        {
+          "code": "invalid_state",
+          "message": "Duplicate is only available for browser tabs",
+          "data": null
+        },
+        {
+          "code": "not_found",
+          "message": "Tab pane not found",
+          "data": null
+        },
+        {
+          "code": "invalid_state",
+          "message": "Failed to toggle full-width tab mode",
+          "data": null
+        },
+        {
+          "code": "not_found",
+          "message": "Tab not found in pane",
+          "data": null
+        },
+        {
+          "code": "internal_error",
+          "message": "Failed to create tab",
+          "data": null
+        },
+        {
+          "code": "internal_error",
+          "message": "Failed to duplicate tab",
+          "data": null
+        },
+        {
+          "code": "invalid_state",
+          "message": "Tab cannot be moved to a new workspace because it is the only tab in its workspace",
+          "data": null
+        },
+        {
+          "code": "unavailable",
+          "message": "AppDelegate not available",
+          "data": null
+        },
+        {
+          "code": "internal_error",
+          "message": "Failed to move tab to new workspace",
+          "data": null
+        }
+      ],
+      "browser_disabled_errors_and_success": {
+        "invalid_url": {
+          "code": "invalid_params",
+          "message": "Invalid URL",
+          "data": {
+            "url": "raw URL string"
+          }
+        },
+        "missing_url": {
+          "code": "browser_disabled",
+          "message": "cmux browser is disabled",
+          "data": null
+        },
+        "external_open_failed": {
+          "code": "external_open_failed",
+          "message": "Failed to open URL externally",
+          "data": {
+            "url": "normalized URL string"
+          }
+        },
+        "opened_externally": {
+          "window_id": "string(UUID)|null",
+          "window_ref": "string(window:N)|null",
+          "workspace_id": null,
+          "workspace_ref": null,
+          "pane_id": null,
+          "pane_ref": null,
+          "surface_id": null,
+          "surface_ref": null,
+          "created_split": false,
+          "opened_externally": true,
+          "browser_disabled": true,
+          "placement_strategy": "external_browser_disabled",
+          "url": "normalized URL string"
+        },
+        "note": "These outcomes must be differentially captured because browser availability and OS external-open success are platform/runtime state."
+      },
+      "base_success_response": {
+        "action": "normalized action",
+        "window_id": "string(UUID)|null",
+        "window_ref": "string(window:N)|null",
+        "workspace_id": "string(UUID)",
+        "workspace_ref": "string(workspace:N)",
+        "surface_id": "target string(UUID)",
+        "surface_ref": "string(surface:N)",
+        "tab_id": "same UUID",
+        "tab_ref": "string(tab:N)",
+        "pane_id": "string(UUID)|null",
+        "pane_ref": "string(pane:N)|null"
+      },
+      "action_semantics": {
+        "rename": "Require trimmed non-empty title; persist trimmed custom title; add title to response.",
+        "clear_name": "Clear custom title; base response only.",
+        "pin_unpin": "Set panel pinned true/false; add pinned boolean.",
+        "mark_read_mark_unread": "Clear/set panel unread metadata; base response only.",
+        "toggle_full_width_tab": "Target must belong to a pane; toggle pane full-width-tab mode and add full_width_tab_mode boolean.",
+        "reload": "Browser only; reload in place; base response.",
+        "duplicate": "Browser only; duplicate immediately to target's right; focus only when authorized; add created_surface_id/ref and created_tab_id/ref.",
+        "new_terminal_right": "Create terminal in the same pane, inheriting target working-directory fallback, then place immediately to the target's right but never before the pinned prefix; add created ids/refs. Remote-tmux route returns accepted=true, routed='remote-tmux', and all created ids/refs null.",
+        "new_browser_right": "Validate optional URL, create automation-preloaded browser in same pane, and place immediately right but after pinned prefix; add created ids/refs.",
+        "close_left_close_right_close_others": "Operate only within the target pane; skip pinned tabs; never remove the final workspace surface; add closed and skipped_pinned counts.",
+        "move_to_new_workspace_family": "Requires more than one source-workspace surface; move the same surface into a newly created workspace without focusing its window by default. Response replaces the base shape with action, source_window/workspace ids+refs, destination window/workspace ids+refs, created_workspace ids+refs, moved surface/tab ids+refs, and destination pane id/ref."
+      },
+      "state": "Uses the same model operations as UI tab actions. Metadata, topology, browser navigation/reload, and new-workspace movement are authoritative model/runtime mutations; no CLI-only shadow state is allowed.",
+      "events": [
+        "one surface.action socket-domain completion event on every successful surface.action or tab.action request",
+        "ordinary lifecycle events caused by create/close/select/move branches, with no duplicates from the CLI façade"
+      ],
+      "persistence_restore": "Custom title, pinned/unread metadata, created/closed/moved topology, and destination workspace survive through the normal session snapshot path. Browser reload and full-width presentation are transient unless the canonical live restore fixture proves otherwise; the differential runner records restart state instead of assuming.",
+      "multiwindow": "Shared routing may target a background window. Metadata/reload/close actions preserve focus. focus=true can focus a newly created/duplicated destination where supported; the move family passes focus through but explicitly does not focus a window. Explicit mismatching window remains authoritative.",
+      "platform_equivalence": "Browser disabled/external-open and terminal/browser creation may use Windows-native runtime primitives, but action availability, result/error shape, ordering, focus, lifecycle events, and persisted state must match after normalization.",
+      "windows_gap": {
+        "classification": "missing_aggregate_adapter_over_partial_primitives",
+        "evidence": [
+          "apps/desktop/src-tauri/src/control_socket.rs:937-980 and 1270-1301 omit surface.action/tab.action",
+          "apps/desktop/src-tauri/src/control_socket.rs:6724-6777 expose separate title/pin/unread mutations",
+          "apps/desktop/src-tauri/src/control_socket.rs:5160-5255 and 6699-6722 expose partial create/close primitives",
+          "apps/desktop/src-tauri/src/control_socket.rs:7838 onward contains a move-to-new-workspace primitive"
+        ],
+        "gap": "No shared action dispatcher, normalization/aliases, exact validation/error order, pane-relative close/insert policy, browser-only reload/duplicate contract, full-width-tab action, canonical response shaping, or surface.action event mapping. Existing primitives return different surface.list-style payloads and are not proof of shared semantics."
+      },
+      "adversarial_cases": [
+        "Conflicting workspace and surface selectors cannot escape the explicitly routed window/workspace.",
+        "A workspace-scoped request without surface_id targets that workspace's focused panel, not global focus.",
+        "Pinned tabs form the insertion floor and are counted/skipped by all close range actions.",
+        "Closing others in a one-surface workspace returns closed=0 without topology/event corruption.",
+        "focus=false creation in a background window preserves both windows' selected workspace/surface; focus=true changes only the documented destination focus.",
+        "Unknown aliases return the exact advertised list; accepted unadvertised compatibility aliases execute their canonical branch.",
+        "Every success emits exactly one socket surface.action event with the original method and unchanged params; every failure emits none.",
+        "Metadata/topology survives restart and no branch maintains a second optimistic copy."
+      ]
+    },
+    {
+      "id": "cli:tab-action",
+      "command": "tab-action",
+      "kind": "cli_command",
+      "sources": [
+        "CLI/cmux.swift:4347-4349",
+        "CLI/cmux.swift:7248-7350",
+        "CLI/cmux.swift:15673-15702",
+        "CLI/CMUXCLI+MoveTabToNewWorkspace.swift:3-21",
+        "tests_v2/test_tab_workspace_action_naming.py:92-164"
+      ],
+      "usage": "cmux tab-action --action <name> [--tab <id|ref|index>] [--surface <id|ref|index>] [--workspace <id|ref|index>] [--window <id|ref|index>] [--title <text>] [--url <url>] [--focus <true|false>]",
+      "parse_order": [
+        "Remove --workspace, --tab, --surface, --action, --title, --url, --focus, and --window options.",
+        "Action is --action, else first remaining positional; normalize lowercase and '-' to '_'.",
+        "Any remaining token beginning '--' fails as an unknown flag; remaining non-flags become inferred rename title joined by one space.",
+        "Window is command --window then global window override.",
+        "Workspace is explicit --workspace, else CMUX_WORKSPACE_ID only when there is no window.",
+        "Tab target is --tab, then --surface, then CMUX_TAB_ID, then CMUX_SURFACE_ID only when neither explicit workspace nor window exists.",
+        "Normalize window, then workspace within window (allow current), then tab within workspace/window. When an explicit workspace resolved and no tab was given, omit surface_id so the server resolves that workspace's focused tab.",
+        "Title is --title else joined trailing text, trimmed. URL is trimmed when non-empty. focus is always sent and defaults false."
+      ],
+      "client_errors": [
+        "tab-action requires --action <name>",
+        "tab-action: unknown flag '<flag>'",
+        "tab-action rename requires --title <text> (or a trailing title)",
+        "--focus must be true|false",
+        "window/workspace/tab UUID/ref/index normalizer errors from window.list, workspace.list/current, and surface.list/current"
+      ],
+      "wire_call": {
+        "method": "tab.action",
+        "params": "normalized action plus normalized window_id/workspace_id/surface_id, optional title/url, and focus boolean"
+      },
+      "output": {
+        "exit": "0 on success; nonzero on parse/normalization/backend error",
+        "stdout_text": "OK action=<normalized>[ tab=<formatted tab>][ workspace=<formatted workspace>][ closed=<n>][ full_width_tab_mode=<bool>][ created=<formatted tab>][ created_workspace=<formatted workspace>] plus newline",
+        "stdout_json": "formatted backend result after recursive --id-format refs|uuids|both projection",
+        "stderr": "empty on success; CLI/backend error text on failure; no legacy deprecation warning",
+        "id_format": "global --id-format controls handle rendering; help and examples prefer tab:<n> while --surface remains backward-compatible"
+      },
+      "help_contract": {
+        "usage_prefix": "Usage: cmux tab-action --action <name> [flags]",
+        "must_describe": [
+          "Target tab",
+          "tab:<n> and surface:<n>",
+          "workspace/window context",
+          "focus default false",
+          "rename trailing title",
+          "examples using --tab tab:<n>"
+        ]
+      },
+      "state_events_persistence": "No independent CLI state. The command must be a pure façade over tab.action and inherit all backend mutation, focus, event, multiwindow, and restore semantics exactly once.",
+      "platform_equivalence": "Windows named-pipe transport and executable naming are platform-equivalent; parse, request sequence, exit code, stdout, stderr, JSON/id formatting, and resulting live state/events are not optional differences.",
+      "windows_gap": {
+        "classification": "classified_but_unimplemented",
+        "evidence": [
+          "crates/cmux-cli/src/classify.rs:462 recognizes the top-level name",
+          "crates/cmux-cli/src/classify.rs:533 classifies help",
+          "crates/cmux-cli/src/command_forward.rs has no tab-action mapping or parser",
+          "matrix evidence reports no concrete help and explicit_socket_command_not_ported"
+        ],
+        "gap": "The command currently reaches classification only. There is no concrete help, normalization, tab.action request, formatter, executable process-contract test, or behavioral backend route."
+      },
+      "adversarial_cases": [
+        "--tab beats --surface and explicit --workspace suppresses ambient tab ids.",
+        "--window suppresses ambient workspace/tab context and scopes zero-based indexes to that window.",
+        "Workspace-only mark-unread omits surface_id and changes that workspace's focused tab without changing selected workspace.",
+        "Positional rename title, --title, quotes, and unknown trailing flags produce canonical request/error text.",
+        "refs, UUIDs, and zero-based indexes produce the same mutation and correct --id-format text/JSON.",
+        "CLI success produces only the backend's single surface.action completion event."
+      ]
+    }
+  ],
+  "gap_summary": {
+    "v2:surface.current": "missing_with_reusable_primitives",
+    "v2:surface.refresh": "wrong_existing_analogue",
+    "v2:surface.report_pwd": "missing_model_and_handler",
+    "v2:surface.action": "missing_aggregate_adapter_over_partial_primitives",
+    "cli:tab-action": "classified_but_unimplemented",
+    "resolved_entries": 0,
+    "strict_status_after_contract": "unchanged; all five remain missing until independent runtime verification"
+  },
+  "implementation_plan": {
+    "red": [
+      "Add behavioral desktop control-socket tests for all four exact v2 names, capability advertisement, exact success/error payloads, invalid explicit-window no-fallback behavior, and two-window routing. These tests must call decoded request handlers, not grep source.",
+      "Add session/model behavior tests for report_pwd per-panel versus focused-workspace directory, alias conflicts, pending remote apply-once, and persistence round-trip.",
+      "Add one parameterized surface.action behavioral suite covering every advertised action and accepted alias, pane-local insertion/close/pinned invariants, browser-only failures, move response, focus true/false, exact domain/lifecycle event counts, and restart-visible state.",
+      "Add cmux-cli mapping/parser/formatter tests plus a real executable named-pipe process-contract test for exit/stdout/stderr/help/JSON/id-format/ambient-versus-window precedence. Confirm each new test fails for the intended missing/wrong behavior at the red commit."
+    ],
+    "green": [
+      "Create one shared multiwindow surface target resolver and canonical identity/payload helpers; do not add per-method first-window fallbacks.",
+      "Implement surface.current as a snapshot adapter over the shared resolver and selected/focused surface data.",
+      "Replace or wrap refresh_all with canonical routed surface.refresh that refreshes terminal surfaces only and reports the exact count; retain refresh_all only as a documented compatibility alias if existing consumers require it.",
+      "Add canonical per-panel reported-directory/pending-remote state and one report_pwd mutation path that updates workspace projection only for the focused eligible panel and persists through the established session snapshot path.",
+      "Build one surface_action dispatcher over shared session/browser/terminal operations, not calls back through separate wire methods. Add canonical event mapping and exact payload/error shaping.",
+      "Map tab-action to tab.action in cmux-cli with canonical normalization, ambient/window precedence, concrete help, and formatter. Do not duplicate action semantics in the CLI."
+    ],
+    "green_gate": [
+      "Run focused cmux-core session tests, cmux-desktop control_socket tests with real sidecars where needed, cmux-cli unit/process tests, capabilities/help contract tests, and normal desktop build.",
+      "Run hosted Windows live tests that exercise renderer refresh, browser reload/duplicate, terminal creation, multiwindow selection preservation, named-pipe CLI output, event stream, and restart persistence. Local compilation alone cannot move an entry beyond implemented_unverified.",
+      "Run frozen canonical macOS and Windows differential fixtures, symbolize dynamic ids/refs, and compare exit/stdout/stderr, response/error, state, events, persistence, selector precedence, and multiwindow focus."
+    ],
+    "simplify": [
+      "Collapse duplicate selector parsing and response identity construction into the existing control-socket helpers while preserving exact error precedence.",
+      "Route title/pin/unread/new-tab/close/move operations through one authoritative session mutation path already used by UI/control entrypoints; remove any adapter-only optimistic state.",
+      "Keep report_pwd telemetry parsing off the UI lane and cross into state mutation once; avoid a new synchronous UI wait or duplicated pending queue.",
+      "Keep tab-action CLI limited to normalization/request/output and share global handle/id-format utilities."
+    ],
+    "second_green": [
+      "Repeat the entire focused suite, stress action/refresh/report concurrency, full desktop native suite, web/type/build/parity gates, normal desktop build, and hosted Windows live differential without changing expected artifacts.",
+      "Require an independent verifier to inspect the exact simplification commit and reproduce multiwindow, event, and restart cases before any matrix promotion or push."
+    ]
+  },
+  "differential_live_runner_plan": {
+    "canonical_fixture": "Frozen e1825d40 tagged macOS app/socket with two windows, two workspaces per window, a pane containing pinned and unpinned terminal/browser tabs, one empty/browser-only workspace, one empty remote workspace fixture, event subscription, and persisted restart fixture.",
+    "windows_fixture": "Matching isolated Windows desktop build/named pipe with equivalent public state and real terminal/browser sidecars; no placeholder executables.",
+    "captures": [
+      "request and response/error envelope",
+      "CLI exit code, stdout, and stderr",
+      "before/after workspace, pane, surface, title, pinned, unread, cwd, browser URL/reload, and selected/key-window state",
+      "ordered event frames including socket completion and lifecycle events",
+      "post-restart session state",
+      "renderer-observable refresh counts",
+      "all selector conflicts and explicit invalid-window behavior"
+    ],
+    "normalization": "Symbolize dynamic UUIDs and kind:N refs by creation/ownership order; normalize only native path separators/root fixtures where the platform-equivalence rule permits it. Do not normalize errors, counts, booleans, action names, CLI whitespace, event multiplicity/order, focus, or null versus omitted fields.",
+    "pass_condition": "Zero unexplained normalized deltas for every one of the five scoped entries across wire, process, state, events, persistence, selectors, and multiwindow behavior."
+  },
+  "batch_assessment": {
+    "coherent": true,
+    "reason": "After the split, the five entries form one adapter/control-plane batch: three surface snapshot/telemetry/render adapters plus the surface action adapter and its only CLI façade. They share selector/identity/event/session integration and can be verified without claiming terminal process construction/replacement parity.",
+    "implementation_subscopes": [
+      {
+        "name": "surface_read_telemetry_render_adapters",
+        "entries": [
+          "v2:surface.current",
+          "v2:surface.refresh",
+          "v2:surface.report_pwd"
+        ]
+      },
+      {
+        "name": "surface_action_adapter_and_cli",
+        "entries": [
+          "v2:surface.action",
+          "cli:tab-action"
+        ]
+      }
+    ],
+    "deferred_terminal_lifecycle_entries": [
+      "v2:surface.create",
+      "v2:surface.respawn",
+      "cli:respawn-pane"
+    ]
+  }
+}
