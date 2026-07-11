@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -92,15 +93,24 @@ def test_desktop_lib_registers_its_lib_local_tauri_commands() -> None:
     # These are the commands defined in lib.rs itself
     # (the terminal/session/agent/command-palette/diff/markdown commands live in
     # their own modules and are registered by module path).
-    assert lib.count("#[tauri::command]") == 3
-    for command in ("ping", "desktop_core_status", "agent_provider_status"):
-        assert f"fn {command}()" in lib
-    # Both are registered in the invoke handler. Check per-command containment
-    # inside the handler block rather than an exact 2-command string, so adding a
+    required_commands = {
+        "ping",
+        "desktop_core_status",
+        "agent_provider_status",
+        "active_callback_scheme",
+    }
+    local_commands = re.findall(
+        r"#\[tauri::command\]\s*(?:pub\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+        lib,
+    )
+    assert required_commands <= set(local_commands)
+    assert len(local_commands) == len(set(local_commands)), "duplicate local Tauri command"
+    # All are registered in the invoke handler. Check per-command containment
+    # inside the handler block rather than an exact command-list string, so adding a
     # module command does not bitrot this contract test.
     handler_start = lib.index("tauri::generate_handler![")
     handler = lib[handler_start : lib.index("]", handler_start)]
-    for command in ("ping", "desktop_core_status", "agent_provider_status"):
+    for command in local_commands:
         assert command in handler, f"invoke handler missing {command!r}"
 
 
@@ -166,11 +176,21 @@ def test_bridge_consumes_status_as_a_bare_object_not_an_envelope() -> None:
 
 def test_bridge_native_reply_envelope_shapes_match_rust_outputs() -> None:
     bridge = _read(BRIDGE_TS)
+    native_reply = bridge[bridge.index("type NativeReply<T> =") : bridge.index("type AgentEvent")]
     # The three NativeReply<T> shapes the bridge handles. Rust currently emits
     # only bare values (ping -> string, desktop_core_status -> object), but the
     # bridge must still support the ok/err envelopes for future commands.
-    assert "{ ok: true; value: T }" in bridge
-    assert "{ ok: false; error?: { code?: string; userMessage?: string } }" in bridge
+    assert "{ ok: true; value: T }" in native_reply
+    assert "{ ok: false; error?: {" in native_reply
+    for error_field in (
+        "code?: string",
+        "userMessage?: string",
+        "data?: unknown",
+    ):
+        assert error_field in native_reply
+    assert "readonly data?: unknown" in bridge
+    assert "this.data = data" in bridge
+    assert "reply.error?.data" in bridge
     # Default error message used when userMessage is absent.
     assert '"Native bridge request failed."' in bridge
     # Browser fallback used when window.__TAURI__ is absent.

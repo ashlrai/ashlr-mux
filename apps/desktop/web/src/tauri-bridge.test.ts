@@ -151,6 +151,25 @@ describe("callNative", () => {
       }
     });
 
+    test("preserves structured error.data on NativeBridgeError", async () => {
+      const data = {
+        reason: "manifest_denied",
+        manifest: { permissions: ["workspace.read"] },
+      };
+      installInvoke(() => ({
+        ok: false,
+        error: { code: "E_DENIED", userMessage: "denied", data },
+      }));
+
+      try {
+        await callNative("custom_sidebar_action_invoke");
+        throw new Error("expected callNative to reject");
+      } catch (error) {
+        expect(error).toBeInstanceOf(NativeBridgeError);
+        expect((error as NativeBridgeError).data).toEqual(data);
+      }
+    });
+
     test("propagates error.code even when userMessage is absent", async () => {
       installInvoke(() => ({ ok: false, error: { code: "E_NO_MESSAGE" } }));
 
