@@ -1702,16 +1702,23 @@ mod tests {
 
     impl CapturedWriter {
         fn wait_for_line(&self, index: usize) -> String {
-            let deadline = Instant::now() + Duration::from_secs(5);
+            self.wait_for_line_timeout(index, Duration::from_secs(5))
+                .unwrap_or_else(|| {
+                    panic!("timed out waiting for captured daemon request line {index}")
+                })
+        }
+
+        fn wait_for_line_timeout(&self, index: usize, timeout: Duration) -> Option<String> {
+            let deadline = Instant::now() + timeout;
             loop {
                 {
                     let inner = self.lock();
                     if let Some(line) = inner.lines.get(index) {
-                        return line.clone();
+                        return Some(line.clone());
                     }
                 }
                 if Instant::now() >= deadline {
-                    panic!("timed out waiting for captured daemon request line {index}");
+                    return None;
                 }
                 thread::sleep(Duration::from_millis(10));
             }
@@ -2239,16 +2246,22 @@ mod tests {
             }),
         );
 
-        let mut stream = stream_receiver
+        let stream = stream_receiver
             .recv_timeout(Duration::from_secs(5))
             .unwrap()
             .unwrap();
-        stream.write_all(b"ping").unwrap();
+        let (write_sender, write_receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let mut stream = stream;
+            let result = stream.write_all(b"ping");
+            write_sender.send((stream, result)).unwrap();
+        });
         let write = writer.wait_for_line(2);
         let write_value: Value = serde_json::from_str(write.trim_end()).unwrap();
         assert_eq!(write_value["method"], json!("proxy.write"));
         assert_eq!(write_value["params"]["stream_id"], json!("stream-1"));
         assert_eq!(write_value["params"]["data_base64"], json!("cGluZw=="));
+        assert_eq!(write_value["params"]["timeout_ms"], json!(8_000));
         send_daemon_frame(
             &daemon_sender,
             json!({
@@ -2257,6 +2270,10 @@ mod tests {
                 "result": { "written": 4 },
             }),
         );
+
+        let (mut stream, write_result) =
+            write_receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+        write_result.unwrap();
 
         send_daemon_frame(
             &daemon_sender,
@@ -2286,5 +2303,175 @@ mod tests {
             }),
         );
         close_receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn daemon_proxy_stream_write_half_close_preserves_events_until_both_close() {
+        let (daemon_sender, daemon_receiver) = mpsc::channel::<Vec<u8>>();
+        let writer = CapturedWriter::default();
+        let client =
+            DaemonProxyRpcClient::start(ChannelReader::new(daemon_receiver), writer.clone());
+        let connector = DaemonProxyConnector::with_timeout(client, Duration::from_secs(2));
+        let target = ProxyTarget {
+            host: "example.com".to_string(),
+            port: 443,
+        };
+        let (stream_sender, stream_receiver) = mpsc::channel();
+        thread::spawn(move || {
+            stream_sender
+                .send(connector.open_stream(&target, ProxyHandshakeProtocol::Socks5))
+                .unwrap();
+        });
+
+        let open = writer.wait_for_line(0);
+        send_daemon_frame(
+            &daemon_sender,
+            json!({
+                "id": request_id(&open),
+                "ok": true,
+                "result": { "stream_id": "stream-half-close" },
+            }),
+        );
+        let subscribe = writer.wait_for_line(1);
+        send_daemon_frame(
+            &daemon_sender,
+            json!({
+                "id": request_id(&subscribe),
+                "ok": true,
+                "result": {},
+            }),
+        );
+        let mut stream = stream_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+
+        let write_half = stream.try_clone_box().unwrap();
+        let (half_sender, half_receiver) = mpsc::channel();
+        thread::spawn(move || {
+            half_sender
+                .send(write_half.shutdown(Shutdown::Write))
+                .unwrap();
+        });
+
+        let unexpected_close = writer.wait_for_line_timeout(2, Duration::from_millis(250));
+        if let Some(close) = &unexpected_close {
+            send_daemon_frame(
+                &daemon_sender,
+                json!({
+                    "id": request_id(close),
+                    "ok": true,
+                    "result": {},
+                }),
+            );
+        }
+        half_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        assert!(
+            unexpected_close.is_none(),
+            "Shutdown::Write must not send proxy.close"
+        );
+
+        send_daemon_frame(
+            &daemon_sender,
+            json!({
+                "event": "proxy.stream.data",
+                "stream_id": "stream-half-close",
+                "data_base64": "cG9uZw==",
+            }),
+        );
+        let mut payload = [0u8; 4];
+        stream.read_exact(&mut payload).unwrap();
+        assert_eq!(&payload, b"pong");
+
+        let (close_sender, close_receiver) = mpsc::channel();
+        thread::spawn(move || {
+            close_sender.send(stream.shutdown(Shutdown::Both)).unwrap();
+        });
+        let close = writer.wait_for_line(2);
+        assert_eq!(request_method(&close), "proxy.close");
+        send_daemon_frame(
+            &daemon_sender,
+            json!({
+                "id": request_id(&close),
+                "ok": true,
+                "result": {},
+            }),
+        );
+        close_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        assert!(
+            writer
+                .wait_for_line_timeout(3, Duration::from_millis(250))
+                .is_none(),
+            "daemon stream must close at most once"
+        );
+    }
+
+    #[test]
+    fn daemon_rpc_correlates_out_of_order_responses_around_stream_events() {
+        let (daemon_sender, daemon_receiver) = mpsc::channel::<Vec<u8>>();
+        let writer = CapturedWriter::default();
+        let client =
+            DaemonProxyRpcClient::start(ChannelReader::new(daemon_receiver), writer.clone());
+        let (result_sender, result_receiver) = mpsc::channel();
+
+        for label in ["first", "second"] {
+            let client = Arc::clone(&client);
+            let result_sender = result_sender.clone();
+            thread::spawn(move || {
+                let result = client.request_response(
+                    |id| daemon_rpc_request_line(id, label, json!({})),
+                    Duration::from_secs(2),
+                );
+                result_sender.send((label, result)).unwrap();
+            });
+        }
+        drop(result_sender);
+
+        let first_line = writer.wait_for_line(0);
+        let second_line = writer.wait_for_line(1);
+        send_daemon_frame(
+            &daemon_sender,
+            json!({
+                "event": "proxy.stream.data",
+                "stream_id": "unsubscribed",
+                "data_base64": "aWdub3JlZA==",
+            }),
+        );
+        send_daemon_frame(
+            &daemon_sender,
+            json!({
+                "id": request_id(&second_line),
+                "ok": true,
+                "result": { "method": request_method(&second_line) },
+            }),
+        );
+        send_daemon_frame(
+            &daemon_sender,
+            json!({
+                "id": request_id(&first_line),
+                "ok": true,
+                "result": { "method": request_method(&first_line) },
+            }),
+        );
+
+        let mut completed = Vec::new();
+        for _ in 0..2 {
+            let (label, result) = result_receiver
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+            let (id, line) = result.unwrap();
+            assert_eq!(id, request_id(&line));
+            let value: Value = serde_json::from_str(line.trim_end()).unwrap();
+            assert_eq!(value["result"]["method"], json!(label));
+            completed.push(label);
+        }
+        completed.sort_unstable();
+        assert_eq!(completed, vec!["first", "second"]);
     }
 }
