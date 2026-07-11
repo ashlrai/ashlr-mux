@@ -1767,7 +1767,7 @@ mod control_result_tests {
         ]});
         assert_eq!(
             format_control_result("workspace.list", &list),
-            "* workspace:1  Build\n   workspace:2  Remote  [remote:unknown]"
+            "* workspace:1  Build  [selected]\n  workspace:2  Remote  [remote:unknown]"
         );
         assert_eq!(
             format_control_result("workspace.list", &serde_json::json!({"workspaces":[]})),
@@ -1815,7 +1815,7 @@ mod control_result_tests {
         ]});
         assert_eq!(
             format_workspace_entries(&list),
-            "* workspace:1  Local\n   workspace:2  Remote  [ssh:connected]"
+            "* workspace:1  Local  [selected]\n  workspace:2  Remote  [ssh:connected]"
         );
 
         let response = serde_json::json!({"workspace_id":"uuid-a","workspace_ref":"workspace:1"});
@@ -1861,6 +1861,37 @@ mod control_result_tests {
         assert!(persisted["mainVerticalLayouts"].get("keep").is_none());
         assert!(persisted["lastSplitSurface"].get("keep").is_none());
         assert_eq!(persisted["buffers"]["default"], "keep");
+    }
+
+    #[test]
+    fn verifier_json_id_filter_matches_frozen_plain_and_plural_pairs_recursively() {
+        let original = serde_json::json!({
+            "id":"root-id", "ref":"root:1",
+            "workspace_id":"workspace-id", "workspace_ref":"workspace:1",
+            "surface_ids":["surface-a"], "surface_refs":["surface:1"],
+            "nested":[{"id":"child-id","ref":"child:1","pane_ids":["pane-a"],"pane_refs":["pane:1"]}]
+        });
+        let mut refs = original.clone();
+        filter_id_format(&mut refs, "refs");
+        assert_eq!(
+            refs,
+            serde_json::json!({
+                "ref":"root:1", "workspace_ref":"workspace:1", "surface_refs":["surface:1"],
+                "nested":[{"ref":"child:1","pane_refs":["pane:1"]}]
+            })
+        );
+        let mut uuids = original.clone();
+        filter_id_format(&mut uuids, "uuids");
+        assert_eq!(
+            uuids,
+            serde_json::json!({
+                "id":"root-id", "workspace_id":"workspace-id", "surface_ids":["surface-a"],
+                "nested":[{"id":"child-id","pane_ids":["pane-a"]}]
+            })
+        );
+        let mut both = original.clone();
+        filter_id_format(&mut both, "both");
+        assert_eq!(both, original);
     }
 
     #[test]
