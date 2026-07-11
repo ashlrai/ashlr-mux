@@ -330,7 +330,10 @@ pub fn run() {
             if let Err(error) = config::start_config_file_watcher(&handle) {
                 eprintln!("[config] failed to start watcher: {error}");
             }
-            let _ = session::session_snapshot(handle, app.state::<session::SessionState>());
+            if let Some(window) = app.get_webview_window("main") {
+                let _ =
+                    session::session_snapshot(handle, window, app.state::<session::SessionState>());
+            }
             Ok(())
         })
         // Phase-4 custom URI schemes (WebView2 `WebResourceRequested` handlers).

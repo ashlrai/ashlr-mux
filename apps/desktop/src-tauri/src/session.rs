@@ -32,7 +32,7 @@ use cmux_core::session::{
 };
 use cmux_core::session_ops::{self, CloseOutcome, SplitChild};
 use cmux_workspaces::{WorkspaceBatchReorderError, WorkspaceReorderPlanItem};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use uuid::Uuid;
 
 /// Event carrying the full session snapshot after any structural change.
@@ -117,7 +117,7 @@ fn initial_snapshot(first_panel_id: &str) -> AppSessionSnapshot {
         version: SESSION_SNAPSHOT_SCHEMA_VERSION,
         created_at: 0,
         windows: vec![SessionWindowSnapshot {
-            window_id: Some("window-1".to_string()),
+            window_id: Some("main".to_string()),
             tab_manager: SessionTabManagerSnapshot {
                 selected_workspace_index: Some(0),
                 workspaces: vec![session_ops::fresh_terminal_workspace(first_panel_id)],
@@ -2512,8 +2512,29 @@ fn apply_set_group_collapsed(
     }
 }
 
+fn window_index_for_label(snapshot: &AppSessionSnapshot, label: &str) -> Option<usize> {
+    snapshot
+        .windows
+        .iter()
+        .position(|window| window.window_id.as_deref() == Some(label))
+        .or_else(|| (label == "main" && !snapshot.windows.is_empty()).then_some(0))
+}
+
+pub(crate) fn snapshot_for_window(
+    snapshot: &AppSessionSnapshot,
+    label: &str,
+) -> AppSessionSnapshot {
+    let mut projected = snapshot.clone();
+    if let Some(index) = window_index_for_label(&projected, label) {
+        projected.windows.swap(0, index);
+    }
+    projected
+}
+
 fn emit_session_changed(app: &AppHandle, snapshot: &AppSessionSnapshot) {
-    let _ = app.emit(SESSION_CHANGED_EVENT, snapshot);
+    for (label, window) in app.webview_windows() {
+        let _ = window.emit(SESSION_CHANGED_EVENT, snapshot_for_window(snapshot, &label));
+    }
 }
 
 fn notify_session_changed(app: &AppHandle, snapshot: &AppSessionSnapshot) {
@@ -2736,12 +2757,16 @@ pub(crate) fn set_browser_zoom_for_control(
 
 /// Return the current session snapshot (structure of windows/workspaces/panes).
 #[tauri::command]
-pub fn session_snapshot(app: AppHandle, state: State<'_, SessionState>) -> AppSessionSnapshot {
+pub fn session_snapshot(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, SessionState>,
+) -> AppSessionSnapshot {
     let snapshot = current_session_snapshot(&state);
     persist_current_snapshot(&app, &snapshot);
     crate::window_title::refresh_window_titles(&app, &snapshot);
     crate::window::emit_window_states(&app);
-    snapshot
+    snapshot_for_window(&snapshot, window.label())
 }
 
 pub(crate) fn current_session_snapshot(state: &SessionState) -> AppSessionSnapshot {
@@ -2752,6 +2777,108 @@ pub(crate) fn current_session_snapshot(state: &SessionState) -> AppSessionSnapsh
     ensure_workspace_ids(&mut guard);
     ensure_pane_ids(&mut guard);
     guard.clone()
+}
+
+pub(crate) fn register_window_for_control(
+    app: &AppHandle,
+    state: &SessionState,
+    window_id: &str,
+) -> AppSessionSnapshot {
+    let (changed, snapshot) = {
+        let mut guard = state
+            .snapshot
+            .lock()
+            .expect("session snapshot mutex poisoned");
+        let exact_window_index = guard
+            .windows
+            .iter()
+            .position(|window| window.window_id.as_deref() == Some(window_id));
+        let changed =
+            if exact_window_index.is_none() && window_id == "main" && !guard.windows.is_empty() {
+                guard.windows[0].window_id = Some("main".to_string());
+                true
+            } else if exact_window_index.is_none() {
+                let panel_id = format!(
+                    "surface-{}",
+                    state.next_panel.fetch_add(1, Ordering::Relaxed)
+                );
+                guard.windows.push(SessionWindowSnapshot {
+                    window_id: Some(window_id.to_string()),
+                    tab_manager: SessionTabManagerSnapshot {
+                        selected_workspace_index: Some(0),
+                        workspaces: vec![session_ops::fresh_terminal_workspace(&panel_id)],
+                        workspace_groups: None,
+                    },
+                });
+                ensure_workspace_ids(&mut guard);
+                ensure_pane_ids(&mut guard);
+                true
+            } else {
+                false
+            };
+        (changed, guard.clone())
+    };
+    if changed {
+        notify_session_changed(app, &snapshot);
+    }
+    snapshot
+}
+
+pub(crate) fn unregister_window_for_control(
+    app: &AppHandle,
+    state: &SessionState,
+    window_id: &str,
+) -> AppSessionSnapshot {
+    let (changed, snapshot) = {
+        let mut guard = state
+            .snapshot
+            .lock()
+            .expect("session snapshot mutex poisoned");
+        let changed = if let Some(index) =
+            window_index_for_label(&guard, window_id).filter(|index| *index != 0)
+        {
+            guard.windows.remove(index);
+            true
+        } else {
+            false
+        };
+        (changed, guard.clone())
+    };
+    if changed {
+        notify_session_changed(app, &snapshot);
+    }
+    snapshot
+}
+
+pub(crate) fn move_workspace_to_window_for_control(
+    app: &AppHandle,
+    state: &SessionState,
+    workspace_id: &str,
+    target_window_id: &str,
+    focus: bool,
+) -> Result<AppSessionSnapshot, session_ops::MoveWorkspaceToWindowError> {
+    let bootstrap_panel_id = format!(
+        "surface-{}",
+        state.next_panel.fetch_add(1, Ordering::Relaxed)
+    );
+    let snapshot = {
+        let mut guard = state
+            .snapshot
+            .lock()
+            .expect("session snapshot mutex poisoned");
+        session_ops::move_workspace_to_window(
+            &mut guard,
+            workspace_id,
+            target_window_id,
+            session_ops::fresh_terminal_workspace(&bootstrap_panel_id),
+            focus,
+        )?;
+        ensure_workspace_ids(&mut guard);
+        ensure_pane_ids(&mut guard);
+        guard.clone()
+    };
+    notify_session_changed(app, &snapshot);
+    Ok(snapshot)
 }
 
 pub(crate) fn configure_workspace_remote_for_control(
@@ -5624,7 +5751,7 @@ pub fn session_reopen_closed_browser_tab(
             .expect("closed browser history mutex poisoned");
         history.pop()
     }) else {
-        return session_snapshot(app, state);
+        return current_session_snapshot(&state);
     };
     let new_panel_id = format!(
         "surface-{}",
@@ -6144,6 +6271,27 @@ mod tests {
         assert_eq!(tabs.selected_workspace_index, Some(0));
         assert_eq!(tabs.workspaces.len(), 1);
         assert_eq!(count_leaves(active_layout(&snapshot)), 1);
+    }
+
+    #[test]
+    fn snapshot_for_window_projects_requested_tab_manager_first() {
+        let mut snapshot = initial_snapshot(FIRST_PANEL_ID);
+        snapshot.windows.push(SessionWindowSnapshot {
+            window_id: Some("window-2".to_string()),
+            tab_manager: SessionTabManagerSnapshot {
+                selected_workspace_index: Some(0),
+                workspaces: vec![session_ops::fresh_terminal_workspace("surface-2")],
+                workspace_groups: None,
+            },
+        });
+
+        let projected = snapshot_for_window(&snapshot, "window-2");
+        assert_eq!(projected.windows[0].window_id.as_deref(), Some("window-2"));
+        assert_eq!(
+            first_panel_id(&projected.windows[0].tab_manager.workspaces[0]),
+            Some("surface-2")
+        );
+        assert_eq!(snapshot.windows[0].window_id.as_deref(), Some("main"));
     }
 
     #[test]

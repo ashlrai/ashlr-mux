@@ -274,6 +274,10 @@ pub fn control_command_for(
             "workspace.reorder_many",
             canonical_workspaces_reorder_params(args)?,
         )),
+        "move-workspace-to-window" => Some(ControlCommand::new(
+            "workspace.move_to_window",
+            move_workspace_to_window_params(args)?,
+        )),
         "move-surface" => Some(ControlCommand::new(
             "surface.move",
             canonical_surface_move_params(args)?,
@@ -1348,6 +1352,20 @@ fn canonical_surface_move_params(args: &[String]) -> Result<serde_json::Value, C
         };
         params.insert("focus".to_string(), serde_json::json!(focus));
     }
+    Ok(serde_json::Value::Object(params))
+}
+
+fn move_workspace_to_window_params(args: &[String]) -> Result<serde_json::Value, CliError> {
+    let parsed = ParsedArgs::parse(args)?;
+    let workspace = parsed
+        .value(&["--workspace"])
+        .ok_or_else(|| CliError::new("move-workspace-to-window requires --workspace"))?;
+    let window = parsed
+        .value(&["--window"])
+        .ok_or_else(|| CliError::new("move-workspace-to-window requires --window"))?;
+    let mut params = serde_json::Map::new();
+    apply_workspace_target_selector(workspace, "workspace", &mut params);
+    apply_window_selector_value(window, &mut params);
     Ok(serde_json::Value::Object(params))
 }
 
@@ -4620,6 +4638,37 @@ mod tests {
                 .unwrap_err()
                 .message,
             "--focus must be true|false"
+        );
+    }
+
+    #[test]
+    fn maps_canonical_move_workspace_to_window_command() {
+        let moved = mapped(
+            "move-workspace-to-window",
+            &["--workspace", "2", "--window", "window:3"],
+        );
+        assert_eq!(moved.method, "workspace.move_to_window");
+        assert_eq!(
+            moved.params,
+            serde_json::json!({
+                "workspace_ref": "workspace:2",
+                "window_ref": "window:3",
+            })
+        );
+        assert_eq!(
+            control_command_for("move-workspace-to-window", &args(&["--window", "window:1"]))
+                .unwrap_err()
+                .message,
+            "move-workspace-to-window requires --workspace"
+        );
+        assert_eq!(
+            control_command_for(
+                "move-workspace-to-window",
+                &args(&["--workspace", "workspace:1"])
+            )
+            .unwrap_err()
+            .message,
+            "move-workspace-to-window requires --window"
         );
     }
 

@@ -13,12 +13,12 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::session::{
-    SessionCanvasPaneSnapshot, SessionPaneLayoutSnapshot, SessionPanelListeningPortsSnapshot,
-    SessionPanelPinSnapshot, SessionPanelRestorableAgentSnapshot,
-    SessionPanelShellActivitySnapshot, SessionPanelTerminalStartupSnapshot,
-    SessionPanelTitleSnapshot, SessionPanelTtySnapshot, SessionPanelUnreadSnapshot,
-    SessionSplitLayoutSnapshot, SessionSplitOrientation, SessionTabManagerSnapshot,
-    SessionWorkspaceLayoutSnapshot, SessionWorkspaceSnapshot,
+    AppSessionSnapshot, SessionCanvasPaneSnapshot, SessionPaneLayoutSnapshot,
+    SessionPanelListeningPortsSnapshot, SessionPanelPinSnapshot,
+    SessionPanelRestorableAgentSnapshot, SessionPanelShellActivitySnapshot,
+    SessionPanelTerminalStartupSnapshot, SessionPanelTitleSnapshot, SessionPanelTtySnapshot,
+    SessionPanelUnreadSnapshot, SessionSplitLayoutSnapshot, SessionSplitOrientation,
+    SessionTabManagerSnapshot, SessionWorkspaceLayoutSnapshot, SessionWorkspaceSnapshot,
 };
 use cmux_browser_history::{NavigationAvailability, SessionHistoryURLSanitizer};
 use cmux_workspaces::{
@@ -1989,13 +1989,16 @@ fn reconcile_workspace_groups_after_membership_change(tabs: &mut SessionTabManag
     };
 }
 
-fn close_workspace_at_index(tabs: &mut SessionTabManagerSnapshot, removed: usize) -> bool {
+fn detach_workspace_at_index(
+    tabs: &mut SessionTabManagerSnapshot,
+    removed: usize,
+) -> SessionWorkspaceSnapshot {
     let anchored_group_ids = tabs.workspaces[removed]
         .workspace_id
         .as_deref()
         .map(|workspace_id| anchored_group_ids_for_workspace_id(tabs, workspace_id))
         .unwrap_or_default();
-    tabs.workspaces.remove(removed);
+    let workspace = tabs.workspaces.remove(removed);
 
     if !anchored_group_ids.is_empty() {
         for workspace in &mut tabs.workspaces {
@@ -2014,14 +2017,108 @@ fn close_workspace_at_index(tabs: &mut SessionTabManagerSnapshot, removed: usize
     // surviving workspace focused: removing a tab before the selected one shifts
     // it left; removing at/after clamps to the (new) last tab — canonical's
     // `min(index, count - 1)`.
-    let selected = tabs.selected_workspace_index.unwrap_or(0).max(0) as usize;
-    let next = if selected > removed {
-        selected - 1
+    if tabs.workspaces.is_empty() {
+        tabs.selected_workspace_index = None;
     } else {
-        selected.min(tabs.workspaces.len() - 1)
-    };
-    tabs.selected_workspace_index = Some(next as i64);
+        let selected = tabs.selected_workspace_index.unwrap_or(0).max(0) as usize;
+        let next = if selected > removed {
+            selected - 1
+        } else {
+            selected.min(tabs.workspaces.len() - 1)
+        };
+        tabs.selected_workspace_index = Some(next as i64);
+    }
+    workspace
+}
+
+fn close_workspace_at_index(tabs: &mut SessionTabManagerSnapshot, removed: usize) -> bool {
+    detach_workspace_at_index(tabs, removed);
     true
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MoveWorkspaceToWindowError {
+    WorkspaceNotFound,
+    WindowNotFound,
+}
+
+/// Transfer a workspace between window tab managers using canonical detach /
+/// attach behavior. Detach dissolves a group anchored by the mover and clears
+/// the mover's group membership. Empty source windows receive `bootstrap`.
+/// Attach appends unpinned workspaces, places pinned workspaces at the end of
+/// the pinned prefix, restores group contiguity, and selects only when `focus`
+/// is requested. Validation is transactional.
+pub fn move_workspace_to_window(
+    snapshot: &mut AppSessionSnapshot,
+    workspace_id: &str,
+    target_window_id: &str,
+    bootstrap: SessionWorkspaceSnapshot,
+    focus: bool,
+) -> Result<(), MoveWorkspaceToWindowError> {
+    let source = snapshot
+        .windows
+        .iter()
+        .enumerate()
+        .find_map(|(window_index, window)| {
+            window
+                .tab_manager
+                .workspaces
+                .iter()
+                .position(|workspace| workspace.workspace_id.as_deref() == Some(workspace_id))
+                .map(|workspace_index| (window_index, workspace_index))
+        })
+        .ok_or(MoveWorkspaceToWindowError::WorkspaceNotFound)?;
+    let target_window_index = snapshot
+        .windows
+        .iter()
+        .position(|window| window.window_id.as_deref() == Some(target_window_id))
+        .ok_or(MoveWorkspaceToWindowError::WindowNotFound)?;
+
+    let mut next = snapshot.clone();
+    let mut moved = detach_workspace_at_index(&mut next.windows[source.0].tab_manager, source.1);
+    moved.group_id = None;
+    if next.windows[source.0].tab_manager.workspaces.is_empty() {
+        next.windows[source.0]
+            .tab_manager
+            .workspaces
+            .push(bootstrap);
+        next.windows[source.0].tab_manager.selected_workspace_index = Some(0);
+    }
+
+    let target = &mut next.windows[target_window_index].tab_manager;
+    let selected_workspace_id = target
+        .selected_workspace_index
+        .and_then(|index| usize::try_from(index).ok())
+        .and_then(|index| target.workspaces.get(index))
+        .and_then(|workspace| workspace.workspace_id.clone());
+    let insert_index = if moved.is_pinned == Some(true) {
+        target
+            .workspaces
+            .iter()
+            .take_while(|workspace| workspace.is_pinned == Some(true))
+            .count()
+    } else {
+        target.workspaces.len()
+    };
+    target.workspaces.insert(insert_index, moved);
+    normalize_workspace_groups_in_snapshot(target);
+    if focus {
+        target.selected_workspace_index = target
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.workspace_id.as_deref() == Some(workspace_id))
+            .map(|index| index as i64);
+    } else if let Some(selected_workspace_id) = selected_workspace_id {
+        target.selected_workspace_index = target
+            .workspaces
+            .iter()
+            .position(|workspace| {
+                workspace.workspace_id.as_deref() == Some(selected_workspace_id.as_str())
+            })
+            .map(|index| index as i64);
+    }
+    *snapshot = next;
+    Ok(())
 }
 
 pub fn close_workspace(tabs: &mut SessionTabManagerSnapshot, index: i64) -> bool {
@@ -5114,6 +5211,210 @@ mod tests {
             None
         );
         assert_eq!(tabs, before);
+    }
+
+    fn workspace_with_id(id: &str, panel_id: &str) -> SessionWorkspaceSnapshot {
+        let mut workspace = fresh_terminal_workspace(panel_id);
+        workspace.workspace_id = Some(id.to_string());
+        workspace
+    }
+
+    #[test]
+    fn move_workspace_to_window_detaches_group_and_preserves_unfocused_selection() {
+        let group_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let mut source_tabs = SessionTabManagerSnapshot {
+            selected_workspace_index: Some(0),
+            workspaces: vec![
+                workspace_with_id("workspace-a", "a"),
+                workspace_with_id("workspace-b", "b"),
+            ],
+            workspace_groups: Some(vec![crate::session::SessionWorkspaceGroupSnapshot {
+                id: group_id.to_string(),
+                name: "group".to_string(),
+                anchor_workspace_id: Some("workspace-a".to_string()),
+                ..Default::default()
+            }]),
+        };
+        source_tabs.workspaces[0].group_id = Some(group_id.to_string());
+        source_tabs.workspaces[1].group_id = Some(group_id.to_string());
+        source_tabs.workspaces[0].is_pinned = Some(true);
+        let destination_tabs = SessionTabManagerSnapshot {
+            selected_workspace_index: Some(0),
+            workspaces: vec![workspace_with_id("workspace-c", "c")],
+            workspace_groups: None,
+        };
+        let mut snapshot = crate::session::AppSessionSnapshot {
+            windows: vec![
+                crate::session::SessionWindowSnapshot {
+                    window_id: Some("window-a".to_string()),
+                    tab_manager: source_tabs,
+                },
+                crate::session::SessionWindowSnapshot {
+                    window_id: Some("window-b".to_string()),
+                    tab_manager: destination_tabs,
+                },
+            ],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            move_workspace_to_window(
+                &mut snapshot,
+                "workspace-a",
+                "window-b",
+                workspace_with_id("bootstrap", "bootstrap-panel"),
+                false,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            snapshot.windows[0].tab_manager.workspaces[0]
+                .workspace_id
+                .as_deref(),
+            Some("workspace-b")
+        );
+        assert_eq!(snapshot.windows[0].tab_manager.workspaces[0].group_id, None);
+        assert_eq!(snapshot.windows[0].tab_manager.workspace_groups, None);
+        assert_eq!(
+            snapshot.windows[0].tab_manager.selected_workspace_index,
+            Some(0)
+        );
+        assert_eq!(
+            snapshot.windows[1].tab_manager.selected_workspace_index,
+            Some(1)
+        );
+        assert_eq!(
+            snapshot.windows[1]
+                .tab_manager
+                .workspaces
+                .iter()
+                .map(|workspace| workspace.workspace_id.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            ["workspace-a", "workspace-c"]
+        );
+        assert_eq!(snapshot.windows[1].tab_manager.workspaces[0].group_id, None);
+    }
+
+    #[test]
+    fn move_workspace_to_window_bootstraps_empty_source_and_focuses_destination() {
+        let mut snapshot = crate::session::AppSessionSnapshot {
+            windows: vec![
+                crate::session::SessionWindowSnapshot {
+                    window_id: Some("window-a".to_string()),
+                    tab_manager: SessionTabManagerSnapshot {
+                        selected_workspace_index: Some(0),
+                        workspaces: vec![workspace_with_id("workspace-a", "a")],
+                        workspace_groups: None,
+                    },
+                },
+                crate::session::SessionWindowSnapshot {
+                    window_id: Some("window-b".to_string()),
+                    tab_manager: SessionTabManagerSnapshot {
+                        selected_workspace_index: Some(0),
+                        workspaces: vec![workspace_with_id("workspace-b", "b")],
+                        workspace_groups: None,
+                    },
+                },
+            ],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            move_workspace_to_window(
+                &mut snapshot,
+                "workspace-a",
+                "window-b",
+                workspace_with_id("bootstrap", "bootstrap-panel"),
+                true,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            snapshot.windows[0].tab_manager.workspaces[0]
+                .workspace_id
+                .as_deref(),
+            Some("bootstrap")
+        );
+        assert_eq!(
+            snapshot.windows[0].tab_manager.selected_workspace_index,
+            Some(0)
+        );
+        assert_eq!(
+            snapshot.windows[1].tab_manager.selected_workspace_index,
+            Some(1)
+        );
+        assert_eq!(
+            snapshot.windows[1].tab_manager.workspaces[1]
+                .workspace_id
+                .as_deref(),
+            Some("workspace-a")
+        );
+    }
+
+    #[test]
+    fn move_workspace_to_same_window_uses_detach_attach_semantics() {
+        let mut snapshot = crate::session::AppSessionSnapshot {
+            windows: vec![crate::session::SessionWindowSnapshot {
+                window_id: Some("window-a".to_string()),
+                tab_manager: SessionTabManagerSnapshot {
+                    selected_workspace_index: Some(0),
+                    workspaces: vec![workspace_with_id("workspace-a", "a")],
+                    workspace_groups: None,
+                },
+            }],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            move_workspace_to_window(
+                &mut snapshot,
+                "workspace-a",
+                "window-a",
+                workspace_with_id("bootstrap", "bootstrap-panel"),
+                false,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            snapshot.windows[0]
+                .tab_manager
+                .workspaces
+                .iter()
+                .map(|workspace| workspace.workspace_id.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            ["bootstrap", "workspace-a"]
+        );
+        assert_eq!(
+            snapshot.windows[0].tab_manager.selected_workspace_index,
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn move_workspace_to_window_rejects_missing_targets_atomically() {
+        let mut snapshot = crate::session::AppSessionSnapshot {
+            windows: vec![crate::session::SessionWindowSnapshot {
+                window_id: Some("window-a".to_string()),
+                tab_manager: SessionTabManagerSnapshot {
+                    selected_workspace_index: Some(0),
+                    workspaces: vec![workspace_with_id("workspace-a", "a")],
+                    workspace_groups: None,
+                },
+            }],
+            ..Default::default()
+        };
+        let before = snapshot.clone();
+        assert_eq!(
+            move_workspace_to_window(
+                &mut snapshot,
+                "workspace-a",
+                "missing-window",
+                workspace_with_id("bootstrap", "bootstrap-panel"),
+                false,
+            ),
+            Err(MoveWorkspaceToWindowError::WindowNotFound)
+        );
+        assert_eq!(snapshot, before);
     }
 
     #[test]

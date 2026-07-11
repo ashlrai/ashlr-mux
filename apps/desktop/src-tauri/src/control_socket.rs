@@ -39,10 +39,11 @@ use crate::session::{
     close_workspace_for_control, close_workspaces_for_control,
     configure_workspace_remote_for_control, current_session_snapshot,
     equalize_dividers_for_control, move_panel_to_new_workspace_for_control,
-    move_surface_for_control, new_browser_workspace_for_control, new_terminal_tab_for_control,
-    new_workspace_for_control, open_browser_url_in_panel, open_custom_sidebar_in_panel,
-    open_diff_viewer_in_panel, open_file_in_panel, open_markdown_file_in_panel,
-    reconnect_workspace_remote_for_control, rename_workspace_for_control,
+    move_surface_for_control, move_workspace_to_window_for_control,
+    new_browser_workspace_for_control, new_terminal_tab_for_control, new_workspace_for_control,
+    open_browser_url_in_panel, open_custom_sidebar_in_panel, open_diff_viewer_in_panel,
+    open_file_in_panel, open_markdown_file_in_panel, reconnect_workspace_remote_for_control,
+    register_window_for_control, rename_workspace_for_control,
     reopen_closed_browser_tab_for_control, reorder_surface_for_control,
     reorder_workspaces_for_control, reorder_workspaces_many_for_control,
     reset_workspace_color_for_control, reset_workspace_sidebar_metadata_for_control,
@@ -836,6 +837,7 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "workspace.reorder",
     "workspace.reorder_many",
     "workspace.move",
+    "workspace.move_to_window",
     "workspace.next",
     "workspace.previous",
     "workspace.equalize_splits",
@@ -1091,6 +1093,7 @@ fn handle_control_request(app: &AppHandle, request: ControlRequest) -> ControlCa
         "workspace.rename" => workspace_rename(app, &request.params),
         "workspace.select" => workspace_select(app, &request.params),
         "workspace.reorder" | "workspace.move" => workspace_reorder(app, &request.params),
+        "workspace.move_to_window" => workspace_move_to_window(app, &request.params),
         "workspace.reorder_many" => workspace_reorder_many(app, &request.params),
         "workspace.next" => workspace_select_relative(app, 1),
         "workspace.previous" => workspace_select_relative(app, -1),
@@ -2648,13 +2651,21 @@ fn config_reload(app: &AppHandle) -> ControlCallResult {
 
 fn window_list(app: &AppHandle) -> ControlCallResult {
     let session = snapshot(app);
-    let session_window = session.windows.first();
     let windows = crate::window::control_window_summaries(app);
     ok(json!({"windows": windows
         .into_iter()
         .enumerate()
         .map(|(index, window)| {
-            let tab_manager = (index == 0).then_some(session_window).flatten().map(|window| &window.tab_manager);
+            let session_window = session.windows.iter().find(|session_window| {
+                session_window.window_id.as_deref() == Some(window.identity.label.as_str())
+            }).or_else(|| {
+                if window.identity.label == "main" {
+                    session.windows.first()
+                } else {
+                    None
+                }
+            });
+            let tab_manager = session_window.map(|window| &window.tab_manager);
             let selected_index = tab_manager
                 .and_then(|tab_manager| tab_manager.selected_workspace_index)
                 .unwrap_or_default()
@@ -2670,7 +2681,7 @@ fn window_list(app: &AppHandle) -> ControlCallResult {
                 "visible": window.is_visible,
                 "workspace_count": tab_manager.map_or(0, |tab_manager| tab_manager.workspaces.len()),
                 "selected_workspace_id": selected_workspace_id,
-                "selected_workspace_ref": selected_workspace_id.as_ref().map(|_| "workspace:1"),
+                "selected_workspace_ref": selected_workspace_id.as_ref().map(|_| workspace_ref(selected_index)),
             })
         })
         .collect::<Vec<_>>() }))
@@ -3303,6 +3314,126 @@ fn workspace_select(app: &AppHandle, params: &serde_json::Map<String, Value>) ->
     };
     let state = app.state::<SessionState>();
     workspace_current(&select_workspace_for_control(app, &state, index as i64))
+}
+
+fn workspace_id_for_window_move(
+    snapshot: &AppSessionSnapshot,
+    params: &serde_json::Map<String, Value>,
+) -> Option<String> {
+    if let Some(reference) = string_param(params, &["workspace_ref"]) {
+        let index = one_based_ref_index(&reference, "workspace")?;
+        return snapshot
+            .windows
+            .first()?
+            .tab_manager
+            .workspaces
+            .get(index)?
+            .workspace_id
+            .clone();
+    }
+    let workspace_id = string_param(params, &["workspace_id"])?;
+    snapshot
+        .windows
+        .iter()
+        .flat_map(|window| &window.tab_manager.workspaces)
+        .any(|workspace| workspace.workspace_id.as_deref() == Some(workspace_id.as_str()))
+        .then_some(workspace_id)
+}
+
+fn workspace_move_to_window(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    if !params.contains_key("workspace_ref") && !params.contains_key("workspace_id") {
+        return invalid_params("Missing or invalid workspace_id");
+    }
+    let Some(workspace_id) = workspace_id_for_window_move(&current, params) else {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Workspace not found".to_string(),
+            data: string_param(params, &["workspace_id"])
+                .and_then(|workspace_id| json!({"workspace_id": workspace_id}).try_into().ok()),
+        };
+    };
+    let Some(window_selector) = raw_string_param(params, &["window_ref", "window_id"]) else {
+        return invalid_params("Missing or invalid window_id");
+    };
+    let Some(window_identity) =
+        crate::window::current_control_window(app, Some(window_selector.as_str()))
+    else {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Window not found".to_string(),
+            data: Some(
+                json!({"window_id": window_selector})
+                    .try_into()
+                    .unwrap_or(JsonValue::Null),
+            ),
+        };
+    };
+    let state = app.state::<SessionState>();
+    register_window_for_control(app, &state, &window_identity.label);
+    let focus = bool_param(params, &["focus"]).unwrap_or(false);
+    let result = match move_workspace_to_window_for_control(
+        app,
+        &state,
+        &workspace_id,
+        &window_identity.label,
+        focus,
+    ) {
+        Ok(result) => result,
+        Err(session_ops::MoveWorkspaceToWindowError::WorkspaceNotFound) => {
+            return ControlCallResult::Err {
+                code: "not_found".to_string(),
+                message: "Workspace not found".to_string(),
+                data: Some(
+                    json!({"workspace_id": workspace_id})
+                        .try_into()
+                        .unwrap_or(JsonValue::Null),
+                ),
+            };
+        }
+        Err(session_ops::MoveWorkspaceToWindowError::WindowNotFound) => {
+            return ControlCallResult::Err {
+                code: "not_found".to_string(),
+                message: "Window not found".to_string(),
+                data: Some(
+                    json!({"window_id": window_identity.id})
+                        .try_into()
+                        .unwrap_or(JsonValue::Null),
+                ),
+            };
+        }
+    };
+    if focus {
+        if let Some(window) = app.get_webview_window(&window_identity.label) {
+            let _ = window.set_focus();
+        }
+    }
+    let Some(target_window) = result
+        .windows
+        .iter()
+        .find(|window| window.window_id.as_deref() == Some(window_identity.label.as_str()))
+    else {
+        return ControlCallResult::Err {
+            code: "internal_error".to_string(),
+            message: "Failed to move workspace".to_string(),
+            data: None,
+        };
+    };
+    let workspace_ref_value = target_window
+        .tab_manager
+        .workspaces
+        .iter()
+        .position(|workspace| workspace.workspace_id.as_deref() == Some(workspace_id.as_str()))
+        .map(workspace_ref);
+    ok(json!({
+        "workspace_id": workspace_id,
+        "workspace_ref": workspace_ref_value,
+        "window_id": window_identity.id,
+        "window_ref": window_identity.reference,
+    }))
 }
 
 fn workspace_reorder(
@@ -11341,6 +11472,35 @@ mod tests {
     }
 
     #[test]
+    fn workspace_window_move_resolves_refs_locally_and_ids_globally() {
+        let mut snapshot = surface_move_snapshot();
+        let destination = snapshot.windows[0]
+            .tab_manager
+            .workspaces
+            .pop()
+            .expect("destination workspace");
+        snapshot.windows.push(SessionWindowSnapshot {
+            window_id: Some("window-2".to_string()),
+            tab_manager: SessionTabManagerSnapshot {
+                selected_workspace_index: Some(0),
+                workspaces: vec![destination],
+                workspace_groups: None,
+            },
+        });
+
+        let by_ref = serde_json::json!({"workspace_ref": "workspace:1"});
+        assert_eq!(
+            workspace_id_for_window_move(&snapshot, by_ref.as_object().unwrap()).as_deref(),
+            Some("workspace-1")
+        );
+        let by_id = serde_json::json!({"workspace_id": "workspace-2"});
+        assert_eq!(
+            workspace_id_for_window_move(&snapshot, by_id.as_object().unwrap()).as_deref(),
+            Some("workspace-2")
+        );
+    }
+
+    #[test]
     fn custom_sidebar_action_reply_uses_native_bridge_envelope() {
         let ok_reply = custom_sidebar_action_reply(ControlCallResult::Ok(
             JsonValue::try_from(json!({ "accepted": true })).expect("json value"),
@@ -12490,6 +12650,7 @@ mod tests {
             "sidebar.snapshot",
             "workspace.set_agent_pid",
             "workspace.clear_agent_pid",
+            "workspace.move_to_window",
             "surface.report_tty",
             "surface.report_shell_state",
             "surface.move",

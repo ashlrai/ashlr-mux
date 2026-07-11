@@ -131,8 +131,10 @@ pub fn resolve_window_title(snapshot: &AppSessionSnapshot, template_raw: Option<
 
 /// Push the resolved title into every live desktop window.
 pub fn refresh_window_titles(app: &AppHandle, snapshot: &AppSessionSnapshot) {
-    let title = resolve_window_title(snapshot, configured_window_title_template_raw().as_deref());
-    for window in app.webview_windows().into_values() {
+    let template = configured_window_title_template_raw();
+    for (label, window) in app.webview_windows() {
+        let projected = crate::session::snapshot_for_window(snapshot, &label);
+        let title = resolve_window_title(&projected, template.as_deref());
         let _ = window.set_title(&title);
     }
 }

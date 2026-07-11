@@ -349,12 +349,21 @@ pub async fn window_new(app: AppHandle, window: WebviewWindow) -> Result<String,
     }
     install_window_state_listener(&new_window);
     let _ = emit_window_state(&new_window);
+    let state = app.state::<crate::session::SessionState>();
+    crate::session::register_window_for_control(&app, state.inner(), &label);
     Ok(label)
 }
 
 #[tauri::command]
 pub fn window_close(window: WebviewWindow) -> Result<(), String> {
-    window.close().map_err(|error| error.to_string())
+    let label = window.label().to_string();
+    let app = window.app_handle().clone();
+    window.close().map_err(|error| error.to_string())?;
+    if label != MAIN_WINDOW_LABEL {
+        let state = app.state::<crate::session::SessionState>();
+        crate::session::unregister_window_for_control(&app, state.inner(), &label);
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]

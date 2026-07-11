@@ -987,6 +987,11 @@ fn format_control_result(method: &str, result: &serde_json::Value) -> String {
         "workspace.sidebar_state" => format_sidebar_state(result),
         "workspace.reorder" => format_workspace_reorder(result),
         "workspace.reorder_many" => format_workspace_reorder_items(result),
+        "workspace.move_to_window" => format!(
+            "OK workspace={} window={}",
+            control_handle(result, "workspace"),
+            control_handle(result, "window"),
+        ),
         "surface.reorder" => format!(
             "OK surface={} pane={} workspace={}",
             control_handle(result, "surface"),
@@ -1321,6 +1326,18 @@ mod control_result_tests {
         assert_eq!(
             format_control_result("surface.move", &result),
             "OK surface=surface:1 pane=pane:2 workspace=workspace:3 window=window:1"
+        );
+    }
+
+    #[test]
+    fn move_workspace_to_window_keeps_canonical_plain_output() {
+        let result = serde_json::json!({
+            "workspace_ref": "workspace:2",
+            "window_ref": "window:3",
+        });
+        assert_eq!(
+            format_control_result("workspace.move_to_window", &result),
+            "OK workspace=workspace:2 window=window:3"
         );
     }
 

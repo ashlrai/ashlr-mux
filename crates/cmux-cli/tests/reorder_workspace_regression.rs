@@ -266,3 +266,44 @@ fn executable_routes_move_surface_and_formats_result() {
         })
     );
 }
+
+#[test]
+fn executable_routes_move_workspace_to_window_and_formats_result() {
+    let (pipe, request_rx) = spawn_server(
+        "move-workspace-to-window",
+        serde_json::json!({
+            "workspace_ref": "workspace:1",
+            "window_ref": "window:2",
+        }),
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_cmux"))
+        .args([
+            "move-workspace-to-window",
+            "--workspace",
+            "workspace:2",
+            "--window",
+            "window:1",
+        ])
+        .env("CMUX_SOCKET_PATH", &pipe)
+        .env_remove("CMUX_SOCKET")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "OK workspace=workspace:1 window=window:2\n"
+    );
+    let (method, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(method, "workspace.move_to_window");
+    assert_eq!(
+        serde_json::Value::Object(params),
+        serde_json::json!({
+            "workspace_ref": "workspace:2",
+            "window_ref": "window:1",
+        })
+    );
+}
