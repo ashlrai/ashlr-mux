@@ -173,6 +173,24 @@ fn executable_routes_last_window_and_formats_result() {
 }
 
 #[test]
+fn executable_tmux_version_is_local_and_canonical() {
+    for flag in ["-V", "-v"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_cmux"))
+            .args(["__tmux-compat", flag])
+            .env("CMUX_SOCKET_PATH", r"\\.\pipe\cmux-must-not-connect")
+            .env_remove("CMUX_SOCKET")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), "tmux 3.4\n");
+    }
+}
+
+#[test]
 fn executable_routes_canonical_reorder_workspace_and_formats_dry_run() {
     let (pipe, request_rx) = spawn_server(
         "reorder-workspace",

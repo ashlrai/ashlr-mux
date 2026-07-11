@@ -715,7 +715,7 @@ fn run_tmux_compat_command(options: &GlobalOptions, args: &[String]) -> Result<(
         .or_else(|| std::env::var("CMUX_PANE_ID").ok());
     let launched_through_omx = std::env::var_os("CMUX_OMX_CMUX_BIN").is_some()
         || std::env::var("CMUX_AGENT_LAUNCH_KIND").as_deref() == Ok("omx");
-    cmux_cli::tmux_compat::run_tmux_compat(
+    let result = cmux_cli::tmux_compat::run_tmux_compat(
         args,
         &cmux_cli::tmux_compat::TmuxCompatEnvironment {
             workspace_id: workspace_id.as_deref(),
@@ -724,6 +724,9 @@ fn run_tmux_compat_command(options: &GlobalOptions, args: &[String]) -> Result<(
         },
         |method, params| call_control_command(options, method, params),
     )?;
+    if let Some(output) = result.output {
+        println!("{output}");
+    }
     Ok(())
 }
 

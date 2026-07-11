@@ -12,6 +12,21 @@ pub struct TmuxCompatEnvironment<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TmuxCompatResult {
+    pub changed: bool,
+    pub output: Option<&'static str>,
+}
+
+impl TmuxCompatResult {
+    fn quiet(changed: bool) -> Self {
+        Self {
+            changed,
+            output: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct ParsedArguments {
     flags: HashSet<String>,
     options: HashMap<String, Vec<String>>,
@@ -410,11 +425,17 @@ pub fn run_tmux_compat<F>(
     args: &[String],
     environment: &TmuxCompatEnvironment<'_>,
     mut call: F,
-) -> Result<bool, CliError>
+) -> Result<TmuxCompatResult, CliError>
 where
     F: FnMut(&str, &Value) -> Result<Value, CliError>,
 {
     let (command, raw_args) = split_command(args)?;
+    if matches!(command, "-V" | "-v") {
+        return Ok(TmuxCompatResult {
+            changed: false,
+            output: Some("tmux 3.4"),
+        });
+    }
     if !matches!(
         command.to_ascii_lowercase().as_str(),
         "resize-pane" | "resizep"
@@ -437,41 +458,41 @@ where
     if !has_direction {
         if let Some(target_cells) = parse_cells(parsed.value("-x")) {
             if target_cells <= 0 {
-                return Ok(false);
+                return Ok(TmuxCompatResult::quiet(false));
             }
             let Some(cell_size) = pane
                 .get("cell_width_px")
                 .and_then(Value::as_i64)
                 .filter(|size| *size > 0)
             else {
-                return Ok(false);
+                return Ok(TmuxCompatResult::quiet(false));
             };
             call(
                 "pane.resize",
                 &json!({"workspace_id": target.workspace_id, "pane_id": target.pane_id, "absolute_axis": "horizontal", "target_pixels": target_cells * cell_size}),
             )?;
-            return Ok(true);
+            return Ok(TmuxCompatResult::quiet(true));
         }
         if let Some(target_cells) = parse_cells(parsed.value("-y")) {
             if target_cells <= 0
                 || pane_looks_like_omx_hud(&target.workspace_id, pane, environment, &mut call)
             {
-                return Ok(false);
+                return Ok(TmuxCompatResult::quiet(false));
             }
             let Some(cell_size) = pane
                 .get("cell_height_px")
                 .and_then(Value::as_i64)
                 .filter(|size| *size > 0)
             else {
-                return Ok(false);
+                return Ok(TmuxCompatResult::quiet(false));
             };
             call(
                 "pane.resize",
                 &json!({"workspace_id": target.workspace_id, "pane_id": target.pane_id, "absolute_axis": "vertical", "target_pixels": target_cells * cell_size}),
             )?;
-            return Ok(true);
+            return Ok(TmuxCompatResult::quiet(true));
         }
-        return Ok(false);
+        return Ok(TmuxCompatResult::quiet(false));
     }
 
     let direction = if parsed.has_flag("-L") {
@@ -490,7 +511,7 @@ where
         "pane.resize",
         &json!({"workspace_id": target.workspace_id, "pane_id": target.pane_id, "direction": direction, "amount": amount}),
     )?;
-    Ok(true)
+    Ok(TmuxCompatResult::quiet(true))
 }
 
 #[cfg(test)]
@@ -521,7 +542,7 @@ mod tests {
     #[test]
     fn absolute_width_resolves_attached_flags_and_multiplies_cell_width() {
         let mut resize = None;
-        let changed = run_tmux_compat(
+        let result = run_tmux_compat(
             &args(&["resizep", "-tworkspace-a.pane:2", "-x13"]),
             &TmuxCompatEnvironment::default(),
             |method, params| {
@@ -532,7 +553,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(changed);
+        assert!(result.changed);
         assert_eq!(
             resize,
             Some(json!({
@@ -575,7 +596,7 @@ mod tests {
     #[test]
     fn absolute_height_is_a_noop_for_an_omx_hud() {
         let mut resized = false;
-        let changed = run_tmux_compat(
+        let result = run_tmux_compat(
             &args(&["resize-pane", "-t", "workspace-a.pane:2", "-y", "4"]),
             &TmuxCompatEnvironment::default(),
             |method, params| {
@@ -584,7 +605,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(!changed);
+        assert!(!result.changed);
         assert!(!resized);
     }
 
@@ -606,6 +627,25 @@ mod tests {
                 .message,
             "tmux shim requires a command"
         );
+    }
+
+    #[test]
+    fn version_flags_return_canonical_output_without_socket_calls() {
+        for flag in ["-V", "-v"] {
+            let result = run_tmux_compat(
+                &args(&[flag]),
+                &TmuxCompatEnvironment::default(),
+                |method, _| Err(CliError::new(format!("unexpected socket call: {method}"))),
+            )
+            .unwrap();
+            assert_eq!(
+                result,
+                TmuxCompatResult {
+                    changed: false,
+                    output: Some("tmux 3.4")
+                }
+            );
+        }
     }
 
     #[test]
