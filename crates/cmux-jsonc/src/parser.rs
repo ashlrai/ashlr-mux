@@ -144,10 +144,7 @@ fn decode_utf32(bytes: &[u8], big_endian: bool) -> Option<String> {
         } else {
             u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
         };
-        match char::from_u32(value) {
-            Some(c) => result.push(c),
-            None => return None,
-        }
+        result.push(char::from_u32(value)?);
     }
     Some(result)
 }

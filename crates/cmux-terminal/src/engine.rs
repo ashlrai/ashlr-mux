@@ -111,7 +111,11 @@ impl<L: EventListener> TerminalGrid<L> {
     /// `line_limit` tails the result, matching `surface.read_text --lines`.
     pub fn text_lines(&self, include_scrollback: bool, line_limit: Option<usize>) -> Vec<String> {
         let grid = self.term.grid();
-        let history_lines = include_scrollback.then(|| grid.history_size()).unwrap_or(0);
+        let history_lines = if include_scrollback {
+            grid.history_size()
+        } else {
+            0
+        };
         let first_line = -(history_lines as i32);
         let mut lines = self.rows_from(Line(first_line));
         let cursor_line = history_lines.saturating_add(grid.cursor.point.line.0.max(0) as usize);
