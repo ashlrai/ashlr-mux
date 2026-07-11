@@ -1,0 +1,497 @@
+{
+  "schema_version": 1,
+  "contract_id": "pane_surface_lifecycle",
+  "canonical_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+  "windows_audit_commit": "b39157f25c19e5032ba6ae6570865823ab1e09f3",
+  "scope": [
+    "product.pane_surface_lifecycle",
+    "v2:pane.create",
+    "v2:pane.resize",
+    "v2:surface.action",
+    "v2:surface.create",
+    "v2:surface.current",
+    "v2:surface.list",
+    "v2:surface.report_pwd",
+    "v2:surface.respawn",
+    "v2:surface.close",
+    "v2:surface.focus",
+    "v2:surface.move",
+    "cli:tab-action",
+    "cli:respawn-pane"
+  ],
+  "scope_count": 14,
+  "dependency_assessment": {
+    "indispensable_matrix_dependencies_outside_scope": [],
+    "conclusion": "No further matrix entry is indispensable to implement and verify this family. pane.focus and surface.split are required regression dependencies because they consume the migrated model, but their parity rows are not claimed in this batch. Existing window/workspace routing, browser/terminal runtimes, event transport, and session persistence are infrastructure dependencies, not additional parity entries. The family therefore remains within the exact 14 requested entries and below the 15-entry ceiling.",
+    "reason_for_expansion": "The earlier adapter/read cuts were false boundaries. list/current consume the same heterogeneous surface model that pane/surface create, action, close, focus, move, resize, and respawn mutate; report_pwd requires arrival-time reconciliation and lifecycle cleanup/transfer; the CLIs are direct façades over action/respawn. Existing close/focus/move/resize implementations must be regression and differential rows because the model migration can silently break them."
+  },
+  "regression_dependencies_not_claimed": {
+    "v2:pane.focus": "Must remain green because it consumes pane identity/focus produced by the migrated model; no matrix status claim is made in this batch.",
+    "v2:surface.split": "Must remain green because it creates pane/surface lifecycle state through an existing entrypoint; no matrix status claim is made in this batch.",
+    "rule": "Regression coverage may exercise these methods, but evidence and promotion are limited to the exact 14 scoped rows."
+  },
+  "matrix_status_at_audit": {
+    "product.pane_surface_lifecycle": "missing",
+    "v2:pane.create": "missing",
+    "v2:pane.resize": "implemented_unverified",
+    "v2:surface.action": "missing",
+    "v2:surface.create": "missing",
+    "v2:surface.current": "missing",
+    "v2:surface.list": "implemented_unverified",
+    "v2:surface.report_pwd": "missing",
+    "v2:surface.respawn": "missing",
+    "v2:surface.close": "implemented_unverified",
+    "v2:surface.focus": "implemented_unverified",
+    "v2:surface.move": "implemented_unverified",
+    "cli:tab-action": "missing",
+    "cli:respawn-pane": "missing"
+  },
+  "authoritative_model_migration": {
+    "objective": "Replace pane-shaped and parallel-metadata approximations with one authoritative per-surface lifecycle that can reconcile persisted snapshot identity, live runtime attachment, remote arrival, directory reporting, actions, respawn, and close/move cleanup without duplicate state.",
+    "surface_record": {
+      "identity": "stable public surface id plus owner window/workspace/pane and pane-local order; public identity remains stable across runtime replacement such as respawn",
+      "selection": "pane-selected is separate from workspace-focused; multiple panes may have selected surfaces but exactly one workspace-focused surface",
+      "common_metadata": [
+        "title/custom-title provenance",
+        "pinned",
+        "unread",
+        "reported directory and provenance",
+        "resume binding",
+        "lifecycle generation/runtime attachment state"
+      ],
+      "heterogeneous_kind_union": {
+        "terminal": "requested working directory, initial command/input/environment, tmux start command, runtime process/PTY, resume/agent state",
+        "browser": "URL/profile/history/render state/developer tools and duplication/reload runtime",
+        "agent_session": "provider, renderer, working directory, agent lifecycle",
+        "markdown_file_diff_project_sidebar": "kind-specific file/session identifiers without pretending they are terminal/browser state",
+        "remote_terminal": "remote PTY/tmux identity, remote provenance, arrival generation, pending directory-report application"
+      }
+    },
+    "pane_record": "Stable pane id, ordered surface ids, selected surface id, layout-tree position/divider geometry, container kind (workspace or Dock). Pane metadata must not be copied onto every surface.",
+    "indexes": "Maintain owner indexes surface->(window,workspace,pane), pane->(window,workspace), and runtime-handle->surface. Every mutation updates all indexes atomically with the snapshot.",
+    "creation_reconciliation": [
+      "Reserve stable ids and intended ownership/order before starting asynchronous terminal/browser/remote runtime creation.",
+      "Attach runtime only if lifecycle generation still matches; stale callbacks after close/respawn are ignored and cleaned up.",
+      "For remote tmux create/split, return accepted/routed with null created id where canonical does, then reconcile the arriving remote surface by authoritative remote identity without duplicating it.",
+      "Apply pending PWD metadata exactly once when the matching requested or uniquely resolvable surface arrives.",
+      "Emit lifecycle events from committed state transitions, not from both request adapter and runtime callback."
+    ],
+    "restore_reconciliation": [
+      "Decode panes, ordered heterogeneous surfaces, selection/focus, metadata, and kind-specific state into the authoritative model before launching runtimes.",
+      "Recreate/attach runtimes against stable restored ids and lifecycle generations; do not mint replacement public ids on restore.",
+      "Preserve canonical persisted fields (directory/provenance, titles, pin/unread, terminal startup/resume, browser state) while treating runtime handles as transient/derived.",
+      "Prune orphan metadata and pending reports whose owner lifecycle is definitively closed; transfer all surface metadata atomically on move/detach."
+    ],
+    "close_move_respawn_invariants": [
+      "Close removes surface owner indexes, runtime, pending directory reports, and metadata once; pane collapse and focused/selected fallback are one transaction.",
+      "Move/detach transfers the same public surface id and all heterogeneous metadata/runtime ownership without duplication or loss.",
+      "Respawn is terminal-only, replaces the runtime behind the same public surface id, invalidates stale callbacks, preserves appropriate surface metadata, and applies the requested startup inputs atomically.",
+      "Pinned close-range actions skip protected tabs and never delete the last surface."
+    ],
+    "windows_current_model_gaps": [
+      "apps/desktop/src-tauri/src/control_socket.rs derives surfaces by walking pane snapshots and frequently routes through snapshot.windows.first.",
+      "Pane surface_kind is used for every panel in a pane, which cannot represent canonical heterogeneous horizontal tabs reliably.",
+      "Parallel panel_titles/pins/unreads/startup arrays can drift from pane order/runtime arrival and require manual pruning.",
+      "Current list marks each pane-selected surface focused and returns many noncanonical fields while missing canonical index_in_pane semantics.",
+      "No shared arrival hook owns pending PWD reconciliation, runtime generation, action/create/respawn events, and restore together."
+    ]
+  },
+  "shared_canonical_rules": {
+    "identity_refs": "Public ids are UUID strings and *_id values accept UUID or minted kind:N refs unless an entry-specific quirk says otherwise. Responses pair UUID/ref and use explicit nulls.",
+    "routing_precedence": [
+      "present non-null window_id; invalid/unresolved is terminal and never falls through",
+      "resolvable group_id",
+      "resolvable workspace_id",
+      "surface_id, then terminal_id, then tab_id",
+      "pane_id",
+      "controller/caller TabManager",
+      "active scriptable window TabManager"
+    ],
+    "workspace_resolution": [
+      "workspace_id within resolved manager",
+      "surface owner",
+      "pane owner",
+      "manager selected workspace"
+    ],
+    "focus": "Reads, directory reporting, and default mutations do not activate or raise windows. focus=true and surface.focus are honored only through canonical explicit-focus policy and only by branches that support destination focus.",
+    "browser_disabled": {
+      "invalid_url": "invalid_params / Invalid URL / {url}",
+      "no_url": "browser_disabled / cmux browser is disabled / null",
+      "external_failure": "external_open_failed / Failed to open URL externally / {url}",
+      "external_success": "window id/ref; workspace/pane/surface ids+refs null; created_split=false, opened_externally=true, browser_disabled=true, placement_strategy=external_browser_disabled, url"
+    },
+    "remote_tmux": "Reject unsupported options before mutation. Successful routed create/split returns accepted=true, routed=remote-tmux, type, window/workspace ids+refs, and null pane/surface created identities until the remote arrival event reconciles state.",
+    "events": "Lifecycle events come from authoritative model transitions. Successful surface.action/tab.action additionally maps to one surface.action socket-domain completion event; failures and surface.current/list/report_pwd do not emit completion events.",
+    "sources": [
+      "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/ControlRoutingSelectors.swift",
+      "Sources/TerminalController.swift:3644-3680",
+      "Sources/CmuxSocketEventMapper.swift:1-103,154-180",
+      "Sources/CmuxEventPublishing.swift:145-240"
+    ]
+  },
+  "entries": [
+    {
+      "id": "product.pane_surface_lifecycle",
+      "kind": "product_behavior",
+      "contract": "End-to-end create, attach, select/focus, heterogeneous metadata, action, directory reconciliation, pane resize, respawn, move/detach, close, restore, and multiwindow ownership use the authoritative model migration above.",
+      "observable_requirements": [
+        "Pane order/geometry and surface order/selection/focus are mutually consistent across every API and UI snapshot.",
+        "Terminal, browser, agent, markdown/file/diff/project/sidebar, Dock, and remote surfaces retain kind-specific metadata without pane-wide leakage.",
+        "Creation and restore callbacks reconcile by stable identity/generation; no duplicate or zombie runtime appears.",
+        "Close/move/respawn atomically clean up or transfer metadata, pending directory reports, runtime indexes, events, and persisted state.",
+        "Two-window and Dock ownership is exact and non-focus commands preserve focus."
+      ],
+      "windows_gap": "missing product behavior; existing independent helpers and parallel arrays do not establish one reconciled lifecycle",
+      "acceptance": [
+        "differential.product.pane_surface_lifecycle.live",
+        "differential.product.pane_surface_lifecycle.restore_multiwindow"
+      ]
+    },
+    {
+      "id": "v2:pane.create",
+      "kind": "v2_method",
+      "sources": [
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Pane/ControlCommandCoordinator+Pane.swift:271-420",
+        "Sources/TerminalController+ControlPaneContext.swift:281-395"
+      ],
+      "request": {
+        "required": "direction accepted by parseSplitDirection (left/l/right/r/up/u/down/d)",
+        "routing": "shared selectors; source is a raw UUID-only surface_id quirk, else workspace focused surface",
+        "optional": [
+          "type (unknown defaults terminal; agent-session rejected)",
+          "url",
+          "working_directory",
+          "initial_command",
+          "tmux_start_command",
+          "startup_environment then initial_env",
+          "focus default false",
+          "initial_divider_position numeric finite, clamped 0.1...0.9",
+          "placement workspace|dock default workspace"
+        ]
+      },
+      "errors": [
+        "unavailable/TabManager not available",
+        "invalid_params/Missing or invalid direction (left|right|up|down)",
+        "invalid_params/initial_divider_position must be numeric",
+        "invalid_params/placement must be one of: workspace, dock with placement data",
+        "invalid_params/agent-session is only supported by surface.create with type data",
+        "Dock unavailable/type/conflicting selector errors",
+        "canonical browser-disabled errors",
+        "not_found/Workspace not found",
+        "not_found/No source surface to split",
+        "internal_error/Failed to create pane",
+        "remote unsupported-options error before mutation"
+      ],
+      "success": "Created workspace pane returns window/workspace/pane/surface ids+refs and type. Dock success returns placement=dock, ordinary pane/surface ids null, dock_pane_id nullable, dock_surface_id, type. Remote route and external-browser success use shared shapes.",
+      "state_events_persistence": "Creates a new pane and first heterogeneous surface adjacent by direction, records divider, optionally focuses, emits pane.created and surface.created (plus selection if changed), and persists layout/kind/startup metadata.",
+      "windows_gap": "missing exact method; existing surface.split has different direction/response/errors and relies on the unreconciled pane-shaped surface model"
+    },
+    {
+      "id": "v2:pane.resize",
+      "kind": "v2_method",
+      "matrix_status": "implemented_unverified",
+      "sources": [
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Pane/ControlCommandCoordinator+Pane.swift:422-552",
+        "Sources/TerminalController+ControlPaneContext.swift:397-510"
+      ],
+      "request": {
+        "routing": "shared routing; pane_id else focused pane",
+        "absolute": "If either absolute_axis or target_pixels is present, require axis horizontal|vertical and finite target_pixels > 0.",
+        "relative": "Otherwise require direction left|right|up|down and integer amount > 0 (default 1).",
+        "precedence": "Absolute intent wins over relative fields."
+      },
+      "errors": [
+        "unavailable/TabManager not available",
+        "invalid_params/absolute_axis must be 'horizontal' or 'vertical'",
+        "invalid_params/target_pixels must be > 0",
+        "invalid_params/direction must be one of left|right|up|down and amount must be > 0",
+        "not_found/Workspace not found or No focused pane or Pane not found or Pane not found in split tree",
+        "invalid_state/No split ancestor for absolute pane resize",
+        "invalid_state/No <orientation> split ancestor for pane",
+        "invalid_state/Pane has no adjacent border in direction <direction>",
+        "internal_error/Failed to resize pane"
+      ],
+      "success": "Return window/workspace/pane/split ids+refs, old_divider_position, new_divider_position, plus absolute_axis+target_pixels or direction+amount. Divider movement is clamped to 0.1...0.9.",
+      "state_events_persistence": "Mutate the correct split ancestor in the authoritative pane tree, emit the canonical pane resize event once, preserve selection/focus unless explicitly specified by the method contract, and persist restored divider geometry.",
+      "windows_gap": "Implemented but unverified. Existing pane_resize has useful relative/absolute logic, yet the per-surface/pane model migration can change pane identity/tree ancestry, and no frozen-canonical live differential proves exact errors, ancestor choice, pixel geometry, events, persistence, or multiwindow routing."
+    },
+    {
+      "id": "v2:surface.create",
+      "kind": "v2_method",
+      "sources": [
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Surface/ControlCommandCoordinator+Surface.swift:488-570",
+        "Sources/TerminalController+ControlSurfaceContext2.swift:281-390"
+      ],
+      "request": {
+        "routing": "shared selectors; pane_id else focused pane",
+        "type": "terminal default; browser/markdown/filePreview/rightSidebarTool/agentSession tokens; unknown token falls back terminal",
+        "agent_session": "provider_id then provider, default codex, valid codex|claude|claudecode|opencode; renderer_kind then renderer, default react, valid react|solid",
+        "terminal_browser": "url, working_directory, initial_command, tmux_start_command, remote_pty_session_id, remote_context, startup_environment then initial_env, focus=false",
+        "placement": "workspace|dock; Dock supports only canonical permitted terminal/browser kinds"
+      },
+      "errors": [
+        "unavailable/TabManager not available",
+        "invalid provider/renderer with raw data",
+        "invalid placement/Dock errors",
+        "canonical browser-disabled errors",
+        "not_found/Workspace not found",
+        "not_found/Pane not found",
+        "internal_error/Failed to create surface",
+        "remote unsupported-options before mutation"
+      ],
+      "success": "Workspace: window/workspace/pane/surface ids+refs and type. Dock: placement=dock, ordinary pane/surface ids+refs null, dock pane/surface ids and type. Remote/external use shared shapes.",
+      "state_events_persistence": "Appends a heterogeneous surface to one pane, initializes kind metadata/runtime, reconciles async attachment, emits one surface.created and optional selection, and persists kind-specific snapshot.",
+      "windows_gap": "missing exact method; separate new-terminal/browser helpers cannot provide agent-session/Dock/remote/error/payload/lifecycle parity without the model migration"
+    },
+    {
+      "id": "v2:surface.current",
+      "kind": "v2_method",
+      "sources": [
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Surface/ControlCommandCoordinator+Surface.swift:186-238",
+        "Sources/TerminalController+ControlSurfaceContext.swift:201-229"
+      ],
+      "contract": "Shared routing chooses a workspace/container; a surface selector chooses its owner but does not focus it. Return workspace focused surface, else first ordered surface, as window/workspace/pane/surface ids+refs plus surface_type. Empty container succeeds with null pane/surface/type. Errors unavailable then Workspace not found.",
+      "state_events_persistence": "read-only/no event; reflects restored/reconciled focus and heterogeneous type",
+      "windows_gap": "missing; current pane-selected/first-window inputs are insufficient"
+    },
+    {
+      "id": "v2:surface.list",
+      "kind": "v2_method",
+      "matrix_status": "implemented_unverified",
+      "sources": [
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Surface/ControlCommandCoordinator+Surface.swift:79-184",
+        "Sources/TerminalController+ControlSurfaceContext.swift:83-199"
+      ],
+      "contract": "Shared routing; unavailable versus Workspace not found. Top-level workspace id/ref, ordered surfaces, window id/ref. Every row: id/ref/index/type/title/focused/pane_id/ref/index_in_pane/selected_in_pane. Browser may add developer_tools_visible. Terminal adds requested_working_directory, initial_command, tmux_start_command, resume_binding (explicit null/object).",
+      "critical_semantics": [
+        "focused is workspace-wide focusedPanelId, not each pane's selected surface",
+        "pane-selected and workspace-focused are distinct",
+        "kind-conditional fields are exact; Windows convenience fields do not substitute",
+        "multiwindow and Dock ownership/ref minting are exact"
+      ],
+      "windows_gap": "Known deltas despite implementation: first-window routing, pane-selected marked focused, missing index_in_pane, pane refs derived from surface index, pane-wide kind/cwd assumptions, extra/noncanonical conditional fields, no live differential. Remains implemented_unverified."
+    },
+    {
+      "id": "v2:surface.close",
+      "kind": "v2_method",
+      "matrix_status": "implemented_unverified",
+      "sources": [
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Surface/ControlCommandCoordinator+Surface.swift:572-628",
+        "Sources/TerminalController+ControlSurfaceContext2.swift:392-450"
+      ],
+      "request": "Shared routing; surface_id if resolvable, else the resolved workspace/Dock focused surface.",
+      "errors": [
+        "unavailable/TabManager not available",
+        "not_found/Workspace not found",
+        "not_found/No focused surface",
+        "not_found/Surface not found with surface_id data",
+        "invalid_state/Cannot close the last surface",
+        "internal_error/Failed to close surface with surface_id data"
+      ],
+      "success": "Return closed workspace/surface/window ids+refs, preserving the identity of the surface that was removed.",
+      "state_events_persistence": "Close exactly once, tear down runtime and pending directory state, prune metadata/indexes, collapse empty pane, choose deterministic pane/surface focus fallback, emit lifecycle close/selection events once, and persist the resulting topology.",
+      "windows_gap": "Implemented but unverified. Current surface_close returns post-close surface.list shape, uses first-window/focused helpers, and lacks differential proof for last-surface protection, runtime cleanup, stale callbacks, metadata pruning, pane collapse, exact events, restore, and multiwindow ownership."
+    },
+    {
+      "id": "v2:surface.focus",
+      "kind": "v2_method",
+      "matrix_status": "implemented_unverified",
+      "sources": [
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Surface/ControlCommandCoordinator+Surface.swift:240-277",
+        "Sources/TerminalController+ControlSurfaceContext.swift:257-286"
+      ],
+      "request": "Resolve TabManager first through shared routing, then require a resolvable surface_id. The target must belong to the resolved workspace/container.",
+      "errors": [
+        "unavailable/TabManager not available",
+        "invalid_params/Missing or invalid surface_id",
+        "not_found/Workspace not found",
+        "not_found/Surface not found with surface_id data"
+      ],
+      "success": "Return window/workspace/surface ids+refs for the focused surface.",
+      "state_events_persistence": "Explicit focus-intent: focus owning window in-app, select owning workspace/pane/surface, update focus history/selected ids, emit selection events only for actual transitions, and preserve that selection in the session snapshot without activating another application.",
+      "windows_gap": "Implemented but unverified. Current handler returns {accepted,changed,...}, uses first-window/workspace helpers, and has no exact error/payload, Dock, focus-history, event multiplicity, app-activation, restart, or cross-window differential proof."
+    },
+    {
+      "id": "v2:surface.move",
+      "kind": "v2_method",
+      "matrix_status": "implemented_unverified",
+      "sources": [
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Surface/ControlCommandCoordinator+Surface2.swift:10-19",
+        "Sources/TerminalController.swift:4719-4875"
+      ],
+      "request": {
+        "required": "surface_id UUID/ref",
+        "destination_precedence": "before_surface_id or after_surface_id anchor; else pane_id; else workspace_id; else window_id selected workspace; else source workspace/pane",
+        "position": "explicit index unless an anchor supplies before/after index",
+        "validation": "at most one before_surface_id/after_surface_id",
+        "focus": "bool-like, default false"
+      },
+      "errors": [
+        "invalid_params/Missing or invalid surface_id",
+        "invalid_params/Specify at most one of before_surface_id or after_surface_id",
+        "unavailable/AppDelegate not available",
+        "not_found/Surface, Anchor surface, Pane, Workspace, Window, selected workspace, or destination pane with exact identity data",
+        "internal_error/Failed to move surface or detach/attach destination"
+      ],
+      "success": "Return destination window/workspace/pane/surface ids+refs; surface public identity is unchanged.",
+      "state_events_persistence": "Within-workspace move reorders/transfers to pane atomically. Cross-workspace/window move detaches the full heterogeneous surface transfer, attaches at destination, rolls back to original pane/index if attach fails, transfers runtime/metadata/pending directory ownership, optionally focuses destination, emits one move plus actual selection events, and persists both workspaces.",
+      "windows_gap": "Implemented but unverified. Current move has partial resolver/core support, but model migration can break pane identity and metadata transfer; no frozen-canonical proof covers anchor precedence, rollback, heterogeneous runtime transfer, exact errors/payload/events, focus, restore, or multiwindow move."
+    },
+    {
+      "id": "v2:surface.report_pwd",
+      "kind": "v2_method",
+      "sources": [
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Surface/ControlCommandCoordinator+Surface3.swift:215-267",
+        "Sources/TerminalController+ControlSurfaceContext4.swift:319-356,441-480",
+        "Sources/Workspace.swift:4420-4507,6287-6306"
+      ],
+      "request": "Require workspace_id; optional syntactically valid surface_id; first nonblank raw string path,directory,cwd, preserving whitespace; all nonblank aliases must equal exactly.",
+      "errors": "Exact invalid workspace/surface, Missing path, Conflicting path parameters, Workspace not found or Surface not found with requested identity block.",
+      "success": "Recorded response returns resolved ids/refs and exact path. Empty remote workspace returns requested/null surface identity, exact path, pending=true.",
+      "state_events_persistence": "Resolve the reported-directory target; store directory/provenance, update workspace cwd only when eligible focused panel, update projections, or queue pending remote PWD and apply once on arrival. Persist panel directory/provenance; no completion event/focus change.",
+      "windows_gap": "missing handler and authoritative per-surface directory/provenance/pending-arrival lifecycle"
+    },
+    {
+      "id": "v2:surface.respawn",
+      "kind": "v2_method",
+      "sources": [
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Surface/ControlCommandCoordinator+Surface.swift:415-486",
+        "Sources/TerminalController+ControlSurfaceContext2.swift:214-279"
+      ],
+      "request": "Shared routing. command then initial_command trimmed, default exec ${SHELL:-/bin/zsh} -l; tmux_start_command defaults command; optional working_directory; surface_id presence is significant; focus if present must parse bool, default no explicit focus override.",
+      "target_semantics": "Present surface_id is located globally by exact surface identity and overrides routing fallback; invalid/unresolved gives Surface not found for the given surface_id. Without it resolve workspace then focused surface. Terminal-only.",
+      "errors": [
+        "invalid_params/Missing or invalid focus",
+        "not_found/Surface not found for the given surface_id with optional id data",
+        "unavailable/Unable to access the cmux window or TabManager not available per localized frozen strings",
+        "not_found/Workspace not found",
+        "not_found/No focused surface",
+        "invalid_params/Surface is not a terminal with id data",
+        "internal_error/Failed to respawn surface with id data"
+      ],
+      "success": "workspace/surface ids+refs, terminal type, window id/ref; public surface id remains the same",
+      "state_events_persistence": "Replace terminal runtime under same surface lifecycle generation, apply command/cwd/tmux command and optional focus, ignore stale old-runtime callbacks, preserve/refresh appropriate metadata, persist new startup/restore state, and avoid duplicate created/closed identities.",
+      "platform_equivalence": "Windows uses a native default shell and process invocation equivalent; exact canonical macOS shell text is not required on Windows, but empty/default versus explicit command, quoting, runtime replacement, identity, environment/cwd, errors, events, and persistence are.",
+      "windows_gap": "missing method/runtime replacement lifecycle; input injection is not respawn equivalence"
+    },
+    {
+      "id": "v2:surface.action",
+      "kind": "v2_method",
+      "method_alias": "tab.action",
+      "sources": [
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/System/ControlCommandCoordinator+SystemTabAction.swift",
+        "Sources/TerminalController+ControlSystemContext2.swift:29-322",
+        "Sources/TerminalController+MoveTabToNewWorkspace.swift:35-82"
+      ],
+      "normalization_target": "action trimmed/lowercase/hyphen->underscore; surface_id then tab_id then workspace focused. Shared routing/workspace precedence.",
+      "actions": {
+        "metadata": "rename(trimmed title response), clear_name, pin/unpin(pinned response), mark_read/mark_unread",
+        "presentation_runtime": "reload browser-only; toggle_full_width_tab with result boolean",
+        "create": "duplicate browser-only; new_terminal_right; new_browser_right. Insert immediately right but not before pinned prefix; created ids/refs or remote accepted/null shape.",
+        "close": "close_left/right/others within target pane, skip pinned, preserve last surface; return closed/skipped_pinned",
+        "move": "move_to_new_workspace/detach aliases require >1 source surfaces; move same id and metadata, return source and created destination identities"
+      },
+      "errors": "Exact unavailable, Missing action, Workspace/Tab/focused/pane not found, Unknown tab action with ordered supported_actions, invalid title/URL/state, browser-only, create/duplicate/move failures, browser-disabled errors.",
+      "success": "Base action/window/workspace/surface+tab/pane ids+refs plus action-specific extras; move uses its source/destination payload.",
+      "state_events_persistence": "All actions use authoritative model/UI paths. One successful socket completion surface.action event plus committed lifecycle events only once. Metadata/topology persists; transient reload/full-width behavior follows canonical live/restore differential.",
+      "windows_gap": "missing aggregate method; partial title/pin/unread/create/close/move helpers have different payloads and cannot be safely composed until lifecycle migration"
+    },
+    {
+      "id": "cli:tab-action",
+      "kind": "cli_command",
+      "sources": [
+        "CLI/cmux.swift:7248-7350,15673-15702",
+        "CLI/CMUXCLI+MoveTabToNewWorkspace.swift:3-45"
+      ],
+      "usage": "tab-action --action <name> [--tab] [--surface] [--workspace] [--window] [--title] [--url] [--focus true|false]",
+      "precedence": "--action else first positional; --tab over --surface; explicit workspace/window suppress inappropriate ambient CMUX_TAB_ID/CMUX_SURFACE_ID; window then workspace then tab normalization; workspace-only request omits surface for server focused resolution; focus always sent default false.",
+      "errors_output": "Exact parse/unknown flag/rename title/focus/normalizer errors. Calls tab.action. Text: OK action=... optional tab/workspace/closed/full_width_tab_mode/created/created_workspace; JSON and --id-format exact; no deprecation warning.",
+      "state_events_persistence": "Pure façade; no shadow state or duplicate event.",
+      "windows_gap": "classified/help-classified only; no concrete help, mapping, formatting, process-contract test, or backend route"
+    },
+    {
+      "id": "cli:respawn-pane",
+      "kind": "cli_command",
+      "sources": [
+        "CLI/cmux.swift:23864-23894,16541-16557",
+        "CLI/CMUXCLI+TmuxCompatSupport.swift:75-113"
+      ],
+      "usage": "respawn-pane [--workspace] [--surface] [--window] [--command <cmd> | trailing command]",
+      "precedence": "Window command/global override; workspace explicit else CMUX_WORKSPACE_ID only without window; surface normalized in window/workspace with focused fallback. --command else trailing tokens after optional --; trim; empty defaults to exec ${SHELL:-/bin/zsh} -l.",
+      "wire": "Call surface.respawn with command=/bin/sh -c <single-quoted final command> and tmux_start_command=<unwrapped final command>, plus normalized ids. Windows must use a native shell-wrapper equivalent that preserves command text/quoting semantics.",
+      "output": "Backend errors nonzero; success text OK; JSON formatted payload; exact help documents flags/default focused surface.",
+      "state_events_persistence": "Pure façade over respawn; no separate process or session state.",
+      "windows_gap": "classified/help-classified only; no concrete help/mapping/normalization/wrapper/output/process-contract test"
+    }
+  ],
+  "exact_error_and_payload_reference": {
+    "purpose": "The compact entry summaries above do not authorize approximate strings/shapes. Implementation red tests must transcribe the frozen coordinator switch branches byte-for-byte from these sources.",
+    "sources": [
+      "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Pane/ControlCommandCoordinator+Pane.swift",
+      "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Surface/ControlCommandCoordinator+Surface.swift",
+      "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Surface/ControlCommandCoordinator+Surface2.swift",
+      "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Surface/ControlCommandCoordinator+Surface3.swift",
+      "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/System/ControlCommandCoordinator+SystemTabAction.swift",
+      "CLI/cmux.swift"
+    ]
+  },
+  "red_green_simplify_green_plan": {
+    "red_1_model": [
+      "Add core behavioral tests for heterogeneous tabs in one pane, pane-selected versus workspace-focused, owner indexes, stable ids/generations, create/arrival races, close cleanup, move transfer/rollback, focus transitions, pane resize ancestry, respawn replacement, pending PWD apply-once, and snapshot restore reconciliation.",
+      "Prove current parallel-array/pane-kind implementation fails the exact mixed-kind, stale callback, pending arrival, and restore cases."
+    ],
+    "green_1_model": [
+      "Migrate session schema/operations to authoritative per-surface records plus pane ordering/selection and lifecycle generations.",
+      "Add migration decoding for existing Windows snapshots, authoritative indexes, runtime attach/detach hooks, pending PWD queues, atomic cleanup/transfer, and kind-specific persistence."
+    ],
+    "red_2_v2": [
+      "Add behavioral decoded-request tests for all nine surface methods plus pane.create and pane.resize: capability, selectors, exact validation order/error/data, exact conditional/null payloads, focus, events, remote/Dock/browser-disabled paths, resize geometry, and lifecycle state.",
+      "Add two-window/Dock/remote and real runtime fixtures; tests must exercise handler/model/runtime paths, not source strings."
+    ],
+    "green_2_v2": [
+      "Implement shared canonical routing/identity/payload seams over the migrated model.",
+      "Implement pane create/resize and surface action/create/current/list/PWD/respawn/close/focus/move using one mutation/reconciliation path, preserving worker/main execution policy and event boundaries."
+    ],
+    "red_3_cli": [
+      "Add cmux-cli parser/mapping/help/formatter tests and real named-pipe executable tests for tab-action and respawn-pane across UUID/ref/index, ambient versus explicit window/workspace, quoting, JSON/id-format, exit/stdout/stderr, and backend failure."
+    ],
+    "green_3_cli": [
+      "Implement thin CLI façades only; share normalizers, id formatting, shell-wrapper utilities, and backend methods; do not duplicate lifecycle state."
+    ],
+    "first_full_green": [
+      "Run focused core/desktop/CLI tests, real sidecars, complete native desktop suite, normal desktop build, strict Rust 1.97 lint/format, web/type/build, parity gates, and hosted Windows live matrix.",
+      "Run frozen canonical differential capturing wire/process/state/events/persistence/selectors/multiwindow for all 14 entries."
+    ],
+    "simplify": [
+      "Remove obsolete pane-wide surface_kind and parallel per-panel mutation paths after migration compatibility is proven.",
+      "Collapse duplicate target resolution/payload identity/event emission and ensure one writer per lifecycle transition.",
+      "Keep PWD parsing off-main where policy permits, runtime UI/focus/resize operations narrowly on main, and CLI logic stateless.",
+      "Audit snapshot versioning/migration and delete temporary dual-write only after old-snapshot fixture coverage passes."
+    ],
+    "second_full_green": [
+      "Repeat every focused/stress/full/hosted/differential gate on the simplified exact commit.",
+      "Independent verifier reproduces create/restore races, mixed-kind tabs, pending PWD, resize, close/focus/move regressions, respawn, events, CLIs, and multiwindow before any matrix promotion or push."
+    ]
+  },
+  "differential_live_gate": {
+    "canonical_fixture": "Frozen e1825d40 tagged macOS app/socket: two windows, workspace and Dock panes, mixed terminal/browser/agent/markdown/file surfaces, pinned/unread/custom-title tabs, remote tmux/empty remote arrival fixture, event subscription, and restart snapshot.",
+    "windows_fixture": "Isolated hosted Windows build/named pipe with real terminal/browser sidecars and equivalent public setup.",
+    "capture": [
+      "exact response/error and ref ownership",
+      "CLI exit/stdout/stderr/help/JSON/id-format and command quoting",
+      "pane tree, surface order/kind/selection/focus/metadata/runtime generation",
+      "create/arrival/close/move/respawn event timeline and duplicate/zombie detection",
+      "pane resize divider ancestry/geometry and restored layout",
+      "PWD pending/application/provenance side effects",
+      "post-restart identities, heterogeneous metadata, runtime attachment, and transient-versus-persisted state",
+      "two-window/Dock focus preservation and selector conflicts"
+    ],
+    "normalization": "Symbolize UUID/ref identities by stable owner/creation order and treat native path/shell executable values as platform-equivalent only where stated. Do not normalize missing/extra fields, nulls, errors, counts, ordering, focus, geometry, events, timing, quoting behavior, or persistence.",
+    "promotion": "Each entry remains missing or implemented_unverified until zero unexplained deltas exist for its acceptance surface on the exact independently verified pushed commit. The product entry promotes only after all thirteen constituent entries and the cross-entry lifecycle/restore scenarios pass."
+  },
+  "batch_assessment": {
+    "coherent": true,
+    "single_implementation_batch_required": true,
+    "reason": "All 14 entries read, create, replace, mutate, report against, resize, focus, close, or expose the same pane/surface identity and lifecycle. The product behavior is the cross-entry invariant; pane/surface create establish ownership, list/current consume it, PWD reconciles against arrival, action/respawn/close/focus/move/resize mutate it, restore reattaches it, and both CLIs are direct façades. Existing close/focus/move/resize rows must be reverified because the migration changes their underlying identities and tree."
+  }
+}
