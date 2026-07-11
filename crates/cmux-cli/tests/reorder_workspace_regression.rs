@@ -1,11 +1,13 @@
 #![cfg(windows)]
 
+use std::collections::HashMap;
 use std::process::Command;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
 use cmux_ipc::{control_pipe_path, serve_named_pipe, ControlCallResult, JsonValue};
+use serde_json::Value;
 
 type CapturedRequest = (String, serde_json::Map<String, serde_json::Value>);
 
@@ -39,6 +41,103 @@ fn spawn_server(
             });
     });
     (pipe, request_rx)
+}
+
+fn spawn_method_server(
+    tag: &str,
+    responses: HashMap<String, serde_json::Value>,
+) -> (String, mpsc::Receiver<CapturedRequest>) {
+    let pipe = control_pipe_path(&format!(
+        "cmux-{tag}-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ))
+    .unwrap();
+    let (request_tx, request_rx) = mpsc::channel();
+    let server_pipe = pipe.clone();
+    thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async move {
+                let _ = serve_named_pipe(&server_pipe, move || {
+                    let request_tx = request_tx.clone();
+                    let responses = responses.clone();
+                    move |request: cmux_ipc::ControlRequest| {
+                        let method = request.method.clone();
+                        request_tx.send((request.method, request.params)).unwrap();
+                        let response = responses.get(&method).cloned().unwrap_or(Value::Null);
+                        ControlCallResult::Ok(JsonValue::try_from(response).unwrap())
+                    }
+                })
+                .await;
+            });
+    });
+    (pipe, request_rx)
+}
+
+#[test]
+fn executable_routes_tmux_absolute_resize_through_pane_metrics() {
+    let (pipe, request_rx) = spawn_method_server(
+        "tmux-resize-pane",
+        HashMap::from([
+            (
+                "workspace.list".to_string(),
+                serde_json::json!({"workspaces":[{
+                    "id":"workspace-a", "ref":"workspace:1", "index":0
+                }]}),
+            ),
+            (
+                "pane.list".to_string(),
+                serde_json::json!({"panes":[{
+                    "id":"pane-b", "ref":"pane:2", "index":1,
+                    "focused":true, "selected_surface_id":"surface-b",
+                    "cell_width_px":9, "cell_height_px":18
+                }]}),
+            ),
+            (
+                "pane.resize".to_string(),
+                serde_json::json!({"pane_ref":"pane:2"}),
+            ),
+        ]),
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cmux"))
+        .args([
+            "__tmux-compat",
+            "resize-pane",
+            "-tworkspace-a.pane:2",
+            "-x13",
+        ])
+        .env("CMUX_SOCKET_PATH", &pipe)
+        .env_remove("CMUX_SOCKET")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty());
+
+    let requests = (0..3)
+        .map(|_| request_rx.recv_timeout(Duration::from_secs(5)).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(requests[0].0, "workspace.list");
+    assert_eq!(requests[1].0, "pane.list");
+    assert_eq!(
+        Value::Object(requests[1].1.clone()),
+        serde_json::json!({"workspace_id":"workspace-a"})
+    );
+    assert_eq!(requests[2].0, "pane.resize");
+    assert_eq!(
+        Value::Object(requests[2].1.clone()),
+        serde_json::json!({
+            "workspace_id":"workspace-a", "pane_id":"pane-b",
+            "absolute_axis":"horizontal", "target_pixels":117
+        })
+    );
 }
 
 #[test]

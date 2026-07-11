@@ -121,6 +121,7 @@ fn dispatch(
                 .with_window_id(options.window_id.as_deref());
             run_control_command(options, &control.method, &control.params)
         }
+        DispatchPlan::RunTmuxCompat(args) => run_tmux_compat_command(options, &args),
         DispatchPlan::RunEvents(args) => run_events_command(options, &args),
         DispatchPlan::RunDiffViewerRefs(args) => {
             let output = cmux_cli::diff_viewer_cli::run_diff_viewer_refs_command(&args, &cwd)?;
@@ -703,6 +704,26 @@ fn run_control_command(
     } else {
         println!("{}", format_control_result(method, &result));
     }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn run_tmux_compat_command(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
+    let workspace_id = std::env::var(CMUX_WORKSPACE_ID_ENV).ok();
+    let pane_id = std::env::var("TMUX_PANE")
+        .ok()
+        .or_else(|| std::env::var("CMUX_PANE_ID").ok());
+    let launched_through_omx = std::env::var_os("CMUX_OMX_CMUX_BIN").is_some()
+        || std::env::var("CMUX_AGENT_LAUNCH_KIND").as_deref() == Ok("omx");
+    cmux_cli::tmux_compat::run_tmux_compat(
+        args,
+        &cmux_cli::tmux_compat::TmuxCompatEnvironment {
+            workspace_id: workspace_id.as_deref(),
+            pane_id: pane_id.as_deref(),
+            launched_through_omx,
+        },
+        |method, params| call_control_command(options, method, params),
+    )?;
     Ok(())
 }
 
@@ -2029,6 +2050,13 @@ fn run_control_command(
 ) -> Result<(), CliError> {
     Err(CliError::new(
         "socket commands are only supported on Windows in this build",
+    ))
+}
+
+#[cfg(not(windows))]
+fn run_tmux_compat_command(_options: &GlobalOptions, _args: &[String]) -> Result<(), CliError> {
+    Err(CliError::new(
+        "tmux compatibility commands are only supported on Windows in this build",
     ))
 }
 

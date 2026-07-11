@@ -31,6 +31,7 @@ pub mod settings;
 pub mod sigpipe;
 pub mod socket;
 pub mod ssh;
+pub mod tmux_compat;
 #[cfg(windows)]
 pub mod transport;
 pub mod vm_pty_connect;

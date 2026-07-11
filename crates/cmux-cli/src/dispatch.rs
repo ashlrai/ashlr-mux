@@ -45,6 +45,8 @@ pub enum DispatchPlan {
     RunRpc,
     /// Run one mapped user-facing command through the v2 control socket.
     RunControl(ControlCommand),
+    /// Run the multi-call tmux compatibility shim.
+    RunTmuxCompat(Vec<String>),
     /// Stream reconnectable event frames from the v2 control socket.
     RunEvents(Vec<String>),
     /// Run the multi-step SSH workspace bootstrap/control flow.
@@ -446,6 +448,8 @@ pub fn plan_with_args(action: &PreSocketAction, command: &str, args: &[String]) 
         PreSocketAction::NeedsSocket => {
             if command == "rpc" {
                 DispatchPlan::RunRpc
+            } else if command == "__tmux-compat" {
+                DispatchPlan::RunTmuxCompat(args.to_vec())
             } else if command == "events" {
                 DispatchPlan::RunEvents(args.to_vec())
             } else if command == "ssh" {
@@ -626,6 +630,15 @@ mod tests {
             }
             other => panic!("expected RunControl, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn tmux_compat_routes_to_its_multi_call_executor() {
+        let args = vec!["resize-pane".to_string(), "-L".to_string()];
+        assert_eq!(
+            plan_with_args(&PreSocketAction::NeedsSocket, "__tmux-compat", &args),
+            DispatchPlan::RunTmuxCompat(args)
+        );
     }
 
     #[test]
