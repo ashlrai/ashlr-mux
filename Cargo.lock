@@ -589,6 +589,7 @@ dependencies = [
  "tempfile",
  "time",
  "tokio",
+ "url",
  "uuid",
  "windows",
 ]

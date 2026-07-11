@@ -50,6 +50,16 @@ pub fn run_diff_viewer_refs_command(args: &[String], cwd: &Path) -> Result<Strin
 /// writes a patch + HTML page under the trusted diff-viewer root, updates the
 /// token manifest, and prints `{ "url": "/diff-<group>-branch.html", ... }`.
 pub fn run_diff_viewer_branch_command(args: &[String], cwd: &Path) -> Result<String, CliError> {
+    run_diff_viewer_branch_command_with_root(args, cwd, &default_trusted_root()?)
+}
+
+/// Root-injected branch regeneration used by the loopback HTTP server. Keeping
+/// generation here ensures the hidden CLI helper and HTTP route cannot drift.
+pub fn run_diff_viewer_branch_command_with_root(
+    args: &[String],
+    cwd: &Path,
+    trusted_root: &Path,
+) -> Result<String, CliError> {
     let parsed = parse_query_args(args)?;
     let token = parsed
         .token
@@ -78,7 +88,6 @@ pub fn run_diff_viewer_branch_command(args: &[String], cwd: &Path) -> Result<Str
         ],
     )?;
 
-    let trusted_root = default_trusted_root()?;
     let token_dir = trusted_root.join(token);
     std::fs::create_dir_all(&token_dir).map_err(|error| {
         CliError::new(format!(
@@ -101,7 +110,7 @@ pub fn run_diff_viewer_branch_command(args: &[String], cwd: &Path) -> Result<Str
     .map_err(|error| CliError::new(format!("failed to write diff-viewer branch page: {error}")))?;
 
     upsert_manifest(
-        &trusted_root,
+        trusted_root,
         token,
         &[
             RegisteredFile {
@@ -303,7 +312,7 @@ fn upsert_manifest(root: &Path, token: &str, entries: &[RegisteredFile]) -> Resu
             })
         })
         .collect();
-    let manifest = json!({ "files": files }).to_string();
+    let manifest = json!({ "token": token, "files": files }).to_string();
     std::fs::write(root.join(manifest_file_name(token)), manifest)
         .map_err(|error| CliError::new(format!("failed to write diff-viewer manifest: {error}")))
 }

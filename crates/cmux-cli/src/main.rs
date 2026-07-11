@@ -123,6 +123,11 @@ fn dispatch(
             println!("{output}");
             Ok(())
         }
+        DispatchPlan::RunDiffViewerServer(args) => {
+            let server = cmux_cli::diff_viewer_server::DiffViewerServer::prepare(&args)?;
+            println!("{}", server.port());
+            server.run()
+        }
         DispatchPlan::RunDocs(args) => {
             let output = cmux_cli::docs::run_docs_command(&args, options.json_output)?;
             println!("{output}");

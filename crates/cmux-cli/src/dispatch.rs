@@ -53,6 +53,8 @@ pub enum DispatchPlan {
     RunDiffViewerRefs(Vec<String>),
     /// Regenerate a branch-base diff page and manifest entries.
     RunDiffViewerBranch(Vec<String>),
+    /// Serve token-jailed diff-viewer files over loopback HTTP.
+    RunDiffViewerServer(Vec<String>),
     /// Render the canonical no-socket documentation index or topic.
     RunDocs(Vec<String>),
     /// Print the canonical ANSI welcome card without a socket.
@@ -469,7 +471,9 @@ pub fn plan_with_args(action: &PreSocketAction, command: &str, args: &[String]) 
             return DispatchPlan::RunSigpipeStdinPipeProbe;
         }
         PreSocketAction::SigpipeInspect => return DispatchPlan::RunSigpipeInspect(args.to_vec()),
-        PreSocketAction::DiffViewerServer => "diff-viewer-server",
+        PreSocketAction::DiffViewerServer => {
+            return DispatchPlan::RunDiffViewerServer(args.to_vec());
+        }
         PreSocketAction::DiffViewerRefs => {
             return DispatchPlan::RunDiffViewerRefs(args.to_vec());
         }
@@ -800,6 +804,19 @@ mod tests {
         assert_eq!(
             plan_with_args(&PreSocketAction::Docs, "docs", &args),
             DispatchPlan::RunDocs(args)
+        );
+    }
+
+    #[test]
+    fn diff_viewer_server_runs_locally_with_all_arguments() {
+        let args = vec!["--root".to_string(), "C:\\viewer".to_string()];
+        assert_eq!(
+            plan_with_args(
+                &PreSocketAction::DiffViewerServer,
+                "diff-viewer-server",
+                &args,
+            ),
+            DispatchPlan::RunDiffViewerServer(args)
         );
     }
 

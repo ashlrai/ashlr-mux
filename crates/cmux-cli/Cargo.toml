@@ -27,6 +27,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.10"
 time = "0.3"
+url = "2"
 uuid = { workspace = true }
 # rt drives the one-shot socket round-trip; io-util backs tokio::io::split.
 tokio = { version = "1", features = ["io-util", "rt"] }

@@ -14,6 +14,7 @@ pub mod classify;
 pub mod command_forward;
 pub mod config;
 pub mod diff_viewer_cli;
+pub mod diff_viewer_server;
 pub mod dispatch;
 pub mod docs;
 pub mod feed_clear;
