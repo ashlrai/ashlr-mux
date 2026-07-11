@@ -380,6 +380,7 @@ pub fn run() {
             session::session_set_surface_kind,
             session::session_select_adjacent_panel,
             session::session_select_workspace_surface,
+            session::session_focus_panel,
             session::session_toggle_split_zoom,
             session::session_set_layout_mode,
             session::session_set_canvas_pane_frame,

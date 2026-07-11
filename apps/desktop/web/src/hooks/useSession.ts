@@ -68,6 +68,8 @@ export interface UseSession {
   selectWorkspace: (index: number) => void;
   /** Select a workspace by id and focus a panel/tab inside it. */
   selectWorkspaceSurface: (workspaceId: string, panelId: string) => void;
+  /** Persist which pane owns keyboard focus without changing workspace/tab selection. */
+  focusPanel: (panelId: string) => void;
   /** Close the workspace at `index` (always leaves at least one alive). */
   closeWorkspace: (index: number) => void;
   /**
@@ -402,6 +404,13 @@ export function useSession(): UseSession {
       .catch((error) => console.error("session_select_workspace_surface failed", error));
   }, []);
 
+  const focusPanel = useCallback((panelId: string) => {
+    void host
+      .invoke<AppSessionSnapshot>("session_focus_panel", { panelId })
+      .then(setSnapshot)
+      .catch((error) => console.error("session_focus_panel failed", error));
+  }, []);
+
   const newWorkspace = useCallback((currentDirectoryOrOptions?: string | NewWorkspaceOptions) => {
     const options =
       typeof currentDirectoryOrOptions === "string"
@@ -709,6 +718,7 @@ export function useSession(): UseSession {
     setWorkspacePinned,
     setGroupCollapsed,
     selectWorkspaceSurface,
+    focusPanel,
   };
 }
 

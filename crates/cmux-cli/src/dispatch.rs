@@ -212,6 +212,9 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
         "join-pane" => Some(
             "Usage:\n  cmux join-pane --target-pane <id|ref|index> [--workspace <id|ref|index>] [--pane <id|ref|index>] [--surface <id|ref|index>] [--window <id|ref|index>] [--focus <true|false>] [--no-focus]\n\nJoin a pane/surface into another pane.\n\nFlags:\n  --target-pane <id|ref|index>  Target pane (required)\n  --workspace <id|ref|index>    Workspace context\n  --pane <id|ref|index>         Source pane\n  --surface <id|ref|index>      Source surface\n  --window <id|ref|index>       Window context\n  --focus <true|false>          Focus the result (default: false)\n  --no-focus                    Compatibility alias for --focus false",
         ),
+        "last-pane" => Some(
+            "Usage:\n  cmux last-pane [--workspace <id|ref|index>] [--window <id|ref|index>]\n\nFocus the previously focused pane in a workspace.\n\nFlags:\n  --workspace <id|ref|index>   Workspace context\n  --window <id|ref|index>      Window context for workspace refs and indexes",
+        ),
         "reorder-surface" => Some(
             "Usage:\n  cmux reorder-surface [--surface <id|ref|index> | <id|ref|index>] [flags]\n\nReorders a surface within its pane.\n\nFlags:\n  --surface <id|ref|index>     Surface to reorder\n  --workspace <id|ref|index>   Workspace context\n  --window <id|ref|index>      Window context\n  --index <n>                  Place at this insertion index\n  --before <id|ref|index>      Place before this surface\n  --before-surface <handle>    Alias for --before\n  --after <id|ref|index>       Place after this surface\n  --after-surface <handle>     Alias for --after\n  --focus <true|false>         Focus after reordering (default: false)",
         ),
@@ -663,6 +666,7 @@ mod tests {
             "swap-pane",
             "break-pane",
             "join-pane",
+            "last-pane",
         ] {
             let plan = plan(
                 &PreSocketAction::SubcommandHelp {

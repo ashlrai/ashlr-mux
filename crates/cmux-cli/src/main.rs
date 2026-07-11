@@ -1015,6 +1015,7 @@ fn format_control_result(method: &str, result: &serde_json::Value) -> String {
             control_handle(result, "workspace"),
             control_handle(result, "window"),
         ),
+        "pane.last" => format!("OK {}", control_handle(result, "pane")),
         _ => serde_json::to_string(result).unwrap_or_default(),
     }
 }
@@ -1396,6 +1397,14 @@ mod control_result_tests {
                 &serde_json::json!({"surface_ref": "surface:1"})
             ),
             "OK"
+        );
+    }
+
+    #[test]
+    fn last_pane_keeps_canonical_handle_summary() {
+        assert_eq!(
+            format_control_result("pane.last", &serde_json::json!({"pane_ref": "pane:2"})),
+            "OK pane:2"
         );
     }
 

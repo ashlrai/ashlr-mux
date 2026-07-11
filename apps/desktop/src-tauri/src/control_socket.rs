@@ -38,11 +38,12 @@ use crate::session::{
     clear_workspace_sidebar_status_for_control, close_panel_for_control,
     close_workspace_for_control, close_workspaces_for_control,
     configure_workspace_remote_for_control, current_session_snapshot,
-    equalize_dividers_for_control, move_panel_to_new_workspace_for_control,
-    move_surface_for_control, move_workspace_to_window_for_control,
-    new_browser_workspace_for_control, new_terminal_tab_for_control, new_workspace_for_control,
-    open_browser_url_in_panel, open_custom_sidebar_in_panel, open_diff_viewer_in_panel,
-    open_file_in_panel, open_markdown_file_in_panel, reconnect_workspace_remote_for_control,
+    equalize_dividers_for_control, focus_last_pane_for_control,
+    move_panel_to_new_workspace_for_control, move_surface_for_control,
+    move_workspace_to_window_for_control, new_browser_workspace_for_control,
+    new_terminal_tab_for_control, new_workspace_for_control, open_browser_url_in_panel,
+    open_custom_sidebar_in_panel, open_diff_viewer_in_panel, open_file_in_panel,
+    open_markdown_file_in_panel, reconnect_workspace_remote_for_control,
     register_window_for_control, rename_workspace_for_control,
     reopen_closed_browser_tab_for_control, reorder_surface_for_control,
     reorder_workspaces_for_control, reorder_workspaces_many_for_control,
@@ -61,7 +62,7 @@ use crate::session::{
     split_browser_for_control, split_off_surface_for_control, split_panel_for_control,
     start_direct_browser_proxy_for_control, swap_panes_for_control,
     toggle_browser_developer_tools_for_control, toggle_browser_focus_mode_for_control,
-    toggle_browser_omnibar_for_control, toggle_split_zoom_for_control,
+    toggle_browser_omnibar_for_control, toggle_split_zoom_for_control, PaneLastControlError,
     ReorderWorkspacesManyControlError, SessionState, WorkspaceRemoteControlConfig,
 };
 use crate::terminal::{
@@ -922,6 +923,7 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "pane.swap",
     "pane.break",
     "pane.join",
+    "pane.last",
     "browser.open_split",
     "browser.navigate",
     "browser.back",
@@ -1219,6 +1221,7 @@ fn handle_control_request(app: &AppHandle, request: ControlRequest) -> ControlCa
         "pane.swap" => pane_swap(app, &request.params),
         "pane.break" => pane_break(app, &request.params),
         "pane.join" => pane_join(app, &request.params),
+        "pane.last" => pane_last(app, &request.params),
         "browser.navigate" => browser_navigate(app, &request.params),
         "browser.back" => browser_back(app, &request.params),
         "browser.forward" => browser_forward(app, &request.params),
@@ -5222,6 +5225,101 @@ fn pane_join(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Contro
         }
     }
     surface_move(app, &move_params)
+}
+
+fn pane_last(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(requested_window) = split_off_window_index(app, &current, params) else {
+        return ControlCallResult::Err {
+            code: "unavailable".to_string(),
+            message: "TabManager not available".to_string(),
+            data: None,
+        };
+    };
+    let window_index = requested_window.unwrap_or(0);
+    let Some(requested_workspace) = split_off_workspace_index(&current, params, window_index)
+    else {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Workspace not found".to_string(),
+            data: None,
+        };
+    };
+    let Some(window) = current.windows.get(window_index) else {
+        return ControlCallResult::Err {
+            code: "unavailable".to_string(),
+            message: "TabManager not available".to_string(),
+            data: None,
+        };
+    };
+    let workspace_index = requested_workspace.unwrap_or_else(|| {
+        window
+            .tab_manager
+            .selected_workspace_index
+            .and_then(|index| usize::try_from(index).ok())
+            .unwrap_or(0)
+    });
+    if window.tab_manager.workspaces.get(workspace_index).is_none() {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Workspace not found".to_string(),
+            data: None,
+        };
+    }
+    let state = app.state::<SessionState>();
+    let (focused, result) =
+        match focus_last_pane_for_control(app, &state, window_index, workspace_index) {
+            Ok(result) => result,
+            Err(PaneLastControlError::WorkspaceNotFound) => {
+                return ControlCallResult::Err {
+                    code: "not_found".to_string(),
+                    message: "Workspace not found".to_string(),
+                    data: None,
+                };
+            }
+            Err(PaneLastControlError::Pane(session_ops::PaneLastError::NoFocusedPane)) => {
+                return ControlCallResult::Err {
+                    code: "not_found".to_string(),
+                    message: "No focused pane".to_string(),
+                    data: None,
+                };
+            }
+            Err(PaneLastControlError::Pane(session_ops::PaneLastError::NoAlternatePane)) => {
+                return ControlCallResult::Err {
+                    code: "not_found".to_string(),
+                    message: "No alternate pane available".to_string(),
+                    data: None,
+                };
+            }
+        };
+    let window = &result.windows[window_index];
+    let workspace = &window.tab_manager.workspaces[workspace_index];
+    let window_identity = crate::window::control_window_summaries(app)
+        .into_iter()
+        .find(|summary| summary.identity.label == window.window_id.as_deref().unwrap_or("main"))
+        .map(|summary| summary.identity);
+    if let Some(identity) = window_identity.as_ref() {
+        if let Some(window) = app.get_webview_window(&identity.label) {
+            let _ = window.set_focus();
+        }
+    }
+    let surface_ref_value = focused.surface_id.as_deref().and_then(|surface_id| {
+        surfaces_for_workspace(workspace)
+            .iter()
+            .position(|surface| surface.get("id").and_then(Value::as_str) == Some(surface_id))
+            .map(surface_ref)
+    });
+    let pane_index = pane_index_by_id(workspace, &focused.pane_id).unwrap_or(0);
+    ok(json!({
+        "window_id": window_identity.as_ref().map(|identity| identity.id.clone()),
+        "window_ref": window_identity.as_ref().map(|identity| identity.reference.clone()),
+        "workspace_id": workspace.workspace_id,
+        "workspace_ref": workspace_ref(workspace_index),
+        "pane_id": focused.pane_id,
+        "pane_ref": pane_ref(pane_index),
+        "surface_id": focused.surface_id,
+        "surface_ref": surface_ref_value,
+    }))
 }
 
 fn surface_close(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
@@ -13401,6 +13499,7 @@ mod tests {
             "pane.swap",
             "pane.break",
             "pane.join",
+            "pane.last",
             "surface.move",
             "surface.clear_history",
             "surface.trigger_flash",

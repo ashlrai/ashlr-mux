@@ -639,6 +639,11 @@ pub struct SessionWorkspaceSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub zoomed_panel_id: Option<String>,
+    /// The panel whose pane currently owns keyboard focus. Canonical persists
+    /// this independently from each pane's selected tab.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub focused_panel_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub panel_titles: Option<Vec<SessionPanelTitleSnapshot>>,

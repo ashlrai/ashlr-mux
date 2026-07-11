@@ -14,11 +14,10 @@ import { firstActivePanelId, isPane, type Layout } from "./splitLayout";
  * Packages/macOS/CmuxWorkspaces/.../WorkspaceSurfaceListModel.swift:61-67),
  * fed by pane tap gestures and the AppKit first-responder sync
  * (WorkspaceContentView.swift:215-217 / 231-238). The port's generated session
- * model has no focused field and adding one is a crates + core-types change,
- * so for this slice the focus SoT lives web-side: Workspace writes this store
- * from capture-phase pointer/focus events, the command palette reads it.
- * Snapshot-persisted focus (Workspace.swift:132 writes, 242-246 restores) is a
- * noted follow-up once the Rust model grows the field.
+ * model persists `focused_panel_id`; Workspace mirrors that value into this
+ * low-latency store and writes capture-phase pointer/focus changes back through
+ * the session bridge. The command palette can therefore read synchronously
+ * while CLI `pane.last` and restored sessions share the same focus truth.
  */
 
 export interface FocusedPaneStore {

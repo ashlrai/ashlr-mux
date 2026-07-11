@@ -1408,6 +1408,68 @@ pub enum PaneSwapError {
     BothPanesNeedSurface,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneLastResult {
+    pub pane_id: String,
+    pub surface_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneLastError {
+    NoFocusedPane,
+    NoAlternatePane,
+}
+
+/// Resolve canonical `pane.last`: validate the focused pane, then choose the
+/// first pane in layout order whose identity differs from it.
+pub fn focus_alternate_pane(
+    workspace: &SessionWorkspaceSnapshot,
+    focused_pane_id: Option<&str>,
+) -> Result<PaneLastResult, PaneLastError> {
+    fn first_other<'a>(
+        layout: &'a Layout,
+        focused_pane_id: &str,
+    ) -> Option<&'a SessionPaneLayoutSnapshot> {
+        match layout {
+            Layout::Pane(pane) => pane
+                .pane_id
+                .as_deref()
+                .is_some_and(|id| id != focused_pane_id)
+                .then_some(pane),
+            Layout::Split(split) => first_other(&split.first, focused_pane_id)
+                .or_else(|| first_other(&split.second, focused_pane_id)),
+        }
+    }
+    let focused_pane_id = focused_pane_id.ok_or(PaneLastError::NoFocusedPane)?;
+    let layout = workspace
+        .layout
+        .as_ref()
+        .ok_or(PaneLastError::NoFocusedPane)?;
+    pane_by_id(layout, focused_pane_id).ok_or(PaneLastError::NoFocusedPane)?;
+    let target = first_other(layout, focused_pane_id).ok_or(PaneLastError::NoAlternatePane)?;
+    let pane_id = target
+        .pane_id
+        .clone()
+        .ok_or(PaneLastError::NoAlternatePane)?;
+    Ok(PaneLastResult {
+        pane_id,
+        surface_id: target
+            .selected_panel_id
+            .clone()
+            .filter(|id| target.panel_ids.contains(id))
+            .or_else(|| target.panel_ids.first().cloned()),
+    })
+}
+
+pub fn pane_id_containing_surface<'a>(
+    workspace: &'a SessionWorkspaceSnapshot,
+    panel_id: &str,
+) -> Option<&'a str> {
+    pane_containing_panel(workspace.layout.as_ref()?, panel_id)?
+        .pane_id
+        .as_deref()
+}
+
 fn remove_surface_from_pane(layout: &mut Layout, pane_id: &str, panel_id: &str) -> bool {
     let Some(pane) = pane_by_id_mut(layout, pane_id) else {
         return false;
@@ -1890,6 +1952,7 @@ pub fn fresh_terminal_workspace(panel_id: &str) -> SessionWorkspaceSnapshot {
     SessionWorkspaceSnapshot {
         process_title: "Terminal".to_string(),
         layout: Some(single_pane(panel_id)),
+        focused_panel_id: Some(panel_id.to_string()),
         ..Default::default()
     }
 }
@@ -5868,6 +5931,59 @@ mod tests {
             ["a"]
         );
         assert_eq!(tabs.selected_workspace_index, Some(1));
+    }
+
+    #[test]
+    fn focus_alternate_pane_selects_first_pane_different_from_focus() {
+        let mut first = pane("a");
+        let Layout::Pane(first_pane) = &mut first else {
+            unreachable!();
+        };
+        first_pane.pane_id = Some("pane-a".into());
+        let mut second = pane("b");
+        let Layout::Pane(second_pane) = &mut second else {
+            unreachable!();
+        };
+        second_pane.pane_id = Some("pane-b".into());
+        let mut workspace = fresh_terminal_workspace("unused");
+        workspace.layout = Some(split(
+            SessionSplitOrientation::Horizontal,
+            0.5,
+            first,
+            second,
+        ));
+
+        assert_eq!(
+            focus_alternate_pane(&workspace, Some("pane-a")),
+            Ok(PaneLastResult {
+                pane_id: "pane-b".into(),
+                surface_id: Some("b".into()),
+            })
+        );
+        assert_eq!(
+            focus_alternate_pane(&workspace, Some("pane-b")),
+            Ok(PaneLastResult {
+                pane_id: "pane-a".into(),
+                surface_id: Some("a".into()),
+            })
+        );
+        assert_eq!(
+            focus_alternate_pane(&workspace, None),
+            Err(PaneLastError::NoFocusedPane)
+        );
+    }
+
+    #[test]
+    fn focus_alternate_pane_rejects_single_pane() {
+        let mut workspace = fresh_terminal_workspace("a");
+        let Layout::Pane(pane) = workspace.layout.as_mut().unwrap() else {
+            unreachable!();
+        };
+        pane.pane_id = Some("pane-a".into());
+        assert_eq!(
+            focus_alternate_pane(&workspace, Some("pane-a")),
+            Err(PaneLastError::NoAlternatePane)
+        );
     }
 
     #[test]

@@ -1126,10 +1126,29 @@ fn apply_select_workspace_surface(
         return false;
     }
     let selected_changed = session_ops::select_panel(layout, panel_id);
+    let focus_changed = tab_manager.workspaces[index].focused_panel_id.as_deref() != Some(panel_id);
+    tab_manager.workspaces[index].focused_panel_id = Some(panel_id.to_string());
     let index_i64 = index as i64;
     let workspace_changed = tab_manager.selected_workspace_index != Some(index_i64);
     tab_manager.selected_workspace_index = Some(index_i64);
-    selected_changed || workspace_changed
+    selected_changed || workspace_changed || focus_changed
+}
+
+fn apply_focus_panel(snapshot: &mut AppSessionSnapshot, panel_id: &str) -> bool {
+    for window in &mut snapshot.windows {
+        for workspace in &mut window.tab_manager.workspaces {
+            if workspace
+                .layout
+                .as_ref()
+                .is_some_and(|layout| session_ops::contains_panel(layout, panel_id))
+            {
+                let changed = workspace.focused_panel_id.as_deref() != Some(panel_id);
+                workspace.focused_panel_id = Some(panel_id.to_string());
+                return changed;
+            }
+        }
+    }
+    false
 }
 
 /// Open `file_path` in the markdown surface of the pane holding `panel_id`.
@@ -3907,6 +3926,43 @@ pub(crate) fn break_pane_for_control(
     Ok((broken, snapshot))
 }
 
+#[derive(Debug)]
+pub(crate) enum PaneLastControlError {
+    WorkspaceNotFound,
+    Pane(session_ops::PaneLastError),
+}
+
+pub(crate) fn focus_last_pane_for_control(
+    app: &AppHandle,
+    state: &SessionState,
+    window_index: usize,
+    workspace_index: usize,
+) -> Result<(session_ops::PaneLastResult, AppSessionSnapshot), PaneLastControlError> {
+    let (focused, snapshot) = {
+        let mut guard = state
+            .snapshot
+            .lock()
+            .expect("session snapshot mutex poisoned");
+        let workspace = guard
+            .windows
+            .get_mut(window_index)
+            .and_then(|window| window.tab_manager.workspaces.get_mut(workspace_index))
+            .ok_or(PaneLastControlError::WorkspaceNotFound)?;
+        let focused_pane_id = workspace.focused_panel_id.as_deref().and_then(|panel_id| {
+            session_ops::pane_id_containing_surface(workspace, panel_id).map(str::to_string)
+        });
+        let focused = session_ops::focus_alternate_pane(workspace, focused_pane_id.as_deref())
+            .map_err(PaneLastControlError::Pane)?;
+        workspace.focused_panel_id = focused.surface_id.clone();
+        guard.windows[window_index]
+            .tab_manager
+            .selected_workspace_index = Some(workspace_index as i64);
+        (focused, guard.clone())
+    };
+    notify_session_changed(app, &snapshot);
+    Ok((focused, snapshot))
+}
+
 pub(crate) fn new_terminal_tab_for_control(
     app: &AppHandle,
     state: &SessionState,
@@ -5296,6 +5352,26 @@ pub fn session_select_workspace_surface(
     panel_id: String,
 ) -> AppSessionSnapshot {
     let (_, snapshot) = select_workspace_surface(&app, &state, &workspace_id, &panel_id);
+    snapshot
+}
+
+#[tauri::command]
+pub fn session_focus_panel(
+    app: AppHandle,
+    state: State<'_, SessionState>,
+    panel_id: String,
+) -> AppSessionSnapshot {
+    let (changed, snapshot) = {
+        let mut guard = state
+            .snapshot
+            .lock()
+            .expect("session snapshot mutex poisoned");
+        let changed = apply_focus_panel(&mut guard, &panel_id);
+        (changed, guard.clone())
+    };
+    if changed {
+        notify_session_changed(&app, &snapshot);
+    }
     snapshot
 }
 
@@ -6957,6 +7033,12 @@ mod tests {
             panic!("expected a pane");
         };
         assert_eq!(pane.selected_panel_id.as_deref(), Some("surface-3"));
+        assert_eq!(
+            snapshot.windows[0].tab_manager.workspaces[1]
+                .focused_panel_id
+                .as_deref(),
+            Some("surface-3")
+        );
 
         snapshot.windows[0].tab_manager.selected_workspace_index = Some(0);
         assert!(!apply_select_workspace_surface(
@@ -6964,6 +7046,37 @@ mod tests {
             &workspace_id,
             "missing",
         ));
+        assert_eq!(
+            snapshot.windows[0].tab_manager.selected_workspace_index,
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn apply_focus_panel_persists_focus_without_changing_selection() {
+        let mut snapshot = initial_snapshot("surface-1");
+        assert!(apply_split(
+            &mut snapshot,
+            "surface-1",
+            SessionSplitOrientation::Horizontal,
+            "surface-2",
+            false,
+        ));
+        assert_eq!(
+            snapshot.windows[0].tab_manager.workspaces[0]
+                .focused_panel_id
+                .as_deref(),
+            Some("surface-1")
+        );
+        assert!(!apply_focus_panel(&mut snapshot, "surface-1"));
+        assert!(apply_focus_panel(&mut snapshot, "surface-2"));
+        assert_eq!(
+            snapshot.windows[0].tab_manager.workspaces[0]
+                .focused_panel_id
+                .as_deref(),
+            Some("surface-2")
+        );
+        assert!(!apply_focus_panel(&mut snapshot, "missing"));
         assert_eq!(
             snapshot.windows[0].tab_manager.selected_workspace_index,
             Some(0)

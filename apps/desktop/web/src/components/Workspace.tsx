@@ -204,6 +204,7 @@ export function Workspace({
     setPanelUnread,
     setCanvasPaneFrame,
     applyCanvasAction,
+    focusPanel,
   } = useSession();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [flashTokens, setFlashTokens] = useState<Record<string, number>>({});
@@ -385,6 +386,20 @@ export function Workspace({
   const activePanelId = useFocusedPanelId(layout);
   const canvasSnapMetrics = canvasMetricsFromConfig(canvasConfig);
   const canvasSnappingEnabled = canvasConfig?.snappingEnabled ?? true;
+
+  useEffect(() => {
+    if (currentWorkspace?.focused_panel_id !== undefined) {
+      focusedPaneStore.focus(currentWorkspace.focused_panel_id);
+    }
+  }, [currentWorkspace?.focused_panel_id]);
+
+  const recordFocusedPanel = useCallback(
+    (panelId: string): void => {
+      focusedPaneStore.focus(panelId);
+      focusPanel(panelId);
+    },
+    [focusPanel],
+  );
 
   useEffect(() => {
     let disposed = false;
@@ -837,8 +852,8 @@ export function Workspace({
             // focus landing inside a pane marks it focused. This is the
             // canonical pane tap gesture + AppKit first-responder sync
             // (WorkspaceContentView.swift:215-217 / 231-238).
-            onPointerDownCapture={() => focusedPaneStore.focus(panelId)}
-            onFocusCapture={() => focusedPaneStore.focus(panelId)}
+            onPointerDownCapture={() => recordFocusedPanel(panelId)}
+            onFocusCapture={() => recordFocusedPanel(panelId)}
             style={{
               ...(isCanvasLayout &&
               canvasPaneFrame !== undefined &&

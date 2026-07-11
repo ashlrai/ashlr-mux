@@ -38,6 +38,7 @@ let currentUnreadPanelIds = new Set<string>();
 let currentLayoutMode: string | undefined;
 let currentCanvasPanes: SessionCanvasPaneSnapshot[] | undefined;
 const openBrowserUrlCalls: Array<[string, string | undefined]> = [];
+const focusPanelCalls: string[] = [];
 function workspacesForLayout(
   layout: Layout | null,
 ): readonly SessionWorkspaceSnapshot[] {
@@ -68,6 +69,7 @@ mock.module("../hooks/useSession", () => ({
     selectedWorkspaceIndex: 0,
     selectWorkspace: () => {},
     selectWorkspaceSurface: () => {},
+    focusPanel: (panelId: string) => focusPanelCalls.push(panelId),
     newWorkspace: () => {},
     newTerminalTab: () => {},
     closeWorkspace: () => {},
@@ -503,6 +505,7 @@ describe("Workspace focused-pane tracking", () => {
     paneWrapperProps.length = 0;
     terminalSurfaceProps.length = 0;
     openBrowserUrlCalls.length = 0;
+    focusPanelCalls.length = 0;
   });
 
   test("pointer-down (capture) on a pane wrapper focuses that pane", () => {
@@ -511,12 +514,14 @@ describe("Workspace focused-pane tracking", () => {
     expect(paneWrapperProps.length).toBe(2);
     (paneWrapperProps[1]?.onPointerDownCapture as () => void)();
     expect(focusedPaneStore.get()).toBe("b");
+    expect(focusPanelCalls).toEqual(["b"]);
   });
 
   test("focus (capture) on a pane wrapper focuses that pane", () => {
     render(split("horizontal", 0.5, pane(undefined, "a"), pane(undefined, "b")));
     (paneWrapperProps[0]?.onFocusCapture as () => void)();
     expect(focusedPaneStore.get()).toBe("a");
+    expect(focusPanelCalls).toEqual(["a"]);
   });
 
   test("focus restoration activates only the visible focused terminal", () => {

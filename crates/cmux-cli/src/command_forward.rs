@@ -293,6 +293,10 @@ pub fn control_command_for(
         "swap-pane" => Some(ControlCommand::new("pane.swap", swap_pane_params(args)?)),
         "break-pane" => Some(ControlCommand::new("pane.break", break_pane_params(args)?)),
         "join-pane" => Some(ControlCommand::new("pane.join", join_pane_params(args)?)),
+        "last-pane" => Some(ControlCommand::new(
+            "pane.last",
+            workspace_window_scope_params(args)?,
+        )),
         "reorder-surface" => Some(ControlCommand::new(
             "surface.reorder",
             canonical_surface_reorder_params(args)?,
@@ -1490,6 +1494,14 @@ fn pane_transfer_params(
         Some(_) => return Err(CliError::new("--focus must be true|false")),
     };
     params.insert("focus".to_string(), serde_json::json!(focus));
+    Ok(serde_json::Value::Object(params))
+}
+
+fn workspace_window_scope_params(args: &[String]) -> Result<serde_json::Value, CliError> {
+    let parsed = ParsedArgs::parse(args)?;
+    let mut params = serde_json::Map::new();
+    apply_workspace_scope_selector(&parsed, &mut params);
+    apply_window_scope_selector(&parsed, &mut params);
     Ok(serde_json::Value::Object(params))
 }
 
@@ -4969,6 +4981,19 @@ mod tests {
                 .unwrap_err()
                 .message,
             "join-pane requires --target-pane"
+        );
+    }
+
+    #[test]
+    fn maps_canonical_last_pane_command() {
+        let last = mapped("last-pane", &["--workspace", "2", "--window", "window:1"]);
+        assert_eq!(last.method, "pane.last");
+        assert_eq!(
+            last.params,
+            serde_json::json!({
+                "workspace_ref": "workspace:2",
+                "window_ref": "window:1",
+            })
         );
     }
 

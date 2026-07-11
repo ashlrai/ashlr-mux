@@ -41,7 +41,12 @@ initial_terminal_environment?: { [key in string]?: string }, layout: SessionWork
  * The panel id currently zoomed to fill the workspace split area, if any.
  * Omitted when no pane zoom is active.
  */
-zoomed_panel_id?: string, panel_titles?: Array<SessionPanelTitleSnapshot>, panel_pins?: Array<SessionPanelPinSnapshot>, panel_unreads?: Array<SessionPanelUnreadSnapshot>, restorable_agent_snapshots?: Array<SessionPanelRestorableAgentSnapshot>,
+zoomed_panel_id?: string,
+/**
+ * The panel whose pane currently owns keyboard focus. Canonical persists
+ * this independently from each pane's selected tab.
+ */
+focused_panel_id?: string, panel_titles?: Array<SessionPanelTitleSnapshot>, panel_pins?: Array<SessionPanelPinSnapshot>, panel_unreads?: Array<SessionPanelUnreadSnapshot>, restorable_agent_snapshots?: Array<SessionPanelRestorableAgentSnapshot>,
 /**
  * Workspace-level git branch fallback used only when no panel reports a
  * branch. Mirrors canonical `Workspace.gitBranch` as consumed by the
