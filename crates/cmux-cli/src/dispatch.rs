@@ -185,6 +185,9 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
         "close-workspaces" => Some(
             "Usage:\n  cmux close-workspaces WORKSPACE...\n\nCloses one or more workspaces by workspace:N ref or workspace id. Bare numbers are normalized to workspace:N refs.",
         ),
+        "reorder-workspace" => Some(
+            "Usage:\n  cmux reorder-workspace [--workspace <id|ref|index> | <id|ref|index>] [flags]\n\nReorders a workspace within its window.\n\nFlags:\n  --index <n>                  Place at this index\n  --before <id|ref|index>      Place before this workspace\n  --before-workspace <handle>  Alias for --before\n  --after <id|ref|index>       Place after this workspace\n  --after-workspace <handle>   Alias for --after\n  --window <id|ref|index>      Window context\n  --dry-run                    Print the resolved final index without applying",
+        ),
         "select-workspace" => Some(
             "Usage:\n  cmux select-workspace WORKSPACE\n\nSelects a workspace by workspace:N ref or workspace id. Bare numbers are normalized to workspace:N refs.",
         ),
@@ -614,6 +617,7 @@ mod tests {
             "notify",
             "reload-config",
             "refresh-surfaces",
+            "reorder-workspace",
             "right-sidebar",
             "rename-window",
             "reopen-closed-browser-tab",

@@ -985,8 +985,59 @@ fn format_control_result(method: &str, result: &serde_json::Value) -> String {
         "workspace.list_meta_blocks" => format_metadata_blocks(result),
         "workspace.list_log" => format_log_entries(result),
         "workspace.sidebar_state" => format_sidebar_state(result),
+        "workspace.reorder" => format_workspace_reorder(result),
         _ => serde_json::to_string(result).unwrap_or_default(),
     }
+}
+
+fn format_workspace_reorder(result: &serde_json::Value) -> String {
+    if result.get("dry_run").and_then(serde_json::Value::as_bool) == Some(true) {
+        let plan = result.get("plan").and_then(serde_json::Value::as_array);
+        let items: Vec<&serde_json::Value> = plan
+            .map(|items| items.iter().collect())
+            .unwrap_or_else(|| vec![result]);
+        return items
+            .into_iter()
+            .map(|item| {
+                format!(
+                    "OK plan workspace={} window={} index={}",
+                    control_handle(item, "workspace"),
+                    control_handle(item, "window"),
+                    control_index(item),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+    format!(
+        "OK workspace={} window={} index={}",
+        control_handle(result, "workspace"),
+        control_handle(result, "window"),
+        control_index(result),
+    )
+}
+
+fn control_handle<'a>(result: &'a serde_json::Value, kind: &str) -> &'a str {
+    result
+        .get(format!("{kind}_ref"))
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            result
+                .get(format!("{kind}_id"))
+                .and_then(serde_json::Value::as_str)
+        })
+        .unwrap_or("unknown")
+}
+
+fn control_index(result: &serde_json::Value) -> String {
+    result
+        .get("to_index")
+        .or_else(|| result.get("index"))
+        .map(|value| match value {
+            serde_json::Value::String(value) => value.clone(),
+            value => value.to_string(),
+        })
+        .unwrap_or_else(|| "?".to_string())
 }
 
 fn format_display_entries(result: &serde_json::Value) -> String {
@@ -1168,6 +1219,43 @@ mod control_result_tests {
             "OK"
         );
         assert_eq!(format_control_result("browser.reload", &result), "OK");
+    }
+
+    #[test]
+    fn reorder_workspace_keeps_canonical_plain_output() {
+        let result = serde_json::json!({
+            "workspace_id": "ws-2",
+            "workspace_ref": "workspace:1",
+            "window_id": "win-1",
+            "window_ref": "window:1",
+            "index": 0,
+            "dry_run": false,
+            "plan": [{
+                "workspace_id": "ws-2",
+                "workspace_ref": "workspace:1",
+                "window_id": "win-1",
+                "window_ref": "window:1",
+                "from_index": 1,
+                "to_index": 0,
+            }],
+        });
+        assert_eq!(
+            format_control_result("workspace.reorder", &result),
+            "OK workspace=workspace:1 window=window:1 index=0"
+        );
+
+        let dry_run = serde_json::json!({
+            "dry_run": true,
+            "plan": [{
+                "workspace_ref": "workspace:1",
+                "window_ref": "window:1",
+                "to_index": 0,
+            }],
+        });
+        assert_eq!(
+            format_control_result("workspace.reorder", &dry_run),
+            "OK plan workspace=workspace:1 window=window:1 index=0"
+        );
     }
 
     #[test]

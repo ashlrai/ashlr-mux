@@ -13,6 +13,7 @@ use cmux_core::session::{
     SessionPullRequestStatusSnapshot, SessionSplitOrientation, SessionWorkspaceLayoutSnapshot,
     SessionWorkspaceSnapshot,
 };
+use cmux_core::session_ops;
 use cmux_ipc::{ControlCallResult, ControlRequest, ControlStream, JsonValue};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -3300,22 +3301,85 @@ fn workspace_reorder(
     params: &serde_json::Map<String, Value>,
 ) -> ControlCallResult {
     let current = snapshot(app);
+    if !workspace_reorder_window_matches(&current, params) {
+        return ControlCallResult::Err {
+            code: "unavailable".to_string(),
+            message: "TabManager not available".to_string(),
+            data: None,
+        };
+    }
     let Some(index) = workspace_index_from_params(&current, params) else {
         return invalid_params("Missing or invalid workspace selector");
     };
-    let Some(to_index) = workspace_reorder_destination_index(&current, params, index) else {
-        return invalid_params("Missing or invalid destination workspace selector");
+    let Some(workspace_id) = current
+        .windows
+        .first()
+        .and_then(|window| window.tab_manager.workspaces.get(index))
+        .and_then(|workspace| workspace.workspace_id.clone())
+    else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let Some(requested_index) = workspace_reorder_destination_index(&current, params, index) else {
+        return invalid_params(
+            "Specify exactly one target: index, before_workspace_id, or after_workspace_id",
+        );
     };
     let uses_top_level_rows =
         bool_param(params, &["uses_top_level_rows", "top_level_rows"]).unwrap_or(false);
-    let state = app.state::<SessionState>();
-    workspace_current(&reorder_workspaces_for_control(
-        app,
-        &state,
-        index as i64,
-        to_index,
-        uses_top_level_rows,
-    ))
+    let mut planned = current.clone();
+    if let Some(window) = planned.windows.first_mut() {
+        session_ops::reorder_workspaces_with_mode(
+            &mut window.tab_manager,
+            index as i64,
+            requested_index,
+            uses_top_level_rows,
+        );
+    }
+    let Some(to_index) = workspace_index_for_id(&planned, &workspace_id) else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    let dry_run = bool_param(params, &["dry_run"]).unwrap_or(false);
+    let result = if dry_run {
+        planned
+    } else {
+        let state = app.state::<SessionState>();
+        reorder_workspaces_for_control(
+            app,
+            &state,
+            index as i64,
+            requested_index,
+            uses_top_level_rows,
+        )
+    };
+    let window = result.windows.first();
+    let window_id = window.and_then(|window| window.window_id.clone());
+    let window_ref = window_id.as_ref().map(|_| "window:1");
+    let workspace_ref = workspace_ref(to_index);
+    let plan = json!({
+        "workspace_id": workspace_id,
+        "workspace_ref": workspace_ref,
+        "window_id": window_id,
+        "window_ref": window_ref,
+        "from_index": index,
+        "to_index": to_index,
+    });
+    let events = if !dry_run && index != to_index {
+        vec![plan.clone()]
+    } else {
+        Vec::new()
+    };
+    ok(json!({
+        "workspace_id": workspace_id,
+        "workspace_ref": workspace_ref,
+        "window_id": window_id,
+        "window_ref": window_ref,
+        "from_index": index,
+        "to_index": to_index,
+        "index": to_index,
+        "dry_run": dry_run,
+        "plan": [plan],
+        "events": events,
+    }))
 }
 
 fn workspace_select_relative(app: &AppHandle, delta: i64) -> ControlCallResult {
@@ -9287,6 +9351,7 @@ fn workspace_reorder_destination_index(
         return None;
     }
 
+    let index = i64_param(params, &["index"]);
     let before = workspace_index_from_selector_keys(
         snapshot,
         params,
@@ -9299,8 +9364,9 @@ fn workspace_reorder_destination_index(
         &["after_workspace_ref", "after_ref"],
         &["after_workspace_id", "after_workspace"],
     );
-    match (before, after) {
-        (Some(target), None) => {
+    match (index, before, after) {
+        (Some(index), None, None) => Some(index),
+        (None, Some(target), None) => {
             let destination = if from_index < target {
                 target.saturating_sub(1)
             } else {
@@ -9308,7 +9374,7 @@ fn workspace_reorder_destination_index(
             };
             Some(destination as i64)
         }
-        (None, Some(target)) => {
+        (None, None, Some(target)) => {
             let destination = if from_index < target {
                 target
             } else {
@@ -9318,6 +9384,22 @@ fn workspace_reorder_destination_index(
         }
         _ => None,
     }
+}
+
+fn workspace_reorder_window_matches(
+    snapshot: &AppSessionSnapshot,
+    params: &serde_json::Map<String, Value>,
+) -> bool {
+    let Some(window) = snapshot.windows.first() else {
+        return false;
+    };
+    let reference_matches = string_param(params, &["window_ref"])
+        .map(|reference| one_based_ref_index(&reference, "window") == Some(0))
+        .unwrap_or(true);
+    let id_matches = string_param(params, &["window_id"])
+        .map(|id| window.window_id.as_deref() == Some(id.as_str()))
+        .unwrap_or(true);
+    reference_matches && id_matches
 }
 
 fn workspace_index_from_selector_keys(
@@ -12670,7 +12752,7 @@ mod tests {
     }
 
     #[test]
-    fn workspace_reorder_destination_uses_refs_not_indices() {
+    fn workspace_reorder_destination_accepts_exactly_one_canonical_target() {
         let mut snapshot = test_snapshot();
         let mut second = snapshot.windows[0].tab_manager.workspaces[0].clone();
         second.workspace_id = Some("workspace-2".to_string());
@@ -12726,11 +12808,47 @@ mod tests {
         assert_eq!(
             workspace_reorder_destination_index(
                 &snapshot,
+                &serde_json::Map::from_iter([("index".to_string(), json!(0))]),
+                2,
+            ),
+            Some(0)
+        );
+        assert_eq!(
+            workspace_reorder_destination_index(
+                &snapshot,
+                &serde_json::Map::from_iter([
+                    ("index".to_string(), json!(0)),
+                    ("before_workspace_ref".to_string(), json!("workspace:2"),),
+                ]),
+                2,
+            ),
+            None
+        );
+        assert_eq!(
+            workspace_reorder_destination_index(
+                &snapshot,
                 &serde_json::Map::from_iter([("to_index".to_string(), json!(0))]),
                 2,
             ),
             None
         );
+    }
+
+    #[test]
+    fn workspace_reorder_window_scope_cannot_fall_through_to_first_window() {
+        let snapshot = test_snapshot();
+        assert!(workspace_reorder_window_matches(
+            &snapshot,
+            &serde_json::Map::new()
+        ));
+        assert!(workspace_reorder_window_matches(
+            &snapshot,
+            &serde_json::Map::from_iter([("window_ref".to_string(), json!("window:1"),)])
+        ));
+        assert!(!workspace_reorder_window_matches(
+            &snapshot,
+            &serde_json::Map::from_iter([("window_ref".to_string(), json!("window:2"),)])
+        ));
     }
 
     #[test]

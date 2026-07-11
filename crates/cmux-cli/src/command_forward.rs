@@ -266,6 +266,10 @@ pub fn control_command_for(
             "workspace.close_many",
             workspace_multi_selector_params(args)?,
         )),
+        "reorder-workspace" => Some(ControlCommand::new(
+            "workspace.reorder",
+            canonical_workspace_reorder_params(args)?,
+        )),
         "select-workspace" => Some(ControlCommand::new(
             "workspace.select",
             workspace_selector_params(args)?,
@@ -1184,6 +1188,35 @@ fn workspace_reorder_params(args: &[String]) -> Result<serde_json::Value, CliErr
     }
     if parsed.has_flag("--top-level-rows") {
         params.insert("uses_top_level_rows".to_string(), serde_json::json!(true));
+    }
+    Ok(serde_json::Value::Object(params))
+}
+
+fn canonical_workspace_reorder_params(args: &[String]) -> Result<serde_json::Value, CliError> {
+    let parsed = ParsedArgs::parse(args)?;
+    let workspace = parsed
+        .value(&["--workspace"])
+        .cloned()
+        .or_else(|| parsed.positionals.first().cloned())
+        .ok_or_else(|| CliError::new("reorder-workspace requires --workspace <id|ref|index>"))?;
+    let mut params = serde_json::Map::new();
+    apply_workspace_target_selector(&workspace, "workspace", &mut params);
+
+    if let Some(before) = parsed.value(&["--before", "--before-workspace"]) {
+        apply_workspace_target_selector(before, "before_workspace", &mut params);
+    }
+    if let Some(after) = parsed.value(&["--after", "--after-workspace"]) {
+        apply_workspace_target_selector(after, "after_workspace", &mut params);
+    }
+    if let Some(index) = parsed.value(&["--index"]) {
+        let index = index
+            .parse::<i64>()
+            .map_err(|_| CliError::new("--index must be an integer"))?;
+        params.insert("index".to_string(), serde_json::json!(index));
+    }
+    apply_window_scope_selector(&parsed, &mut params);
+    if parsed.has_flag("--dry-run") {
+        params.insert("dry_run".to_string(), serde_json::json!(true));
     }
     Ok(serde_json::Value::Object(params))
 }
@@ -4271,6 +4304,43 @@ mod tests {
                 .unwrap_err()
                 .message,
             "workspace reorder requires a before/after workspace ref or id; --to-index is not supported"
+        );
+    }
+
+    #[test]
+    fn maps_canonical_reorder_workspace_command() {
+        let reorder = mapped(
+            "reorder-workspace",
+            &[
+                "--workspace",
+                "workspace:3",
+                "--index",
+                "0",
+                "--window",
+                "window:1",
+                "--dry-run",
+            ],
+        );
+        assert_eq!(reorder.method, "workspace.reorder");
+        assert_eq!(
+            reorder.params,
+            serde_json::json!({
+                "workspace_ref": "workspace:3",
+                "index": 0,
+                "window_ref": "window:1",
+                "dry_run": true,
+            })
+        );
+        assert_eq!(
+            mapped(
+                "reorder-workspace",
+                &["ws-2", "--after-workspace", "workspace:1"]
+            )
+            .params,
+            serde_json::json!({
+                "workspace_id": "ws-2",
+                "after_workspace_ref": "workspace:1",
+            })
         );
     }
 
