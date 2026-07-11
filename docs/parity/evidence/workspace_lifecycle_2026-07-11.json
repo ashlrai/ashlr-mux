@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "batch": "workspace-lifecycle",
+  "canonical_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+  "implementation_commit": "978b238ee13f7cffbd532e298e87aa6149a86f56",
+  "independent_verification": {
+    "commit": "1b92e8f49eeb14312d3eaa10e2106d6b2282b8fc",
+    "result": "pass_locally_testable_semantics",
+    "verifier_attempts": 3,
+    "failed_attempts_caught": 2
+  },
+  "entries": [
+    "v2:workspace.close",
+    "v2:workspace.create",
+    "v2:workspace.current",
+    "v2:workspace.list",
+    "v2:workspace.rename",
+    "v2:workspace.select",
+    "cli:close-workspace",
+    "cli:new-workspace",
+    "cli:current-workspace",
+    "cli:list-workspaces",
+    "cli:rename-workspace",
+    "cli:select-workspace"
+  ],
+  "matrix_status": "implemented_unverified",
+  "matrix_promotions": 0,
+  "release_gate": {
+    "result": "pass",
+    "core_tests": 290,
+    "cli_library_tests": 219,
+    "web_and_webview_tests": 1337,
+    "included": [
+      "cmux-core, cmux-config, cmux-cli, and cmux-golden test suites",
+      "desktop all-target check, test-binary link, and build",
+      "strict cmux-core/cmux-config/cmux-cli Clippy",
+      "desktop web tests, typecheck, and production build",
+      "core-types drift and desktop contract checks",
+      "all parity extractor, source, schema, determinism, and harness tests",
+      "cargo fmt and git diff checks"
+    ]
+  },
+  "runtime_limitations": [
+    "Desktop test execution is blocked before the harness by STATUS_ENTRYPOINT_NOT_FOUND on this host.",
+    "No live canonical-macOS versus Windows differential run has yet covered focus, event ordering, PTY-observed cwd/environment/command, restart persistence, multiwindow selection, or remote tmux transport.",
+    "Therefore no entry is verified or platform_equivalent."
+  ],
+  "red_green_commits": [
+    ["5992fa86f", "a3c68d2ca"],
+    ["117c6dd73", "3b0dd3b20"],
+    ["03142a44c", "9b0c440ba"],
+    ["ab2435816", "7eaad1f3a"],
+    ["6d5f60d06", "1b92e8f49"]
+  ],
+  "release_gate_corrections": [
+    "16effbacd: update session golden coverage for the persisted selected workspace identity",
+    "978b238ee: document the persisted layout enum's scoped large-variant lint exception"
+  ]
+}
