@@ -3709,6 +3709,27 @@ pub(crate) fn select_workspace_for_control(
     snapshot
 }
 
+pub(crate) fn select_workspace_in_window_for_control(
+    app: &AppHandle,
+    state: &SessionState,
+    window_index: usize,
+    workspace_index: usize,
+) -> Option<AppSessionSnapshot> {
+    let (changed, snapshot) = {
+        let mut guard = state
+            .snapshot
+            .lock()
+            .expect("session snapshot mutex poisoned");
+        let tabs = &mut guard.windows.get_mut(window_index)?.tab_manager;
+        let changed = session_ops::select_workspace(tabs, workspace_index as i64);
+        (changed, guard.clone())
+    };
+    if changed {
+        notify_session_changed(app, &snapshot);
+    }
+    Some(snapshot)
+}
+
 pub(crate) fn equalize_dividers_for_control(
     app: &AppHandle,
     state: &SessionState,
@@ -3754,6 +3775,57 @@ pub(crate) fn new_workspace_for_control(
     };
     notify_session_changed(app, &snapshot);
     snapshot
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn new_workspace_in_window_for_control(
+    app: &AppHandle,
+    state: &SessionState,
+    window_index: usize,
+    current_directory: Option<&str>,
+    initial_terminal_command: Option<&str>,
+    initial_terminal_environment: Option<BTreeMap<String, String>>,
+    title: Option<&str>,
+    description: Option<&str>,
+    workspace_environment: Option<BTreeMap<String, String>>,
+    group_id: Option<&str>,
+    focus: bool,
+) -> Option<(AppSessionSnapshot, usize)> {
+    let new_panel_id = format!(
+        "surface-{}",
+        state.next_panel.fetch_add(1, Ordering::Relaxed)
+    );
+    let (snapshot, created_index) = {
+        let mut guard = state
+            .snapshot
+            .lock()
+            .expect("session snapshot mutex poisoned");
+        let tabs = &mut guard.windows.get_mut(window_index)?.tab_manager;
+        let previous_selected = tabs.selected_workspace_index;
+        session_ops::new_workspace(tabs, &new_panel_id);
+        let created_index = usize::try_from(tabs.selected_workspace_index?).ok()?;
+        let workspace = tabs.workspaces.get_mut(created_index)?;
+        workspace.current_directory = current_directory.map(str::to_owned);
+        workspace.initial_terminal_command = initial_terminal_command.map(str::to_owned);
+        let mut effective_environment = workspace_environment.clone().unwrap_or_default();
+        effective_environment.extend(initial_terminal_environment.unwrap_or_default());
+        workspace.initial_terminal_environment =
+            (!effective_environment.is_empty()).then_some(effective_environment);
+        workspace.custom_title = title.map(str::to_owned);
+        workspace.custom_title_source = title.map(|_| "user".to_string());
+        workspace.custom_description = description.map(str::to_owned);
+        workspace.group_id = group_id.map(str::to_owned);
+        // The persistent workspace environment shares the snapshot's terminal
+        // environment carrier until the dedicated Windows shell model lands.
+        if !focus {
+            tabs.selected_workspace_index = previous_selected;
+        }
+        ensure_workspace_ids(&mut guard);
+        ensure_pane_ids(&mut guard);
+        (guard.clone(), created_index)
+    };
+    notify_session_changed(app, &snapshot);
+    Some((snapshot, created_index))
 }
 
 pub(crate) fn new_browser_workspace_for_control(
@@ -3807,18 +3879,29 @@ pub(crate) fn reopen_closed_browser_tab_for_control(
     snapshot
 }
 
-pub(crate) fn close_workspace_for_control(
+pub(crate) fn close_workspace_in_window_for_control(
     app: &AppHandle,
     state: &SessionState,
-    index: i64,
-) -> AppSessionSnapshot {
+    window_index: usize,
+    workspace_index: usize,
+) -> Option<(AppSessionSnapshot, bool)> {
     let (closed_browser_tabs, changed, snapshot) = {
         let mut guard = state
             .snapshot
             .lock()
             .expect("session snapshot mutex poisoned");
-        let closed_browser_tabs = closed_browser_tabs_for_workspace_index(&guard, index);
-        let changed = apply_close_workspace(&mut guard, index);
+        let closed_browser_tabs = guard
+            .windows
+            .get(window_index)?
+            .tab_manager
+            .workspaces
+            .get(workspace_index)
+            .map(closed_browser_tabs_for_workspace)
+            .unwrap_or_default();
+        let changed = session_ops::close_workspace(
+            &mut guard.windows.get_mut(window_index)?.tab_manager,
+            workspace_index as i64,
+        );
         (closed_browser_tabs, changed, guard.clone())
     };
     if changed && !closed_browser_tabs.is_empty() {
@@ -3828,8 +3911,10 @@ pub(crate) fn close_workspace_for_control(
             .expect("closed browser history mutex poisoned");
         push_closed_browser_tabs(&mut history, closed_browser_tabs);
     }
-    notify_session_changed(app, &snapshot);
-    snapshot
+    if changed {
+        notify_session_changed(app, &snapshot);
+    }
+    Some((snapshot, changed))
 }
 
 pub(crate) fn close_workspaces_for_control(
@@ -3892,24 +3977,29 @@ pub(crate) fn close_workspaces_for_control(
     snapshot
 }
 
-pub(crate) fn rename_workspace_for_control(
+pub(crate) fn rename_workspace_in_window_for_control(
     app: &AppHandle,
     state: &SessionState,
-    index: i64,
+    window_index: usize,
+    workspace_index: usize,
     title: &str,
-) -> AppSessionSnapshot {
+) -> Option<AppSessionSnapshot> {
     let (changed, snapshot) = {
         let mut guard = state
             .snapshot
             .lock()
             .expect("session snapshot mutex poisoned");
-        let changed = apply_rename_workspace(&mut guard, index, title);
+        let changed = session_ops::rename_workspace(
+            &mut guard.windows.get_mut(window_index)?.tab_manager,
+            workspace_index as i64,
+            title,
+        );
         (changed, guard.clone())
     };
     if changed {
         notify_session_changed(app, &snapshot);
     }
-    snapshot
+    Some(snapshot)
 }
 
 pub(crate) fn split_panel_for_control(

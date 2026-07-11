@@ -36,37 +36,37 @@ use crate::session::{
     clear_workspace_sidebar_metadata_block_for_control,
     clear_workspace_sidebar_metadata_for_control, clear_workspace_sidebar_progress_for_control,
     clear_workspace_sidebar_status_for_control, close_panel_for_control,
-    close_workspace_for_control, close_workspaces_for_control,
+    close_workspace_in_window_for_control, close_workspaces_for_control,
     configure_workspace_remote_for_control, current_session_snapshot,
     equalize_dividers_for_control, focus_last_pane_for_control, focus_pane_for_control,
     move_panel_to_new_workspace_for_control, move_surface_for_control,
     move_workspace_to_window_for_control, new_browser_workspace_for_control,
-    new_terminal_tab_for_control, new_workspace_for_control, open_browser_url_in_panel,
+    new_terminal_tab_for_control, new_workspace_in_window_for_control, open_browser_url_in_panel,
     open_custom_sidebar_in_panel, open_diff_viewer_in_panel, open_file_in_panel,
     open_markdown_file_in_panel, reconnect_workspace_remote_for_control,
-    register_window_for_control, rename_workspace_for_control,
+    register_window_for_control, rename_workspace_in_window_for_control,
     reopen_closed_browser_tab_for_control, reorder_surface_for_control,
     reorder_workspaces_for_control, reorder_workspaces_many_for_control,
     reset_workspace_color_for_control, reset_workspace_sidebar_metadata_for_control,
     resize_pane_for_control, restore_previous_launch_for_control,
     select_adjacent_panel_for_control, select_last_workspace_for_control,
-    select_workspace_for_control, select_workspace_surface, set_browser_zoom_for_control,
-    set_group_collapsed_for_control, set_panel_listening_ports_for_control,
-    set_panel_pinned_for_control, set_panel_shell_activity_for_control,
-    set_panel_title_for_control, set_panel_tty_for_control, set_panel_unread_for_control,
-    set_surface_kind_for_control, set_workspace_agent_listening_ports_for_control,
-    set_workspace_agent_pid_for_control, set_workspace_description_for_control,
-    set_workspace_panel_pull_request_for_control, set_workspace_pinned_for_control,
-    set_workspace_sidebar_metadata_block_for_control, set_workspace_sidebar_metadata_for_control,
-    set_workspace_sidebar_progress_for_control, set_workspace_sidebar_status_for_control,
-    set_workspace_unread_for_control, show_browser_developer_tools_for_control,
-    split_browser_for_control, split_off_surface_for_control, split_panel_for_control,
-    start_direct_browser_proxy_for_control, swap_panes_for_control,
-    toggle_browser_developer_tools_for_control, toggle_browser_focus_mode_for_control,
-    toggle_browser_omnibar_for_control, toggle_split_zoom_for_control, PaneFocusControlError,
-    PaneLastControlError, PaneResizeControlError, PaneResizeControlIntent,
-    ReorderWorkspacesManyControlError, SessionState, WorkspaceLastControlError,
-    WorkspaceRemoteControlConfig,
+    select_workspace_for_control, select_workspace_in_window_for_control, select_workspace_surface,
+    set_browser_zoom_for_control, set_group_collapsed_for_control,
+    set_panel_listening_ports_for_control, set_panel_pinned_for_control,
+    set_panel_shell_activity_for_control, set_panel_title_for_control, set_panel_tty_for_control,
+    set_panel_unread_for_control, set_surface_kind_for_control,
+    set_workspace_agent_listening_ports_for_control, set_workspace_agent_pid_for_control,
+    set_workspace_description_for_control, set_workspace_panel_pull_request_for_control,
+    set_workspace_pinned_for_control, set_workspace_sidebar_metadata_block_for_control,
+    set_workspace_sidebar_metadata_for_control, set_workspace_sidebar_progress_for_control,
+    set_workspace_sidebar_status_for_control, set_workspace_unread_for_control,
+    show_browser_developer_tools_for_control, split_browser_for_control,
+    split_off_surface_for_control, split_panel_for_control, start_direct_browser_proxy_for_control,
+    swap_panes_for_control, toggle_browser_developer_tools_for_control,
+    toggle_browser_focus_mode_for_control, toggle_browser_omnibar_for_control,
+    toggle_split_zoom_for_control, PaneFocusControlError, PaneLastControlError,
+    PaneResizeControlError, PaneResizeControlIntent, ReorderWorkspacesManyControlError,
+    SessionState, WorkspaceLastControlError, WorkspaceRemoteControlConfig,
 };
 use crate::terminal::{
     scan_listening_ports_for_root_pid, scan_panel_listening_ports, terminal_clear_history_panel,
@@ -1095,7 +1095,7 @@ fn handle_control_request(app: &AppHandle, request: ControlRequest) -> ControlCa
         "sidebar.open" => sidebar_open(app, &request.params),
         "sidebar.reload" => sidebar_reload(app, &request.params),
         "sidebar.select" => sidebar_select(app, &request.params),
-        "workspace.list" => ok(workspace_list_payload(&snapshot(app))),
+        "workspace.list" => workspace_list_from_params(&snapshot(app), &request.params),
         "workspace.current" => workspace_current_from_params(&snapshot(app), &request.params),
         "workspace.create" => workspace_create(app, &request.params),
         "workspace.create_browser" | "browser.new_workspace" => {
@@ -2628,26 +2628,112 @@ fn event_timestamp() -> String {
 }
 
 fn workspace_create(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
-    let current_directory = string_param(params, &["current_directory", "cwd"]);
-    let initial_terminal_command = string_param(
-        params,
-        &["initial_terminal_command", "initialCommand", "command"],
-    );
-    let initial_terminal_input =
-        string_param(params, &["initial_terminal_input", "initialInput", "input"]);
-    let initial_terminal_environment = string_map_param(
-        params,
-        &["initial_terminal_environment", "environment", "env"],
-    );
+    let current = snapshot(app);
+    let Some(window_index) = workspace_routed_window_index(&current, params) else {
+        return ControlCallResult::Err {
+            code: "unavailable".to_string(),
+            message: "TabManager not available".to_string(),
+            data: None,
+        };
+    };
+    let current_directory = if let Some(value) = params.get("working_directory") {
+        value
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    } else {
+        match params.get("cwd") {
+            Some(Value::String(value)) => {
+                let value = value.trim();
+                (!value.is_empty()).then(|| value.to_owned())
+            }
+            Some(Value::Null) | None => None,
+            Some(_) => return invalid_params("cwd must be a string"),
+        }
+    };
+    let initial_command = string_param(params, &["initial_command"]);
+    let initial_environment = string_map_param(params, &["initial_env"]);
+    let workspace_environment = string_map_param(params, &["workspace_env"]);
+    let title = string_param(params, &["title"]);
+    let description = raw_string_param(params, &["description"]);
+    let group_id = string_param(params, &["group_id"]);
+    if params.contains_key("group_id") && group_id.is_none() {
+        return invalid_params("Missing or invalid group_id");
+    }
+    if let Some(group_id) = group_id.as_deref() {
+        let group_exists = current.windows[window_index]
+            .tab_manager
+            .workspace_groups
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .any(|group| group.id == group_id);
+        if !group_exists {
+            return ControlCallResult::Err {
+                code: "not_found".to_string(),
+                message: "Group not found".to_string(),
+                data: json!({"group_id": group_id}).try_into().ok(),
+            };
+        }
+    }
+    if params
+        .get("layout")
+        .is_some_and(|layout| !layout.is_object())
+    {
+        return invalid_params("layout must be a valid JSON object");
+    }
+    if params.contains_key("group_placement") || params.contains_key("placement") {
+        if string_param(params, &["group_id"]).is_none() {
+            return invalid_params("group_id is required for group placement");
+        }
+        let placement =
+            raw_string_param(params, &["group_placement", "placement"]).unwrap_or_default();
+        if !matches!(placement.as_str(), "afterCurrent" | "top" | "end") {
+            return ControlCallResult::Err {
+                code: "invalid_params".to_string(),
+                message: "Invalid group_placement".to_string(),
+                data: json!({"group_placement": placement}).try_into().ok(),
+            };
+        }
+    }
     let state = app.state::<SessionState>();
-    workspace_current(&new_workspace_for_control(
+    let Some((result, created_index)) = new_workspace_in_window_for_control(
         app,
         &state,
+        window_index,
         current_directory.as_deref(),
-        initial_terminal_command.as_deref(),
-        initial_terminal_input.as_deref(),
-        initial_terminal_environment,
-    ))
+        initial_command.as_deref(),
+        initial_environment,
+        title.as_deref(),
+        description.as_deref(),
+        workspace_environment,
+        group_id.as_deref(),
+        false,
+    ) else {
+        return ControlCallResult::Err {
+            code: "internal_error".to_string(),
+            message: "Failed to create workspace".to_string(),
+            data: None,
+        };
+    };
+    let window = &result.windows[window_index];
+    let workspace = &window.tab_manager.workspaces[created_index];
+    let surface_id = surfaces_for_workspace(workspace)
+        .first()
+        .and_then(|surface| surface.get("id"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    ok(json!({
+        "window_id": window.window_id,
+        "window_ref": window.window_id.as_ref().map(|_| window_ref(window_index)),
+        "workspace_id": workspace.workspace_id,
+        "workspace_ref": workspace_ref(created_index),
+        "group_id": workspace.group_id,
+        "group_ref": Value::Null,
+        "surface_id": surface_id,
+        "surface_ref": if surface_id.is_null() { Value::Null } else { json!(surface_ref(0)) },
+    }))
 }
 
 fn workspace_create_browser(
@@ -3297,13 +3383,44 @@ fn session_restore_previous_launch(app: &AppHandle) -> ControlCallResult {
 
 fn workspace_close(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
     let current = snapshot(app);
-    let Some(index) = workspace_index_from_close_params(&current, params) else {
-        return invalid_params(
-            "workspace.close requires an explicit workspace target (workspace_id or workspace_ref)",
-        );
+    let Some(window_index) = workspace_routed_window_index(&current, params) else {
+        return ControlCallResult::Err {
+            code: "unavailable".to_string(),
+            message: "TabManager not available".to_string(),
+            data: None,
+        };
     };
+    if raw_string_param(params, &["workspace_id"]).is_none() {
+        return invalid_params("Missing or invalid workspace_id");
+    }
+    let Some(index) = canonical_workspace_target_index(&current, window_index, params) else {
+        return workspace_not_found(params);
+    };
+    let window = &current.windows[window_index];
+    let workspace = &window.tab_manager.workspaces[index];
+    let workspace_id = workspace.workspace_id.clone().unwrap_or_default();
+    let identity = workspace_identity_payload(window, window_index, index, &workspace_id);
+    if workspace.is_pinned == Some(true) {
+        let mut data = identity;
+        data["pinned"] = json!(true);
+        return ControlCallResult::Err {
+            code: "protected".to_string(),
+            message: "Pinned workspaces can't be closed while pinned. Unpin the workspace first."
+                .to_string(),
+            data: data.try_into().ok(),
+        };
+    }
     let state = app.state::<SessionState>();
-    workspace_current(&close_workspace_for_control(app, &state, index as i64))
+    let Some((_snapshot, _changed)) =
+        close_workspace_in_window_for_control(app, &state, window_index, index)
+    else {
+        return ControlCallResult::Err {
+            code: "unavailable".to_string(),
+            message: "TabManager not available".to_string(),
+            data: None,
+        };
+    };
+    ok(identity)
 }
 
 fn workspace_close_many(
@@ -3319,29 +3436,113 @@ fn workspace_close_many(
 }
 
 fn workspace_rename(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
-    let Some(title) = raw_string_param(params, &["title", "name"]) else {
-        return invalid_params("Missing workspace title");
-    };
     let current = snapshot(app);
-    let Some(index) = workspace_index_from_params_or_selected(&current, params) else {
-        return invalid_params("Missing or invalid workspace selector");
+    let Some(window_index) = workspace_routed_window_index(&current, params) else {
+        return ControlCallResult::Err {
+            code: "unavailable".to_string(),
+            message: "TabManager not available".to_string(),
+            data: None,
+        };
     };
+    if raw_string_param(params, &["workspace_id"]).is_none() {
+        return invalid_params("Missing or invalid workspace_id");
+    }
+    let Some(title) = string_param(params, &["title"]) else {
+        return invalid_params("Missing or invalid title");
+    };
+    let Some(index) = canonical_workspace_target_index(&current, window_index, params) else {
+        return workspace_not_found(params);
+    };
+    let workspace_id = current.windows[window_index].tab_manager.workspaces[index]
+        .workspace_id
+        .clone()
+        .unwrap_or_default();
     let state = app.state::<SessionState>();
-    workspace_current(&rename_workspace_for_control(
-        app,
-        &state,
-        index as i64,
-        &title,
-    ))
+    let Some(result) =
+        rename_workspace_in_window_for_control(app, &state, window_index, index, &title)
+    else {
+        return ControlCallResult::Err {
+            code: "unavailable".to_string(),
+            message: "TabManager not available".to_string(),
+            data: None,
+        };
+    };
+    let mut payload = workspace_identity_payload(
+        &result.windows[window_index],
+        window_index,
+        index,
+        &workspace_id,
+    );
+    payload["title"] = json!(title);
+    ok(payload)
 }
 
 fn workspace_select(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
     let current = snapshot(app);
-    let Some(index) = workspace_index_from_params(&current, params) else {
-        return invalid_params("Missing or invalid workspace selector");
+    let Some(window_index) = workspace_routed_window_index(&current, params) else {
+        return ControlCallResult::Err {
+            code: "unavailable".to_string(),
+            message: "TabManager not available".to_string(),
+            data: None,
+        };
     };
+    if raw_string_param(params, &["workspace_id"]).is_none() {
+        return invalid_params("Missing or invalid workspace_id");
+    }
+    let Some(index) = canonical_workspace_target_index(&current, window_index, params) else {
+        return workspace_not_found(params);
+    };
+    let workspace_id = current.windows[window_index].tab_manager.workspaces[index]
+        .workspace_id
+        .clone()
+        .unwrap_or_default();
     let state = app.state::<SessionState>();
-    workspace_current(&select_workspace_for_control(app, &state, index as i64))
+    let Some(result) = select_workspace_in_window_for_control(app, &state, window_index, index)
+    else {
+        return ControlCallResult::Err {
+            code: "unavailable".to_string(),
+            message: "TabManager not available".to_string(),
+            data: None,
+        };
+    };
+    ok(workspace_identity_payload(
+        &result.windows[window_index],
+        window_index,
+        index,
+        &workspace_id,
+    ))
+}
+
+fn workspace_not_found(params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let workspace_id = raw_string_param(params, &["workspace_id"]).unwrap_or_default();
+    ControlCallResult::Err {
+        code: "not_found".to_string(),
+        message: "Workspace not found".to_string(),
+        data: json!({
+            "workspace_id": workspace_id,
+            "workspace_ref": if one_based_ref_index(&workspace_id, "workspace").is_some() {
+                Value::String(workspace_id)
+            } else {
+                Value::Null
+            },
+        })
+        .try_into()
+        .ok(),
+    }
+}
+
+fn workspace_identity_payload(
+    window: &cmux_core::session::SessionWindowSnapshot,
+    window_index: usize,
+    workspace_index: usize,
+    workspace_id: &str,
+) -> Value {
+    json!({
+        "window_id": window.window_id,
+        "window_ref": window.window_id.as_ref().map(|_| window_ref(window_index)),
+        "workspace_id": workspace_id,
+        "workspace_ref": workspace_ref(workspace_index),
+    })
 }
 
 fn workspace_id_for_window_move(
@@ -10294,27 +10495,54 @@ fn ok(value: Value) -> ControlCallResult {
     }
 }
 
+#[cfg(test)]
 fn workspace_list_payload(snapshot: &AppSessionSnapshot) -> Value {
     let Some(window) = snapshot.windows.first() else {
-        return json!({
-            "window_id": Value::Null,
-            "window_ref": Value::Null,
-            "workspaces": [],
-            "workspace_groups": [],
-        });
+        return Value::Null;
     };
     let selected = selected_workspace_index(snapshot);
     json!({
         "window_id": window.window_id,
         "window_ref": window.window_id.as_ref().map(|_| "window:1"),
+        "workspaces": window.tab_manager.workspaces.iter().enumerate()
+            .map(|(index, workspace)| workspace_summary(workspace, index, index == selected))
+            .collect::<Vec<_>>(),
+        "workspace_groups": workspace_group_summaries(
+            &window.tab_manager.workspaces,
+            &window.tab_manager.workspace_groups,
+        ),
+    })
+}
+
+fn workspace_list_from_params(
+    snapshot: &AppSessionSnapshot,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let Some(window_index) = workspace_routed_window_index(snapshot, params) else {
+        return ControlCallResult::Err {
+            code: "unavailable".to_string(),
+            message: "TabManager not available".to_string(),
+            data: None,
+        };
+    };
+    ok(workspace_list_payload_for_window(snapshot, window_index))
+}
+
+fn workspace_list_payload_for_window(snapshot: &AppSessionSnapshot, window_index: usize) -> Value {
+    let Some(window) = snapshot.windows.get(window_index) else {
+        return Value::Null;
+    };
+    let selected = selected_workspace_index_for_window(snapshot, window_index);
+    json!({
+        "window_id": window.window_id,
+        "window_ref": window.window_id.as_ref().map(|_| window_ref(window_index)),
         "workspaces": window
             .tab_manager
             .workspaces
             .iter()
             .enumerate()
-            .map(|(index, workspace)| workspace_summary(workspace, index, index == selected))
+            .map(|(index, workspace)| canonical_workspace_summary(workspace, index, Some(index) == selected))
             .collect::<Vec<_>>(),
-        "workspace_groups": workspace_group_summaries(&window.tab_manager.workspaces, &window.tab_manager.workspace_groups),
     })
 }
 
@@ -11590,14 +11818,21 @@ fn workspace_current_from_params(
     snapshot: &AppSessionSnapshot,
     params: &serde_json::Map<String, Value>,
 ) -> ControlCallResult {
-    let Some(window) = snapshot.windows.first() else {
+    let Some(window_index) = workspace_routed_window_index(snapshot, params) else {
         return ControlCallResult::Err {
-            code: "not_found".to_string(),
-            message: "No workspace selected".to_string(),
+            code: "unavailable".to_string(),
+            message: "TabManager not available".to_string(),
             data: None,
         };
     };
-    let Some(index) = workspace_index_from_params_or_selected(snapshot, params) else {
+    let Some(window) = snapshot.windows.get(window_index) else {
+        return ControlCallResult::Err {
+            code: "unavailable".to_string(),
+            message: "TabManager not available".to_string(),
+            data: None,
+        };
+    };
+    let Some(index) = selected_workspace_index_for_window(snapshot, window_index) else {
         return ControlCallResult::Err {
             code: "not_found".to_string(),
             message: "No workspace selected".to_string(),
@@ -11613,10 +11848,10 @@ fn workspace_current_from_params(
     };
     ok(json!({
         "window_id": window.window_id,
-        "window_ref": window.window_id.as_ref().map(|_| "window:1"),
+        "window_ref": window.window_id.as_ref().map(|_| window_ref(window_index)),
         "workspace_id": workspace.workspace_id,
         "workspace_ref": workspace_ref(index),
-        "workspace": workspace_summary(workspace, index, index == selected_workspace_index(snapshot)),
+        "workspace": canonical_workspace_summary(workspace, index, true),
     }))
 }
 
@@ -11690,6 +11925,98 @@ fn selected_workspace_index(snapshot: &AppSessionSnapshot) -> usize {
         .unwrap_or(0)
 }
 
+fn selected_workspace_index_for_window(
+    snapshot: &AppSessionSnapshot,
+    window_index: usize,
+) -> Option<usize> {
+    snapshot
+        .windows
+        .get(window_index)?
+        .tab_manager
+        .selected_workspace_index
+        .and_then(|index| usize::try_from(index).ok())
+}
+
+fn window_ref(index: usize) -> String {
+    format!("window:{}", index + 1)
+}
+
+/// Resolve the v2 routing selectors to a tab manager without changing focus.
+/// An explicit window selector is authoritative: an invalid value never falls
+/// through to a workspace/surface in another window.
+fn workspace_routed_window_index(
+    snapshot: &AppSessionSnapshot,
+    params: &serde_json::Map<String, Value>,
+) -> Option<usize> {
+    if params.contains_key("window_id") || params.contains_key("window_ref") {
+        let selector = raw_string_param(params, &["window_id", "window_ref"])?;
+        if let Some(index) = one_based_ref_index(&selector, "window") {
+            return (index < snapshot.windows.len()).then_some(index);
+        }
+        return snapshot
+            .windows
+            .iter()
+            .position(|window| window.window_id.as_deref() == Some(selector.as_str()));
+    }
+
+    if let Some(group_id) = string_param(params, &["group_id"]) {
+        return snapshot.windows.iter().position(|window| {
+            window
+                .tab_manager
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.group_id.as_deref() == Some(group_id.as_str()))
+        });
+    }
+
+    if let Some(workspace_id) = string_param(params, &["workspace_id"]) {
+        if one_based_ref_index(&workspace_id, "workspace").is_none() {
+            return snapshot.windows.iter().position(|window| {
+                window.tab_manager.workspaces.iter().any(|workspace| {
+                    workspace.workspace_id.as_deref() == Some(workspace_id.as_str())
+                })
+            });
+        }
+    }
+
+    if let Some(surface_id) = string_param(params, &["surface_id", "terminal_id", "tab_id"]) {
+        return snapshot.windows.iter().position(|window| {
+            window.tab_manager.workspaces.iter().any(|workspace| {
+                surfaces_for_workspace(workspace).iter().any(|surface| {
+                    surface.get("id").and_then(Value::as_str) == Some(surface_id.as_str())
+                })
+            })
+        });
+    }
+
+    if let Some(pane_id) = string_param(params, &["pane_id"]) {
+        return snapshot.windows.iter().position(|window| {
+            window.tab_manager.workspaces.iter().any(|workspace| {
+                pane_event_summaries(workspace)
+                    .iter()
+                    .any(|pane| pane.id.as_deref() == Some(pane_id.as_str()))
+            })
+        });
+    }
+
+    (!snapshot.windows.is_empty()).then_some(0)
+}
+
+fn canonical_workspace_target_index(
+    snapshot: &AppSessionSnapshot,
+    window_index: usize,
+    params: &serde_json::Map<String, Value>,
+) -> Option<usize> {
+    let selector = raw_string_param(params, &["workspace_id"])?;
+    let workspaces = &snapshot.windows.get(window_index)?.tab_manager.workspaces;
+    if let Some(index) = one_based_ref_index(&selector, "workspace") {
+        return (index < workspaces.len()).then_some(index);
+    }
+    workspaces
+        .iter()
+        .position(|workspace| workspace.workspace_id.as_deref() == Some(selector.as_str()))
+}
+
 fn workspace_index_for_id(snapshot: &AppSessionSnapshot, workspace_id: &str) -> Option<usize> {
     snapshot
         .windows
@@ -11724,37 +12051,6 @@ fn workspace_index_from_params(
         .map(str::trim)
         .filter(|value| !value.is_empty())?;
     workspace_index_for_id(snapshot, workspace_id)
-}
-
-fn workspace_index_from_close_params(
-    snapshot: &AppSessionSnapshot,
-    params: &serde_json::Map<String, Value>,
-) -> Option<usize> {
-    if let Some(workspace_ref) = string_param(params, &["workspace_ref", "ref"]) {
-        let index = one_based_ref_index(&workspace_ref, "workspace")?;
-        if snapshot
-            .windows
-            .first()
-            .is_some_and(|window| index < window.tab_manager.workspaces.len())
-        {
-            return Some(index);
-        }
-        return None;
-    }
-
-    let workspace_id = params
-        .get("workspace_id")
-        .or_else(|| params.get("id"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())?;
-    snapshot
-        .windows
-        .first()?
-        .tab_manager
-        .workspaces
-        .iter()
-        .position(|workspace| workspace.workspace_id.as_deref() == Some(workspace_id))
 }
 
 fn workspace_reorder_destination_index(
@@ -12440,6 +12736,31 @@ fn workspace_summary(workspace: &SessionWorkspaceSnapshot, index: usize, selecte
     })
 }
 
+fn canonical_workspace_summary(
+    workspace: &SessionWorkspaceSnapshot,
+    index: usize,
+    selected: bool,
+) -> Value {
+    json!({
+        "id": workspace.workspace_id,
+        "ref": workspace_ref(index),
+        "index": index,
+        "title": workspace_display_name(workspace),
+        "custom_title": workspace.custom_title,
+        "has_custom_title": workspace.custom_title.as_ref().is_some_and(|title| !title.trim().is_empty()),
+        "description": workspace.custom_description,
+        "selected": selected,
+        "pinned": workspace.is_pinned.unwrap_or(false),
+        "listening_ports": workspace_listening_ports(workspace),
+        "remote": workspace_remote_payload(workspace),
+        "current_directory": workspace.current_directory,
+        "custom_color": workspace.custom_color,
+        "latest_conversation_message": Value::Null,
+        "latest_submitted_message": Value::Null,
+        "latest_submitted_at": Value::Null,
+    })
+}
+
 fn workspace_remote_payload(workspace: &SessionWorkspaceSnapshot) -> Value {
     workspace.remote.as_ref().map_or_else(
         || {
@@ -12896,6 +13217,7 @@ fn pane_ref(index: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
     static ENV_LOCK: Mutex<()> = Mutex::new(());
     use cmux_core::session::SessionPanelShellActivitySnapshot;
     use cmux_core::session::{
@@ -15608,26 +15930,29 @@ mod tests {
     fn workspace_index_from_params_requires_explicit_selector_for_close_commands() {
         let snapshot = test_snapshot();
         assert_eq!(
-            workspace_index_from_close_params(&snapshot, &serde_json::Map::new()),
+            canonical_workspace_target_index(&snapshot, 0, &serde_json::Map::new()),
             None
         );
         assert_eq!(
-            workspace_index_from_close_params(
+            canonical_workspace_target_index(
                 &snapshot,
+                0,
                 &serde_json::Map::from_iter([("index".to_string(), json!(0),)])
             ),
             None
         );
         assert_eq!(
-            workspace_index_from_close_params(
+            canonical_workspace_target_index(
                 &snapshot,
+                0,
                 &serde_json::Map::from_iter([("workspace_id".to_string(), json!("workspace-1"),)])
             ),
             Some(0)
         );
         assert_eq!(
-            workspace_index_from_close_params(
+            canonical_workspace_target_index(
                 &snapshot,
+                0,
                 &serde_json::Map::from_iter([("workspace_ref".to_string(), json!("workspace:1"),)])
             ),
             None
@@ -15636,7 +15961,7 @@ mod tests {
 
     #[test]
     fn workspace_v2_list_has_canonical_shape_only() {
-        let payload = workspace_list_payload(&test_snapshot());
+        let payload = workspace_list_payload_for_window(&test_snapshot(), 0);
         let object = payload.as_object().expect("workspace.list object");
         assert_eq!(
             object.keys().map(String::as_str).collect::<BTreeSet<_>>(),
@@ -15681,11 +16006,10 @@ mod tests {
         background.tab_manager.selected_workspace_index = Some(0);
         snapshot.windows.push(background);
 
-        let params = serde_json::Map::from_iter([(
-            "workspace_id".to_string(),
-            json!("workspace-b2"),
-        )]);
-        let ControlCallResult::Ok(result) = workspace_current_from_params(&snapshot, &params) else {
+        let params =
+            serde_json::Map::from_iter([("workspace_id".to_string(), json!("workspace-b2"))]);
+        let ControlCallResult::Ok(result) = workspace_current_from_params(&snapshot, &params)
+        else {
             panic!("workspace.current should resolve the owning window");
         };
         let result: Value = result.into();

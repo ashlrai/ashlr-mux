@@ -2666,6 +2666,9 @@ pub fn close_workspace(tabs: &mut SessionTabManagerSnapshot, index: i64) -> bool
     if count <= 1 || index < 0 || (index as usize) >= count {
         return false;
     }
+    if tabs.workspaces[index as usize].is_pinned == Some(true) {
+        return false;
+    }
     close_workspace_at_index(tabs, index as usize)
 }
 
