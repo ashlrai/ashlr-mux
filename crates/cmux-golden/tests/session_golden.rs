@@ -130,6 +130,7 @@ fn full_modern_snapshot() {
         created_at: 1_718_900_000,
         windows: vec![SessionWindowSnapshot {
             window_id: Some("window-1".into()),
+            selected_workspace_id: Some("3F2504E0-4F89-41D3-9A0C-0305E82C3301".into()),
             tab_manager: SessionTabManagerSnapshot {
                 selected_workspace_index: Some(0),
                 workspaces: vec![workspace],
@@ -169,6 +170,7 @@ fn legacy_pre_canvas_pre_tab_snapshot() {
         created_at: 1_600_000_000,
         windows: vec![SessionWindowSnapshot {
             window_id: None,
+            selected_workspace_id: None,
             tab_manager: SessionTabManagerSnapshot {
                 selected_workspace_index: None,
                 workspaces: vec![workspace],
@@ -190,6 +192,7 @@ fn legacy_no_layout_snapshot() {
         created_at: 1_500_000_000,
         windows: vec![SessionWindowSnapshot {
             window_id: None,
+            selected_workspace_id: None,
             tab_manager: SessionTabManagerSnapshot {
                 selected_workspace_index: None,
                 workspaces: vec![SessionWorkspaceSnapshot {
