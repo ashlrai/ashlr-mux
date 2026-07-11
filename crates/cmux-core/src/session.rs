@@ -140,6 +140,9 @@ pub struct SessionSplitLayoutSnapshot {
 // impls (the `{type, pane|split}` adjacently-tagged wire shape), so ts-rs cannot
 // derive a matching `TS`. The manual `TS` impl below (also feature-gated) mirrors
 // that exact wire shape. See the `impl TS` block further down.
+// Keep the persisted wire variants direct: boxing `Pane` would churn the public
+// snapshot API solely to satisfy an in-memory size heuristic.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum SessionWorkspaceLayoutSnapshot {
     Pane(SessionPaneLayoutSnapshot),
