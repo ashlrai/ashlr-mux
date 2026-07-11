@@ -476,6 +476,7 @@ pub fn run() {
             session::session_set_browser_zoom,
             session::session_new_browser_workspace,
             session::session_reopen_closed_browser_tab,
+            session::session_reopen_closed_workspace,
             cli::cli_install_status,
             cli::install_cli,
             cli::uninstall_cli,

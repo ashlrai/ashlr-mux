@@ -2247,6 +2247,7 @@ mod tests {
             created_at: 0,
             windows: vec![SessionWindowSnapshot {
                 window_id: Some("window-1".to_string()),
+                selected_workspace_id: None,
                 tab_manager: SessionTabManagerSnapshot {
                     selected_workspace_index: Some(0),
                     workspaces: vec![SessionWorkspaceSnapshot {

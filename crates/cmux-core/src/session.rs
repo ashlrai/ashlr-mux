@@ -807,6 +807,11 @@ pub struct SessionWindowSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub window_id: Option<String>,
+    /// Stable selected workspace identity, retained even when the legacy index
+    /// is stale during restore/routing reconciliation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub selected_workspace_id: Option<String>,
     pub tab_manager: SessionTabManagerSnapshot,
 }
 

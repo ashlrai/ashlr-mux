@@ -5821,10 +5821,12 @@ mod tests {
             windows: vec![
                 crate::session::SessionWindowSnapshot {
                     window_id: Some("window-a".to_string()),
+                    selected_workspace_id: None,
                     tab_manager: source_tabs,
                 },
                 crate::session::SessionWindowSnapshot {
                     window_id: Some("window-b".to_string()),
+                    selected_workspace_id: None,
                     tab_manager: destination_tabs,
                 },
             ],
@@ -5875,6 +5877,7 @@ mod tests {
             windows: vec![
                 crate::session::SessionWindowSnapshot {
                     window_id: Some("window-a".to_string()),
+                    selected_workspace_id: None,
                     tab_manager: SessionTabManagerSnapshot {
                         selected_workspace_index: Some(0),
                         workspaces: vec![workspace_with_id("workspace-a", "a")],
@@ -5883,6 +5886,7 @@ mod tests {
                 },
                 crate::session::SessionWindowSnapshot {
                     window_id: Some("window-b".to_string()),
+                    selected_workspace_id: None,
                     tab_manager: SessionTabManagerSnapshot {
                         selected_workspace_index: Some(0),
                         workspaces: vec![workspace_with_id("workspace-b", "b")],
@@ -5930,6 +5934,7 @@ mod tests {
         let mut snapshot = crate::session::AppSessionSnapshot {
             windows: vec![crate::session::SessionWindowSnapshot {
                 window_id: Some("window-a".to_string()),
+                selected_workspace_id: None,
                 tab_manager: SessionTabManagerSnapshot {
                     selected_workspace_index: Some(0),
                     workspaces: vec![workspace_with_id("workspace-a", "a")],
@@ -5969,6 +5974,7 @@ mod tests {
         let mut snapshot = crate::session::AppSessionSnapshot {
             windows: vec![crate::session::SessionWindowSnapshot {
                 window_id: Some("window-a".to_string()),
+                selected_workspace_id: None,
                 tab_manager: SessionTabManagerSnapshot {
                     selected_workspace_index: Some(0),
                     workspaces: vec![workspace_with_id("workspace-a", "a")],

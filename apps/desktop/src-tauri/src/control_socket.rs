@@ -45,28 +45,29 @@ use crate::session::{
     open_custom_sidebar_in_panel, open_diff_viewer_in_panel, open_file_in_panel,
     open_markdown_file_in_panel, reconnect_workspace_remote_for_control,
     register_window_for_control, rename_workspace_in_window_for_control,
-    reopen_closed_browser_tab_for_control, reorder_surface_for_control,
-    reorder_workspaces_for_control, reorder_workspaces_many_for_control,
-    reset_workspace_color_for_control, reset_workspace_sidebar_metadata_for_control,
-    resize_pane_for_control, restore_previous_launch_for_control,
-    select_adjacent_panel_for_control, select_last_workspace_for_control,
-    select_workspace_for_control, select_workspace_in_window_for_control, select_workspace_surface,
-    set_browser_zoom_for_control, set_group_collapsed_for_control,
-    set_panel_listening_ports_for_control, set_panel_pinned_for_control,
-    set_panel_shell_activity_for_control, set_panel_title_for_control, set_panel_tty_for_control,
-    set_panel_unread_for_control, set_surface_kind_for_control,
-    set_workspace_agent_listening_ports_for_control, set_workspace_agent_pid_for_control,
-    set_workspace_description_for_control, set_workspace_panel_pull_request_for_control,
-    set_workspace_pinned_for_control, set_workspace_sidebar_metadata_block_for_control,
-    set_workspace_sidebar_metadata_for_control, set_workspace_sidebar_progress_for_control,
-    set_workspace_sidebar_status_for_control, set_workspace_unread_for_control,
-    show_browser_developer_tools_for_control, split_browser_for_control,
-    split_off_surface_for_control, split_panel_for_control, start_direct_browser_proxy_for_control,
-    swap_panes_for_control, toggle_browser_developer_tools_for_control,
-    toggle_browser_focus_mode_for_control, toggle_browser_omnibar_for_control,
-    toggle_split_zoom_for_control, PaneFocusControlError, PaneLastControlError,
-    PaneResizeControlError, PaneResizeControlIntent, ReorderWorkspacesManyControlError,
-    SessionState, WorkspaceLastControlError, WorkspaceRemoteControlConfig,
+    reopen_closed_browser_tab_for_control, reopen_closed_workspace_for_control,
+    reorder_surface_for_control, reorder_workspaces_for_control,
+    reorder_workspaces_many_for_control, reset_workspace_color_for_control,
+    reset_workspace_sidebar_metadata_for_control, resize_pane_for_control,
+    restore_previous_launch_for_control, select_adjacent_panel_for_control,
+    select_last_workspace_for_control, select_workspace_for_control,
+    select_workspace_in_window_for_control, select_workspace_surface, set_browser_zoom_for_control,
+    set_group_collapsed_for_control, set_panel_listening_ports_for_control,
+    set_panel_pinned_for_control, set_panel_shell_activity_for_control,
+    set_panel_title_for_control, set_panel_tty_for_control, set_panel_unread_for_control,
+    set_surface_kind_for_control, set_workspace_agent_listening_ports_for_control,
+    set_workspace_agent_pid_for_control, set_workspace_description_for_control,
+    set_workspace_panel_pull_request_for_control, set_workspace_pinned_for_control,
+    set_workspace_sidebar_metadata_block_for_control, set_workspace_sidebar_metadata_for_control,
+    set_workspace_sidebar_progress_for_control, set_workspace_sidebar_status_for_control,
+    set_workspace_unread_for_control, show_browser_developer_tools_for_control,
+    split_browser_for_control, split_off_surface_for_control, split_panel_for_control,
+    start_direct_browser_proxy_for_control, swap_panes_for_control,
+    toggle_browser_developer_tools_for_control, toggle_browser_focus_mode_for_control,
+    toggle_browser_omnibar_for_control, toggle_split_zoom_for_control, PaneFocusControlError,
+    PaneLastControlError, PaneResizeControlError, PaneResizeControlIntent,
+    ReorderWorkspacesManyControlError, SessionState, WorkspaceLastControlError,
+    WorkspaceRemoteControlConfig, WorkspaceRenameResolution,
 };
 use crate::terminal::{
     scan_listening_ports_for_root_pid, scan_panel_listening_ports, terminal_clear_history_panel,
@@ -895,6 +896,7 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "session.restore_previous_launch",
     "workspace.restore_previous_launch",
     "workspace.close",
+    "workspace.reopen_closed",
     "workspace.close_many",
     "workspace.close_workspaces",
     "workspace.rename",
@@ -1181,6 +1183,7 @@ fn handle_control_request(app: &AppHandle, mut request: ControlRequest) -> Contr
         | "session.restore_previous_launch"
         | "workspace.restore_previous_launch" => session_restore_previous_launch(app),
         "workspace.close" => workspace_close(app, &request.params),
+        "workspace.reopen_closed" => workspace_reopen_closed(app),
         "workspace.close_many" | "workspace.close_workspaces" => {
             workspace_close_many(app, &request.params)
         }
@@ -2779,25 +2782,24 @@ fn workspace_create(app: &AppHandle, params: &serde_json::Map<String, Value>) ->
             data: None,
         };
     };
-    let current_directory = if let Some(value) = params.get("working_directory") {
-        value
-            .as_str()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned)
-    } else {
-        match params.get("cwd") {
-            Some(Value::String(value)) => {
-                let value = value.trim();
-                (!value.is_empty()).then(|| value.to_owned())
-            }
-            Some(Value::Null) | None => None,
-            Some(_) => return invalid_params("cwd must be a string"),
-        }
+    let inherited_directory = current.windows[window_index]
+        .tab_manager
+        .selected_workspace_index
+        .and_then(|index| usize::try_from(index).ok())
+        .and_then(|index| {
+            current.windows[window_index]
+                .tab_manager
+                .workspaces
+                .get(index)
+        })
+        .and_then(|workspace| workspace.current_directory.as_deref());
+    let current_directory = match workspace_create_cwd_param(params, inherited_directory) {
+        Ok(directory) => directory,
+        Err(()) => return invalid_params("cwd must be a string"),
     };
     let initial_command = string_param(params, &["initial_command"]);
-    let initial_environment = string_map_param(params, &["initial_env"]);
-    let workspace_environment = string_map_param(params, &["workspace_env"]);
+    let initial_environment = workspace_create_initial_env(params);
+    let workspace_environment = workspace_create_workspace_env(params);
     let title = string_param(params, &["title"]);
     let description = raw_string_param(params, &["description"]);
     let group_id = string_param(params, &["group_id"]);
@@ -2911,10 +2913,13 @@ fn workspace_create(app: &AppHandle, params: &serde_json::Map<String, Value>) ->
             .then_some(initial_command)
             .flatten()
             .as_deref(),
-        layout.is_none().then_some(initial_environment).flatten(),
+        layout
+            .is_none()
+            .then_some(initial_environment)
+            .filter(|env| !env.is_empty()),
         title.as_deref(),
         description.as_deref(),
-        workspace_environment,
+        (!workspace_environment.is_empty()).then_some(workspace_environment),
         group_id.as_deref(),
         layout,
         group_insert_index,
@@ -2943,6 +2948,116 @@ fn workspace_create(app: &AppHandle, params: &serde_json::Map<String, Value>) ->
         "surface_id": surface_id,
         "surface_ref": surface_id.as_str().map(|id| control_handle_ref(app, "surface", id)),
     }))
+}
+
+fn record_resolved_workspace_rename_event(
+    app: &AppHandle,
+    snapshot: &AppSessionSnapshot,
+    window_index: usize,
+    workspace_index: usize,
+) {
+    let Some(event) = resolved_workspace_rename_event_spec(snapshot, window_index, workspace_index)
+    else {
+        return;
+    };
+    record_event(
+        app,
+        event.name,
+        event.category,
+        event.source,
+        event.window_id,
+        event.workspace_id,
+        event.surface_id,
+        event.payload,
+    );
+}
+
+fn resolved_workspace_rename_event_spec(
+    snapshot: &AppSessionSnapshot,
+    window_index: usize,
+    workspace_index: usize,
+) -> Option<DerivedEventSpec> {
+    let Some(window) = snapshot.windows.get(window_index) else {
+        return None;
+    };
+    let summaries = session_event_summaries(snapshot);
+    let key = window
+        .window_id
+        .clone()
+        .unwrap_or_else(|| format!("window-{window_index}"));
+    let Some(current) = summaries.get(&key) else {
+        return None;
+    };
+    let Some(workspace) = current.workspaces.get(workspace_index) else {
+        return None;
+    };
+    Some(workspace_renamed_event_spec(
+        current,
+        workspace,
+        &workspace.title,
+    ))
+}
+
+fn workspace_create_cwd_param(
+    params: &serde_json::Map<String, Value>,
+    inherited: Option<&str>,
+) -> Result<Option<String>, ()> {
+    let working_directory = params
+        .get("working_directory")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    if working_directory.is_some() {
+        return Ok(working_directory);
+    }
+    match params.get("cwd") {
+        Some(Value::String(value)) => Ok(Some(value.clone())),
+        Some(_) => Err(()),
+        None => Ok(inherited.map(str::to_string)),
+    }
+}
+
+fn workspace_create_initial_env(
+    params: &serde_json::Map<String, Value>,
+) -> BTreeMap<String, String> {
+    raw_string_map_param(params, "initial_env")
+        .into_iter()
+        .filter_map(|(key, value)| {
+            let key = key.trim();
+            (!key.is_empty()).then(|| (key.to_string(), value))
+        })
+        .collect()
+}
+
+fn workspace_create_workspace_env(
+    params: &serde_json::Map<String, Value>,
+) -> BTreeMap<String, String> {
+    raw_string_map_param(params, "workspace_env")
+        .into_iter()
+        .filter_map(|(key, value)| {
+            let key = key.trim();
+            (!key.is_empty()
+                && !value.is_empty()
+                && !key.contains('\0')
+                && !key.contains('=')
+                && !value.contains('\0'))
+            .then(|| (key.to_string(), value))
+        })
+        .collect()
+}
+
+fn raw_string_map_param(
+    params: &serde_json::Map<String, Value>,
+    key: &str,
+) -> BTreeMap<String, String> {
+    params
+        .get(key)
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter_map(|(key, value)| value.as_str().map(|value| (key.clone(), value.to_string())))
+        .collect()
 }
 
 fn canonical_layout_is_valid(layout: &cmux_config::CmuxLayoutNode) -> bool {
@@ -3690,6 +3805,18 @@ fn workspace_close(app: &AppHandle, params: &serde_json::Map<String, Value>) -> 
     ok(identity)
 }
 
+fn workspace_reopen_closed(app: &AppHandle) -> ControlCallResult {
+    let state = app.state::<SessionState>();
+    let Some(snapshot) = reopen_closed_workspace_for_control(app, &state) else {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "No recently closed workspace".to_string(),
+            data: None,
+        };
+    };
+    workspace_current(&snapshot)
+}
+
 fn workspace_close_many(
     app: &AppHandle,
     params: &serde_json::Map<String, Value>,
@@ -3728,15 +3855,27 @@ fn workspace_rename(app: &AppHandle, params: &serde_json::Map<String, Value>) ->
         .clone()
         .unwrap_or_default();
     let state = app.state::<SessionState>();
-    let Some(result) =
-        rename_workspace_in_window_for_control(app, &state, window_index, index, &title)
-    else {
+    let rename_result =
+        rename_workspace_in_window_for_control(app, &state, window_index, index, &title);
+    let Some((result, resolution)) = (match rename_result {
+        Ok(result) => result,
+        Err(message) => {
+            return ControlCallResult::Err {
+                code: "remote_rename_failed".to_string(),
+                message,
+                data: None,
+            }
+        }
+    }) else {
         return ControlCallResult::Err {
             code: "unavailable".to_string(),
             message: "TabManager not available".to_string(),
             data: None,
         };
     };
+    if resolution == WorkspaceRenameResolution::ResolvedUnchanged {
+        record_resolved_workspace_rename_event(app, &result, window_index, index);
+    }
     let mut payload = workspace_identity_payload(app, &result.windows[window_index], &workspace_id);
     payload["title"] = json!(title);
     ok(payload)
@@ -12130,12 +12269,10 @@ fn workspace_current_from_params(
         };
     };
     let workspace = window.tab_manager.workspaces.get(index);
-    // The Windows snapshot currently stores selected identity as an index.
-    // Preserve a stable identity for the canonical stale-index edge by using
-    // the last selected workspace witness still present in this manager while
-    // intentionally returning a null summary.
-    let identity_index = workspace.map(|_| index).unwrap_or(0);
-    let Some(identity) = workspace.or_else(|| window.tab_manager.workspaces.first()) else {
+    let identity_id = workspace
+        .and_then(|workspace| workspace.workspace_id.clone())
+        .or_else(|| window.selected_workspace_id.clone());
+    let Some(identity_id) = identity_id else {
         return ControlCallResult::Err {
             code: "not_found".to_string(),
             message: "No workspace selected".to_string(),
@@ -12145,8 +12282,8 @@ fn workspace_current_from_params(
     ok(json!({
         "window_id": window.window_id,
         "window_ref": window.window_id.as_ref().map(|_| window_ref(window_index)),
-        "workspace_id": identity.workspace_id,
-        "workspace_ref": workspace_ref(identity_index),
+        "workspace_id": identity_id,
+        "workspace_ref": workspace_ref(index),
         "workspace": workspace.map(|workspace| canonical_workspace_summary(workspace, index, true)),
     }))
 }
@@ -13598,6 +13735,7 @@ mod tests {
             created_at: 0,
             windows: vec![SessionWindowSnapshot {
                 window_id: Some("window-1".to_string()),
+                selected_workspace_id: None,
                 tab_manager: SessionTabManagerSnapshot {
                     selected_workspace_index: Some(0),
                     workspaces: vec![SessionWorkspaceSnapshot {
@@ -13632,6 +13770,18 @@ mod tests {
                 },
             }],
         }
+    }
+
+    #[test]
+    fn resolved_same_title_rename_still_produces_one_rename_event_spec() {
+        let snapshot = test_snapshot();
+
+        let event = resolved_workspace_rename_event_spec(&snapshot, 0, 0).unwrap();
+
+        assert_eq!(event.name, "workspace.renamed");
+        assert_eq!(event.workspace_id.as_deref(), Some("workspace-1"));
+        assert_eq!(event.payload["title"], json!("Phoenix"));
+        assert_eq!(event.payload["previous_title"], json!("Phoenix"));
     }
 
     fn surface_move_snapshot() -> AppSessionSnapshot {
@@ -13885,6 +14035,7 @@ mod tests {
             .expect("destination workspace");
         snapshot.windows.push(SessionWindowSnapshot {
             window_id: Some("window-2".to_string()),
+            selected_workspace_id: None,
             tab_manager: SessionTabManagerSnapshot {
                 selected_workspace_index: Some(0),
                 workspaces: vec![destination],

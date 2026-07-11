@@ -2,4 +2,9 @@
 // Do not edit by hand. Run `bun run generate` to refresh.
 import type { SessionTabManagerSnapshot } from "./SessionTabManagerSnapshot";
 
-export type SessionWindowSnapshot = { window_id?: string, tab_manager: SessionTabManagerSnapshot, };
+export type SessionWindowSnapshot = { window_id?: string,
+/**
+ * Stable selected workspace identity, retained even when the legacy index
+ * is stale during restore/routing reconciliation.
+ */
+selected_workspace_id?: string, tab_manager: SessionTabManagerSnapshot, };

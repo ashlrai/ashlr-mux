@@ -13,6 +13,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -57,7 +58,7 @@ pub struct SessionState {
     closed_workspaces: Mutex<Vec<ClosedWorkspaceSnapshot>>,
     remote_configs: Mutex<HashMap<String, WorkspaceRemoteControlConfig>>,
     workspace_focus_history: Mutex<HashMap<String, WorkspaceFocusHistory>>,
-    remote_workspace_renames: Mutex<Vec<(String, String)>>,
+    remote_workspace_rename_controller: Arc<dyn RemoteWorkspaceRenameController>,
 }
 
 impl Default for SessionState {
@@ -71,7 +72,7 @@ impl Default for SessionState {
             closed_workspaces: Mutex::new(Vec::new()),
             remote_configs: Mutex::new(HashMap::new()),
             workspace_focus_history: Mutex::new(workspace_focus_history),
-            remote_workspace_renames: Mutex::new(Vec::new()),
+            remote_workspace_rename_controller: Arc::new(SshRemoteWorkspaceRenameController),
         }
     }
 }
@@ -221,6 +222,142 @@ pub(crate) struct WorkspaceRemoteControlConfig {
     pub auto_connect: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RemoteWorkspaceRenameRequest {
+    workspace_id: String,
+    destination: String,
+    port: Option<u16>,
+    identity_file: Option<String>,
+    ssh_options: Vec<String>,
+    session: Option<String>,
+    title: String,
+}
+
+trait RemoteWorkspaceRenameController: Send + Sync {
+    fn rename(&self, request: &RemoteWorkspaceRenameRequest) -> Result<(), String>;
+}
+
+struct SshRemoteWorkspaceRenameController;
+
+impl RemoteWorkspaceRenameController for SshRemoteWorkspaceRenameController {
+    fn rename(&self, request: &RemoteWorkspaceRenameRequest) -> Result<(), String> {
+        let mut command = Command::new("ssh");
+        command.args(["-T", "-o", "BatchMode=yes"]);
+        if let Some(port) = request.port {
+            command.args(["-p", &port.to_string()]);
+        }
+        if let Some(identity_file) = request.identity_file.as_deref() {
+            command.args(["-i", identity_file]);
+        }
+        for option in &request.ssh_options {
+            command.args(["-o", option]);
+        }
+        command.arg(&request.destination);
+        command.args(["tmux", "rename-session"]);
+        if let Some(session) = request.session.as_deref() {
+            command.args(["-t", session]);
+        }
+        let status = command
+            .arg(&request.title)
+            .status()
+            .map_err(|error| format!("failed to launch remote tmux rename: {error}"))?;
+        status
+            .success()
+            .then_some(())
+            .ok_or_else(|| format!("remote tmux rename exited with {status}"))
+    }
+}
+
+fn dispatch_remote_workspace_rename(
+    controller: &dyn RemoteWorkspaceRenameController,
+    request: &RemoteWorkspaceRenameRequest,
+) -> Result<(), String> {
+    controller.rename(request)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorkspaceCloseTeardownPlan {
+    workspace_id: String,
+    clear_notifications: bool,
+    clear_metadata: bool,
+    clear_focus_history: bool,
+    stop_remote: bool,
+}
+
+fn workspace_close_teardown_plan(
+    workspace_id: &str,
+    has_remote: bool,
+) -> WorkspaceCloseTeardownPlan {
+    WorkspaceCloseTeardownPlan {
+        workspace_id: workspace_id.to_string(),
+        clear_notifications: true,
+        clear_metadata: true,
+        clear_focus_history: true,
+        stop_remote: has_remote,
+    }
+}
+
+fn apply_workspace_close_teardown(
+    app: &AppHandle,
+    state: &SessionState,
+    teardown: &WorkspaceCloseTeardownPlan,
+) {
+    if teardown.clear_notifications {
+        if let Some(notifications) =
+            app.try_state::<crate::notifications::NotificationCommandState>()
+        {
+            let _ = crate::notifications::notification_clear_for_control(
+                notifications.inner(),
+                Some(&teardown.workspace_id),
+            );
+        }
+    }
+    if teardown.clear_focus_history {
+        let mut histories = state
+            .workspace_focus_history
+            .lock()
+            .expect("workspace focus history mutex poisoned");
+        for history in histories.values_mut() {
+            history.entries.retain(|id| id != &teardown.workspace_id);
+            history.index = history.entries.len().checked_sub(1);
+        }
+    }
+    if teardown.clear_metadata {
+        state
+            .remote_configs
+            .lock()
+            .expect("remote config mutex poisoned")
+            .remove(&teardown.workspace_id);
+    }
+    if teardown.stop_remote {
+        if let Some(brokers) = app.try_state::<crate::remote_proxy::RemoteProxyBrokerState>() {
+            brokers.stop_workspace_broker(&teardown.workspace_id);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WorkspaceRenameResolution {
+    ResolvedChanged,
+    ResolvedUnchanged,
+    NotFound,
+}
+
+fn rename_workspace_resolution(
+    tabs: &mut SessionTabManagerSnapshot,
+    workspace_index: usize,
+    title: &str,
+) -> WorkspaceRenameResolution {
+    if tabs.workspaces.get(workspace_index).is_none() {
+        return WorkspaceRenameResolution::NotFound;
+    }
+    if session_ops::rename_workspace(tabs, workspace_index as i64, title) {
+        WorkspaceRenameResolution::ResolvedChanged
+    } else {
+        WorkspaceRenameResolution::ResolvedUnchanged
+    }
+}
+
 /// A single window / single workspace / single pane starting layout.
 fn initial_snapshot(first_panel_id: &str) -> AppSessionSnapshot {
     let mut snapshot = AppSessionSnapshot {
@@ -228,6 +365,7 @@ fn initial_snapshot(first_panel_id: &str) -> AppSessionSnapshot {
         created_at: 0,
         windows: vec![SessionWindowSnapshot {
             window_id: Some("main".to_string()),
+            selected_workspace_id: None,
             tab_manager: SessionTabManagerSnapshot {
                 selected_workspace_index: Some(0),
                 workspaces: vec![session_ops::fresh_terminal_workspace(first_panel_id)],
@@ -253,6 +391,19 @@ fn ensure_workspace_ids(snapshot: &mut AppSessionSnapshot) {
                 workspace.workspace_id = Some(Uuid::new_v4().to_string());
             }
         }
+        sync_window_selected_workspace_id(window);
+    }
+}
+
+fn sync_window_selected_workspace_id(window: &mut SessionWindowSnapshot) {
+    let selected = window
+        .tab_manager
+        .selected_workspace_index
+        .and_then(|index| usize::try_from(index).ok())
+        .and_then(|index| window.tab_manager.workspaces.get(index))
+        .and_then(|workspace| workspace.workspace_id.clone());
+    if selected.is_some() {
+        window.selected_workspace_id = selected;
     }
 }
 
@@ -1253,6 +1404,7 @@ fn apply_select_workspace_surface(
     let index_i64 = index as i64;
     let workspace_changed = tab_manager.selected_workspace_index != Some(index_i64);
     tab_manager.selected_workspace_index = Some(index_i64);
+    sync_window_selected_workspace_id(window);
     selected_changed || workspace_changed || focus_changed
 }
 
@@ -1725,7 +1877,13 @@ fn apply_move_panel_to_new_workspace(snapshot: &mut AppSessionSnapshot, panel_id
 /// no-op). Delegates to [`session_ops::select_workspace`].
 fn apply_select_workspace(snapshot: &mut AppSessionSnapshot, index: i64) -> bool {
     match snapshot.windows.first_mut() {
-        Some(window) => session_ops::select_workspace(&mut window.tab_manager, index),
+        Some(window) => {
+            let changed = session_ops::select_workspace(&mut window.tab_manager, index);
+            if changed {
+                sync_window_selected_workspace_id(window);
+            }
+            changed
+        }
         None => false,
     }
 }
@@ -1745,6 +1903,7 @@ fn apply_select_workspace_by_id(snapshot: &mut AppSessionSnapshot, workspace_id:
     let index = index as i64;
     let changed = window.tab_manager.selected_workspace_index != Some(index);
     window.tab_manager.selected_workspace_index = Some(index);
+    sync_window_selected_workspace_id(window);
     changed
 }
 
@@ -1753,7 +1912,13 @@ fn apply_select_workspace_by_id(snapshot: &mut AppSessionSnapshot, workspace_id:
 /// Delegates to [`session_ops::close_workspace`].
 fn apply_close_workspace(snapshot: &mut AppSessionSnapshot, index: i64) -> bool {
     match snapshot.windows.first_mut() {
-        Some(window) => session_ops::close_workspace(&mut window.tab_manager, index),
+        Some(window) => {
+            let changed = session_ops::close_workspace(&mut window.tab_manager, index);
+            if changed {
+                sync_window_selected_workspace_id(window);
+            }
+            changed
+        }
         None => false,
     }
 }
@@ -2948,6 +3113,7 @@ pub(crate) fn register_window_for_control(
                 );
                 guard.windows.push(SessionWindowSnapshot {
                     window_id: Some(window_id.to_string()),
+                    selected_workspace_id: None,
                     tab_manager: SessionTabManagerSnapshot {
                         selected_workspace_index: Some(0),
                         workspaces: vec![session_ops::fresh_terminal_workspace(&panel_id)],
@@ -3729,8 +3895,12 @@ pub(crate) fn select_workspace_in_window_for_control(
             .snapshot
             .lock()
             .expect("session snapshot mutex poisoned");
-        let tabs = &mut guard.windows.get_mut(window_index)?.tab_manager;
-        let changed = session_ops::select_workspace(tabs, workspace_index as i64);
+        let window = guard.windows.get_mut(window_index)?;
+        let changed =
+            session_ops::select_workspace(&mut window.tab_manager, workspace_index as i64);
+        if changed {
+            sync_window_selected_workspace_id(window);
+        }
         (changed, guard.clone())
     };
     if changed {
@@ -3902,6 +4072,72 @@ fn closed_workspace_snapshot(
     })
 }
 
+fn apply_reopen_closed_workspace(
+    snapshot: &mut AppSessionSnapshot,
+    closed: ClosedWorkspaceSnapshot,
+) -> bool {
+    let window_index = closed
+        .window_id
+        .as_deref()
+        .and_then(|window_id| {
+            snapshot
+                .windows
+                .iter()
+                .position(|window| window.window_id.as_deref() == Some(window_id))
+        })
+        .or_else(|| (!snapshot.windows.is_empty()).then_some(0));
+    let Some(window_index) = window_index else {
+        return false;
+    };
+    let window = &mut snapshot.windows[window_index];
+    if window.tab_manager.workspaces.iter().any(|workspace| {
+        workspace.workspace_id.is_some() && workspace.workspace_id == closed.workspace.workspace_id
+    }) {
+        return false;
+    }
+    let index = closed
+        .original_index
+        .min(window.tab_manager.workspaces.len());
+    let workspace_id = closed.workspace.workspace_id.clone();
+    window
+        .tab_manager
+        .workspaces
+        .insert(index, closed.workspace);
+    window.tab_manager.selected_workspace_index = Some(index as i64);
+    window.selected_workspace_id = workspace_id;
+    ensure_workspace_ids(snapshot);
+    ensure_pane_ids(snapshot);
+    true
+}
+
+pub(crate) fn reopen_closed_workspace_for_control(
+    app: &AppHandle,
+    state: &SessionState,
+) -> Option<AppSessionSnapshot> {
+    let closed = state
+        .closed_workspaces
+        .lock()
+        .expect("closed workspace history mutex poisoned")
+        .pop()?;
+    let snapshot = {
+        let mut guard = state
+            .snapshot
+            .lock()
+            .expect("session snapshot mutex poisoned");
+        if !apply_reopen_closed_workspace(&mut guard, closed.clone()) {
+            state
+                .closed_workspaces
+                .lock()
+                .expect("closed workspace history mutex poisoned")
+                .push(closed);
+            return None;
+        }
+        guard.clone()
+    };
+    notify_session_changed(app, &snapshot);
+    Some(snapshot)
+}
+
 fn remote_workspace_rename_intent(
     workspace: &SessionWorkspaceSnapshot,
     title: &str,
@@ -3917,6 +4153,29 @@ fn remote_workspace_rename_intent(
         .workspace_id
         .clone()
         .map(|workspace_id| (workspace_id, title.trim().to_string()))
+}
+
+fn remote_workspace_rename_request(
+    state: &SessionState,
+    workspace: &SessionWorkspaceSnapshot,
+    title: &str,
+) -> Option<RemoteWorkspaceRenameRequest> {
+    let (workspace_id, title) = remote_workspace_rename_intent(workspace, title)?;
+    let config = state
+        .remote_configs
+        .lock()
+        .expect("remote config mutex poisoned")
+        .get(&workspace_id)
+        .cloned()?;
+    (config.transport == "ssh").then(|| RemoteWorkspaceRenameRequest {
+        workspace_id,
+        destination: config.destination,
+        port: config.port,
+        identity_file: config.identity_file,
+        ssh_options: config.ssh_options,
+        session: config.persistent_daemon_slot,
+        title,
+    })
 }
 
 fn session_layout_from_cmux(
@@ -4070,7 +4329,7 @@ pub(crate) fn close_workspace_in_window_for_control(
     window_index: usize,
     workspace_index: usize,
 ) -> Option<(AppSessionSnapshot, bool)> {
-    let (closed_browser_tabs, closed_workspace, changed, snapshot) = {
+    let (closed_browser_tabs, closed_workspace, teardown, changed, snapshot) = {
         let mut guard = state
             .snapshot
             .lock()
@@ -4084,13 +4343,24 @@ pub(crate) fn close_workspace_in_window_for_control(
             .map(closed_browser_tabs_for_workspace)
             .unwrap_or_default();
         let closed_workspace = closed_workspace_snapshot(&guard, window_index, workspace_index);
-        let changed = session_ops::close_workspace(
-            &mut guard.windows.get_mut(window_index)?.tab_manager,
-            workspace_index as i64,
-        );
+        let teardown = guard.windows[window_index]
+            .tab_manager
+            .workspaces
+            .get(workspace_index)
+            .and_then(|workspace| {
+                workspace.workspace_id.as_deref().map(|workspace_id| {
+                    workspace_close_teardown_plan(workspace_id, workspace.remote.is_some())
+                })
+            });
+        let window = guard.windows.get_mut(window_index)?;
+        let changed = session_ops::close_workspace(&mut window.tab_manager, workspace_index as i64);
+        if changed {
+            sync_window_selected_workspace_id(window);
+        }
         (
             closed_browser_tabs,
             closed_workspace,
+            teardown,
             changed,
             guard.clone(),
         )
@@ -4112,6 +4382,11 @@ pub(crate) fn close_workspace_in_window_for_control(
         }
     }
     if changed {
+        if let Some(teardown) = teardown {
+            apply_workspace_close_teardown(app, state, &teardown);
+        }
+    }
+    if changed {
         notify_session_changed(app, &snapshot);
     }
     Some((snapshot, changed))
@@ -4122,13 +4397,15 @@ pub(crate) fn close_workspaces_for_control(
     state: &SessionState,
     indices: &[i64],
 ) -> AppSessionSnapshot {
-    let (closed_browser_tabs, changed, snapshot) = {
+    let (closed_browser_tabs, closed_workspaces, teardowns, changed, snapshot) = {
         let mut guard = state
             .snapshot
             .lock()
             .expect("session snapshot mutex poisoned");
+        let mut seen_indices = HashSet::new();
         let candidates: Vec<_> = indices
             .iter()
+            .filter(|index| seen_indices.insert(**index))
             .filter_map(|index| {
                 if *index < 0 {
                     return None;
@@ -4137,8 +4414,15 @@ pub(crate) fn close_workspaces_for_control(
                     .windows
                     .first()
                     .and_then(|window| window.tab_manager.workspaces.get(*index as usize))?;
-                let tabs = closed_browser_tabs_for_workspace(workspace);
-                (!tabs.is_empty()).then(|| (workspace.workspace_id.clone(), tabs))
+                let workspace_id = workspace.workspace_id.clone();
+                Some((
+                    workspace_id.clone(),
+                    closed_browser_tabs_for_workspace(workspace),
+                    closed_workspace_snapshot(&guard, 0, *index as usize),
+                    workspace_id.as_deref().map(|workspace_id| {
+                        workspace_close_teardown_plan(workspace_id, workspace.remote.is_some())
+                    }),
+                ))
             })
             .collect();
         let changed = apply_close_workspaces(&mut guard, indices);
@@ -4149,20 +4433,37 @@ pub(crate) fn close_workspaces_for_control(
             .flat_map(|window| window.tab_manager.workspaces.iter())
             .filter_map(|workspace| workspace.workspace_id.clone())
             .collect();
-        let closed_browser_tabs = if changed {
+        let closed: Vec<_> = if changed {
             candidates
                 .into_iter()
-                .filter(|(workspace_id, _tabs)| {
+                .filter(|(workspace_id, _, _, _)| {
                     workspace_id
                         .as_ref()
                         .is_none_or(|id| !remaining_ids.contains(id))
                 })
-                .flat_map(|(_workspace_id, tabs)| tabs)
                 .collect()
         } else {
             Vec::new()
         };
-        (closed_browser_tabs, changed, guard.clone())
+        let closed_browser_tabs: Vec<ClosedBrowserTabSnapshot> = closed
+            .iter()
+            .flat_map(|(_, tabs, _, _)| tabs.clone())
+            .collect();
+        let closed_workspaces: Vec<ClosedWorkspaceSnapshot> = closed
+            .iter()
+            .filter_map(|(_, _, workspace, _)| workspace.clone())
+            .collect();
+        let teardowns: Vec<WorkspaceCloseTeardownPlan> = closed
+            .into_iter()
+            .filter_map(|(_, _, _, teardown)| teardown)
+            .collect();
+        (
+            closed_browser_tabs,
+            closed_workspaces,
+            teardowns,
+            changed,
+            guard.clone(),
+        )
     };
     if !closed_browser_tabs.is_empty() {
         let mut history = state
@@ -4170,6 +4471,16 @@ pub(crate) fn close_workspaces_for_control(
             .lock()
             .expect("closed browser history mutex poisoned");
         push_closed_browser_tabs(&mut history, closed_browser_tabs);
+    }
+    if !closed_workspaces.is_empty() {
+        state
+            .closed_workspaces
+            .lock()
+            .expect("closed workspace history mutex poisoned")
+            .extend(closed_workspaces);
+    }
+    for teardown in teardowns {
+        apply_workspace_close_teardown(app, state, &teardown);
     }
     if changed {
         notify_session_changed(app, &snapshot);
@@ -4183,31 +4494,46 @@ pub(crate) fn rename_workspace_in_window_for_control(
     window_index: usize,
     workspace_index: usize,
     title: &str,
-) -> Option<AppSessionSnapshot> {
-    let (changed, remote_workspace_id, snapshot) = {
+) -> Result<Option<(AppSessionSnapshot, WorkspaceRenameResolution)>, String> {
+    let remote_request = {
+        let guard = state
+            .snapshot
+            .lock()
+            .expect("session snapshot mutex poisoned");
+        let Some(workspace) = guard
+            .windows
+            .get(window_index)
+            .and_then(|window| window.tab_manager.workspaces.get(workspace_index))
+        else {
+            return Ok(None);
+        };
+        remote_workspace_rename_request(state, workspace, title)
+    };
+    if let Some(request) = remote_request.as_ref() {
+        dispatch_remote_workspace_rename(
+            state.remote_workspace_rename_controller.as_ref(),
+            request,
+        )?;
+    }
+    let (resolution, snapshot) = {
         let mut guard = state
             .snapshot
             .lock()
             .expect("session snapshot mutex poisoned");
-        let tabs = &mut guard.windows.get_mut(window_index)?.tab_manager;
-        let remote_rename = tabs
-            .workspaces
-            .get(workspace_index)
-            .and_then(|workspace| remote_workspace_rename_intent(workspace, title));
-        let changed = session_ops::rename_workspace(tabs, workspace_index as i64, title);
-        (changed, remote_rename, guard.clone())
+        let Some(window) = guard.windows.get_mut(window_index) else {
+            return Ok(None);
+        };
+        let tabs = &mut window.tab_manager;
+        let resolution = rename_workspace_resolution(tabs, workspace_index, title);
+        (resolution, guard.clone())
     };
-    if changed {
-        if let Some(rename) = remote_workspace_id {
-            state
-                .remote_workspace_renames
-                .lock()
-                .expect("remote workspace rename queue mutex poisoned")
-                .push(rename);
-        }
+    if resolution == WorkspaceRenameResolution::NotFound {
+        return Ok(None);
+    }
+    if resolution == WorkspaceRenameResolution::ResolvedChanged {
         notify_session_changed(app, &snapshot);
     }
-    Some(snapshot)
+    Ok(Some((snapshot, resolution)))
 }
 
 pub(crate) fn split_panel_for_control(
@@ -4272,6 +4598,7 @@ pub(crate) fn split_off_surface_for_control(
             guard.windows[window_index]
                 .tab_manager
                 .selected_workspace_index = Some(workspace_index as i64);
+            sync_window_selected_workspace_id(&mut guard.windows[window_index]);
         }
         ensure_pane_ids(&mut guard);
         guard.clone()
@@ -4305,6 +4632,7 @@ pub(crate) fn swap_panes_for_control(
             guard.windows[window_index]
                 .tab_manager
                 .selected_workspace_index = Some(workspace_index as i64);
+            sync_window_selected_workspace_id(&mut guard.windows[window_index]);
         }
         (swap, guard.clone())
     };
@@ -4369,6 +4697,7 @@ fn apply_focus_pane(
     snapshot.windows[window_index]
         .tab_manager
         .selected_workspace_index = Some(workspace_index as i64);
+    sync_window_selected_workspace_id(&mut snapshot.windows[window_index]);
     Ok(())
 }
 
@@ -4416,6 +4745,7 @@ pub(crate) fn focus_last_pane_for_control(
         guard.windows[window_index]
             .tab_manager
             .selected_workspace_index = Some(workspace_index as i64);
+        sync_window_selected_workspace_id(&mut guard.windows[window_index]);
         (focused, guard.clone())
     };
     notify_session_changed(app, &snapshot);
@@ -4466,6 +4796,7 @@ pub(crate) fn select_last_workspace_for_control(
             .position(|workspace| workspace.workspace_id.as_deref() == Some(workspace_id.as_str()))
             .ok_or(WorkspaceLastControlError::NoPreviousWorkspace)?;
         window.tab_manager.selected_workspace_index = Some(index as i64);
+        sync_window_selected_workspace_id(window);
         (workspace_id, guard.clone())
     };
     notify_session_changed(app, &snapshot);
@@ -6510,6 +6841,16 @@ pub fn session_reopen_closed_browser_tab(
     snapshot
 }
 
+/// Reopen the most recently closed workspace with its complete session model.
+#[tauri::command]
+pub fn session_reopen_closed_workspace(
+    app: AppHandle,
+    state: State<'_, SessionState>,
+) -> Result<AppSessionSnapshot, String> {
+    reopen_closed_workspace_for_control(&app, &state)
+        .ok_or_else(|| "No recently closed workspace".to_string())
+}
+
 /// Move `panelId` from the active workspace into a newly-created workspace.
 #[tauri::command]
 pub fn session_move_panel_to_new_workspace(
@@ -7043,6 +7384,7 @@ mod tests {
         let mut snapshot = initial_snapshot(FIRST_PANEL_ID);
         snapshot.windows.push(SessionWindowSnapshot {
             window_id: Some("window-2".to_string()),
+            selected_workspace_id: None,
             tab_manager: SessionTabManagerSnapshot {
                 selected_workspace_index: Some(0),
                 workspaces: vec![session_ops::fresh_terminal_workspace("surface-2")],
@@ -8689,7 +9031,32 @@ mod tests {
             serde_json::from_value(serde_json::to_value(&snapshot).unwrap()).unwrap();
 
         assert_eq!(restored.windows[0].selected_workspace_id, Some(selected_id));
-        assert_eq!(restored.windows[0].tab_manager.selected_workspace_index, Some(99));
+        assert_eq!(
+            restored.windows[0].tab_manager.selected_workspace_index,
+            Some(99)
+        );
+    }
+
+    #[test]
+    fn selected_workspace_identity_witness_tracks_create_select_and_close() {
+        let mut snapshot = initial_snapshot("surface-1");
+        let first_id = snapshot.windows[0].selected_workspace_id.clone().unwrap();
+
+        apply_new_workspace(&mut snapshot, "surface-2", None, None, None, None);
+        let second_id = snapshot.windows[0].tab_manager.workspaces[1]
+            .workspace_id
+            .clone()
+            .unwrap();
+        assert_eq!(
+            snapshot.windows[0].selected_workspace_id,
+            Some(second_id.clone())
+        );
+
+        assert!(apply_select_workspace(&mut snapshot, 0));
+        assert_eq!(snapshot.windows[0].selected_workspace_id, Some(first_id));
+
+        assert!(apply_close_workspace(&mut snapshot, 0));
+        assert_eq!(snapshot.windows[0].selected_workspace_id, Some(second_id));
     }
 
     #[test]
@@ -8708,7 +9075,10 @@ mod tests {
         assert!(apply_reopen_closed_workspace(&mut snapshot, closed));
         let reopened = &snapshot.windows[0].tab_manager.workspaces[0];
         assert_eq!(reopened.custom_title.as_deref(), Some("Restored"));
-        assert_eq!(reopened.initial_terminal_input.as_deref(), Some("scrollback fixture"));
+        assert_eq!(
+            reopened.initial_terminal_input.as_deref(),
+            Some("scrollback fixture")
+        );
         assert_eq!(
             reopened
                 .workspace_environment
