@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "contract_id": "runtime_remote_proxy_transport",
+  "canonical_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+  "windows_audit_commit": "e9cbbd41f35ad79af412649a7d497c8beffa7952",
+  "audit_platform": {
+    "os": "Windows",
+    "transport_api": "Winsock through std::net::TcpStream",
+    "date": "2026-07-11"
+  },
+  "scope": [
+    "remote_proxy::tests::relay_bidirectional_observes_pipelined_upstream_and_downstream_prefixes",
+    "remote_proxy::tests::daemon_proxy_connector_routes_requests_and_stream_events"
+  ],
+  "contract": {
+    "bidirectional_relay": {
+      "pipelined_upstream": "Bytes consumed with the SOCKS5/HTTP handshake are written once before relay and are included first in the upstream observation; subsequent local bytes follow in wire order.",
+      "downstream": "Remote bytes continue to drain to the local client after local write EOF. Remote EOF ends downstream delivery.",
+      "local_half_close": "Local write EOF is a half-close. It ends only local-to-remote copying and must not discard unread local bytes, abort the peer, or close the remote stream before its response is drained.",
+      "teardown_order": [
+        "downstream EOF may half-close the local socket write side",
+        "the upstream worker must drain local EOF and finish before the owning socket read side is shut down",
+        "full local/remote teardown occurs after both copy directions have quiesced"
+      ],
+      "observation": "Emit exactly one observation after both directions finish. Preserve protocol, target, ordered bounded prefixes, truncation flags, and monotonic started/completed timestamps.",
+      "canonical_evidence": [
+        "Packages/macOS/CmuxRemoteWorkspace/Sources/CmuxRemoteWorkspace/Tunnel/RemoteDaemonProxySession.swift:112-121 explicitly treats local EOF as a half-close and keeps the remote read loop alive",
+        "Packages/macOS/CmuxRemoteWorkspace/Sources/CmuxRemoteWorkspace/Tunnel/RemoteDaemonProxySession.swift:369-371 closes only on remote EOF after forwarding its final payload",
+        "Packages/macOS/CmuxRemoteWorkspace/Sources/CmuxRemoteWorkspace/Tunnel/RemoteDaemonProxySession.swift:422-433 performs full close as a separate terminal operation"
+      ]
+    },
+    "daemon_rpc": {
+      "request_correlation": "Each request receives a unique increasing id, is registered before the frame is written, and blocks its caller until the reader thread routes the response with the same id or the timeout expires.",
+      "stream_event_routing": "Frames with ids resolve pending calls. Id-less proxy.stream.* frames route by exact stream_id to the subscribed receiver; unrelated stream ids and unrelated event families do not resolve calls or enter another stream.",
+      "thread_ownership": "The caller of open/write/subscribe/close may block. A distinct transport reader must continue consuming and routing frames. Tests and production responders must therefore answer a synchronous request from another thread.",
+      "timeouts": {
+        "windows_open_and_subscribe_test_override": "2 seconds",
+        "windows_stream_write": "10 seconds (DEFAULT_DAEMON_RPC_TIMEOUT)",
+        "windows_stream_close": "10 seconds (DEFAULT_DAEMON_RPC_TIMEOUT)",
+        "canonical_proxy_write": "8 seconds",
+        "canonical_proxy_close": "4 seconds"
+      },
+      "canonical_evidence": [
+        "Packages/macOS/CmuxRemoteDaemon/Sources/CmuxRemoteDaemon/Client/RemoteDaemonRPCClient+RPC.swift:37-46 defines synchronous proxy.write",
+        "Packages/macOS/CmuxRemoteDaemon/Sources/CmuxRemoteDaemon/Client/RemoteDaemonRPCClient+RPC.swift:51-84 registers stream routing before synchronous subscribe",
+        "Packages/macOS/CmuxRemoteDaemon/Sources/CmuxRemoteDaemon/Client/RemoteDaemonRPCClient+RPC.swift:272-325 writes then blocks on a separately resolved pending call",
+        "Packages/macOS/CmuxRemoteDaemon/Sources/CmuxRemoteDaemon/Registry/RemoteDaemonPendingCallRegistry.swift:3-24 documents the reader/caller-thread signal-to-wait contract"
+      ]
+    },
+    "daemon_stream_half_close_gap": {
+      "finding": "The daemon wire protocol exposes proxy.write, proxy.close, and stream data/eof/error, but no write-half-close RPC. Canonical local EOF deliberately keeps the remote stream open. Windows DaemonProxyStream currently maps Shutdown::Write to proxy.close, which is a full close and is not canonical-equivalent.",
+      "required_behavior": "Shutdown::Write on a daemon-backed stream must not issue proxy.close. Shutdown::Both (or final terminal cleanup) must close once and unregister once. This preserves response draining after local EOF."
+    },
+    "daemon_timeout_gap": {
+      "finding": "Windows currently uses DEFAULT_DAEMON_RPC_TIMEOUT (10 seconds) for stream writes and closes, while the frozen canonical contract uses 8 seconds for proxy.write and 4 seconds for proxy.close.",
+      "required_behavior": "Use operation-specific 8-second write and 4-second close deadlines so timeout and error timing match canonical behavior; connector/open timeout remains independently configurable."
+    }
+  },
+  "reds": [
+    {
+      "test": "remote_proxy::tests::relay_bidirectional_observes_pipelined_upstream_and_downstream_prefixes",
+      "source": "apps/desktop/src-tauri/src/remote_proxy.rs:2056-2105",
+      "reproduction": {
+        "command": "cmux_desktop_lib-<hash>.exe --exact remote_proxy::tests::relay_bidirectional_observes_pipelined_upstream_and_downstream_prefixes",
+        "repetitions": 100,
+        "passed": 63,
+        "failed": 37,
+        "failure": "proxy upstream relay failed: An established connection was aborted by the software in your host machine. (os error 10053)"
+      },
+      "root_cause": "After the in-memory remote returns immediate EOF, relay_bidirectional shuts down the server TcpStream write side and then read side before joining the upstream worker. On Windows, Shutdown::Read discards/aborts the peer's still-in-flight final bytes even though a cloned handle is reading them. The client write shutdown and/or the upstream read then observes WSAECONNABORTED (10053). Unix commonly tolerates this timing, hiding the ownership race.",
+      "minimal_fix": [
+        "Do not call client.shutdown(Shutdown::Read) while the upstream worker may still read.",
+        "After downstream EOF, flush and half-close only client Write, join the upstream worker, then perform terminal read/full cleanup.",
+      "Make daemon-backed Shutdown::Write a non-closing half-close/no-op because proxy.close is full close; reserve close_once for Shutdown::Both/final cleanup."
+      ]
+    },
+    {
+      "test": "remote_proxy::tests::daemon_proxy_connector_routes_requests_and_stream_events",
+      "source": "apps/desktop/src-tauri/src/remote_proxy.rs:2204-2279",
+      "reproduction": {
+        "command": "cmux_desktop_lib-<hash>.exe --exact remote_proxy::tests::daemon_proxy_connector_routes_requests_and_stream_events",
+        "repetitions": 3,
+        "passed": 0,
+        "failed": 3,
+        "elapsed_per_failure_seconds": 10,
+        "failure": "daemon RPC request 3 timed out"
+      },
+      "root_cause": "This red is in test orchestration, not request correlation. The test calls stream.write_all on its sole coordinator thread. write_all synchronously sends request id 3 and waits up to 10 seconds. The same thread intends to call writer.wait_for_line(2) and send id 3's response only after write_all returns, so no responder can run and timeout is inevitable. Open and close already demonstrate the correct separate-thread pattern.",
+      "minimal_fix": [
+        "Move stream.write_all(b\"ping\") to a worker thread and return the stream plus write result over a channel.",
+        "On the coordinator thread, observe request id 3, assert its method/stream/data, send the matching response, then join/receive the writer result before continuing.",
+        "Keep close on a worker thread and answer its exact request id from the coordinator thread."
+      ]
+    }
+  ],
+  "red_plan": {
+    "implementation_scope": "apps/desktop/src-tauri/src/remote_proxy.rs only",
+    "test_first": [
+      "Retain the existing relay test as a Windows race red and add a controlled barrier variant that proves upstream bytes are drained before read-side shutdown.",
+      "Correct only the RPC test scheduling first; its existing 10-second failure must become an immediate pass without changing production correlation code.",
+      "Add a daemon-stream half-close test asserting Shutdown::Write emits no proxy.close and later stream data/eof remains readable; Shutdown::Both emits exactly one proxy.close."
+    ],
+    "simplification": "Centralize direction completion/terminal cleanup ordering and express daemon close ownership through close_once; do not add sleeps, platform-specific error suppression, retry loops, or longer timeouts."
+  },
+  "adversarial_acceptance": [
+    "Relay test passes at least 1000 consecutive native Windows repetitions with zero 10053/10054 errors and exact upstream/downstream prefixes.",
+    "Barrier test delays upstream drain until downstream EOF and proves no local read shutdown occurs before drain completion.",
+    "Local client sends a request then Shutdown::Write; delayed remote response is still delivered completely before EOF.",
+    "Simultaneous EOF in both directions terminates without hang, duplicate observation, or duplicate close.",
+    "Daemon RPC test passes at least 250 consecutive repetitions and completes well below the 10-second request timeout.",
+    "Out-of-order responses for two concurrent request ids resolve only their matching callers.",
+    "An id-less stream event interleaved between request and response reaches only the exact stream subscription and does not consume the pending response.",
+    "Wrong-id, late-after-timeout, wrong-stream, malformed, EOF, and error frames do not deadlock or cross-route.",
+    "Shutdown::Write on DaemonProxyStream sends no proxy.close; terminal Shutdown::Both closes once, and subsequent drop only unregisters at most once.",
+    "Daemon proxy writes time out at 8 seconds and closes at 4 seconds, matching the frozen canonical RPC contract.",
+    "Full cmux-desktop native Windows test gate remains green after focused stress."
+  ],
+  "audit_result": {
+    "relay": "confirmed nondeterministic production teardown race",
+    "rpc": "confirmed deterministic test-thread deadlock; production request correlation not implicated by this red",
+    "implementation_changed": false,
+    "status": "red_contract_ready"
+  }
+}
