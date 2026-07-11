@@ -7,28 +7,131 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-#[cfg(debug_assertions)]
-use cmux_core::window_display::{centered_window_geometry, matching_monitor_index};
-use tauri::{AppHandle, Emitter, Manager, WebviewWindow, WindowEvent};
-#[cfg(debug_assertions)]
-use tauri::{PhysicalPosition, PhysicalSize};
+use cmux_core::window_display::{
+    centered_window_geometry, matching_monitor_index, ordered_window_identities,
+    resolve_window_selector, WindowControlIdentity,
+};
+use tauri::{
+    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewWindow, WindowEvent,
+};
 
 const MAIN_WINDOW_LABEL: &str = "main";
 const AUX_WINDOW_LABEL_PREFIX: &str = "window-";
 const WINDOW_STATE_CHANGED_EVENT: &str = "cmux://window-state-changed";
 static NEXT_WINDOW_NUMBER: AtomicU64 = AtomicU64::new(2);
 
-#[cfg(debug_assertions)]
-fn apply_default_display(window: &WebviewWindow) -> Result<(), String> {
-    let Some(config_path) = cmux_config::config_path() else {
-        return Ok(());
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowDisplayInfo {
+    pub name: String,
+    pub index: usize,
+    pub is_main: bool,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowDisplayMoveResult {
+    pub display: String,
+    pub moved: Vec<WindowControlIdentity>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WindowDisplayMoveError {
+    WindowNotFound(String),
+    DisplayNotFound {
+        requested: String,
+        available: Vec<String>,
+    },
+    Internal(String),
+}
+
+pub fn available_displays(app: &AppHandle) -> Result<Vec<WindowDisplayInfo>, String> {
+    let monitors = app
+        .available_monitors()
+        .map_err(|error| error.to_string())?;
+    let primary = app.primary_monitor().map_err(|error| error.to_string())?;
+    Ok(monitors
+        .iter()
+        .enumerate()
+        .map(|(index, monitor)| {
+            let position = monitor.position();
+            let size = monitor.size();
+            let is_main = primary.as_ref().is_some_and(|primary| {
+                primary.position() == position
+                    && primary.size() == size
+                    && primary.name() == monitor.name()
+            });
+            WindowDisplayInfo {
+                name: monitor
+                    .name()
+                    .cloned()
+                    .unwrap_or_else(|| "(unknown)".into()),
+                index,
+                is_main,
+                x: position.x,
+                y: position.y,
+                width: size.width,
+                height: size.height,
+            }
+        })
+        .collect())
+}
+
+pub fn move_control_windows_to_display(
+    app: &AppHandle,
+    query: &str,
+    selector: Option<&str>,
+) -> Result<WindowDisplayMoveResult, WindowDisplayMoveError> {
+    let mut windows = ordered_control_windows(app);
+    if let Some(selector) = selector {
+        let identities: Vec<_> = windows
+            .iter()
+            .map(|(identity, _)| identity.clone())
+            .collect();
+        let Some(index) = resolve_window_selector(&identities, selector) else {
+            return Err(WindowDisplayMoveError::WindowNotFound(selector.to_string()));
+        };
+        windows = vec![windows.remove(index)];
+    }
+    let displays = available_displays(app).map_err(WindowDisplayMoveError::Internal)?;
+    let names: Vec<_> = displays
+        .iter()
+        .map(|display| Some(display.name.clone()))
+        .collect();
+    let Some(display_index) = matching_monitor_index(&names, query) else {
+        return Err(WindowDisplayMoveError::DisplayNotFound {
+            requested: query.to_string(),
+            available: displays.into_iter().map(|display| display.name).collect(),
+        });
     };
-    let Some(query) = cmux_config::dev_window_display_at(&config_path)
-        .ok()
-        .flatten()
-    else {
-        return Ok(());
-    };
+    let resolved_display = displays[display_index].name.clone();
+    let mut moved = Vec::with_capacity(windows.len());
+    for (identity, window) in windows {
+        move_window_to_display(&window, &resolved_display)
+            .map_err(WindowDisplayMoveError::Internal)?;
+        moved.push(identity);
+    }
+    Ok(WindowDisplayMoveResult {
+        display: resolved_display,
+        moved,
+    })
+}
+
+fn ordered_control_windows(app: &AppHandle) -> Vec<(WindowControlIdentity, WebviewWindow)> {
+    let mut windows = app.webview_windows();
+    ordered_window_identities(windows.keys().cloned())
+        .into_iter()
+        .filter_map(|identity| {
+            windows
+                .remove(&identity.label)
+                .map(|window| (identity, window))
+        })
+        .collect()
+}
+
+fn move_window_to_display(window: &WebviewWindow, query: &str) -> Result<(), String> {
     let monitors = window
         .available_monitors()
         .map_err(|error| error.to_string())?;
@@ -36,9 +139,8 @@ fn apply_default_display(window: &WebviewWindow) -> Result<(), String> {
         .iter()
         .map(|monitor| monitor.name().cloned())
         .collect();
-    let Some(index) = matching_monitor_index(&names, &query) else {
-        return Ok(());
-    };
+    let index = matching_monitor_index(&names, query)
+        .ok_or_else(|| format!("Display not found: {query}"))?;
     let monitor = &monitors[index];
     let work_area = monitor.work_area();
     let window_size = window.outer_size().map_err(|error| error.to_string())?;
@@ -55,6 +157,26 @@ fn apply_default_display(window: &WebviewWindow) -> Result<(), String> {
     window
         .set_position(PhysicalPosition::new(position.0, position.1))
         .map_err(|error| error.to_string())
+}
+
+#[cfg(debug_assertions)]
+fn apply_default_display(window: &WebviewWindow) -> Result<(), String> {
+    let Some(config_path) = cmux_config::config_path() else {
+        return Ok(());
+    };
+    let Some(query) = cmux_config::dev_window_display_at(&config_path)
+        .ok()
+        .flatten()
+    else {
+        return Ok(());
+    };
+    move_window_to_display(window, &query).or_else(|error| {
+        if error.starts_with("Display not found:") {
+            Ok(())
+        } else {
+            Err(error)
+        }
+    })
 }
 
 #[cfg(not(debug_assertions))]

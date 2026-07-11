@@ -859,6 +859,8 @@ fn format_control_result(method: &str, result: &serde_json::Value) -> String {
         | "surface.refresh_all"
         | "surface.trigger_flash" => "OK".to_string(),
         "window.list" => format_window_entries(result),
+        "window.displays" => format_display_entries(result),
+        "window.display" => format_window_display_result(result),
         "window.current" => result
             .get("window_id")
             .and_then(serde_json::Value::as_str)
@@ -882,6 +884,46 @@ fn format_control_result(method: &str, result: &serde_json::Value) -> String {
         "workspace.sidebar_state" => format_sidebar_state(result),
         _ => serde_json::to_string(result).unwrap_or_default(),
     }
+}
+
+fn format_display_entries(result: &serde_json::Value) -> String {
+    let displays = result.get("displays").and_then(serde_json::Value::as_array);
+    let Some(displays) = displays.filter(|displays| !displays.is_empty()) else {
+        return "No displays found.".into();
+    };
+    displays
+        .iter()
+        .map(|display| {
+            let index = display
+                .get("index")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(-1);
+            let name = display
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("(unknown)");
+            let main = if display.get("main").and_then(serde_json::Value::as_bool) == Some(true) {
+                "  (main)"
+            } else {
+                ""
+            };
+            format!("{index}: {name}{main}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn format_window_display_result(result: &serde_json::Value) -> String {
+    let display = result
+        .get("display")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let moved = result
+        .get("moved")
+        .and_then(serde_json::Value::as_array)
+        .map_or(0, Vec::len);
+    let suffix = if moved == 1 { "" } else { "s" };
+    format!("Moved {moved} window{suffix} to {display}.")
 }
 
 fn format_window_entries(result: &serde_json::Value) -> String {
@@ -1077,6 +1119,25 @@ mod control_result_tests {
                 &serde_json::json!({"window_id": "window-id"})
             ),
             "window-id"
+        );
+    }
+
+    #[test]
+    fn window_display_commands_keep_canonical_plain_text() {
+        let displays = serde_json::json!({"displays":[
+            {"index":0,"name":"LG HDR 4K","main":true},
+            {"index":1,"name":"Sidecar","main":false}
+        ]});
+        assert_eq!(
+            format_control_result("window.displays", &displays),
+            "0: LG HDR 4K  (main)\n1: Sidecar"
+        );
+        assert_eq!(
+            format_control_result(
+                "window.display",
+                &serde_json::json!({"display":"LG HDR 4K","moved":["window-1"]})
+            ),
+            "Moved 1 window to LG HDR 4K."
         );
     }
 

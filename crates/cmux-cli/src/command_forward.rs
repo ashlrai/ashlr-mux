@@ -52,6 +52,7 @@ impl ControlCommand {
                 | "surface.trigger_flash"
                 | "notification.clear"
                 | "notification.create"
+                | "window.display"
                 | "right_sidebar"
         ) {
             return self;
@@ -193,6 +194,7 @@ pub fn control_command_for(
         )),
         "list-windows" => Some(ControlCommand::new("window.list", serde_json::json!({}))),
         "current-window" => Some(ControlCommand::new("window.current", serde_json::json!({}))),
+        "window" => Some(window_command(args)?),
         "list-notifications" => Some(ControlCommand::new(
             "notification.list",
             serde_json::json!({}),
@@ -1224,6 +1226,44 @@ fn config_reload_alias_params(args: &[String]) -> Result<serde_json::Value, CliE
         return Err(CliError::new("Usage: cmux config reload"));
     }
     Ok(serde_json::json!({}))
+}
+
+fn window_command(args: &[String]) -> Result<ControlCommand, CliError> {
+    let Some(subcommand) = args.first().map(|argument| argument.to_lowercase()) else {
+        return Err(CliError::new(
+            "window requires a subcommand. Try: display, displays, default-display",
+        ));
+    };
+    match subcommand.as_str() {
+        "displays" => Ok(ControlCommand::new(
+            "window.displays",
+            serde_json::json!({}),
+        )),
+        "display"
+            if args[1..]
+                .iter()
+                .any(|argument| matches!(argument.as_str(), "--list" | "-l")) =>
+        {
+            Ok(ControlCommand::new(
+                "window.displays",
+                serde_json::json!({}),
+            ))
+        }
+        "display" => {
+            let display = args[1..]
+                .iter()
+                .find(|argument| !argument.starts_with('-'))
+                .filter(|argument| !argument.is_empty())
+                .ok_or_else(|| CliError::new("window display requires a display name. Usage: cmux window display \"LG HDR 4K\"  (list names with: cmux window displays)"))?;
+            Ok(ControlCommand::new(
+                "window.display",
+                serde_json::json!({"display": display}),
+            ))
+        }
+        _ => Err(CliError::new(format!(
+            "Unknown window subcommand: {subcommand}. Try: display, displays"
+        ))),
+    }
 }
 
 fn dismiss_notification_params(args: &[String]) -> Result<serde_json::Value, CliError> {
@@ -3526,6 +3566,27 @@ mod tests {
             mapped("refresh-surfaces", &[]).method,
             "surface.refresh_all"
         );
+    }
+
+    #[test]
+    fn maps_window_display_namespace_and_global_window_target() {
+        let displays = mapped("window", &["displays"]);
+        assert_eq!(displays.method, "window.displays");
+        assert_eq!(displays.params, serde_json::json!({}));
+
+        let display = mapped("window", &["display", "LG HDR 4K"]).with_window_id(Some("2"));
+        assert_eq!(display.method, "window.display");
+        assert_eq!(
+            display.params,
+            serde_json::json!({"display":"LG HDR 4K","window_ref":"window:2"})
+        );
+        assert_eq!(
+            mapped("window", &["display", "--list"]).method,
+            "window.displays"
+        );
+
+        let error = control_command_for("window", &args(&["display"])).unwrap_err();
+        assert_eq!(error.message, "window display requires a display name. Usage: cmux window display \"LG HDR 4K\"  (list names with: cmux window displays)");
     }
 
     #[test]

@@ -1,5 +1,57 @@
 //! Platform-neutral display matching and centered window geometry.
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowControlIdentity {
+    pub label: String,
+    pub id: String,
+    pub reference: String,
+}
+
+pub fn ordered_window_identities(
+    labels: impl IntoIterator<Item = String>,
+) -> Vec<WindowControlIdentity> {
+    let mut labels: Vec<_> = labels.into_iter().collect();
+    labels.sort_by_key(|label| {
+        if label == "main" {
+            1
+        } else {
+            label
+                .strip_prefix("window-")
+                .and_then(|number| number.parse::<usize>().ok())
+                .unwrap_or(usize::MAX)
+        }
+    });
+    labels
+        .into_iter()
+        .enumerate()
+        .map(|(index, label)| WindowControlIdentity {
+            id: if label == "main" {
+                "window-1".to_string()
+            } else {
+                label.clone()
+            },
+            label,
+            reference: format!("window:{}", index + 1),
+        })
+        .collect()
+}
+
+pub fn resolve_window_selector(
+    identities: &[WindowControlIdentity],
+    selector: &str,
+) -> Option<usize> {
+    selector
+        .strip_prefix("window:")
+        .and_then(|index| index.parse::<usize>().ok())
+        .and_then(|index| index.checked_sub(1))
+        .filter(|index| *index < identities.len())
+        .or_else(|| {
+            identities
+                .iter()
+                .position(|identity| identity.id == selector)
+        })
+}
+
 /// Resolve a display query by case-insensitive exact name, then substring,
 /// then zero-based index, matching canonical cmux.
 pub fn matching_monitor_index(names: &[Option<String>], query: &str) -> Option<usize> {
@@ -64,5 +116,21 @@ mod tests {
             centered_window_geometry((1920, 0), (1920, 1040), (2200, 1200)),
             ((1920, 0), (1920, 1040))
         );
+
+        let identities = ordered_window_identities([
+            "window-10".to_string(),
+            "main".to_string(),
+            "window-2".to_string(),
+        ]);
+        assert_eq!(
+            identities
+                .iter()
+                .map(|identity| identity.id.as_str())
+                .collect::<Vec<_>>(),
+            ["window-1", "window-2", "window-10"]
+        );
+        assert_eq!(resolve_window_selector(&identities, "window:2"), Some(1));
+        assert_eq!(resolve_window_selector(&identities, "window-10"), Some(2));
+        assert_eq!(resolve_window_selector(&identities, "window:9"), None);
     }
 }

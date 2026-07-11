@@ -793,6 +793,8 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "config.reload",
     "window.list",
     "window.current",
+    "window.displays",
+    "window.display",
     "notification.list",
     "notification.dismiss",
     "notification.mark_read",
@@ -1038,6 +1040,8 @@ fn handle_control_request(app: &AppHandle, request: ControlRequest) -> ControlCa
         "config.reload" => config_reload(app),
         "window.list" => window_list(app),
         "window.current" => window_current(app),
+        "window.displays" => window_displays(app),
+        "window.display" => window_display(app, &request.params),
         "notification.list" => notification_list(app),
         "notification.dismiss" => notification_dismiss(app, &request.params),
         "notification.mark_read" => notification_mark_read(app, &request.params),
@@ -2681,6 +2685,88 @@ fn window_current(app: &AppHandle) -> ControlCallResult {
         "window_id": window_id,
         "window_ref": "window:1",
     }))
+}
+
+fn window_displays(app: &AppHandle) -> ControlCallResult {
+    match crate::window::available_displays(app) {
+        Ok(displays) => ok(json!({
+            "displays": displays.into_iter().map(|display| json!({
+                "name": display.name,
+                "index": display.index,
+                "display_id": Value::Null,
+                "main": display.is_main,
+                "frame": {
+                    "x": display.x,
+                    "y": display.y,
+                    "width": display.width,
+                    "height": display.height,
+                },
+            })).collect::<Vec<_>>(),
+        })),
+        Err(message) => ControlCallResult::Err {
+            code: "window_displays_failed".into(),
+            message,
+            data: None,
+        },
+    }
+}
+
+fn window_display(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let Some(display) = raw_string_param(params, &["display"]) else {
+        return invalid_params("Missing or invalid display");
+    };
+    let selector = raw_string_param(params, &["window_id", "window_ref"]);
+    match crate::window::move_control_windows_to_display(app, &display, selector.as_deref()) {
+        Ok(result) => {
+            let mut payload = serde_json::Map::from_iter([
+                ("display".into(), json!(result.display)),
+                (
+                    "moved".into(),
+                    json!(result
+                        .moved
+                        .iter()
+                        .map(|identity| identity.id.clone())
+                        .collect::<Vec<_>>()),
+                ),
+            ]);
+            if selector.is_some() {
+                if let Some(identity) = result.moved.first() {
+                    payload.insert("window_id".into(), json!(identity.id));
+                    payload.insert("window_ref".into(), json!(identity.reference));
+                }
+            }
+            ok(Value::Object(payload))
+        }
+        Err(crate::window::WindowDisplayMoveError::WindowNotFound(selector)) => {
+            let data = if selector.starts_with("window:") {
+                json!({"window_ref": selector})
+            } else {
+                json!({"window_id": selector})
+            };
+            ControlCallResult::Err {
+                code: "not_found".into(),
+                message: "Window not found".into(),
+                data: JsonValue::try_from(data).ok(),
+            }
+        }
+        Err(crate::window::WindowDisplayMoveError::DisplayNotFound {
+            requested,
+            available,
+        }) => ControlCallResult::Err {
+            code: "not_found".into(),
+            message: format!("Display not found: {requested}"),
+            data: JsonValue::try_from(json!({
+                "requested": requested,
+                "available": available,
+            }))
+            .ok(),
+        },
+        Err(crate::window::WindowDisplayMoveError::Internal(message)) => ControlCallResult::Err {
+            code: "window_display_failed".into(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn right_sidebar_control(
