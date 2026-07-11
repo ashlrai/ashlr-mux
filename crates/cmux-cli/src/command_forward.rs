@@ -104,6 +104,8 @@ fn workspace_scoped_method(method: &str) -> bool {
             | "workspace.sidebar_state"
             | "workspace.set_unread"
             | "workspace.set_pinned"
+            | "pane.list"
+            | "pane.surfaces"
             | "surface.list"
             | "surface.split"
             | "surface.new_terminal_tab"
@@ -418,9 +420,18 @@ pub fn control_command_for(
             surface_selector_params(args)?,
         )),
         "workspace" => workspace_subcommand(args)?,
-        "list-panes" | "list-pane-surfaces" | "list-panels" => {
-            Some(ControlCommand::new("surface.list", serde_json::json!({})))
-        }
+        "list-panes" => Some(ControlCommand::new(
+            "pane.list",
+            workspace_window_scope_params(args)?,
+        )),
+        "list-pane-surfaces" => Some(ControlCommand::new(
+            "pane.surfaces",
+            pane_workspace_window_scope_params(args)?,
+        )),
+        "list-panels" => Some(ControlCommand::new(
+            "surface.list",
+            workspace_window_scope_params(args)?,
+        )),
         "new-split" => Some(ControlCommand::new(
             "surface.split",
             surface_split_params(args)?,
@@ -1516,6 +1527,17 @@ fn workspace_window_scope_params(args: &[String]) -> Result<serde_json::Value, C
 fn window_scope_params(args: &[String]) -> Result<serde_json::Value, CliError> {
     let parsed = ParsedArgs::parse(args)?;
     let mut params = serde_json::Map::new();
+    apply_window_scope_selector(&parsed, &mut params);
+    Ok(serde_json::Value::Object(params))
+}
+
+fn pane_workspace_window_scope_params(args: &[String]) -> Result<serde_json::Value, CliError> {
+    let parsed = ParsedArgs::parse(args)?;
+    let mut params = serde_json::Map::new();
+    if let Some(pane) = parsed.value(&["--pane"]) {
+        apply_pane_target_selector(pane, &mut params);
+    }
+    apply_workspace_scope_selector(&parsed, &mut params);
     apply_window_scope_selector(&parsed, &mut params);
     Ok(serde_json::Value::Object(params))
 }
@@ -4203,6 +4225,29 @@ mod tests {
     }
 
     #[test]
+    fn pane_list_commands_route_to_distinct_canonical_methods() {
+        let panes = mapped("list-panes", &["--workspace", "2", "--window", "window:1"]);
+        assert_eq!(panes.method, "pane.list");
+        assert_eq!(
+            panes.params,
+            serde_json::json!({"workspace_ref":"workspace:2", "window_ref":"window:1"})
+        );
+
+        let surfaces = mapped(
+            "list-pane-surfaces",
+            &["--workspace", "2", "--pane", "3", "--window", "1"],
+        );
+        assert_eq!(surfaces.method, "pane.surfaces");
+        assert_eq!(
+            surfaces.params,
+            serde_json::json!({
+                "workspace_ref":"workspace:2", "pane_ref":"pane:3", "window_ref":"window:1"
+            })
+        );
+        assert_eq!(mapped("list-panels", &[]).method, "surface.list");
+    }
+
+    #[test]
     fn maps_workspace_list_and_current() {
         assert_eq!(mapped("list-workspaces", &[]).method, "workspace.list");
         assert_eq!(
@@ -5258,7 +5303,7 @@ mod tests {
 
     #[test]
     fn maps_legacy_surface_aliases() {
-        assert_eq!(mapped("list-panes", &[]).method, "surface.list");
+        assert_eq!(mapped("list-panes", &[]).method, "pane.list");
         assert_eq!(mapped("new-pane", &[]).method, "surface.split");
         assert_eq!(
             mapped("new-surface", &[]).method,

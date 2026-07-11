@@ -317,8 +317,14 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
             "Usage:\n  cmux workspace group collapse GROUP_ID\n  cmux workspace group expand GROUP_ID\n\nCollapses or expands a workspace group.",
         ),
         "ssh" => Some(SSH_USAGE_TEXT),
-        "list-panes" | "list-pane-surfaces" | "list-panels" => Some(
-            "Usage:\n  cmux list-pane-surfaces\n\nLists pane/surface metadata for the active desktop session.",
+        "list-panes" => Some(
+            "Usage:\n  cmux list-panes [--workspace WORKSPACE] [--window WINDOW]\n\nLists panes in a workspace.",
+        ),
+        "list-pane-surfaces" => Some(
+            "Usage:\n  cmux list-pane-surfaces [--workspace WORKSPACE] [--pane PANE] [--window WINDOW]\n\nLists surfaces in a pane. Defaults to the focused pane.",
+        ),
+        "list-panels" => Some(
+            "Usage:\n  cmux list-panels [--workspace WORKSPACE] [--window WINDOW]\n\nLists surfaces (panels) in a workspace.",
         ),
         "new-split" => Some(
             "Usage:\n  cmux new-split [--panel PANEL] [--direction right|down|left|up]\n\nSplits a pane and creates a terminal surface.",
@@ -618,6 +624,17 @@ mod tests {
             }
             other => panic!("expected PrintLine, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn pane_list_command_help_describes_distinct_scopes() {
+        assert!(subcommand_help_text("list-panes")
+            .contains("cmux list-panes [--workspace WORKSPACE] [--window WINDOW]"));
+        assert!(subcommand_help_text("list-pane-surfaces").contains(
+            "cmux list-pane-surfaces [--workspace WORKSPACE] [--pane PANE] [--window WINDOW]"
+        ));
+        assert!(subcommand_help_text("list-panels")
+            .contains("cmux list-panels [--workspace WORKSPACE] [--window WINDOW]"));
     }
 
     #[test]

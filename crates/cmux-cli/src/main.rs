@@ -989,6 +989,8 @@ fn format_control_result(method: &str, result: &serde_json::Value) -> String {
         | "pane.break"
         | "pane.join" => "OK".to_string(),
         "window.list" => format_window_entries(result),
+        "pane.list" => format_pane_entries(result),
+        "pane.surfaces" => format_pane_surface_entries(result),
         "window.displays" => format_display_entries(result),
         "window.display" => format_window_display_result(result),
         "window.current" => result
@@ -1107,6 +1109,72 @@ fn control_index(result: &serde_json::Value) -> String {
             value => value.to_string(),
         })
         .unwrap_or_else(|| "?".to_string())
+}
+
+fn entry_handle(entry: &serde_json::Value) -> &str {
+    entry
+        .get("ref")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| entry.get("id").and_then(serde_json::Value::as_str))
+        .unwrap_or("unknown")
+}
+
+fn format_pane_entries(result: &serde_json::Value) -> String {
+    let Some(panes) = result
+        .get("panes")
+        .and_then(serde_json::Value::as_array)
+        .filter(|panes| !panes.is_empty())
+    else {
+        return "No panes".to_string();
+    };
+    panes
+        .iter()
+        .map(|pane| {
+            let focused = pane.get("focused").and_then(serde_json::Value::as_bool) == Some(true);
+            let count = pane
+                .get("surface_count")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            format!(
+                "{}{}  [{} surface{}]{}",
+                if focused { "* " } else { "  " },
+                entry_handle(pane),
+                count,
+                if count == 1 { "" } else { "s" },
+                if focused { "  [focused]" } else { "" },
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn format_pane_surface_entries(result: &serde_json::Value) -> String {
+    let Some(surfaces) = result
+        .get("surfaces")
+        .and_then(serde_json::Value::as_array)
+        .filter(|surfaces| !surfaces.is_empty())
+    else {
+        return "No surfaces in pane".to_string();
+    };
+    surfaces
+        .iter()
+        .map(|surface| {
+            let selected =
+                surface.get("selected").and_then(serde_json::Value::as_bool) == Some(true);
+            let title = surface
+                .get("title")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            format!(
+                "{}{}  {}{}",
+                if selected { "* " } else { "  " },
+                entry_handle(surface),
+                title,
+                if selected { "  [selected]" } else { "" },
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn format_display_entries(result: &serde_json::Value) -> String {
@@ -1442,6 +1510,38 @@ mod control_result_tests {
                 &serde_json::json!({"workspace_ref":"workspace:2"}),
             ),
             "OK workspace:2"
+        );
+    }
+
+    #[test]
+    fn pane_list_outputs_match_canonical_text_rows() {
+        assert_eq!(
+            format_control_result(
+                "pane.list",
+                &serde_json::json!({"panes":[
+                    {"id":"pane-a", "ref":"pane:1", "surface_count":1, "focused":true},
+                    {"id":"pane-b", "ref":"pane:2", "surface_count":2, "focused":false}
+                ]})
+            ),
+            "* pane:1  [1 surface]  [focused]\n  pane:2  [2 surfaces]"
+        );
+        assert_eq!(
+            format_control_result(
+                "pane.surfaces",
+                &serde_json::json!({"surfaces":[
+                    {"id":"surface-a", "ref":"surface:1", "title":"Shell", "selected":true},
+                    {"id":"surface-b", "ref":"surface:2", "title":"Logs", "selected":false}
+                ]})
+            ),
+            "* surface:1  Shell  [selected]\n  surface:2  Logs"
+        );
+        assert_eq!(
+            format_control_result("pane.list", &serde_json::json!({"panes":[]})),
+            "No panes"
+        );
+        assert_eq!(
+            format_control_result("pane.surfaces", &serde_json::json!({"surfaces":[]})),
+            "No surfaces in pane"
         );
     }
 

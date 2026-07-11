@@ -846,6 +846,7 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "workspace.move_to_window",
     "workspace.next",
     "workspace.previous",
+    "workspace.last",
     "workspace.equalize_splits",
     "workspace.set_description",
     "workspace.reset_color",
@@ -926,6 +927,7 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "surface.toggle_split_zoom",
     "pane.swap",
     "pane.list",
+    "pane.surfaces",
     "pane.break",
     "pane.join",
     "pane.last",
@@ -1227,6 +1229,7 @@ fn handle_control_request(app: &AppHandle, request: ControlRequest) -> ControlCa
         "surface.toggle_split_zoom" => surface_toggle_split_zoom(app, &request.params),
         "pane.swap" => pane_swap(app, &request.params),
         "pane.list" => pane_list(app, &request.params),
+        "pane.surfaces" => pane_surfaces(app, &request.params),
         "pane.break" => pane_break(app, &request.params),
         "pane.join" => pane_join(app, &request.params),
         "pane.last" => pane_last(app, &request.params),
@@ -5065,6 +5068,145 @@ fn pane_list(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Contro
         "window_id": window_identity.as_ref().map(|identity| identity.id.clone()),
         "window_ref": window_identity.as_ref().map(|identity| identity.reference.clone()),
         "container_frame": {"width": width, "height": height},
+    }))
+}
+
+fn pane_snapshot_at_index(
+    workspace: &SessionWorkspaceSnapshot,
+    target_index: usize,
+) -> Option<&SessionPaneLayoutSnapshot> {
+    fn visit<'a>(
+        layout: &'a SessionWorkspaceLayoutSnapshot,
+        target_index: usize,
+        index: &mut usize,
+    ) -> Option<&'a SessionPaneLayoutSnapshot> {
+        match layout {
+            SessionWorkspaceLayoutSnapshot::Pane(pane) => {
+                let current = *index;
+                *index += 1;
+                (current == target_index).then_some(pane)
+            }
+            SessionWorkspaceLayoutSnapshot::Split(split) => {
+                visit(&split.first, target_index, index)
+                    .or_else(|| visit(&split.second, target_index, index))
+            }
+        }
+    }
+    let mut index = 0;
+    visit(workspace.layout.as_ref()?, target_index, &mut index)
+}
+
+fn resolve_pane_surfaces_target(
+    snapshot: &AppSessionSnapshot,
+    params: &serde_json::Map<String, Value>,
+    window_index: usize,
+) -> Option<(usize, usize, String)> {
+    let window = snapshot.windows.get(window_index)?;
+    let requested_workspace = split_off_workspace_index(snapshot, params, window_index)?;
+    let selected_workspace = window
+        .tab_manager
+        .selected_workspace_index
+        .and_then(|index| usize::try_from(index).ok())
+        .unwrap_or(0);
+    if let Some(pane_id) = string_param(params, &["pane_id"]) {
+        if let Some(workspace_index) = requested_workspace {
+            let workspace = window.tab_manager.workspaces.get(workspace_index)?;
+            return pane_index_by_id(workspace, &pane_id)
+                .map(|pane_index| (workspace_index, pane_index, pane_id));
+        }
+        return window.tab_manager.workspaces.iter().enumerate().find_map(
+            |(workspace_index, workspace)| {
+                pane_index_by_id(workspace, &pane_id)
+                    .map(|pane_index| (workspace_index, pane_index, pane_id.clone()))
+            },
+        );
+    }
+    let workspace_index = requested_workspace.unwrap_or(selected_workspace);
+    let workspace = window.tab_manager.workspaces.get(workspace_index)?;
+    if let Some(reference) = string_param(params, &["pane_ref"]) {
+        let pane_index = one_based_ref_index(&reference, "pane")?;
+        let (_, pane_id) = pane_at_index(workspace, pane_index)?;
+        return Some((workspace_index, pane_index, pane_id));
+    }
+    workspace
+        .focused_panel_id
+        .as_deref()
+        .and_then(|panel_id| surface_pane_details(workspace, panel_id))
+        .and_then(|(pane_index, pane_id, _)| {
+            pane_id.map(|pane_id| (workspace_index, pane_index, pane_id))
+        })
+}
+
+fn pane_surfaces(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(requested_window) = split_off_window_index(app, &current, params) else {
+        return ControlCallResult::Err {
+            code: "unavailable".to_string(),
+            message: "TabManager not available".to_string(),
+            data: None,
+        };
+    };
+    let window_index = requested_window.unwrap_or_else(|| {
+        crate::window::current_control_window(app, None)
+            .and_then(|identity| {
+                current
+                    .windows
+                    .iter()
+                    .position(|window| window.window_id.as_deref() == Some(identity.label.as_str()))
+            })
+            .unwrap_or(0)
+    });
+    let Some((workspace_index, pane_index, pane_id)) =
+        resolve_pane_surfaces_target(&current, params, window_index)
+    else {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Pane or workspace not found".to_string(),
+            data: None,
+        };
+    };
+    let window = &current.windows[window_index];
+    let workspace = &window.tab_manager.workspaces[workspace_index];
+    let pane = pane_snapshot_at_index(workspace, pane_index)
+        .expect("resolved pane index remains in the immutable snapshot");
+    let workspace_surface_ids = surfaces_for_workspace(workspace)
+        .into_iter()
+        .filter_map(|surface| {
+            surface
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect::<Vec<_>>();
+    let surface_type = pane.surface_kind.as_deref().unwrap_or("terminal");
+    let surfaces = pane
+        .panel_ids
+        .iter()
+        .enumerate()
+        .map(|(index, panel_id)| {
+            json!({
+                "id": panel_id,
+                "ref": workspace_surface_ids.iter().position(|id| id == panel_id).map(surface_ref),
+                "index": index,
+                "title": panel_title(&workspace.panel_titles, panel_id).unwrap_or_else(|| surface_type.to_string()),
+                "type": surface_type,
+                "selected": pane.selected_panel_id.as_deref() == Some(panel_id.as_str()),
+            })
+        })
+        .collect::<Vec<_>>();
+    let window_label = window.window_id.as_deref().unwrap_or("main");
+    let identity = crate::window::control_window_summaries(app)
+        .into_iter()
+        .find(|summary| summary.identity.label == window_label)
+        .map(|summary| summary.identity);
+    ok(json!({
+        "workspace_id": workspace.workspace_id,
+        "workspace_ref": workspace_ref(workspace_index),
+        "pane_id": pane_id,
+        "pane_ref": pane_ref(pane_index),
+        "surfaces": surfaces,
+        "window_id": identity.as_ref().map(|identity| identity.id.clone()),
+        "window_ref": identity.as_ref().map(|identity| identity.reference.clone()),
     }))
 }
 
@@ -12871,6 +13013,27 @@ mod tests {
     }
 
     #[test]
+    fn pane_surfaces_target_resolves_global_id_scoped_ref_or_focus() {
+        let mut snapshot = surface_move_snapshot();
+        snapshot.windows[0].tab_manager.workspaces[0].focused_panel_id =
+            Some("surface-1".to_string());
+        let by_id = json!({"pane_id":"pane-2"});
+        assert_eq!(
+            resolve_pane_surfaces_target(&snapshot, by_id.as_object().unwrap(), 0),
+            Some((1, 0, "pane-2".to_string()))
+        );
+        let by_ref = json!({"workspace_ref":"workspace:2", "pane_ref":"pane:1"});
+        assert_eq!(
+            resolve_pane_surfaces_target(&snapshot, by_ref.as_object().unwrap(), 0),
+            Some((1, 0, "pane-2".to_string()))
+        );
+        assert_eq!(
+            resolve_pane_surfaces_target(&snapshot, &serde_json::Map::new(), 0),
+            Some((0, 0, "pane-1".to_string()))
+        );
+    }
+
+    #[test]
     fn workspace_window_move_resolves_refs_locally_and_ids_globally() {
         let mut snapshot = surface_move_snapshot();
         let destination = snapshot.windows[0]
@@ -14069,6 +14232,7 @@ mod tests {
             "pane.join",
             "pane.last",
             "pane.list",
+            "pane.surfaces",
             "pane.resize",
             "surface.move",
             "surface.clear_history",

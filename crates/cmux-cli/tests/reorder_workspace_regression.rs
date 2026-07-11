@@ -191,6 +191,48 @@ fn executable_tmux_version_is_local_and_canonical() {
 }
 
 #[test]
+fn executable_routes_list_pane_surfaces_and_formats_rows() {
+    let (pipe, request_rx) = spawn_server(
+        "list-pane-surfaces",
+        serde_json::json!({"surfaces":[
+            {"id":"surface-a", "ref":"surface:1", "index":0, "title":"Shell", "type":"terminal", "selected":true},
+            {"id":"surface-b", "ref":"surface:2", "index":1, "title":"Logs", "type":"terminal", "selected":false}
+        ]}),
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_cmux"))
+        .args([
+            "list-pane-surfaces",
+            "--workspace",
+            "workspace:2",
+            "--pane",
+            "pane:1",
+            "--window",
+            "window:1",
+        ])
+        .env("CMUX_SOCKET_PATH", &pipe)
+        .env_remove("CMUX_SOCKET")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "* surface:1  Shell  [selected]\n  surface:2  Logs\n"
+    );
+    let (method, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(method, "pane.surfaces");
+    assert_eq!(
+        Value::Object(params),
+        serde_json::json!({
+            "workspace_ref":"workspace:2", "pane_ref":"pane:1", "window_ref":"window:1"
+        })
+    );
+}
+
+#[test]
 fn executable_routes_canonical_reorder_workspace_and_formats_dry_run() {
     let (pipe, request_rx) = spawn_server(
         "reorder-workspace",
