@@ -104,6 +104,7 @@ fn workspace_scoped_method(method: &str) -> bool {
             | "workspace.sidebar_state"
             | "workspace.set_unread"
             | "workspace.set_pinned"
+            | "pane.focus"
             | "pane.list"
             | "pane.surfaces"
             | "surface.list"
@@ -456,7 +457,8 @@ pub fn control_command_for(
             "surface.close",
             surface_selector_params(args)?,
         )),
-        "focus-pane" | "focus-panel" => Some(ControlCommand::new(
+        "focus-pane" => Some(ControlCommand::new("pane.focus", pane_focus_params(args)?)),
+        "focus-panel" => Some(ControlCommand::new(
             "surface.focus",
             surface_focus_params(args)?,
         )),
@@ -3363,6 +3365,20 @@ fn surface_focus_params(args: &[String]) -> Result<serde_json::Value, CliError> 
     Ok(serde_json::Value::Object(params))
 }
 
+fn pane_focus_params(args: &[String]) -> Result<serde_json::Value, CliError> {
+    let parsed = ParsedArgs::parse(args)?;
+    let mut params = serde_json::Map::new();
+    let pane = parsed
+        .value(&["--pane"])
+        .map(String::as_str)
+        .or_else(|| parsed.first_positional())
+        .ok_or_else(|| CliError::new("focus-pane requires --pane <id|ref>"))?;
+    apply_pane_target_selector(pane, &mut params);
+    apply_workspace_scope_selector(&parsed, &mut params);
+    apply_window_scope_selector(&parsed, &mut params);
+    Ok(serde_json::Value::Object(params))
+}
+
 fn surface_send_text_params(
     args: &[String],
     require_panel: bool,
@@ -5304,6 +5320,19 @@ mod tests {
     #[test]
     fn maps_legacy_surface_aliases() {
         assert_eq!(mapped("list-panes", &[]).method, "pane.list");
+        assert_eq!(mapped("focus-pane", &["pane:2"]).method, "pane.focus");
+        assert_eq!(
+            mapped(
+                "focus-pane",
+                &["--pane", "2", "--workspace", "workspace:3", "--window", "1"]
+            )
+            .params,
+            serde_json::json!({
+                "pane_ref": "pane:2",
+                "workspace_ref": "workspace:3",
+                "window_ref": "window:1",
+            })
+        );
         assert_eq!(mapped("new-pane", &[]).method, "surface.split");
         assert_eq!(
             mapped("new-surface", &[]).method,
@@ -5345,7 +5374,7 @@ mod tests {
         );
         assert_eq!(
             mapped("focus-pane", &["surface-2"]).params,
-            serde_json::json!({"panel_id": "surface-2"})
+            serde_json::json!({"pane_id": "surface-2"})
         );
     }
 

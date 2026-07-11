@@ -1421,6 +1421,32 @@ pub enum PaneLastError {
     NoAlternatePane,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneFocusError {
+    PaneNotFound,
+}
+
+/// Resolve the stable pane identity and its selected surface without changing
+/// pane-local tab selection.
+pub fn focus_pane_target(
+    workspace: &SessionWorkspaceSnapshot,
+    pane_id: &str,
+) -> Result<PaneLastResult, PaneFocusError> {
+    let pane = workspace
+        .layout
+        .as_ref()
+        .and_then(|layout| pane_by_id(layout, pane_id))
+        .ok_or(PaneFocusError::PaneNotFound)?;
+    Ok(PaneLastResult {
+        pane_id: pane_id.to_string(),
+        surface_id: pane
+            .selected_panel_id
+            .clone()
+            .filter(|id| pane.panel_ids.contains(id))
+            .or_else(|| pane.panel_ids.first().cloned()),
+    })
+}
+
 /// Resolve canonical `pane.last`: validate the focused pane, then choose the
 /// first pane in layout order whose identity differs from it.
 pub fn focus_alternate_pane(
@@ -6184,6 +6210,28 @@ mod tests {
         assert_eq!(
             focus_alternate_pane(&workspace, None),
             Err(PaneLastError::NoFocusedPane)
+        );
+    }
+
+    #[test]
+    fn focus_pane_target_preserves_selected_surface_and_rejects_missing_pane() {
+        let mut workspace = fresh_terminal_workspace("a");
+        let Layout::Pane(pane) = workspace.layout.as_mut().unwrap() else {
+            unreachable!();
+        };
+        pane.pane_id = Some("pane-a".into());
+        pane.panel_ids.push("b".into());
+        pane.selected_panel_id = Some("b".into());
+        assert_eq!(
+            focus_pane_target(&workspace, "pane-a"),
+            Ok(PaneLastResult {
+                pane_id: "pane-a".into(),
+                surface_id: Some("b".into()),
+            })
+        );
+        assert_eq!(
+            focus_pane_target(&workspace, "missing"),
+            Err(PaneFocusError::PaneNotFound)
         );
     }
 

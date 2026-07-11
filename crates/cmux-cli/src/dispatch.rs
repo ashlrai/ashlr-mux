@@ -344,8 +344,11 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
         "close-surface" => Some(
             "Usage:\n  cmux close-surface [SURFACE]\n\nCloses the selected surface, or the surface identified by surface:N ref or id.",
         ),
-        "focus-pane" | "focus-panel" => Some(
-            "Usage:\n  cmux focus-panel --panel PANEL\n\nFocuses a surface/panel in the selected or scoped workspace.",
+        "focus-pane" => Some(
+            "Usage:\n  cmux focus-pane [--pane PANE | PANE] [--workspace WORKSPACE] [--window WINDOW]\n\nFocuses the specified pane.",
+        ),
+        "focus-panel" => Some(
+            "Usage:\n  cmux focus-panel --panel PANEL [--workspace WORKSPACE] [--window WINDOW]\n\nFocuses a surface/panel in the selected or scoped workspace.",
         ),
         "surface-health" => Some(
             "Usage:\n  cmux surface-health [--workspace WORKSPACE]\n\nReports surface health for a workspace.",
