@@ -23,6 +23,7 @@ cmux-jsonc = { path = "../cmux-jsonc" }
 cmux-process = { path = "../cmux-process" }
 cmux-ssh = { path = "../cmux-ssh" }
 crossterm = "0.29"
+futures-util = "0.3"
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.10"
@@ -30,7 +31,8 @@ time = "0.3"
 url = "2"
 uuid = { workspace = true }
 # rt drives the one-shot socket round-trip; io-util backs tokio::io::split.
-tokio = { version = "1", features = ["io-util", "rt"] }
+tokio = { version = "1", features = ["io-util", "net", "rt", "sync", "time"] }
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-native-roots"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [

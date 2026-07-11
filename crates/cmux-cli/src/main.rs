@@ -113,6 +113,7 @@ fn dispatch(
             println!("{output}");
             Ok(())
         }
+        DispatchPlan::RunVmPtyConnect(args) => cmux_cli::vm_pty_connect::run_vm_pty_connect(&args),
         DispatchPlan::RunControl(control) => {
             let ambient_workspace_id = std::env::var(CMUX_WORKSPACE_ID_ENV).ok();
             let control = control

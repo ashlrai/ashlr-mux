@@ -33,6 +33,7 @@ pub mod socket;
 pub mod ssh;
 #[cfg(windows)]
 pub mod transport;
+pub mod vm_pty_connect;
 pub mod welcome;
 pub mod window_default_display;
 

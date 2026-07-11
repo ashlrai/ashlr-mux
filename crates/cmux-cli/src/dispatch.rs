@@ -51,6 +51,8 @@ pub enum DispatchPlan {
     RunSsh(Vec<String>),
     /// Inspect the remote-daemon release manifest and local cache.
     RunRemoteDaemonStatus(Vec<String>),
+    /// Bridge this terminal to a Cloud VM PTY WebSocket.
+    RunVmPtyConnect(Vec<String>),
     /// Run hidden local git-ref discovery for the diff-viewer branch picker.
     RunDiffViewerRefs(Vec<String>),
     /// Regenerate a branch-base diff page and manifest entries.
@@ -114,6 +116,7 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
         "config" => Some(crate::config::CONFIG_USAGE),
         "docs" => Some(crate::docs::DOCS_USAGE),
         "remote-daemon-status" => Some(crate::remote_daemon_status::REMOTE_DAEMON_STATUS_USAGE),
+        "vm-pty-connect" => Some(crate::vm_pty_connect::VM_PTY_CONNECT_USAGE),
         "sessions" | "session-debug" => Some(crate::sessions::SESSIONS_USAGE),
         "settings" => Some(crate::settings::SETTINGS_USAGE),
         "ping" => Some("Usage:\n  cmux ping\n\nSends a ping to the control socket."),
@@ -373,17 +376,9 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
     }
 }
 
-/// A uniform "this action is not part of the Windows headless port yet" failure
-/// (exit 1). `label` is the user-facing command spelling.
-fn not_yet_ported(label: &str) -> CliError {
-    CliError::new(format!(
-        "'{label}' is not yet available in the Windows port"
-    ))
-}
-
 /// The not-yet-ported failure for a socket-backed command with no explicit v2
-/// mapping yet. Kept distinct from [`not_yet_ported`] so the message points at
-/// the raw escape hatch that always works for available backend methods.
+/// mapping yet. The message points at the raw escape hatch that always works
+/// for available backend methods.
 fn socket_command_not_ported(command: &str) -> CliError {
     CliError::new(format!(
         "socket command '{command}' is not yet ported (M4 WS5); \
@@ -401,20 +396,19 @@ pub fn plan(action: &PreSocketAction, command: &str) -> DispatchPlan {
 /// Map a classified `action` (for `command` plus its command-specific args) to
 /// the executor's plan.
 pub fn plan_with_args(action: &PreSocketAction, command: &str, args: &[String]) -> DispatchPlan {
-    // The wired paths return directly; every remaining variant is a no-socket
-    // command whose subsystem is not ported yet, so it falls through to a single
-    // `Fail(not_yet_ported(label))` with its own user-facing label.
-    let label = match action {
-        PreSocketAction::BareVersion => return DispatchPlan::PrintVersion,
-        PreSocketAction::Help => return DispatchPlan::PrintTopLevelHelp,
+    // Every no-socket action has a concrete executor. Socket-backed commands
+    // without a typed mapping retain the explicit raw-RPC failure below.
+    match action {
+        PreSocketAction::BareVersion => DispatchPlan::PrintVersion,
+        PreSocketAction::Help => DispatchPlan::PrintTopLevelHelp,
         PreSocketAction::UnknownCommandHelp { command } => {
-            return DispatchPlan::PrintLine(unknown_command_message(command))
+            DispatchPlan::PrintLine(unknown_command_message(command))
         }
         PreSocketAction::SubcommandHelp { command } => {
-            return DispatchPlan::PrintLine(subcommand_help_text(command))
+            DispatchPlan::PrintLine(subcommand_help_text(command))
         }
         PreSocketAction::NeedsSocket => {
-            return if command == "rpc" {
+            if command == "rpc" {
                 DispatchPlan::RunRpc
             } else if command == "events" {
                 DispatchPlan::RunEvents(args.to_vec())
@@ -458,41 +452,30 @@ pub fn plan_with_args(action: &PreSocketAction, command: &str, args: &[String]) 
                 DispatchPlan::Fail(socket_command_not_ported(command))
             }
         }
-        PreSocketAction::RemoteDaemonStatus => {
-            return DispatchPlan::RunRemoteDaemonStatus(args.to_vec());
-        }
-        PreSocketAction::VmPtyConnect => "vm-pty-connect",
-        PreSocketAction::Docs => return DispatchPlan::RunDocs(args.to_vec()),
-        PreSocketAction::Welcome => return DispatchPlan::RunWelcome,
+        PreSocketAction::RemoteDaemonStatus => DispatchPlan::RunRemoteDaemonStatus(args.to_vec()),
+        PreSocketAction::VmPtyConnect => DispatchPlan::RunVmPtyConnect(args.to_vec()),
+        PreSocketAction::Docs => DispatchPlan::RunDocs(args.to_vec()),
+        PreSocketAction::Welcome => DispatchPlan::RunWelcome,
         PreSocketAction::Sessions { debug } => {
             let mut session_args = args.to_vec();
             if *debug {
                 session_args.insert(0, "debug".to_string());
             }
-            return DispatchPlan::RunSessions(session_args);
+            DispatchPlan::RunSessions(session_args)
         }
-        PreSocketAction::SigpipeProbe => return DispatchPlan::RunSigpipeProbe(args.to_vec()),
-        PreSocketAction::SigpipeStdinPipeProbe => {
-            return DispatchPlan::RunSigpipeStdinPipeProbe;
-        }
-        PreSocketAction::SigpipeInspect => return DispatchPlan::RunSigpipeInspect(args.to_vec()),
-        PreSocketAction::DiffViewerServer => {
-            return DispatchPlan::RunDiffViewerServer(args.to_vec());
-        }
-        PreSocketAction::DiffViewerRefs => {
-            return DispatchPlan::RunDiffViewerRefs(args.to_vec());
-        }
-        PreSocketAction::DiffViewerBranch => {
-            return DispatchPlan::RunDiffViewerBranch(args.to_vec());
-        }
-        PreSocketAction::SettingsNoSocket => return DispatchPlan::RunSettings(args.to_vec()),
+        PreSocketAction::SigpipeProbe => DispatchPlan::RunSigpipeProbe(args.to_vec()),
+        PreSocketAction::SigpipeStdinPipeProbe => DispatchPlan::RunSigpipeStdinPipeProbe,
+        PreSocketAction::SigpipeInspect => DispatchPlan::RunSigpipeInspect(args.to_vec()),
+        PreSocketAction::DiffViewerServer => DispatchPlan::RunDiffViewerServer(args.to_vec()),
+        PreSocketAction::DiffViewerRefs => DispatchPlan::RunDiffViewerRefs(args.to_vec()),
+        PreSocketAction::DiffViewerBranch => DispatchPlan::RunDiffViewerBranch(args.to_vec()),
+        PreSocketAction::SettingsNoSocket => DispatchPlan::RunSettings(args.to_vec()),
         PreSocketAction::WindowDefaultDisplay => {
-            return DispatchPlan::RunWindowDefaultDisplay(args.to_vec());
+            DispatchPlan::RunWindowDefaultDisplay(args.to_vec())
         }
-        PreSocketAction::ConfigNoSocket => return DispatchPlan::RunConfig(args.to_vec()),
-        PreSocketAction::OpenPath { path } => return DispatchPlan::RunOpenPath(path.clone()),
-    };
-    DispatchPlan::Fail(not_yet_ported(label))
+        PreSocketAction::ConfigNoSocket => DispatchPlan::RunConfig(args.to_vec()),
+        PreSocketAction::OpenPath { path } => DispatchPlan::RunOpenPath(path.clone()),
+    }
 }
 
 fn generated_hook_feed_args(args: &[String]) -> Option<Vec<String>> {
@@ -843,6 +826,22 @@ mod tests {
         let help = subcommand_help_text("remote-daemon-status");
         assert!(help.contains("Usage: cmux remote-daemon-status"));
         assert!(help.contains("checksum verification state"));
+        assert!(!help.contains("not yet ported"));
+    }
+
+    #[test]
+    fn vm_pty_connect_runs_locally_with_all_arguments() {
+        let args = vec![
+            "--config".to_string(),
+            "C:\\Temp\\vm.json".to_string(),
+            "--id=vm-123".to_string(),
+        ];
+        assert_eq!(
+            plan_with_args(&PreSocketAction::VmPtyConnect, "vm-pty-connect", &args),
+            DispatchPlan::RunVmPtyConnect(args)
+        );
+        let help = subcommand_help_text("vm-pty-connect");
+        assert!(help.contains(crate::vm_pty_connect::VM_PTY_CONNECT_USAGE));
         assert!(!help.contains("not yet ported"));
     }
 
