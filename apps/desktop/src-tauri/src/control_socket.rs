@@ -921,6 +921,7 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "surface.toggle_split_zoom",
     "pane.swap",
     "pane.break",
+    "pane.join",
     "browser.open_split",
     "browser.navigate",
     "browser.back",
@@ -1217,6 +1218,7 @@ fn handle_control_request(app: &AppHandle, request: ControlRequest) -> ControlCa
         "surface.toggle_split_zoom" => surface_toggle_split_zoom(app, &request.params),
         "pane.swap" => pane_swap(app, &request.params),
         "pane.break" => pane_break(app, &request.params),
+        "pane.join" => pane_join(app, &request.params),
         "browser.navigate" => browser_navigate(app, &request.params),
         "browser.back" => browser_back(app, &request.params),
         "browser.forward" => browser_forward(app, &request.params),
@@ -5116,6 +5118,110 @@ fn pane_break(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Contr
         "surface_id": broken.surface_id,
         "surface_ref": surface_ref(0),
     }))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum PaneJoinSourceError {
+    Missing,
+    SourcePaneUnresolved(String),
+}
+
+fn resolve_pane_join_source(
+    current: &AppSessionSnapshot,
+    params: &serde_json::Map<String, Value>,
+) -> Result<String, PaneJoinSourceError> {
+    if let Some(surface_id) = string_param(params, &["surface_id"]) {
+        return Ok(surface_id);
+    }
+    if params.contains_key("surface_ref") {
+        let workspace_index = workspace_index_from_workspace_scope_or_selected(current, params)
+            .ok_or(PaneJoinSourceError::Missing)?;
+        let workspace = current
+            .windows
+            .first()
+            .and_then(|window| window.tab_manager.workspaces.get(workspace_index))
+            .ok_or(PaneJoinSourceError::Missing)?;
+        return surface_id_from_selector_keys(workspace, params, &["surface_ref"], &["surface_id"])
+            .ok_or(PaneJoinSourceError::Missing);
+    }
+    let (workspace_index, pane_id) = if let Some(pane_id) = string_param(params, &["pane_id"]) {
+        pane_location_by_id(current, &pane_id)
+            .map(|(workspace_index, _, pane_id)| (workspace_index, pane_id))
+            .ok_or_else(|| PaneJoinSourceError::SourcePaneUnresolved(pane_id))?
+    } else if let Some(pane_reference) = string_param(params, &["pane_ref"]) {
+        let workspace_index = workspace_index_from_workspace_scope_or_selected(current, params)
+            .ok_or_else(|| PaneJoinSourceError::SourcePaneUnresolved(pane_reference.clone()))?;
+        let workspace = current
+            .windows
+            .first()
+            .and_then(|window| window.tab_manager.workspaces.get(workspace_index))
+            .ok_or_else(|| PaneJoinSourceError::SourcePaneUnresolved(pane_reference.clone()))?;
+        let pane_index = one_based_ref_index(&pane_reference, "pane")
+            .ok_or_else(|| PaneJoinSourceError::SourcePaneUnresolved(pane_reference.clone()))?;
+        pane_at_index(workspace, pane_index)
+            .map(|(_, pane_id)| (workspace_index, pane_id))
+            .ok_or(PaneJoinSourceError::SourcePaneUnresolved(pane_reference))?
+    } else {
+        return Err(PaneJoinSourceError::Missing);
+    };
+    let workspace = &current.windows[0].tab_manager.workspaces[workspace_index];
+    surfaces_for_workspace(workspace)
+        .into_iter()
+        .find(|surface| {
+            surface.get("pane_id").and_then(Value::as_str) == Some(pane_id.as_str())
+                && surface
+                    .get("selected_in_pane")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+        })
+        .and_then(|surface| {
+            surface
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .ok_or(PaneJoinSourceError::SourcePaneUnresolved(pane_id))
+}
+
+fn pane_join(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    if !params.contains_key("target_pane_id") && !params.contains_key("target_pane_ref") {
+        return invalid_params("Missing or invalid target_pane_id");
+    }
+    let current = snapshot(app);
+    let source_panel_id = match resolve_pane_join_source(&current, params) {
+        Ok(panel_id) => panel_id,
+        Err(PaneJoinSourceError::Missing) => {
+            return invalid_params("Missing surface_id (or pane_id with selected surface)");
+        }
+        Err(PaneJoinSourceError::SourcePaneUnresolved(pane_id)) => {
+            return ControlCallResult::Err {
+                code: "not_found".to_string(),
+                message: "Unable to resolve selected surface in source pane".to_string(),
+                data: Some(
+                    json!({"pane_id": pane_id})
+                        .try_into()
+                        .unwrap_or(JsonValue::Null),
+                ),
+            };
+        }
+    };
+    let mut move_params = serde_json::Map::new();
+    move_params.insert("surface_id".to_string(), json!(source_panel_id));
+    for key in [
+        "target_pane_id",
+        "target_pane_ref",
+        "workspace_id",
+        "workspace_ref",
+        "window_id",
+        "window_ref",
+        "focus",
+    ] {
+        if let Some(value) = params.get(key) {
+            let move_key = key.strip_prefix("target_").unwrap_or(key);
+            move_params.insert(move_key.to_string(), value.clone());
+        }
+    }
+    surface_move(app, &move_params)
 }
 
 fn surface_close(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
@@ -12066,6 +12172,40 @@ mod tests {
     }
 
     #[test]
+    fn pane_join_source_resolves_explicit_surface_or_selected_pane_surface() {
+        let snapshot = surface_move_snapshot();
+        let direct = serde_json::json!({"surface_id": "surface-2"});
+        assert_eq!(
+            resolve_pane_join_source(&snapshot, direct.as_object().unwrap()),
+            Ok("surface-2".to_string())
+        );
+        let by_pane = serde_json::json!({"pane_id": "pane-2"});
+        assert_eq!(
+            resolve_pane_join_source(&snapshot, by_pane.as_object().unwrap()),
+            Ok("surface-3".to_string())
+        );
+        let by_ref = serde_json::json!({
+            "workspace_ref": "workspace:2",
+            "pane_ref": "pane:1",
+        });
+        assert_eq!(
+            resolve_pane_join_source(&snapshot, by_ref.as_object().unwrap()),
+            Ok("surface-3".to_string())
+        );
+        assert_eq!(
+            resolve_pane_join_source(&snapshot, &serde_json::Map::new()),
+            Err(PaneJoinSourceError::Missing)
+        );
+        let missing = serde_json::json!({"pane_id": "missing"});
+        assert_eq!(
+            resolve_pane_join_source(&snapshot, missing.as_object().unwrap()),
+            Err(PaneJoinSourceError::SourcePaneUnresolved(
+                "missing".to_string()
+            ))
+        );
+    }
+
+    #[test]
     fn workspace_window_move_resolves_refs_locally_and_ids_globally() {
         let mut snapshot = surface_move_snapshot();
         let destination = snapshot.windows[0]
@@ -13260,6 +13400,7 @@ mod tests {
             "surface.drag_to_split",
             "pane.swap",
             "pane.break",
+            "pane.join",
             "surface.move",
             "surface.clear_history",
             "surface.trigger_flash",

@@ -292,6 +292,7 @@ pub fn control_command_for(
         )),
         "swap-pane" => Some(ControlCommand::new("pane.swap", swap_pane_params(args)?)),
         "break-pane" => Some(ControlCommand::new("pane.break", break_pane_params(args)?)),
+        "join-pane" => Some(ControlCommand::new("pane.join", join_pane_params(args)?)),
         "reorder-surface" => Some(ControlCommand::new(
             "surface.reorder",
             canonical_surface_reorder_params(args)?,
@@ -1447,6 +1448,17 @@ fn swap_pane_params(args: &[String]) -> Result<serde_json::Value, CliError> {
 }
 
 fn break_pane_params(args: &[String]) -> Result<serde_json::Value, CliError> {
+    pane_transfer_params(args, false)
+}
+
+fn join_pane_params(args: &[String]) -> Result<serde_json::Value, CliError> {
+    pane_transfer_params(args, true)
+}
+
+fn pane_transfer_params(
+    args: &[String],
+    require_target_pane: bool,
+) -> Result<serde_json::Value, CliError> {
     let parsed = ParsedArgs::parse(args)?;
     if parsed.value(&["--focus"]).is_some() && parsed.has_flag("--no-focus") {
         return Err(CliError::new(
@@ -1454,6 +1466,12 @@ fn break_pane_params(args: &[String]) -> Result<serde_json::Value, CliError> {
         ));
     }
     let mut params = serde_json::Map::new();
+    if require_target_pane {
+        let target_pane = parsed
+            .value(&["--target-pane"])
+            .ok_or_else(|| CliError::new("join-pane requires --target-pane"))?;
+        apply_named_pane_target_selector(target_pane, "target_pane", &mut params);
+    }
     if let Some(pane) = parsed.value(&["--pane"]) {
         apply_pane_target_selector(pane, &mut params);
     }
@@ -4915,6 +4933,42 @@ mod tests {
                 .unwrap_err()
                 .message,
             "--focus and --no-focus cannot be used together"
+        );
+    }
+
+    #[test]
+    fn maps_canonical_join_pane_command_and_requires_target() {
+        let joined = mapped(
+            "join-pane",
+            &[
+                "--target-pane",
+                "pane:3",
+                "--pane",
+                "2",
+                "--surface",
+                "surface-id",
+                "--workspace",
+                "1",
+                "--focus",
+                "true",
+            ],
+        );
+        assert_eq!(joined.method, "pane.join");
+        assert_eq!(
+            joined.params,
+            serde_json::json!({
+                "target_pane_ref": "pane:3",
+                "pane_ref": "pane:2",
+                "surface_id": "surface-id",
+                "workspace_ref": "workspace:1",
+                "focus": true,
+            })
+        );
+        assert_eq!(
+            control_command_for("join-pane", &args(&[]))
+                .unwrap_err()
+                .message,
+            "join-pane requires --target-pane"
         );
     }
 

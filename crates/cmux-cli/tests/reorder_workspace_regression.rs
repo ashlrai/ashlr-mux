@@ -484,3 +484,47 @@ fn executable_routes_break_pane_and_formats_result() {
         })
     );
 }
+
+#[test]
+fn executable_routes_join_pane_and_formats_result() {
+    let (pipe, request_rx) = spawn_server(
+        "join-pane",
+        serde_json::json!({
+            "surface_ref": "surface:1",
+            "pane_ref": "pane:2",
+            "workspace_ref": "workspace:1",
+        }),
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_cmux"))
+        .args([
+            "join-pane",
+            "--target-pane",
+            "pane:2",
+            "--surface",
+            "surface:3",
+            "--workspace",
+            "workspace:1",
+            "--no-focus",
+        ])
+        .env("CMUX_SOCKET_PATH", &pipe)
+        .env_remove("CMUX_SOCKET")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "OK\n");
+    let (method, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(method, "pane.join");
+    assert_eq!(
+        serde_json::Value::Object(params),
+        serde_json::json!({
+            "target_pane_ref": "pane:2",
+            "surface_ref": "surface:3",
+            "workspace_ref": "workspace:1",
+            "focus": false,
+        })
+    );
+}
