@@ -1646,7 +1646,7 @@ fn parse_host_port(raw: &str) -> Result<ProxyTarget, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::MutexGuard;
+    use std::sync::{Condvar, MutexGuard};
     use std::time::Instant;
 
     struct ChannelReader {
@@ -1809,6 +1809,114 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct RelayWriteBarrierState {
+        first_write_started: bool,
+        release_first_write: bool,
+    }
+
+    #[derive(Clone)]
+    struct BarrierProxyStream {
+        read_bytes: Arc<Mutex<VecDeque<u8>>>,
+        written: Arc<Mutex<Vec<u8>>>,
+        barrier: Arc<(Mutex<RelayWriteBarrierState>, Condvar)>,
+    }
+
+    impl BarrierProxyStream {
+        fn new(read_bytes: &[u8]) -> Self {
+            Self {
+                read_bytes: Arc::new(Mutex::new(read_bytes.iter().copied().collect())),
+                written: Arc::new(Mutex::new(Vec::new())),
+                barrier: Arc::new((
+                    Mutex::new(RelayWriteBarrierState::default()),
+                    Condvar::new(),
+                )),
+            }
+        }
+
+        fn wait_for_first_write(&self) {
+            let (lock, ready) = &*self.barrier;
+            let state = lock.lock().expect("relay write barrier mutex poisoned");
+            let (state, timeout) = ready
+                .wait_timeout_while(state, Duration::from_secs(5), |state| {
+                    !state.first_write_started
+                })
+                .expect("relay write barrier mutex poisoned");
+            assert!(
+                state.first_write_started,
+                "upstream relay never reached remote writer"
+            );
+            assert!(
+                !timeout.timed_out(),
+                "timed out waiting for upstream relay write"
+            );
+        }
+
+        fn release_first_write(&self) {
+            let (lock, ready) = &*self.barrier;
+            let mut state = lock.lock().expect("relay write barrier mutex poisoned");
+            state.release_first_write = true;
+            ready.notify_all();
+        }
+
+        fn written(&self) -> Vec<u8> {
+            self.written
+                .lock()
+                .expect("barrier proxy written mutex poisoned")
+                .clone()
+        }
+    }
+
+    impl Read for BarrierProxyStream {
+        fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+            let mut read_bytes = self
+                .read_bytes
+                .lock()
+                .expect("barrier proxy read mutex poisoned");
+            let count = output.len().min(read_bytes.len());
+            for slot in output.iter_mut().take(count) {
+                *slot = read_bytes
+                    .pop_front()
+                    .expect("read length checked before pop");
+            }
+            Ok(count)
+        }
+    }
+
+    impl Write for BarrierProxyStream {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            let (lock, ready) = &*self.barrier;
+            let mut state = lock.lock().expect("relay write barrier mutex poisoned");
+            if !state.first_write_started {
+                state.first_write_started = true;
+                ready.notify_all();
+                state = ready
+                    .wait_while(state, |state| !state.release_first_write)
+                    .expect("relay write barrier mutex poisoned");
+            }
+            drop(state);
+            self.written
+                .lock()
+                .expect("barrier proxy written mutex poisoned")
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl ProxyStream for BarrierProxyStream {
+        fn try_clone_box(&self) -> io::Result<Box<dyn ProxyStream>> {
+            Ok(Box::new(self.clone()))
+        }
+
+        fn shutdown(&self, _how: Shutdown) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
     struct ChannelTrafficObserver {
         sender: mpsc::Sender<ProxyTrafficObservation>,
     }
@@ -1835,6 +1943,51 @@ mod tests {
             .as_str()
             .unwrap()
             .to_string()
+    }
+
+    fn open_scripted_daemon_stream(
+        client: Arc<DaemonProxyRpcClient>,
+        writer: &CapturedWriter,
+        daemon_sender: &mpsc::Sender<Vec<u8>>,
+        first_line_index: usize,
+        stream_id: &str,
+    ) -> Box<dyn ProxyStream> {
+        let connector = DaemonProxyConnector::with_timeout(client, Duration::from_secs(2));
+        let target = ProxyTarget {
+            host: "example.com".to_string(),
+            port: 443,
+        };
+        let (stream_sender, stream_receiver) = mpsc::channel();
+        thread::spawn(move || {
+            stream_sender
+                .send(connector.open_stream(&target, ProxyHandshakeProtocol::Socks5))
+                .unwrap();
+        });
+
+        let open = writer.wait_for_line(first_line_index);
+        assert_eq!(request_method(&open), "proxy.open");
+        send_daemon_frame(
+            daemon_sender,
+            json!({
+                "id": request_id(&open),
+                "ok": true,
+                "result": { "stream_id": stream_id },
+            }),
+        );
+        let subscribe = writer.wait_for_line(first_line_index + 1);
+        assert_eq!(request_method(&subscribe), "proxy.stream.subscribe");
+        send_daemon_frame(
+            daemon_sender,
+            json!({
+                "id": request_id(&subscribe),
+                "ok": true,
+                "result": {},
+            }),
+        );
+        stream_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap()
     }
 
     #[test]
@@ -2113,6 +2266,47 @@ mod tests {
         assert!(!observation.upstream_truncated);
         assert!(!observation.downstream_truncated);
         assert!(observation.completed_at_ms >= observation.started_at_ms);
+    }
+
+    #[test]
+    fn relay_bidirectional_drains_upstream_after_downstream_eof_before_read_shutdown() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut client = TcpStream::connect(address).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        let remote_response = b"response-before-final-upstream";
+        let remote = BarrierProxyStream::new(remote_response);
+        let remote_written = remote.clone();
+
+        let handle = thread::spawn(move || {
+            relay_bidirectional(
+                server,
+                Box::new(remote),
+                None,
+                ProxyHandshakeProtocol::Socks5,
+                ProxyTarget {
+                    host: "example.com".to_string(),
+                    port: 80,
+                },
+                Vec::new(),
+            )
+        });
+
+        client.write_all(b"prefix-").unwrap();
+        remote_written.wait_for_first_write();
+
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).unwrap();
+        let final_write = client.write_all(b"final");
+        let final_shutdown = client.shutdown(Shutdown::Write);
+        remote_written.release_first_write();
+        let relay_result = handle.join().unwrap();
+
+        final_write.expect("local final bytes must remain writable after downstream EOF");
+        final_shutdown.expect("local write half-close must remain valid after downstream EOF");
+        relay_result.unwrap();
+        assert_eq!(response, remote_response);
+        assert_eq!(remote_written.written(), b"prefix-final");
     }
 
     #[test]
@@ -2411,6 +2605,108 @@ mod tests {
                 .wait_for_line_timeout(3, Duration::from_millis(250))
                 .is_none(),
             "daemon stream must close at most once"
+        );
+    }
+
+    #[test]
+    fn daemon_proxy_stream_final_clone_drop_closes_and_unregisters_once() {
+        let (daemon_sender, daemon_receiver) = mpsc::channel::<Vec<u8>>();
+        let writer = CapturedWriter::default();
+        let client =
+            DaemonProxyRpcClient::start(ChannelReader::new(daemon_receiver), writer.clone());
+        let stream = open_scripted_daemon_stream(
+            Arc::clone(&client),
+            &writer,
+            &daemon_sender,
+            0,
+            "stream-drop",
+        );
+        let clone_one = stream.try_clone_box().unwrap();
+        let clone_two = stream.try_clone_box().unwrap();
+        let (drop_sender, drop_receiver) = mpsc::channel();
+        thread::spawn(move || {
+            drop((stream, clone_one, clone_two));
+            drop_sender.send(()).unwrap();
+        });
+
+        let close = writer.wait_for_line_timeout(2, Duration::from_millis(500));
+        if let Some(close) = &close {
+            send_daemon_frame(
+                &daemon_sender,
+                json!({
+                    "id": request_id(close),
+                    "ok": true,
+                    "result": {},
+                }),
+            );
+        }
+        drop_receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+        let close = close.expect("dropping the final stream clone must send proxy.close");
+        assert_eq!(request_method(&close), "proxy.close");
+        assert!(
+            writer
+                .wait_for_line_timeout(3, Duration::from_millis(250))
+                .is_none(),
+            "final clone drop must send exactly one proxy.close"
+        );
+        assert!(
+            !client
+                .stream_events
+                .lock()
+                .expect("daemon proxy event map mutex poisoned")
+                .contains_key("stream-drop"),
+            "final clone drop must unregister its stream subscription"
+        );
+    }
+
+    #[test]
+    fn daemon_proxy_stream_both_then_drop_does_not_close_or_unregister_twice() {
+        let (daemon_sender, daemon_receiver) = mpsc::channel::<Vec<u8>>();
+        let writer = CapturedWriter::default();
+        let client =
+            DaemonProxyRpcClient::start(ChannelReader::new(daemon_receiver), writer.clone());
+        let stream = open_scripted_daemon_stream(
+            Arc::clone(&client),
+            &writer,
+            &daemon_sender,
+            0,
+            "stream-both-drop",
+        );
+        let clone = stream.try_clone_box().unwrap();
+        let (close_sender, close_receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let result = stream.shutdown(Shutdown::Both);
+            close_sender.send((stream, clone, result)).unwrap();
+        });
+
+        let close = writer.wait_for_line(2);
+        assert_eq!(request_method(&close), "proxy.close");
+        send_daemon_frame(
+            &daemon_sender,
+            json!({
+                "id": request_id(&close),
+                "ok": true,
+                "result": {},
+            }),
+        );
+        let (stream, clone, close_result) =
+            close_receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+        close_result.unwrap();
+        drop((stream, clone));
+
+        assert!(
+            writer
+                .wait_for_line_timeout(3, Duration::from_millis(250))
+                .is_none(),
+            "drop after Shutdown::Both must not send another proxy.close"
+        );
+        assert!(
+            !client
+                .stream_events
+                .lock()
+                .expect("daemon proxy event map mutex poisoned")
+                .contains_key("stream-both-drop"),
+            "Shutdown::Both must leave the stream subscription unregistered"
         );
     }
 
