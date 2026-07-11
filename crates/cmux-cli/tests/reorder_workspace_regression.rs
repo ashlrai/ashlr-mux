@@ -141,6 +141,54 @@ fn executable_routes_tmux_absolute_resize_through_pane_metrics() {
 }
 
 #[test]
+fn executable_routes_tmux_select_pane_through_pane_focus() {
+    let (pipe, request_rx) = spawn_method_server(
+        "tmux-select-pane",
+        HashMap::from([
+            (
+                "workspace.list".to_string(),
+                serde_json::json!({"workspaces":[{
+                    "id":"workspace-a", "ref":"workspace:1", "index":0
+                }]}),
+            ),
+            (
+                "pane.list".to_string(),
+                serde_json::json!({"panes":[{
+                    "id":"pane-b", "ref":"pane:2", "index":1, "focused":false
+                }]}),
+            ),
+            (
+                "pane.focus".to_string(),
+                serde_json::json!({"pane_ref":"pane:2"}),
+            ),
+        ]),
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_cmux"))
+        .args(["__tmux-compat", "select-pane", "-tworkspace-a.pane:2"])
+        .env("CMUX_SOCKET_PATH", &pipe)
+        .env_remove("CMUX_SOCKET")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty());
+
+    let requests = (0..3)
+        .map(|_| request_rx.recv_timeout(Duration::from_secs(5)).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(requests[0].0, "workspace.list");
+    assert_eq!(requests[1].0, "pane.list");
+    assert_eq!(requests[2].0, "pane.focus");
+    assert_eq!(
+        Value::Object(requests[2].1.clone()),
+        serde_json::json!({"workspace_id":"workspace-a", "pane_id":"pane-b"})
+    );
+}
+
+#[test]
 fn executable_routes_last_window_and_formats_result() {
     let (pipe, request_rx) = spawn_server(
         "last-window",

@@ -70,9 +70,11 @@ fn split_command(args: &[String]) -> Result<(&str, &[String]), CliError> {
     Err(CliError::new("tmux shim requires a command"))
 }
 
-fn parse_resize_arguments(args: &[String]) -> Result<ParsedArguments, CliError> {
-    let value_flags = ['t', 'x', 'y'];
-    let bool_flags = ['D', 'L', 'R', 'U'];
+fn parse_arguments(
+    args: &[String],
+    value_flags: &[char],
+    bool_flags: &[char],
+) -> Result<ParsedArguments, CliError> {
     let mut parsed = ParsedArguments {
         flags: HashSet::new(),
         options: HashMap::new(),
@@ -436,15 +438,25 @@ where
             output: Some("tmux 3.4"),
         });
     }
-    if !matches!(
-        command.to_ascii_lowercase().as_str(),
-        "resize-pane" | "resizep"
-    ) {
+    let command = command.to_ascii_lowercase();
+    if matches!(command.as_str(), "select-pane" | "selectp") {
+        let parsed = parse_arguments(raw_args, &['P', 'T', 't'], &[])?;
+        if parsed.value("-P").is_some() || parsed.value("-T").is_some() {
+            return Ok(TmuxCompatResult::quiet(false));
+        }
+        let target = resolve_target(parsed.value("-t"), environment, &mut call)?;
+        call(
+            "pane.focus",
+            &json!({"workspace_id": target.workspace_id, "pane_id": target.pane_id}),
+        )?;
+        return Ok(TmuxCompatResult::quiet(true));
+    }
+    if !matches!(command.as_str(), "resize-pane" | "resizep") {
         return Err(CliError::new(format!(
             "tmux compatibility command is not yet ported: {command}"
         )));
     }
-    let parsed = parse_resize_arguments(raw_args)?;
+    let parsed = parse_arguments(raw_args, &['t', 'x', 'y'], &['D', 'L', 'R', 'U'])?;
     let has_direction = ["-L", "-R", "-U", "-D"]
         .iter()
         .any(|flag| parsed.has_flag(flag));
@@ -535,6 +547,7 @@ mod tests {
                 json!({"surfaces": [{"id":"surface-b", "initial_command":"node omx.js hud --watch"}]}),
             ),
             "pane.resize" => Ok(params.clone()),
+            "pane.focus" => Ok(params.clone()),
             _ => Err(CliError::new(format!("unexpected call: {method}"))),
         }
     }
@@ -561,6 +574,41 @@ mod tests {
                 "absolute_axis":"horizontal", "target_pixels":104
             }))
         );
+    }
+
+    #[test]
+    fn select_pane_resolves_target_and_focuses_it_quietly() {
+        let mut focus = None;
+        let result = run_tmux_compat(
+            &args(&["selectp", "-tworkspace-a.pane:1"]),
+            &TmuxCompatEnvironment::default(),
+            |method, params| {
+                if method == "pane.focus" {
+                    focus = Some(params.clone());
+                }
+                fixtures(method, params)
+            },
+        )
+        .unwrap();
+        assert_eq!(result, TmuxCompatResult::quiet(true));
+        assert_eq!(
+            focus,
+            Some(json!({"workspace_id":"workspace-a", "pane_id":"pane-a"}))
+        );
+    }
+
+    #[test]
+    fn select_pane_style_and_title_flags_are_quiet_noops() {
+        for args in [
+            args(&["select-pane", "-P", "bg=red"]),
+            args(&["selectp", "-Ttitle"]),
+        ] {
+            let result = run_tmux_compat(&args, &TmuxCompatEnvironment::default(), |method, _| {
+                Err(CliError::new(format!("unexpected socket call: {method}")))
+            })
+            .unwrap();
+            assert_eq!(result, TmuxCompatResult::quiet(false));
+        }
     }
 
     #[test]
