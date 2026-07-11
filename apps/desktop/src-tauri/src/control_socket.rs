@@ -880,6 +880,7 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "surface.new_tab",
     "surface.split_browser",
     "surface.split_off",
+    "surface.drag_to_split",
     "surface.close",
     "surface.set_type",
     "surface.set_kind",
@@ -1176,7 +1177,7 @@ fn handle_control_request(app: &AppHandle, request: ControlRequest) -> ControlCa
             surface_new_terminal_tab(app, &request.params)
         }
         "surface.split_browser" => surface_split_browser(app, &request.params),
-        "surface.split_off" => surface_split_off(app, &request.params),
+        "surface.split_off" | "surface.drag_to_split" => surface_split_off(app, &request.params),
         "browser.open_split" => browser_open_split(app, &request.params),
         "surface.close" => surface_close(app, &request.params),
         "surface.set_type" | "surface.set_kind" => surface_set_kind(app, &request.params),
@@ -12921,6 +12922,7 @@ mod tests {
             "surface.report_tty",
             "surface.report_shell_state",
             "surface.split_off",
+            "surface.drag_to_split",
             "surface.move",
             "surface.clear_history",
             "surface.trigger_flash",

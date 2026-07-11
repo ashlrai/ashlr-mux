@@ -282,9 +282,13 @@ pub fn control_command_for(
             "surface.move",
             canonical_surface_move_params(args)?,
         )),
-        "split-off" => Some(ControlCommand::new(
-            "surface.split_off",
-            split_off_params(args, "split-off")?,
+        "split-off" | "drag-surface-to-split" => Some(ControlCommand::new(
+            if command == "split-off" {
+                "surface.split_off"
+            } else {
+                "surface.drag_to_split"
+            },
+            split_off_params(args, command)?,
         )),
         "reorder-surface" => Some(ControlCommand::new(
             "surface.reorder",
@@ -4753,6 +4757,23 @@ mod tests {
                 .unwrap_err()
                 .message,
             "split-off: direction must be left|right|up|down"
+        );
+    }
+
+    #[test]
+    fn maps_canonical_drag_surface_to_split_command() {
+        let drag = mapped(
+            "drag-surface-to-split",
+            &["--panel", "surface:2", "u", "--focus", "true"],
+        );
+        assert_eq!(drag.method, "surface.drag_to_split");
+        assert_eq!(
+            drag.params,
+            serde_json::json!({
+                "surface_ref": "surface:2",
+                "direction": "u",
+                "focus": true,
+            })
         );
     }
 

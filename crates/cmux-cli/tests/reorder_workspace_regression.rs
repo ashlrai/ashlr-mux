@@ -353,3 +353,48 @@ fn executable_routes_split_off_and_formats_result() {
         })
     );
 }
+
+#[test]
+fn executable_routes_drag_surface_to_split_and_formats_result() {
+    let (pipe, request_rx) = spawn_server(
+        "drag-surface-to-split",
+        serde_json::json!({
+            "surface_ref": "surface:2",
+            "pane_ref": "pane:2",
+            "workspace_ref": "workspace:1",
+            "window_ref": "window:1",
+        }),
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_cmux"))
+        .args([
+            "drag-surface-to-split",
+            "--surface",
+            "surface:3",
+            "left",
+            "--focus",
+            "true",
+        ])
+        .env("CMUX_SOCKET_PATH", &pipe)
+        .env_remove("CMUX_SOCKET")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "OK surface=surface:2 pane=pane:2 workspace=workspace:1 window=window:1\n"
+    );
+    let (method, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(method, "surface.drag_to_split");
+    assert_eq!(
+        serde_json::Value::Object(params),
+        serde_json::json!({
+            "surface_ref": "surface:3",
+            "direction": "left",
+            "focus": true,
+        })
+    );
+}
