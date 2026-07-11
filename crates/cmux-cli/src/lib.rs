@@ -39,7 +39,9 @@ pub mod welcome;
 pub mod window_default_display;
 
 pub use classify::{classify_command, ClassifyEnv, PreSocketAction};
-pub use command_forward::{control_command_for, ControlCommand, CMUX_WORKSPACE_ID_ENV};
+pub use command_forward::{
+    control_command_for, ControlCommand, CMUX_SURFACE_ID_ENV, CMUX_WORKSPACE_ID_ENV,
+};
 pub use dispatch::{plan, plan_with_args, DispatchPlan};
 pub use invocation::{parse_global_options, CliError, GlobalOptions, ParseOutcome};
 pub use password::{password_file_path, read_password_file};

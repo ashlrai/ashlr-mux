@@ -15,7 +15,7 @@ use std::{
 
 use cmux_cli::{
     classify_command, parse_global_options, plan_with_args, ClassifyEnv, CliError, DispatchPlan,
-    GlobalOptions, ParseOutcome, CMUX_WORKSPACE_ID_ENV,
+    GlobalOptions, ParseOutcome, CMUX_SURFACE_ID_ENV, CMUX_WORKSPACE_ID_ENV,
 };
 
 macro_rules! print {
@@ -116,10 +116,28 @@ fn dispatch(
         DispatchPlan::RunVmPtyConnect(args) => cmux_cli::vm_pty_connect::run_vm_pty_connect(&args),
         DispatchPlan::RunControl(control) => {
             let ambient_workspace_id = std::env::var(CMUX_WORKSPACE_ID_ENV).ok();
-            let control = control
-                .with_ambient_workspace_id(ambient_workspace_id.as_deref())
-                .with_window_id(options.window_id.as_deref());
-            run_control_command(options, &control.method, &control.params)
+            let ambient_surface_id = std::env::var(CMUX_SURFACE_ID_ENV).ok();
+            let control = if options.window_id.is_some() {
+                control.with_window_id(options.window_id.as_deref())
+            } else {
+                control
+                    .with_ambient_workspace_id(ambient_workspace_id.as_deref())
+                    .with_ambient_surface_id(ambient_surface_id.as_deref())
+            };
+            if matches!(
+                command,
+                "list-workspaces"
+                    | "current-workspace"
+                    | "new-workspace"
+                    | "close-workspace"
+                    | "select-workspace"
+                    | "rename-workspace"
+                    | "rename-window"
+            ) {
+                run_legacy_workspace_command(options, command, &control.method, &control.params)
+            } else {
+                run_control_command(options, &control.method, &control.params)
+            }
         }
         DispatchPlan::RunTmuxCompat(args) => run_tmux_compat_command(options, &args),
         DispatchPlan::RunEvents(args) => run_events_command(options, &args),
@@ -708,6 +726,208 @@ fn run_control_command(
 }
 
 #[cfg(windows)]
+fn run_legacy_workspace_command(
+    options: &GlobalOptions,
+    command: &str,
+    method: &str,
+    params: &serde_json::Value,
+) -> Result<(), CliError> {
+    if command != "current-workspace"
+        && command != "rename-window"
+        && std::env::var_os("CMUX_QUIET").is_none()
+    {
+        let replacement = match command {
+            "list-workspaces" => "workspace list",
+            "new-workspace" => "workspace create",
+            "close-workspace" => "workspace close",
+            "select-workspace" => "workspace select",
+            "rename-workspace" => "workspace rename",
+            _ => command,
+        };
+        eprintln!("Warning: `{command}` is deprecated; use `cmux {replacement}` instead.");
+    }
+    let mut request_params = params.clone();
+    let post_create_command = request_params
+        .as_object_mut()
+        .and_then(|params| params.remove("__post_create_command"))
+        .and_then(|value| value.as_str().map(str::to_owned));
+    normalize_legacy_workspace_params(options, method, &mut request_params)?;
+    let has_layout = request_params.get("layout").is_some();
+    let result = call_control_command(options, method, &request_params)?;
+    if command == "new-workspace" && !has_layout {
+        if let Some(text) = post_create_command {
+            let mut send_params = serde_json::Map::new();
+            if let Some(workspace_id) = result.get("workspace_id") {
+                send_params.insert("workspace_id".into(), workspace_id.clone());
+            } else if let Some(workspace_ref) = result.get("workspace_ref") {
+                send_params.insert("workspace_ref".into(), workspace_ref.clone());
+            }
+            if let Some(surface_id) = result.get("surface_id") {
+                send_params.insert("surface_id".into(), surface_id.clone());
+            } else if let Some(surface_ref) = result.get("surface_ref") {
+                send_params.insert("surface_ref".into(), surface_ref.clone());
+            }
+            send_params.insert("text".into(), serde_json::json!(format!("{text}\r")));
+            call_control_command(
+                options,
+                "surface.send_text",
+                &serde_json::Value::Object(send_params),
+            )?;
+        }
+    }
+    if options.json_output && command != "new-workspace" {
+        let mut formatted = result.clone();
+        filter_id_format(
+            &mut formatted,
+            options.id_format.as_deref().unwrap_or("refs"),
+        );
+        println!("{}", serde_json::to_string(&formatted).unwrap_or_default());
+    } else {
+        println!("{}", format_control_result(method, &result));
+    }
+    Ok(())
+}
+
+fn filter_id_format(value: &mut serde_json::Value, id_format: &str) {
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                filter_id_format(item, id_format);
+            }
+        }
+        serde_json::Value::Object(object) => {
+            for child in object.values_mut() {
+                filter_id_format(child, id_format);
+            }
+            let keys = object.keys().cloned().collect::<Vec<_>>();
+            for key in keys {
+                if id_format == "refs" && key.ends_with("_id") {
+                    let ref_key = format!("{}_ref", key.trim_end_matches("_id"));
+                    if object.contains_key(&ref_key) {
+                        object.remove(&key);
+                    }
+                } else if id_format == "uuids" && key.ends_with("_ref") {
+                    let id_key = format!("{}_id", key.trim_end_matches("_ref"));
+                    if object.contains_key(&id_key) {
+                        object.remove(&key);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+#[cfg(windows)]
+fn normalize_legacy_workspace_params(
+    options: &GlobalOptions,
+    method: &str,
+    params: &mut serde_json::Value,
+) -> Result<(), CliError> {
+    let Some(object) = params.as_object_mut() else {
+        return Ok(());
+    };
+    let window_index = object
+        .remove("window_index")
+        .and_then(|value| value.as_u64());
+    let window_ref = object
+        .get("window_ref")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    if window_index.is_some() || window_ref.is_some() {
+        let result = call_control_command(options, "window.list", &serde_json::json!({}))?;
+        let windows = result
+            .get("windows")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let matched = windows
+            .iter()
+            .find(|window| {
+                window_index.is_some_and(|index| {
+                    window.get("index").and_then(serde_json::Value::as_u64) == Some(index)
+                }) || window_ref.as_deref().is_some_and(|reference| {
+                    window
+                        .get("window_ref")
+                        .or_else(|| window.get("ref"))
+                        .and_then(serde_json::Value::as_str)
+                        == Some(reference)
+                })
+            })
+            .ok_or_else(|| {
+                CliError::new(if window_index.is_some() {
+                    "Window index not found"
+                } else {
+                    "Window not found"
+                })
+            })?;
+        let id = matched
+            .get("window_id")
+            .or_else(|| matched.get("id"))
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| CliError::new("Window not found"))?;
+        object.remove("window_ref");
+        object.insert("window_id".into(), serde_json::json!(id));
+    }
+
+    if !matches!(method, "workspace.close" | "workspace.select") {
+        return Ok(());
+    }
+    let workspace_index = object
+        .remove("workspace_index")
+        .and_then(|value| value.as_u64());
+    let workspace_ref = object
+        .get("workspace_ref")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    if workspace_index.is_none() && workspace_ref.is_none() {
+        return Ok(());
+    }
+    let mut list_params = serde_json::Map::new();
+    if let Some(window_id) = object.get("window_id") {
+        list_params.insert("window_id".into(), window_id.clone());
+    }
+    let result = call_control_command(
+        options,
+        "workspace.list",
+        &serde_json::Value::Object(list_params),
+    )?;
+    let workspaces = result
+        .get("workspaces")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let matched = workspaces
+        .iter()
+        .find(|workspace| {
+            workspace_index.is_some_and(|index| {
+                workspace.get("index").and_then(serde_json::Value::as_u64) == Some(index)
+            }) || workspace_ref.as_deref().is_some_and(|reference| {
+                workspace
+                    .get("workspace_ref")
+                    .or_else(|| workspace.get("ref"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some(reference)
+            })
+        })
+        .ok_or_else(|| {
+            CliError::new(if workspace_index.is_some() {
+                "Workspace index not found"
+            } else {
+                "Workspace not found"
+            })
+        })?;
+    let id = matched
+        .get("workspace_id")
+        .or_else(|| matched.get("id"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| CliError::new("Workspace not found"))?;
+    object.remove("workspace_ref");
+    object.insert("workspace_id".into(), serde_json::json!(id));
+    Ok(())
+}
+
+#[cfg(windows)]
 fn run_tmux_compat_command(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
     let workspace_id = std::env::var(CMUX_WORKSPACE_ID_ENV).ok();
     let pane_id = std::env::var("TMUX_PANE")
@@ -884,15 +1104,14 @@ fn handle_events_frame(
         .and_then(|value| value.get("type"))
         .and_then(serde_json::Value::as_str);
     let is_event = frame_type == Some("event");
-    if is_event {
-        if command
+    if is_event
+        && command
             .event_limit
             .is_some_and(|limit| *printed_events >= limit)
-        {
-            return Ok(false);
-        }
+    {
+        return Ok(false);
     }
-    if !(frame_type == Some("ack") && !command.print_ack) {
+    if frame_type != Some("ack") || command.print_ack {
         println!("{frame}");
         std::io::stdout()
             .flush()
@@ -989,6 +1208,11 @@ fn format_control_result(method: &str, result: &serde_json::Value) -> String {
         | "pane.break"
         | "pane.join" => "OK".to_string(),
         "window.list" => format_window_entries(result),
+        "workspace.list" => format_workspace_entries(result),
+        "workspace.current" => control_handle(result, "workspace").to_string(),
+        "workspace.create" | "workspace.close" | "workspace.select" | "workspace.rename" => {
+            format!("OK {}", control_handle(result, "workspace"))
+        }
         "pane.list" => format_pane_entries(result),
         "pane.surfaces" => format_pane_surface_entries(result),
         "window.displays" => format_display_entries(result),
@@ -1047,6 +1271,57 @@ fn format_control_result(method: &str, result: &serde_json::Value) -> String {
         "pane.resize" => format!("OK {}", control_handle(result, "pane")),
         _ => serde_json::to_string(result).unwrap_or_default(),
     }
+}
+
+fn format_workspace_entries(result: &serde_json::Value) -> String {
+    let Some(workspaces) = result
+        .get("workspaces")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return "No workspaces".to_string();
+    };
+    if workspaces.is_empty() {
+        return "No workspaces".to_string();
+    }
+    workspaces
+        .iter()
+        .map(|workspace| {
+            let prefix = if workspace
+                .get("selected")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+            {
+                "*"
+            } else {
+                "  "
+            };
+            let mut line = format!("{prefix} {}", control_handle(workspace, "workspace"));
+            if let Some(title) = workspace
+                .get("title")
+                .and_then(serde_json::Value::as_str)
+                .filter(|title| !title.is_empty())
+            {
+                line.push_str("  ");
+                line.push_str(title);
+            }
+            if let Some(remote) = workspace
+                .get("remote")
+                .and_then(serde_json::Value::as_object)
+            {
+                let transport = remote
+                    .get("transport")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("remote");
+                let state = remote
+                    .get("state")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("unknown");
+                line.push_str(&format!("  [{transport}:{state}]"));
+            }
+            line
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn format_workspace_reorder(result: &serde_json::Value) -> String {
@@ -1338,6 +1613,52 @@ mod control_result_tests {
         assert_eq!(
             format_control_result("surface.read_text", &result),
             "first\nsecond"
+        );
+    }
+
+    #[test]
+    fn legacy_workspace_results_use_canonical_plain_output() {
+        let list = serde_json::json!({"workspaces":[
+            {"workspace_ref":"workspace:1","title":"Build","selected":true},
+            {"workspace_ref":"workspace:2","title":"Remote","selected":false,"remote":{}}
+        ]});
+        assert_eq!(
+            format_control_result("workspace.list", &list),
+            "* workspace:1  Build\n   workspace:2  Remote  [remote:unknown]"
+        );
+        assert_eq!(
+            format_control_result("workspace.list", &serde_json::json!({"workspaces":[]})),
+            "No workspaces"
+        );
+        let current = serde_json::json!({"workspace_ref":"workspace:2","workspace_id":"uuid"});
+        assert_eq!(
+            format_control_result("workspace.current", &current),
+            "workspace:2"
+        );
+        for method in [
+            "workspace.create",
+            "workspace.close",
+            "workspace.select",
+            "workspace.rename",
+        ] {
+            assert_eq!(format_control_result(method, &current), "OK workspace:2");
+        }
+    }
+
+    #[test]
+    fn legacy_workspace_json_honors_recursive_id_format() {
+        let original = serde_json::json!({"workspace_id":"uuid","workspace_ref":"workspace:1","workspace":{"surface_id":"surface-uuid","surface_ref":"surface:1"}});
+        let mut refs = original.clone();
+        filter_id_format(&mut refs, "refs");
+        assert_eq!(
+            refs,
+            serde_json::json!({"workspace_ref":"workspace:1","workspace":{"surface_ref":"surface:1"}})
+        );
+        let mut uuids = original;
+        filter_id_format(&mut uuids, "uuids");
+        assert_eq!(
+            uuids,
+            serde_json::json!({"workspace_id":"uuid","workspace":{"surface_id":"surface-uuid"}})
         );
     }
 

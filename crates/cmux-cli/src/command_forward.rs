@@ -9,6 +9,7 @@ use crate::invocation::CliError;
 use std::collections::BTreeMap;
 
 pub const CMUX_WORKSPACE_ID_ENV: &str = "CMUX_WORKSPACE_ID";
+pub const CMUX_SURFACE_ID_ENV: &str = "CMUX_SURFACE_ID";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlCommand {
@@ -55,6 +56,12 @@ impl ControlCommand {
                 | "window.current"
                 | "window.display"
                 | "right_sidebar"
+                | "workspace.list"
+                | "workspace.current"
+                | "workspace.create"
+                | "workspace.close"
+                | "workspace.select"
+                | "workspace.rename"
         ) {
             return self;
         }
@@ -70,12 +77,35 @@ impl ControlCommand {
         apply_window_selector_value(window_id, params);
         self
     }
+
+    pub fn with_ambient_surface_id(mut self, surface_id: Option<&str>) -> Self {
+        let Some(surface_id) = surface_id.map(str::trim).filter(|value| !value.is_empty()) else {
+            return self;
+        };
+        if !matches!(
+            self.method.as_str(),
+            "workspace.list" | "workspace.current" | "workspace.create" | "workspace.rename"
+        ) {
+            return self;
+        }
+        let Some(params) = self.params.as_object_mut() else {
+            return self;
+        };
+        if !params.contains_key("window_id") && !params.contains_key("window_ref") {
+            params
+                .entry("surface_id")
+                .or_insert_with(|| serde_json::json!(surface_id));
+        }
+        self
+    }
 }
 
 fn workspace_scoped_method(method: &str) -> bool {
     matches!(
         method,
         "workspace.current"
+            | "workspace.list"
+            | "workspace.create"
             | "workspace.close"
             | "workspace.rename"
             | "workspace.equalize_splits"
@@ -236,14 +266,17 @@ pub fn control_command_for(
             serde_json::json!({}),
         )),
         "sidebar" => Some(sidebar_command(args)?),
-        "list-workspaces" => Some(ControlCommand::new("workspace.list", serde_json::json!({}))),
+        "list-workspaces" => Some(ControlCommand::new(
+            "workspace.list",
+            legacy_workspace_scope_params(args, "list-workspaces")?,
+        )),
         "current-workspace" => Some(ControlCommand::new(
             "workspace.current",
-            serde_json::json!({}),
+            legacy_workspace_scope_params(args, "current-workspace")?,
         )),
         "new-workspace" => Some(ControlCommand::new(
             "workspace.create",
-            workspace_create_params(args)?,
+            legacy_workspace_create_params(args)?,
         )),
         "new-browser-workspace" => Some(ControlCommand::new(
             "workspace.create_browser",
@@ -314,11 +347,11 @@ pub fn control_command_for(
         )),
         "select-workspace" => Some(ControlCommand::new(
             "workspace.select",
-            workspace_selector_params(args)?,
+            legacy_workspace_target_params(args, "select-workspace")?,
         )),
         "rename-workspace" | "rename-window" => Some(ControlCommand::new(
             "workspace.rename",
-            workspace_rename_params(args, command)?,
+            legacy_workspace_rename_params(args, command)?,
         )),
         "set-progress" => Some(ControlCommand::new(
             "workspace.set_progress",
@@ -832,7 +865,7 @@ fn browser_subcommand(args: &[String]) -> Result<Option<ControlCommand>, CliErro
             browser_network_clear_params(&rest[1..])?,
         ),
         "network" | "network-requests" | "requests" => {
-            let rest = browser_network_requests_rest(&subcommand, &rest);
+            let rest = browser_network_requests_rest(&subcommand, rest);
             ControlCommand::new(
                 "browser.network.requests",
                 browser_network_requests_params(&rest)?,
@@ -1121,6 +1154,92 @@ fn sidebar_name_params(
     Ok(serde_json::Value::Object(params))
 }
 
+fn legacy_workspace_create_params(args: &[String]) -> Result<serde_json::Value, CliError> {
+    let parsed = ParsedArgs::parse(args)?;
+    validate_legacy_flags(
+        "new-workspace",
+        &parsed,
+        &[
+            "--name",
+            "--description",
+            "--cwd",
+            "--command",
+            "--env",
+            "--env-file",
+            "--layout",
+            "--window",
+            "--focus",
+            "--group",
+            "--group-placement",
+            "--group-reference",
+        ],
+    )?;
+    let mut params = serde_json::Map::new();
+    if let Some(cwd) = parsed.value(&["--cwd"]) {
+        params.insert("working_directory".to_string(), serde_json::json!(cwd));
+    }
+    if let Some(title) = parsed.value(&["--name"]) {
+        params.insert("title".to_string(), serde_json::json!(title));
+    }
+    if let Some(description) = parsed.value(&["--description"]) {
+        params.insert("description".to_string(), serde_json::json!(description));
+    }
+    if let Some(command) = parsed.value(&["--command"]) {
+        params.insert(
+            "__post_create_command".to_string(),
+            serde_json::json!(command),
+        );
+    }
+    let mut environment = BTreeMap::new();
+    for path in parsed.values(&["--env-file"]) {
+        let contents = std::fs::read_to_string(path)
+            .map_err(|error| CliError::new(format!("failed to read env file {path}: {error}")))?;
+        for line in contents
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        {
+            insert_environment_assignment(&mut environment, line)?;
+        }
+    }
+    for assignment in parsed.values(&["--env"]) {
+        insert_environment_assignment(&mut environment, assignment)?;
+    }
+    if !environment.is_empty() {
+        params.insert("workspace_env".to_string(), serde_json::json!(environment));
+    }
+    if let Some(layout) = parsed.value(&["--layout"]) {
+        let value: serde_json::Value = serde_json::from_str(layout)
+            .map_err(|_| CliError::new("--layout must be a JSON object"))?;
+        if !value.is_object() {
+            return Err(CliError::new("--layout must be a JSON object"));
+        }
+        params.insert("layout".to_string(), value);
+    }
+    if let Some(focus) = parsed.value(&["--focus"]) {
+        let focus = match focus.as_str() {
+            "true" => true,
+            "false" => false,
+            _ => return Err(CliError::new("--focus must be true or false")),
+        };
+        params.insert("focus".to_string(), serde_json::json!(focus));
+    }
+    if let Some(group) = parsed.value(&["--group"]) {
+        params.insert("group_id".into(), serde_json::json!(group));
+    }
+    if let Some(placement) = parsed.value(&["--group-placement"]) {
+        params.insert("group_placement".into(), serde_json::json!(placement));
+    }
+    if let Some(reference) = parsed.value(&["--group-reference"]) {
+        params.insert(
+            "group_reference_workspace_id".into(),
+            serde_json::json!(reference),
+        );
+    }
+    apply_legacy_window_scope_selector(&parsed, &mut params);
+    Ok(serde_json::Value::Object(params))
+}
+
 fn workspace_create_params(args: &[String]) -> Result<serde_json::Value, CliError> {
     let parsed = ParsedArgs::parse(args)?;
     let mut params = serde_json::Map::new();
@@ -1148,6 +1267,17 @@ fn workspace_create_params(args: &[String]) -> Result<serde_json::Value, CliErro
     Ok(serde_json::Value::Object(params))
 }
 
+fn legacy_workspace_scope_params(
+    args: &[String],
+    command: &str,
+) -> Result<serde_json::Value, CliError> {
+    let parsed = ParsedArgs::parse(args)?;
+    validate_legacy_flags(command, &parsed, &["--window"])?;
+    let mut params = serde_json::Map::new();
+    apply_legacy_window_scope_selector(&parsed, &mut params);
+    Ok(serde_json::Value::Object(params))
+}
+
 fn workspace_selector_params(args: &[String]) -> Result<serde_json::Value, CliError> {
     let parsed = ParsedArgs::parse(args)?;
     let mut params = serde_json::Map::new();
@@ -1160,18 +1290,23 @@ fn workspace_close_params(
     command_label: &str,
 ) -> Result<serde_json::Value, CliError> {
     let parsed = ParsedArgs::parse(args)?;
-    if parsed.value(&["--index"]).is_some() {
-        return Err(CliError::new(format!(
-            "{command_label} requires workspace:N or workspace id; --index is not supported"
-        )));
-    }
-    if !has_workspace_selector_or_positional(&parsed) {
+    if command_label == "close-workspace" {
+        validate_legacy_flags(command_label, &parsed, &["--workspace", "--window"])?;
+        if parsed.value(&["--workspace"]).is_none() {
+            return Err(CliError::new("close-workspace requires --workspace"));
+        }
+    } else if !has_explicit_workspace_selector(&parsed) && parsed.first_positional().is_none() {
         return Err(CliError::new(format!(
             "{command_label} requires a workspace target (workspace:N or workspace id)"
         )));
     }
     let mut params = serde_json::Map::new();
-    apply_workspace_selector(&parsed, &mut params)?;
+    if command_label == "close-workspace" {
+        apply_legacy_workspace_selector(&parsed, &mut params);
+        apply_legacy_window_scope_selector(&parsed, &mut params);
+    } else {
+        apply_workspace_selector(&parsed, &mut params)?;
+    }
     Ok(serde_json::Value::Object(params))
 }
 
@@ -1575,20 +1710,146 @@ fn resize_pane_params(args: &[String]) -> Result<serde_json::Value, CliError> {
     Ok(serde_json::Value::Object(params))
 }
 
+fn legacy_workspace_rename_params(
+    args: &[String],
+    command_name: &str,
+) -> Result<serde_json::Value, CliError> {
+    let parsed = ParsedArgs::parse(args)?;
+    if command_name == "rename-workspace" || command_name == "rename-window" {
+        validate_legacy_flags(
+            command_name,
+            &parsed,
+            &["--workspace", "--window", "--title", "--name"],
+        )?;
+    }
+    let mut params = serde_json::Map::new();
+    if let Some(workspace) = parsed.value(&["--workspace"]) {
+        apply_workspace_selector_value(workspace, &mut params);
+    }
+    apply_legacy_window_scope_selector(&parsed, &mut params);
+    let title = parsed
+        .value(&["--title", "--name"])
+        .cloned()
+        .or_else(|| {
+            let title = parsed.positionals.join(" ");
+            (!title.trim().is_empty()).then_some(title)
+        })
+        .ok_or_else(|| CliError::new(format!("{command_name} requires a title")))?;
+    if title.trim().is_empty() {
+        return Err(CliError::new(format!("{command_name} requires a title")));
+    }
+    params.insert("title".to_string(), serde_json::json!(title));
+    Ok(serde_json::Value::Object(params))
+}
+
 fn workspace_rename_params(
     args: &[String],
     command_name: &str,
 ) -> Result<serde_json::Value, CliError> {
     let parsed = ParsedArgs::parse(args)?;
     let mut params = serde_json::Map::new();
-    apply_workspace_selector_for_rename(&parsed, &mut params)?;
+    apply_workspace_selector_for_free_text(&parsed, &mut params)?;
     let title = parsed
         .value(&["--title", "--name"])
         .cloned()
-        .or_else(|| workspace_title_from_positionals(&parsed))
+        .or_else(|| workspace_free_text_from_positionals(&parsed))
         .ok_or_else(|| CliError::new(format!("{command_name} requires a title")))?;
     params.insert("title".to_string(), serde_json::json!(title));
     Ok(serde_json::Value::Object(params))
+}
+
+fn legacy_workspace_target_params(
+    args: &[String],
+    command: &str,
+) -> Result<serde_json::Value, CliError> {
+    let parsed = ParsedArgs::parse(args)?;
+    validate_legacy_flags(command, &parsed, &["--workspace", "--window"])?;
+    if parsed.value(&["--workspace"]).is_none() {
+        return Err(CliError::new(format!("{command} requires --workspace")));
+    }
+    let mut params = serde_json::Map::new();
+    apply_legacy_workspace_selector(&parsed, &mut params);
+    apply_legacy_window_scope_selector(&parsed, &mut params);
+    Ok(serde_json::Value::Object(params))
+}
+
+fn apply_legacy_workspace_selector(
+    parsed: &ParsedArgs,
+    params: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    let Some(value) = parsed.value(&["--workspace"]) else {
+        return;
+    };
+    if let Ok(index) = value.parse::<usize>() {
+        params.insert("workspace_index".into(), serde_json::json!(index));
+    } else {
+        apply_workspace_selector_value(value, params);
+    }
+}
+
+fn apply_legacy_window_scope_selector(
+    parsed: &ParsedArgs,
+    params: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    let Some(value) = parsed.value(&["--window"]) else {
+        return;
+    };
+    if let Ok(index) = value.parse::<usize>() {
+        params.insert("window_index".into(), serde_json::json!(index));
+    } else {
+        apply_window_selector_value(value, params);
+    }
+}
+
+fn apply_workspace_selector_value(
+    value: &str,
+    params: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    if value.starts_with("workspace:") {
+        params.insert("workspace_ref".into(), serde_json::json!(value));
+    } else {
+        params.insert("workspace_id".into(), serde_json::json!(value));
+    }
+}
+
+fn insert_environment_assignment(
+    environment: &mut BTreeMap<String, String>,
+    assignment: &str,
+) -> Result<(), CliError> {
+    let (key, value) = assignment.split_once('=').ok_or_else(|| {
+        CliError::new(format!(
+            "invalid environment assignment: {assignment} (expected KEY=VALUE)"
+        ))
+    })?;
+    if key.trim().is_empty() {
+        return Err(CliError::new(format!(
+            "invalid environment assignment: {assignment} (key cannot be empty)"
+        )));
+    }
+    environment.insert(key.to_string(), value.to_string());
+    Ok(())
+}
+
+fn validate_legacy_flags(
+    command: &str,
+    parsed: &ParsedArgs,
+    allowed: &[&str],
+) -> Result<(), CliError> {
+    if let Some(flag) = parsed
+        .flags
+        .iter()
+        .find(|flag| !allowed.contains(&flag.as_str()))
+    {
+        return Err(CliError::new(format!("{command}: unknown flag '{flag}'")));
+    }
+    if let Some((flag, _)) = parsed
+        .values
+        .iter()
+        .find(|(flag, _)| !allowed.contains(&flag.as_str()))
+    {
+        return Err(CliError::new(format!("{command}: unknown flag '{flag}'")));
+    }
+    Ok(())
 }
 
 fn restore_session_params(args: &[String]) -> Result<serde_json::Value, CliError> {
@@ -2133,13 +2394,6 @@ fn workspace_group_collapsed_params(
     params.insert("group_id".to_string(), serde_json::json!(group_id));
     params.insert("collapsed".to_string(), serde_json::json!(collapsed));
     Ok(serde_json::Value::Object(params))
-}
-
-fn apply_workspace_selector_for_rename(
-    parsed: &ParsedArgs,
-    params: &mut serde_json::Map<String, serde_json::Value>,
-) -> Result<(), CliError> {
-    apply_workspace_selector_for_free_text(parsed, params)
 }
 
 fn apply_workspace_selector_for_free_text(
@@ -3536,10 +3790,6 @@ fn has_explicit_workspace_selector(parsed: &ParsedArgs) -> bool {
             .is_some()
 }
 
-fn has_workspace_selector_or_positional(parsed: &ParsedArgs) -> bool {
-    has_explicit_workspace_selector(parsed) || parsed.first_positional().is_some()
-}
-
 fn apply_surface_selector(
     parsed: &ParsedArgs,
     params: &mut serde_json::Map<String, serde_json::Value>,
@@ -3702,17 +3952,6 @@ fn terminal_environment_param(
     Ok((!environment.is_empty()).then_some(environment))
 }
 
-fn workspace_title_from_positionals(parsed: &ParsedArgs) -> Option<String> {
-    let first = parsed.positionals.first()?;
-    let title_start = if looks_like_workspace_selector(first) && parsed.positionals.len() > 1 {
-        1
-    } else {
-        0
-    };
-    let title = parsed.positionals[title_start..].join(" ");
-    (!title.trim().is_empty()).then_some(title)
-}
-
 fn surface_title_from_positionals(parsed: &ParsedArgs) -> Option<String> {
     let title = parsed.positionals.join(" ");
     (!title.trim().is_empty()).then_some(title)
@@ -3835,6 +4074,7 @@ fn takes_value(arg: &str) -> bool {
             | "--description"
             | "--body"
             | "--env"
+            | "--env-file"
             | "--environment"
             | "--file"
             | "--format"
@@ -3843,6 +4083,8 @@ fn takes_value(arg: &str) -> bool {
             | "--function"
             | "--group"
             | "--group-id"
+            | "--group-placement"
+            | "--group-reference"
             | "--height"
             | "--href"
             | "--id"
@@ -3992,10 +4234,13 @@ mod tests {
     }
 
     #[test]
-    fn ambient_workspace_id_is_ignored_for_global_commands() {
+    fn ambient_workspace_id_routes_legacy_workspace_list() {
         let command = mapped("list-workspaces", &[]).with_ambient_workspace_id(Some("workspace-2"));
         assert_eq!(command.method, "workspace.list");
-        assert_eq!(command.params, serde_json::json!({}));
+        assert_eq!(
+            command.params,
+            serde_json::json!({"workspace_id":"workspace-2"})
+        );
     }
 
     #[test]
@@ -4326,52 +4571,144 @@ mod tests {
     fn maps_workspace_create_options() {
         let command = mapped(
             "new-workspace",
-            &[
-                "--cwd",
-                "C:/repo",
-                "--command=git status",
-                "--input",
-                "hello",
-                "--env",
-                "CI=1",
-                "--environment=NODE_ENV=test",
-            ],
+            &["--cwd", "C:/repo", "--command=git status", "--env", "CI=1"],
         );
         assert_eq!(command.method, "workspace.create");
         assert_eq!(
             command.params,
             serde_json::json!({
-                "current_directory": "C:/repo",
-                "initial_terminal_command": "git status",
-                "initial_terminal_input": "hello",
-                "initial_terminal_environment": {
-                    "CI": "1",
-                    "NODE_ENV": "test",
-                },
+                "working_directory": "C:/repo",
+                "__post_create_command": "git status",
+                "workspace_env": { "CI": "1" },
             })
         );
     }
 
     #[test]
-    fn bare_workspace_number_is_a_one_based_ref() {
-        let command = mapped("select-workspace", &["2"]);
-        assert_eq!(command.method, "workspace.select");
+    fn legacy_workspace_verbs_match_canonical_argument_contract() {
         assert_eq!(
-            command.params,
-            serde_json::json!({"workspace_ref": "workspace:2"})
+            mapped("list-workspaces", &["--window", "window:2"]).params,
+            serde_json::json!({"window_ref":"window:2"})
+        );
+        assert_eq!(
+            mapped("current-workspace", &["--window", "window-id"]).params,
+            serde_json::json!({"window_id":"window-id"})
+        );
+        assert_eq!(
+            mapped(
+                "close-workspace",
+                &["--workspace", "0", "--window", "window:2"]
+            )
+            .params,
+            serde_json::json!({"workspace_index":0,"window_ref":"window:2"})
+        );
+        assert_eq!(
+            mapped(
+                "select-workspace",
+                &["--workspace", "workspace:3", "--window", "window-id"]
+            )
+            .params,
+            serde_json::json!({"workspace_ref":"workspace:3","window_id":"window-id"})
+        );
+        assert_eq!(
+            mapped(
+                "rename-workspace",
+                &["--window", "window:2", "--", "2", "Build"]
+            )
+            .params,
+            serde_json::json!({"window_ref":"window:2","title":"2 Build"})
+        );
+        assert_eq!(
+            mapped(
+                "new-workspace",
+                &[
+                    "--name",
+                    "Build",
+                    "--description",
+                    "Review",
+                    "--cwd",
+                    "C:/repo",
+                    "--env",
+                    "A=file",
+                    "--layout",
+                    "{\"type\":\"terminal\"}",
+                    "--focus",
+                    "false",
+                    "--group",
+                    "workspace_group:2",
+                    "--group-placement",
+                    "end",
+                    "--window",
+                    "window:2",
+                    "ignored"
+                ]
+            )
+            .params,
+            serde_json::json!({
+                "title":"Build", "description":"Review", "working_directory":"C:/repo",
+                "workspace_env":{"A":"file"}, "layout":{"type":"terminal"}, "focus":false,
+                "group_id":"workspace_group:2", "group_placement":"end", "window_ref":"window:2"
+            })
         );
     }
 
     #[test]
-    fn explicit_workspace_index_is_rejected_in_favor_of_refs() {
+    fn legacy_workspace_required_flags_and_values_fail_before_socket() {
+        assert_eq!(
+            control_command_for("close-workspace", &args(&["workspace:1"]))
+                .unwrap_err()
+                .message,
+            "close-workspace requires --workspace"
+        );
+        assert_eq!(
+            control_command_for("select-workspace", &args(&["workspace:1"]))
+                .unwrap_err()
+                .message,
+            "select-workspace requires --workspace"
+        );
+        assert_eq!(
+            control_command_for("rename-workspace", &args(&[" "]))
+                .unwrap_err()
+                .message,
+            "rename-workspace requires a title"
+        );
+        assert_eq!(
+            control_command_for("new-workspace", &args(&["--focus", "yes"]))
+                .unwrap_err()
+                .message,
+            "--focus must be true or false"
+        );
+        assert_eq!(
+            control_command_for("new-workspace", &args(&["--layout", "[]"]))
+                .unwrap_err()
+                .message,
+            "--layout must be a JSON object"
+        );
+        assert_eq!(
+            control_command_for("new-workspace", &args(&["--bogus"]))
+                .unwrap_err()
+                .message,
+            "new-workspace: unknown flag '--bogus'"
+        );
+    }
+
+    #[test]
+    fn bare_workspace_number_is_a_zero_based_index() {
+        let command = mapped("select-workspace", &["--workspace", "2"]);
+        assert_eq!(command.method, "workspace.select");
+        assert_eq!(command.params, serde_json::json!({"workspace_index": 2}));
+    }
+
+    #[test]
+    fn legacy_select_requires_workspace_flag() {
         assert_eq!(
             control_command_for("select-workspace", &args(&["--index", "0"]))
                 .unwrap_err()
                 .message,
-            "workspace selectors require workspace:N or workspace id; --index is not supported"
+            "select-workspace: unknown flag '--index'"
         );
         assert_eq!(
-            mapped("select-workspace", &["workspace:1"]).params,
+            mapped("select-workspace", &["--workspace", "workspace:1"]).params,
             serde_json::json!({"workspace_ref": "workspace:1"})
         );
     }
@@ -4396,7 +4733,7 @@ mod tests {
             control_command_for("close-workspace", &[])
                 .unwrap_err()
                 .message,
-            "close-workspace requires a workspace target (workspace:N or workspace id)"
+            "close-workspace requires --workspace"
         );
         assert_eq!(
             control_command_for("workspace", &args(&["close"]))
@@ -4408,10 +4745,10 @@ mod tests {
             control_command_for("close-workspace", &args(&["--index", "0"]))
                 .unwrap_err()
                 .message,
-            "close-workspace requires workspace:N or workspace id; --index is not supported"
+            "close-workspace: unknown flag '--index'"
         );
         assert_eq!(
-            mapped("close-workspace", &["workspace:2"]).params,
+            mapped("close-workspace", &["--workspace", "workspace:2"]).params,
             serde_json::json!({"workspace_ref": "workspace:2"})
         );
         assert_eq!(
@@ -4432,7 +4769,7 @@ mod tests {
         );
         assert_eq!(
             mapped("rename-workspace", &["2", "Build", "Lane"]).params,
-            serde_json::json!({"workspace_ref": "workspace:2", "title": "Build Lane"})
+            serde_json::json!({"title": "2 Build Lane"})
         );
         assert_eq!(
             mapped("rename-workspace", &["Build"]).params,
@@ -4443,10 +4780,7 @@ mod tests {
 
         let alias = mapped("rename-window", &["2", "Build", "Lane"]);
         assert_eq!(alias.method, "workspace.rename");
-        assert_eq!(
-            alias.params,
-            serde_json::json!({"workspace_ref": "workspace:2", "title": "Build Lane"})
-        );
+        assert_eq!(alias.params, serde_json::json!({"title": "2 Build Lane"}));
         let error = control_command_for("rename-window", &[]).unwrap_err();
         assert_eq!(error.message, "rename-window requires a title");
     }

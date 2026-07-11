@@ -164,13 +164,13 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
         ),
         "feed" => Some(crate::feed_clear::FEED_USAGE),
         "list-workspaces" => Some(
-            "Usage:\n  cmux list-workspaces\n\nLists workspaces from the active desktop session.",
+            "Usage:\n  cmux list-workspaces [--window WINDOW]\n\nLists workspaces from the resolved desktop window.",
         ),
         "current-workspace" => Some(
-            "Usage:\n  cmux current-workspace\n\nPrints the selected workspace.",
+            "Usage:\n  cmux current-workspace [--window WINDOW]\n\nPrints the selected workspace handle.",
         ),
         "new-workspace" => Some(
-            "Usage:\n  cmux new-workspace [--cwd PATH] [--command CMD] [--input TEXT] [--env KEY=VALUE]\n\nCreates and selects a terminal workspace.",
+            "Usage:\n  cmux new-workspace [--name TITLE] [--description TEXT] [--cwd PATH] [--command CMD] [--env KEY=VALUE] [--env-file PATH] [--layout JSON] [--window WINDOW] [--focus true|false] [--group GROUP] [--group-placement PLACEMENT] [--group-reference WORKSPACE]\n\nCreates a terminal workspace.",
         ),
         "new-browser-workspace" => Some(
             "Usage:\n  cmux new-browser-workspace [URL|--url URL]\n\nCreates and selects a browser workspace.",
@@ -182,7 +182,7 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
             "Usage:\n  cmux restore-session\n\nReopens the previously saved cmux session.",
         ),
         "close-workspace" => Some(
-            "Usage:\n  cmux close-workspace WORKSPACE\n\nCloses the workspace identified by workspace:N ref or workspace id.",
+            "Usage:\n  cmux close-workspace --workspace WORKSPACE [--window WINDOW]\n\nCloses a workspace by UUID, workspace:N ref, or zero-based index.",
         ),
         "close-workspaces" => Some(
             "Usage:\n  cmux close-workspaces WORKSPACE...\n\nCloses one or more workspaces by workspace:N ref or workspace id. Bare numbers are normalized to workspace:N refs.",
@@ -227,10 +227,10 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
             "Usage:\n  cmux reorder-surface [--surface <id|ref|index> | <id|ref|index>] [flags]\n\nReorders a surface within its pane.\n\nFlags:\n  --surface <id|ref|index>     Surface to reorder\n  --workspace <id|ref|index>   Workspace context\n  --window <id|ref|index>      Window context\n  --index <n>                  Place at this insertion index\n  --before <id|ref|index>      Place before this surface\n  --before-surface <handle>    Alias for --before\n  --after <id|ref|index>       Place after this surface\n  --after-surface <handle>     Alias for --after\n  --focus <true|false>         Focus after reordering (default: false)",
         ),
         "select-workspace" => Some(
-            "Usage:\n  cmux select-workspace WORKSPACE\n\nSelects a workspace by workspace:N ref or workspace id. Bare numbers are normalized to workspace:N refs.",
+            "Usage:\n  cmux select-workspace --workspace WORKSPACE [--window WINDOW]\n\nSelects a workspace by UUID, workspace:N ref, or zero-based index.",
         ),
         "rename-workspace" => Some(
-            "Usage:\n  cmux rename-workspace [WORKSPACE] TITLE\n\nSets or clears a workspace title.",
+            "Usage:\n  cmux rename-workspace [--workspace WORKSPACE] [--window WINDOW] [--] TITLE\n\nSets a workspace title; all positional tokens form the title.",
         ),
         "rename-window" => Some(
             "Usage:\n  cmux rename-window [WORKSPACE] TITLE\n\nCompatibility alias for `cmux rename-workspace`.",
@@ -622,7 +622,7 @@ mod tests {
                     "got: {text:?}"
                 );
                 assert!(text.contains("Usage:\n  cmux list-workspaces"));
-                assert!(text.contains("active desktop session"));
+                assert!(text.contains("resolved desktop window"));
                 assert!(!text.contains("not yet ported"));
             }
             other => panic!("expected PrintLine, got {other:?}"),
@@ -1022,14 +1022,11 @@ mod tests {
 
     #[test]
     fn mapped_socket_commands_can_use_command_args() {
-        let args = vec!["2".to_string()];
+        let args = vec!["--workspace".to_string(), "2".to_string()];
         match plan_with_args(&PreSocketAction::NeedsSocket, "select-workspace", &args) {
             DispatchPlan::RunControl(control) => {
                 assert_eq!(control.method, "workspace.select");
-                assert_eq!(
-                    control.params,
-                    serde_json::json!({"workspace_ref": "workspace:2"})
-                );
+                assert_eq!(control.params, serde_json::json!({"workspace_index": 2}));
             }
             other => panic!("expected RunControl, got {other:?}"),
         }
