@@ -54,16 +54,121 @@ pub struct SessionState {
     next_panel: AtomicU64,
     closed_browser_tabs: Mutex<Vec<ClosedBrowserTabSnapshot>>,
     remote_configs: Mutex<HashMap<String, WorkspaceRemoteControlConfig>>,
+    workspace_focus_history: Mutex<HashMap<String, WorkspaceFocusHistory>>,
 }
 
 impl Default for SessionState {
     fn default() -> Self {
+        let snapshot = initial_snapshot(FIRST_PANEL_ID);
+        let workspace_focus_history = workspace_focus_history_for_snapshot(&snapshot);
         Self {
-            snapshot: Mutex::new(initial_snapshot(FIRST_PANEL_ID)),
+            snapshot: Mutex::new(snapshot),
             next_panel: AtomicU64::new(2),
             closed_browser_tabs: Mutex::new(Vec::new()),
             remote_configs: Mutex::new(HashMap::new()),
+            workspace_focus_history: Mutex::new(workspace_focus_history),
         }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct WorkspaceFocusHistory {
+    entries: Vec<String>,
+    index: Option<usize>,
+}
+
+impl WorkspaceFocusHistory {
+    fn record(&mut self, workspace_id: &str) {
+        if self
+            .index
+            .and_then(|index| self.entries.get(index))
+            .is_some_and(|current| current == workspace_id)
+        {
+            return;
+        }
+        let keep = self.index.map_or(0, |index| index + 1);
+        self.entries.truncate(keep);
+        self.entries.push(workspace_id.to_string());
+        if self.entries.len() > 50 {
+            self.entries.remove(0);
+        }
+        self.index = Some(self.entries.len() - 1);
+    }
+
+    fn navigate_back(&mut self, valid_workspace_ids: &HashSet<&str>) -> Option<String> {
+        let mut target = self.index?.checked_sub(1)?;
+        loop {
+            let workspace_id = self.entries.get(target)?.clone();
+            if valid_workspace_ids.contains(workspace_id.as_str()) {
+                self.index = Some(target);
+                return Some(workspace_id);
+            }
+            self.entries.remove(target);
+            if let Some(index) = self.index.as_mut() {
+                *index = index.saturating_sub(1);
+            }
+            target = target.checked_sub(1)?;
+        }
+    }
+}
+
+fn workspace_focus_history_for_snapshot(
+    snapshot: &AppSessionSnapshot,
+) -> HashMap<String, WorkspaceFocusHistory> {
+    snapshot
+        .windows
+        .iter()
+        .filter_map(|window| {
+            let index = usize::try_from(window.tab_manager.selected_workspace_index?).ok()?;
+            let workspace_id = window
+                .tab_manager
+                .workspaces
+                .get(index)?
+                .workspace_id
+                .as_deref()?;
+            let mut history = WorkspaceFocusHistory::default();
+            history.record(workspace_id);
+            Some((
+                window
+                    .window_id
+                    .clone()
+                    .unwrap_or_else(|| "main".to_string()),
+                history,
+            ))
+        })
+        .collect()
+}
+
+fn record_workspace_focus_history(state: &SessionState, snapshot: &AppSessionSnapshot) {
+    let mut histories = state
+        .workspace_focus_history
+        .lock()
+        .expect("workspace focus history mutex poisoned");
+    for window in &snapshot.windows {
+        let Some(index) = window
+            .tab_manager
+            .selected_workspace_index
+            .and_then(|index| usize::try_from(index).ok())
+        else {
+            continue;
+        };
+        let Some(workspace_id) = window
+            .tab_manager
+            .workspaces
+            .get(index)
+            .and_then(|workspace| workspace.workspace_id.as_deref())
+        else {
+            continue;
+        };
+        histories
+            .entry(
+                window
+                    .window_id
+                    .clone()
+                    .unwrap_or_else(|| "main".to_string()),
+            )
+            .or_default()
+            .record(workspace_id);
     }
 }
 
@@ -267,6 +372,11 @@ pub fn bootstrap_session_persistence(app: &AppHandle, state: State<'_, SessionSt
         ensure_pane_ids(&mut guard);
         guard.clone()
     };
+    *state
+        .workspace_focus_history
+        .lock()
+        .expect("workspace focus history mutex poisoned") =
+        workspace_focus_history_for_snapshot(&snapshot);
     persist_current_snapshot(app, &snapshot);
 }
 
@@ -2560,6 +2670,9 @@ fn emit_session_changed(app: &AppHandle, snapshot: &AppSessionSnapshot) {
 }
 
 fn notify_session_changed(app: &AppHandle, snapshot: &AppSessionSnapshot) {
+    if let Some(state) = app.try_state::<SessionState>() {
+        record_workspace_focus_history(state.inner(), snapshot);
+    }
     persist_current_snapshot(app, snapshot);
     crate::control_socket::record_session_changed_event(app, snapshot);
     emit_session_changed(app, snapshot);
@@ -3964,6 +4077,56 @@ pub(crate) fn focus_last_pane_for_control(
     };
     notify_session_changed(app, &snapshot);
     Ok((focused, snapshot))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WorkspaceLastControlError {
+    TabManagerUnavailable,
+    NoPreviousWorkspace,
+}
+
+pub(crate) fn select_last_workspace_for_control(
+    app: &AppHandle,
+    state: &SessionState,
+    window_index: usize,
+) -> Result<(String, AppSessionSnapshot), WorkspaceLastControlError> {
+    let (workspace_id, snapshot) = {
+        let mut guard = state
+            .snapshot
+            .lock()
+            .expect("session snapshot mutex poisoned");
+        let window = guard
+            .windows
+            .get_mut(window_index)
+            .ok_or(WorkspaceLastControlError::TabManagerUnavailable)?;
+        let window_key = window
+            .window_id
+            .clone()
+            .unwrap_or_else(|| "main".to_string());
+        let valid_ids = window
+            .tab_manager
+            .workspaces
+            .iter()
+            .filter_map(|workspace| workspace.workspace_id.as_deref())
+            .collect::<HashSet<_>>();
+        let workspace_id = state
+            .workspace_focus_history
+            .lock()
+            .expect("workspace focus history mutex poisoned")
+            .get_mut(&window_key)
+            .and_then(|history| history.navigate_back(&valid_ids))
+            .ok_or(WorkspaceLastControlError::NoPreviousWorkspace)?;
+        let index = window
+            .tab_manager
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.workspace_id.as_deref() == Some(workspace_id.as_str()))
+            .ok_or(WorkspaceLastControlError::NoPreviousWorkspace)?;
+        window.tab_manager.selected_workspace_index = Some(index as i64);
+        (workspace_id, guard.clone())
+    };
+    notify_session_changed(app, &snapshot);
+    Ok((workspace_id, snapshot))
 }
 
 #[derive(Debug, Clone)]
@@ -6561,6 +6724,34 @@ mod tests {
             "not a uuid: {}",
             pane_ids[0]
         );
+    }
+
+    #[test]
+    fn workspace_focus_history_navigates_back_skips_stale_and_truncates_branches() {
+        let mut history = WorkspaceFocusHistory::default();
+        history.record("workspace-a");
+        history.record("workspace-b");
+        history.record("workspace-c");
+        let valid = HashSet::from(["workspace-a", "workspace-c"]);
+        assert_eq!(
+            history.navigate_back(&valid).as_deref(),
+            Some("workspace-a")
+        );
+        assert_eq!(history.entries, ["workspace-a", "workspace-c"]);
+
+        history.record("workspace-a");
+        assert_eq!(history.entries, ["workspace-a", "workspace-c"]);
+        history.record("workspace-d");
+        assert_eq!(history.entries, ["workspace-a", "workspace-d"]);
+        assert_eq!(history.index, Some(1));
+    }
+
+    #[test]
+    fn workspace_focus_history_requires_a_distinct_previous_entry() {
+        let mut history = WorkspaceFocusHistory::default();
+        history.record("workspace-a");
+        history.record("workspace-a");
+        assert_eq!(history.navigate_back(&HashSet::from(["workspace-a"])), None);
     }
 
     #[test]

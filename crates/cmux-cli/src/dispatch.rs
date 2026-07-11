@@ -220,6 +220,9 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
         "resize-pane" => Some(
             "Usage:\n  cmux resize-pane [--pane <id|ref|index>] [--workspace <id|ref|index>] [--window <id|ref|index>] [-L|-R|-U|-D] [--amount <n>]\n\ntmux-compatible pane resize command.\n\nFlags:\n  --pane <id|ref|index>        Pane to resize (default: focused pane)\n  --workspace <id|ref|index>   Workspace context\n  --window <id|ref|index>      Window context for workspace/pane refs and indexes\n  -L|-R|-U|-D                  Direction (default: -R)\n  --amount <n>                 Resize amount (default: 1)",
         ),
+        "last-window" => Some(
+            "Usage:\n  cmux last-window [--window <id|ref|index>]\n\nSelects the previously visited workspace.\n\nFlags:\n  --window <id|ref|index>   Window whose workspace history to navigate",
+        ),
         "reorder-surface" => Some(
             "Usage:\n  cmux reorder-surface [--surface <id|ref|index> | <id|ref|index>] [flags]\n\nReorders a surface within its pane.\n\nFlags:\n  --surface <id|ref|index>     Surface to reorder\n  --workspace <id|ref|index>   Workspace context\n  --window <id|ref|index>      Window context\n  --index <n>                  Place at this insertion index\n  --before <id|ref|index>      Place before this surface\n  --before-surface <handle>    Alias for --before\n  --after <id|ref|index>       Place after this surface\n  --after-surface <handle>     Alias for --after\n  --focus <true|false>         Focus after reordering (default: false)",
         ),
@@ -683,6 +686,7 @@ mod tests {
             "break-pane",
             "join-pane",
             "last-pane",
+            "last-window",
             "resize-pane",
         ] {
             let plan = plan(

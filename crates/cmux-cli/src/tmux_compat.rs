@@ -186,6 +186,15 @@ where
 {
     let selector = trimmed(selector).or_else(|| trimmed(environment.workspace_id));
     if let Some(raw) = selector {
+        if matches!(raw, "!" | "^" | "-") {
+            let previous = call_object(call, "workspace.last", json!({}))?;
+            return previous
+                .get("workspace_id")
+                .or_else(|| previous.get("id"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .ok_or_else(|| CliError::new("Previous workspace not found"));
+        }
         let mut token = raw;
         if let Some((_, suffix)) = token.rsplit_once(':') {
             token = if suffix.is_empty() {
@@ -625,5 +634,29 @@ mod tests {
         )
         .unwrap();
         assert_eq!(resized_workspace.as_deref(), Some("workspace-a"));
+    }
+
+    #[test]
+    fn previous_workspace_tmux_selectors_delegate_to_workspace_last() {
+        for selector in ["!", "^", "-"] {
+            let mut methods = Vec::new();
+            run_tmux_compat(
+                &args(&["resize-pane", "-t", &format!("{selector}.pane:2"), "-R"]),
+                &TmuxCompatEnvironment::default(),
+                |method, params| {
+                    methods.push(method.to_string());
+                    match method {
+                        "workspace.last" => Ok(json!({"workspace_id":"workspace-a"})),
+                        "pane.list" => Ok(json!({"panes":[{
+                            "id":"pane-b", "ref":"pane:2", "index":1, "focused":true
+                        }]})),
+                        "pane.resize" => Ok(params.clone()),
+                        _ => Err(CliError::new("unexpected call")),
+                    }
+                },
+            )
+            .unwrap();
+            assert_eq!(methods, ["workspace.last", "pane.list", "pane.resize"]);
+        }
     }
 }

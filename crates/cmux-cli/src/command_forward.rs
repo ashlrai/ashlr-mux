@@ -297,6 +297,10 @@ pub fn control_command_for(
             "pane.last",
             workspace_window_scope_params(args)?,
         )),
+        "last-window" => Some(ControlCommand::new(
+            "workspace.last",
+            window_scope_params(args)?,
+        )),
         "resize-pane" => Some(ControlCommand::new(
             "pane.resize",
             resize_pane_params(args)?,
@@ -1505,6 +1509,13 @@ fn workspace_window_scope_params(args: &[String]) -> Result<serde_json::Value, C
     let parsed = ParsedArgs::parse(args)?;
     let mut params = serde_json::Map::new();
     apply_workspace_scope_selector(&parsed, &mut params);
+    apply_window_scope_selector(&parsed, &mut params);
+    Ok(serde_json::Value::Object(params))
+}
+
+fn window_scope_params(args: &[String]) -> Result<serde_json::Value, CliError> {
+    let parsed = ParsedArgs::parse(args)?;
+    let mut params = serde_json::Map::new();
     apply_window_scope_selector(&parsed, &mut params);
     Ok(serde_json::Value::Object(params))
 }
@@ -5031,6 +5042,13 @@ mod tests {
                 "window_ref": "window:1",
             })
         );
+    }
+
+    #[test]
+    fn maps_canonical_last_window_command() {
+        let command = mapped("last-window", &["--window", "2"]);
+        assert_eq!(command.method, "workspace.last");
+        assert_eq!(command.params, serde_json::json!({"window_ref":"window:2"}));
     }
 
     #[test]

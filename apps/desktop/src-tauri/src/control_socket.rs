@@ -49,23 +49,23 @@ use crate::session::{
     reorder_workspaces_for_control, reorder_workspaces_many_for_control,
     reset_workspace_color_for_control, reset_workspace_sidebar_metadata_for_control,
     resize_pane_for_control, restore_previous_launch_for_control,
-    select_adjacent_panel_for_control, select_workspace_for_control, select_workspace_surface,
-    set_browser_zoom_for_control, set_group_collapsed_for_control,
-    set_panel_listening_ports_for_control, set_panel_pinned_for_control,
-    set_panel_shell_activity_for_control, set_panel_title_for_control, set_panel_tty_for_control,
-    set_panel_unread_for_control, set_surface_kind_for_control,
-    set_workspace_agent_listening_ports_for_control, set_workspace_agent_pid_for_control,
-    set_workspace_description_for_control, set_workspace_panel_pull_request_for_control,
-    set_workspace_pinned_for_control, set_workspace_sidebar_metadata_block_for_control,
-    set_workspace_sidebar_metadata_for_control, set_workspace_sidebar_progress_for_control,
-    set_workspace_sidebar_status_for_control, set_workspace_unread_for_control,
-    show_browser_developer_tools_for_control, split_browser_for_control,
-    split_off_surface_for_control, split_panel_for_control, start_direct_browser_proxy_for_control,
-    swap_panes_for_control, toggle_browser_developer_tools_for_control,
-    toggle_browser_focus_mode_for_control, toggle_browser_omnibar_for_control,
-    toggle_split_zoom_for_control, PaneLastControlError, PaneResizeControlError,
-    PaneResizeControlIntent, ReorderWorkspacesManyControlError, SessionState,
-    WorkspaceRemoteControlConfig,
+    select_adjacent_panel_for_control, select_last_workspace_for_control,
+    select_workspace_for_control, select_workspace_surface, set_browser_zoom_for_control,
+    set_group_collapsed_for_control, set_panel_listening_ports_for_control,
+    set_panel_pinned_for_control, set_panel_shell_activity_for_control,
+    set_panel_title_for_control, set_panel_tty_for_control, set_panel_unread_for_control,
+    set_surface_kind_for_control, set_workspace_agent_listening_ports_for_control,
+    set_workspace_agent_pid_for_control, set_workspace_description_for_control,
+    set_workspace_panel_pull_request_for_control, set_workspace_pinned_for_control,
+    set_workspace_sidebar_metadata_block_for_control, set_workspace_sidebar_metadata_for_control,
+    set_workspace_sidebar_progress_for_control, set_workspace_sidebar_status_for_control,
+    set_workspace_unread_for_control, show_browser_developer_tools_for_control,
+    split_browser_for_control, split_off_surface_for_control, split_panel_for_control,
+    start_direct_browser_proxy_for_control, swap_panes_for_control,
+    toggle_browser_developer_tools_for_control, toggle_browser_focus_mode_for_control,
+    toggle_browser_omnibar_for_control, toggle_split_zoom_for_control, PaneLastControlError,
+    PaneResizeControlError, PaneResizeControlIntent, ReorderWorkspacesManyControlError,
+    SessionState, WorkspaceLastControlError, WorkspaceRemoteControlConfig,
 };
 use crate::terminal::{
     scan_listening_ports_for_root_pid, scan_panel_listening_ports, terminal_clear_history_panel,
@@ -94,6 +94,7 @@ const CUSTOM_SIDEBAR_ALLOWED_ACTION_METHODS: &[&str] = &[
     "workspace.select",
     "workspace.next",
     "workspace.previous",
+    "workspace.last",
     "workspace.sidebar_state",
     "workspace.list_status",
     "workspace.list_log",
@@ -1110,6 +1111,7 @@ fn handle_control_request(app: &AppHandle, request: ControlRequest) -> ControlCa
         "workspace.reorder_many" => workspace_reorder_many(app, &request.params),
         "workspace.next" => workspace_select_relative(app, 1),
         "workspace.previous" => workspace_select_relative(app, -1),
+        "workspace.last" => workspace_last(app, &request.params),
         "workspace.equalize_splits" => workspace_equalize_splits(app),
         "workspace.set_description" => workspace_set_description(app, &request.params),
         "workspace.reset_color" => workspace_reset_color(app, &request.params),
@@ -3743,6 +3745,67 @@ fn workspace_select_relative(app: &AppHandle, delta: i64) -> ControlCallResult {
     let next = (selected as i64 + delta).rem_euclid(count as i64);
     let state = app.state::<SessionState>();
     workspace_current(&select_workspace_for_control(app, &state, next))
+}
+
+fn workspace_last(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let current = snapshot(app);
+    let Some(requested_window) = split_off_window_index(app, &current, params) else {
+        return ControlCallResult::Err {
+            code: "unavailable".to_string(),
+            message: "TabManager not available".to_string(),
+            data: None,
+        };
+    };
+    let window_index = requested_window.unwrap_or_else(|| {
+        crate::window::current_control_window(app, None)
+            .and_then(|identity| {
+                current
+                    .windows
+                    .iter()
+                    .position(|window| window.window_id.as_deref() == Some(identity.label.as_str()))
+            })
+            .unwrap_or(0)
+    });
+    let state = app.state::<SessionState>();
+    let (workspace_id, result) = match select_last_workspace_for_control(app, &state, window_index)
+    {
+        Ok(result) => result,
+        Err(WorkspaceLastControlError::TabManagerUnavailable) => {
+            return ControlCallResult::Err {
+                code: "unavailable".to_string(),
+                message: "TabManager not available".to_string(),
+                data: None,
+            };
+        }
+        Err(WorkspaceLastControlError::NoPreviousWorkspace) => {
+            return ControlCallResult::Err {
+                code: "not_found".to_string(),
+                message: "No previous workspace in history".to_string(),
+                data: None,
+            };
+        }
+    };
+    let window = &result.windows[window_index];
+    let window_label = window.window_id.as_deref().unwrap_or("main");
+    let identity = crate::window::control_window_summaries(app)
+        .into_iter()
+        .find(|summary| summary.identity.label == window_label)
+        .map(|summary| summary.identity);
+    if let Some(window) = app.get_webview_window(window_label) {
+        let _ = window.set_focus();
+    }
+    let workspace_index = window
+        .tab_manager
+        .workspaces
+        .iter()
+        .position(|workspace| workspace.workspace_id.as_deref() == Some(workspace_id.as_str()))
+        .unwrap_or(0);
+    ok(json!({
+        "workspace_id": workspace_id,
+        "workspace_ref": workspace_ref(workspace_index),
+        "window_id": identity.as_ref().map(|identity| identity.id.clone()),
+        "window_ref": identity.as_ref().map(|identity| identity.reference.clone()),
+    }))
 }
 
 fn workspace_equalize_splits(app: &AppHandle) -> ControlCallResult {
@@ -13996,6 +14059,7 @@ mod tests {
             "workspace.set_agent_pid",
             "workspace.clear_agent_pid",
             "workspace.move_to_window",
+            "workspace.last",
             "surface.report_tty",
             "surface.report_shell_state",
             "surface.split_off",
