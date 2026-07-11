@@ -67,11 +67,36 @@
     "Daemon Shutdown::Write is a half-close, terminal close is emitted exactly once on Shutdown::Both or final drop, and request/event correlation remains exact.",
     "Daemon proxy write and close deadlines are 8 seconds and 4 seconds respectively."
   ],
+  "hosted_windows_native_green": {
+    "commit": "581da70ab9dd6abbf4012309dc3a4ce9666f6704",
+    "workflow_run": "https://github.com/ashlrai/ashlr-mux/actions/runs/29170180137",
+    "desktop_job": 86590035874,
+    "prerequisites": "pass through sidecars, bootstrap tests, strict Clippy, workspace check, type drift, and 24 bridge tests",
+    "native_summary": "453 passed, 0 failed, 1 ignored; finished in 0.71s",
+    "job_result": "failed_after_native_suite",
+    "trailing_failure": "tests/test_desktop_contracts_unit.py had stale source-literal and local-command-count assertions"
+  },
+  "contract_gate_correction": {
+    "integrated_commits": [
+      "a765c964e",
+      "8a9b507a5"
+    ],
+    "independent_verification": {
+      "result": "pass",
+      "source_commit": "7a074b9118b07373030bd944f52c6aa1d140fa3c",
+      "failed_review_attempts": 1,
+      "bridge_tests": "25 passed, 0 failed, 67 expectations",
+      "adversarial_parser": "command arguments, intervening attributes, pub(in), pub(crate), async, unsafe, and exact handler-entry collision coverage passed"
+    },
+    "release_gate_commit": "8a9b507a5d0107c37c4f889ad548a6e71b1d159d",
+    "release_gate": "pass",
+    "desktop_matrix": "453 passed, 0 failed, 1 ignored; contracts/integration/e2e passed; e2e skipped=0"
+  },
   "hosted_windows_green": null,
   "matrix_status": "implemented_unverified",
   "matrix_promotions": 0,
   "promotion_blockers": [
-    "The exact implementation commit has not yet passed the hosted Windows desktop job.",
+    "The native runtime suite is hosted-Windows green, but the exact contract-gate correction commit has not yet completed a hosted Windows desktop job.",
     "No frozen canonical macOS versus Windows differential run covers the affected observable behavior."
   ]
 }
