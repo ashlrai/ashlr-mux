@@ -329,6 +329,7 @@ upstream\tgit@github.com:openai/codex.git (fetch)\n";
     fn panel_ids_from_layout_walks_leaves_left_to_right() {
         let layout =
             SessionWorkspaceLayoutSnapshot::Split(cmux_core::session::SessionSplitLayoutSnapshot {
+                split_id: None,
                 orientation: cmux_core::session::SessionSplitOrientation::Horizontal,
                 divider_position: 0.5,
                 first: Box::new(SessionWorkspaceLayoutSnapshot::Pane(

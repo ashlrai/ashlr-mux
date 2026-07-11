@@ -127,6 +127,9 @@ pub enum SessionSplitOrientation {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SessionSplitLayoutSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub split_id: Option<String>,
     pub orientation: SessionSplitOrientation,
     pub divider_position: f64,
     pub first: Box<SessionWorkspaceLayoutSnapshot>,
@@ -940,6 +943,7 @@ mod tests {
     #[test]
     fn tagged_union_round_trips() {
         let snapshot = SessionWorkspaceLayoutSnapshot::Split(SessionSplitLayoutSnapshot {
+            split_id: None,
             orientation: SessionSplitOrientation::Horizontal,
             divider_position: 0.5,
             first: Box::new(SessionWorkspaceLayoutSnapshot::Pane(

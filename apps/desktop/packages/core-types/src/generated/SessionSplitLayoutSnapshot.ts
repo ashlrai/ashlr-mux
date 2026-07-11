@@ -3,4 +3,4 @@
 import type { SessionSplitOrientation } from "./SessionSplitOrientation";
 import type { SessionWorkspaceLayoutSnapshot } from "./SessionWorkspaceLayoutSnapshot";
 
-export type SessionSplitLayoutSnapshot = { orientation: SessionSplitOrientation, divider_position: number, first: SessionWorkspaceLayoutSnapshot, second: SessionWorkspaceLayoutSnapshot, };
+export type SessionSplitLayoutSnapshot = { split_id?: string, orientation: SessionSplitOrientation, divider_position: number, first: SessionWorkspaceLayoutSnapshot, second: SessionWorkspaceLayoutSnapshot, };

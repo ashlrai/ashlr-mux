@@ -558,3 +558,40 @@ fn executable_routes_last_pane_and_formats_result() {
         serde_json::json!({"workspace_ref": "workspace:2"})
     );
 }
+
+#[test]
+fn executable_routes_resize_pane_and_formats_result() {
+    let (pipe, request_rx) = spawn_server("resize-pane", serde_json::json!({"pane_ref": "pane:2"}));
+    let output = Command::new(env!("CARGO_BIN_EXE_cmux"))
+        .args([
+            "resize-pane",
+            "--pane",
+            "pane:3",
+            "--workspace",
+            "workspace:1",
+            "-U",
+            "--amount",
+            "8",
+        ])
+        .env("CMUX_SOCKET_PATH", &pipe)
+        .env_remove("CMUX_SOCKET")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "OK pane:2\n");
+    let (method, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(method, "pane.resize");
+    assert_eq!(
+        serde_json::Value::Object(params),
+        serde_json::json!({
+            "pane_ref": "pane:3",
+            "workspace_ref": "workspace:1",
+            "direction": "up",
+            "amount": 8,
+        })
+    );
+}

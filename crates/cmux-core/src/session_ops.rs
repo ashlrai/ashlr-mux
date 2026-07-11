@@ -1365,6 +1365,7 @@ pub fn split_off_surface(
                     (Layout::Pane(source), Layout::Pane(moved))
                 };
                 *layout = Layout::Split(SessionSplitLayoutSnapshot {
+                    split_id: None,
                     orientation: orientation.clone(),
                     divider_position: 0.5,
                     first: Box::new(first),
@@ -1468,6 +1469,216 @@ pub fn pane_id_containing_surface<'a>(
     pane_containing_panel(workspace.layout.as_ref()?, panel_id)?
         .pane_id
         .as_deref()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneResizeDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+impl PaneResizeDirection {
+    fn orientation(self) -> SessionSplitOrientation {
+        match self {
+            Self::Left | Self::Right => SessionSplitOrientation::Horizontal,
+            Self::Up | Self::Down => SessionSplitOrientation::Vertical,
+        }
+    }
+
+    fn requires_first_child(self) -> bool {
+        matches!(self, Self::Right | Self::Down)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PaneResizeResult {
+    pub split_id: String,
+    pub old_divider_position: f64,
+    pub new_divider_position: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneResizeError {
+    PaneNotFoundInTree,
+    NoOrientationSplitAncestor,
+    NoAdjacentBorder,
+    MissingSplitIdentity,
+}
+
+struct PaneResizeCandidate {
+    path: Vec<SplitChild>,
+    split_id: Option<String>,
+    orientation: SessionSplitOrientation,
+    pane_in_first_child: bool,
+    divider_position: f64,
+    axis_pixels: f64,
+}
+
+fn pane_resize_candidates(
+    layout: &Layout,
+    pane_id: &str,
+    width: f64,
+    height: f64,
+    path: &mut Vec<SplitChild>,
+    candidates: &mut Vec<PaneResizeCandidate>,
+) -> bool {
+    match layout {
+        Layout::Pane(pane) => pane.pane_id.as_deref() == Some(pane_id),
+        Layout::Split(split) => {
+            let divider = clamp_divider(split.divider_position);
+            let (first_width, first_height, second_width, second_height) = match split.orientation {
+                SessionSplitOrientation::Horizontal => {
+                    let first_width = width * divider;
+                    (first_width, height, width - first_width, height)
+                }
+                SessionSplitOrientation::Vertical => {
+                    let first_height = height * divider;
+                    (width, first_height, width, height - first_height)
+                }
+            };
+            path.push(SplitChild::First);
+            let first_contains = pane_resize_candidates(
+                &split.first,
+                pane_id,
+                first_width,
+                first_height,
+                path,
+                candidates,
+            );
+            path.pop();
+            path.push(SplitChild::Second);
+            let second_contains = pane_resize_candidates(
+                &split.second,
+                pane_id,
+                second_width,
+                second_height,
+                path,
+                candidates,
+            );
+            path.pop();
+            if first_contains || second_contains {
+                candidates.push(PaneResizeCandidate {
+                    path: path.clone(),
+                    split_id: split.split_id.clone(),
+                    orientation: split.orientation.clone(),
+                    pane_in_first_child: first_contains,
+                    divider_position: split.divider_position,
+                    axis_pixels: match split.orientation {
+                        SessionSplitOrientation::Horizontal => width.max(1.0),
+                        SessionSplitOrientation::Vertical => height.max(1.0),
+                    },
+                });
+            }
+            first_contains || second_contains
+        }
+    }
+}
+
+fn apply_pane_resize(
+    workspace: &mut SessionWorkspaceSnapshot,
+    candidate: &PaneResizeCandidate,
+    new_position: f64,
+) -> Result<PaneResizeResult, PaneResizeError> {
+    let split_id = candidate
+        .split_id
+        .clone()
+        .ok_or(PaneResizeError::MissingSplitIdentity)?;
+    let mut next = workspace
+        .layout
+        .clone()
+        .ok_or(PaneResizeError::PaneNotFoundInTree)?;
+    if !set_divider_at_path(&mut next, &candidate.path, new_position) {
+        return Err(PaneResizeError::PaneNotFoundInTree);
+    }
+    let new_divider_position = clamp_divider(new_position);
+    workspace.layout = Some(next);
+    Ok(PaneResizeResult {
+        split_id,
+        old_divider_position: candidate.divider_position,
+        new_divider_position,
+    })
+}
+
+pub fn resize_pane_relative(
+    workspace: &mut SessionWorkspaceSnapshot,
+    pane_id: &str,
+    direction: PaneResizeDirection,
+    amount: u64,
+    width: f64,
+    height: f64,
+) -> Result<PaneResizeResult, PaneResizeError> {
+    let mut candidates = Vec::new();
+    let contains_target = workspace.layout.as_ref().is_some_and(|layout| {
+        pane_resize_candidates(
+            layout,
+            pane_id,
+            width.max(1.0),
+            height.max(1.0),
+            &mut Vec::new(),
+            &mut candidates,
+        )
+    });
+    if !contains_target {
+        return Err(PaneResizeError::PaneNotFoundInTree);
+    }
+    let orientation = direction.orientation();
+    if !candidates
+        .iter()
+        .any(|candidate| candidate.orientation == orientation)
+    {
+        return Err(PaneResizeError::NoOrientationSplitAncestor);
+    }
+    let candidate = candidates
+        .iter()
+        .find(|candidate| {
+            candidate.orientation == orientation
+                && candidate.pane_in_first_child == direction.requires_first_child()
+        })
+        .ok_or(PaneResizeError::NoAdjacentBorder)?;
+    let sign = if direction.requires_first_child() {
+        1.0
+    } else {
+        -1.0
+    };
+    let requested = candidate.divider_position + sign * amount as f64 / candidate.axis_pixels;
+    apply_pane_resize(workspace, candidate, requested)
+}
+
+pub fn resize_pane_absolute(
+    workspace: &mut SessionWorkspaceSnapshot,
+    pane_id: &str,
+    axis: SessionSplitOrientation,
+    target_pixels: f64,
+    width: f64,
+    height: f64,
+) -> Result<PaneResizeResult, PaneResizeError> {
+    let mut candidates = Vec::new();
+    let contains_target = workspace.layout.as_ref().is_some_and(|layout| {
+        pane_resize_candidates(
+            layout,
+            pane_id,
+            width.max(1.0),
+            height.max(1.0),
+            &mut Vec::new(),
+            &mut candidates,
+        )
+    });
+    if !contains_target {
+        return Err(PaneResizeError::PaneNotFoundInTree);
+    }
+    let candidate = candidates
+        .iter()
+        .find(|candidate| candidate.orientation == axis)
+        .ok_or(PaneResizeError::NoOrientationSplitAncestor)?;
+    let fraction = target_pixels / candidate.axis_pixels;
+    let requested = if candidate.pane_in_first_child {
+        fraction
+    } else {
+        1.0 - fraction
+    };
+    apply_pane_resize(workspace, candidate, requested)
 }
 
 fn remove_surface_from_pane(layout: &mut Layout, pane_id: &str, panel_id: &str) -> bool {
@@ -1581,6 +1792,7 @@ fn split_pane_impl(
             (existing, new_pane)
         };
         *node = Layout::Split(SessionSplitLayoutSnapshot {
+            split_id: None,
             orientation: orientation.clone(),
             divider_position: 0.5,
             first: Box::new(first),
@@ -3550,6 +3762,7 @@ mod tests {
         second: Layout,
     ) -> Layout {
         Layout::Split(SessionSplitLayoutSnapshot {
+            split_id: None,
             orientation,
             divider_position: divider,
             first: Box::new(first),
@@ -3587,6 +3800,7 @@ mod tests {
     #[test]
     fn equalize_weights_by_leaf_count() {
         let two_vs_one = SessionSplitLayoutSnapshot {
+            split_id: None,
             orientation: SessionSplitOrientation::Horizontal,
             divider_position: 0.5,
             first: Box::new(split(
@@ -5986,6 +6200,162 @@ mod tests {
         );
     }
 
+    fn resize_workspace() -> SessionWorkspaceSnapshot {
+        let mut a = pane("a");
+        let Layout::Pane(a_pane) = &mut a else {
+            unreachable!()
+        };
+        a_pane.pane_id = Some("pane-a".into());
+        let mut b = pane("b");
+        let Layout::Pane(b_pane) = &mut b else {
+            unreachable!()
+        };
+        b_pane.pane_id = Some("pane-b".into());
+        let mut c = pane("c");
+        let Layout::Pane(c_pane) = &mut c else {
+            unreachable!()
+        };
+        c_pane.pane_id = Some("pane-c".into());
+        let mut inner = split(SessionSplitOrientation::Horizontal, 0.5, a, b);
+        let Layout::Split(inner_split) = &mut inner else {
+            unreachable!()
+        };
+        inner_split.split_id = Some("split-inner".into());
+        let mut root = split(SessionSplitOrientation::Horizontal, 0.6, inner, c);
+        let Layout::Split(root_split) = &mut root else {
+            unreachable!()
+        };
+        root_split.split_id = Some("split-root".into());
+        SessionWorkspaceSnapshot {
+            layout: Some(root),
+            ..fresh_terminal_workspace("unused")
+        }
+    }
+
+    #[test]
+    fn resize_pane_relative_uses_nearest_matching_adjacent_ancestor() {
+        let mut workspace = resize_workspace();
+        assert_eq!(
+            resize_pane_relative(
+                &mut workspace,
+                "pane-a",
+                PaneResizeDirection::Right,
+                60,
+                1000.0,
+                800.0,
+            ),
+            Ok(PaneResizeResult {
+                split_id: "split-inner".into(),
+                old_divider_position: 0.5,
+                new_divider_position: 0.6,
+            })
+        );
+        let Layout::Split(root) = workspace.layout.as_ref().unwrap() else {
+            unreachable!()
+        };
+        assert_eq!(root.divider_position, 0.6);
+        let Layout::Split(inner) = root.first.as_ref() else {
+            unreachable!()
+        };
+        assert!((inner.divider_position - 0.6).abs() < 1e-9);
+    }
+
+    #[test]
+    fn resize_pane_relative_walks_outward_for_requested_border() {
+        let mut workspace = resize_workspace();
+        let result = resize_pane_relative(
+            &mut workspace,
+            "pane-b",
+            PaneResizeDirection::Right,
+            100,
+            1000.0,
+            800.0,
+        )
+        .unwrap();
+        assert_eq!(result.split_id, "split-root");
+        assert!((result.new_divider_position - 0.7).abs() < 1e-9);
+
+        let before = workspace.clone();
+        assert_eq!(
+            resize_pane_relative(
+                &mut workspace,
+                "pane-c",
+                PaneResizeDirection::Right,
+                10,
+                1000.0,
+                800.0,
+            ),
+            Err(PaneResizeError::NoAdjacentBorder)
+        );
+        assert_eq!(workspace, before);
+    }
+
+    #[test]
+    fn resize_pane_absolute_uses_target_child_fraction_and_clamps() {
+        let mut workspace = resize_workspace();
+        let result = resize_pane_absolute(
+            &mut workspace,
+            "pane-b",
+            SessionSplitOrientation::Horizontal,
+            120.0,
+            1000.0,
+            800.0,
+        )
+        .unwrap();
+        assert_eq!(result.split_id, "split-inner");
+        assert!((result.new_divider_position - 0.8).abs() < 1e-9);
+
+        let clamped = resize_pane_absolute(
+            &mut workspace,
+            "pane-a",
+            SessionSplitOrientation::Horizontal,
+            1.0,
+            1000.0,
+            800.0,
+        )
+        .unwrap();
+        assert_eq!(clamped.new_divider_position, MIN_DIVIDER);
+    }
+
+    #[test]
+    fn resize_pane_rejects_missing_axis_or_identity_without_mutating() {
+        let mut workspace = resize_workspace();
+        let before = workspace.clone();
+        assert_eq!(
+            resize_pane_relative(
+                &mut workspace,
+                "pane-a",
+                PaneResizeDirection::Down,
+                10,
+                1000.0,
+                800.0,
+            ),
+            Err(PaneResizeError::NoOrientationSplitAncestor)
+        );
+        assert_eq!(workspace, before);
+
+        let Layout::Split(root) = workspace.layout.as_mut().unwrap() else {
+            unreachable!()
+        };
+        let Layout::Split(inner) = root.first.as_mut() else {
+            unreachable!()
+        };
+        inner.split_id = None;
+        let before = workspace.clone();
+        assert_eq!(
+            resize_pane_relative(
+                &mut workspace,
+                "pane-a",
+                PaneResizeDirection::Right,
+                10,
+                1000.0,
+                800.0,
+            ),
+            Err(PaneResizeError::MissingSplitIdentity)
+        );
+        assert_eq!(workspace, before);
+    }
+
     #[test]
     fn set_panel_unread_sets_and_clears_panel_unread() {
         let mut workspace = fresh_terminal_workspace("surface-1");
@@ -6025,6 +6395,7 @@ mod tests {
         let mut tabs = tabs_with(2, 0, 0);
         tabs.workspaces[0].layout = Some(SessionWorkspaceLayoutSnapshot::Split(
             SessionSplitLayoutSnapshot {
+                split_id: None,
                 orientation: SessionSplitOrientation::Horizontal,
                 divider_position: 0.5,
                 first: Box::new(single_pane("surface-1")),

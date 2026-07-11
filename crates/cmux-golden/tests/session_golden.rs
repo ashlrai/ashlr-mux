@@ -68,6 +68,7 @@ fn full_modern_snapshot() {
     // A modern snapshot exercising every optional field: workspace ids, custom
     // titles, a recursive split layout, canvas panes, and workspace groups.
     let split = SessionWorkspaceLayoutSnapshot::Split(SessionSplitLayoutSnapshot {
+        split_id: None,
         orientation: SessionSplitOrientation::Horizontal,
         divider_position: 0.5,
         first: Box::new(SessionWorkspaceLayoutSnapshot::Pane(pane(
@@ -76,6 +77,7 @@ fn full_modern_snapshot() {
         ))),
         second: Box::new(SessionWorkspaceLayoutSnapshot::Split(
             SessionSplitLayoutSnapshot {
+                split_id: None,
                 orientation: SessionSplitOrientation::Vertical,
                 divider_position: 0.25,
                 first: Box::new(SessionWorkspaceLayoutSnapshot::Pane(pane(

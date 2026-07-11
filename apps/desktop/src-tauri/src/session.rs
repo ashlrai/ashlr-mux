@@ -146,7 +146,7 @@ fn ensure_workspace_ids(snapshot: &mut AppSessionSnapshot) {
     }
 }
 
-/// Mint a stable `pane_id` for every pane that lacks one. This mirrors the
+/// Mint stable pane and split identities for every layout node that lacks one. This mirrors the
 /// workspace-id rule above: older snapshots decode without pane ids, and the
 /// stateful desktop layer synthesizes them exactly once so downstream pure/UI
 /// consumers can treat pane identity as stable.
@@ -159,6 +159,9 @@ fn ensure_pane_ids(snapshot: &mut AppSessionSnapshot) {
                 }
             }
             SessionWorkspaceLayoutSnapshot::Split(split) => {
+                if split.split_id.is_none() {
+                    split.split_id = Some(Uuid::new_v4().to_string());
+                }
                 ensure_layout_pane_ids(&mut split.first);
                 ensure_layout_pane_ids(&mut split.second);
             }
@@ -3963,6 +3966,69 @@ pub(crate) fn focus_last_pane_for_control(
     Ok((focused, snapshot))
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum PaneResizeControlIntent {
+    Relative {
+        direction: session_ops::PaneResizeDirection,
+        amount: u64,
+    },
+    Absolute {
+        axis: SessionSplitOrientation,
+        target_pixels: f64,
+    },
+}
+
+#[derive(Debug)]
+pub(crate) enum PaneResizeControlError {
+    WorkspaceNotFound,
+    Pane(session_ops::PaneResizeError),
+}
+
+pub(crate) fn resize_pane_for_control(
+    app: &AppHandle,
+    state: &SessionState,
+    window_index: usize,
+    workspace_index: usize,
+    pane_id: &str,
+    intent: PaneResizeControlIntent,
+    width: f64,
+    height: f64,
+) -> Result<(session_ops::PaneResizeResult, AppSessionSnapshot), PaneResizeControlError> {
+    let (resized, snapshot) = {
+        let mut guard = state
+            .snapshot
+            .lock()
+            .expect("session snapshot mutex poisoned");
+        let workspace = guard
+            .windows
+            .get_mut(window_index)
+            .and_then(|window| window.tab_manager.workspaces.get_mut(workspace_index))
+            .ok_or(PaneResizeControlError::WorkspaceNotFound)?;
+        let resized = match intent {
+            PaneResizeControlIntent::Relative { direction, amount } => {
+                session_ops::resize_pane_relative(
+                    workspace, pane_id, direction, amount, width, height,
+                )
+            }
+            PaneResizeControlIntent::Absolute {
+                axis,
+                target_pixels,
+            } => session_ops::resize_pane_absolute(
+                workspace,
+                pane_id,
+                axis,
+                target_pixels,
+                width,
+                height,
+            ),
+        }
+        .map_err(PaneResizeControlError::Pane)?;
+        (resized, guard.clone())
+    };
+    notify_session_changed(app, &snapshot);
+    Ok((resized, snapshot))
+}
+
 pub(crate) fn new_terminal_tab_for_control(
     app: &AppHandle,
     state: &SessionState,
@@ -6431,6 +6497,18 @@ mod tests {
         }
     }
 
+    fn split_ids_in_layout(layout: &SessionWorkspaceLayoutSnapshot) -> Vec<&str> {
+        match layout {
+            SessionWorkspaceLayoutSnapshot::Pane(_) => Vec::new(),
+            SessionWorkspaceLayoutSnapshot::Split(split) => {
+                let mut ids = split.split_id.as_deref().into_iter().collect::<Vec<_>>();
+                ids.extend(split_ids_in_layout(&split.first));
+                ids.extend(split_ids_in_layout(&split.second));
+                ids
+            }
+        }
+    }
+
     #[test]
     fn initial_snapshot_is_one_window_workspace_pane() {
         let snapshot = initial_snapshot(FIRST_PANEL_ID);
@@ -6670,6 +6748,9 @@ mod tests {
         for pane_id in after {
             assert!(Uuid::parse_str(pane_id).is_ok(), "not a uuid: {pane_id}");
         }
+        let split_ids = split_ids_in_layout(active_layout(&snapshot));
+        assert_eq!(split_ids.len(), 1);
+        assert!(Uuid::parse_str(split_ids[0]).is_ok());
     }
 
     #[test]

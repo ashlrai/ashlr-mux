@@ -297,6 +297,10 @@ pub fn control_command_for(
             "pane.last",
             workspace_window_scope_params(args)?,
         )),
+        "resize-pane" => Some(ControlCommand::new(
+            "pane.resize",
+            resize_pane_params(args)?,
+        )),
         "reorder-surface" => Some(ControlCommand::new(
             "surface.reorder",
             canonical_surface_reorder_params(args)?,
@@ -1500,6 +1504,37 @@ fn pane_transfer_params(
 fn workspace_window_scope_params(args: &[String]) -> Result<serde_json::Value, CliError> {
     let parsed = ParsedArgs::parse(args)?;
     let mut params = serde_json::Map::new();
+    apply_workspace_scope_selector(&parsed, &mut params);
+    apply_window_scope_selector(&parsed, &mut params);
+    Ok(serde_json::Value::Object(params))
+}
+
+fn resize_pane_params(args: &[String]) -> Result<serde_json::Value, CliError> {
+    let parsed = ParsedArgs::parse(args)?;
+    let amount = parsed
+        .value(&["--amount"])
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(1);
+    if amount <= 0 {
+        return Err(CliError::new("--amount must be greater than 0"));
+    }
+    let direction = if args.iter().any(|arg| arg == "-L") {
+        "left"
+    } else if args.iter().any(|arg| arg == "-R") {
+        "right"
+    } else if args.iter().any(|arg| arg == "-U") {
+        "up"
+    } else if args.iter().any(|arg| arg == "-D") {
+        "down"
+    } else {
+        "right"
+    };
+    let mut params = serde_json::Map::new();
+    params.insert("direction".to_string(), serde_json::json!(direction));
+    params.insert("amount".to_string(), serde_json::json!(amount));
+    if let Some(pane) = parsed.value(&["--pane"]) {
+        apply_pane_target_selector(pane, &mut params);
+    }
     apply_workspace_scope_selector(&parsed, &mut params);
     apply_window_scope_selector(&parsed, &mut params);
     Ok(serde_json::Value::Object(params))
@@ -3732,6 +3767,7 @@ fn takes_value(arg: &str) -> bool {
         "--after"
             | "--after-surface"
             | "--after-workspace"
+            | "--amount"
             | "--before"
             | "--before-surface"
             | "--before-workspace"
@@ -4994,6 +5030,46 @@ mod tests {
                 "workspace_ref": "workspace:2",
                 "window_ref": "window:1",
             })
+        );
+    }
+
+    #[test]
+    fn maps_canonical_resize_pane_command_and_direction_precedence() {
+        let resized = mapped(
+            "resize-pane",
+            &[
+                "--pane",
+                "2",
+                "--workspace",
+                "workspace:3",
+                "--window",
+                "window:1",
+                "-D",
+                "-L",
+                "--amount",
+                "12",
+            ],
+        );
+        assert_eq!(resized.method, "pane.resize");
+        assert_eq!(
+            resized.params,
+            serde_json::json!({
+                "pane_ref": "pane:2",
+                "workspace_ref": "workspace:3",
+                "window_ref": "window:1",
+                "direction": "left",
+                "amount": 12,
+            })
+        );
+        assert_eq!(
+            mapped("resize-pane", &["--amount", "not-a-number"]).params,
+            serde_json::json!({"direction": "right", "amount": 1})
+        );
+        assert_eq!(
+            control_command_for("resize-pane", &args(&["--amount", "0"]))
+                .unwrap_err()
+                .message,
+            "--amount must be greater than 0"
         );
     }
 

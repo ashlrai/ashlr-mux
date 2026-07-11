@@ -48,22 +48,24 @@ use crate::session::{
     reopen_closed_browser_tab_for_control, reorder_surface_for_control,
     reorder_workspaces_for_control, reorder_workspaces_many_for_control,
     reset_workspace_color_for_control, reset_workspace_sidebar_metadata_for_control,
-    restore_previous_launch_for_control, select_adjacent_panel_for_control,
-    select_workspace_for_control, select_workspace_surface, set_browser_zoom_for_control,
-    set_group_collapsed_for_control, set_panel_listening_ports_for_control,
-    set_panel_pinned_for_control, set_panel_shell_activity_for_control,
-    set_panel_title_for_control, set_panel_tty_for_control, set_panel_unread_for_control,
-    set_surface_kind_for_control, set_workspace_agent_listening_ports_for_control,
-    set_workspace_agent_pid_for_control, set_workspace_description_for_control,
-    set_workspace_panel_pull_request_for_control, set_workspace_pinned_for_control,
-    set_workspace_sidebar_metadata_block_for_control, set_workspace_sidebar_metadata_for_control,
-    set_workspace_sidebar_progress_for_control, set_workspace_sidebar_status_for_control,
-    set_workspace_unread_for_control, show_browser_developer_tools_for_control,
-    split_browser_for_control, split_off_surface_for_control, split_panel_for_control,
-    start_direct_browser_proxy_for_control, swap_panes_for_control,
-    toggle_browser_developer_tools_for_control, toggle_browser_focus_mode_for_control,
-    toggle_browser_omnibar_for_control, toggle_split_zoom_for_control, PaneLastControlError,
-    ReorderWorkspacesManyControlError, SessionState, WorkspaceRemoteControlConfig,
+    resize_pane_for_control, restore_previous_launch_for_control,
+    select_adjacent_panel_for_control, select_workspace_for_control, select_workspace_surface,
+    set_browser_zoom_for_control, set_group_collapsed_for_control,
+    set_panel_listening_ports_for_control, set_panel_pinned_for_control,
+    set_panel_shell_activity_for_control, set_panel_title_for_control, set_panel_tty_for_control,
+    set_panel_unread_for_control, set_surface_kind_for_control,
+    set_workspace_agent_listening_ports_for_control, set_workspace_agent_pid_for_control,
+    set_workspace_description_for_control, set_workspace_panel_pull_request_for_control,
+    set_workspace_pinned_for_control, set_workspace_sidebar_metadata_block_for_control,
+    set_workspace_sidebar_metadata_for_control, set_workspace_sidebar_progress_for_control,
+    set_workspace_sidebar_status_for_control, set_workspace_unread_for_control,
+    show_browser_developer_tools_for_control, split_browser_for_control,
+    split_off_surface_for_control, split_panel_for_control, start_direct_browser_proxy_for_control,
+    swap_panes_for_control, toggle_browser_developer_tools_for_control,
+    toggle_browser_focus_mode_for_control, toggle_browser_omnibar_for_control,
+    toggle_split_zoom_for_control, PaneLastControlError, PaneResizeControlError,
+    PaneResizeControlIntent, ReorderWorkspacesManyControlError, SessionState,
+    WorkspaceRemoteControlConfig,
 };
 use crate::terminal::{
     scan_listening_ports_for_root_pid, scan_panel_listening_ports, terminal_clear_history_panel,
@@ -924,6 +926,7 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "pane.break",
     "pane.join",
     "pane.last",
+    "pane.resize",
     "browser.open_split",
     "browser.navigate",
     "browser.back",
@@ -1222,6 +1225,7 @@ fn handle_control_request(app: &AppHandle, request: ControlRequest) -> ControlCa
         "pane.break" => pane_break(app, &request.params),
         "pane.join" => pane_join(app, &request.params),
         "pane.last" => pane_last(app, &request.params),
+        "pane.resize" => pane_resize(app, &request.params),
         "browser.navigate" => browser_navigate(app, &request.params),
         "browser.back" => browser_back(app, &request.params),
         "browser.forward" => browser_forward(app, &request.params),
@@ -5322,6 +5326,217 @@ fn pane_last(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Contro
     }))
 }
 
+fn pane_resize(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let intent = if params.contains_key("absolute_axis") || params.contains_key("target_pixels") {
+        let axis = match string_param(params, &["absolute_axis"]).as_deref() {
+            Some("horizontal") => SessionSplitOrientation::Horizontal,
+            Some("vertical") => SessionSplitOrientation::Vertical,
+            _ => return invalid_params("absolute_axis must be 'horizontal' or 'vertical'"),
+        };
+        let Some(target_pixels) =
+            f64_param(params, &["target_pixels"]).filter(|value| value.is_finite() && *value > 0.0)
+        else {
+            return invalid_params("target_pixels must be > 0");
+        };
+        PaneResizeControlIntent::Absolute {
+            axis,
+            target_pixels,
+        }
+    } else {
+        let direction = match string_param(params, &["direction"]).as_deref() {
+            Some("left") => session_ops::PaneResizeDirection::Left,
+            Some("right") => session_ops::PaneResizeDirection::Right,
+            Some("up") => session_ops::PaneResizeDirection::Up,
+            Some("down") => session_ops::PaneResizeDirection::Down,
+            _ => {
+                return invalid_params(
+                    "direction must be one of left|right|up|down and amount must be > 0",
+                );
+            }
+        };
+        let Some(amount) = i64_param(params, &["amount"])
+            .filter(|amount| *amount > 0)
+            .and_then(|amount| u64::try_from(amount).ok())
+        else {
+            return invalid_params(
+                "direction must be one of left|right|up|down and amount must be > 0",
+            );
+        };
+        PaneResizeControlIntent::Relative { direction, amount }
+    };
+
+    let current = snapshot(app);
+    let Some(requested_window) = split_off_window_index(app, &current, params) else {
+        return ControlCallResult::Err {
+            code: "unavailable".to_string(),
+            message: "TabManager not available".to_string(),
+            data: None,
+        };
+    };
+    let window_index = requested_window.unwrap_or(0);
+    let Some(requested_workspace) = split_off_workspace_index(&current, params, window_index)
+    else {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Workspace not found".to_string(),
+            data: None,
+        };
+    };
+    let Some(window) = current.windows.get(window_index) else {
+        return ControlCallResult::Err {
+            code: "unavailable".to_string(),
+            message: "TabManager not available".to_string(),
+            data: None,
+        };
+    };
+    let workspace_index = requested_workspace.unwrap_or_else(|| {
+        window
+            .tab_manager
+            .selected_workspace_index
+            .and_then(|index| usize::try_from(index).ok())
+            .unwrap_or(0)
+    });
+    let Some(workspace) = window.tab_manager.workspaces.get(workspace_index) else {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Workspace not found".to_string(),
+            data: None,
+        };
+    };
+    let Some((pane_index, pane_id)) = resolve_resize_pane(workspace, params) else {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Pane not found".to_string(),
+            data: None,
+        };
+    };
+
+    let window_label = window.window_id.as_deref().unwrap_or("main");
+    let (width, height) = app
+        .get_webview_window(window_label)
+        .and_then(|window| window.inner_size().ok())
+        .map(|size| (f64::from(size.width), f64::from(size.height)))
+        .unwrap_or((1.0, 1.0));
+    let state = app.state::<SessionState>();
+    let (resized, result) = match resize_pane_for_control(
+        app,
+        &state,
+        window_index,
+        workspace_index,
+        &pane_id,
+        intent.clone(),
+        width,
+        height,
+    ) {
+        Ok(result) => result,
+        Err(PaneResizeControlError::WorkspaceNotFound) => {
+            return ControlCallResult::Err {
+                code: "not_found".to_string(),
+                message: "Workspace not found".to_string(),
+                data: None,
+            };
+        }
+        Err(PaneResizeControlError::Pane(session_ops::PaneResizeError::PaneNotFoundInTree)) => {
+            return ControlCallResult::Err {
+                code: "not_found".to_string(),
+                message: "Pane not found in split tree".to_string(),
+                data: None,
+            };
+        }
+        Err(PaneResizeControlError::Pane(
+            session_ops::PaneResizeError::NoOrientationSplitAncestor,
+        )) => {
+            let message = match intent {
+                PaneResizeControlIntent::Absolute { .. } => {
+                    "No split ancestor for absolute pane resize".to_string()
+                }
+                PaneResizeControlIntent::Relative { direction, .. } => format!(
+                    "No {} split ancestor for pane",
+                    match direction {
+                        session_ops::PaneResizeDirection::Left
+                        | session_ops::PaneResizeDirection::Right => "horizontal",
+                        session_ops::PaneResizeDirection::Up
+                        | session_ops::PaneResizeDirection::Down => "vertical",
+                    }
+                ),
+            };
+            return ControlCallResult::Err {
+                code: "invalid_state".to_string(),
+                message,
+                data: None,
+            };
+        }
+        Err(PaneResizeControlError::Pane(session_ops::PaneResizeError::NoAdjacentBorder)) => {
+            let direction = match intent {
+                PaneResizeControlIntent::Relative { direction, .. } => match direction {
+                    session_ops::PaneResizeDirection::Left => "left",
+                    session_ops::PaneResizeDirection::Right => "right",
+                    session_ops::PaneResizeDirection::Up => "up",
+                    session_ops::PaneResizeDirection::Down => "down",
+                },
+                PaneResizeControlIntent::Absolute { .. } => unreachable!(),
+            };
+            return ControlCallResult::Err {
+                code: "invalid_state".to_string(),
+                message: format!("Pane has no adjacent border in direction {direction}"),
+                data: None,
+            };
+        }
+        Err(PaneResizeControlError::Pane(session_ops::PaneResizeError::MissingSplitIdentity)) => {
+            return ControlCallResult::Err {
+                code: "internal_error".to_string(),
+                message: "Failed to resize pane".to_string(),
+                data: None,
+            };
+        }
+    };
+    let window = &result.windows[window_index];
+    let workspace = &window.tab_manager.workspaces[workspace_index];
+    let window_identity = crate::window::control_window_summaries(app)
+        .into_iter()
+        .find(|summary| summary.identity.label == window_label)
+        .map(|summary| summary.identity);
+    let mut payload = json!({
+        "window_id": window_identity.as_ref().map(|identity| identity.id.clone()),
+        "window_ref": window_identity.as_ref().map(|identity| identity.reference.clone()),
+        "workspace_id": workspace.workspace_id,
+        "workspace_ref": workspace_ref(workspace_index),
+        "pane_id": pane_id,
+        "pane_ref": pane_ref(pane_index),
+        "split_id": resized.split_id,
+        "old_divider_position": resized.old_divider_position,
+        "new_divider_position": resized.new_divider_position,
+    });
+    if let Some(object) = payload.as_object_mut() {
+        match intent {
+            PaneResizeControlIntent::Relative { direction, amount } => {
+                let direction = match direction {
+                    session_ops::PaneResizeDirection::Left => "left",
+                    session_ops::PaneResizeDirection::Right => "right",
+                    session_ops::PaneResizeDirection::Up => "up",
+                    session_ops::PaneResizeDirection::Down => "down",
+                };
+                object.insert("direction".to_string(), json!(direction));
+                object.insert("amount".to_string(), json!(amount));
+            }
+            PaneResizeControlIntent::Absolute {
+                axis,
+                target_pixels,
+            } => {
+                object.insert(
+                    "absolute_axis".to_string(),
+                    json!(match axis {
+                        SessionSplitOrientation::Horizontal => "horizontal",
+                        SessionSplitOrientation::Vertical => "vertical",
+                    }),
+                );
+                object.insert("target_pixels".to_string(), json!(target_pixels));
+            }
+        }
+    }
+    ok(payload)
+}
+
 fn surface_close(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
     let current = snapshot(app);
     let Some(panel_id) = surface_id_from_params_or_focused(&current, params) else {
@@ -5443,6 +5658,24 @@ fn pane_at_index(
     }
     let mut index = 0;
     visit(workspace.layout.as_ref()?, target_index, &mut index)
+}
+
+fn resolve_resize_pane(
+    workspace: &SessionWorkspaceSnapshot,
+    params: &serde_json::Map<String, Value>,
+) -> Option<(usize, String)> {
+    if let Some(pane_id) = string_param(params, &["pane_id"]) {
+        return pane_index_by_id(workspace, &pane_id).map(|index| (index, pane_id));
+    }
+    if let Some(reference) = string_param(params, &["pane_ref"]) {
+        return one_based_ref_index(&reference, "pane")
+            .and_then(|index| pane_at_index(workspace, index));
+    }
+    workspace
+        .focused_panel_id
+        .as_deref()
+        .and_then(|panel_id| surface_pane_details(workspace, panel_id))
+        .and_then(|(index, pane_id, _)| pane_id.map(|pane_id| (index, pane_id)))
 }
 
 fn pane_index_by_id(workspace: &SessionWorkspaceSnapshot, pane_id: &str) -> Option<usize> {
@@ -12304,6 +12537,34 @@ mod tests {
     }
 
     #[test]
+    fn resize_pane_resolves_id_ref_or_persisted_focus() {
+        let mut snapshot = test_snapshot();
+        let workspace = &mut snapshot.windows[0].tab_manager.workspaces[0];
+        workspace.focused_panel_id = Some("surface-1".to_string());
+
+        let by_id = json!({"pane_id": "pane-1"});
+        assert_eq!(
+            resolve_resize_pane(workspace, by_id.as_object().unwrap()),
+            Some((0, "pane-1".to_string()))
+        );
+        let by_ref = json!({"pane_ref": "pane:1"});
+        assert_eq!(
+            resolve_resize_pane(workspace, by_ref.as_object().unwrap()),
+            Some((0, "pane-1".to_string()))
+        );
+        assert_eq!(
+            resolve_resize_pane(workspace, &serde_json::Map::new()),
+            Some((0, "pane-1".to_string()))
+        );
+
+        workspace.focused_panel_id = None;
+        assert_eq!(
+            resolve_resize_pane(workspace, &serde_json::Map::new()),
+            None
+        );
+    }
+
+    #[test]
     fn workspace_window_move_resolves_refs_locally_and_ids_globally() {
         let mut snapshot = surface_move_snapshot();
         let destination = snapshot.windows[0]
@@ -13500,6 +13761,7 @@ mod tests {
             "pane.break",
             "pane.join",
             "pane.last",
+            "pane.resize",
             "surface.move",
             "surface.clear_history",
             "surface.trigger_flash",
@@ -13693,6 +13955,7 @@ mod tests {
             .unwrap();
         workspace.layout = Some(SessionWorkspaceLayoutSnapshot::Split(
             cmux_core::session::SessionSplitLayoutSnapshot {
+                split_id: None,
                 orientation: SessionSplitOrientation::Horizontal,
                 first: Box::new(SessionWorkspaceLayoutSnapshot::Pane(
                     SessionPaneLayoutSnapshot {
