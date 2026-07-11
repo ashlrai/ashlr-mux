@@ -69,6 +69,12 @@ pub enum DispatchPlan {
     RunOpenPath(String),
     /// Inspect persisted agent hook sessions without a control socket.
     RunSessions(Vec<String>),
+    /// Run the hidden child-process SIGPIPE/default-disposition probe.
+    RunSigpipeProbe(Vec<String>),
+    /// Verify a child closing stdin does not terminate the CLI writer.
+    RunSigpipeStdinPipeProbe,
+    /// Inspect the platform's SIGPIPE-equivalent stdio disposition.
+    RunSigpipeInspect(Vec<String>),
     /// Run a local hooks installer/uninstaller command.
     RunHooksInstaller { command: String, args: Vec<String> },
     /// Read one agent hook payload from stdin and bridge it through `feed.push`.
@@ -458,9 +464,11 @@ pub fn plan_with_args(action: &PreSocketAction, command: &str, args: &[String]) 
             }
             return DispatchPlan::RunSessions(session_args);
         }
-        PreSocketAction::SigpipeProbe => "__sigpipe-probe",
-        PreSocketAction::SigpipeStdinPipeProbe => "__sigpipe-stdin-pipe-probe",
-        PreSocketAction::SigpipeInspect => "__sigpipe-inspect",
+        PreSocketAction::SigpipeProbe => return DispatchPlan::RunSigpipeProbe(args.to_vec()),
+        PreSocketAction::SigpipeStdinPipeProbe => {
+            return DispatchPlan::RunSigpipeStdinPipeProbe;
+        }
+        PreSocketAction::SigpipeInspect => return DispatchPlan::RunSigpipeInspect(args.to_vec()),
         PreSocketAction::DiffViewerServer => "diff-viewer-server",
         PreSocketAction::DiffViewerRefs => {
             return DispatchPlan::RunDiffViewerRefs(args.to_vec());
@@ -950,5 +958,22 @@ mod tests {
                 other => panic!("expected RunSessions for {action:?}, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn sigpipe_diagnostics_run_locally_without_a_socket() {
+        let args = vec!["probe".to_string()];
+        assert_eq!(
+            plan_with_args(&PreSocketAction::SigpipeProbe, "hidden", &args),
+            DispatchPlan::RunSigpipeProbe(args.clone())
+        );
+        assert_eq!(
+            plan_with_args(&PreSocketAction::SigpipeStdinPipeProbe, "hidden", &args),
+            DispatchPlan::RunSigpipeStdinPipeProbe
+        );
+        assert_eq!(
+            plan_with_args(&PreSocketAction::SigpipeInspect, "hidden", &args),
+            DispatchPlan::RunSigpipeInspect(args)
+        );
     }
 }

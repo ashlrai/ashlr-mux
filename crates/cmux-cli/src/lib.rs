@@ -26,6 +26,7 @@ pub mod path_open;
 pub mod rpc;
 pub mod sessions;
 pub mod settings;
+pub mod sigpipe;
 pub mod socket;
 pub mod ssh;
 #[cfg(windows)]

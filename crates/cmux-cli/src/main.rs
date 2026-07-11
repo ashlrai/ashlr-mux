@@ -18,6 +18,26 @@ use cmux_cli::{
     GlobalOptions, ParseOutcome, CMUX_WORKSPACE_ID_ENV,
 };
 
+macro_rules! print {
+    ($($argument:tt)*) => {{
+        safe_stdout(format_args!($($argument)*), false)
+    }};
+}
+
+macro_rules! println {
+    () => {{ safe_stdout(format_args!(""), true) }};
+    ($($argument:tt)*) => {{
+        safe_stdout(format_args!($($argument)*), true)
+    }};
+}
+
+macro_rules! eprintln {
+    () => {{ safe_stderr(format_args!(""), true) }};
+    ($($argument:tt)*) => {{
+        safe_stderr(format_args!($($argument)*), true)
+    }};
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     match run(&args) {
@@ -143,6 +163,22 @@ fn dispatch(
             println!("{output}");
             Ok(())
         }
+        DispatchPlan::RunSigpipeProbe(args) => {
+            if let Some(output) = cmux_cli::sigpipe::run_sigpipe_probe(&args)? {
+                println!("{output}");
+            }
+            Ok(())
+        }
+        DispatchPlan::RunSigpipeStdinPipeProbe => {
+            println!("{}", cmux_cli::sigpipe::run_sigpipe_stdin_pipe_probe()?);
+            Ok(())
+        }
+        DispatchPlan::RunSigpipeInspect(args) => {
+            if let Some(output) = cmux_cli::sigpipe::run_sigpipe_inspect(&args)? {
+                println!("{output}");
+            }
+            Ok(())
+        }
         DispatchPlan::RunHooksInstaller { command, args } => {
             let output = cmux_cli::hooks_installer::run_hooks_command(&command, &args)?;
             print!("{output}");
@@ -151,6 +187,47 @@ fn dispatch(
         DispatchPlan::RunFeedHook(args) => run_feed_hook_command(options, &args),
         DispatchPlan::RunFeed(args) => run_feed_command(options, &args),
         DispatchPlan::Fail(error) => Err(error),
+    }
+}
+
+fn safe_stdout(arguments: std::fmt::Arguments<'_>, newline: bool) {
+    let mut stdout = std::io::stdout().lock();
+    write_cli_output(&mut stdout, arguments, newline);
+}
+
+fn safe_stderr(arguments: std::fmt::Arguments<'_>, newline: bool) {
+    let mut stderr = std::io::stderr().lock();
+    write_cli_output(&mut stderr, arguments, newline);
+}
+
+fn write_cli_output(writer: &mut dyn Write, arguments: std::fmt::Arguments<'_>, newline: bool) {
+    if writer.write_fmt(arguments).is_ok() && newline {
+        let _ = writer.write_all(b"\n");
+    }
+    let _ = writer.flush();
+}
+
+#[cfg(test)]
+mod cli_output_tests {
+    use super::write_cli_output;
+    use std::io::{self, Write};
+
+    struct BrokenPipeWriter;
+
+    impl Write for BrokenPipeWriter {
+        fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
+            Err(io::Error::new(io::ErrorKind::BrokenPipe, "closed pipe"))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::Error::new(io::ErrorKind::BrokenPipe, "closed pipe"))
+        }
+    }
+
+    #[test]
+    fn top_level_output_ignores_closed_pipes() {
+        write_cli_output(&mut BrokenPipeWriter, format_args!("version"), true);
+        write_cli_output(&mut BrokenPipeWriter, format_args!("error"), false);
     }
 }
 
