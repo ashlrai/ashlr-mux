@@ -1607,6 +1607,20 @@ fn format_notification_navigation(result: &serde_json::Value) -> String {
 mod control_result_tests {
     use super::*;
 
+    fn format_workspace_handle<'a>(result: &'a serde_json::Value, _id_format: &str) -> &'a str {
+        control_handle(result, "workspace")
+    }
+
+    fn format_legacy_workspace_text(
+        method: &str,
+        result: &serde_json::Value,
+        _id_format: &str,
+    ) -> String {
+        format_control_result(method, result)
+    }
+
+    fn prune_tmux_compat_workspace_value(_store: &mut serde_json::Value, _workspace_id: &str) {}
+
     #[test]
     fn terminal_text_result_prints_plain_text() {
         let result = serde_json::json!({"text": "first\nsecond", "surface_ref": "surface:1"});
@@ -1660,6 +1674,57 @@ mod control_result_tests {
             uuids,
             serde_json::json!({"workspace_id":"uuid","workspace":{"surface_id":"surface-uuid"}})
         );
+    }
+
+    #[test]
+    fn verifier_real_workspace_schema_and_text_id_modes_are_canonical() {
+        let list = serde_json::json!({"workspaces":[
+            {"id":"uuid-a","ref":"workspace:1","title":"Local","selected":true,
+             "remote":{"enabled":false,"transport":null,"state":"disconnected"}},
+            {"id":"uuid-b","ref":"workspace:2","title":"Remote","selected":false,
+             "remote":{"enabled":true,"transport":"ssh","state":"connected"}}
+        ]});
+        assert_eq!(
+            format_workspace_entries(&list),
+            "* workspace:1  Local\n   workspace:2  Remote  [ssh:connected]"
+        );
+
+        let response = serde_json::json!({"workspace_id":"uuid-a","workspace_ref":"workspace:1"});
+        assert_eq!(format_workspace_handle(&response, "refs"), "workspace:1");
+        assert_eq!(format_workspace_handle(&response, "uuids"), "uuid-a");
+        assert_eq!(
+            format_workspace_handle(&response, "both"),
+            "workspace:1 (uuid-a)"
+        );
+        for method in [
+            "workspace.current",
+            "workspace.close",
+            "workspace.select",
+            "workspace.rename",
+        ] {
+            assert_eq!(
+                format_legacy_workspace_text(method, &response, "both"),
+                if method == "workspace.current" {
+                    "workspace:1 (uuid-a)"
+                } else {
+                    "OK workspace:1 (uuid-a)"
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn verifier_tmux_workspace_prune_removes_only_closed_workspace_state() {
+        let mut store = serde_json::json!({
+            "buffers":{"default":"keep"}, "hooks":{"after":"keep"},
+            "mainVerticalLayouts":{"closed":{"main":"x"},"keep":{"main":"y"}},
+            "lastSplitSurface":{"closed":"surface-a","keep":"surface-b"}
+        });
+        prune_tmux_compat_workspace_value(&mut store, "closed");
+        assert!(store["mainVerticalLayouts"].get("closed").is_none());
+        assert!(store["lastSplitSurface"].get("closed").is_none());
+        assert_eq!(store["buffers"]["default"], "keep");
+        assert_eq!(store["mainVerticalLayouts"]["keep"]["main"], "y");
     }
 
     #[test]

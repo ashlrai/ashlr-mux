@@ -4693,6 +4693,60 @@ mod tests {
     }
 
     #[test]
+    fn verifier_create_expands_cwd_and_parses_dotenv_canonically() {
+        let temp = tempfile::tempdir().unwrap();
+        let env_path = temp.path().join("workspace.env");
+        std::fs::write(&env_path, "export A='from file'\nB=\"two words\"\nEMPTY=\n").unwrap();
+        let command = mapped(
+            "new-workspace",
+            &[
+                "--cwd",
+                ".",
+                "--env-file",
+                env_path.to_str().unwrap(),
+                "--env",
+                "A=override=value",
+            ],
+        );
+        assert_eq!(
+            command.params["working_directory"],
+            serde_json::json!(std::env::current_dir().unwrap().to_string_lossy())
+        );
+        assert_eq!(
+            command.params["workspace_env"],
+            serde_json::json!({
+                "A":"override=value", "B":"two words", "EMPTY":""
+            })
+        );
+        assert_eq!(
+            control_command_for("new-workspace", &args(&["--env", "BROKEN"]))
+                .unwrap_err()
+                .message,
+            "new-workspace: --env entry 'BROKEN' must be in KEY=VALUE form"
+        );
+    }
+
+    #[test]
+    fn verifier_rename_selectors_preserve_canonical_intent() {
+        assert_eq!(
+            mapped("rename-workspace", &["--workspace", "uuid-a", "Build"]).params,
+            serde_json::json!({"workspace_id":"uuid-a","title":"Build"})
+        );
+        assert_eq!(
+            mapped("rename-workspace", &["--workspace", "workspace:2", "Build"]).params,
+            serde_json::json!({"workspace_ref":"workspace:2","title":"Build"})
+        );
+        assert_eq!(
+            mapped("rename-workspace", &["--workspace", "0", "Build"]).params,
+            serde_json::json!({"workspace_index":0,"title":"Build"})
+        );
+        assert_eq!(
+            mapped("rename-workspace", &["--window", "window:2", "Build"]).params,
+            serde_json::json!({"window_ref":"window:2","resolve_current_workspace":true,"title":"Build"})
+        );
+    }
+
+    #[test]
     fn bare_workspace_number_is_a_zero_based_index() {
         let command = mapped("select-workspace", &["--workspace", "2"]);
         assert_eq!(command.method, "workspace.select");
