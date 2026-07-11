@@ -832,28 +832,25 @@ struct DaemonProxyStreamInner {
     closed: AtomicBool,
 }
 
+impl DaemonProxyStreamInner {
+    fn close_once(&self) -> Result<(), String> {
+        if self.closed.swap(true, Ordering::SeqCst) {
+            return Ok(());
+        }
+        self.client.unsubscribe_stream(&self.stream_id);
+        self.client
+            .proxy_close_stream(&self.stream_id, DAEMON_PROXY_CLOSE_TIMEOUT)
+    }
+}
+
 impl Drop for DaemonProxyStreamInner {
     fn drop(&mut self) {
-        if !self.closed.swap(true, Ordering::SeqCst) {
-            self.client.unsubscribe_stream(&self.stream_id);
-        }
+        let _ = self.close_once();
     }
 }
 
 pub(crate) struct DaemonProxyStream {
     inner: Arc<DaemonProxyStreamInner>,
-}
-
-impl DaemonProxyStream {
-    fn close_once(&self) -> Result<(), String> {
-        if self.inner.closed.swap(true, Ordering::SeqCst) {
-            return Ok(());
-        }
-        self.inner.client.unsubscribe_stream(&self.inner.stream_id);
-        self.inner
-            .client
-            .proxy_close_stream(&self.inner.stream_id, DAEMON_PROXY_CLOSE_TIMEOUT)
-    }
 }
 
 impl Read for DaemonProxyStream {
@@ -929,7 +926,7 @@ impl ProxyStream for DaemonProxyStream {
 
     fn shutdown(&self, how: Shutdown) -> io::Result<()> {
         if matches!(how, Shutdown::Both) {
-            self.close_once().map_err(io_other)?;
+            self.inner.close_once().map_err(io_other)?;
         }
         Ok(())
     }
