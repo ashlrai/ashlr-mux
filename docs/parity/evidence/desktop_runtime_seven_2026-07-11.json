@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "batch": "desktop-runtime-seven",
+  "canonical_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+  "implementation_commit": "ca402eb59226e1916d374eb713e53df3490b2eca",
+  "contracts": [
+    "docs/parity/contracts/runtime_proxy_body_classification.json",
+    "docs/parity/contracts/runtime_workspace_current.json",
+    "docs/parity/contracts/runtime_remote_proxy_transport.json"
+  ],
+  "hosted_red_witness": {
+    "commit": "19b7e08ed9e20ae824544826bfa713ddf407b245",
+    "workflow_run": "https://github.com/ashlrai/ashlr-mux/actions/runs/29168099312",
+    "desktop_job": 86584715024,
+    "summary": "440 passed, 7 failed, 1 ignored; finished in 10.15s"
+  },
+  "red_green_commits": [
+    ["c52c1c593", "f62c9109f"],
+    ["38a02378c", "aa04d91fc"],
+    ["0a01f5f1b", "2a26d17aa"],
+    ["edae23b11", "ca402eb59"]
+  ],
+  "resolved_failures": {
+    "opaque_tunnel_body_classification": 3,
+    "workspace_current_test_contracts": 2,
+    "remote_proxy_transport_and_test_orchestration": 2
+  },
+  "independent_verification": {
+    "commit": "ca402eb59226e1916d374eb713e53df3490b2eca",
+    "result": "pass",
+    "fresh_real_sidecars": true,
+    "desktop_suite": "453 passed, 0 failed, 1 ignored (454 enumerated)",
+    "normal_desktop_build": "pass",
+    "stress": {
+      "barrier_relay": "100/100",
+      "original_relay": "100/100",
+      "final_drop_close": "50/50",
+      "shutdown_both_then_drop": "50/50",
+      "out_of_order_rpc": "50/50"
+    },
+    "source_semantics": "pass"
+  },
+  "release_gate": {
+    "result": "pass",
+    "cargo_target": "C:\\tmp\\cargo-loader-integration",
+    "desktop_suite": "453 passed, 0 failed, 1 ignored",
+    "desktop_tests_enumerated_by_each_manifest_host": 454,
+    "web_and_webview_tests": 1337,
+    "parity_unit_tests": 15,
+    "included": [
+      "real Windows sidecar staging without placeholders",
+      "cmux-core, cmux-config, cmux-agent, cmux-terminal, cmux-ipc, cmux-cli, and cmux-golden tests",
+      "cmux-desktop all-target check and full native unit suite",
+      "manifest regression plus Windows PowerShell 5.1 and PowerShell Core import/manifest/list verification",
+      "normal cmux-desktop build",
+      "Rust 1.97 strict core/agent/terminal/ipc/CLI/golden Clippy",
+      "all 1,337 desktop web/webview tests, typecheck, and production build",
+      "generated core-types and desktop contracts",
+      "all frozen extractors, evidence/source validators, matrix determinism checks, and parity tests",
+      "cargo fmt and git diff checks"
+    ]
+  },
+  "semantic_corrections": [
+    "Opaque non-empty CONNECT prefixes are binary while empty prefixes remain empty and truncation metadata is preserved.",
+    "workspace.current tests now reflect canonical manager routing and stable stale-selection identity without changing production behavior.",
+    "Bidirectional relay joins upstream draining before read/full shutdown.",
+    "Daemon Shutdown::Write is a half-close, terminal close is emitted exactly once on Shutdown::Both or final drop, and request/event correlation remains exact.",
+    "Daemon proxy write and close deadlines are 8 seconds and 4 seconds respectively."
+  ],
+  "hosted_windows_green": null,
+  "matrix_status": "implemented_unverified",
+  "matrix_promotions": 0,
+  "promotion_blockers": [
+    "The exact implementation commit has not yet passed the hosted Windows desktop job.",
+    "No frozen canonical macOS versus Windows differential run covers the affected observable behavior."
+  ]
+}
