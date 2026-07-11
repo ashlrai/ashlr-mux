@@ -189,6 +189,46 @@ fn executable_routes_tmux_select_pane_through_pane_focus() {
 }
 
 #[test]
+fn executable_routes_tmux_select_window_through_workspace_select() {
+    let (pipe, request_rx) = spawn_method_server(
+        "tmux-select-window",
+        HashMap::from([
+            (
+                "workspace.list".to_string(),
+                serde_json::json!({"workspaces":[{
+                    "id":"workspace-b", "ref":"workspace:2", "index":1, "title":"Beta"
+                }]}),
+            ),
+            (
+                "workspace.select".to_string(),
+                serde_json::json!({"workspace_ref":"workspace:2"}),
+            ),
+        ]),
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_cmux"))
+        .args(["__tmux-compat", "select-window", "-tBeta"])
+        .env("CMUX_SOCKET_PATH", &pipe)
+        .env_remove("CMUX_SOCKET")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty());
+    let requests = (0..2)
+        .map(|_| request_rx.recv_timeout(Duration::from_secs(5)).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(requests[0].0, "workspace.list");
+    assert_eq!(requests[1].0, "workspace.select");
+    assert_eq!(
+        Value::Object(requests[1].1.clone()),
+        serde_json::json!({"workspace_id":"workspace-b"})
+    );
+}
+
+#[test]
 fn executable_routes_last_window_and_formats_result() {
     let (pipe, request_rx) = spawn_server(
         "last-window",

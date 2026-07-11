@@ -439,6 +439,12 @@ where
         });
     }
     let command = command.to_ascii_lowercase();
+    if matches!(command.as_str(), "select-window" | "selectw") {
+        let parsed = parse_arguments(raw_args, &['t'], &[])?;
+        let workspace_id = resolve_workspace(parsed.value("-t"), environment, &mut call)?;
+        call("workspace.select", &json!({"workspace_id": workspace_id}))?;
+        return Ok(TmuxCompatResult::quiet(true));
+    }
     if matches!(command.as_str(), "select-pane" | "selectp") {
         let parsed = parse_arguments(raw_args, &['P', 'T', 't'], &[])?;
         if parsed.value("-P").is_some() || parsed.value("-T").is_some() {
@@ -548,6 +554,7 @@ mod tests {
             ),
             "pane.resize" => Ok(params.clone()),
             "pane.focus" => Ok(params.clone()),
+            "workspace.select" => Ok(params.clone()),
             _ => Err(CliError::new(format!("unexpected call: {method}"))),
         }
     }
@@ -609,6 +616,24 @@ mod tests {
             .unwrap();
             assert_eq!(result, TmuxCompatResult::quiet(false));
         }
+    }
+
+    #[test]
+    fn select_window_resolves_target_and_selects_it_quietly() {
+        let mut selection = None;
+        let result = run_tmux_compat(
+            &args(&["selectw", "-tAlpha"]),
+            &TmuxCompatEnvironment::default(),
+            |method, params| {
+                if method == "workspace.select" {
+                    selection = Some(params.clone());
+                }
+                fixtures(method, params)
+            },
+        )
+        .unwrap();
+        assert_eq!(result, TmuxCompatResult::quiet(true));
+        assert_eq!(selection, Some(json!({"workspace_id":"workspace-a"})));
     }
 
     #[test]
