@@ -754,6 +754,14 @@ fn run_legacy_workspace_command(
     normalize_legacy_workspace_params(options, method, &mut request_params)?;
     let has_layout = request_params.get("layout").is_some();
     let result = call_control_command(options, method, &request_params)?;
+    if command == "close-workspace" {
+        if let Some(workspace_id) = result
+            .get("workspace_id")
+            .and_then(serde_json::Value::as_str)
+        {
+            let _ = prune_tmux_compat_workspace_state(workspace_id);
+        }
+    }
     if command == "new-workspace" && !has_layout {
         if let Some(text) = post_create_command {
             let mut send_params = serde_json::Map::new();
@@ -783,7 +791,14 @@ fn run_legacy_workspace_command(
         );
         println!("{}", serde_json::to_string(&formatted).unwrap_or_default());
     } else {
-        println!("{}", format_control_result(method, &result));
+        println!(
+            "{}",
+            format_legacy_workspace_text(
+                method,
+                &result,
+                options.id_format.as_deref().unwrap_or("refs"),
+            )
+        );
     }
     Ok(())
 }
@@ -870,7 +885,10 @@ fn normalize_legacy_workspace_params(
         object.insert("window_id".into(), serde_json::json!(id));
     }
 
-    if !matches!(method, "workspace.close" | "workspace.select") {
+    if !matches!(
+        method,
+        "workspace.close" | "workspace.select" | "workspace.rename"
+    ) {
         return Ok(());
     }
     let workspace_index = object
@@ -880,6 +898,32 @@ fn normalize_legacy_workspace_params(
         .get("workspace_ref")
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned);
+    let resolve_current = object
+        .remove("resolve_current_workspace")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    if object.get("workspace_id").is_some() && workspace_index.is_none() && workspace_ref.is_none()
+    {
+        return Ok(());
+    }
+    if resolve_current && workspace_index.is_none() && workspace_ref.is_none() {
+        let mut current_params = serde_json::Map::new();
+        if let Some(window_id) = object.get("window_id") {
+            current_params.insert("window_id".into(), window_id.clone());
+        }
+        let current = call_control_command(
+            options,
+            "workspace.current",
+            &serde_json::Value::Object(current_params),
+        )?;
+        let id = current
+            .get("workspace_id")
+            .or_else(|| current.get("id"))
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| CliError::new("No workspace selected"))?;
+        object.insert("workspace_id".into(), serde_json::json!(id));
+        return Ok(());
+    }
     if workspace_index.is_none() && workspace_ref.is_none() {
         return Ok(());
     }
@@ -1274,6 +1318,10 @@ fn format_control_result(method: &str, result: &serde_json::Value) -> String {
 }
 
 fn format_workspace_entries(result: &serde_json::Value) -> String {
+    format_workspace_entries_with_mode(result, "refs")
+}
+
+fn format_workspace_entries_with_mode(result: &serde_json::Value, id_format: &str) -> String {
     let Some(workspaces) = result
         .get("workspaces")
         .and_then(serde_json::Value::as_array)
@@ -1295,7 +1343,7 @@ fn format_workspace_entries(result: &serde_json::Value) -> String {
             } else {
                 "  "
             };
-            let mut line = format!("{prefix} {}", control_handle(workspace, "workspace"));
+            let mut line = format!("{prefix} {}", workspace_row_handle(workspace, id_format));
             if let Some(title) = workspace
                 .get("title")
                 .and_then(serde_json::Value::as_str)
@@ -1307,6 +1355,9 @@ fn format_workspace_entries(result: &serde_json::Value) -> String {
             if let Some(remote) = workspace
                 .get("remote")
                 .and_then(serde_json::Value::as_object)
+                .filter(|remote| {
+                    remote.get("enabled").and_then(serde_json::Value::as_bool) == Some(true)
+                })
             {
                 let transport = remote
                     .get("transport")
@@ -1322,6 +1373,98 @@ fn format_workspace_entries(result: &serde_json::Value) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn workspace_row_handle(workspace: &serde_json::Value, id_format: &str) -> String {
+    format_id_pair(
+        workspace.get("id").and_then(serde_json::Value::as_str),
+        workspace.get("ref").and_then(serde_json::Value::as_str),
+        id_format,
+    )
+    .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn workspace_handle(result: &serde_json::Value, id_format: &str) -> String {
+    format_id_pair(
+        result
+            .get("workspace_id")
+            .and_then(serde_json::Value::as_str),
+        result
+            .get("workspace_ref")
+            .and_then(serde_json::Value::as_str),
+        id_format,
+    )
+    .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn format_id_pair(id: Option<&str>, reference: Option<&str>, id_format: &str) -> Option<String> {
+    match id_format {
+        "uuids" => id.or(reference).map(str::to_owned),
+        "both" => match (reference, id) {
+            (Some(reference), Some(id)) => Some(format!("{reference} ({id})")),
+            (Some(reference), None) => Some(reference.to_string()),
+            (None, Some(id)) => Some(id.to_string()),
+            (None, None) => None,
+        },
+        _ => reference.or(id).map(str::to_owned),
+    }
+}
+
+fn format_legacy_workspace_text(
+    method: &str,
+    result: &serde_json::Value,
+    id_format: &str,
+) -> String {
+    match method {
+        "workspace.list" => format_workspace_entries_with_mode(result, id_format),
+        "workspace.current" => workspace_handle(result, id_format),
+        "workspace.create" | "workspace.close" | "workspace.select" | "workspace.rename" => {
+            format!("OK {}", workspace_handle(result, id_format))
+        }
+        _ => format_control_result(method, result),
+    }
+}
+
+fn prune_tmux_compat_workspace_value(store: &mut serde_json::Value, workspace_id: &str) -> bool {
+    let mut changed = false;
+    for key in ["mainVerticalLayouts", "lastSplitSurface"] {
+        if let Some(map) = store
+            .get_mut(key)
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            changed |= map.remove(workspace_id).is_some();
+        }
+    }
+    changed
+}
+
+fn prune_tmux_compat_workspace_state(workspace_id: &str) -> Result<(), std::io::Error> {
+    let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) else {
+        return Ok(());
+    };
+    let path = PathBuf::from(home)
+        .join(".cmuxterm")
+        .join("tmux-compat-store.json");
+    prune_tmux_compat_workspace_state_at(&path, workspace_id)
+}
+
+fn prune_tmux_compat_workspace_state_at(
+    path: &Path,
+    workspace_id: &str,
+) -> Result<(), std::io::Error> {
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return Ok(());
+    };
+    let Ok(mut store) = serde_json::from_str::<serde_json::Value>(&contents) else {
+        return Ok(());
+    };
+    if prune_tmux_compat_workspace_value(&mut store, workspace_id) {
+        std::fs::write(
+            path,
+            serde_json::to_vec(&store).map_err(std::io::Error::other)?,
+        )?;
+    }
+    Ok(())
 }
 
 fn format_workspace_reorder(result: &serde_json::Value) -> String {
@@ -1607,20 +1750,6 @@ fn format_notification_navigation(result: &serde_json::Value) -> String {
 mod control_result_tests {
     use super::*;
 
-    fn format_workspace_handle<'a>(result: &'a serde_json::Value, _id_format: &str) -> &'a str {
-        control_handle(result, "workspace")
-    }
-
-    fn format_legacy_workspace_text(
-        method: &str,
-        result: &serde_json::Value,
-        _id_format: &str,
-    ) -> String {
-        format_control_result(method, result)
-    }
-
-    fn prune_tmux_compat_workspace_value(_store: &mut serde_json::Value, _workspace_id: &str) {}
-
     #[test]
     fn terminal_text_result_prints_plain_text() {
         let result = serde_json::json!({"text": "first\nsecond", "surface_ref": "surface:1"});
@@ -1633,8 +1762,8 @@ mod control_result_tests {
     #[test]
     fn legacy_workspace_results_use_canonical_plain_output() {
         let list = serde_json::json!({"workspaces":[
-            {"workspace_ref":"workspace:1","title":"Build","selected":true},
-            {"workspace_ref":"workspace:2","title":"Remote","selected":false,"remote":{}}
+            {"id":"uuid-a","ref":"workspace:1","title":"Build","selected":true,"remote":{"enabled":false}},
+            {"id":"uuid-b","ref":"workspace:2","title":"Remote","selected":false,"remote":{"enabled":true}}
         ]});
         assert_eq!(
             format_control_result("workspace.list", &list),
@@ -1690,12 +1819,9 @@ mod control_result_tests {
         );
 
         let response = serde_json::json!({"workspace_id":"uuid-a","workspace_ref":"workspace:1"});
-        assert_eq!(format_workspace_handle(&response, "refs"), "workspace:1");
-        assert_eq!(format_workspace_handle(&response, "uuids"), "uuid-a");
-        assert_eq!(
-            format_workspace_handle(&response, "both"),
-            "workspace:1 (uuid-a)"
-        );
+        assert_eq!(workspace_handle(&response, "refs"), "workspace:1");
+        assert_eq!(workspace_handle(&response, "uuids"), "uuid-a");
+        assert_eq!(workspace_handle(&response, "both"), "workspace:1 (uuid-a)");
         for method in [
             "workspace.current",
             "workspace.close",
@@ -1725,6 +1851,16 @@ mod control_result_tests {
         assert!(store["lastSplitSurface"].get("closed").is_none());
         assert_eq!(store["buffers"]["default"], "keep");
         assert_eq!(store["mainVerticalLayouts"]["keep"]["main"], "y");
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("tmux-compat-store.json");
+        std::fs::write(&path, serde_json::to_vec(&store).unwrap()).unwrap();
+        prune_tmux_compat_workspace_state_at(&path, "keep").unwrap();
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert!(persisted["mainVerticalLayouts"].get("keep").is_none());
+        assert!(persisted["lastSplitSurface"].get("keep").is_none());
+        assert_eq!(persisted["buffers"]["default"], "keep");
     }
 
     #[test]

@@ -7,6 +7,7 @@
 
 use crate::invocation::CliError;
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 pub const CMUX_WORKSPACE_ID_ENV: &str = "CMUX_WORKSPACE_ID";
 pub const CMUX_SURFACE_ID_ENV: &str = "CMUX_SURFACE_ID";
@@ -1176,7 +1177,10 @@ fn legacy_workspace_create_params(args: &[String]) -> Result<serde_json::Value, 
     )?;
     let mut params = serde_json::Map::new();
     if let Some(cwd) = parsed.value(&["--cwd"]) {
-        params.insert("working_directory".to_string(), serde_json::json!(cwd));
+        params.insert(
+            "working_directory".to_string(),
+            serde_json::json!(expand_workspace_path(cwd)?),
+        );
     }
     if let Some(title) = parsed.value(&["--name"]) {
         params.insert("title".to_string(), serde_json::json!(title));
@@ -1194,16 +1198,22 @@ fn legacy_workspace_create_params(args: &[String]) -> Result<serde_json::Value, 
     for path in parsed.values(&["--env-file"]) {
         let contents = std::fs::read_to_string(path)
             .map_err(|error| CliError::new(format!("failed to read env file {path}: {error}")))?;
-        for line in contents
+        for raw_line in contents
             .lines()
             .map(str::trim)
             .filter(|line| !line.is_empty() && !line.starts_with('#'))
         {
-            insert_environment_assignment(&mut environment, line)?;
+            let line = raw_line
+                .strip_prefix("export ")
+                .map(str::trim)
+                .unwrap_or(raw_line);
+            let (key, value) = parse_environment_assignment(line, &format!("--env-file '{path}'"))?;
+            environment.insert(key, unquote_env_file_value(&value));
         }
     }
     for assignment in parsed.values(&["--env"]) {
-        insert_environment_assignment(&mut environment, assignment)?;
+        let (key, value) = parse_environment_assignment(assignment, "--env")?;
+        environment.insert(key, value);
     }
     if !environment.is_empty() {
         params.insert("workspace_env".to_string(), serde_json::json!(environment));
@@ -1723,8 +1733,10 @@ fn legacy_workspace_rename_params(
         )?;
     }
     let mut params = serde_json::Map::new();
-    if let Some(workspace) = parsed.value(&["--workspace"]) {
-        apply_workspace_selector_value(workspace, &mut params);
+    if parsed.value(&["--workspace"]).is_some() {
+        apply_legacy_workspace_selector(&parsed, &mut params);
+    } else {
+        params.insert("resolve_current_workspace".into(), serde_json::json!(true));
     }
     apply_legacy_window_scope_selector(&parsed, &mut params);
     let title = parsed
@@ -1812,22 +1824,65 @@ fn apply_workspace_selector_value(
     }
 }
 
-fn insert_environment_assignment(
-    environment: &mut BTreeMap<String, String>,
+fn parse_environment_assignment(
     assignment: &str,
-) -> Result<(), CliError> {
+    source: &str,
+) -> Result<(String, String), CliError> {
     let (key, value) = assignment.split_once('=').ok_or_else(|| {
         CliError::new(format!(
-            "invalid environment assignment: {assignment} (expected KEY=VALUE)"
+            "new-workspace: {source} entry '{assignment}' must be in KEY=VALUE form"
         ))
     })?;
     if key.trim().is_empty() {
         return Err(CliError::new(format!(
-            "invalid environment assignment: {assignment} (key cannot be empty)"
+            "new-workspace: {source} entry '{assignment}' has an empty key"
         )));
     }
-    environment.insert(key.to_string(), value.to_string());
-    Ok(())
+    Ok((key.trim().to_string(), value.to_string()))
+}
+
+fn unquote_env_file_value(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.len() >= 2
+        && ((trimmed.starts_with('"') && trimmed.ends_with('"'))
+            || (trimmed.starts_with('\'') && trimmed.ends_with('\'')))
+    {
+        trimmed[1..trimmed.len() - 1].to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn expand_workspace_path(raw: &str) -> Result<String, CliError> {
+    let expanded = if raw == "~" || raw.starts_with("~/") || raw.starts_with("~\\") {
+        let home = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .ok_or_else(|| {
+                CliError::new("new-workspace: unable to expand '~' without a home directory")
+            })?;
+        let suffix = raw.trim_start_matches('~').trim_start_matches(['/', '\\']);
+        PathBuf::from(home).join(suffix)
+    } else {
+        PathBuf::from(raw)
+    };
+    let absolute = if expanded.is_absolute() {
+        expanded
+    } else {
+        std::env::current_dir()
+            .map_err(|error| {
+                CliError::new(format!("new-workspace: failed to resolve --cwd: {error}"))
+            })?
+            .join(expanded)
+    };
+    let normalized = normalize_path(&absolute).to_string_lossy().into_owned();
+    Ok(normalized
+        .strip_prefix(r"\\?\")
+        .unwrap_or(&normalized)
+        .to_string())
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn validate_legacy_flags(
@@ -4616,7 +4671,7 @@ mod tests {
                 &["--window", "window:2", "--", "2", "Build"]
             )
             .params,
-            serde_json::json!({"window_ref":"window:2","title":"2 Build"})
+            serde_json::json!({"window_ref":"window:2","resolve_current_workspace":true,"title":"2 Build"})
         );
         assert_eq!(
             mapped(
@@ -4823,18 +4878,21 @@ mod tests {
         );
         assert_eq!(
             mapped("rename-workspace", &["2", "Build", "Lane"]).params,
-            serde_json::json!({"title": "2 Build Lane"})
+            serde_json::json!({"resolve_current_workspace":true,"title": "2 Build Lane"})
         );
         assert_eq!(
             mapped("rename-workspace", &["Build"]).params,
-            serde_json::json!({"title": "Build"})
+            serde_json::json!({"resolve_current_workspace":true,"title": "Build"})
         );
         let error = control_command_for("rename-workspace", &[]).unwrap_err();
         assert_eq!(error.message, "rename-workspace requires a title");
 
         let alias = mapped("rename-window", &["2", "Build", "Lane"]);
         assert_eq!(alias.method, "workspace.rename");
-        assert_eq!(alias.params, serde_json::json!({"title": "2 Build Lane"}));
+        assert_eq!(
+            alias.params,
+            serde_json::json!({"resolve_current_workspace":true,"title": "2 Build Lane"})
+        );
         let error = control_command_for("rename-window", &[]).unwrap_err();
         assert_eq!(error.message, "rename-window requires a title");
     }
