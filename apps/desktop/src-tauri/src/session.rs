@@ -31,6 +31,7 @@ use cmux_core::session::{
     SessionWorkspaceSnapshot, SESSION_SNAPSHOT_SCHEMA_VERSION,
 };
 use cmux_core::session_ops::{self, CloseOutcome, SplitChild};
+use cmux_workspaces::{WorkspaceBatchReorderError, WorkspaceReorderPlanItem};
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
@@ -4210,6 +4211,62 @@ pub(crate) fn reorder_workspaces_for_control(
         notify_session_changed(app, &snapshot);
     }
     snapshot
+}
+
+pub(crate) fn reorder_workspaces_many_for_control(
+    app: &AppHandle,
+    state: &SessionState,
+    ordered_workspace_ids: &[Uuid],
+    dry_run: bool,
+) -> Result<(Vec<WorkspaceReorderPlanItem>, AppSessionSnapshot), ReorderWorkspacesManyControlError>
+{
+    let (plan, snapshot) = if dry_run {
+        let guard = state
+            .snapshot
+            .lock()
+            .expect("session snapshot mutex poisoned");
+        let mut snapshot = guard.clone();
+        let window = snapshot
+            .windows
+            .first_mut()
+            .ok_or(ReorderWorkspacesManyControlError::Unavailable)?;
+        let plan = session_ops::reorder_workspaces_many(
+            &mut window.tab_manager,
+            ordered_workspace_ids,
+            false,
+        )?;
+        (plan, snapshot)
+    } else {
+        let mut guard = state
+            .snapshot
+            .lock()
+            .expect("session snapshot mutex poisoned");
+        let window = guard
+            .windows
+            .first_mut()
+            .ok_or(ReorderWorkspacesManyControlError::Unavailable)?;
+        let plan = session_ops::reorder_workspaces_many(
+            &mut window.tab_manager,
+            ordered_workspace_ids,
+            false,
+        )?;
+        (plan, guard.clone())
+    };
+    if !dry_run && plan.iter().any(|item| item.from_index != item.to_index) {
+        notify_session_changed(app, &snapshot);
+    }
+    Ok((plan, snapshot))
+}
+
+pub(crate) enum ReorderWorkspacesManyControlError {
+    Unavailable,
+    Batch(WorkspaceBatchReorderError),
+}
+
+impl From<WorkspaceBatchReorderError> for ReorderWorkspacesManyControlError {
+    fn from(error: WorkspaceBatchReorderError) -> Self {
+        Self::Batch(error)
+    }
 }
 
 pub(crate) fn set_group_collapsed_for_control(

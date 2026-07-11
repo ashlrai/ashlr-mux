@@ -15,6 +15,7 @@ use cmux_core::session::{
 };
 use cmux_core::session_ops;
 use cmux_ipc::{ControlCallResult, ControlRequest, ControlStream, JsonValue};
+use cmux_workspaces::{WorkspaceBatchReorderError, WorkspaceReorderPlanItem};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
 use time::OffsetDateTime;
@@ -42,22 +43,23 @@ use crate::session::{
     open_browser_url_in_panel, open_custom_sidebar_in_panel, open_diff_viewer_in_panel,
     open_file_in_panel, open_markdown_file_in_panel, reconnect_workspace_remote_for_control,
     rename_workspace_for_control, reopen_closed_browser_tab_for_control,
-    reorder_workspaces_for_control, reset_workspace_color_for_control,
-    reset_workspace_sidebar_metadata_for_control, restore_previous_launch_for_control,
-    select_adjacent_panel_for_control, select_workspace_for_control, select_workspace_surface,
-    set_browser_zoom_for_control, set_group_collapsed_for_control,
-    set_panel_listening_ports_for_control, set_panel_pinned_for_control,
-    set_panel_shell_activity_for_control, set_panel_title_for_control, set_panel_tty_for_control,
-    set_panel_unread_for_control, set_surface_kind_for_control,
-    set_workspace_agent_listening_ports_for_control, set_workspace_agent_pid_for_control,
-    set_workspace_description_for_control, set_workspace_panel_pull_request_for_control,
-    set_workspace_pinned_for_control, set_workspace_sidebar_metadata_block_for_control,
-    set_workspace_sidebar_metadata_for_control, set_workspace_sidebar_progress_for_control,
-    set_workspace_sidebar_status_for_control, set_workspace_unread_for_control,
-    show_browser_developer_tools_for_control, split_browser_for_control, split_panel_for_control,
-    start_direct_browser_proxy_for_control, toggle_browser_developer_tools_for_control,
-    toggle_browser_focus_mode_for_control, toggle_browser_omnibar_for_control,
-    toggle_split_zoom_for_control, SessionState, WorkspaceRemoteControlConfig,
+    reorder_workspaces_for_control, reorder_workspaces_many_for_control,
+    reset_workspace_color_for_control, reset_workspace_sidebar_metadata_for_control,
+    restore_previous_launch_for_control, select_adjacent_panel_for_control,
+    select_workspace_for_control, select_workspace_surface, set_browser_zoom_for_control,
+    set_group_collapsed_for_control, set_panel_listening_ports_for_control,
+    set_panel_pinned_for_control, set_panel_shell_activity_for_control,
+    set_panel_title_for_control, set_panel_tty_for_control, set_panel_unread_for_control,
+    set_surface_kind_for_control, set_workspace_agent_listening_ports_for_control,
+    set_workspace_agent_pid_for_control, set_workspace_description_for_control,
+    set_workspace_panel_pull_request_for_control, set_workspace_pinned_for_control,
+    set_workspace_sidebar_metadata_block_for_control, set_workspace_sidebar_metadata_for_control,
+    set_workspace_sidebar_progress_for_control, set_workspace_sidebar_status_for_control,
+    set_workspace_unread_for_control, show_browser_developer_tools_for_control,
+    split_browser_for_control, split_panel_for_control, start_direct_browser_proxy_for_control,
+    toggle_browser_developer_tools_for_control, toggle_browser_focus_mode_for_control,
+    toggle_browser_omnibar_for_control, toggle_split_zoom_for_control,
+    ReorderWorkspacesManyControlError, SessionState, WorkspaceRemoteControlConfig,
 };
 use crate::terminal::{
     scan_listening_ports_for_root_pid, scan_panel_listening_ports, terminal_clear_history_panel,
@@ -831,6 +833,7 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "workspace.rename",
     "workspace.select",
     "workspace.reorder",
+    "workspace.reorder_many",
     "workspace.move",
     "workspace.next",
     "workspace.previous",
@@ -1085,6 +1088,7 @@ fn handle_control_request(app: &AppHandle, request: ControlRequest) -> ControlCa
         "workspace.rename" => workspace_rename(app, &request.params),
         "workspace.select" => workspace_select(app, &request.params),
         "workspace.reorder" | "workspace.move" => workspace_reorder(app, &request.params),
+        "workspace.reorder_many" => workspace_reorder_many(app, &request.params),
         "workspace.next" => workspace_select_relative(app, 1),
         "workspace.previous" => workspace_select_relative(app, -1),
         "workspace.equalize_splits" => workspace_equalize_splits(app),
@@ -3380,6 +3384,194 @@ fn workspace_reorder(
         "plan": [plan],
         "events": events,
     }))
+}
+
+fn workspace_reorder_many(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    if !workspace_reorder_window_matches(&current, params) {
+        return ControlCallResult::Err {
+            code: "unavailable".to_string(),
+            message: "TabManager not available".to_string(),
+            data: None,
+        };
+    }
+    let ordered_workspace_ids = match workspace_reorder_many_order(&current, params) {
+        Ok(ids) => ids,
+        Err(WorkspaceReorderManyOrderError::Missing) => {
+            return invalid_params("Missing workspace_ids");
+        }
+        Err(WorkspaceReorderManyOrderError::Invalid(workspace)) => {
+            return ControlCallResult::Err {
+                code: "invalid_params".to_string(),
+                message: "Invalid workspace id or ref".to_string(),
+                data: Some(
+                    json!({"workspace": workspace})
+                        .try_into()
+                        .unwrap_or(JsonValue::Null),
+                ),
+            };
+        }
+    };
+    let dry_run = bool_param(params, &["dry_run"]).unwrap_or(false);
+    let state = app.state::<SessionState>();
+    let (plan, result) =
+        match reorder_workspaces_many_for_control(app, &state, &ordered_workspace_ids, dry_run) {
+            Ok(result) => result,
+            Err(ReorderWorkspacesManyControlError::Unavailable) => {
+                return ControlCallResult::Err {
+                    code: "unavailable".to_string(),
+                    message: "TabManager not available".to_string(),
+                    data: None,
+                };
+            }
+            Err(ReorderWorkspacesManyControlError::Batch(
+                WorkspaceBatchReorderError::DuplicateWorkspace(workspace_id),
+            )) => {
+                return ControlCallResult::Err {
+                code: "invalid_params".to_string(),
+                message: "Duplicate workspace in order".to_string(),
+                data: Some(
+                    json!({
+                        "workspace_id": workspace_id,
+                        "workspace_ref": workspace_index_for_id(&current, &workspace_id.to_string())
+                            .map(workspace_ref),
+                    })
+                    .try_into()
+                    .unwrap_or(JsonValue::Null),
+                ),
+            };
+            }
+            Err(ReorderWorkspacesManyControlError::Batch(
+                WorkspaceBatchReorderError::WorkspaceNotFound(workspace_id),
+            )) => {
+                return ControlCallResult::Err {
+                    code: "not_found".to_string(),
+                    message: "Workspace not found".to_string(),
+                    data: Some(
+                        json!({
+                            "workspace_id": workspace_id,
+                            "workspace_ref": Value::Null,
+                        })
+                        .try_into()
+                        .unwrap_or(JsonValue::Null),
+                    ),
+                };
+            }
+        };
+    let plan_payloads: Vec<Value> = plan
+        .iter()
+        .map(|item| workspace_reorder_plan_payload(&result, item))
+        .collect();
+    let events: Vec<Value> = if dry_run {
+        Vec::new()
+    } else {
+        plan.iter()
+            .zip(&plan_payloads)
+            .filter_map(|(item, payload)| {
+                (item.from_index != item.to_index).then(|| payload.clone())
+            })
+            .collect()
+    };
+    let window_id = result
+        .windows
+        .first()
+        .and_then(|window| window.window_id.clone());
+    ok(json!({
+        "window_id": window_id,
+        "window_ref": window_id.as_ref().map(|_| "window:1"),
+        "dry_run": dry_run,
+        "plan": plan_payloads,
+        "events": events,
+    }))
+}
+
+fn workspace_reorder_plan_payload(
+    snapshot: &AppSessionSnapshot,
+    item: &WorkspaceReorderPlanItem,
+) -> Value {
+    let workspace_id = item.workspace_id.to_string();
+    let workspace_ref_value = workspace_index_for_id(snapshot, &workspace_id).map(workspace_ref);
+    let window_id = snapshot
+        .windows
+        .first()
+        .and_then(|window| window.window_id.clone());
+    json!({
+        "workspace_id": workspace_id,
+        "workspace_ref": workspace_ref_value,
+        "window_id": window_id,
+        "window_ref": window_id.as_ref().map(|_| "window:1"),
+        "from_index": item.from_index,
+        "to_index": item.to_index,
+    })
+}
+
+#[derive(Debug)]
+enum WorkspaceReorderManyOrderError {
+    Missing,
+    Invalid(String),
+}
+
+fn workspace_reorder_many_order(
+    snapshot: &AppSessionSnapshot,
+    params: &serde_json::Map<String, Value>,
+) -> Result<Vec<Uuid>, WorkspaceReorderManyOrderError> {
+    let values: Vec<&str> = if let Some(raw) = params.get("workspace_ids") {
+        match raw {
+            Value::Array(values) => values
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .ok_or_else(|| WorkspaceReorderManyOrderError::Invalid(value.to_string()))
+                })
+                .collect::<Result<_, _>>()?,
+            Value::String(value) => vec![value],
+            value => {
+                return Err(WorkspaceReorderManyOrderError::Invalid(value.to_string()));
+            }
+        }
+    } else if let Some(raw) = params.get("order") {
+        match raw {
+            Value::String(value) => value.split(',').collect(),
+            value => {
+                return Err(WorkspaceReorderManyOrderError::Invalid(value.to_string()));
+            }
+        }
+    } else {
+        return Err(WorkspaceReorderManyOrderError::Missing);
+    };
+    if values.is_empty() {
+        return Err(WorkspaceReorderManyOrderError::Missing);
+    }
+
+    values
+        .into_iter()
+        .map(|raw| {
+            let raw = raw.trim();
+            if raw.is_empty() {
+                return Err(WorkspaceReorderManyOrderError::Invalid(raw.to_string()));
+            }
+            let workspace_id = if let Some(index) = one_based_ref_index(raw, "workspace") {
+                snapshot
+                    .windows
+                    .first()
+                    .and_then(|window| window.tab_manager.workspaces.get(index))
+                    .and_then(|workspace| workspace.workspace_id.as_deref())
+                    .ok_or_else(|| WorkspaceReorderManyOrderError::Invalid(raw.to_string()))?
+            } else if workspace_index_for_id(snapshot, raw).is_some()
+                || Uuid::parse_str(raw).is_ok()
+            {
+                raw
+            } else {
+                return Err(WorkspaceReorderManyOrderError::Invalid(raw.to_string()));
+            };
+            Uuid::parse_str(workspace_id)
+                .map_err(|_| WorkspaceReorderManyOrderError::Invalid(raw.to_string()))
+        })
+        .collect()
 }
 
 fn workspace_select_relative(app: &AppHandle, delta: i64) -> ControlCallResult {
@@ -12848,6 +13040,37 @@ mod tests {
         assert!(!workspace_reorder_window_matches(
             &snapshot,
             &serde_json::Map::from_iter([("window_ref".to_string(), json!("window:2"),)])
+        ));
+    }
+
+    #[test]
+    fn workspace_reorder_many_order_resolves_refs_and_ids_in_request_order() {
+        let first = "00000000-0000-0000-0000-000000000001";
+        let second = "00000000-0000-0000-0000-000000000002";
+        let mut snapshot = test_snapshot();
+        snapshot.windows[0].tab_manager.workspaces[0].workspace_id = Some(first.to_string());
+        let mut workspace = snapshot.windows[0].tab_manager.workspaces[0].clone();
+        workspace.workspace_id = Some(second.to_string());
+        snapshot.windows[0].tab_manager.workspaces.push(workspace);
+
+        let order = workspace_reorder_many_order(
+            &snapshot,
+            &serde_json::Map::from_iter([(
+                "workspace_ids".to_string(),
+                json!(["workspace:2", first]),
+            )]),
+        )
+        .unwrap();
+        assert_eq!(
+            order,
+            [
+                Uuid::parse_str(second).unwrap(),
+                Uuid::parse_str(first).unwrap()
+            ]
+        );
+        assert!(matches!(
+            workspace_reorder_many_order(&snapshot, &serde_json::Map::new()),
+            Err(WorkspaceReorderManyOrderError::Missing)
         ));
     }
 

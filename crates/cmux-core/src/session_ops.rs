@@ -25,7 +25,8 @@ use cmux_workspaces::{
     assign_group, clamped_reorder_index, clamped_top_level_reorder_index, insertion_index,
     is_workspace_group_anchor, normalize_workspace_group_contiguity,
     normalize_workspace_group_runs_preserving_order, sidebar_top_level_workspace_ids,
-    sync_workspace_groups_order_to_anchor_order, NewWorkspacePlacement, WorkspaceGroup,
+    sync_workspace_groups_order_to_anchor_order, NewWorkspacePlacement, WorkspaceBatchReorderError,
+    WorkspaceGroup, WorkspaceOrderSnapshot, WorkspaceReorderPlanItem, WorkspaceReorderPlanner,
     WorkspaceRow,
 };
 use uuid::Uuid;
@@ -2700,12 +2701,50 @@ fn normalize_workspace_groups_in_snapshot(tabs: &mut SessionTabManagerSnapshot) 
 /// ungrouped row nudged into the middle of a group's section snaps back out).
 ///
 /// Batch multi-id reorder (`reorderWorkspaces(orderedWorkspaceIds:)`,
-/// Coordinator:414-444) is already ported golden-pinned as
-/// `cmux_workspaces::WorkspaceReorderPlanner` (`reorder.rs`) and will back the
-/// future `workspace.reorder_many` socket lane; canonical drag is single-row,
-/// so it is intentionally not part of this op.
+/// Coordinator:414-444) is exposed separately by [`reorder_workspaces_many`];
+/// canonical drag is single-row, so it is intentionally not part of this op.
 pub fn reorder_workspaces(tabs: &mut SessionTabManagerSnapshot, index: i64, to_index: i64) -> bool {
     reorder_workspaces_with_mode(tabs, index, to_index, false)
+}
+
+/// Atomically reorder a requested leading subset within pinned and unpinned
+/// tiers, returning canonical pre-application plan indexes. A dry run validates
+/// and plans without touching the snapshot. Applying rebuilds the full row
+/// order, then restores group contiguity and anchor ordering exactly like the
+/// canonical batch coordinator.
+pub fn reorder_workspaces_many(
+    tabs: &mut SessionTabManagerSnapshot,
+    ordered_workspace_ids: &[Uuid],
+    dry_run: bool,
+) -> Result<Vec<WorkspaceReorderPlanItem>, WorkspaceBatchReorderError> {
+    let (rows, groups) = workspace_mirror(tabs);
+    let current: Vec<WorkspaceOrderSnapshot> = rows
+        .iter()
+        .map(|row| WorkspaceOrderSnapshot::new(row.id, row.is_pinned))
+        .collect();
+    let planner = WorkspaceReorderPlanner::new();
+    let plan = planner.batch_reorder_plan(ordered_workspace_ids, &current)?;
+    if dry_run || !plan.iter().any(|item| item.from_index != item.to_index) {
+        return Ok(plan);
+    }
+
+    let original_ids: Vec<Uuid> = rows.iter().map(|row| row.id).collect();
+    let rows_by_id: HashMap<Uuid, WorkspaceRow> = rows.iter().map(|row| (row.id, *row)).collect();
+    let final_ids = planner.batch_reorder_final_ids(ordered_workspace_ids, &current);
+    let reordered_rows: Vec<WorkspaceRow> = final_ids
+        .iter()
+        .filter_map(|id| rows_by_id.get(id).copied())
+        .collect();
+    let (final_rows, final_groups) = if groups.is_empty() {
+        (reordered_rows, groups)
+    } else {
+        let synced_groups = sync_workspace_groups_order_to_anchor_order(&reordered_rows, &groups);
+        normalize_workspace_group_contiguity(&reordered_rows, &synced_groups, None)
+    };
+    let final_row_ids: Vec<Uuid> = final_rows.iter().map(|row| row.id).collect();
+    let final_group_ids: Vec<Uuid> = final_groups.iter().map(|group| group.id).collect();
+    write_back_reordered(tabs, &original_ids, &final_row_ids, &final_group_ids);
+    Ok(plan)
 }
 
 /// Sidebar-reorder variant of [`reorder_workspaces`]. When
@@ -4927,6 +4966,62 @@ mod tests {
             .iter()
             .map(|w| w.workspace_id.as_deref().unwrap_or(""))
             .collect()
+    }
+
+    #[test]
+    fn reorder_workspaces_many_plans_dry_run_and_applies_atomically() {
+        let ordered = [
+            Uuid::parse_str(R_W3).unwrap(),
+            Uuid::parse_str(R_W2).unwrap(),
+        ];
+        let mut tabs = reorder_tabs(
+            &[(R_W1, None, true), (R_W2, None, false), (R_W3, None, false)],
+            Some(1),
+        );
+        let before = tabs.clone();
+
+        let dry_plan = reorder_workspaces_many(&mut tabs, &ordered, true).unwrap();
+        assert_eq!(
+            dry_plan,
+            vec![
+                WorkspaceReorderPlanItem::new(ordered[0], 2, 1),
+                WorkspaceReorderPlanItem::new(ordered[1], 1, 2),
+            ]
+        );
+        assert_eq!(tabs, before);
+
+        let applied_plan = reorder_workspaces_many(&mut tabs, &ordered, false).unwrap();
+        assert_eq!(applied_plan, dry_plan);
+        assert_eq!(ws_id_order(&tabs), [R_W1, R_W3, R_W2]);
+        assert_eq!(tabs.selected_workspace_index, Some(2));
+
+        let before_duplicate = tabs.clone();
+        assert_eq!(
+            reorder_workspaces_many(&mut tabs, &[ordered[0], ordered[0]], false),
+            Err(WorkspaceBatchReorderError::DuplicateWorkspace(ordered[0]))
+        );
+        assert_eq!(tabs, before_duplicate);
+    }
+
+    #[test]
+    fn reorder_workspaces_many_restores_group_contiguity_and_anchor_order() {
+        let mut tabs = reorder_tabs(
+            &[
+                (R_W1, Some(R_G1), false),
+                (R_W2, Some(R_G1), false),
+                (R_W3, None, false),
+            ],
+            Some(0),
+        );
+        tabs.workspace_groups = Some(vec![reorder_group(R_G1, R_W1, false)]);
+        let ordered = [
+            Uuid::parse_str(R_W3).unwrap(),
+            Uuid::parse_str(R_W2).unwrap(),
+        ];
+
+        reorder_workspaces_many(&mut tabs, &ordered, false).unwrap();
+        assert_eq!(ws_id_order(&tabs), [R_W3, R_W1, R_W2]);
+        assert_eq!(tabs.selected_workspace_index, Some(1));
     }
 
     fn reorder_group(

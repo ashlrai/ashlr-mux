@@ -270,6 +270,10 @@ pub fn control_command_for(
             "workspace.reorder",
             canonical_workspace_reorder_params(args)?,
         )),
+        "reorder-workspaces" => Some(ControlCommand::new(
+            "workspace.reorder_many",
+            canonical_workspaces_reorder_params(args)?,
+        )),
         "select-workspace" => Some(ControlCommand::new(
             "workspace.select",
             workspace_selector_params(args)?,
@@ -1214,6 +1218,51 @@ fn canonical_workspace_reorder_params(args: &[String]) -> Result<serde_json::Val
             .map_err(|_| CliError::new("--index must be an integer"))?;
         params.insert("index".to_string(), serde_json::json!(index));
     }
+    apply_window_scope_selector(&parsed, &mut params);
+    if parsed.has_flag("--dry-run") {
+        params.insert("dry_run".to_string(), serde_json::json!(true));
+    }
+    Ok(serde_json::Value::Object(params))
+}
+
+fn canonical_workspaces_reorder_params(args: &[String]) -> Result<serde_json::Value, CliError> {
+    let parsed = ParsedArgs::parse(args)?;
+    let order = parsed.value(&["--order"]).ok_or_else(|| {
+        CliError::new("reorder-workspaces requires --order <id|ref|index>,<id|ref|index>,...")
+    })?;
+    if order.is_empty() {
+        return Err(CliError::new(
+            "reorder-workspaces requires at least one workspace in --order",
+        ));
+    }
+    let workspace_ids: Vec<String> = order
+        .split(',')
+        .map(str::trim)
+        .map(str::to_string)
+        .collect();
+    if workspace_ids.iter().any(String::is_empty) {
+        return Err(CliError::new(
+            "reorder-workspaces --order cannot contain empty workspace refs",
+        ));
+    }
+    let workspace_ids: Vec<String> = workspace_ids
+        .into_iter()
+        .map(|workspace| {
+            if workspace
+                .chars()
+                .all(|character| character.is_ascii_digit())
+            {
+                format!("workspace:{workspace}")
+            } else {
+                workspace
+            }
+        })
+        .collect();
+    let mut params = serde_json::Map::new();
+    params.insert(
+        "workspace_ids".to_string(),
+        serde_json::json!(workspace_ids),
+    );
     apply_window_scope_selector(&parsed, &mut params);
     if parsed.has_flag("--dry-run") {
         params.insert("dry_run".to_string(), serde_json::json!(true));
@@ -3456,6 +3505,7 @@ fn takes_value(arg: &str) -> bool {
             | "--name"
             | "--number"
             | "--orientation"
+            | "--order"
             | "--out"
             | "--panel"
             | "--panel-id"
@@ -4341,6 +4391,47 @@ mod tests {
                 "workspace_id": "ws-2",
                 "after_workspace_ref": "workspace:1",
             })
+        );
+    }
+
+    #[test]
+    fn maps_canonical_reorder_workspaces_command() {
+        let reorder = mapped(
+            "reorder-workspaces",
+            &[
+                "--order",
+                "workspace:3, ws-1,2",
+                "--window",
+                "window:1",
+                "--dry-run",
+            ],
+        );
+        assert_eq!(reorder.method, "workspace.reorder_many");
+        assert_eq!(
+            reorder.params,
+            serde_json::json!({
+                "workspace_ids": ["workspace:3", "ws-1", "workspace:2"],
+                "window_ref": "window:1",
+                "dry_run": true,
+            })
+        );
+        assert_eq!(
+            control_command_for("reorder-workspaces", &args(&[]))
+                .unwrap_err()
+                .message,
+            "reorder-workspaces requires --order <id|ref|index>,<id|ref|index>,..."
+        );
+        assert_eq!(
+            control_command_for("reorder-workspaces", &args(&["--order="]))
+                .unwrap_err()
+                .message,
+            "reorder-workspaces requires at least one workspace in --order"
+        );
+        assert_eq!(
+            control_command_for("reorder-workspaces", &args(&["--order", "1,,2"]))
+                .unwrap_err()
+                .message,
+            "reorder-workspaces --order cannot contain empty workspace refs"
         );
     }
 

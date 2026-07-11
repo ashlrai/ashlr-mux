@@ -986,28 +986,14 @@ fn format_control_result(method: &str, result: &serde_json::Value) -> String {
         "workspace.list_log" => format_log_entries(result),
         "workspace.sidebar_state" => format_sidebar_state(result),
         "workspace.reorder" => format_workspace_reorder(result),
+        "workspace.reorder_many" => format_workspace_reorder_items(result),
         _ => serde_json::to_string(result).unwrap_or_default(),
     }
 }
 
 fn format_workspace_reorder(result: &serde_json::Value) -> String {
     if result.get("dry_run").and_then(serde_json::Value::as_bool) == Some(true) {
-        let plan = result.get("plan").and_then(serde_json::Value::as_array);
-        let items: Vec<&serde_json::Value> = plan
-            .map(|items| items.iter().collect())
-            .unwrap_or_else(|| vec![result]);
-        return items
-            .into_iter()
-            .map(|item| {
-                format!(
-                    "OK plan workspace={} window={} index={}",
-                    control_handle(item, "workspace"),
-                    control_handle(item, "window"),
-                    control_index(item),
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+        return format_workspace_reorder_items(result);
     }
     format!(
         "OK workspace={} window={} index={}",
@@ -1015,6 +1001,34 @@ fn format_workspace_reorder(result: &serde_json::Value) -> String {
         control_handle(result, "window"),
         control_index(result),
     )
+}
+
+fn format_workspace_reorder_items(result: &serde_json::Value) -> String {
+    let prefix = if result
+        .get("dry_run")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+    {
+        "OK plan"
+    } else {
+        "OK"
+    };
+    let plan = result.get("plan").and_then(serde_json::Value::as_array);
+    let items: Vec<&serde_json::Value> = plan
+        .map(|items| items.iter().collect())
+        .unwrap_or_else(|| vec![result]);
+    items
+        .into_iter()
+        .map(|item| {
+            format!(
+                "{prefix} workspace={} window={} index={}",
+                control_handle(item, "workspace"),
+                control_handle(item, "window"),
+                control_index(item),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn control_handle<'a>(result: &'a serde_json::Value, kind: &str) -> &'a str {
@@ -1255,6 +1269,18 @@ mod control_result_tests {
         assert_eq!(
             format_control_result("workspace.reorder", &dry_run),
             "OK plan workspace=workspace:1 window=window:1 index=0"
+        );
+
+        let many = serde_json::json!({
+            "dry_run": false,
+            "plan": [
+                {"workspace_ref": "workspace:1", "window_ref": "window:1", "to_index": 0},
+                {"workspace_ref": "workspace:2", "window_ref": "window:1", "to_index": 1},
+            ],
+        });
+        assert_eq!(
+            format_control_result("workspace.reorder_many", &many),
+            "OK workspace=workspace:1 window=window:1 index=0\nOK workspace=workspace:2 window=window:1 index=1"
         );
     }
 
