@@ -1736,6 +1736,47 @@ mod tests {
     }
 
     #[test]
+    fn proxy_tunnel_printable_ascii_prefix_remains_binary() {
+        let state = BrowserWebviewState::default();
+        let upstream = b"apparently textual tunnel bytes";
+        let downstream = b"{\"apparently\":\"json\"}";
+
+        record_proxy_tunnel_observation_with_attribution(
+            &state,
+            "surface-1",
+            "socks5",
+            "secure.example",
+            443,
+            upstream,
+            false,
+            downstream,
+            false,
+            100,
+            175,
+            Some("panel"),
+        )
+        .unwrap();
+
+        let reply = browser_network_requests_for_control(
+            &state,
+            "surface-1",
+            BrowserNetworkRequestsQuery::default(),
+        )
+        .unwrap();
+        let record = &reply.requests[0];
+        assert_eq!(record.request_body_preview_kind, "binary");
+        assert_eq!(
+            record.request_body.as_deref(),
+            Some("<binary body: 31 bytes>")
+        );
+        assert_eq!(record.response_body_preview_kind, "binary");
+        assert_eq!(
+            record.response_body.as_deref(),
+            Some("<binary body: 21 bytes>")
+        );
+    }
+
+    #[test]
     fn network_reply_serializes_tunnel_record_for_control_socket_clients() {
         let state = BrowserWebviewState::default();
         record_proxy_tunnel_observation_with_attribution(
