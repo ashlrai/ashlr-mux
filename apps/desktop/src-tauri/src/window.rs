@@ -38,6 +38,13 @@ pub struct WindowDisplayMoveResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowControlSummary {
+    pub identity: WindowControlIdentity,
+    pub is_key: bool,
+    pub is_visible: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WindowDisplayMoveError {
     WindowNotFound(String),
     DisplayNotFound {
@@ -117,6 +124,37 @@ pub fn move_control_windows_to_display(
         display: resolved_display,
         moved,
     })
+}
+
+pub fn control_window_summaries(app: &AppHandle) -> Vec<WindowControlSummary> {
+    ordered_control_windows(app)
+        .into_iter()
+        .map(|(identity, window)| WindowControlSummary {
+            identity,
+            is_key: window.is_focused().unwrap_or(false),
+            is_visible: window.is_visible().unwrap_or(false),
+        })
+        .collect()
+}
+
+pub fn current_control_window(
+    app: &AppHandle,
+    selector: Option<&str>,
+) -> Option<WindowControlIdentity> {
+    let summaries = control_window_summaries(app);
+    if let Some(selector) = selector {
+        let identities: Vec<_> = summaries
+            .iter()
+            .map(|summary| summary.identity.clone())
+            .collect();
+        return resolve_window_selector(&identities, selector)
+            .map(|index| summaries[index].identity.clone());
+    }
+    summaries
+        .iter()
+        .find(|summary| summary.is_key)
+        .or_else(|| summaries.first())
+        .map(|summary| summary.identity.clone())
 }
 
 fn ordered_control_windows(app: &AppHandle) -> Vec<(WindowControlIdentity, WebviewWindow)> {

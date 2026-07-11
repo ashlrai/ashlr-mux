@@ -940,7 +940,8 @@ fn format_window_entries(result: &serde_json::Value) -> String {
         .iter()
         .map(|window| {
             let selected = if window
-                .get("selected")
+                .get("key")
+                .or_else(|| window.get("selected"))
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false)
             {
@@ -1104,7 +1105,8 @@ mod control_result_tests {
             "windows": [{
                 "index": 0,
                 "id": "window-id",
-                "selected": true,
+                "key": true,
+                "visible": true,
                 "selected_workspace_id": "workspace-id",
                 "workspace_count": 2
             }]

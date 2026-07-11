@@ -1039,7 +1039,7 @@ fn handle_control_request(app: &AppHandle, request: ControlRequest) -> ControlCa
         })),
         "config.reload" => config_reload(app),
         "window.list" => window_list(app),
-        "window.current" => window_current(app),
+        "window.current" => window_current(app, &request.params),
         "window.displays" => window_displays(app),
         "window.display" => window_display(app, &request.params),
         "notification.list" => notification_list(app),
@@ -2637,53 +2637,47 @@ fn config_reload(app: &AppHandle) -> ControlCallResult {
 }
 
 fn window_list(app: &AppHandle) -> ControlCallResult {
-    let current = snapshot(app);
-    ok(json!(current
-        .windows
-        .iter()
+    let session = snapshot(app);
+    let session_window = session.windows.first();
+    let windows = crate::window::control_window_summaries(app);
+    ok(json!({"windows": windows
+        .into_iter()
         .enumerate()
         .map(|(index, window)| {
-            let selected_index = window
-                .tab_manager
-                .selected_workspace_index
+            let tab_manager = (index == 0).then_some(session_window).flatten().map(|window| &window.tab_manager);
+            let selected_index = tab_manager
+                .and_then(|tab_manager| tab_manager.selected_workspace_index)
                 .unwrap_or_default()
                 .max(0) as usize;
+            let selected_workspace_id = tab_manager
+                .and_then(|tab_manager| tab_manager.workspaces.get(selected_index))
+                .and_then(|workspace| workspace.workspace_id.clone());
             json!({
                 "index": index,
-                "id": window.window_id,
-                "ref": window.window_id.as_ref().map(|_| format!("window:{}", index + 1)),
-                "key": window.window_id,
-                "selected": index == 0,
-                "workspace_count": window.tab_manager.workspaces.len(),
-                "selected_workspace_id": window
-                    .tab_manager
-                    .workspaces
-                    .get(selected_index)
-                    .and_then(|workspace| workspace.workspace_id.clone()),
+                "id": window.identity.id,
+                "ref": window.identity.reference,
+                "key": window.is_key,
+                "visible": window.is_visible,
+                "workspace_count": tab_manager.map_or(0, |tab_manager| tab_manager.workspaces.len()),
+                "selected_workspace_id": selected_workspace_id,
+                "selected_workspace_ref": selected_workspace_id.as_ref().map(|_| "workspace:1"),
             })
         })
-        .collect::<Vec<_>>()))
+        .collect::<Vec<_>>() }))
 }
 
-fn window_current(app: &AppHandle) -> ControlCallResult {
-    let current = snapshot(app);
-    let Some(window) = current.windows.first() else {
+fn window_current(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
+    let selector = raw_string_param(params, &["window_id", "window_ref"]);
+    let Some(window) = crate::window::current_control_window(app, selector.as_deref()) else {
         return ControlCallResult::Err {
             code: "not_found".to_string(),
-            message: "No active window".to_string(),
-            data: None,
-        };
-    };
-    let Some(window_id) = window.window_id.as_ref() else {
-        return ControlCallResult::Err {
-            code: "not_found".to_string(),
-            message: "No active window".to_string(),
+            message: "Current window not found".to_string(),
             data: None,
         };
     };
     ok(json!({
-        "window_id": window_id,
-        "window_ref": "window:1",
+        "window_id": window.id,
+        "window_ref": window.reference,
     }))
 }
 

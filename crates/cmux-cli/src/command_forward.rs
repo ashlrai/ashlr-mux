@@ -52,6 +52,7 @@ impl ControlCommand {
                 | "surface.trigger_flash"
                 | "notification.clear"
                 | "notification.create"
+                | "window.current"
                 | "window.display"
                 | "right_sidebar"
         ) {
@@ -3531,6 +3532,9 @@ mod tests {
         assert_eq!(command.params["window_ref"], serde_json::json!("window:2"));
 
         let command = mapped("clear-notifications", &[]).with_window_id(Some("2"));
+        assert_eq!(command.params["window_ref"], serde_json::json!("window:2"));
+
+        let command = mapped("current-window", &[]).with_window_id(Some("2"));
         assert_eq!(command.params["window_ref"], serde_json::json!("window:2"));
 
         let command =
