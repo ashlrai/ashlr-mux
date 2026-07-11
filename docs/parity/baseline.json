@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "canonical": {
+    "repository": "https://github.com/manaflow-ai/cmux.git",
+    "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+    "commit_date": "2026-07-09",
+    "commit_subject": "Restore README star history chart (#7767)",
+    "ref_at_freeze": "origin/main",
+    "frozen_on": "2026-07-11",
+    "expected_top_level_commands": 158,
+    "expected_release_v2_methods": 251
+  },
+  "windows": {
+    "repository": "https://github.com/ashlrai/ashlr-mux.git",
+    "branch": "windows-port",
+    "head_when_frozen": "689854602b58dd1f6ee24f3d6a94182cfa8c7423"
+  },
+  "policy": {
+    "allowed_statuses": [
+      "missing",
+      "red",
+      "implemented_unverified",
+      "verified",
+      "platform_equivalent",
+      "not_applicable"
+    ],
+    "resolved_statuses": [
+      "verified",
+      "platform_equivalent",
+      "not_applicable"
+    ],
+    "automatic_evidence_ceiling": "implemented_unverified",
+    "not_applicable_requires_user_approval": true,
+    "upstream_changes_after_freeze": "tracked_separately"
+  }
+}
