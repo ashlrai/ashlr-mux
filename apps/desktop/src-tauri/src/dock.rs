@@ -16,12 +16,13 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
 use crate::browser::{
-    browser_attach_webview_for_control, browser_close_webview_for_control,
+    browser_attach_webview_for_control, browser_close_webview_strict_for_control,
     browser_has_webview_for_control, BrowserWebviewState,
 };
 use crate::terminal::{
-    terminal_close_id_for_control, terminal_close_panel_for_control,
-    terminal_has_panel_for_control, terminal_open_for_control, TerminalState,
+    terminal_has_panel_for_control, terminal_ids_for_panel_for_control, terminal_open_for_control,
+    terminal_remove_id_for_control, terminal_shutdown_id_preserving_authority_for_control,
+    TerminalState,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -786,6 +787,92 @@ fn empty_snapshot(owner_id: &str) -> DockSnapshot {
 
 pub(crate) const DOCK_CHANGED_EVENT: &str = "cmux://dock-changed";
 
+struct DirectDockCommitJournal<C, T> {
+    claims: Vec<C>,
+    teardowns: Vec<T>,
+}
+
+enum DirectDockRollbackStep<C, T> {
+    RollbackClaim(C),
+    RecreateTeardown(T),
+}
+
+impl<C, T> Default for DirectDockCommitJournal<C, T> {
+    fn default() -> Self {
+        Self {
+            claims: Vec::new(),
+            teardowns: Vec::new(),
+        }
+    }
+}
+
+impl<C, T> DirectDockCommitJournal<C, T> {
+    fn stage_claim(&mut self, claim: C) {
+        self.claims.push(claim);
+    }
+
+    fn stage_teardown(&mut self, teardown: T) {
+        self.teardowns.push(teardown);
+    }
+
+    fn finish(&mut self) {
+        self.claims.clear();
+        self.teardowns.clear();
+    }
+
+    fn rollback<E>(
+        &mut self,
+        mut compensate: impl FnMut(DirectDockRollbackStep<C, T>) -> Result<(), E>,
+    ) -> Result<(), String>
+    where
+        E: ToString,
+    {
+        let mut failures = Vec::new();
+        for claim in self.claims.drain(..).rev() {
+            if let Err(error) = compensate(DirectDockRollbackStep::RollbackClaim(claim)) {
+                failures.push(error.to_string());
+            }
+        }
+        for teardown in self.teardowns.drain(..).rev() {
+            if let Err(error) = compensate(DirectDockRollbackStep::RecreateTeardown(teardown)) {
+                failures.push(error.to_string());
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(failures.join("; "))
+        }
+    }
+}
+
+fn transact_direct_dock_lifecycle<R, C, T>(
+    before: &AppSessionSnapshot,
+    journal: &mut DirectDockCommitJournal<C, T>,
+    mutate: impl FnOnce(
+        &mut AppSessionSnapshot,
+        &mut DirectDockCommitJournal<C, T>,
+    ) -> Result<R, String>,
+    persist: impl FnOnce(&AppSessionSnapshot) -> Result<AppSessionSnapshot, String>,
+    compensate: impl FnMut(DirectDockRollbackStep<C, T>) -> Result<(), String>,
+) -> Result<(R, AppSessionSnapshot), String> {
+    let mut candidate = before.clone();
+    let result = mutate(&mut candidate, journal)
+        .and_then(|value| persist(&candidate).map(|committed| (value, committed)));
+    match result {
+        Ok(committed) => {
+            journal.finish();
+            Ok(committed)
+        }
+        Err(primary) => match journal.rollback(compensate) {
+            Ok(()) => Err(primary),
+            Err(rollback) => Err(format!(
+                "{primary}; rollback compensation failed: {rollback}"
+            )),
+        },
+    }
+}
+
 trait DockRuntimeEffects {
     fn stage_create(
         &mut self,
@@ -918,12 +1005,17 @@ pub(crate) fn rollback_runtime_claim(
 ) -> Result<(), String> {
     match claim {
         DockRuntimeClaim::Terminal { id } => {
-            terminal_close_id_for_control(app.state::<TerminalState>().inner(), id).map(|_| ())
+            let state = app.state::<TerminalState>();
+            terminal_shutdown_id_preserving_authority_for_control(state.inner(), id)?;
+            terminal_remove_id_for_control(state.inner(), id)
         }
-        DockRuntimeClaim::Browser { surface_id, .. } => browser_close_webview_for_control(
-            app.state::<BrowserWebviewState>().inner(),
-            &surface_id,
-        ),
+        DockRuntimeClaim::Browser { surface_id, .. } => {
+            let state = app.state::<BrowserWebviewState>();
+            if browser_has_webview_for_control(state.inner(), &surface_id)? {
+                browser_close_webview_strict_for_control(state.inner(), &surface_id)?;
+            }
+            Ok(())
+        }
     }
 }
 
@@ -939,13 +1031,17 @@ pub(crate) fn teardown_runtime_for_control(
     };
     match intent {
         DockRuntimeIntent::Terminal { .. } => {
-            terminal_close_panel_for_control(app.state::<TerminalState>().inner(), surface_id)?;
+            let state = app.state::<TerminalState>();
+            for id in terminal_ids_for_panel_for_control(state.inner(), surface_id) {
+                terminal_shutdown_id_preserving_authority_for_control(state.inner(), id)?;
+                terminal_remove_id_for_control(state.inner(), id)?;
+            }
         }
         DockRuntimeIntent::Browser { .. } => {
-            browser_close_webview_for_control(
-                app.state::<BrowserWebviewState>().inner(),
-                surface_id,
-            )?;
+            let state = app.state::<BrowserWebviewState>();
+            if browser_has_webview_for_control(state.inner(), surface_id)? {
+                browser_close_webview_strict_for_control(state.inner(), surface_id)?;
+            }
         }
     }
     Ok(())
@@ -972,9 +1068,28 @@ pub(crate) fn runtime_exists_for_control(
     }
 }
 
+struct DirectDockTeardownCompensation {
+    owner_id: String,
+    operation: DockRuntimeOperation,
+}
+
 struct ProductionDockRuntime<'a> {
     app: &'a AppHandle,
+    owner_id: String,
     staged: Option<DockRuntimeClaim>,
+    torn_down: Option<DirectDockTeardownCompensation>,
+}
+
+impl ProductionDockRuntime<'_> {
+    fn take_published_claim(&mut self) -> Result<DockRuntimeClaim, String> {
+        self.staged
+            .take()
+            .ok_or_else(|| "Dock runtime claim was not retained".to_string())
+    }
+
+    fn take_teardown(&mut self) -> Option<DirectDockTeardownCompensation> {
+        self.torn_down.take()
+    }
 }
 
 impl DockRuntimeEffects for ProductionDockRuntime<'_> {
@@ -991,7 +1106,6 @@ impl DockRuntimeEffects for ProductionDockRuntime<'_> {
         if let Some(claim) = self.staged.as_ref() {
             publish_runtime_claim(self.app, claim)?;
         }
-        self.staged = None;
         Ok(())
     }
 
@@ -1003,7 +1117,59 @@ impl DockRuntimeEffects for ProductionDockRuntime<'_> {
     }
 
     fn teardown(&mut self, operation: &DockRuntimeOperation) -> Result<(), String> {
-        teardown_runtime_for_control(self.app, operation)
+        let existed = runtime_exists_for_control(self.app, operation)?;
+        teardown_runtime_for_control(self.app, operation)?;
+        if existed {
+            self.torn_down = Some(DirectDockTeardownCompensation {
+                owner_id: self.owner_id.clone(),
+                operation: operation.clone(),
+            });
+        }
+        Ok(())
+    }
+}
+
+fn recreate_direct_dock_teardown(
+    app: &AppHandle,
+    compensation: DirectDockTeardownCompensation,
+) -> Result<(), String> {
+    if runtime_exists_for_control(app, &compensation.operation)? {
+        return Ok(());
+    }
+    let DockRuntimeOperation::Teardown {
+        surface_id,
+        generation,
+        intent,
+    } = compensation.operation
+    else {
+        return Err("Expected Dock teardown compensation".into());
+    };
+    let operation = DockRuntimeOperation::Create {
+        surface_id,
+        generation,
+        intent,
+    };
+    let claim = stage_runtime_for_control(app, &compensation.owner_id, &operation)?;
+    if let Err(primary) = publish_runtime_claim(app, &claim) {
+        return match rollback_runtime_claim(app, claim) {
+            Ok(()) => Err(primary),
+            Err(rollback) => Err(format!(
+                "{primary}; replacement rollback failed: {rollback}"
+            )),
+        };
+    }
+    Ok(())
+}
+
+fn compensate_direct_dock_step(
+    app: &AppHandle,
+    step: DirectDockRollbackStep<DockRuntimeClaim, DirectDockTeardownCompensation>,
+) -> Result<(), String> {
+    match step {
+        DirectDockRollbackStep::RollbackClaim(claim) => rollback_runtime_claim(app, claim),
+        DirectDockRollbackStep::RecreateTeardown(teardown) => {
+            recreate_direct_dock_teardown(app, teardown)
+        }
     }
 }
 
@@ -1035,13 +1201,34 @@ pub(crate) fn dock_create(
     state: State<'_, DockStore>,
     session: State<'_, crate::session::SessionState>,
 ) -> Result<DockSnapshot, String> {
+    let _control_guard = session.lock_control_mutation()?;
+    let before = session.snapshot_for_lifecycle()?;
     let mut runtime = ProductionDockRuntime {
         app: &app,
+        owner_id: owner_id.clone(),
         staged: None,
+        torn_down: None,
     };
-    let (_, committed) = session.transact_lifecycle(&app, |snapshot| {
-        create_with_runtime(snapshot, state.inner(), &owner_id, request, &mut runtime).map(|_| ())
-    })?;
+    let mut journal = DirectDockCommitJournal::default();
+    let (_, committed) = transact_direct_dock_lifecycle(
+        &before,
+        &mut journal,
+        |candidate, journal| {
+            create_with_runtime(candidate, state.inner(), &owner_id, request, &mut runtime)?;
+            journal.stage_claim(runtime.take_published_claim()?);
+            Ok(())
+        },
+        |candidate| {
+            crate::session::commit_lifecycle_snapshot_for_control_if_current(
+                &app,
+                session.inner(),
+                &before,
+                candidate,
+                true,
+            )
+        },
+        |step| compensate_direct_dock_step(&app, step),
+    )?;
     emit_snapshot(&app, &committed, state.inner(), &owner_id)
 }
 
@@ -1057,6 +1244,7 @@ pub(crate) fn dock_select(
 ) -> Result<DockSnapshot, String> {
     let pane_id = Uuid::parse_str(&pane_id).map_err(|_| "Invalid Dock pane identity")?;
     let surface_id = Uuid::parse_str(&surface_id).map_err(|_| "Invalid Dock surface identity")?;
+    let _control_guard = session.lock_control_mutation()?;
     let (_, committed) = session.transact_lifecycle(&app, |snapshot| {
         state.select(snapshot, &owner_id, pane_id, surface_id)?;
         if focus {
@@ -1076,6 +1264,7 @@ pub(crate) fn dock_focus(
     session: State<'_, crate::session::SessionState>,
 ) -> Result<DockSnapshot, String> {
     let surface_id = Uuid::parse_str(&surface_id).map_err(|_| "Invalid Dock surface identity")?;
+    let _control_guard = session.lock_control_mutation()?;
     let (_, committed) = session.transact_lifecycle(&app, |snapshot| {
         state.focus(snapshot, &owner_id, surface_id)
     })?;
@@ -1091,13 +1280,42 @@ pub(crate) fn dock_close(
     session: State<'_, crate::session::SessionState>,
 ) -> Result<DockSnapshot, String> {
     let surface_id = Uuid::parse_str(&surface_id).map_err(|_| "Invalid Dock surface identity")?;
+    let _control_guard = session.lock_control_mutation()?;
+    let before = session.snapshot_for_lifecycle()?;
     let mut runtime = ProductionDockRuntime {
         app: &app,
+        owner_id: owner_id.clone(),
         staged: None,
+        torn_down: None,
     };
-    let (_, committed) = session.transact_lifecycle(&app, |snapshot| {
-        close_with_runtime(snapshot, state.inner(), &owner_id, surface_id, &mut runtime)
-    })?;
+    let mut journal = DirectDockCommitJournal::default();
+    let (_, committed) = transact_direct_dock_lifecycle(
+        &before,
+        &mut journal,
+        |candidate, journal| {
+            close_with_runtime(
+                candidate,
+                state.inner(),
+                &owner_id,
+                surface_id,
+                &mut runtime,
+            )?;
+            if let Some(teardown) = runtime.take_teardown() {
+                journal.stage_teardown(teardown);
+            }
+            Ok(())
+        },
+        |candidate| {
+            crate::session::commit_lifecycle_snapshot_for_control_if_current(
+                &app,
+                session.inner(),
+                &before,
+                candidate,
+                true,
+            )
+        },
+        |step| compensate_direct_dock_step(&app, step),
+    )?;
     emit_snapshot(&app, &committed, state.inner(), &owner_id)
 }
 

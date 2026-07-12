@@ -349,43 +349,11 @@ fn terminal_open_with_policy(
     Ok(id)
 }
 
-pub(crate) fn terminal_close_panel_for_control(
-    state: &TerminalState,
-    panel_id: &str,
-) -> Result<bool, String> {
-    let removed = {
-        let mut sessions = state.live_sessions();
-        let id = sessions.iter().find_map(|(id, session)| {
-            (session.panel_id.as_deref() == Some(panel_id)).then_some(*id)
-        });
-        id.and_then(|id| sessions.remove(&id))
-    };
-    if let Some(mut session) = removed {
-        session.pty.kill().map_err(|error| error.to_string())?;
-        Ok(true)
-    } else {
-        Ok(false)
-    }
-}
-
 pub(crate) fn terminal_has_panel_for_control(state: &TerminalState, panel_id: &str) -> bool {
     state
         .live_sessions()
         .values()
         .any(|session| session.panel_id.as_deref() == Some(panel_id))
-}
-
-pub(crate) fn terminal_close_id_for_control(
-    state: &TerminalState,
-    id: u32,
-) -> Result<bool, String> {
-    let removed = state.live_sessions().remove(&id);
-    if let Some(mut session) = removed {
-        session.pty.kill().map_err(|error| error.to_string())?;
-        Ok(true)
-    } else {
-        Ok(false)
-    }
 }
 
 pub(crate) fn terminal_ids_for_panel_for_control(
