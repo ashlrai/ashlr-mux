@@ -1,8 +1,8 @@
 #![cfg(windows)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::process::{Command, Output};
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -71,6 +71,49 @@ fn spawn_method_server(
                         let method = request.method.clone();
                         request_tx.send((request.method, request.params)).unwrap();
                         ok(responses.get(&method).cloned().unwrap_or(Value::Null))
+                    }
+                })
+                .await;
+            });
+    });
+    (pipe, request_rx)
+}
+
+fn spawn_sequence_server(
+    tag: &str,
+    responses: Vec<(&str, Value)>,
+) -> (String, mpsc::Receiver<CapturedRequest>) {
+    let pipe = control_pipe_path(&format!(
+        "cmux-{tag}-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ))
+    .unwrap();
+    let (request_tx, request_rx) = mpsc::channel();
+    let responses = Arc::new(Mutex::new(
+        responses
+            .into_iter()
+            .map(|(method, response)| (method.to_string(), response))
+            .collect::<VecDeque<_>>(),
+    ));
+    let server_pipe = pipe.clone();
+    thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async move {
+                let _ = serve_named_pipe(&server_pipe, move || {
+                    let request_tx = request_tx.clone();
+                    let responses = responses.clone();
+                    move |request: cmux_ipc::ControlRequest| {
+                        request_tx
+                            .send((request.method.clone(), request.params))
+                            .unwrap();
+                        let (expected_method, response) =
+                            responses.lock().unwrap().pop_front().unwrap();
+                        assert_eq!(request.method, expected_method);
+                        ok(response)
                     }
                 })
                 .await;
@@ -167,6 +210,11 @@ fn tab_action_normalizes_only_case_and_hyphens_while_accepting_unknown_actions()
     .expect("tab-action must be mapped");
 
     assert_eq!(mapped.params["action"], "  custom action_name  ");
+
+    let mapped = control_command_for("tab-action", &["ÄCTION-Ö".into()])
+        .unwrap()
+        .expect("tab-action must be mapped");
+    assert_eq!(mapped.params["action"], "äction_ö");
 }
 
 #[test]
@@ -835,6 +883,27 @@ fn tab_action_formats_text_json_and_all_id_modes_exactly() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(String::from_utf8(output.stdout).unwrap(), "OK action=new_terminal_right tab=tab:4 workspace=workspace:2 closed=2 full_width_tab_mode=true created=tab:5 created_workspace=workspace:6\n");
+
+    let (pipe, _request_rx) = spawn_server(
+        "tab-action-uppercase-surface-refs",
+        ok(json!({
+            "surface_ref":"SURFACE:4",
+            "created_surface_ref":"SuRfAcE:5"
+        })),
+    );
+    let output = executable(
+        Some(&pipe),
+        &["tab-action", "pin", "--workspace", WORKSPACE_ID],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "OK action=pin tab=tab:4 created=tab:5\n"
+    );
 
     for (tag, id_format, expected) in [
         (
@@ -1580,6 +1649,16 @@ fn blank_window_suppresses_ambient_tab_but_preserves_ambient_workspace() {
             vec!["respawn-pane", "--window", "", "--command", "echo ok"],
             "surface.respawn",
         ),
+        (
+            "blank-global-tab-window-ambient-workspace",
+            vec!["--window", "", "tab-action", "pin"],
+            "tab.action",
+        ),
+        (
+            "blank-global-respawn-window-ambient-workspace",
+            vec!["--window", "", "respawn-pane", "--command", "echo ok"],
+            "surface.respawn",
+        ),
     ] {
         let (pipe, request_rx) = spawn_server(tag, ok(json!({})));
         let output = Command::new(env!("CARGO_BIN_EXE_cmux"))
@@ -1596,12 +1675,243 @@ fn blank_window_suppresses_ambient_tab_but_preserves_ambient_workspace() {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        let (actual_method, params) =
-            request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let (actual_method, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(actual_method, method);
         assert_eq!(params.get("workspace_id"), Some(&json!(WORKSPACE_ID)));
         assert!(params.get("surface_id").is_none());
         assert!(params.get("window_id").is_none());
         assert!(request_rx.try_recv().is_err());
+    }
+}
+
+#[test]
+fn lifecycle_recognizes_cross_kind_refs_before_contextual_resolution() {
+    for (tag, args, expected_params, expected_prefix) in [
+        (
+            "cross-kind-workspace-ref",
+            vec!["tab-action", "pin", "--workspace", "surface:2"],
+            json!({"action":"pin", "workspace_id":"surface:2", "focus":false}),
+            None,
+        ),
+        (
+            "cross-kind-surface-ref",
+            vec!["tab-action", "pin", "--surface", "workspace:2"],
+            json!({
+                "action":"pin", "workspace_id":WORKSPACE_ID,
+                "surface_id":"workspace:2", "focus":false
+            }),
+            Some("workspace.current"),
+        ),
+    ] {
+        let (pipe, request_rx) = spawn_method_server(
+            tag,
+            HashMap::from([
+                (
+                    "workspace.current".into(),
+                    json!({"workspace_id":WORKSPACE_ID}),
+                ),
+                ("tab.action".into(), json!({"action":"pin"})),
+            ]),
+        );
+        let output = executable(Some(&pipe), &args);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if let Some(expected_prefix) = expected_prefix {
+            assert_eq!(
+                request_rx.recv_timeout(Duration::from_secs(5)).unwrap().0,
+                expected_prefix
+            );
+        }
+        let (method, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(method, "tab.action");
+        assert_eq!(Value::Object(params), expected_params);
+    }
+
+    let (pipe, request_rx) = spawn_method_server(
+        "cross-kind-window-ref",
+        HashMap::from([("window.list".into(), json!({"windows":[]}))]),
+    );
+    assert_failure(
+        executable(Some(&pipe), &["tab-action", "pin", "--window", "surface:2"]),
+        "Error: Window not found: surface:2\n",
+    );
+    assert_eq!(
+        request_rx.recv_timeout(Duration::from_secs(5)).unwrap().0,
+        "window.list"
+    );
+}
+
+#[test]
+fn tab_action_resolvers_accept_ref_only_selected_records() {
+    let (pipe, request_rx) = spawn_method_server(
+        "ref-only-window-selection",
+        HashMap::from([
+            (
+                "window.list".into(),
+                json!({"windows":[{"index":2,"ref":"window:4"}]}),
+            ),
+            (
+                "workspace.current".into(),
+                json!({"workspace_ref":"workspace:3"}),
+            ),
+            ("tab.action".into(), json!({"action":"pin"})),
+        ]),
+    );
+    let output = executable(Some(&pipe), &["tab-action", "pin", "--window", "2"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        request_rx.recv_timeout(Duration::from_secs(5)).unwrap().0,
+        "window.list"
+    );
+    assert_eq!(
+        request_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+        (
+            "workspace.current".into(),
+            json!({"window_id":"window:4"}).as_object().unwrap().clone()
+        )
+    );
+    let (method, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(method, "tab.action");
+    assert_eq!(
+        Value::Object(params),
+        json!({
+            "action":"pin", "window_id":"window:4",
+            "workspace_id":"workspace:3", "focus":false
+        })
+    );
+
+    let (pipe, request_rx) = spawn_method_server(
+        "ref-only-workspace-index",
+        HashMap::from([
+            (
+                "workspace.list".into(),
+                json!({"workspaces":[{"index":2,"ref":"workspace:5"}]}),
+            ),
+            ("tab.action".into(), json!({"action":"pin"})),
+        ]),
+    );
+    let output = executable(Some(&pipe), &["tab-action", "pin", "--workspace", "2"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        request_rx.recv_timeout(Duration::from_secs(5)).unwrap().0,
+        "workspace.list"
+    );
+    let (method, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(method, "tab.action");
+    assert_eq!(params.get("workspace_id"), Some(&json!("workspace:5")));
+}
+
+#[test]
+fn respawn_resolvers_continue_from_ref_only_selected_records() {
+    let (pipe, request_rx) = spawn_sequence_server(
+        "respawn-ref-only-window",
+        vec![
+            (
+                "window.list",
+                json!({"windows":[{"index":2,"ref":"window:4"}]}),
+            ),
+            (
+                "system.identify",
+                json!({"focused":{"surface_id":SURFACE_ID}}),
+            ),
+            ("surface.respawn", json!({})),
+        ],
+    );
+    let output = executable(
+        Some(&pipe),
+        &["respawn-pane", "--window", "2", "--command", "echo ok"],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for (expected_method, expected_params) in [
+        ("window.list", json!({})),
+        ("system.identify", json!({"window_id":"window:4"})),
+        (
+            "surface.respawn",
+            json!({
+                "window_id":"window:4", "surface_id":SURFACE_ID,
+                "command": control_command_for(
+                    "respawn-pane",
+                    &["--command".into(), "echo ok".into()]
+                ).unwrap().unwrap().params["command"].clone(),
+                "tmux_start_command":"echo ok"
+            }),
+        ),
+    ] {
+        let (method, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(method, expected_method);
+        assert_eq!(Value::Object(params), expected_params);
+    }
+
+    for (tag, args, responses, expected_calls) in [
+        (
+            "respawn-ref-only-current-workspace",
+            vec!["respawn-pane", "--command", "echo ok"],
+            vec![
+                ("workspace.current", json!({"workspace_ref":"workspace:5"})),
+                ("window.list", json!({"windows":[{"id":WINDOW_ID}]})),
+                (
+                    "workspace.list",
+                    json!({"workspaces":[{"ref":"workspace:5","id":WORKSPACE_ID}]}),
+                ),
+                ("surface.respawn", json!({})),
+            ],
+            vec![
+                ("workspace.current", json!({})),
+                ("window.list", json!({})),
+                ("workspace.list", json!({"window_id":WINDOW_ID})),
+            ],
+        ),
+        (
+            "respawn-ref-only-numeric-workspace",
+            vec!["respawn-pane", "--workspace", "2", "--command", "echo ok"],
+            vec![
+                (
+                    "workspace.list",
+                    json!({"workspaces":[{"index":2,"ref":"workspace:5"}]}),
+                ),
+                ("window.list", json!({"windows":[{"id":WINDOW_ID}]})),
+                (
+                    "workspace.list",
+                    json!({"workspaces":[{"ref":"workspace:5","id":WORKSPACE_ID}]}),
+                ),
+                ("surface.respawn", json!({})),
+            ],
+            vec![
+                ("workspace.list", json!({})),
+                ("window.list", json!({})),
+                ("workspace.list", json!({"window_id":WINDOW_ID})),
+            ],
+        ),
+    ] {
+        let (pipe, request_rx) = spawn_sequence_server(tag, responses);
+        let output = executable(Some(&pipe), &args);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        for (expected_method, expected_params) in expected_calls {
+            let (method, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert_eq!(method, expected_method);
+            assert_eq!(Value::Object(params), expected_params);
+        }
+        let (method, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(method, "surface.respawn");
+        assert_eq!(params.get("workspace_id"), Some(&json!(WORKSPACE_ID)));
     }
 }
