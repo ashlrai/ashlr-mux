@@ -6,7 +6,7 @@ use super::pane_surface_lifecycle::{
 use super::*;
 use cmux_core::session::{
     SessionSplitOrientation, SessionSurfaceKindSnapshot, SessionSurfaceMetadataSnapshot,
-    SessionSurfaceSnapshot,
+    SessionSurfaceSnapshot, SessionSurfaceTerminalStartupSnapshot,
 };
 use cmux_core::surface_lifecycle::SurfaceLifecycleModel;
 use serde_json::Map;
@@ -1389,7 +1389,7 @@ fn v2_double_parser_accepts_bool_numbers_and_strings_but_rejects_nonfinite() {
             Some(0.0),
             Some(1.0),
             Some(0.4),
-            Some(0.3),
+            None,
             None,
             None,
             None,
@@ -1406,7 +1406,7 @@ fn local_pane_create_applies_clamped_v2_double_divider_values() {
         (json!(1), 0.9),
         (json!(-1), 0.1),
         (json!(0.4), 0.4),
-        (json!(" 0.3 "), 0.3),
+        (json!("0.3"), 0.3),
         (json!("2"), 0.9),
     ];
     let actual = cases.map(|(divider, expected)| {
@@ -1453,6 +1453,27 @@ fn pane_create_rejects_nonfinite_divider_strings_before_any_route_or_mutation() 
             assert_eq!(transition.snapshot, snapshot);
             assert!(transition.effects.is_empty());
         }
+    }
+}
+
+#[test]
+fn pane_create_rejects_whitespace_wrapped_divider_string_without_mutation() {
+    for snapshot in [action_snapshot(), remote_split_snapshot()] {
+        let transition = remote_pane_create(
+            &snapshot,
+            json!({
+                "surface_id": A,
+                "direction": "right",
+                "initial_divider_position": " 0.3 ",
+            }),
+        );
+        assert_error(
+            &transition,
+            "invalid_params",
+            "initial_divider_position must be numeric",
+        );
+        assert_eq!(transition.snapshot, snapshot);
+        assert!(transition.effects.is_empty());
     }
 }
 
@@ -1531,4 +1552,150 @@ fn disabled_tmux_record_uses_local_new_terminal_right_even_if_stale_connected() 
         .effects
         .iter()
         .any(|effect| matches!(effect, LifecycleEffect::RemoteCreate { .. })));
+}
+
+fn local_cwd_snapshot(
+    reported_directory: Option<&str>,
+    startup_directory: Option<&str>,
+    workspace_directory: Option<&str>,
+) -> AppSessionSnapshot {
+    let mut snapshot = action_snapshot();
+    let workspace = &mut snapshot.windows[0].tab_manager.workspaces[0];
+    workspace.current_directory = workspace_directory.map(str::to_owned);
+    let source = workspace
+        .surfaces
+        .as_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|surface| surface.surface_id == A)
+        .unwrap();
+    source.metadata.reported_directory = reported_directory.map(str::to_owned);
+    source.terminal_startup =
+        startup_directory.map(|working_directory| SessionSurfaceTerminalStartupSnapshot {
+            working_directory: Some(working_directory.to_owned()),
+            ..Default::default()
+        });
+    snapshot
+}
+
+fn inherited_cwd_result(snapshot: &AppSessionSnapshot, focus: bool) -> Value {
+    let source_before = snapshot.windows[0].tab_manager.workspaces[0]
+        .surfaces
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|surface| surface.surface_id == A)
+        .unwrap()
+        .clone();
+    let transition = dispatch(
+        snapshot,
+        json!({"surface_id": A, "action": "new-terminal-right", "focus": focus}),
+    );
+    let result = ok(&transition);
+    let created = result["created_surface_id"].as_str().unwrap();
+    let workspace = &transition.snapshot.windows[0].tab_manager.workspaces[0];
+    let created_record = workspace
+        .surfaces
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|surface| surface.surface_id == created)
+        .unwrap();
+    let source_after = workspace
+        .surfaces
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|surface| surface.surface_id == A)
+        .unwrap();
+    assert_eq!(source_after, &source_before);
+    let effect = serialized_effect(&transition, "TerminalCreate");
+    let pane = model(&transition.snapshot).pane(P1).unwrap().clone();
+    json!({
+        "startup_cwd": created_record.terminal_startup.as_ref().and_then(|startup| startup.working_directory.clone()),
+        "effect_cwd": effect["working_directory"],
+        "order": pane.surface_ids,
+        "focused": model(&transition.snapshot).focused_surface(WS1),
+        "created": created,
+    })
+}
+
+#[test]
+fn local_new_terminal_right_inherits_normalized_cwd_by_canonical_precedence() {
+    let cases = [
+        (
+            local_cwd_snapshot(
+                Some("  C:/reported repo  "),
+                Some("C:/startup"),
+                Some("C:/workspace"),
+            ),
+            Some("C:/reported repo"),
+        ),
+        (
+            local_cwd_snapshot(Some("  "), Some(" C:/startup "), Some("C:/workspace")),
+            Some("C:/startup"),
+        ),
+        (
+            local_cwd_snapshot(Some("\r\n"), Some("\t"), Some(" C:/workspace ")),
+            Some("C:/workspace"),
+        ),
+        (local_cwd_snapshot(Some(" "), Some("\n"), Some("\t")), None),
+    ];
+    let actual = cases.map(|(snapshot, expected)| {
+        let value = inherited_cwd_result(&snapshot, false);
+        json!({
+            "startup_cwd": value["startup_cwd"],
+            "effect_cwd": value["effect_cwd"],
+            "expected": expected,
+            "inserted_right": value["order"][0] == A
+                && value["order"][1] == value["created"]
+                && value["order"][2] == B,
+            "focused_source": value["focused"] == A,
+        })
+    });
+    let checks = actual.map(|row| {
+        (
+            row["startup_cwd"] == row["expected"],
+            row["effect_cwd"] == row["expected"],
+            row["inserted_right"] == true,
+            row["focused_source"] == true,
+        )
+    });
+    assert_eq!(checks, [(true, true, true, true); 4]);
+}
+
+#[test]
+fn local_new_terminal_right_cwd_inheritance_preserves_requested_focus() {
+    let snapshot = local_cwd_snapshot(Some("C:/repo"), None, None);
+    let value = inherited_cwd_result(&snapshot, true);
+    assert_eq!(value["startup_cwd"], "C:/repo");
+    assert_eq!(value["effect_cwd"], "C:/repo");
+    assert_eq!(value["focused"], value["created"]);
+}
+
+#[test]
+fn disabled_tmux_fallback_new_terminal_right_still_inherits_source_cwd() {
+    let mut snapshot = remote_action_snapshot();
+    let workspace = &mut snapshot.windows[0].tab_manager.workspaces[0];
+    let remote = workspace.remote.as_mut().unwrap();
+    remote.enabled = false;
+    remote.connected = true;
+    remote.state = "connected".into();
+    let source = workspace
+        .surfaces
+        .as_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|surface| surface.surface_id == A)
+        .unwrap();
+    source.metadata.reported_directory = Some("  /srv/disabled fallback  ".into());
+    source.terminal_startup = Some(SessionSurfaceTerminalStartupSnapshot {
+        working_directory: Some("/srv/startup".into()),
+        ..Default::default()
+    });
+    workspace.current_directory = Some("/srv/workspace".into());
+
+    let value = inherited_cwd_result(&snapshot, false);
+    assert_eq!(value["startup_cwd"], "/srv/disabled fallback");
+    assert_eq!(value["effect_cwd"], "/srv/disabled fallback");
 }
