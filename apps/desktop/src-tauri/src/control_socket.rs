@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, SystemTime};
@@ -25,9 +26,9 @@ mod pane_surface_lifecycle;
 
 use crate::browser::{
     browser_add_init_script_for_control, browser_attach_webview_for_control,
-    browser_clear_network_requests_for_control, browser_eval_for_control,
-    browser_network_requests_for_control, browser_webview_command_for_control,
-    BrowserNetworkRequestsQuery, BrowserWebviewState,
+    browser_clear_network_requests_for_control, browser_close_webview_for_control,
+    browser_eval_for_control, browser_network_requests_for_control,
+    browser_webview_command_for_control, BrowserNetworkRequestsQuery, BrowserWebviewState,
 };
 use crate::diff::DiffState;
 use crate::session::{
@@ -39,9 +40,9 @@ use crate::session::{
     clear_workspace_sidebar_metadata_for_control, clear_workspace_sidebar_progress_for_control,
     clear_workspace_sidebar_status_for_control, close_panel_for_control,
     close_workspace_in_window_for_control, close_workspaces_for_control,
-    configure_workspace_remote_for_control, current_session_snapshot,
-    equalize_dividers_for_control, focus_last_pane_for_control, focus_pane_for_control,
-    move_panel_to_new_workspace_for_control, move_surface_for_control,
+    commit_lifecycle_snapshot_for_control, configure_workspace_remote_for_control,
+    current_session_snapshot, equalize_dividers_for_control, focus_last_pane_for_control,
+    focus_pane_for_control, move_panel_to_new_workspace_for_control, move_surface_for_control,
     move_workspace_to_window_for_control, new_browser_workspace_for_control,
     new_terminal_tab_for_control, new_workspace_in_window_for_control, open_browser_url_in_panel,
     open_custom_sidebar_in_panel, open_diff_viewer_in_panel, open_file_in_panel,
@@ -73,8 +74,9 @@ use crate::session::{
 };
 use crate::terminal::{
     scan_listening_ports_for_root_pid, scan_panel_listening_ports, terminal_clear_history_panel,
-    terminal_grid_size_for_panel, terminal_read_panel, terminal_runtime_snapshots,
-    terminal_write_panel, TerminalState,
+    terminal_close_id_for_control, terminal_close_panel_except_for_control,
+    terminal_close_panel_for_control, terminal_grid_size_for_panel, terminal_open_for_control,
+    terminal_read_panel, terminal_runtime_snapshots, terminal_write_panel, TerminalState,
 };
 
 const CONTROL_PIPE_BASE_NAME: &str = "cmux";
@@ -1142,6 +1144,11 @@ fn handle_control_request(app: &AppHandle, mut request: ControlRequest) -> Contr
         };
     }
     resolve_request_handle_refs(app, &mut request.params);
+    if control_request_route_for_method(&request.method)
+        == ControlRequestRoute::PaneSurfaceLifecycle
+    {
+        return handle_pane_surface_lifecycle_request(app, &request.method, &request.params);
+    }
     match request.method.as_str() {
         "ping" | "system.ping" => ok(json!("pong")),
         "system.identify" => ok(json!({
@@ -1483,6 +1490,290 @@ fn handle_control_request(app: &AppHandle, mut request: ControlRequest) -> Contr
     }
 }
 
+struct ProductionLifecycleExecutor<'a> {
+    app: &'a AppHandle,
+    candidate: Option<AppSessionSnapshot>,
+    staged: Vec<pane_surface_lifecycle::LifecycleEffect>,
+    staged_terminals: Vec<(String, u32, bool)>,
+    staged_remote_panes: Vec<(String, String)>,
+    staged_browsers: Vec<(String, Option<String>)>,
+}
+
+impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExecutor<'_> {
+    type Error = String;
+
+    fn prepare_transition(&mut self, candidate: &AppSessionSnapshot) -> Result<(), Self::Error> {
+        cmux_core::surface_lifecycle::SurfaceLifecycleModel::from_app_session(candidate)
+            .and_then(|model| model.validate_indexes())
+            .map_err(|error| error.to_string())?;
+        self.candidate = Some(candidate.clone());
+        Ok(())
+    }
+
+    fn stage(
+        &mut self,
+        effect: &pane_surface_lifecycle::LifecycleEffect,
+    ) -> Result<(), Self::Error> {
+        if matches!(
+            effect,
+            pane_surface_lifecycle::LifecycleEffect::DockCreate { .. }
+        ) {
+            return Err("Dock unavailable".to_string());
+        }
+        let terminal_state = self.app.state::<TerminalState>();
+        match effect {
+            pane_surface_lifecycle::LifecycleEffect::TerminalCreate {
+                surface_id,
+                command,
+                working_directory,
+                ..
+            } => {
+                let id = terminal_open_for_control(
+                    self.app,
+                    terminal_state.inner(),
+                    Some(surface_id),
+                    working_directory.as_deref(),
+                    command.as_deref(),
+                    None,
+                    None,
+                    None,
+                    None,
+                )?;
+                self.staged_terminals.push((surface_id.clone(), id, false));
+            }
+            pane_surface_lifecycle::LifecycleEffect::TerminalReplace {
+                surface_id,
+                command,
+                working_directory,
+                ..
+            } => {
+                let id = terminal_open_for_control(
+                    self.app,
+                    terminal_state.inner(),
+                    Some(surface_id),
+                    working_directory.as_deref(),
+                    Some(command),
+                    None,
+                    None,
+                    None,
+                    None,
+                )?;
+                self.staged_terminals.push((surface_id.clone(), id, true));
+            }
+            pane_surface_lifecycle::LifecycleEffect::RemoteCreate { destination, .. } => {
+                let output = Command::new("ssh")
+                    .args(["-T", "-o", "BatchMode=yes", destination])
+                    .args(["tmux", "split-window", "-d", "-P", "-F", "#{pane_id}"])
+                    .output()
+                    .map_err(|error| format!("failed to launch remote tmux split: {error}"))?;
+                if !output.status.success() {
+                    return Err(format!("remote tmux split exited with {}", output.status));
+                }
+                let pane_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if pane_id.is_empty() {
+                    return Err("remote tmux split returned no pane identity".to_string());
+                }
+                self.staged_remote_panes
+                    .push((destination.clone(), pane_id));
+            }
+            pane_surface_lifecycle::LifecycleEffect::BrowserAttach {
+                surface_id, url, ..
+            } => {
+                let state = self.app.state::<BrowserWebviewState>();
+                browser_attach_webview_for_control(
+                    self.app,
+                    state.inner(),
+                    surface_id,
+                    url.as_deref(),
+                    None,
+                    false,
+                )?;
+                self.staged_browsers.push((surface_id.clone(), url.clone()));
+            }
+            _ => {}
+        }
+        self.staged.push(effect.clone());
+        Ok(())
+    }
+
+    fn commit_staged(&mut self) -> Result<(), Self::Error> {
+        let candidate = self
+            .candidate
+            .as_ref()
+            .ok_or_else(|| "lifecycle candidate was not prepared".to_string())?;
+        let browser_state = self.app.state::<BrowserWebviewState>();
+        for (surface_id, url) in &self.staged_browsers {
+            browser_attach_webview_for_control(
+                self.app,
+                browser_state.inner(),
+                surface_id,
+                url.as_deref(),
+                None,
+                true,
+            )?;
+        }
+        let state = self.app.state::<SessionState>();
+        commit_lifecycle_snapshot_for_control(self.app, state.inner(), candidate)?;
+        let terminal_state = self.app.state::<TerminalState>();
+        for (surface_id, id, replace) in &self.staged_terminals {
+            if *replace {
+                let _ = terminal_close_panel_except_for_control(
+                    terminal_state.inner(),
+                    surface_id,
+                    *id,
+                );
+            }
+        }
+        for effect in &self.staged {
+            match effect {
+                pane_surface_lifecycle::LifecycleEffect::ActivateWindow { window_id } => {
+                    if let Some(window) = self.app.get_webview_window(window_id) {
+                        let _ = window.set_focus();
+                    }
+                }
+                pane_surface_lifecycle::LifecycleEffect::RuntimeTeardown { surface_id, .. } => {
+                    let _ = terminal_close_panel_for_control(terminal_state.inner(), surface_id);
+                    let _ = browser_close_webview_for_control(browser_state.inner(), surface_id);
+                    self.app
+                        .state::<crate::remote_proxy::RemoteProxyBrokerState>()
+                        .stop_panel_broker(surface_id);
+                }
+                pane_surface_lifecycle::LifecycleEffect::TerminalCreate { .. }
+                | pane_surface_lifecycle::LifecycleEffect::TerminalReplace { .. }
+                | pane_surface_lifecycle::LifecycleEffect::BrowserAttach { .. } => {}
+                pane_surface_lifecycle::LifecycleEffect::RemoteCreate { .. } => {}
+                pane_surface_lifecycle::LifecycleEffect::DockCreate { .. } => unreachable!(),
+                pane_surface_lifecycle::LifecycleEffect::PersistSession => {}
+            }
+        }
+        self.staged.clear();
+        self.staged_terminals.clear();
+        self.staged_remote_panes.clear();
+        self.staged_browsers.clear();
+        Ok(())
+    }
+
+    fn rollback_staged(&mut self) {
+        if let Some(state) = self.app.try_state::<TerminalState>() {
+            for (_, id, _) in self.staged_terminals.drain(..) {
+                let _ = terminal_close_id_for_control(state.inner(), id);
+            }
+        }
+        for (destination, pane_id) in self.staged_remote_panes.drain(..) {
+            let _ = Command::new("ssh")
+                .args(["-T", "-o", "BatchMode=yes", &destination])
+                .args(["tmux", "kill-pane", "-t", &pane_id])
+                .status();
+        }
+        if let Some(state) = self.app.try_state::<BrowserWebviewState>() {
+            for (surface_id, _) in self.staged_browsers.drain(..) {
+                let _ = browser_close_webview_for_control(state.inner(), &surface_id);
+            }
+        }
+        self.staged.clear();
+        self.candidate = None;
+    }
+}
+
+fn handle_pane_surface_lifecycle_request(
+    app: &AppHandle,
+    method: &str,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let viewport_size = app.webview_windows().values().find_map(|window| {
+        window
+            .inner_size()
+            .ok()
+            .map(|size| (f64::from(size.width), f64::from(size.height)))
+    });
+    let active_window_id = app.webview_windows().iter().find_map(|(label, window)| {
+        (window.is_focused().ok() == Some(true)).then(|| label.clone())
+    });
+    let mut transition = pane_surface_lifecycle::dispatch_lifecycle_request(
+        &current,
+        method,
+        params,
+        &pane_surface_lifecycle::LifecycleDispatchContext {
+            viewport_size,
+            browser_enabled: app.try_state::<BrowserWebviewState>().is_some(),
+            dock_available: false,
+            active_window_id,
+        },
+    );
+    decorate_lifecycle_result_refs(app, &mut transition.result);
+    if !transition.changed {
+        return transition.result;
+    }
+    let mut target = current;
+    let mut executor = ProductionLifecycleExecutor {
+        app,
+        candidate: None,
+        staged: Vec::new(),
+        staged_terminals: Vec::new(),
+        staged_remote_panes: Vec::new(),
+        staged_browsers: Vec::new(),
+    };
+    pane_surface_lifecycle::commit_lifecycle_transition(&mut target, transition, &mut executor)
+        .unwrap_or_else(|message| ControlCallResult::Err {
+            code: "internal_error".into(),
+            message,
+            data: None,
+        })
+}
+
+fn decorate_lifecycle_result_refs(app: &AppHandle, result: &mut ControlCallResult) {
+    let ControlCallResult::Ok(payload) = result else {
+        return;
+    };
+    let mut value = Value::from(payload.clone());
+    fn decorate(app: &AppHandle, value: &mut Value, row_is_surface: bool) {
+        match value {
+            Value::Array(values) => {
+                for value in values {
+                    decorate(app, value, true);
+                }
+            }
+            Value::Object(object) => {
+                for (id_key, ref_key, kind) in [
+                    ("window_id", "window_ref", "window"),
+                    ("workspace_id", "workspace_ref", "workspace"),
+                    ("pane_id", "pane_ref", "pane"),
+                    ("surface_id", "surface_ref", "surface"),
+                    ("tab_id", "tab_ref", "surface"),
+                ] {
+                    if let Some(id) = object.get(id_key) {
+                        let reference = id.as_str().map(|id| {
+                            let reference = control_handle_ref(app, kind, id);
+                            if ref_key == "tab_ref" {
+                                reference.replacen("surface:", "tab:", 1)
+                            } else {
+                                reference
+                            }
+                        });
+                        object.entry(ref_key).or_insert_with(|| json!(reference));
+                    }
+                }
+                if row_is_surface {
+                    if let Some(id) = object.get("id").and_then(Value::as_str).map(str::to_owned) {
+                        object
+                            .entry("ref")
+                            .or_insert_with(|| json!(control_handle_ref(app, "surface", &id)));
+                    }
+                }
+                for child in object.values_mut() {
+                    decorate(app, child, false);
+                }
+            }
+            _ => {}
+        }
+    }
+    decorate(app, &mut value, false);
+    if let Ok(decorated) = JsonValue::try_from(value) {
+        *payload = decorated;
+    }
+}
+
 fn resolve_request_handle_refs(app: &AppHandle, params: &mut serde_json::Map<String, Value>) {
     for (key, kind) in [
         ("window_id", "window"),
@@ -1498,7 +1789,16 @@ fn resolve_request_handle_refs(app: &AppHandle, params: &mut serde_json::Map<Str
         let Some(reference) = params.get(key).and_then(Value::as_str) else {
             continue;
         };
-        if let Some(id) = resolve_control_handle_ref(app, kind, reference) {
+        let normalized = (key == "tab_id")
+            .then(|| {
+                reference
+                    .strip_prefix("tab:")
+                    .map(|suffix| format!("surface:{suffix}"))
+            })
+            .flatten();
+        if let Some(id) =
+            resolve_control_handle_ref(app, kind, normalized.as_deref().unwrap_or(reference))
+        {
             params.insert(key.to_string(), json!(id));
         }
     }
@@ -17205,6 +17505,76 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn lifecycle_commit_failure_keeps_model_unpublished_and_compensates_resources() {
+        #[derive(Default)]
+        struct CommitFailure {
+            prepared: Option<AppSessionSnapshot>,
+            staged: usize,
+            compensated: usize,
+        }
+        impl pane_surface_lifecycle::LifecycleEffectExecutor for CommitFailure {
+            type Error = &'static str;
+
+            fn prepare_transition(
+                &mut self,
+                candidate: &AppSessionSnapshot,
+            ) -> Result<(), Self::Error> {
+                self.prepared = Some(candidate.clone());
+                Ok(())
+            }
+
+            fn stage(
+                &mut self,
+                _effect: &pane_surface_lifecycle::LifecycleEffect,
+            ) -> Result<(), Self::Error> {
+                self.staged += 1;
+                Ok(())
+            }
+
+            fn commit_staged(&mut self) -> Result<(), Self::Error> {
+                Err("injected post-stage commit failure")
+            }
+
+            fn rollback_staged(&mut self) {
+                self.staged = 0;
+            }
+
+            fn rollback_committed(&mut self) {
+                self.compensated += self.staged;
+                self.staged = 0;
+            }
+        }
+
+        let before = test_snapshot();
+        let transition = pane_surface_lifecycle::dispatch_lifecycle_request(
+            &before,
+            "pane.create",
+            json!({"direction":"right","type":"terminal"})
+                .as_object()
+                .unwrap(),
+            &pane_surface_lifecycle::LifecycleDispatchContext {
+                viewport_size: Some((1_000.0, 800.0)),
+                browser_enabled: true,
+                dock_available: false,
+                active_window_id: None,
+            },
+        );
+        let candidate = transition.snapshot.clone();
+        let effect_count = transition.effects.len();
+        let mut published = before.clone();
+        let mut executor = CommitFailure::default();
+        assert!(pane_surface_lifecycle::commit_lifecycle_transition(
+            &mut published,
+            transition,
+            &mut executor
+        )
+        .is_err());
+        assert_eq!(published, before);
+        assert_eq!(executor.prepared, Some(candidate));
+        assert_eq!(executor.compensated, effect_count);
     }
 
     #[path = "pane_surface_lifecycle_red.rs"]

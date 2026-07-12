@@ -8,13 +8,13 @@ use cmux_ipc::{ControlCallResult, JsonValue};
 use serde_json::{json, Map, Value};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub(super) struct LifecycleEvent {
     pub name: &'static str,
     pub payload: Value,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[allow(dead_code)] // Variants are introduced together; dispatch branches consume them incrementally.
 pub(super) enum LifecycleEffect {
     TerminalCreate {
@@ -46,6 +46,7 @@ pub(super) enum LifecycleEffect {
     },
     RemoteCreate {
         remote_session_id: String,
+        destination: String,
         kind: String,
     },
     ActivateWindow {
@@ -54,11 +55,12 @@ pub(super) enum LifecycleEffect {
     PersistSession,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) struct LifecycleDispatchContext {
     pub viewport_size: Option<(f64, f64)>,
     pub browser_enabled: bool,
     pub dock_available: bool,
+    pub active_window_id: Option<String>,
 }
 
 #[derive(Debug)]
@@ -73,12 +75,20 @@ pub(super) struct LifecycleTransition {
 pub(super) trait LifecycleEffectExecutor {
     type Error;
 
+    fn prepare_transition(&mut self, _candidate: &AppSessionSnapshot) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
     /// Validate and acquire all resources needed by an effect without making
     /// it externally visible. The transition is committed only after every
     /// effect has staged successfully.
     fn stage(&mut self, effect: &LifecycleEffect) -> Result<(), Self::Error>;
     fn commit_staged(&mut self) -> Result<(), Self::Error>;
     fn rollback_staged(&mut self);
+
+    fn rollback_committed(&mut self) {
+        self.rollback_staged();
+    }
 }
 
 pub(super) fn commit_lifecycle_transition<E: LifecycleEffectExecutor>(
@@ -86,6 +96,7 @@ pub(super) fn commit_lifecycle_transition<E: LifecycleEffectExecutor>(
     transition: LifecycleTransition,
     executor: &mut E,
 ) -> Result<ControlCallResult, E::Error> {
+    executor.prepare_transition(&transition.snapshot)?;
     for effect in &transition.effects {
         if let Err(error) = executor.stage(effect) {
             executor.rollback_staged();
@@ -93,7 +104,7 @@ pub(super) fn commit_lifecycle_transition<E: LifecycleEffectExecutor>(
         }
     }
     if let Err(error) = executor.commit_staged() {
-        executor.rollback_staged();
+        executor.rollback_committed();
         return Err(error);
     }
     if transition.changed {
@@ -221,15 +232,15 @@ pub(super) fn dispatch_lifecycle_request(
     context: &LifecycleDispatchContext,
 ) -> LifecycleTransition {
     match method {
-        "surface.current" => surface_current(snapshot, params),
-        "surface.list" => surface_list(snapshot, params),
+        "surface.current" => surface_current(snapshot, params, context),
+        "surface.list" => surface_list(snapshot, params, context),
         "surface.create" => surface_create(snapshot, params, context),
         "surface.action" | "tab.action" => surface_action(snapshot, params),
         "surface.report_pwd" => surface_report_pwd(snapshot, params),
         "surface.respawn" => surface_respawn(snapshot, params),
-        "surface.close" => surface_close(snapshot, params),
+        "surface.close" => surface_close(snapshot, params, context),
         "surface.focus" => surface_focus(snapshot, params),
-        "surface.move" => surface_move(snapshot, params),
+        "surface.move" => surface_move(snapshot, params, context),
         "pane.resize" => pane_resize(snapshot, params, context),
         "pane.focus" => pane_focus(snapshot, params),
         "pane.create" | "surface.split" => pane_create(snapshot, method, params, context),
@@ -278,8 +289,6 @@ fn error(
     message: &str,
     data: Option<Value>,
 ) -> LifecycleTransition {
-    #[cfg(test)]
-    eprintln!("lifecycle error {code}: {message}");
     LifecycleTransition {
         snapshot: snapshot.clone(),
         result: ControlCallResult::Err {
@@ -304,77 +313,152 @@ struct Scope {
 fn scope(
     snapshot: &AppSessionSnapshot,
     params: &Map<String, Value>,
+    context: &LifecycleDispatchContext,
 ) -> Result<Scope, (&'static str, &'static str)> {
-    let window_index = if let Some(Value::String(requested)) = params.get("window_id") {
-        snapshot
-            .windows
-            .iter()
-            .position(|window| window.window_id.as_deref() == Some(requested))
-            .ok_or(("unavailable", "TabManager not available"))?
-    } else if let Some(surface) = params
+    let surface_selector = params
         .get("surface_id")
+        .or_else(|| params.get("terminal_id"))
         .or_else(|| params.get("tab_id"))
-        .and_then(Value::as_str)
-    {
-        snapshot
-            .windows
+        .and_then(Value::as_str);
+    let pane_selector = params.get("pane_id").and_then(Value::as_str);
+    let workspace_selector = params.get("workspace_id").and_then(Value::as_str);
+    let group_selector = params.get("group_id").and_then(Value::as_str);
+    let contains_surface = |workspace: &cmux_core::session::SessionWorkspaceSnapshot, id: &str| {
+        workspace
+            .surfaces
+            .as_deref()
+            .unwrap_or_default()
             .iter()
-            .position(|window| {
-                window.tab_manager.workspaces.iter().any(|workspace| {
-                    workspace
-                        .surfaces
-                        .as_deref()
-                        .unwrap_or_default()
-                        .iter()
-                        .any(|record| record.surface_id == surface)
-                        || workspace.layout.as_ref().is_some_and(|layout| {
-                            layout_surface_ids(layout).iter().any(|id| id == surface)
-                        })
-                })
+            .any(|record| record.surface_id == id)
+            || workspace.layout.as_ref().is_some_and(|layout| {
+                layout_surface_ids(layout)
+                    .iter()
+                    .any(|candidate| candidate == id)
             })
-            .unwrap_or(0)
-    } else {
-        0
     };
+    let contains_pane = |workspace: &cmux_core::session::SessionWorkspaceSnapshot, id: &str| {
+        find_pane(workspace.layout.as_ref(), id).is_some()
+    };
+
+    let window_index =
+        if let Some(explicit) = params.get("window_id").filter(|value| !value.is_null()) {
+            let requested = explicit
+                .as_str()
+                .ok_or(("unavailable", "TabManager not available"))?;
+            snapshot
+                .windows
+                .iter()
+                .position(|window| window.window_id.as_deref() == Some(requested))
+                .ok_or(("unavailable", "TabManager not available"))?
+        } else {
+            group_selector
+                .and_then(|group| {
+                    snapshot.windows.iter().position(|window| {
+                        window
+                            .tab_manager
+                            .workspace_groups
+                            .as_deref()
+                            .unwrap_or_default()
+                            .iter()
+                            .any(|candidate| candidate.id == group)
+                    })
+                })
+                .or_else(|| {
+                    workspace_selector.and_then(|workspace| {
+                        snapshot.windows.iter().position(|window| {
+                            window.tab_manager.workspaces.iter().any(|candidate| {
+                                candidate.workspace_id.as_deref() == Some(workspace)
+                            })
+                        })
+                    })
+                })
+                .or_else(|| {
+                    surface_selector.and_then(|surface| {
+                        snapshot.windows.iter().position(|window| {
+                            window
+                                .tab_manager
+                                .workspaces
+                                .iter()
+                                .any(|workspace| contains_surface(workspace, surface))
+                        })
+                    })
+                })
+                .or_else(|| {
+                    pane_selector.and_then(|pane| {
+                        snapshot.windows.iter().position(|window| {
+                            window
+                                .tab_manager
+                                .workspaces
+                                .iter()
+                                .any(|workspace| contains_pane(workspace, pane))
+                        })
+                    })
+                })
+                .or_else(|| {
+                    context.active_window_id.as_deref().and_then(|active| {
+                        snapshot
+                            .windows
+                            .iter()
+                            .position(|window| window.window_id.as_deref() == Some(active))
+                    })
+                })
+                .unwrap_or(0)
+        };
     let window = snapshot
         .windows
         .get(window_index)
         .ok_or(("unavailable", "TabManager not available"))?;
-    let workspace_index =
-        if let Some(requested) = params.get("workspace_id").and_then(Value::as_str) {
-            window
-                .tab_manager
-                .workspaces
-                .iter()
-                .position(|workspace| workspace.workspace_id.as_deref() == Some(requested))
-                .ok_or(("not_found", "Workspace not found"))?
-        } else if let Some(surface) = params
-            .get("surface_id")
-            .or_else(|| params.get("tab_id"))
-            .and_then(Value::as_str)
-        {
-            window
-                .tab_manager
-                .workspaces
-                .iter()
-                .position(|workspace| {
-                    workspace
-                        .surfaces
-                        .as_deref()
-                        .unwrap_or_default()
-                        .iter()
-                        .any(|record| record.surface_id == surface)
-                        || workspace.layout.as_ref().is_some_and(|layout| {
-                            layout_surface_ids(layout).iter().any(|id| id == surface)
-                        })
-                })
-                .unwrap_or_else(|| {
-                    usize::try_from(window.tab_manager.selected_workspace_index.unwrap_or(0))
-                        .unwrap_or(0)
-                })
-        } else {
-            usize::try_from(window.tab_manager.selected_workspace_index.unwrap_or(0)).unwrap_or(0)
-        };
+    let workspace_index = if let Some(requested) = workspace_selector {
+        window
+            .tab_manager
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.workspace_id.as_deref() == Some(requested))
+            .ok_or(("not_found", "Workspace not found"))?
+    } else if let Some(group) = group_selector {
+        let anchor = window
+            .tab_manager
+            .workspace_groups
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .find(|candidate| candidate.id == group)
+            .and_then(|group| group.anchor_workspace_id.as_deref())
+            .ok_or(("not_found", "Workspace not found"))?;
+        window
+            .tab_manager
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.workspace_id.as_deref() == Some(anchor))
+            .ok_or(("not_found", "Workspace not found"))?
+    } else if let Some(surface) = surface_selector {
+        window
+            .tab_manager
+            .workspaces
+            .iter()
+            .position(|workspace| {
+                workspace
+                    .surfaces
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|record| record.surface_id == surface)
+                    || workspace.layout.as_ref().is_some_and(|layout| {
+                        layout_surface_ids(layout).iter().any(|id| id == surface)
+                    })
+            })
+            .ok_or(("not_found", "Workspace not found"))?
+    } else if let Some(pane) = pane_selector {
+        window
+            .tab_manager
+            .workspaces
+            .iter()
+            .position(|workspace| contains_pane(workspace, pane))
+            .ok_or(("not_found", "Workspace not found"))?
+    } else {
+        usize::try_from(window.tab_manager.selected_workspace_index.unwrap_or(0))
+            .map_err(|_| ("not_found", "Workspace not found"))?
+    };
     let workspace = window
         .tab_manager
         .workspaces
@@ -477,8 +561,9 @@ fn event(name: &'static str, payload: Value) -> LifecycleEvent {
 fn surface_current(
     snapshot: &AppSessionSnapshot,
     params: &Map<String, Value>,
+    context: &LifecycleDispatchContext,
 ) -> LifecycleTransition {
-    let scope = match scope(snapshot, params) {
+    let scope = match scope(snapshot, params, context) {
         Ok(scope) => scope,
         Err((code, message)) => return error(snapshot, code, message, None),
     };
@@ -528,8 +613,12 @@ fn surface_current(
     )
 }
 
-fn surface_list(snapshot: &AppSessionSnapshot, params: &Map<String, Value>) -> LifecycleTransition {
-    let scope = match scope(snapshot, params) {
+fn surface_list(
+    snapshot: &AppSessionSnapshot,
+    params: &Map<String, Value>,
+    context: &LifecycleDispatchContext,
+) -> LifecycleTransition {
+    let scope = match scope(snapshot, params, context) {
         Ok(scope) => scope,
         Err((code, message)) => return error(snapshot, code, message, None),
     };
@@ -650,7 +739,7 @@ fn surface_create(
             }],
         );
     }
-    let scope = match scope(snapshot, params) {
+    let scope = match scope(snapshot, params, context) {
         Ok(scope) => scope,
         Err((code, message)) => return error(snapshot, code, message, None),
     };
@@ -1086,6 +1175,7 @@ fn surface_respawn(
 fn surface_close(
     snapshot: &AppSessionSnapshot,
     params: &Map<String, Value>,
+    context: &LifecycleDispatchContext,
 ) -> LifecycleTransition {
     let mut model = match SurfaceLifecycleModel::from_app_session(snapshot) {
         Ok(model) => model,
@@ -1103,7 +1193,7 @@ fn surface_close(
         .and_then(Value::as_str)
         .map(str::to_owned)
         .or_else(|| {
-            scope(snapshot, params).ok().and_then(|scope| {
+            scope(snapshot, params, context).ok().and_then(|scope| {
                 model
                     .focused_surface(&scope.workspace_id)
                     .map(str::to_owned)
@@ -1199,7 +1289,11 @@ fn surface_focus(
     )
 }
 
-fn surface_move(snapshot: &AppSessionSnapshot, params: &Map<String, Value>) -> LifecycleTransition {
+fn surface_move(
+    snapshot: &AppSessionSnapshot,
+    params: &Map<String, Value>,
+    context: &LifecycleDispatchContext,
+) -> LifecycleTransition {
     let Some(surface_id) = params.get("surface_id").and_then(Value::as_str) else {
         return error(
             snapshot,
@@ -1227,7 +1321,9 @@ fn surface_move(snapshot: &AppSessionSnapshot, params: &Map<String, Value>) -> L
             Some(json!({"surface_id":surface_id})),
         );
     }
-    let destination_scope = match scope(snapshot, params) {
+    let mut destination_params = params.clone();
+    destination_params.remove("surface_id");
+    let destination_scope = match scope(snapshot, &destination_params, context) {
         Ok(scope) => scope,
         Err((code, message)) => return error(snapshot, code, message, None),
     };
@@ -1319,7 +1415,7 @@ fn pane_resize(
     context: &LifecycleDispatchContext,
 ) -> LifecycleTransition {
     let absolute = params.contains_key("absolute_axis") || params.contains_key("target_pixels");
-    let scope = match scope(snapshot, params) {
+    let scope = match scope(snapshot, params, context) {
         Ok(scope) => scope,
         Err((code, message)) => return error(snapshot, code, message, None),
     };
@@ -1419,7 +1515,7 @@ fn pane_create(
     snapshot: &AppSessionSnapshot,
     method: &str,
     params: &Map<String, Value>,
-    _context: &LifecycleDispatchContext,
+    context: &LifecycleDispatchContext,
 ) -> LifecycleTransition {
     let (orientation, insert_first) = match params
         .get("direction")
@@ -1447,7 +1543,7 @@ fn pane_create(
             )
         }
     };
-    let scope = match scope(snapshot, params) {
+    let scope = match scope(snapshot, params, context) {
         Ok(scope) => scope,
         Err((code, message)) => return error(snapshot, code, message, None),
     };
@@ -1469,6 +1565,10 @@ fn pane_create(
             vec![],
             vec![LifecycleEffect::RemoteCreate {
                 remote_session_id: remote,
+                destination: workspace_value["remote"]["destination"]
+                    .as_str()
+                    .unwrap_or("remote")
+                    .to_owned(),
                 kind: "terminal".into(),
             }],
         );
@@ -1522,9 +1622,7 @@ fn pane_create(
     }
     let mut model = match SurfaceLifecycleModel::from_app_session(&next) {
         Ok(model) => model,
-        Err(problem) => {
-            #[cfg(test)]
-            eprintln!("pane create model error: {problem}");
+        Err(_) => {
             return error(snapshot, "internal_error", "Failed to create pane", None);
         }
     };
@@ -1536,9 +1634,7 @@ fn pane_create(
     } else {
         match model.replace_kind(&surface_id, kind.clone()) {
             Ok(value) => value.generation,
-            Err(problem) => {
-                #[cfg(test)]
-                eprintln!("pane create kind error: {problem}");
+            Err(_) => {
                 return error(snapshot, "internal_error", "Failed to create pane", None);
             }
         }

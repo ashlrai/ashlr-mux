@@ -149,6 +149,7 @@ fn context() -> LifecycleDispatchContext {
         viewport_size: Some((1_000.0, 800.0)),
         browser_enabled: true,
         dock_available: true,
+        active_window_id: None,
     }
 }
 
@@ -521,11 +522,7 @@ fn current_and_list_run_through_shared_dispatch_without_focus_side_effects() {
 fn surface_focus_requires_an_identity_and_commits_workspace_focus() {
     let snapshot = mixed_surface_snapshot();
     let invalid = transition(&snapshot, "surface.focus", json!({}));
-    assert_error(
-        &invalid,
-        "invalid_params",
-        "Missing or invalid surface_id",
-    );
+    assert_error(&invalid, "invalid_params", "Missing or invalid surface_id");
     assert!(!invalid.changed);
 
     let focused = transition(

@@ -223,8 +223,32 @@ pub fn terminal_open(
     initial_input: Option<String>,
     environment: Option<BTreeMap<String, String>>,
 ) -> Result<u32, String> {
+    terminal_open_for_control(
+        &app,
+        state.inner(),
+        panel_id.as_deref(),
+        cwd.as_deref(),
+        initial_command.as_deref(),
+        initial_input.as_deref(),
+        environment,
+        cols,
+        rows,
+    )
+}
+
+pub(crate) fn terminal_open_for_control(
+    app: &AppHandle,
+    state: &TerminalState,
+    panel_id: Option<&str>,
+    cwd: Option<&str>,
+    initial_command: Option<&str>,
+    initial_input: Option<&str>,
+    environment: Option<BTreeMap<String, String>>,
+    cols: Option<u16>,
+    rows: Option<u16>,
+) -> Result<u32, String> {
     let size = ConPtySize::new(cols.unwrap_or(80).max(1), rows.unwrap_or(24).max(1));
-    let command = default_shell_command(cwd.as_deref(), initial_command.as_deref(), environment);
+    let command = default_shell_command(cwd, initial_command, environment);
 
     let pty = ConPty::spawn(&command, size).map_err(|e| e.to_string())?;
     // Clone the reader before taking the writer; both are independent handles
@@ -273,6 +297,71 @@ pub fn terminal_open(
         );
 
     Ok(id)
+}
+
+pub(crate) fn terminal_close_panel_for_control(
+    state: &TerminalState,
+    panel_id: &str,
+) -> Result<bool, String> {
+    let removed = {
+        let mut sessions = state
+            .sessions
+            .lock()
+            .expect("terminal sessions mutex poisoned");
+        let id = sessions.iter().find_map(|(id, session)| {
+            (session.panel_id.as_deref() == Some(panel_id)).then_some(*id)
+        });
+        id.and_then(|id| sessions.remove(&id))
+    };
+    if let Some(mut session) = removed {
+        session.pty.kill().map_err(|error| error.to_string())?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+pub(crate) fn terminal_close_id_for_control(
+    state: &TerminalState,
+    id: u32,
+) -> Result<bool, String> {
+    let removed = state
+        .sessions
+        .lock()
+        .expect("terminal sessions mutex poisoned")
+        .remove(&id);
+    if let Some(mut session) = removed {
+        session.pty.kill().map_err(|error| error.to_string())?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+pub(crate) fn terminal_close_panel_except_for_control(
+    state: &TerminalState,
+    panel_id: &str,
+    keep_id: u32,
+) -> Result<(), String> {
+    let removed = {
+        let mut sessions = state
+            .sessions
+            .lock()
+            .expect("terminal sessions mutex poisoned");
+        let ids = sessions
+            .iter()
+            .filter_map(|(id, session)| {
+                (*id != keep_id && session.panel_id.as_deref() == Some(panel_id)).then_some(*id)
+            })
+            .collect::<Vec<_>>();
+        ids.into_iter()
+            .filter_map(|id| sessions.remove(&id))
+            .collect::<Vec<_>>()
+    };
+    for mut session in removed {
+        session.pty.kill().map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 /// Write keystrokes (xterm `onData`) into a session's shell.

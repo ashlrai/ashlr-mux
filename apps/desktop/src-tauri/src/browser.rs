@@ -251,6 +251,31 @@ pub fn browser_close_webview(
     child.webview.close().map_err(|error| error.to_string())
 }
 
+pub(crate) fn browser_close_webview_for_control(
+    state: &BrowserWebviewState,
+    panel_id: &str,
+) -> Result<(), String> {
+    let Some(child) = state
+        .webviews
+        .lock()
+        .map_err(|_| "browser webview state lock poisoned".to_string())?
+        .remove(panel_id)
+    else {
+        return Ok(());
+    };
+    state
+        .network_records
+        .lock()
+        .map_err(|_| "browser network record state lock poisoned".to_string())?
+        .remove(panel_id);
+    state
+        .init_scripts
+        .lock()
+        .map_err(|_| "browser init script state lock poisoned".to_string())?
+        .remove(panel_id);
+    child.webview.close().map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 pub fn browser_webview_command(
     state: State<'_, BrowserWebviewState>,

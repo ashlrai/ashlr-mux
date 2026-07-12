@@ -3088,6 +3088,81 @@ pub(crate) fn current_session_snapshot(state: &SessionState) -> AppSessionSnapsh
     guard.clone()
 }
 
+#[cfg(windows)]
+fn replace_file_atomically(staged: &Path, destination: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let staged: Vec<u16> = staged.as_os_str().encode_wide().chain(Some(0)).collect();
+    let destination: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    unsafe {
+        MoveFileExW(
+            PCWSTR(staged.as_ptr()),
+            PCWSTR(destination.as_ptr()),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    }
+    .map_err(|error| error.to_string())
+}
+
+#[cfg(not(windows))]
+fn replace_file_atomically(staged: &Path, destination: &Path) -> Result<(), String> {
+    std::fs::rename(staged, destination).map_err(|error| error.to_string())
+}
+
+/// Atomically publish one already-validated application-wide lifecycle
+/// snapshot. Persistence is prepared and installed before the in-memory
+/// authority changes, so a filesystem failure cannot leave the live model and
+/// restore state describing different topologies.
+pub(crate) fn commit_lifecycle_snapshot_for_control(
+    app: &AppHandle,
+    state: &SessionState,
+    candidate: &AppSessionSnapshot,
+) -> Result<AppSessionSnapshot, String> {
+    cmux_core::surface_lifecycle::SurfaceLifecycleModel::from_app_session(candidate)
+        .and_then(|model| model.validate_indexes())
+        .map_err(|error| error.to_string())?;
+
+    if let Some((current, _)) = session_snapshot_paths(app) {
+        let bytes = serde_json::to_vec_pretty(candidate).map_err(|error| error.to_string())?;
+        let parent = current
+            .parent()
+            .ok_or_else(|| "session snapshot path has no parent".to_string())?;
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        let staged = current.with_extension("json.lifecycle-staged");
+        std::fs::write(&staged, bytes).map_err(|error| error.to_string())?;
+        if let Err(error) = replace_file_atomically(&staged, &current) {
+            let _ = std::fs::remove_file(&staged);
+            return Err(error);
+        }
+    }
+
+    let committed = {
+        let mut guard = state
+            .snapshot
+            .lock()
+            .expect("session snapshot mutex poisoned");
+        *guard = candidate.clone();
+        state
+            .next_panel
+            .fetch_max(next_panel_counter(candidate), Ordering::Relaxed);
+        guard.clone()
+    };
+    record_workspace_focus_history(state, &committed);
+    crate::control_socket::record_session_changed_event(app, &committed);
+    emit_session_changed(app, &committed);
+    crate::window_title::refresh_window_titles(app, &committed);
+    crate::window::emit_window_states(app);
+    Ok(committed)
+}
+
 pub(crate) fn register_window_for_control(
     app: &AppHandle,
     state: &SessionState,
@@ -10097,5 +10172,21 @@ mod tests {
         assert!(json.contains("\"orientation\":\"vertical\""));
         let round: AppSessionSnapshot = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(round, snapshot);
+    }
+
+    #[test]
+    fn lifecycle_snapshot_replace_overwrites_existing_and_preserves_it_on_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let current = directory.path().join("session.json");
+        let staged = directory.path().join("session.staged");
+        std::fs::write(&current, b"old").unwrap();
+        std::fs::write(&staged, b"new").unwrap();
+        replace_file_atomically(&staged, &current).unwrap();
+        assert_eq!(std::fs::read(&current).unwrap(), b"new");
+        assert!(!staged.exists());
+
+        let missing = directory.path().join("missing.staged");
+        assert!(replace_file_atomically(&missing, &current).is_err());
+        assert_eq!(std::fs::read(&current).unwrap(), b"new");
     }
 }
