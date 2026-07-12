@@ -703,6 +703,117 @@ fn explicit_window_or_workspace_suppresses_inappropriate_ambient_tab_context() {
 }
 
 #[test]
+fn numeric_window_or_workspace_suppresses_inappropriate_ambient_tab_context() {
+    let (pipe, request_rx) = spawn_method_server(
+        "numeric-tab-workspace-ambient",
+        HashMap::from([
+            (
+                "workspace.list".into(),
+                json!({"workspaces":[{"index":2,"id":WORKSPACE_ID}]}),
+            ),
+            ("tab.action".into(), json!({"action":"pin"})),
+        ]),
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_cmux"))
+        .args(["tab-action", "pin", "--workspace", "2"])
+        .env("CMUX_SOCKET_PATH", &pipe)
+        .env_remove("CMUX_SOCKET")
+        .env("CMUX_WORKSPACE_ID", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        .env("CMUX_TAB_ID", SURFACE_ID)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        request_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+        ("workspace.list".into(), serde_json::Map::new())
+    );
+    let (method, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(method, "tab.action");
+    assert_eq!(
+        Value::Object(params),
+        json!({"action":"pin", "workspace_id":WORKSPACE_ID, "focus":false})
+    );
+
+    let (pipe, request_rx) = spawn_method_server(
+        "numeric-tab-window-ambient",
+        HashMap::from([
+            (
+                "window.list".into(),
+                json!({"windows":[{"index":2,"id":WINDOW_ID}]}),
+            ),
+            (
+                "workspace.current".into(),
+                json!({"workspace_id":WORKSPACE_ID}),
+            ),
+            ("tab.action".into(), json!({"action":"pin"})),
+        ]),
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_cmux"))
+        .args(["tab-action", "pin", "--window", "2"])
+        .env("CMUX_SOCKET_PATH", &pipe)
+        .env_remove("CMUX_SOCKET")
+        .env("CMUX_WORKSPACE_ID", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        .env("CMUX_TAB_ID", SURFACE_ID)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for expected in ["window.list", "workspace.current", "tab.action"] {
+        let (method, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(method, expected);
+        if method == "tab.action" {
+            assert_eq!(
+                Value::Object(params),
+                json!({
+                    "action":"pin", "window_id":WINDOW_ID,
+                    "workspace_id":WORKSPACE_ID, "focus":false
+                })
+            );
+        }
+    }
+
+    let (pipe, request_rx) = spawn_method_server(
+        "numeric-tab-surface-ambient",
+        HashMap::from([
+            (
+                "surface.list".into(),
+                json!({"surfaces":[
+                    {"index":9,"id":OTHER_SURFACE_ID},
+                    {"index":2,"id":SURFACE_ID}
+                ]}),
+            ),
+            ("tab.action".into(), json!({"action":"pin"})),
+        ]),
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_cmux"))
+        .args(["tab-action", "pin", "--surface", "2"])
+        .env("CMUX_SOCKET_PATH", &pipe)
+        .env_remove("CMUX_SOCKET")
+        .env("CMUX_WORKSPACE_ID", WORKSPACE_ID)
+        .env("CMUX_TAB_ID", OTHER_SURFACE_ID)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let (method, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(method, "surface.list");
+    assert_eq!(Value::Object(params), json!({"workspace_id":WORKSPACE_ID}));
+    let (method, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(method, "tab.action");
+    assert_eq!(params.get("surface_id"), Some(&json!(SURFACE_ID)));
+}
+
+#[test]
 fn tab_action_formats_text_json_and_all_id_modes_exactly() {
     let payload = json!({
         "action":"new_terminal_right",
@@ -1428,4 +1539,43 @@ fn blank_lifecycle_options_suppress_ambient_and_use_frozen_fallbacks() {
     let (_, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
     assert!(params.get("workspace_id").is_none());
     assert_eq!(params.get("surface_id"), Some(&json!(SURFACE_ID)));
+}
+
+#[test]
+fn blank_window_suppresses_ambient_tab_but_preserves_ambient_workspace() {
+    for (tag, args, method) in [
+        (
+            "blank-tab-window-ambient-workspace",
+            vec!["tab-action", "pin", "--window", ""],
+            "tab.action",
+        ),
+        (
+            "blank-respawn-window-ambient-workspace",
+            vec!["respawn-pane", "--window", "", "--command", "echo ok"],
+            "surface.respawn",
+        ),
+    ] {
+        let (pipe, request_rx) = spawn_server(tag, ok(json!({})));
+        let output = Command::new(env!("CARGO_BIN_EXE_cmux"))
+            .args(args)
+            .env("CMUX_SOCKET_PATH", &pipe)
+            .env_remove("CMUX_SOCKET")
+            .env("CMUX_WORKSPACE_ID", WORKSPACE_ID)
+            .env("CMUX_TAB_ID", SURFACE_ID)
+            .env("CMUX_SURFACE_ID", OTHER_SURFACE_ID)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let (actual_method, params) =
+            request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(actual_method, method);
+        assert_eq!(params.get("workspace_id"), Some(&json!(WORKSPACE_ID)));
+        assert!(params.get("surface_id").is_none());
+        assert!(params.get("window_id").is_none());
+        assert!(request_rx.try_recv().is_err());
+    }
 }
