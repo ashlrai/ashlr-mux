@@ -121,7 +121,7 @@ fn change_canvas_frame(snapshot: &mut AppSessionSnapshot) -> bool {
 }
 
 fn noop_canvas_frame(snapshot: &mut AppSessionSnapshot) -> bool {
-    apply_set_canvas_pane_frame(snapshot, "missing", 24, 32, 640, 360)
+    apply_set_canvas_pane_frame(snapshot, " ", 24, 32, 640, 360)
 }
 
 fn change_canvas_action(snapshot: &mut AppSessionSnapshot) -> bool {
@@ -268,10 +268,22 @@ fn command_source<'a>(source: &'a str, command: &str) -> &'a str {
         .find(&format!("pub fn {command}("))
         .unwrap_or_else(|| panic!("missing production command {command}"));
     let tail = &source[start..];
-    let end = tail[1..]
-        .find("\n#[tauri::command]")
-        .map(|offset| offset + 1)
-        .unwrap_or(tail.len());
+    let body_start = tail.find('{').expect("command body");
+    let mut depth = 0usize;
+    let mut end = tail.len();
+    for (offset, character) in tail[body_start..].char_indices() {
+        match character {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = body_start + offset + character.len_utf8();
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
     &tail[..end]
 }
 
