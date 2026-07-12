@@ -150,6 +150,19 @@ impl SessionState {
             publish_snapshot_transaction(&self.snapshot, Some(&expected), &next, &mut operations)?;
         Ok((result, committed))
     }
+
+    pub(crate) fn transact_snapshot_if_changed(
+        &self,
+        app: &AppHandle,
+        mutation: impl FnOnce(&mut AppSessionSnapshot) -> bool,
+    ) -> Result<AppSessionSnapshot, String> {
+        let mut operations = ProductionSnapshotPublicationOperations {
+            app,
+            state: self,
+            derived_events: DerivedEventPolicy::Record,
+        };
+        transact_snapshot_if_changed(&self.snapshot, &mut operations, mutation)
+    }
 }
 
 trait SnapshotPublicationOperations {
@@ -178,6 +191,23 @@ fn publish_snapshot_transaction(
     operations.update_event_baseline(&committed);
     operations.emit(&committed)?;
     Ok(committed)
+}
+
+fn transact_snapshot_if_changed(
+    authority: &GatedSnapshot,
+    operations: &mut impl SnapshotPublicationOperations,
+    mutation: impl FnOnce(&mut AppSessionSnapshot) -> bool,
+) -> Result<AppSessionSnapshot, String> {
+    let _transaction_gate = authority.lock_gate();
+    let current = authority
+        .lock()
+        .map_err(|_| "Session state is unavailable".to_string())?
+        .clone();
+    let mut candidate = current.clone();
+    if !mutation(&mut candidate) {
+        return Ok(current);
+    }
+    publish_snapshot_transaction(authority, Some(&current), &candidate, operations)
 }
 
 /// A snapshot mutex whose guards always participate in the control mutation
@@ -6231,19 +6261,10 @@ pub fn session_set_process_title(
     state: State<'_, SessionState>,
     panel_id: String,
     title: String,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_process_title(&mut guard, &panel_id, &title);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(&app, |snapshot| {
+        apply_set_process_title(snapshot, &panel_id, &title)
+    })
 }
 
 /// Split the pane holding `panel_id` in `orientation`, allocating a fresh panel
@@ -6441,19 +6462,10 @@ pub fn session_toggle_split_zoom(
     app: AppHandle,
     state: State<'_, SessionState>,
     panel_id: String,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_toggle_split_zoom(&mut guard, &panel_id);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(&app, |snapshot| {
+        apply_toggle_split_zoom(snapshot, &panel_id)
+    })
 }
 
 /// Set the active workspace layout mode. `"canvas"` enables freeform canvas
@@ -6464,19 +6476,10 @@ pub fn session_set_layout_mode(
     app: AppHandle,
     state: State<'_, SessionState>,
     mode: Option<String>,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_layout_mode(&mut guard, mode.as_deref());
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(&app, |snapshot| {
+        apply_set_layout_mode(snapshot, mode.as_deref())
+    })
 }
 
 #[tauri::command]
@@ -6488,19 +6491,10 @@ pub fn session_set_canvas_pane_frame(
     y: i64,
     width: i64,
     height: i64,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_canvas_pane_frame(&mut guard, &panel_id, x, y, width, height);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(&app, |snapshot| {
+        apply_set_canvas_pane_frame(snapshot, &panel_id, x, y, width, height)
+    })
 }
 
 #[tauri::command]
@@ -6509,19 +6503,10 @@ pub fn session_apply_canvas_action(
     state: State<'_, SessionState>,
     action: String,
     pane_gap: Option<i64>,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_canvas_action(&mut guard, &action, pane_gap);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(&app, |snapshot| {
+        apply_canvas_action(snapshot, &action, pane_gap)
+    })
 }
 
 /// Set (or clear) the surface kind of the pane holding `panelId`: `"agent"` for
@@ -6554,19 +6539,10 @@ pub fn session_select_adjacent_panel(
     state: State<'_, SessionState>,
     panel_id: String,
     next: bool,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_select_adjacent_panel(&mut guard, &panel_id, next);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(&app, |snapshot| {
+        apply_select_adjacent_panel(snapshot, &panel_id, next)
+    })
 }
 
 /// Select a workspace by id and focus a panel/tab inside it.
@@ -6586,19 +6562,8 @@ pub fn session_focus_panel(
     app: AppHandle,
     state: State<'_, SessionState>,
     panel_id: String,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_focus_panel(&mut guard, &panel_id);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(&app, |snapshot| apply_focus_panel(snapshot, &panel_id))
 }
 
 pub(crate) fn select_workspace_surface(
