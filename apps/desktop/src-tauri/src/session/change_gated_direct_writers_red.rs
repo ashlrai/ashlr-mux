@@ -301,11 +301,19 @@ fn all_seven_production_commands_route_through_the_shared_fallible_session_state
             "{} did not preserve the required Result<AppSessionSnapshot, String> success shape",
             case.command
         );
-        assert!(
-            compact.contains("state.transact_snapshot_if_changed(&app,"),
-            "{} bypasses SessionState::transact_snapshot_if_changed",
-            case.command
-        );
+        if case.command == "session_select_adjacent_panel" {
+            assert!(
+                compact.contains("select_adjacent_panel_for_control(&app,&state,"),
+                "{} bypasses the shared typed focus-navigation helper",
+                case.command
+            );
+        } else {
+            assert!(
+                compact.contains("state.transact_snapshot_if_changed(&app,"),
+                "{} bypasses SessionState::transact_snapshot_if_changed",
+                case.command
+            );
+        }
         assert!(
             !compact.contains("state.snapshot.lock()"),
             "{} still mutates live authority before persistence",
