@@ -7,6 +7,8 @@ use super::pane_surface_lifecycle::{
 use super::*;
 use crate::dock::{DockCreateRequest, DockStore, DockSurfaceKind};
 use std::collections::BTreeMap;
+use std::sync::{mpsc, Arc};
+use std::time::Duration;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct RuntimeRecord {
@@ -143,9 +145,9 @@ impl LifecycleEffectExecutor for ProductionDockFaultHarness {
         result
     }
 
-    fn rollback_staged(&mut self) {
+    fn rollback_staged(&mut self) -> Result<(), Self::Error> {
         let previous = self.previous.take();
-        std::mem::take(&mut self.journal).rollback(|step| {
+        let rollback = std::mem::take(&mut self.journal).rollback(|step| {
             match step {
                 DockRollbackStep::RestoreSnapshot => {
                     self.operation_log.push("restore:previous".into());
@@ -176,10 +178,11 @@ impl LifecycleEffectExecutor for ProductionDockFaultHarness {
             Ok::<_, &'static str>(())
         });
         self.candidate = None;
+        rollback.map_err(|errors| errors.0.into_iter().next().unwrap())
     }
 
-    fn rollback_committed(&mut self) {
-        self.rollback_staged();
+    fn rollback_committed(&mut self) -> Result<(), Self::Error> {
+        self.rollback_staged()
     }
 }
 
@@ -215,6 +218,26 @@ fn stale_snapshot_fence_rejects_intervening_authority_without_clobbering_it() {
         Err("Stale lifecycle transition".into())
     );
     assert_eq!(intervening, preserved);
+}
+
+#[test]
+fn session_control_mutation_gate_serializes_complete_transactions() {
+    let state = Arc::new(SessionState::default());
+    let first = state.lock_control_mutation().unwrap();
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let (acquired_tx, acquired_rx) = mpsc::channel();
+    let contender = Arc::clone(&state);
+    let thread = std::thread::spawn(move || {
+        ready_tx.send(()).unwrap();
+        let _guard = contender.lock_control_mutation().unwrap();
+        acquired_tx.send(()).unwrap();
+    });
+
+    ready_rx.recv().unwrap();
+    assert!(acquired_rx.recv_timeout(Duration::from_millis(50)).is_err());
+    drop(first);
+    acquired_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    thread.join().unwrap();
 }
 
 #[test]
@@ -283,7 +306,7 @@ fn stale_restore_keeps_intervening_authority_and_runtime_inventory_coherent() {
     assert_eq!(publish, Err("injected browser publication failure"));
     assert_ne!(authoritative, candidate);
 
-    journal.rollback(|step| match step {
+    let rollback = journal.rollback(|step| match step {
         DockRollbackStep::RestoreSnapshot => {
             crate::session::ensure_lifecycle_snapshot_current(&authoritative, &candidate)?;
             authoritative = before.clone();
@@ -295,6 +318,10 @@ fn stale_restore_keeps_intervening_authority_and_runtime_inventory_coherent() {
         }
         DockRollbackStep::RecreateTeardown(_) => unreachable!(),
     });
+    assert!(
+        format!("{rollback:?}").contains("Stale lifecycle transition"),
+        "stale compensation must be observable: {rollback:?}"
+    );
 
     let authoritative_has_surface =
         cmux_core::surface_lifecycle::SurfaceLifecycleModel::from_app_session(&authoritative)

@@ -1136,6 +1136,17 @@ impl cmux_ipc::ControlRequestHandler for DesktopControlHandler {
 }
 
 fn handle_control_request(app: &AppHandle, mut request: ControlRequest) -> ControlCallResult {
+    let session_state = app.state::<SessionState>();
+    let _control_guard = match session_state.lock_control_mutation() {
+        Ok(guard) => guard,
+        Err(message) => {
+            return ControlCallResult::Err {
+                code: "internal_error".into(),
+                message,
+                data: None,
+            }
+        }
+    };
     if request.method.starts_with("workspace.") && request.params.contains_key("window") {
         return ControlCallResult::Err {
             code: "invalid_params".to_string(),
@@ -1524,6 +1535,16 @@ enum DockRollbackStep<C, T> {
     RecreateTeardown(T),
 }
 
+#[derive(Debug)]
+struct DockRollbackErrors<E>(Vec<E>);
+
+impl<E: std::fmt::Display> std::fmt::Display for DockRollbackErrors<E> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let messages = self.0.iter().map(ToString::to_string).collect::<Vec<_>>();
+        write!(formatter, "{}", messages.join("; "))
+    }
+}
+
 impl<C, T> Default for DockCommitJournal<C, T> {
     fn default() -> Self {
         Self {
@@ -1556,15 +1577,30 @@ impl<C, T> DockCommitJournal<C, T> {
         Ok(())
     }
 
-    fn rollback<E>(mut self, mut apply: impl FnMut(DockRollbackStep<C, T>) -> Result<(), E>) {
+    fn rollback<E>(
+        mut self,
+        mut apply: impl FnMut(DockRollbackStep<C, T>) -> Result<(), E>,
+    ) -> Result<(), DockRollbackErrors<E>> {
         if self.snapshot_committed {
-            let _ = apply(DockRollbackStep::RestoreSnapshot);
+            if let Err(error) = apply(DockRollbackStep::RestoreSnapshot) {
+                return Err(DockRollbackErrors(vec![error]));
+            }
         }
+        let mut errors = Vec::new();
         for claim in self.claims.drain(..) {
-            let _ = apply(DockRollbackStep::RollbackClaim(claim));
+            if let Err(error) = apply(DockRollbackStep::RollbackClaim(claim)) {
+                errors.push(error);
+            }
         }
         for teardown in self.teardowns.drain(..).rev() {
-            let _ = apply(DockRollbackStep::RecreateTeardown(teardown));
+            if let Err(error) = apply(DockRollbackStep::RecreateTeardown(teardown)) {
+                errors.push(error);
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(DockRollbackErrors(errors))
         }
     }
 
@@ -1643,17 +1679,21 @@ impl ProductionLifecycleExecutor<'_> {
         };
         let claim = stage_runtime_for_control(app, &compensation.owner_id, &operation)?;
         if let Err(error) = publish_runtime_claim(app, &claim) {
-            rollback_runtime_claim(app, claim);
-            return Err(error);
+            return match rollback_runtime_claim(app, claim) {
+                Ok(()) => Err(error),
+                Err(rollback_error) => Err(format!(
+                    "{error}; failed to roll back replacement runtime: {rollback_error}"
+                )),
+            };
         }
         Ok(())
     }
 
-    fn rollback_resources(&mut self) {
+    fn rollback_resources(&mut self) -> Result<(), String> {
         let app = self.app;
         let previous = self.previous.take();
         let candidate = self.candidate.clone();
-        std::mem::take(&mut self.dock_journal).rollback(|step| match step {
+        let dock_rollback = std::mem::take(&mut self.dock_journal).rollback(|step| match step {
             DockRollbackStep::RestoreSnapshot => {
                 let previous = previous
                     .as_ref()
@@ -1670,10 +1710,7 @@ impl ProductionLifecycleExecutor<'_> {
                 )
                 .map(|_| ())
             }
-            DockRollbackStep::RollbackClaim(claim) => {
-                rollback_runtime_claim(app, claim);
-                Ok(())
-            }
+            DockRollbackStep::RollbackClaim(claim) => rollback_runtime_claim(app, claim),
             DockRollbackStep::RecreateTeardown(teardown) => {
                 Self::compensate_dock_teardown(app, teardown)
             }
@@ -1697,6 +1734,7 @@ impl ProductionLifecycleExecutor<'_> {
         }
         self.staged.clear();
         self.candidate = None;
+        dock_rollback.map_err(|errors| format!("Lifecycle rollback failed: {errors}"))
     }
 }
 
@@ -1980,12 +2018,12 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
         Ok(())
     }
 
-    fn rollback_staged(&mut self) {
-        self.rollback_resources();
+    fn rollback_staged(&mut self) -> Result<(), Self::Error> {
+        self.rollback_resources()
     }
 
-    fn rollback_committed(&mut self) {
-        self.rollback_resources();
+    fn rollback_committed(&mut self) -> Result<(), Self::Error> {
+        self.rollback_resources()
     }
 }
 
@@ -2060,6 +2098,12 @@ fn handle_pane_surface_lifecycle_request(
                         message,
                         data: external_url
                             .and_then(|url| JsonValue::try_from(json!({"url":url})).ok()),
+                    }
+                } else if message.starts_with("Lifecycle rollback failed:") {
+                    ControlCallResult::Err {
+                        code: "internal_error".into(),
+                        message,
+                        data: None,
                     }
                 } else {
                     let (code, mapped_message) = lifecycle_failure
@@ -18100,13 +18144,15 @@ mod tests {
                 Err("injected post-stage commit failure")
             }
 
-            fn rollback_staged(&mut self) {
+            fn rollback_staged(&mut self) -> Result<(), Self::Error> {
                 self.staged = 0;
+                Ok(())
             }
 
-            fn rollback_committed(&mut self) {
+            fn rollback_committed(&mut self) -> Result<(), Self::Error> {
                 self.compensated += self.staged;
                 self.staged = 0;
+                Ok(())
             }
         }
 

@@ -908,17 +908,18 @@ pub(crate) fn publish_runtime_claim(
     Ok(())
 }
 
-pub(crate) fn rollback_runtime_claim(app: &AppHandle, claim: DockRuntimeClaim) {
+pub(crate) fn rollback_runtime_claim(
+    app: &AppHandle,
+    claim: DockRuntimeClaim,
+) -> Result<(), String> {
     match claim {
         DockRuntimeClaim::Terminal { id } => {
-            let _ = terminal_close_id_for_control(app.state::<TerminalState>().inner(), id);
+            terminal_close_id_for_control(app.state::<TerminalState>().inner(), id).map(|_| ())
         }
-        DockRuntimeClaim::Browser { surface_id, .. } => {
-            let _ = browser_close_webview_for_control(
-                app.state::<BrowserWebviewState>().inner(),
-                &surface_id,
-            );
-        }
+        DockRuntimeClaim::Browser { surface_id, .. } => browser_close_webview_for_control(
+            app.state::<BrowserWebviewState>().inner(),
+            &surface_id,
+        ),
     }
 }
 
@@ -992,7 +993,7 @@ impl DockRuntimeEffects for ProductionDockRuntime<'_> {
 
     fn rollback_staged(&mut self) {
         if let Some(claim) = self.staged.take() {
-            rollback_runtime_claim(self.app, claim);
+            let _ = rollback_runtime_claim(self.app, claim);
         }
     }
 

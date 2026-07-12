@@ -267,9 +267,10 @@ impl LifecycleEffectExecutor for RecordingExecutor {
         Ok(())
     }
 
-    fn rollback_staged(&mut self) {
+    fn rollback_staged(&mut self) -> Result<(), Self::Error> {
         self.rollback_count += 1;
         self.staged.clear();
+        Ok(())
     }
 }
 

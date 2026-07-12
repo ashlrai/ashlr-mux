@@ -52,6 +52,10 @@ const FIRST_PANEL_ID: &str = "surface-1";
 /// Managed Tauri state: the authoritative session snapshot + a monotonic panel
 /// id counter so every new pane gets a unique, stable id.
 pub struct SessionState {
+    /// Serializes complete named-pipe control requests with direct Dock
+    /// transactions. Legacy Tauri commands that mutate `snapshot` directly
+    /// remain outside this gate and require a separate writer audit.
+    control_mutation_gate: Mutex<()>,
     snapshot: Mutex<AppSessionSnapshot>,
     next_panel: AtomicU64,
     closed_browser_tabs: Mutex<Vec<ClosedBrowserTabSnapshot>>,
@@ -66,6 +70,7 @@ impl Default for SessionState {
         let snapshot = initial_snapshot(FIRST_PANEL_ID);
         let workspace_focus_history = workspace_focus_history_for_snapshot(&snapshot);
         Self {
+            control_mutation_gate: Mutex::new(()),
             snapshot: Mutex::new(snapshot),
             next_panel: AtomicU64::new(2),
             closed_browser_tabs: Mutex::new(Vec::new()),
@@ -78,6 +83,12 @@ impl Default for SessionState {
 }
 
 impl SessionState {
+    pub(crate) fn lock_control_mutation(&self) -> Result<std::sync::MutexGuard<'_, ()>, String> {
+        self.control_mutation_gate
+            .lock()
+            .map_err(|_| "Session control mutation gate is unavailable".to_string())
+    }
+
     pub(crate) fn snapshot_for_lifecycle(&self) -> Result<AppSessionSnapshot, String> {
         self.snapshot
             .lock()
@@ -90,6 +101,7 @@ impl SessionState {
         app: &AppHandle,
         mutation: impl FnOnce(&mut AppSessionSnapshot) -> Result<R, String>,
     ) -> Result<R, String> {
+        let _control_guard = self.lock_control_mutation()?;
         let mut snapshot = self
             .snapshot
             .lock()

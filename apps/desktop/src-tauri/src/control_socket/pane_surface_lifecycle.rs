@@ -128,10 +128,10 @@ pub(super) trait LifecycleEffectExecutor {
     /// effect has staged successfully.
     fn stage(&mut self, effect: &LifecycleEffect) -> Result<(), Self::Error>;
     fn commit_staged(&mut self) -> Result<(), Self::Error>;
-    fn rollback_staged(&mut self);
+    fn rollback_staged(&mut self) -> Result<(), Self::Error>;
 
-    fn rollback_committed(&mut self) {
-        self.rollback_staged();
+    fn rollback_committed(&mut self) -> Result<(), Self::Error> {
+        self.rollback_staged()
     }
 }
 
@@ -143,13 +143,17 @@ pub(super) fn commit_lifecycle_transition<E: LifecycleEffectExecutor>(
     executor.prepare_transition(&transition.snapshot)?;
     for effect in &transition.effects {
         if let Err(error) = executor.stage(effect) {
-            executor.rollback_staged();
-            return Err(error);
+            return match executor.rollback_staged() {
+                Ok(()) => Err(error),
+                Err(rollback_error) => Err(rollback_error),
+            };
         }
     }
     if let Err(error) = executor.commit_staged() {
-        executor.rollback_committed();
-        return Err(error);
+        return match executor.rollback_committed() {
+            Ok(()) => Err(error),
+            Err(rollback_error) => Err(rollback_error),
+        };
     }
     if transition.changed {
         *target = transition.snapshot;
