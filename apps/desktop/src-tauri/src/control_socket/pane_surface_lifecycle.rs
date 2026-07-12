@@ -1871,9 +1871,14 @@ fn apply_create_right_action(
             source_record.terminal_startup.working_directory.as_deref(),
             workspace.current_directory.as_deref(),
         );
-        if workspace.remote.as_ref().is_some_and(|remote| {
-            remote.enabled && remote.connected && remote.transport.as_deref() == Some("tmux")
-        }) {
+        let remote_tmux = workspace
+            .remote
+            .as_ref()
+            .filter(|remote| remote.enabled && remote.transport.as_deref() == Some("tmux"));
+        if let Some(remote_tmux) = remote_tmux {
+            if !remote_tmux.connected {
+                return error(snapshot, "internal_error", "Failed to create tab", None);
+            }
             let focused = super::bool_param(params, &["focus"]).unwrap_or(false);
             let source_remote_pane_id = match &source_record.kind {
                 SessionSurfaceKindSnapshot::RemoteTerminal {
@@ -1890,16 +1895,14 @@ fn apply_create_right_action(
                     .then(|| source_record.metadata.reported_directory.clone())
                     .flatten()
             });
-            let destination = workspace
-                .remote
-                .as_ref()
-                .and_then(|remote| remote.destination.clone())
+            let destination = remote_tmux
+                .destination
+                .clone()
                 .unwrap_or_else(|| "remote".into());
             effects.push(LifecycleEffect::RemoteCreate {
-                remote_session_id: workspace
-                    .remote
-                    .as_ref()
-                    .and_then(|remote| remote.persistent_daemon_slot.clone())
+                remote_session_id: remote_tmux
+                    .persistent_daemon_slot
+                    .clone()
                     .unwrap_or_else(|| destination.clone()),
                 destination,
                 window_id: owner.window_id.clone(),
