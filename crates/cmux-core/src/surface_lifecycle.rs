@@ -1019,6 +1019,15 @@ impl SurfaceLifecycleModel {
         Ok(merged)
     }
 
+    /// Explicitly named compatibility constructor used by desktop lifecycle
+    /// callers to distinguish the application-wide authority from the
+    /// single-window session constructor.
+    pub fn from_app_session_snapshot(
+        snapshot: &AppSessionSnapshot,
+    ) -> Result<Self, LifecycleError> {
+        Self::from_app_session(snapshot)
+    }
+
     fn merge(&mut self, other: Self) -> Result<(), LifecycleError> {
         for (id, pane) in other.panes {
             if self.panes.insert(id.clone(), pane).is_some() {

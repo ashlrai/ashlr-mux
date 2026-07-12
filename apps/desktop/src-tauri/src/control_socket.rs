@@ -21,6 +21,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+mod pane_surface_lifecycle;
+
 use crate::browser::{
     browser_add_init_script_for_control, browser_attach_webview_for_control,
     browser_clear_network_requests_for_control, browser_eval_for_control,
@@ -942,6 +944,11 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "workspace.group.set_collapsed",
     "workspace_group.set_collapsed",
     "surface.list",
+    "surface.current",
+    "surface.create",
+    "surface.action",
+    "surface.report_pwd",
+    "surface.respawn",
     "surface.split",
     "surface.new_terminal_tab",
     "surface.new_tab",
@@ -987,6 +994,7 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "surface.previous",
     "surface.toggle_split_zoom",
     "pane.swap",
+    "pane.create",
     "pane.focus",
     "pane.list",
     "pane.surfaces",
@@ -1091,6 +1099,23 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "debug.browser.attach_webview",
     "debug.terminals",
 ];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ControlRequestRoute {
+    PaneSurfaceLifecycle,
+    Legacy,
+}
+
+fn control_request_route_for_method(method: &str) -> ControlRequestRoute {
+    match method {
+        "pane.create" | "pane.resize" | "pane.focus" | "surface.action" | "surface.create"
+        | "surface.current" | "surface.list" | "surface.report_pwd" | "surface.respawn"
+        | "surface.close" | "surface.focus" | "surface.move" | "surface.split" => {
+            ControlRequestRoute::PaneSurfaceLifecycle
+        }
+        _ => ControlRequestRoute::Legacy,
+    }
+}
 
 impl cmux_ipc::ControlRequestHandler for DesktopControlHandler {
     fn handle(&mut self, request: ControlRequest) -> ControlCallResult {
