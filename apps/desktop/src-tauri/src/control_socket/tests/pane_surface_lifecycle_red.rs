@@ -1226,6 +1226,7 @@ fn remote_window_arrival_inserts_a_tab_right_of_non_last_source_without_a_pane_e
         "%42",
         1,
         "surface-terminal",
+        false,
     );
     assert_eq!(
         runtime_arrival_event_semantics(&arrival),
@@ -1249,6 +1250,26 @@ fn remote_window_arrival_inserts_a_tab_right_of_non_last_source_without_a_pane_e
     assert_eq!(
         model.owner_of_surface("surface-observed").unwrap().pane_id,
         "pane-mixed"
+    );
+
+    let focused = reconcile_runtime_arrival(
+        &snapshot,
+        RuntimeArrival::remote_tab(
+            "window-1",
+            "workspace-1",
+            "pane-mixed",
+            "surface-focused",
+            "%43",
+            1,
+            "surface-terminal",
+            true,
+        ),
+    );
+    assert_eq!(
+        focused.snapshot.windows[0].tab_manager.workspaces[0]
+            .focused_panel_id
+            .as_deref(),
+        Some("surface-focused")
     );
 }
 

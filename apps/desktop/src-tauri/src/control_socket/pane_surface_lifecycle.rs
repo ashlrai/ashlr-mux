@@ -103,9 +103,20 @@ pub(super) enum LifecycleEffect {
         workspace_id: String,
         target_pane_id: Option<String>,
         source_surface_id: Option<String>,
+        source_remote_pane_id: Option<String>,
         kind: String,
         tmux_operation: &'static str,
         arrival_policy: &'static str,
+        focus: bool,
+        focus_mode: &'static str,
+        placement: &'static str,
+        working_directory: Option<String>,
+        working_directory_source_surface_id: Option<String>,
+        observation_source: &'static str,
+        observation_phase: &'static str,
+        pending_reconciliation: bool,
+        observation_failure_policy: &'static str,
+        commit_failure_policy: &'static str,
         failure_code: &'static str,
         failure_message: &'static str,
     },
@@ -199,6 +210,7 @@ pub(crate) struct RuntimeArrival {
     pub generation: u64,
     pub creates_pane: bool,
     pub anchor_surface_id: Option<String>,
+    pub focused: bool,
 }
 
 impl RuntimeArrival {
@@ -219,6 +231,7 @@ impl RuntimeArrival {
             generation,
             creates_pane: true,
             anchor_surface_id: None,
+            focused: false,
         }
     }
 
@@ -230,6 +243,7 @@ impl RuntimeArrival {
         remote_session_id: impl Into<String>,
         generation: u64,
         anchor_surface_id: impl Into<String>,
+        focused: bool,
     ) -> Self {
         Self {
             window_id: window_id.into(),
@@ -240,6 +254,7 @@ impl RuntimeArrival {
             generation,
             creates_pane: false,
             anchor_surface_id: Some(anchor_surface_id.into()),
+            focused,
         }
     }
 }
@@ -399,6 +414,11 @@ pub(super) fn reconcile_runtime_arrival(
                 snapshot: snapshot.clone(),
             };
         }
+        if arrival.focused && model.focus_surface(&arrival.surface_id).is_err() {
+            return RuntimeReconciliation {
+                snapshot: snapshot.clone(),
+            };
+        }
     }
     let Ok(projected) = model.to_app_session(&next) else {
         return RuntimeReconciliation {
@@ -416,7 +436,7 @@ pub(super) fn dispatch_lifecycle_request(
     params: &Map<String, Value>,
     context: &LifecycleDispatchContext,
 ) -> LifecycleTransition {
-    match method {
+    let mut transition = match method {
         "surface.current" => surface_current(snapshot, params, context),
         "surface.list" => surface_list(snapshot, params, context),
         "surface.create" => surface_create(snapshot, params, context),
@@ -435,7 +455,9 @@ pub(super) fn dispatch_lifecycle_request(
             "Unknown lifecycle method",
             None,
         ),
-    }
+    };
+    transition.changed = transition.snapshot != *snapshot;
+    transition
 }
 
 fn json_result(value: Value) -> ControlCallResult {
@@ -1818,6 +1840,22 @@ fn apply_create_right_action(
             .as_ref()
             .is_some_and(|remote| remote.connected && remote.transport.as_deref() == Some("tmux"))
         {
+            let focused = super::bool_param(params, &["focus"]).unwrap_or(false);
+            let source_remote_pane_id = match &source_record.kind {
+                SessionSurfaceKindSnapshot::RemoteTerminal {
+                    remote_session_id, ..
+                } => remote_session_id.clone(),
+                _ => None,
+            };
+            let working_directory = source_remote_pane_id.as_ref().and_then(|_| {
+                source_record
+                    .metadata
+                    .directory_provenance
+                    .as_deref()
+                    .is_some_and(|source| source == "remote_report")
+                    .then(|| source_record.metadata.reported_directory.clone())
+                    .flatten()
+            });
             let destination = workspace
                 .remote
                 .as_ref()
@@ -1834,9 +1872,26 @@ fn apply_create_right_action(
                 workspace_id: owner.workspace_id.clone(),
                 target_pane_id: Some(owner.pane_id.clone()),
                 source_surface_id: Some(surface_id.to_string()),
+                source_remote_pane_id: source_remote_pane_id.clone(),
                 kind: "terminal".into(),
                 tmux_operation: "new-window",
                 arrival_policy: "runtime-window-add",
+                focus: focused,
+                focus_mode: if focused { "focused" } else { "background" },
+                placement: if source_remote_pane_id.is_some() {
+                    "after-source-window"
+                } else {
+                    "end"
+                },
+                working_directory: working_directory.clone(),
+                working_directory_source_surface_id: working_directory
+                    .as_ref()
+                    .map(|_| surface_id.to_string()),
+                observation_source: "tmux-new-window-output",
+                observation_phase: "after-action-completion",
+                pending_reconciliation: true,
+                observation_failure_policy: "retain-pending-and-report",
+                commit_failure_policy: "retain-pending-and-retry",
                 failure_code: "internal_error",
                 failure_message: "Failed to create tab",
             });
@@ -2162,6 +2217,9 @@ fn surface_action(
     if snapshot.windows.is_empty() {
         return error(snapshot, "unavailable", "TabManager not available", None);
     }
+    if action.is_empty() {
+        return error(snapshot, "invalid_params", "Missing action", None);
+    }
     let scope = match scope(snapshot, params, context) {
         Ok(scope) => scope,
         Err((code, message)) => return error(snapshot, code, message, None),
@@ -2204,9 +2262,6 @@ fn surface_action(
         Ok(target) => target,
         Err((code, message, data)) => return error(snapshot, code, message, data),
     };
-    if action.is_empty() {
-        return error(snapshot, "invalid_params", "Missing action", None);
-    }
     if !SUPPORTED_SURFACE_ACTIONS.contains(&action_kind.as_str()) {
         return error(
             snapshot,
@@ -3099,9 +3154,23 @@ fn pane_create(
                 workspace_id: scope.workspace_id,
                 target_pane_id: None,
                 source_surface_id: None,
+                source_remote_pane_id: None,
                 kind: "terminal".into(),
                 tmux_operation: "split-window",
                 arrival_policy: "runtime-pane-add",
+                focus: params
+                    .get("focus")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                focus_mode: "split",
+                placement: "split",
+                working_directory: None,
+                working_directory_source_surface_id: None,
+                observation_source: "tmux-split-window-output",
+                observation_phase: "commit",
+                pending_reconciliation: true,
+                observation_failure_policy: "fail-action",
+                commit_failure_policy: "rollback",
                 failure_code: "internal_error",
                 failure_message: "Failed to create pane",
             }],

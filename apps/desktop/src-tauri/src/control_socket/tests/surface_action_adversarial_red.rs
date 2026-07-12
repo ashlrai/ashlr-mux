@@ -253,6 +253,11 @@ fn remote_action_snapshot() -> AppSessionSnapshot {
         .iter_mut()
         .find(|row| row.surface_id == A)
         .unwrap();
+    source.kind = SessionSurfaceKindSnapshot::RemoteTerminal {
+        remote_session_id: Some("%source".into()),
+        remote_context: None,
+        arrival_generation: Some(1),
+    };
     source.metadata.reported_directory = Some("/srv/repo with spaces".into());
     source.metadata.directory_provenance = Some("remote_report".into());
     let mut encoded = serde_json::to_value(&snapshot).unwrap();
@@ -311,6 +316,28 @@ fn remote_new_window_plan_preserves_focus_placement_and_confirmed_source_cwd() {
 }
 
 #[test]
+fn remote_new_window_local_bootstrap_source_falls_back_to_end_without_cwd() {
+    let mut snapshot = remote_action_snapshot();
+    let source = snapshot.windows[0].tab_manager.workspaces[0]
+        .surfaces
+        .as_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|row| row.surface_id == A)
+        .unwrap();
+    source.kind = SessionSurfaceKindSnapshot::Terminal;
+    let transition = dispatch(
+        &snapshot,
+        json!({"surface_id": A, "action": "new-terminal-right"}),
+    );
+    let remote = serialized_effect(&transition, "RemoteCreate");
+    assert_eq!(remote["placement"], "end");
+    assert_eq!(remote["source_remote_pane_id"], Value::Null);
+    assert_eq!(remote["working_directory"], Value::Null);
+    assert_eq!(remote["working_directory_source_surface_id"], Value::Null);
+}
+
+#[test]
 fn remote_window_arrival_plan_uses_authoritative_notification_and_retains_failures() {
     let transition = dispatch(
         &remote_action_snapshot(),
@@ -321,6 +348,7 @@ fn remote_window_arrival_plan_uses_authoritative_notification_and_retains_failur
         json!({
             "arrival_policy": remote["arrival_policy"],
             "observation_source": remote["observation_source"],
+            "observation_phase": remote["observation_phase"],
             "pending_reconciliation": remote["pending_reconciliation"],
             "observation_failure_policy": remote["observation_failure_policy"],
             "commit_failure_policy": remote["commit_failure_policy"],
@@ -330,6 +358,7 @@ fn remote_window_arrival_plan_uses_authoritative_notification_and_retains_failur
         json!({
             "arrival_policy": "runtime-window-add",
             "observation_source": "tmux-new-window-output",
+            "observation_phase": "after-action-completion",
             "pending_reconciliation": true,
             "observation_failure_policy": "retain-pending-and-report",
             "commit_failure_policy": "retain-pending-and-retry",
