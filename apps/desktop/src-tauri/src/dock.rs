@@ -793,7 +793,7 @@ trait DockRuntimeEffects {
         operation: &DockRuntimeOperation,
     ) -> Result<(), String>;
     fn publish_staged(&mut self) -> Result<(), String>;
-    fn rollback_staged(&mut self);
+    fn rollback_staged(&mut self) -> Result<(), String>;
     fn teardown(&mut self, operation: &DockRuntimeOperation) -> Result<(), String>;
 }
 
@@ -806,9 +806,13 @@ fn create_with_runtime(
 ) -> Result<DockCreateResult, String> {
     store.create_transactionally(snapshot, owner_id, request, |operation| {
         runtime.stage_create(owner_id, operation)?;
-        if let Err(error) = runtime.publish_staged() {
-            runtime.rollback_staged();
-            return Err(error);
+        if let Err(primary) = runtime.publish_staged() {
+            return match runtime.rollback_staged() {
+                Ok(()) => Err(primary),
+                Err(rollback) => Err(format!(
+                    "{primary}; rollback compensation failed: {rollback}"
+                )),
+            };
         }
         Ok(())
     })
@@ -991,10 +995,11 @@ impl DockRuntimeEffects for ProductionDockRuntime<'_> {
         Ok(())
     }
 
-    fn rollback_staged(&mut self) {
+    fn rollback_staged(&mut self) -> Result<(), String> {
         if let Some(claim) = self.staged.take() {
-            let _ = rollback_runtime_claim(self.app, claim);
+            rollback_runtime_claim(self.app, claim)?;
         }
+        Ok(())
     }
 
     fn teardown(&mut self, operation: &DockRuntimeOperation) -> Result<(), String> {
@@ -1034,13 +1039,9 @@ pub(crate) fn dock_create(
         app: &app,
         staged: None,
     };
-    let transaction = session.transact_lifecycle(&app, |snapshot| {
+    session.transact_lifecycle(&app, |snapshot| {
         create_with_runtime(snapshot, state.inner(), &owner_id, request, &mut runtime).map(|_| ())
-    });
-    if let Err(error) = transaction {
-        runtime.rollback_staged();
-        return Err(error);
-    }
+    })?;
     emit_snapshot(
         &app,
         &session.snapshot_for_lifecycle()?,
@@ -1173,11 +1174,13 @@ mod tests {
             }
         }
 
-        fn rollback_staged(&mut self) {
+        fn rollback_staged(&mut self) -> Result<(), String> {
             self.events.push("rollback".into());
-            if !self.fail_rollback {
-                self.staged_runtime_live = false;
+            if self.fail_rollback {
+                return Err("rollback failed".into());
             }
+            self.staged_runtime_live = false;
+            Ok(())
         }
     }
 

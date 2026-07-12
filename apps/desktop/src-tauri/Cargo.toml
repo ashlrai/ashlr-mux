@@ -51,6 +51,7 @@ time = "0.3"
 tauri-plugin-deep-link = "2.0.0"
 native-tls = "0.2"
 url = "2"
+parking_lot = "0.12"
 
 [dev-dependencies]
 # Temp fixtures for the diff-store / markdown-asset / scheme unit tests.

@@ -57,19 +57,19 @@ impl ProductionDockFaultHarness {
         );
     }
 
-    fn persist_candidate(&mut self) -> Result<(), &'static str> {
+    fn persist_candidate(&mut self) -> Result<(), String> {
         self.operation_log.push("persist:candidate".into());
         if self.fail_persist {
-            return Err("injected Dock persistence failure");
+            return Err("injected Dock persistence failure".into());
         }
         self.authoritative = self.candidate.clone().expect("candidate prepared");
         Ok(())
     }
 
-    fn publish_dock(&mut self, surface_id: &str) -> Result<(), &'static str> {
+    fn publish_dock(&mut self, surface_id: &str) -> Result<(), String> {
         self.operation_log.push(format!("publish:{surface_id}"));
         if self.fail_dock_publish {
-            Err("injected Dock publication failure")
+            Err("injected Dock publication failure".into())
         } else {
             Ok(())
         }
@@ -77,7 +77,7 @@ impl ProductionDockFaultHarness {
 }
 
 impl LifecycleEffectExecutor for ProductionDockFaultHarness {
-    type Error = &'static str;
+    type Error = String;
 
     fn prepare_transition(&mut self, candidate: &AppSessionSnapshot) -> Result<(), Self::Error> {
         self.previous = Some(self.authoritative.clone());
@@ -175,7 +175,7 @@ impl LifecycleEffectExecutor for ProductionDockFaultHarness {
                     self.recreation_log.push(surface_id);
                 }
             }
-            Ok::<_, &'static str>(())
+            Ok::<_, String>(())
         });
         self.candidate = None;
         rollback.map_err(|errors| errors.0.into_iter().next().unwrap())
@@ -224,6 +224,11 @@ fn stale_snapshot_fence_rejects_intervening_authority_without_clobbering_it() {
 fn session_control_mutation_gate_serializes_complete_transactions() {
     let state = Arc::new(SessionState::default());
     let first = state.lock_control_mutation().unwrap();
+    assert_eq!(
+        state.snapshot_for_lifecycle().unwrap().windows.len(),
+        1,
+        "a control request must be able to re-enter the gated snapshot on its thread"
+    );
     let (ready_tx, ready_rx) = mpsc::channel();
     let (acquired_tx, acquired_rx) = mpsc::channel();
     let contender = Arc::clone(&state);
@@ -480,7 +485,7 @@ fn post_persist_dock_publish_failure_restores_authority_and_tears_down_staged_ru
 
     let result = commit_lifecycle_transition(&mut published, created, &mut production);
     let mut violations = Vec::new();
-    if result != Err("injected Dock publication failure") {
+    if result != Err("injected Dock publication failure".to_string()) {
         violations.push(format!("publication failure was swallowed: {result:?}"));
     }
     if production.authoritative != before {
@@ -532,7 +537,7 @@ fn dock_close_persist_failure_recreates_original_runtime_and_keeps_snapshot_unch
 
     let result = commit_lifecycle_transition(&mut published, closed, &mut production);
     let mut violations = Vec::new();
-    if result != Err("injected Dock persistence failure") {
+    if result != Err("injected Dock persistence failure".to_string()) {
         violations.push(format!(
             "persistence failure was not propagated: {result:?}"
         ));

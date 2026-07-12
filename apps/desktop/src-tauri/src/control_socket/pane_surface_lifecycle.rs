@@ -117,7 +117,7 @@ pub(super) struct LifecycleTransition {
 }
 
 pub(super) trait LifecycleEffectExecutor {
-    type Error;
+    type Error: From<String> + ToString;
 
     fn prepare_transition(&mut self, _candidate: &AppSessionSnapshot) -> Result<(), Self::Error> {
         Ok(())
@@ -145,20 +145,32 @@ pub(super) fn commit_lifecycle_transition<E: LifecycleEffectExecutor>(
         if let Err(error) = executor.stage(effect) {
             return match executor.rollback_staged() {
                 Ok(()) => Err(error),
-                Err(rollback_error) => Err(rollback_error),
+                Err(rollback_error) => Err(combine_transaction_errors(error, rollback_error)),
             };
         }
     }
     if let Err(error) = executor.commit_staged() {
         return match executor.rollback_committed() {
             Ok(()) => Err(error),
-            Err(rollback_error) => Err(rollback_error),
+            Err(rollback_error) => Err(combine_transaction_errors(error, rollback_error)),
         };
     }
     if transition.changed {
         *target = transition.snapshot;
     }
     Ok(transition.result)
+}
+
+fn combine_transaction_errors<E>(primary: E, rollback: E) -> E
+where
+    E: From<String> + ToString,
+{
+    format!(
+        "{}; rollback compensation failed: {}",
+        primary.to_string(),
+        rollback.to_string()
+    )
+    .into()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -197,6 +209,7 @@ pub(super) struct RuntimeReconciliation {
 }
 
 impl RuntimeReconciliation {
+    #[cfg(test)]
     pub fn directory_apply_count(&self, surface_id: &str) -> usize {
         self.snapshot
             .windows

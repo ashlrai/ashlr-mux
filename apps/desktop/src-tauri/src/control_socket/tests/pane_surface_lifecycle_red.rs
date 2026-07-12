@@ -252,11 +252,11 @@ struct RecordingExecutor {
 }
 
 impl LifecycleEffectExecutor for RecordingExecutor {
-    type Error = &'static str;
+    type Error = String;
 
     fn stage(&mut self, effect: &LifecycleEffect) -> Result<(), Self::Error> {
         if self.fail_stage_at == Some(self.staged.len()) {
-            return Err("injected effect failure");
+            return Err("injected effect failure".into());
         }
         self.staged.push(effect.clone());
         Ok(())

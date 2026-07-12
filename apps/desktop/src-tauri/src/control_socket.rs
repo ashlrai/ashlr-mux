@@ -2099,7 +2099,7 @@ fn handle_pane_surface_lifecycle_request(
                         data: external_url
                             .and_then(|url| JsonValue::try_from(json!({"url":url})).ok()),
                     }
-                } else if message.starts_with("Lifecycle rollback failed:") {
+                } else if message.contains("Lifecycle rollback failed:") {
                     ControlCallResult::Err {
                         code: "internal_error".into(),
                         message,
@@ -18122,7 +18122,7 @@ mod tests {
             compensated: usize,
         }
         impl pane_surface_lifecycle::LifecycleEffectExecutor for CommitFailure {
-            type Error = &'static str;
+            type Error = String;
 
             fn prepare_transition(
                 &mut self,
@@ -18141,7 +18141,7 @@ mod tests {
             }
 
             fn commit_staged(&mut self) -> Result<(), Self::Error> {
-                Err("injected post-stage commit failure")
+                Err("injected post-stage commit failure".into())
             }
 
             fn rollback_staged(&mut self) -> Result<(), Self::Error> {

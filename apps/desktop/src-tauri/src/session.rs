@@ -12,10 +12,11 @@
 //! headless-testable while the ConPTY plumbing lives in `terminal.rs`.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LockResult, Mutex, MutexGuard, PoisonError};
 
 use cmux_config::{CmuxLayoutNode, CmuxSplitDirection, CmuxSurfaceType};
 use cmux_core::session::{
@@ -52,11 +53,10 @@ const FIRST_PANEL_ID: &str = "surface-1";
 /// Managed Tauri state: the authoritative session snapshot + a monotonic panel
 /// id counter so every new pane gets a unique, stable id.
 pub struct SessionState {
-    /// Serializes complete named-pipe control requests with direct Dock
-    /// transactions. Legacy Tauri commands that mutate `snapshot` directly
-    /// remain outside this gate and require a separate writer audit.
-    control_mutation_gate: Mutex<()>,
-    snapshot: Mutex<AppSessionSnapshot>,
+    /// Every read/write guard automatically joins the same reentrant mutation
+    /// gate used by complete control requests. Reentrancy lets a request hold
+    /// the outer gate while helpers take snapshot guards on the same thread.
+    snapshot: GatedSnapshot,
     next_panel: AtomicU64,
     closed_browser_tabs: Mutex<Vec<ClosedBrowserTabSnapshot>>,
     closed_workspaces: Mutex<Vec<ClosedWorkspaceSnapshot>>,
@@ -70,8 +70,7 @@ impl Default for SessionState {
         let snapshot = initial_snapshot(FIRST_PANEL_ID);
         let workspace_focus_history = workspace_focus_history_for_snapshot(&snapshot);
         Self {
-            control_mutation_gate: Mutex::new(()),
-            snapshot: Mutex::new(snapshot),
+            snapshot: GatedSnapshot::new(snapshot),
             next_panel: AtomicU64::new(2),
             closed_browser_tabs: Mutex::new(Vec::new()),
             closed_workspaces: Mutex::new(Vec::new()),
@@ -83,10 +82,10 @@ impl Default for SessionState {
 }
 
 impl SessionState {
-    pub(crate) fn lock_control_mutation(&self) -> Result<std::sync::MutexGuard<'_, ()>, String> {
-        self.control_mutation_gate
-            .lock()
-            .map_err(|_| "Session control mutation gate is unavailable".to_string())
+    pub(crate) fn lock_control_mutation(
+        &self,
+    ) -> Result<parking_lot::ReentrantMutexGuard<'_, ()>, String> {
+        Ok(self.snapshot.lock_gate())
     }
 
     #[cfg(test)]
@@ -145,6 +144,58 @@ impl SessionState {
         drop(snapshot);
         notify_session_changed(app, &next);
         Ok(result)
+    }
+}
+
+/// A snapshot mutex whose guards always participate in the control mutation
+/// gate. Keeping the gate inside this wrapper makes bypasses impossible for
+/// existing and future `SessionState` writers that call `snapshot.lock()`.
+struct GatedSnapshot {
+    gate: parking_lot::ReentrantMutex<()>,
+    value: Mutex<AppSessionSnapshot>,
+}
+
+impl GatedSnapshot {
+    fn new(value: AppSessionSnapshot) -> Self {
+        Self {
+            gate: parking_lot::ReentrantMutex::new(()),
+            value: Mutex::new(value),
+        }
+    }
+
+    fn lock_gate(&self) -> parking_lot::ReentrantMutexGuard<'_, ()> {
+        self.gate.lock()
+    }
+
+    fn lock(&self) -> LockResult<GatedSnapshotGuard<'_>> {
+        let gate = self.gate.lock();
+        match self.value.lock() {
+            Ok(value) => Ok(GatedSnapshotGuard { value, _gate: gate }),
+            Err(poisoned) => Err(PoisonError::new(GatedSnapshotGuard {
+                value: poisoned.into_inner(),
+                _gate: gate,
+            })),
+        }
+    }
+}
+
+struct GatedSnapshotGuard<'a> {
+    // Drop the snapshot guard before releasing the mutation gate.
+    value: MutexGuard<'a, AppSessionSnapshot>,
+    _gate: parking_lot::ReentrantMutexGuard<'a, ()>,
+}
+
+impl Deref for GatedSnapshotGuard<'_> {
+    type Target = AppSessionSnapshot;
+
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
+}
+
+impl DerefMut for GatedSnapshotGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.value
     }
 }
 
