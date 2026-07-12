@@ -218,6 +218,130 @@ fn stale_snapshot_fence_rejects_intervening_authority_without_clobbering_it() {
 }
 
 #[test]
+fn stale_restore_keeps_intervening_authority_and_runtime_inventory_coherent() {
+    // This interleaving is reachable in production: named_pipe::accept_loop
+    // serves every accepted connection in its own tokio::spawn task. A second
+    // client can therefore commit after this candidate is persisted and before
+    // its staged browser publication reports failure.
+    let before = test_snapshot();
+    let owner_id = owner(&before);
+    let created = transition(
+        &before,
+        "surface.create",
+        json!({
+            "placement":"dock",
+            "window_id":owner_id,
+            "type":"browser",
+            "url":"https://candidate.example",
+            "focus":false,
+        }),
+    );
+    let candidate = created.snapshot.clone();
+    let surface_id = created
+        .effects
+        .iter()
+        .find_map(|effect| match effect {
+            LifecycleEffect::DockCreate {
+                dock_surface_id, ..
+            } => Some(dock_surface_id.clone()),
+            _ => None,
+        })
+        .expect("Dock create effect");
+
+    let mut authoritative = before.clone();
+    let mut runtimes = BTreeMap::from([(
+        surface_id.clone(),
+        RuntimeRecord {
+            generation: 1,
+            kind: "browser".into(),
+            owner_id: owner_id.clone(),
+        },
+    )]);
+    let mut journal = DockCommitJournal::<String, String>::default();
+    journal.stage_claim(surface_id.clone());
+    journal
+        .commit_snapshot(|| {
+            authoritative = candidate.clone();
+            Ok::<_, &'static str>(())
+        })
+        .unwrap();
+
+    let publish = journal.publish_claims(|_| {
+        DockStore
+            .create(
+                &mut authoritative,
+                &owner_id,
+                DockCreateRequest {
+                    kind: DockSurfaceKind::Terminal,
+                    focus: false,
+                    ..DockCreateRequest::default()
+                },
+            )
+            .expect("intervening authoritative commit");
+        Err::<(), _>("injected browser publication failure")
+    });
+    assert_eq!(publish, Err("injected browser publication failure"));
+    assert_ne!(authoritative, candidate);
+
+    journal.rollback(|step| match step {
+        DockRollbackStep::RestoreSnapshot => {
+            crate::session::ensure_lifecycle_snapshot_current(&authoritative, &candidate)?;
+            authoritative = before.clone();
+            Ok::<(), String>(())
+        }
+        DockRollbackStep::RollbackClaim(claim) => {
+            runtimes.remove(&claim);
+            Ok(())
+        }
+        DockRollbackStep::RecreateTeardown(_) => unreachable!(),
+    });
+
+    let authoritative_has_surface =
+        cmux_core::surface_lifecycle::SurfaceLifecycleModel::from_app_session(&authoritative)
+            .unwrap()
+            .owner_of_surface(&surface_id)
+            .is_some();
+    let runtime_exists = runtimes.contains_key(&surface_id);
+    assert_eq!(
+        authoritative_has_surface, runtime_exists,
+        "stale snapshot restoration must serialize or reconcile runtime rollback with the intervening authority"
+    );
+}
+
+#[test]
+fn rollback_reports_snapshot_restore_and_runtime_recreation_failures() {
+    let mut restore = DockCommitJournal::<String, String>::default();
+    restore
+        .commit_snapshot(|| Ok::<_, &'static str>(()))
+        .unwrap();
+    let restore_outcome = restore.rollback(|step| match step {
+        DockRollbackStep::RestoreSnapshot => Err::<(), _>("snapshot restore failed"),
+        _ => Ok(()),
+    });
+    let restore_report = format!("{restore_outcome:?}");
+
+    let mut recreate = DockCommitJournal::<String, String>::default();
+    recreate.stage_teardown("closed-dock-runtime".into());
+    let recreate_outcome = recreate.rollback(|step| match step {
+        DockRollbackStep::RecreateTeardown(_) => Err::<(), _>("runtime recreation failed"),
+        _ => Ok(()),
+    });
+    let recreate_report = format!("{recreate_outcome:?}");
+    let mut violations = Vec::new();
+    if !restore_report.contains("snapshot restore failed") {
+        violations.push(format!(
+            "snapshot compensation failure was silently discarded: {restore_report}"
+        ));
+    }
+    if !recreate_report.contains("runtime recreation failed") {
+        violations.push(format!(
+            "runtime compensation failure was silently discarded: {recreate_report}"
+        ));
+    }
+    assert!(violations.is_empty(), "{}", violations.join("; "));
+}
+
+#[test]
 fn post_persist_dock_publish_failure_restores_authority_and_tears_down_staged_runtime() {
     let before = test_snapshot();
     let created = transition(
