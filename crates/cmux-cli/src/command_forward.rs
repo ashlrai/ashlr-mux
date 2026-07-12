@@ -2614,7 +2614,7 @@ fn tab_action_params(args: &[String]) -> Result<serde_json::Value, CliError> {
         ));
     }
 
-    let mut params = lifecycle_scope_params(&parsed);
+    let mut params = lifecycle_scope_params(&parsed)?;
     params.insert("action".into(), serde_json::json!(action));
     if let Some(tab) = parsed.value(&["--tab"]) {
         apply_validated_surface_selector(tab, &mut params)?;
@@ -2655,7 +2655,7 @@ fn respawn_pane_params(args: &[String]) -> Result<serde_json::Value, CliError> {
             "--command",
         ],
     )?;
-    let mut params = lifecycle_scope_params(&parsed);
+    let mut params = lifecycle_scope_params(&parsed)?;
     if let Some(surface) = parsed.value(&["--surface", "--surface-id", "--surface-ref"]) {
         apply_validated_surface_selector(surface, &mut params)?;
     }
@@ -2679,10 +2679,9 @@ fn respawn_pane_params(args: &[String]) -> Result<serde_json::Value, CliError> {
 
 fn normalize_action_name(action: &str) -> String {
     action
-        .trim()
         .chars()
         .map(|character| match character {
-            '-' | ' ' => '_',
+            '-' => '_',
             other => other.to_ascii_lowercase(),
         })
         .collect()
@@ -2691,26 +2690,42 @@ fn normalize_action_name(action: &str) -> String {
 fn apply_lifecycle_workspace_selector(
     parsed: &ParsedArgs,
     params: &mut serde_json::Map<String, serde_json::Value>,
-) {
+) -> Result<(), CliError> {
     if let Some(reference) = parsed.value(&["--workspace-ref"]) {
-        params.insert("workspace_ref".into(), serde_json::json!(reference));
+        apply_lifecycle_workspace_value(reference, params)?;
     } else if let Some(value) = parsed.value(&["--workspace", "--workspace-id"]) {
-        if value.chars().all(|ch| ch.is_ascii_digit()) {
-            params.insert(
-                "workspace_ref".into(),
-                serde_json::json!(format!("workspace:{value}")),
-            );
-        } else if value.starts_with("workspace:") {
-            params.insert("workspace_ref".into(), serde_json::json!(value));
-        } else {
-            params.insert("workspace_id".into(), serde_json::json!(value));
-        }
+        apply_lifecycle_workspace_value(value, params)?;
     }
+    Ok(())
 }
 
-fn lifecycle_scope_params(parsed: &ParsedArgs) -> serde_json::Map<String, serde_json::Value> {
+fn apply_lifecycle_workspace_value(
+    raw: &str,
+    params: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<(), CliError> {
+    let value = raw.trim();
+    if let Ok(index) = value.parse::<u64>() {
+        params.insert("workspace_index".into(), serde_json::json!(index));
+    } else if value
+        .strip_prefix("workspace:")
+        .is_some_and(|index| !index.is_empty() && index.chars().all(|ch| ch.is_ascii_digit()))
+    {
+        params.insert("workspace_ref".into(), serde_json::json!(value));
+    } else if uuid::Uuid::parse_str(value).is_ok() {
+        params.insert("workspace_id".into(), serde_json::json!(value));
+    } else {
+        return Err(CliError::new(format!(
+            "Invalid workspace handle: {value} (expected UUID, ref like workspace:1, or index)"
+        )));
+    }
+    Ok(())
+}
+
+fn lifecycle_scope_params(
+    parsed: &ParsedArgs,
+) -> Result<serde_json::Map<String, serde_json::Value>, CliError> {
     let mut params = serde_json::Map::new();
-    apply_lifecycle_workspace_selector(parsed, &mut params);
+    apply_lifecycle_workspace_selector(parsed, &mut params)?;
     apply_window_scope_selector(parsed, &mut params);
     if (params.contains_key("window_id") || params.contains_key("window_ref"))
         && !params.contains_key("workspace_id")
@@ -2718,7 +2733,7 @@ fn lifecycle_scope_params(parsed: &ParsedArgs) -> serde_json::Map<String, serde_
     {
         params.insert("resolve_current_workspace".into(), serde_json::json!(true));
     }
-    params
+    Ok(params)
 }
 
 fn join_trimmed(parts: &[String]) -> Option<String> {
@@ -2771,7 +2786,11 @@ fn native_windows_shell() -> String {
 }
 
 fn native_shell_wrapper(shell: &str, command: &str) -> String {
-    format!("\"{shell}\" /d /s /c \"{command}\"")
+    format!(
+        "& '{}' /d /s /c '{}'",
+        shell.replace('\'', "''"),
+        command.replace('\'', "''")
+    )
 }
 
 fn surface_read_text_params(
