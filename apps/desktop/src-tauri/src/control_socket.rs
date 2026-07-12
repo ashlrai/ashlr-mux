@@ -18443,6 +18443,83 @@ mod tests {
     }
 
     #[test]
+    fn production_remote_new_window_builder_is_exact_for_focus_and_background() {
+        let focused = RemoteTmuxCreateSpec {
+            operation: "new-window",
+            focus: true,
+            source_target: Some("remote-session-1"),
+            working_directory: Some("/srv/repo with spaces"),
+        };
+        assert_eq!(
+            remote_tmux_create_argv(&focused).unwrap(),
+            [
+                "tmux",
+                "new-window",
+                "-a",
+                "-t",
+                "remote-session-1",
+                "-c",
+                "/srv/repo with spaces",
+                "-P",
+                "-F",
+                "#{window_id}\t#{pane_id}",
+            ]
+        );
+
+        let background = RemoteTmuxCreateSpec {
+            focus: false,
+            ..focused
+        };
+        assert_eq!(
+            remote_tmux_create_argv(&background).unwrap(),
+            [
+                "tmux",
+                "new-window",
+                "-d",
+                "-a",
+                "-t",
+                "remote-session-1",
+                "-c",
+                "/srv/repo with spaces",
+                "-P",
+                "-F",
+                "#{window_id}\t#{pane_id}",
+            ]
+        );
+    }
+
+    #[test]
+    fn production_remote_observation_is_authoritative_retried_and_compensated() {
+        let observation = parse_remote_tmux_observation("@12\t%34\n").unwrap();
+        assert_eq!(observation.window_token, "@12");
+        assert_eq!(observation.pane_token, "%34");
+        assert_eq!(
+            remote_observation_action(true, None, 0),
+            RemoteObservationAction::Reconcile
+        );
+        assert_eq!(
+            remote_observation_action(true, Some("transient persistence failure"), 0),
+            RemoteObservationAction::RetainAndRetry
+        );
+        assert_eq!(
+            remote_observation_action(false, None, 0),
+            RemoteObservationAction::CompensateKillWindow
+        );
+        assert_eq!(
+            remote_observation_action(true, Some("still failing"), REMOTE_OBSERVATION_MAX_RETRIES),
+            RemoteObservationAction::CompensateKillWindow
+        );
+    }
+
+    #[test]
+    fn unchanged_effect_only_transition_skips_snapshot_commit_and_publication() {
+        assert!(!should_commit_lifecycle_snapshot(false));
+        assert!(!should_publish_lifecycle_snapshot(false));
+        assert!(should_commit_lifecycle_snapshot(true));
+        assert!(should_publish_lifecycle_snapshot(true));
+    }
+
+    #[test]
     fn lifecycle_commit_failure_keeps_model_unpublished_and_compensates_resources() {
         #[derive(Default)]
         struct CommitFailure {

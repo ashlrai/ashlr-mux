@@ -329,7 +329,7 @@ fn remote_window_arrival_plan_uses_authoritative_notification_and_retains_failur
         }),
         json!({
             "arrival_policy": "runtime-window-add",
-            "observation_source": "%window-add",
+            "observation_source": "tmux-new-window-output",
             "pending_reconciliation": true,
             "observation_failure_policy": "retain-pending-and-report",
             "commit_failure_policy": "retain-pending-and-retry",
