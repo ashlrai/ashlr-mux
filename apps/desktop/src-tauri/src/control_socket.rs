@@ -1640,7 +1640,8 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
                 }
                 pane_surface_lifecycle::LifecycleEffect::TerminalCreate { .. }
                 | pane_surface_lifecycle::LifecycleEffect::TerminalReplace { .. }
-                | pane_surface_lifecycle::LifecycleEffect::BrowserAttach { .. } => {}
+                | pane_surface_lifecycle::LifecycleEffect::BrowserAttach { .. }
+                | pane_surface_lifecycle::LifecycleEffect::UiSurfaceAttach { .. } => {}
                 pane_surface_lifecycle::LifecycleEffect::RemoteCreate { .. } => {}
                 pane_surface_lifecycle::LifecycleEffect::DockCreate { .. } => unreachable!(),
                 pane_surface_lifecycle::LifecycleEffect::PersistSession => {}
@@ -1705,6 +1706,7 @@ fn handle_pane_surface_lifecycle_request(
     if !transition.changed {
         return transition.result;
     }
+    let completion_events = transition.events.clone();
     let mut target = current;
     let mut executor = ProductionLifecycleExecutor {
         app,
@@ -1714,12 +1716,46 @@ fn handle_pane_surface_lifecycle_request(
         staged_remote_panes: Vec::new(),
         staged_browsers: Vec::new(),
     };
-    pane_surface_lifecycle::commit_lifecycle_transition(&mut target, transition, &mut executor)
-        .unwrap_or_else(|message| ControlCallResult::Err {
-            code: "internal_error".into(),
-            message,
-            data: None,
-        })
+    let result =
+        pane_surface_lifecycle::commit_lifecycle_transition(&mut target, transition, &mut executor)
+            .unwrap_or_else(|message| ControlCallResult::Err {
+                code: "internal_error".into(),
+                message,
+                data: None,
+            });
+    if matches!(result, ControlCallResult::Ok(_)) {
+        for completion in completion_events.into_iter().filter(|event| {
+            matches!(
+                event.name,
+                "surface.action" | "pane.resized" | "surface.respawned"
+            )
+        }) {
+            let mut payload = completion.payload;
+            if let Value::Object(object) = &mut payload {
+                object
+                    .entry("window_id")
+                    .or_insert(json!(completion.window_id));
+                object
+                    .entry("workspace_id")
+                    .or_insert(json!(completion.workspace_id));
+                object.entry("pane_id").or_insert(json!(completion.pane_id));
+                object
+                    .entry("surface_id")
+                    .or_insert(json!(completion.surface_id));
+            }
+            record_event(
+                app,
+                completion.name,
+                completion.category,
+                completion.source,
+                completion.window_id,
+                completion.workspace_id,
+                completion.surface_id,
+                payload,
+            );
+        }
+    }
+    result
 }
 
 fn decorate_lifecycle_result_refs(app: &AppHandle, result: &mut ControlCallResult) {
@@ -1746,7 +1782,7 @@ fn decorate_lifecycle_result_refs(app: &AppHandle, result: &mut ControlCallResul
                         let reference = id.as_str().map(|id| {
                             let reference = control_handle_ref(app, kind, id);
                             if ref_key == "tab_ref" {
-                                reference.replacen("surface:", "tab:", 1)
+                                tab_ref_from_surface_ref(&reference)
                             } else {
                                 reference
                             }
@@ -1790,11 +1826,7 @@ fn resolve_request_handle_refs(app: &AppHandle, params: &mut serde_json::Map<Str
             continue;
         };
         let normalized = (key == "tab_id")
-            .then(|| {
-                reference
-                    .strip_prefix("tab:")
-                    .map(|suffix| format!("surface:{suffix}"))
-            })
+            .then(|| surface_ref_from_tab_ref(reference))
             .flatten();
         if let Some(id) =
             resolve_control_handle_ref(app, kind, normalized.as_deref().unwrap_or(reference))
@@ -1802,6 +1834,18 @@ fn resolve_request_handle_refs(app: &AppHandle, params: &mut serde_json::Map<Str
             params.insert(key.to_string(), json!(id));
         }
     }
+}
+
+fn tab_ref_from_surface_ref(reference: &str) -> String {
+    reference
+        .strip_prefix("surface:")
+        .map_or_else(|| reference.to_string(), |suffix| format!("tab:{suffix}"))
+}
+
+fn surface_ref_from_tab_ref(reference: &str) -> Option<String> {
+    reference
+        .strip_prefix("tab:")
+        .map(|suffix| format!("surface:{suffix}"))
 }
 
 pub(crate) fn record_session_changed_event(app: &AppHandle, snapshot: &AppSessionSnapshot) {
@@ -2764,6 +2808,10 @@ fn record_event(
     let seq = guard.next_seq;
     guard.next_seq = guard.next_seq.saturating_add(1);
     let boot_id = guard.boot_id.clone();
+    let pane_id = payload
+        .get("pane_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     let event = json!({
         "type": "event",
         "protocol": EVENT_STREAM_PROTOCOL,
@@ -2777,7 +2825,7 @@ fn record_event(
         "occurred_at": event_timestamp(),
         "workspace_id": workspace_id,
         "surface_id": surface_id,
-        "pane_id": Value::Null,
+        "pane_id": pane_id,
         "window_id": window_id,
         "payload": payload,
     });
@@ -17575,6 +17623,132 @@ mod tests {
         assert_eq!(published, before);
         assert_eq!(executor.prepared, Some(candidate));
         assert_eq!(executor.compensated, effect_count);
+    }
+
+    #[test]
+    fn lifecycle_routing_uses_active_window_and_group_manager_selected_workspace() {
+        let mut snapshot = test_snapshot();
+        let mut second = snapshot.windows[0].clone();
+        second.window_id = Some("window-2".into());
+        let mut selected = second.tab_manager.workspaces[0].clone();
+        selected.workspace_id = Some("workspace-selected".into());
+        let SessionWorkspaceLayoutSnapshot::Pane(pane) = selected.layout.as_mut().unwrap() else {
+            unreachable!()
+        };
+        pane.pane_id = Some("pane-selected".into());
+        pane.panel_ids = vec!["surface-selected".into()];
+        pane.selected_panel_id = Some("surface-selected".into());
+        selected.focused_panel_id = Some("surface-selected".into());
+        let mut anchor = selected.clone();
+        anchor.workspace_id = Some("workspace-anchor".into());
+        anchor.focused_panel_id = Some("surface-anchor".into());
+        let SessionWorkspaceLayoutSnapshot::Pane(pane) = anchor.layout.as_mut().unwrap() else {
+            unreachable!()
+        };
+        pane.pane_id = Some("pane-anchor".into());
+        pane.panel_ids = vec!["surface-anchor".into()];
+        pane.selected_panel_id = Some("surface-anchor".into());
+        second.tab_manager.workspaces = vec![selected, anchor];
+        second.tab_manager.selected_workspace_index = Some(0);
+        second.tab_manager.workspace_groups = Some(vec![SessionWorkspaceGroupSnapshot {
+            id: "group-2".into(),
+            name: "Group".into(),
+            anchor_workspace_id: Some("workspace-anchor".into()),
+            ..Default::default()
+        }]);
+        snapshot.windows.push(second);
+        let context = pane_surface_lifecycle::LifecycleDispatchContext {
+            viewport_size: None,
+            browser_enabled: true,
+            dock_available: false,
+            active_window_id: Some("window-2".into()),
+        };
+
+        for params in [
+            json!({}),
+            json!({"window_id":null}),
+            json!({"group_id":"group-2"}),
+        ] {
+            let transition = pane_surface_lifecycle::dispatch_lifecycle_request(
+                &snapshot,
+                "surface.current",
+                params.as_object().unwrap(),
+                &context,
+            );
+            let ControlCallResult::Ok(value) = transition.result else {
+                panic!("route failed")
+            };
+            let value = Value::from(value);
+            assert_eq!(value["window_id"], "window-2");
+            assert_eq!(value["workspace_id"], "workspace-selected");
+        }
+    }
+
+    #[test]
+    fn lifecycle_surface_create_preserves_all_heterogeneous_kinds() {
+        let context = pane_surface_lifecycle::LifecycleDispatchContext {
+            viewport_size: None,
+            browser_enabled: true,
+            dock_available: false,
+            active_window_id: None,
+        };
+        for (token, expected) in [
+            ("markdown", "markdown"),
+            ("filePreview", "filePreview"),
+            ("rightSidebarTool", "rightSidebarTool"),
+            ("projectSidebar", "projectSidebar"),
+            ("diff", "diff"),
+        ] {
+            let snapshot = test_snapshot();
+            let params = json!({"pane_id":"pane-1","type":token});
+            let transition = pane_surface_lifecycle::dispatch_lifecycle_request(
+                &snapshot,
+                "surface.create",
+                params.as_object().unwrap(),
+                &context,
+            );
+            let ControlCallResult::Ok(value) = &transition.result else {
+                panic!("{token} failed")
+            };
+            assert_eq!(Value::from(value.clone())["type"], expected);
+            assert!(transition.effects.iter().any(|effect| matches!(
+                effect,
+                pane_surface_lifecycle::LifecycleEffect::UiSurfaceAttach { kind, .. }
+                    if kind == expected
+            )));
+        }
+
+        let invalid = pane_surface_lifecycle::dispatch_lifecycle_request(
+            &test_snapshot(),
+            "surface.create",
+            json!({"pane_id":"pane-1","type":"agentSession","renderer_kind":"canvas"})
+                .as_object()
+                .unwrap(),
+            &context,
+        );
+        assert!(
+            matches!(invalid.result, ControlCallResult::Err { code, .. } if code == "invalid_params")
+        );
+    }
+
+    #[test]
+    fn lifecycle_tab_refs_share_the_surface_handle_number() {
+        let mut registry = ControlHandleRegistry::default();
+        let surface_ref = registry.mint("surface", "550e8400-e29b-41d4-a716-446655440000");
+        assert_eq!(surface_ref, "surface:1");
+        let tab_ref = tab_ref_from_surface_ref(&surface_ref);
+        assert_eq!(tab_ref, "tab:1");
+        let normalized = surface_ref_from_tab_ref(&tab_ref).unwrap();
+        assert_eq!(normalized, "surface:1");
+        assert_eq!(
+            registry.resolve("surface", &normalized).as_deref(),
+            Some("550e8400-e29b-41d4-a716-446655440000")
+        );
+        assert_eq!(
+            registry.resolve("surface", "550e8400-e29b-41d4-a716-446655440000"),
+            None,
+            "UUIDs bypass the ref registry and remain unchanged"
+        );
     }
 
     #[path = "pane_surface_lifecycle_red.rs"]

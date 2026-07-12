@@ -11,6 +11,12 @@ use uuid::Uuid;
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub(super) struct LifecycleEvent {
     pub name: &'static str,
+    pub category: &'static str,
+    pub source: &'static str,
+    pub window_id: Option<String>,
+    pub workspace_id: Option<String>,
+    pub pane_id: Option<String>,
+    pub surface_id: Option<String>,
     pub payload: Value,
 }
 
@@ -34,6 +40,10 @@ pub(super) enum LifecycleEffect {
         surface_id: String,
         generation: u64,
         url: Option<String>,
+    },
+    UiSurfaceAttach {
+        surface_id: String,
+        kind: String,
     },
     RuntimeTeardown {
         surface_id: String,
@@ -415,49 +425,25 @@ fn scope(
             .iter()
             .position(|workspace| workspace.workspace_id.as_deref() == Some(requested))
             .ok_or(("not_found", "Workspace not found"))?
-    } else if let Some(group) = group_selector {
-        let anchor = window
-            .tab_manager
-            .workspace_groups
-            .as_deref()
-            .unwrap_or_default()
-            .iter()
-            .find(|candidate| candidate.id == group)
-            .and_then(|group| group.anchor_workspace_id.as_deref())
-            .ok_or(("not_found", "Workspace not found"))?;
-        window
-            .tab_manager
-            .workspaces
-            .iter()
-            .position(|workspace| workspace.workspace_id.as_deref() == Some(anchor))
-            .ok_or(("not_found", "Workspace not found"))?
-    } else if let Some(surface) = surface_selector {
-        window
-            .tab_manager
-            .workspaces
-            .iter()
-            .position(|workspace| {
-                workspace
-                    .surfaces
-                    .as_deref()
-                    .unwrap_or_default()
-                    .iter()
-                    .any(|record| record.surface_id == surface)
-                    || workspace.layout.as_ref().is_some_and(|layout| {
-                        layout_surface_ids(layout).iter().any(|id| id == surface)
-                    })
-            })
-            .ok_or(("not_found", "Workspace not found"))?
-    } else if let Some(pane) = pane_selector {
-        window
-            .tab_manager
-            .workspaces
-            .iter()
-            .position(|workspace| contains_pane(workspace, pane))
-            .ok_or(("not_found", "Workspace not found"))?
     } else {
-        usize::try_from(window.tab_manager.selected_workspace_index.unwrap_or(0))
-            .map_err(|_| ("not_found", "Workspace not found"))?
+        let surface_index = surface_selector.and_then(|surface| {
+            window
+                .tab_manager
+                .workspaces
+                .iter()
+                .position(|workspace| contains_surface(workspace, surface))
+        });
+        let pane_index = pane_selector.and_then(|pane| {
+            window
+                .tab_manager
+                .workspaces
+                .iter()
+                .position(|workspace| contains_pane(workspace, pane))
+        });
+        surface_index.or(pane_index).unwrap_or(
+            usize::try_from(window.tab_manager.selected_workspace_index.unwrap_or(0))
+                .map_err(|_| ("not_found", "Workspace not found"))?,
+        )
     };
     let workspace = window
         .tab_manager
@@ -538,9 +524,26 @@ fn parse_kind(
                     Some(json!({"provider": provider})),
                 ));
             }
+            let provider = if provider.eq_ignore_ascii_case("claudecode") {
+                "claude"
+            } else {
+                provider
+            };
+            let renderer = params
+                .get("renderer_kind")
+                .or_else(|| params.get("renderer"))
+                .and_then(Value::as_str)
+                .unwrap_or("react");
+            if !matches!(renderer.to_ascii_lowercase().as_str(), "react" | "solid") {
+                return Err((
+                    "invalid_params",
+                    "Invalid renderer (react|solid)",
+                    Some(json!({"renderer": renderer})),
+                ));
+            }
             Ok(SessionSurfaceKindSnapshot::AgentSession {
-                provider: Some(provider.to_owned()),
-                renderer: Some("react".into()),
+                provider: Some(provider.to_ascii_lowercase()),
+                renderer: Some(renderer.to_ascii_lowercase()),
                 working_directory: params
                     .get("working_directory")
                     .and_then(Value::as_str)
@@ -550,12 +553,50 @@ fn parse_kind(
                 restorable_agent: None,
             })
         }
+        "markdown" => Ok(SessionSurfaceKindSnapshot::Markdown {
+            path: params
+                .get("path")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        }),
+        "filepreview" | "file" => Ok(SessionSurfaceKindSnapshot::File {
+            path: params
+                .get("path")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        }),
+        "rightsidebartool" => Ok(SessionSurfaceKindSnapshot::RightSidebarTool),
+        "projectsidebar" => Ok(SessionSurfaceKindSnapshot::ProjectSidebar),
+        "diff" => Ok(SessionSurfaceKindSnapshot::Diff {
+            token: params
+                .get("token")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            request_path: params
+                .get("request_path")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        }),
         _ => Ok(SessionSurfaceKindSnapshot::Terminal),
     }
 }
 
 fn event(name: &'static str, payload: Value) -> LifecycleEvent {
-    LifecycleEvent { name, payload }
+    let field = |key: &str| payload.get(key).and_then(Value::as_str).map(str::to_owned);
+    LifecycleEvent {
+        name,
+        category: if name.starts_with("pane.") {
+            "pane"
+        } else {
+            "surface"
+        },
+        source: "control_socket.lifecycle",
+        window_id: field("window_id"),
+        workspace_id: field("workspace_id"),
+        pane_id: field("pane_id"),
+        surface_id: field("surface_id"),
+        payload,
+    }
 }
 
 fn surface_current(
@@ -826,14 +867,14 @@ fn surface_create(
         Ok(value) => value,
         Err(_) => return error(snapshot, "internal_error", "Failed to create surface", None),
     };
-    let effect = if matches!(kind, SessionSurfaceKindSnapshot::Browser { .. }) {
-        LifecycleEffect::BrowserAttach {
+    let effect = match &kind {
+        SessionSurfaceKindSnapshot::Browser { .. } => LifecycleEffect::BrowserAttach {
             surface_id: surface_id.clone(),
             generation,
             url: params.get("url").and_then(Value::as_str).map(str::to_owned),
-        }
-    } else {
-        LifecycleEffect::TerminalCreate {
+        },
+        SessionSurfaceKindSnapshot::Terminal
+        | SessionSurfaceKindSnapshot::RemoteTerminal { .. } => LifecycleEffect::TerminalCreate {
             surface_id: surface_id.clone(),
             generation,
             command: params
@@ -844,7 +885,11 @@ fn surface_create(
                 .get("working_directory")
                 .and_then(Value::as_str)
                 .map(str::to_owned),
-        }
+        },
+        _ => LifecycleEffect::UiSurfaceAttach {
+            surface_id: surface_id.clone(),
+            kind: kind_name(&kind).into(),
+        },
     };
     ok_transition(
         next,
@@ -1647,28 +1692,30 @@ fn pane_create(
         let _ = model.focus_surface(&surface_id);
     }
     next = model.to_app_session(&next).unwrap();
-    let mut effects = vec![
-        if matches!(kind, SessionSurfaceKindSnapshot::Browser { .. }) {
-            LifecycleEffect::BrowserAttach {
-                surface_id: surface_id.clone(),
-                generation,
-                url: params.get("url").and_then(Value::as_str).map(str::to_owned),
-            }
-        } else {
-            LifecycleEffect::TerminalCreate {
-                surface_id: surface_id.clone(),
-                generation,
-                command: params
-                    .get("initial_command")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                working_directory: params
-                    .get("working_directory")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-            }
+    let mut effects = vec![match &kind {
+        SessionSurfaceKindSnapshot::Browser { .. } => LifecycleEffect::BrowserAttach {
+            surface_id: surface_id.clone(),
+            generation,
+            url: params.get("url").and_then(Value::as_str).map(str::to_owned),
         },
-    ];
+        SessionSurfaceKindSnapshot::Terminal
+        | SessionSurfaceKindSnapshot::RemoteTerminal { .. } => LifecycleEffect::TerminalCreate {
+            surface_id: surface_id.clone(),
+            generation,
+            command: params
+                .get("initial_command")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            working_directory: params
+                .get("working_directory")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        },
+        _ => LifecycleEffect::UiSurfaceAttach {
+            surface_id: surface_id.clone(),
+            kind: kind_name(&kind).into(),
+        },
+    }];
     if params
         .get("focus")
         .and_then(Value::as_bool)
