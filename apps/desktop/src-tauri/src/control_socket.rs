@@ -14331,6 +14331,7 @@ mod tests {
             windows: vec![SessionWindowSnapshot {
                 window_id: Some("window-1".to_string()),
                 selected_workspace_id: None,
+                dock: None,
                 tab_manager: SessionTabManagerSnapshot {
                     selected_workspace_index: Some(0),
                     workspaces: vec![SessionWorkspaceSnapshot {
@@ -14631,6 +14632,7 @@ mod tests {
         snapshot.windows.push(SessionWindowSnapshot {
             window_id: Some("window-2".to_string()),
             selected_workspace_id: None,
+            dock: None,
             tab_manager: SessionTabManagerSnapshot {
                 selected_workspace_index: Some(0),
                 workspaces: vec![destination],

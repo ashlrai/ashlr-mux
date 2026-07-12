@@ -287,6 +287,7 @@ pub fn run() {
         .manage(agent_session::AgentSessionState::default())
         .manage(notifications::NotificationCommandState::default())
         .manage(feed::FeedState::default())
+        .manage(dock::DockStore)
         .manage(right_sidebar::RightSidebarState::default())
         .manage(markdown::MarkdownState::default())
         .manage(open_folder::VSCodeInlineState::default())
@@ -439,6 +440,11 @@ pub fn run() {
             right_sidebar::right_sidebar_update_state,
             right_sidebar::right_sidebar_beta_settings,
             right_sidebar::right_sidebar_set_beta_feature,
+            dock::dock_snapshot,
+            dock::dock_create,
+            dock::dock_select,
+            dock::dock_focus,
+            dock::dock_close,
             feed::feed_list,
             feed::feed_load_older,
             feed::feed_resolve,

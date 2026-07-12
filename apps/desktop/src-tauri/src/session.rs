@@ -77,6 +77,32 @@ impl Default for SessionState {
     }
 }
 
+impl SessionState {
+    pub(crate) fn snapshot_for_lifecycle(&self) -> Result<AppSessionSnapshot, String> {
+        self.snapshot
+            .lock()
+            .map(|snapshot| snapshot.clone())
+            .map_err(|_| "Session state is unavailable".to_string())
+    }
+
+    pub(crate) fn transact_lifecycle<R>(
+        &self,
+        app: &AppHandle,
+        mutation: impl FnOnce(&mut AppSessionSnapshot) -> Result<R, String>,
+    ) -> Result<R, String> {
+        let mut snapshot = self
+            .snapshot
+            .lock()
+            .map_err(|_| "Session state is unavailable".to_string())?;
+        let mut next = snapshot.clone();
+        let result = mutation(&mut next)?;
+        *snapshot = next.clone();
+        drop(snapshot);
+        notify_session_changed(app, &next);
+        Ok(result)
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct WorkspaceFocusHistory {
     entries: Vec<String>,
@@ -366,6 +392,7 @@ fn initial_snapshot(first_panel_id: &str) -> AppSessionSnapshot {
         windows: vec![SessionWindowSnapshot {
             window_id: Some("main".to_string()),
             selected_workspace_id: None,
+            dock: None,
             tab_manager: SessionTabManagerSnapshot {
                 selected_workspace_index: Some(0),
                 workspaces: vec![session_ops::fresh_terminal_workspace(first_panel_id)],
@@ -3192,6 +3219,7 @@ pub(crate) fn register_window_for_control(
                 guard.windows.push(SessionWindowSnapshot {
                     window_id: Some(window_id.to_string()),
                     selected_workspace_id: None,
+                    dock: None,
                     tab_manager: SessionTabManagerSnapshot {
                         selected_workspace_index: Some(0),
                         workspaces: vec![session_ops::fresh_terminal_workspace(&panel_id)],
@@ -7463,6 +7491,7 @@ mod tests {
         snapshot.windows.push(SessionWindowSnapshot {
             window_id: Some("window-2".to_string()),
             selected_workspace_id: None,
+            dock: None,
             tab_manager: SessionTabManagerSnapshot {
                 selected_workspace_index: Some(0),
                 workspaces: vec![session_ops::fresh_terminal_workspace("surface-2")],

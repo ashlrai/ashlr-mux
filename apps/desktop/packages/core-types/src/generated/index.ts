@@ -57,6 +57,7 @@ export type { RendererRealization } from "./RendererRealization";
 export type { ResumeCommandApproval } from "./ResumeCommandApproval";
 export type { ResumePolicy } from "./ResumePolicy";
 export type { SessionCanvasPaneSnapshot } from "./SessionCanvasPaneSnapshot";
+export type { SessionDockSnapshot } from "./SessionDockSnapshot";
 export type { SessionGitBranchSnapshot } from "./SessionGitBranchSnapshot";
 export type { SessionPaneLayoutSnapshot } from "./SessionPaneLayoutSnapshot";
 export type { SessionPanelGitBranchSnapshot } from "./SessionPanelGitBranchSnapshot";
