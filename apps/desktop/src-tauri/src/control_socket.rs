@@ -1695,7 +1695,7 @@ fn remote_tmux_create_argv_with_split(
 ) -> Result<Vec<String>, String> {
     let target = RemoteTmuxTarget::for_create(spec.operation)?;
     let mut parts = vec!["tmux".to_string(), spec.operation.to_string()];
-    if target == RemoteTmuxTarget::Pane || !spec.focus {
+    if target == RemoteTmuxTarget::Window && !spec.focus {
         parts.push("-d".into());
     }
     if target == RemoteTmuxTarget::Window {
@@ -1934,7 +1934,9 @@ fn schedule_remote_window_reconciliation(app: &AppHandle, remote: StagedRemoteCr
             match commit_runtime_arrival_for_control(&app, arrival.clone()) {
                 Ok(outcome) => match outcome {
                     RuntimeArrivalCommitOutcome::Committed => {
-                        if should_focus_window_after_remote_arrival(remote.focus, true) {
+                        if remote.target == RemoteTmuxTarget::Window
+                            && should_focus_window_after_remote_arrival(remote.focus, true)
+                        {
                             if let Some(window) = app.get_webview_window(&remote.window_id) {
                                 let _ = window.set_focus();
                             }
@@ -14347,6 +14349,28 @@ fn string_map_param(
     None
 }
 
+fn first_present_trimmed_string_map_param(
+    params: &serde_json::Map<String, Value>,
+    keys: &[&str],
+) -> Option<BTreeMap<String, String>> {
+    keys.iter().find_map(|key| {
+        let object = params.get(*key)?.as_object()?;
+        Some(
+            object
+                .iter()
+                .filter_map(|(key, value)| {
+                    let key = key.trim();
+                    (!key.is_empty()).then(|| {
+                        value
+                            .as_str()
+                            .map(|value| (key.to_string(), value.to_string()))
+                    })?
+                })
+                .collect(),
+        )
+    })
+}
+
 fn bool_param(params: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<bool> {
     keys.iter().find_map(|key| {
         params.get(*key).and_then(|value| {
@@ -18851,7 +18875,7 @@ mod tests {
         };
         assert_eq!(
             remote_tmux_create_argv(&split).unwrap(),
-            ["tmux split-window -d -P -F '#{pane_id}'"]
+            ["tmux split-window -P -F '#{pane_id}'"]
         );
         assert_eq!(
             remote_tmux_source_window_command("%7").unwrap(),

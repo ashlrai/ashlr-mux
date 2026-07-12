@@ -112,6 +112,7 @@ pub(super) enum LifecycleEffect {
         arrival_policy: &'static str,
         focus: bool,
         focus_mode: &'static str,
+        activate_window: bool,
         placement: &'static str,
         working_directory: Option<String>,
         working_directory_source_surface_id: Option<String>,
@@ -1898,6 +1899,7 @@ fn apply_create_right_action(
                 arrival_policy: "runtime-window-add",
                 focus: focused,
                 focus_mode: if focused { "focused" } else { "background" },
+                activate_window: focused,
                 placement: if source_remote_pane_id.is_some() {
                     "after-source-window"
                 } else {
@@ -3092,6 +3094,34 @@ fn pane_resize(
     )
 }
 
+fn remote_tmux_unsupported_options(params: &Map<String, Value>, insert_first: bool) -> Vec<String> {
+    let mut unsupported = Vec::new();
+    if insert_first {
+        unsupported.push("direction=left/up".to_string());
+    }
+    if super::string_param(params, &["working_directory"]).is_some() {
+        unsupported.push("working_directory".into());
+    }
+    if super::string_param(params, &["initial_command"]).is_some() {
+        unsupported.push("initial_command".into());
+    }
+    if super::string_param(params, &["tmux_start_command"]).is_some() {
+        unsupported.push("tmux_start_command".into());
+    }
+    if super::first_present_trimmed_string_map_param(
+        params,
+        &["startup_environment", "initial_env"],
+    )
+    .is_some_and(|environment| !environment.is_empty())
+    {
+        unsupported.push("startup_environment".into());
+    }
+    if super::f64_param(params, &["initial_divider_position"]).is_some() {
+        unsupported.push("initial_divider_position".into());
+    }
+    unsupported
+}
+
 fn pane_create(
     snapshot: &AppSessionSnapshot,
     method: &str,
@@ -3124,11 +3154,10 @@ fn pane_create(
             )
         }
     };
-    if params.contains_key("initial_divider_position")
-        && params
-            .get("initial_divider_position")
-            .and_then(Value::as_f64)
-            .is_none()
+    if params
+        .get("initial_divider_position")
+        .is_some_and(|value| !value.is_null())
+        && super::f64_param(params, &["initial_divider_position"]).is_none()
     {
         return error(
             snapshot,
@@ -3188,38 +3217,12 @@ fn pane_create(
         } if super::valid_tmux_identity(remote_session_id, '%') => Some(remote_session_id.clone()),
         _ => None,
     });
-    let workspace_value = serde_json::to_value(workspace).unwrap();
+    let remote = workspace.remote.as_ref();
     let remote_tmux = method == "pane.create"
-        && workspace_value["remote"]["connected"] == json!(true)
-        && workspace_value["remote"]["transport"] == json!("tmux");
-    if remote_tmux
-        && matches!(kind, SessionSurfaceKindSnapshot::Terminal)
-        && source_remote_pane_id.is_some()
-    {
-        let mut unsupported = Vec::new();
-        if insert_first {
-            unsupported.push("direction=left/up".to_string());
-        }
-        if params.contains_key("working_directory") {
-            unsupported.push("working_directory".into());
-        }
-        if params.contains_key("initial_command") || params.contains_key("command") {
-            unsupported.push("initial_command".into());
-        }
-        if params.contains_key("tmux_start_command") {
-            unsupported.push("tmux_start_command".into());
-        }
-        if params.get("startup_environment").is_some_and(|value| {
-            !value.is_null()
-                && value
-                    .as_object()
-                    .is_none_or(|environment| !environment.is_empty())
-        }) {
-            unsupported.push("startup_environment".into());
-        }
-        if params.contains_key("initial_divider_position") {
-            unsupported.push("initial_divider_position".into());
-        }
+        && remote.and_then(|remote| remote.transport.as_deref()) == Some("tmux")
+        && matches!(kind, SessionSurfaceKindSnapshot::Terminal);
+    if remote_tmux {
+        let unsupported = remote_tmux_unsupported_options(params, insert_first);
         if !unsupported.is_empty() {
             return error(
                 snapshot,
@@ -3228,6 +3231,11 @@ fn pane_create(
                 Some(json!({"unsupported":unsupported,"routed_target":"remote-tmux"})),
             );
         }
+    }
+    if remote_tmux
+        && remote.is_some_and(|remote| remote.connected)
+        && source_remote_pane_id.is_some()
+    {
         let (split_direction, split_orientation) = match orientation {
             SessionSplitOrientation::Horizontal => (
                 super::RemoteTmuxSplitDirection::Horizontal,
@@ -3238,20 +3246,16 @@ fn pane_create(
                 SessionSplitOrientation::Vertical,
             ),
         };
-        let remote = workspace_value["remote"]["destination"]
-            .as_str()
-            .unwrap_or("remote")
-            .to_owned();
+        let destination = remote
+            .and_then(|remote| remote.destination.clone())
+            .unwrap_or_else(|| "remote".into());
         return ok_transition(
             snapshot.clone(),
             json!({"accepted":true,"routed":"remote-tmux","type":"terminal","window_id":scope.window_id,"workspace_id":scope.workspace_id,"pane_id":null,"surface_id":null}),
             vec![],
             vec![LifecycleEffect::RemoteCreate {
-                remote_session_id: remote,
-                destination: workspace_value["remote"]["destination"]
-                    .as_str()
-                    .unwrap_or("remote")
-                    .to_owned(),
+                remote_session_id: destination.clone(),
+                destination,
                 window_id: scope.window_id,
                 workspace_id: scope.workspace_id,
                 target_pane_id: None,
@@ -3263,11 +3267,9 @@ fn pane_create(
                 kind: "terminal".into(),
                 tmux_operation: "split-window",
                 arrival_policy: "runtime-pane-add",
-                focus: params
-                    .get("focus")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
-                focus_mode: "split",
+                focus: true,
+                focus_mode: "tmux-active",
+                activate_window: false,
                 placement: "split",
                 working_directory: None,
                 working_directory_source_surface_id: None,
@@ -3281,7 +3283,7 @@ fn pane_create(
             }],
         );
     }
-    if remote_tmux && matches!(kind, SessionSurfaceKindSnapshot::Terminal) {
+    if remote_tmux {
         return error(snapshot, "internal_error", "Failed to create pane", None);
     }
     let mut next = snapshot.clone();

@@ -708,7 +708,7 @@ fn production_remote_split_format_crosses_ssh_as_one_safe_shell_command() {
     .unwrap();
     assert_eq!(
         split,
-        vec!["tmux split-window -d -P -F '#{pane_id}'"],
+        vec!["tmux split-window -P -F '#{pane_id}'"],
         "split output format must also survive the remote shell"
     );
 }
@@ -876,7 +876,7 @@ fn production_remote_split_command_targets_the_resolved_tmux_pane() {
             working_directory: None,
         })
         .unwrap(),
-        ["tmux split-window -d -h -t '@7.%34' -P -F '#{pane_id}'"]
+        ["tmux split-window -h -t '@7.%34' -P -F '#{pane_id}'"]
     );
 
     let production = include_str!("../../control_socket.rs");
@@ -1069,6 +1069,7 @@ fn remote_pane_create_unsupported_options_use_coordinator_parsed_values() {
         json!({"startup_environment": null}),
         json!({"startup_environment": {}}),
         json!({"startup_environment": {"   ": "ignored"}}),
+        json!({"startup_environment": {"   ": "ignored"}, "initial_env": {"A": "B"}}),
     ];
     let actual = omitted.map(|extra| {
         let mut params = json!({"surface_id": A, "direction": "right"});
@@ -1086,10 +1087,11 @@ fn remote_pane_create_unsupported_options_use_coordinator_parsed_values() {
                 .any(|effect| matches!(effect, LifecycleEffect::RemoteCreate { .. })),
         )
     });
-    assert_eq!(actual, [(true, true, true); 13]);
+    assert_eq!(actual, [(true, true, true); 14]);
 
     for params in [
         json!({"surface_id": A, "direction": "right", "initial_env": {"  A  ": ""}}),
+        json!({"surface_id": A, "direction": "right", "startup_environment": {"A": ""}}),
         json!({"surface_id": A, "direction": "right", "startup_environment": null, "initial_env": {"A": "B"}}),
     ] {
         let transition = remote_pane_create(&snapshot, params);
