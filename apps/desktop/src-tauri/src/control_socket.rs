@@ -10554,10 +10554,15 @@ fn surface_open_markdown(
     };
     let state = app.state::<SessionState>();
     match open_markdown_file_in_panel(app, &state, &panel_id, &file_path) {
-        Some(snapshot) => surface_list_from_params(&snapshot, params),
-        None => ControlCallResult::Err {
+        Ok(Some(snapshot)) => surface_list_from_params(&snapshot, params),
+        Ok(None) => ControlCallResult::Err {
             code: "not_found".to_string(),
             message: format!("unable to open markdown file in pane {panel_id}"),
+            data: None,
+        },
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
             data: None,
         },
     }
@@ -10576,10 +10581,15 @@ fn surface_open_file(
     };
     let state = app.state::<SessionState>();
     match open_file_in_panel(app, &state, &panel_id, &file_path) {
-        Some(snapshot) => surface_list_from_params(&snapshot, params),
-        None => ControlCallResult::Err {
+        Ok(Some(snapshot)) => surface_list_from_params(&snapshot, params),
+        Ok(None) => ControlCallResult::Err {
             code: "not_found".to_string(),
             message: format!("unable to open file in pane {panel_id}"),
+            data: None,
+        },
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
             data: None,
         },
     }
@@ -13846,7 +13856,7 @@ fn sidebar_open(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Con
     let state = app.state::<SessionState>();
     let path = candidate.path.to_string_lossy().to_string();
     match open_custom_sidebar_in_panel(app, &state, &panel_id, &path) {
-        Some(snapshot) => {
+        Ok(Some(snapshot)) => {
             let surface = surface_list_from_params(&snapshot, params);
             ok(json!({
                 "accepted": true,
@@ -13861,9 +13871,14 @@ fn sidebar_open(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Con
                 "warnings": validation.get("warnings").cloned().unwrap_or_else(|| json!([])),
             }))
         }
-        None => ControlCallResult::Err {
+        Ok(None) => ControlCallResult::Err {
             code: "not_found".to_string(),
             message: format!("unable to open custom sidebar in pane {panel_id}"),
+            data: None,
+        },
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
             data: None,
         },
     }

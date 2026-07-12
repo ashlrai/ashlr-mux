@@ -3066,25 +3066,20 @@ pub(crate) fn record_started_agent_session(
     app: &AppHandle,
     state: &SessionState,
     started: StartedAgentSessionSnapshot,
-) -> bool {
+) -> Result<bool, String> {
     let restorable = restorable_snapshot_from_started(&started);
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_restorable_agent_snapshot(
-            &mut guard,
-            started.workspace_id.as_deref(),
-            &started.panel_id,
-            restorable,
-        );
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    changed
+    let (changed, _) = state
+        .transact_value_if_changed(app, |snapshot| {
+            let changed = apply_restorable_agent_snapshot(
+                snapshot,
+                started.workspace_id.as_deref(),
+                &started.panel_id,
+                restorable,
+            );
+            Ok::<(bool, bool), std::convert::Infallible>((changed, changed))
+        })
+        .map_err(collapse_infallible_publication_error)?;
+    Ok(changed)
 }
 
 fn restorable_snapshot_from_started(
@@ -3344,24 +3339,29 @@ impl SnapshotPublicationOperations for ProductionSnapshotPublicationOperations<'
     }
 }
 
+fn mutate_optional_snapshot_for_control(
+    app: &AppHandle,
+    state: &SessionState,
+    mutation: impl FnOnce(&mut AppSessionSnapshot) -> bool,
+) -> Result<Option<AppSessionSnapshot>, String> {
+    let (resolved, snapshot) = state
+        .transact_value_if_changed(app, |snapshot| {
+            let resolved = mutation(snapshot);
+            Ok::<(bool, bool), std::convert::Infallible>((resolved, resolved))
+        })
+        .map_err(collapse_infallible_publication_error)?;
+    Ok(resolved.then_some(snapshot))
+}
+
 pub(crate) fn open_markdown_file_in_panel(
     app: &AppHandle,
     state: &SessionState,
     panel_id: &str,
     file_path: &str,
-) -> Option<AppSessionSnapshot> {
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        if !apply_open_markdown_file(&mut guard, panel_id, file_path) {
-            return None;
-        }
-        guard.clone()
-    };
-    notify_session_changed(app, &snapshot);
-    Some(snapshot)
+) -> Result<Option<AppSessionSnapshot>, String> {
+    mutate_optional_snapshot_for_control(app, state, |snapshot| {
+        apply_open_markdown_file(snapshot, panel_id, file_path)
+    })
 }
 
 pub(crate) fn open_file_in_panel(
@@ -3369,19 +3369,10 @@ pub(crate) fn open_file_in_panel(
     state: &SessionState,
     panel_id: &str,
     file_path: &str,
-) -> Option<AppSessionSnapshot> {
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        if !apply_open_file(&mut guard, panel_id, file_path) {
-            return None;
-        }
-        guard.clone()
-    };
-    notify_session_changed(app, &snapshot);
-    Some(snapshot)
+) -> Result<Option<AppSessionSnapshot>, String> {
+    mutate_optional_snapshot_for_control(app, state, |snapshot| {
+        apply_open_file(snapshot, panel_id, file_path)
+    })
 }
 
 pub(crate) fn open_custom_sidebar_in_panel(
@@ -3389,19 +3380,10 @@ pub(crate) fn open_custom_sidebar_in_panel(
     state: &SessionState,
     panel_id: &str,
     file_path: &str,
-) -> Option<AppSessionSnapshot> {
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        if !apply_open_custom_sidebar(&mut guard, panel_id, file_path) {
-            return None;
-        }
-        guard.clone()
-    };
-    notify_session_changed(app, &snapshot);
-    Some(snapshot)
+) -> Result<Option<AppSessionSnapshot>, String> {
+    mutate_optional_snapshot_for_control(app, state, |snapshot| {
+        apply_open_custom_sidebar(snapshot, panel_id, file_path)
+    })
 }
 
 pub(crate) fn open_diff_viewer_in_panel(
@@ -6650,7 +6632,7 @@ pub fn session_open_markdown_file(
     panel_id: String,
     file_path: String,
 ) -> Result<AppSessionSnapshot, String> {
-    open_markdown_file_in_panel(&app, &state, &panel_id, &file_path)
+    open_markdown_file_in_panel(&app, &state, &panel_id, &file_path)?
         .ok_or_else(|| format!("unable to open markdown file in pane {panel_id}"))
 }
 
@@ -6664,7 +6646,7 @@ pub fn session_open_file(
     panel_id: String,
     file_path: String,
 ) -> Result<AppSessionSnapshot, String> {
-    open_file_in_panel(&app, &state, &panel_id, &file_path)
+    open_file_in_panel(&app, &state, &panel_id, &file_path)?
         .ok_or_else(|| format!("unable to open file in pane {panel_id}"))
 }
 
@@ -6792,17 +6774,16 @@ pub fn session_set_browser_zoom(
     panel_id: String,
     zoom: f64,
 ) -> Result<AppSessionSnapshot, String> {
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        if !apply_set_browser_zoom(&mut guard, &panel_id, zoom) {
-            return Err(format!("unable to set browser zoom for pane {panel_id}"));
-        }
-        guard.clone()
-    };
-    notify_session_changed(&app, &snapshot);
+    let (_, snapshot) = state
+        .transact_pane_topology(&app, |snapshot| {
+            apply_set_browser_zoom(snapshot, &panel_id, zoom)
+                .then_some(())
+                .ok_or_else(|| format!("unable to set browser zoom for pane {panel_id}"))
+        })
+        .map_err(|error| match error {
+            PaneTopologyControlError::Operation(message)
+            | PaneTopologyControlError::Publication(message) => message,
+        })?;
     Ok(snapshot)
 }
 
@@ -7107,19 +7088,10 @@ pub fn session_rename_workspace(
     state: State<'_, SessionState>,
     index: i64,
     title: String,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_rename_workspace(&mut guard, index, &title);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(&app, |snapshot| {
+        apply_rename_workspace(snapshot, index, &title)
+    })
 }
 
 /// Set or clear the workspace description at `index`. Blank/whitespace-only

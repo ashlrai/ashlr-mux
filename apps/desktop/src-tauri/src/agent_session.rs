@@ -690,7 +690,11 @@ pub async fn agent_session_rpc(
         .recv()
         .unwrap_or_else(|_| err_envelope("actorUnavailable", "Agent session host stopped."));
     if let Some(started) = start_scope.and_then(|scope| started_agent_snapshot(&scope, &reply)) {
-        crate::session::record_started_agent_session(&app, &session_state, started);
+        if let Err(error) =
+            crate::session::record_started_agent_session(&app, &session_state, started)
+        {
+            eprintln!("[agent-session] failed to persist restorable session: {error}");
+        }
     }
     Ok(reply)
 }
