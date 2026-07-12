@@ -145,6 +145,10 @@ mod window_lifecycle_transactions_red;
 #[path = "session/activation_workspace_transactions_red.rs"]
 mod activation_workspace_transactions_red;
 
+#[cfg(test)]
+#[path = "session/runtime_close_leases_red.rs"]
+mod runtime_close_leases_red;
+
 impl Default for SessionState {
     fn default() -> Self {
         let snapshot = initial_snapshot(FIRST_PANEL_ID);
