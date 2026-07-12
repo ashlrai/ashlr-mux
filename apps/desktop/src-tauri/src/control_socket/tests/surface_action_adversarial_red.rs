@@ -2280,3 +2280,136 @@ fn remote_tmux_list_windows_command_and_parser_are_exact_and_injection_safe() {
         );
     }
 }
+
+fn remote_list_output(exit_code: i32, stdout: &str, stderr: &str) -> RemoteTmuxCommandOutput {
+    RemoteTmuxCommandOutput {
+        exit_code,
+        stdout: stdout.into(),
+        stderr: stderr.into(),
+    }
+}
+
+#[test]
+fn remote_window_presence_classifies_success_no_server_and_transport_failures() {
+    assert_eq!(
+        classify_remote_tmux_window_presence("@42", Ok(remote_list_output(0, "@1\n@42\n", ""))),
+        RemoteWindowPresenceObservation::Present,
+    );
+    assert_eq!(
+        classify_remote_tmux_window_presence("@42", Ok(remote_list_output(0, "@1\n@9\n", ""))),
+        RemoteWindowPresenceObservation::Absent,
+    );
+    assert_eq!(
+        classify_remote_tmux_window_presence(
+            "@42",
+            Ok(remote_list_output(
+                1,
+                "",
+                "no server running on /tmp/tmux-1000/default\n",
+            )),
+        ),
+        RemoteWindowPresenceObservation::Absent,
+        "killing the final window normally terminates tmux and is an authoritative absence",
+    );
+    for uncertain in [
+        Ok(remote_list_output(255, "", "ssh: connect timed out\n")),
+        Ok(remote_list_output(1, "", "unknown tmux failure\n")),
+        Ok(remote_list_output(0, "@42; kill-server\n", "")),
+        Err("failed to launch ssh".into()),
+    ] {
+        assert_eq!(
+            classify_remote_tmux_window_presence("@42", uncertain),
+            RemoteWindowPresenceObservation::QueryFailed,
+        );
+    }
+}
+
+#[test]
+fn remote_departure_retry_backoff_grows_and_failure_reports_are_rate_limited() {
+    let mut registry = RemoteWindowDepartureRegistry::default();
+    let key = registry.register(PendingRemoteWindowDeparture {
+        destination: "mirror.example".into(),
+        remote_window_id: "@42".into(),
+        departure: pending_remote_departure(),
+    });
+
+    let initial_delay = registry.retry_delay(&key).unwrap();
+    assert!(initial_delay >= Duration::from_millis(250));
+    assert_eq!(registry.retry_attempts(&key), Some(0));
+
+    assert_eq!(
+        registry.record_observation(&key, RemoteWindowPresenceObservation::QueryFailed),
+        RemoteWindowDepartureAction::RetainAndPoll,
+    );
+    let first_failure_delay = registry.retry_delay(&key).unwrap();
+    assert!(first_failure_delay > initial_delay);
+    assert_eq!(registry.retry_attempts(&key), Some(1));
+    assert!(registry.take_failure_report_permit(&key));
+    assert!(
+        !registry.take_failure_report_permit(&key),
+        "one retry cycle must not emit duplicate close_failed events"
+    );
+
+    for expected_attempt in 2..=5 {
+        registry.record_observation(&key, RemoteWindowPresenceObservation::QueryFailed);
+        assert_eq!(registry.retry_attempts(&key), Some(expected_attempt));
+        assert!(registry.retry_delay(&key).unwrap() >= first_failure_delay);
+        assert!(
+            !registry.take_failure_report_permit(&key),
+            "rapid retry failures must be deduplicated"
+        );
+    }
+    assert!(registry.contains(&key));
+}
+
+#[test]
+fn remote_departure_present_and_commit_failure_rearm_without_losing_registry_state() {
+    let mut registry = RemoteWindowDepartureRegistry::default();
+    let key = registry.register(PendingRemoteWindowDeparture {
+        destination: "mirror.example".into(),
+        remote_window_id: "@42".into(),
+        departure: pending_remote_departure(),
+    });
+
+    assert_eq!(
+        registry.record_observation(&key, RemoteWindowPresenceObservation::Present),
+        RemoteWindowDepartureAction::RetainAndPoll,
+    );
+    assert!(registry.contains(&key));
+    let before_commit_failure = registry.retry_attempts(&key).unwrap();
+    assert!(!registry.record_commit_result(&key, Err("persist failed".into())));
+    assert!(registry.contains(&key));
+    assert!(registry.retry_attempts(&key).unwrap() > before_commit_failure);
+
+    assert_eq!(
+        registry.record_observation(&key, RemoteWindowPresenceObservation::Absent),
+        RemoteWindowDepartureAction::CommitDeparture,
+    );
+    assert!(registry.contains(&key));
+}
+
+#[test]
+fn remote_window_lookup_and_kill_run_without_holding_registry_mutex() {
+    let registry = Mutex::new(RemoteWindowDepartureRegistry::default());
+    let key = execute_remote_window_kill_and_register(
+        &registry,
+        "mirror.example",
+        "%7",
+        pending_remote_departure(),
+        |destination, source_pane| {
+            assert_eq!(destination, "mirror.example");
+            assert_eq!(source_pane, "%7");
+            assert!(
+                registry.try_lock().is_ok(),
+                "blocking SSH lookup/kill must not run under the registry mutex"
+            );
+            Ok("@42".into())
+        },
+    )
+    .unwrap();
+
+    let guard = registry.lock().unwrap();
+    let pending = guard.get(&key).unwrap();
+    assert_eq!(pending.remote_window_id, "@42");
+    assert_eq!(pending.destination, "mirror.example");
+}
