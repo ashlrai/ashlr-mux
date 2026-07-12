@@ -10363,4 +10363,235 @@ mod tests {
         assert!(replace_file_atomically(&missing, &current).is_err());
         assert_eq!(std::fs::read(&current).unwrap(), b"new");
     }
+
+    struct TestSnapshotPublicationOperations {
+        name: &'static str,
+        calls: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        persist_entered: Option<std::sync::mpsc::Sender<()>>,
+        persist_release: Option<std::sync::mpsc::Receiver<()>>,
+        persist_error: Option<String>,
+        event_baseline: String,
+    }
+
+    impl SnapshotPublicationOperations for TestSnapshotPublicationOperations {
+        fn persist(&mut self, _candidate: &AppSessionSnapshot) -> Result<(), String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("{}:persist", self.name));
+            if let Some(entered) = self.persist_entered.take() {
+                entered.send(()).unwrap();
+            }
+            if let Some(release) = self.persist_release.take() {
+                release.recv().unwrap();
+            }
+            if let Some(error) = self.persist_error.take() {
+                return Err(error);
+            }
+            Ok(())
+        }
+
+        fn update_event_baseline(&mut self, candidate: &AppSessionSnapshot) {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("{}:baseline", self.name));
+            self.event_baseline = candidate.windows[0].tab_manager.workspaces[0]
+                .current_directory
+                .clone()
+                .unwrap_or_default();
+        }
+
+        fn emit(&mut self, _candidate: &AppSessionSnapshot) -> Result<(), String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("{}:emit", self.name));
+            Ok(())
+        }
+    }
+
+    fn publication_candidate(base: &AppSessionSnapshot, marker: &str) -> AppSessionSnapshot {
+        let mut candidate = base.clone();
+        candidate.windows[0].tab_manager.workspaces[0].current_directory = Some(marker.into());
+        candidate
+    }
+
+    #[test]
+    fn snapshot_publication_gate_covers_persist_authority_baseline_and_emit() {
+        let initial = initial_snapshot("surface-1");
+        let older = publication_candidate(&initial, "older");
+        let newer = publication_candidate(&older, "newer");
+        let authority = std::sync::Arc::new(GatedSnapshot::new(initial.clone()));
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (older_entered_tx, older_entered_rx) = std::sync::mpsc::channel();
+        let (release_older_tx, release_older_rx) = std::sync::mpsc::channel();
+        let (newer_entered_tx, newer_entered_rx) = std::sync::mpsc::channel();
+
+        let older_authority = authority.clone();
+        let older_calls = calls.clone();
+        let older_initial = initial.clone();
+        let older_thread = std::thread::spawn(move || {
+            let mut operations = TestSnapshotPublicationOperations {
+                name: "older",
+                calls: older_calls,
+                persist_entered: Some(older_entered_tx),
+                persist_release: Some(release_older_rx),
+                persist_error: None,
+                event_baseline: "initial".into(),
+            };
+            publish_snapshot_transaction(
+                &older_authority,
+                Some(&older_initial),
+                &older,
+                &mut operations,
+            )
+            .unwrap();
+        });
+        older_entered_rx.recv().unwrap();
+
+        let newer_authority = authority.clone();
+        let newer_calls = calls.clone();
+        let newer_expected = publication_candidate(&initial, "older");
+        let newer_thread = std::thread::spawn(move || {
+            let mut operations = TestSnapshotPublicationOperations {
+                name: "newer",
+                calls: newer_calls,
+                persist_entered: Some(newer_entered_tx),
+                persist_release: None,
+                persist_error: None,
+                event_baseline: "older".into(),
+            };
+            publish_snapshot_transaction(
+                &newer_authority,
+                Some(&newer_expected),
+                &newer,
+                &mut operations,
+            )
+            .unwrap();
+        });
+
+        assert!(matches!(
+            newer_entered_rx.recv_timeout(std::time::Duration::from_millis(100)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        release_older_tx.send(()).unwrap();
+        older_thread.join().unwrap();
+        newer_entered_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        newer_thread.join().unwrap();
+
+        assert_eq!(
+            calls.lock().unwrap().as_slice(),
+            [
+                "older:persist",
+                "older:baseline",
+                "older:emit",
+                "newer:persist",
+                "newer:baseline",
+                "newer:emit",
+            ]
+        );
+        assert_eq!(
+            authority.lock().unwrap().windows[0].tab_manager.workspaces[0]
+                .current_directory
+                .as_deref(),
+            Some("newer")
+        );
+    }
+
+    #[test]
+    fn snapshot_persistence_failure_preserves_authority_and_event_baseline() {
+        let initial = initial_snapshot("surface-1");
+        let candidate = publication_candidate(&initial, "candidate");
+        let authority = GatedSnapshot::new(initial.clone());
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut operations = TestSnapshotPublicationOperations {
+            name: "failed",
+            calls: calls.clone(),
+            persist_entered: None,
+            persist_release: None,
+            persist_error: Some("snapshot write failed".into()),
+            event_baseline: "initial".into(),
+        };
+
+        assert_eq!(
+            publish_snapshot_transaction(&authority, Some(&initial), &candidate, &mut operations)
+                .unwrap_err(),
+            "snapshot write failed"
+        );
+        assert_eq!(*authority.lock().unwrap(), initial);
+        assert_eq!(operations.event_baseline, "initial");
+        assert_eq!(calls.lock().unwrap().as_slice(), ["failed:persist"]);
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum TestSnapshotWriterFailure {
+        CreateDirectory,
+        WriteStaged,
+        AtomicReplace,
+    }
+
+    struct TestSnapshotFileOperations {
+        failure: TestSnapshotWriterFailure,
+        calls: Vec<&'static str>,
+    }
+
+    impl SnapshotFileOperations for TestSnapshotFileOperations {
+        fn create_parent(&mut self, _parent: &Path) -> Result<(), String> {
+            self.calls.push("mkdir");
+            (self.failure != TestSnapshotWriterFailure::CreateDirectory)
+                .then_some(())
+                .ok_or_else(|| "mkdir failed".into())
+        }
+
+        fn write_staged(&mut self, _path: &Path, bytes: &[u8]) -> Result<(), String> {
+            self.calls.push("write");
+            assert!(!bytes.is_empty());
+            (self.failure != TestSnapshotWriterFailure::WriteStaged)
+                .then_some(())
+                .ok_or_else(|| "write failed".into())
+        }
+
+        fn atomic_replace(&mut self, _staged: &Path, _destination: &Path) -> Result<(), String> {
+            self.calls.push("replace");
+            (self.failure != TestSnapshotWriterFailure::AtomicReplace)
+                .then_some(())
+                .ok_or_else(|| "replace failed".into())
+        }
+    }
+
+    #[test]
+    fn strict_snapshot_writer_surfaces_directory_write_and_replace_failures() {
+        let snapshot = initial_snapshot("surface-1");
+        let path = Path::new("state/session.json");
+        for (failure, expected_error, expected_calls) in [
+            (
+                TestSnapshotWriterFailure::CreateDirectory,
+                "mkdir failed",
+                &["mkdir"][..],
+            ),
+            (
+                TestSnapshotWriterFailure::WriteStaged,
+                "write failed",
+                &["mkdir", "write"][..],
+            ),
+            (
+                TestSnapshotWriterFailure::AtomicReplace,
+                "replace failed",
+                &["mkdir", "write", "replace"][..],
+            ),
+        ] {
+            let mut operations = TestSnapshotFileOperations {
+                failure,
+                calls: Vec::new(),
+            };
+            assert_eq!(
+                write_snapshot_file_strict(path, &snapshot, &mut operations).unwrap_err(),
+                expected_error
+            );
+            assert_eq!(operations.calls, expected_calls);
+        }
+    }
 }
