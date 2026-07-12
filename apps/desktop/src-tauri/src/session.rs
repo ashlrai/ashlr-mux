@@ -133,6 +133,10 @@ mod restore_previous_launch_red;
 #[path = "session/next_panel_allocation_fence_red.rs"]
 mod next_panel_allocation_fence_red;
 
+#[cfg(test)]
+#[path = "session/browser_proxy_transactions_red.rs"]
+mod browser_proxy_transactions_red;
+
 impl Default for SessionState {
     fn default() -> Self {
         let snapshot = initial_snapshot(FIRST_PANEL_ID);
