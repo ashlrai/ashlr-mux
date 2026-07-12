@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 use std::thread;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
@@ -1801,6 +1801,46 @@ enum RemoteWindowPresenceObservation {
     QueryFailed,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RemoteTmuxCommandOutput {
+    exit_code: i32,
+    stdout: String,
+    stderr: String,
+}
+
+fn classify_remote_tmux_window_presence(
+    remote_window_id: &str,
+    output: Result<RemoteTmuxCommandOutput, String>,
+) -> RemoteWindowPresenceObservation {
+    let Ok(output) = output else {
+        return RemoteWindowPresenceObservation::QueryFailed;
+    };
+    if output.exit_code == 0 {
+        return parse_remote_tmux_window_ids(&output.stdout)
+            .map(|window_ids| {
+                if window_ids
+                    .iter()
+                    .any(|window_id| window_id == remote_window_id)
+                {
+                    RemoteWindowPresenceObservation::Present
+                } else {
+                    RemoteWindowPresenceObservation::Absent
+                }
+            })
+            .unwrap_or(RemoteWindowPresenceObservation::QueryFailed);
+    }
+    let no_server = output.stderr.strip_suffix('\n').unwrap_or(&output.stderr);
+    if output.exit_code == 1
+        && output.stdout.is_empty()
+        && no_server
+            .strip_prefix("no server running on ")
+            .is_some_and(|socket| !socket.is_empty() && !socket.contains(['\r', '\n']))
+    {
+        return RemoteWindowPresenceObservation::Absent;
+    }
+    RemoteWindowPresenceObservation::QueryFailed
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RemoteWindowDepartureAction {
     RetainAndPoll,
@@ -1811,6 +1851,13 @@ enum RemoteWindowDepartureAction {
 struct RemoteWindowDepartureRegistry {
     next_key: u64,
     pending: BTreeMap<String, PendingRemoteWindowDeparture>,
+    retry: BTreeMap<String, RemoteWindowDepartureRetryState>,
+}
+
+#[derive(Default)]
+struct RemoteWindowDepartureRetryState {
+    attempts: usize,
+    next_failure_report_at: Option<Instant>,
 }
 
 impl RemoteWindowDepartureRegistry {
@@ -1818,6 +1865,7 @@ impl RemoteWindowDepartureRegistry {
         self.next_key = self.next_key.saturating_add(1);
         let key = format!("remote-window-departure-{}", self.next_key);
         self.pending.insert(key.clone(), pending);
+        self.retry.insert(key.clone(), Default::default());
         key
     }
 
@@ -1849,6 +1897,9 @@ impl RemoteWindowDepartureRegistry {
             RemoteWindowPresenceObservation::Absent => RemoteWindowDepartureAction::CommitDeparture,
             RemoteWindowPresenceObservation::Present
             | RemoteWindowPresenceObservation::QueryFailed => {
+                if let Some(retry) = self.retry.get_mut(key) {
+                    retry.attempts = retry.attempts.saturating_add(1);
+                }
                 RemoteWindowDepartureAction::RetainAndPoll
             }
         }
@@ -1860,11 +1911,35 @@ impl RemoteWindowDepartureRegistry {
         result: Result<RuntimeDepartureCommitOutcome, String>,
     ) -> bool {
         if result.is_ok() {
-            self.pending.remove(key);
-            true
+            self.retry.remove(key);
+            self.pending.remove(key).is_some()
         } else {
+            if let Some(retry) = self.retry.get_mut(key) {
+                retry.attempts = retry.attempts.saturating_add(1);
+            }
             false
         }
+    }
+
+    fn retry_attempts(&self, key: &str) -> Option<usize> {
+        self.retry.get(key).map(|retry| retry.attempts)
+    }
+
+    fn retry_delay(&self, key: &str) -> Option<Duration> {
+        let attempts = self.retry_attempts(key)?.min(6) as u32;
+        Some(Duration::from_millis(250 * 2_u64.pow(attempts)))
+    }
+
+    fn take_failure_report_permit(&mut self, key: &str) -> bool {
+        let now = Instant::now();
+        let Some(retry) = self.retry.get_mut(key) else {
+            return false;
+        };
+        if retry.next_failure_report_at.is_some_and(|next| now < next) {
+            return false;
+        }
+        retry.next_failure_report_at = Some(now + Duration::from_secs(30));
+        true
     }
 
     fn pending_failure_payload(&self, key: &str, message: &str) -> Option<Value> {
@@ -1894,21 +1969,61 @@ fn retain_remote_window_departure_after_kill(
     }))
 }
 
+fn execute_remote_window_kill_and_register<F>(
+    registry: &Mutex<RemoteWindowDepartureRegistry>,
+    destination: &str,
+    source_pane: &str,
+    departure: pane_surface_lifecycle::RuntimeDeparture,
+    kill: F,
+) -> Result<String, String>
+where
+    F: FnOnce(&str, &str) -> Result<String, String>,
+{
+    if !valid_tmux_identity(source_pane, '%') {
+        return Err("invalid remote tmux pane identity".into());
+    }
+    let remote_window_id = kill(destination, source_pane)?;
+    let mut registry = registry
+        .lock()
+        .map_err(|_| "remote departure registry lock poisoned".to_string())?;
+    retain_remote_window_departure_after_kill(
+        &mut registry,
+        destination,
+        &remote_window_id,
+        departure,
+    )
+}
+
 #[derive(Default)]
 pub struct RemoteWindowDepartureRegistryState {
     registry: Mutex<RemoteWindowDepartureRegistry>,
 }
 
-fn run_remote_tmux_command(destination: &str, command: Vec<String>) -> Result<String, String> {
+fn run_remote_tmux_command_output(
+    destination: &str,
+    command: Vec<String>,
+) -> Result<RemoteTmuxCommandOutput, String> {
     let output = Command::new("ssh")
         .args(["-T", "-o", "BatchMode=yes", destination])
         .args(command)
         .output()
         .map_err(|error| error.to_string())?;
-    if !output.status.success() {
-        return Err(format!("remote tmux command exited with {}", output.status));
+    Ok(RemoteTmuxCommandOutput {
+        exit_code: output.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    })
+}
+
+fn run_remote_tmux_command(destination: &str, command: Vec<String>) -> Result<String, String> {
+    let output = run_remote_tmux_command_output(destination, command)?;
+    if output.exit_code != 0 {
+        return Err(format!(
+            "remote tmux command exited with {}",
+            output.exit_code
+        ));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    Ok(output.stdout)
 }
 
 fn remote_tmux_window_for_pane(destination: &str, pane_token: &str) -> Result<String, String> {
@@ -2179,17 +2294,13 @@ fn schedule_remote_window_departure_reconciliation(app: &AppHandle, key: String)
         let Some(pending) = pending else {
             return;
         };
-        let observation =
-            run_remote_tmux_command(&pending.destination, remote_tmux_list_windows_command())
-                .and_then(|output| parse_remote_tmux_window_ids(&output))
-                .map(|window_ids| {
-                    if window_ids.contains(&pending.remote_window_id) {
-                        RemoteWindowPresenceObservation::Present
-                    } else {
-                        RemoteWindowPresenceObservation::Absent
-                    }
-                })
-                .unwrap_or(RemoteWindowPresenceObservation::QueryFailed);
+        let observation = classify_remote_tmux_window_presence(
+            &pending.remote_window_id,
+            run_remote_tmux_command_output(
+                &pending.destination,
+                remote_tmux_list_windows_command(),
+            ),
+        );
         let action = state
             .registry
             .lock()
@@ -2214,11 +2325,12 @@ fn schedule_remote_window_departure_reconciliation(app: &AppHandle, key: String)
             }
         };
         if let Some(message) = failure {
-            let payload = state
-                .registry
-                .lock()
-                .ok()
-                .and_then(|registry| registry.pending_failure_payload(&key, &message));
+            let payload = state.registry.lock().ok().and_then(|mut registry| {
+                registry
+                    .take_failure_report_permit(&key)
+                    .then(|| registry.pending_failure_payload(&key, &message))
+                    .flatten()
+            });
             if let Some(payload) = payload {
                 record_event(
                     &app,
@@ -2233,7 +2345,13 @@ fn schedule_remote_window_departure_reconciliation(app: &AppHandle, key: String)
                 );
             }
         }
-        thread::sleep(Duration::from_millis(250));
+        let retry_delay = state
+            .registry
+            .lock()
+            .ok()
+            .and_then(|registry| registry.retry_delay(&key))
+            .unwrap_or(Duration::from_millis(250));
+        thread::sleep(retry_delay);
         schedule_remote_window_departure_reconciliation(&app, key);
     });
 }
@@ -2788,31 +2906,29 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
                     ..
                 } => {
                     let registry_state = self.app.state::<RemoteWindowDepartureRegistryState>();
-                    let mut registry = registry_state
-                        .registry
-                        .lock()
-                        .map_err(|_| "remote departure registry lock poisoned".to_string())?;
-                    let result = execute_remote_tmux_window_mutation(
+                    let result = execute_remote_window_kill_and_register(
+                        &registry_state.registry,
                         destination,
                         source_remote_pane_id,
-                        |window_token| {
-                            remote_tmux_kill_command(RemoteTmuxTarget::Window, window_token)
+                        pane_surface_lifecycle::RuntimeDeparture {
+                            window_id: window_id.clone(),
+                            workspace_id: workspace_id.clone(),
+                            pane_id: pane_id.clone(),
+                            surface_id: surface_id.clone(),
+                            generation: *generation,
+                        },
+                        |destination, source_pane| {
+                            execute_remote_tmux_window_mutation(
+                                destination,
+                                source_pane,
+                                |window_token| {
+                                    remote_tmux_kill_command(RemoteTmuxTarget::Window, window_token)
+                                },
+                            )
                         },
                     );
-                    if let Ok(remote_window_id) = &result {
-                        let key = retain_remote_window_departure_after_kill(
-                            &mut registry,
-                            destination,
-                            remote_window_id,
-                            pane_surface_lifecycle::RuntimeDeparture {
-                                window_id: window_id.clone(),
-                                workspace_id: workspace_id.clone(),
-                                pane_id: pane_id.clone(),
-                                surface_id: surface_id.clone(),
-                                generation: *generation,
-                            },
-                        )?;
-                        self.deferred_remote_departures.push(key);
+                    if let Ok(key) = &result {
+                        self.deferred_remote_departures.push(key.clone());
                     } else if *must_succeed {
                         result?;
                     }
