@@ -14,6 +14,7 @@ mod control_socket;
 mod default_terminal;
 mod diff;
 mod directory_search;
+mod dock;
 mod feed;
 mod file_explorer;
 mod global_hotkey;
