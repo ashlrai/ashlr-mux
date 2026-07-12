@@ -342,9 +342,13 @@ fn mutator_wrappers_public_duplicates_and_sockets_share_one_fallible_gate() {
     }
 
     let strict_zoom = function_source(session, "pub fn session_set_browser_zoom(");
+    let strict_zoom_compact: String = strict_zoom
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect();
     assert!(strict_zoom.contains("Result<AppSessionSnapshot, String>"));
     assert!(strict_zoom.contains("apply_set_browser_zoom("));
-    assert!(strict_zoom.contains("snapshot.lock()"));
+    assert!(strict_zoom_compact.contains(".snapshot.lock()"));
     assert!(strict_zoom.contains("unable to set browser zoom for pane"));
     assert!(!strict_zoom.contains("set_browser_zoom_for_control("));
 }
