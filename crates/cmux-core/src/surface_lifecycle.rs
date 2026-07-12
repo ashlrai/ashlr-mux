@@ -5,9 +5,12 @@
 //! owner maps here are derived indexes and are never serialized.
 
 use crate::session::{
-    SessionPaneLayoutSnapshot, SessionPanelTerminalStartupSnapshot, SessionSurfaceKindSnapshot,
-    SessionSurfaceMetadataSnapshot, SessionSurfaceSnapshot, SessionSurfaceTerminalStartupSnapshot,
+    SessionPaneLayoutSnapshot, SessionPanelTerminalStartupSnapshot, SessionSurfaceSnapshot,
     SessionTabManagerSnapshot, SessionWorkspaceLayoutSnapshot,
+};
+pub use crate::session::{
+    SessionSurfaceKindSnapshot as SurfaceKind, SessionSurfaceMetadataSnapshot as SurfaceMetadata,
+    SessionSurfaceTerminalStartupSnapshot as TerminalStartup,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -18,60 +21,6 @@ use thiserror::Error;
 pub enum ContainerKind {
     Workspace,
     Dock,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum SurfaceKind {
-    Terminal,
-    Browser {
-        url: String,
-    },
-    AgentSession {
-        provider: String,
-        renderer: String,
-        working_directory: Option<String>,
-    },
-    Markdown {
-        path: String,
-    },
-    File {
-        path: String,
-    },
-    Diff {
-        token: String,
-        request_path: Option<String>,
-    },
-    ProjectSidebar,
-    RightSidebarTool,
-    RemoteTerminal {
-        remote_session_id: String,
-    },
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SurfaceMetadata {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub custom_title: Option<String>,
-    #[serde(default)]
-    pub pinned: bool,
-    #[serde(default)]
-    pub unread: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reported_directory: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub directory_provenance: Option<String>,
-    #[serde(default)]
-    pub directory_apply_count: u64,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TerminalStartup {
-    pub command: Option<String>,
-    pub working_directory: Option<String>,
-    pub initial_input: Option<String>,
-    pub environment: Option<BTreeMap<String, String>>,
-    pub tmux_start_command: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1029,13 +978,9 @@ fn record_from_session(value: &SessionSurfaceSnapshot) -> SurfaceRecord {
         surface_id: value.surface_id.clone(),
         pane_id: value.pane_id.clone(),
         generation: value.generation,
-        kind: kind_from_session(&value.kind),
-        metadata: metadata_from_session(&value.metadata),
-        terminal_startup: value
-            .terminal_startup
-            .as_ref()
-            .map(startup_from_session)
-            .unwrap_or_default(),
+        kind: value.kind.clone(),
+        metadata: value.metadata.clone(),
+        terminal_startup: value.terminal_startup.clone().unwrap_or_default(),
         runtime: None,
         is_workspace_focused: false,
     }
@@ -1045,116 +990,12 @@ fn record_to_session(value: &SurfaceRecord) -> SessionSurfaceSnapshot {
         surface_id: value.surface_id.clone(),
         pane_id: value.pane_id.clone(),
         generation: value.generation,
-        kind: kind_to_session(&value.kind),
-        metadata: metadata_to_session(&value.metadata),
+        kind: value.kind.clone(),
+        metadata: value.metadata.clone(),
         terminal_startup: matches!(
             value.kind,
             SurfaceKind::Terminal | SurfaceKind::RemoteTerminal { .. }
         )
-        .then(|| startup_to_session(&value.terminal_startup)),
-    }
-}
-fn kind_from_session(value: &SessionSurfaceKindSnapshot) -> SurfaceKind {
-    match value {
-        SessionSurfaceKindSnapshot::Terminal => SurfaceKind::Terminal,
-        SessionSurfaceKindSnapshot::Browser { url } => SurfaceKind::Browser { url: url.clone() },
-        SessionSurfaceKindSnapshot::AgentSession {
-            provider,
-            renderer,
-            working_directory,
-        } => SurfaceKind::AgentSession {
-            provider: provider.clone(),
-            renderer: renderer.clone(),
-            working_directory: working_directory.clone(),
-        },
-        SessionSurfaceKindSnapshot::Markdown { path } => {
-            SurfaceKind::Markdown { path: path.clone() }
-        }
-        SessionSurfaceKindSnapshot::File { path } => SurfaceKind::File { path: path.clone() },
-        SessionSurfaceKindSnapshot::Diff {
-            token,
-            request_path,
-        } => SurfaceKind::Diff {
-            token: token.clone(),
-            request_path: request_path.clone(),
-        },
-        SessionSurfaceKindSnapshot::ProjectSidebar => SurfaceKind::ProjectSidebar,
-        SessionSurfaceKindSnapshot::RightSidebarTool => SurfaceKind::RightSidebarTool,
-        SessionSurfaceKindSnapshot::RemoteTerminal { remote_session_id } => {
-            SurfaceKind::RemoteTerminal {
-                remote_session_id: remote_session_id.clone(),
-            }
-        }
-    }
-}
-fn kind_to_session(value: &SurfaceKind) -> SessionSurfaceKindSnapshot {
-    match value {
-        SurfaceKind::Terminal => SessionSurfaceKindSnapshot::Terminal,
-        SurfaceKind::Browser { url } => SessionSurfaceKindSnapshot::Browser { url: url.clone() },
-        SurfaceKind::AgentSession {
-            provider,
-            renderer,
-            working_directory,
-        } => SessionSurfaceKindSnapshot::AgentSession {
-            provider: provider.clone(),
-            renderer: renderer.clone(),
-            working_directory: working_directory.clone(),
-        },
-        SurfaceKind::Markdown { path } => {
-            SessionSurfaceKindSnapshot::Markdown { path: path.clone() }
-        }
-        SurfaceKind::File { path } => SessionSurfaceKindSnapshot::File { path: path.clone() },
-        SurfaceKind::Diff {
-            token,
-            request_path,
-        } => SessionSurfaceKindSnapshot::Diff {
-            token: token.clone(),
-            request_path: request_path.clone(),
-        },
-        SurfaceKind::ProjectSidebar => SessionSurfaceKindSnapshot::ProjectSidebar,
-        SurfaceKind::RightSidebarTool => SessionSurfaceKindSnapshot::RightSidebarTool,
-        SurfaceKind::RemoteTerminal { remote_session_id } => {
-            SessionSurfaceKindSnapshot::RemoteTerminal {
-                remote_session_id: remote_session_id.clone(),
-            }
-        }
-    }
-}
-fn metadata_from_session(v: &SessionSurfaceMetadataSnapshot) -> SurfaceMetadata {
-    SurfaceMetadata {
-        custom_title: v.custom_title.clone(),
-        pinned: v.pinned,
-        unread: v.unread,
-        reported_directory: v.reported_directory.clone(),
-        directory_provenance: v.directory_provenance.clone(),
-        directory_apply_count: v.directory_apply_count,
-    }
-}
-fn metadata_to_session(v: &SurfaceMetadata) -> SessionSurfaceMetadataSnapshot {
-    SessionSurfaceMetadataSnapshot {
-        custom_title: v.custom_title.clone(),
-        pinned: v.pinned,
-        unread: v.unread,
-        reported_directory: v.reported_directory.clone(),
-        directory_provenance: v.directory_provenance.clone(),
-        directory_apply_count: v.directory_apply_count,
-    }
-}
-fn startup_from_session(v: &SessionSurfaceTerminalStartupSnapshot) -> TerminalStartup {
-    TerminalStartup {
-        command: v.command.clone(),
-        working_directory: v.working_directory.clone(),
-        initial_input: v.initial_input.clone(),
-        environment: v.environment.clone(),
-        tmux_start_command: v.tmux_start_command.clone(),
-    }
-}
-fn startup_to_session(v: &TerminalStartup) -> SessionSurfaceTerminalStartupSnapshot {
-    SessionSurfaceTerminalStartupSnapshot {
-        command: v.command.clone(),
-        working_directory: v.working_directory.clone(),
-        initial_input: v.initial_input.clone(),
-        environment: v.environment.clone(),
-        tmux_start_command: v.tmux_start_command.clone(),
+        .then(|| value.terminal_startup.clone()),
     }
 }
