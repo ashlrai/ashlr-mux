@@ -132,7 +132,7 @@ impl SnapshotPublicationOperations for BlockingEmitPublication {
 }
 
 #[test]
-fn real_style_reserve_before_snapshot_lock_cannot_race_restore_reseed() {
+fn real_style_fenced_reservation_cannot_race_restore_reseed() {
     let current = initial_snapshot("surface-1");
     let restored = initial_snapshot("surface-2");
     let authority = GatedSnapshot::new(current);
@@ -154,9 +154,10 @@ fn real_style_reserve_before_snapshot_lock_cannot_race_restore_reseed() {
         });
         emitted_rx.recv().unwrap();
 
-        // This is the ordering used by the affected production routes: reserve
-        // first, then acquire the GatedSnapshot lock before authority use.
+        // Production allocators retain the shared gate from reservation through
+        // the authority mutation that consumes the reserved identity.
         let allocator = scope.spawn(|| {
+            let _allocation_guard = authority.lock_gate();
             let reserved = next_panel.fetch_add(1, Ordering::Relaxed);
             reserved_tx.send(reserved).unwrap();
             let mut snapshot = authority.lock().unwrap();
