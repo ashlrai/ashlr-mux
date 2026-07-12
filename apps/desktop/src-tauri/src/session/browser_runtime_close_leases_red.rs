@@ -489,7 +489,7 @@ fn browser_runtime_lease_contract_is_present_in_production() {
         "detach transfers ownership without closing"
     );
 
-    let upsert = source_item(browser, "fn upsert_browser_webview(");
+    let upsert = source_item(browser, "fn upsert_browser_webview");
     let build = upsert.find(".add_child(").expect("upsert builds a child");
     let reservation_checks = upsert
         .match_indices("reserved_panel_ids")
