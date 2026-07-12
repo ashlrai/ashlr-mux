@@ -1219,7 +1219,7 @@ fn signed_indexes_and_case_insensitive_handle_matching_are_canonical() {
             "--window",
             "WINDOW:1",
             "--workspace",
-            "WORKSPACE:2",
+            "workspace:2",
             "--surface",
             &upper_surface,
         ],
@@ -1292,4 +1292,140 @@ fn respawn_refs_resolve_to_uuids_while_tab_action_keeps_raw_refs() {
             assert_eq!(params.get("surface_id"), Some(&json!(SURFACE_ID)));
         }
     }
+}
+
+#[test]
+fn resolver_ref_matching_keeps_frozen_context_specific_case_rules() {
+    let (pipe, _rx) = spawn_method_server(
+        "workspace-ref-case",
+        HashMap::from([
+            (
+                "window.list".into(),
+                json!({"windows":[{"id":WINDOW_ID,"ref":"window:1"}]}),
+            ),
+            (
+                "workspace.list".into(),
+                json!({"workspaces":[{"id":WORKSPACE_ID,"ref":"workspace:2"}]}),
+            ),
+        ]),
+    );
+    assert_failure(
+        executable(
+            Some(&pipe),
+            &[
+                "tab-action",
+                "pin",
+                "--window",
+                WINDOW_ID,
+                "--workspace",
+                "WORKSPACE:2",
+            ],
+        ),
+        "Error: Workspace ref not found: WORKSPACE:2\n",
+    );
+
+    let (pipe, _rx) = spawn_method_server(
+        "surface-ref-case",
+        HashMap::from([
+            (
+                "workspace.current".into(),
+                json!({"workspace_id":WORKSPACE_ID}),
+            ),
+            (
+                "surface.list".into(),
+                json!({"surfaces":[{"id":SURFACE_ID,"ref":"surface:3"}]}),
+            ),
+        ]),
+    );
+    assert_failure(
+        executable(
+            Some(&pipe),
+            &[
+                "respawn-pane",
+                "--surface",
+                "SURFACE:3",
+                "--command",
+                "echo ok",
+            ],
+        ),
+        "Error: Surface ref not found: SURFACE:3\n",
+    );
+}
+
+#[test]
+fn blank_lifecycle_options_suppress_ambient_and_use_frozen_fallbacks() {
+    let (pipe, request_rx) = spawn_method_server(
+        "blank-tab-workspace",
+        HashMap::from([
+            (
+                "system.identify".into(),
+                json!({"focused":{"surface_id":SURFACE_ID}}),
+            ),
+            ("tab.action".into(), json!({"action":"pin"})),
+        ]),
+    );
+    let output = executable(Some(&pipe), &["tab-action", "pin", "--workspace", ""]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        request_rx.recv_timeout(Duration::from_secs(5)).unwrap().0,
+        "system.identify"
+    );
+    let (_, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(params.get("workspace_id").is_none());
+    assert_eq!(params.get("surface_id"), Some(&json!(SURFACE_ID)));
+
+    let (pipe, request_rx) = spawn_method_server(
+        "blank-tab-surface",
+        HashMap::from([
+            (
+                "workspace.current".into(),
+                json!({"workspace_id":WORKSPACE_ID}),
+            ),
+            ("tab.action".into(), json!({"action":"pin"})),
+        ]),
+    );
+    let output = executable(Some(&pipe), &["tab-action", "pin", "--surface", ""]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        request_rx.recv_timeout(Duration::from_secs(5)).unwrap().0,
+        "workspace.current"
+    );
+    let (_, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(params.get("workspace_id"), Some(&json!(WORKSPACE_ID)));
+    assert!(params.get("surface_id").is_none());
+
+    let (pipe, request_rx) = spawn_method_server(
+        "blank-respawn-workspace",
+        HashMap::from([
+            (
+                "system.identify".into(),
+                json!({"focused":{"surface_id":SURFACE_ID}}),
+            ),
+            ("surface.respawn".into(), json!({"surface_id":SURFACE_ID})),
+        ]),
+    );
+    let output = executable(
+        Some(&pipe),
+        &["respawn-pane", "--workspace", "", "--command", "echo ok"],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        request_rx.recv_timeout(Duration::from_secs(5)).unwrap().0,
+        "system.identify"
+    );
+    let (_, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(params.get("workspace_id").is_none());
+    assert_eq!(params.get("surface_id"), Some(&json!(SURFACE_ID)));
 }
