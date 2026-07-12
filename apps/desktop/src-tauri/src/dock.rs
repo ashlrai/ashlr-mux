@@ -4,6 +4,8 @@ mod tests {
         DockCreateRequest, DockPlacement, DockRuntimeIntent, DockStore, DockSurfaceKind,
     };
     use uuid::Uuid;
+    use cmux_core::session::{SessionSurfaceKindSnapshot, SessionSurfaceMetadataSnapshot};
+    use cmux_core::surface_lifecycle::{ContainerKind, PaneSeed, SurfaceLifecycleModel, SurfaceSeed};
 
     fn terminal(title: &str) -> DockCreateRequest {
         DockCreateRequest {
@@ -128,5 +130,44 @@ mod tests {
         assert_eq!(restored.current(first_owner).unwrap().surface_id, first.surface_id);
         assert_eq!(restored.current(second_owner).unwrap().surface_id, second.surface_id);
         assert_ne!(restored.snapshot(first_owner).panes[0].id, restored.snapshot(second_owner).panes[0].id);
+    }
+
+    #[test]
+    fn cross_container_move_uses_one_authority_and_survives_restore() {
+        let owner = Uuid::new_v4();
+        let workspace_id = Uuid::new_v4();
+        let workspace_pane = Uuid::new_v4();
+        let surface = Uuid::new_v4();
+        let mut model = SurfaceLifecycleModel::new();
+        model
+            .add_pane(PaneSeed {
+                pane_id: workspace_pane.to_string(),
+                window_id: owner.to_string(),
+                workspace_id: workspace_id.to_string(),
+                container: ContainerKind::Workspace,
+            })
+            .unwrap();
+        let generation = model
+            .reserve_surface(SurfaceSeed {
+                surface_id: surface.to_string(),
+                pane_id: workspace_pane.to_string(),
+                kind: SessionSurfaceKindSnapshot::Terminal,
+                metadata: SessionSurfaceMetadataSnapshot::default(),
+            })
+            .unwrap()
+            .generation;
+
+        let store = DockStore::from_model(model);
+        let dock_seed = store.create(owner, terminal("Dock seed")).unwrap();
+        store
+            .move_surface(owner, surface, dock_seed.pane_id, 0)
+            .unwrap();
+        let moved = store.authoritative_snapshot();
+        let restored = SurfaceLifecycleModel::restore(moved).unwrap();
+        let moved_owner = restored.owner_of_surface(&surface.to_string()).unwrap();
+        assert_eq!(moved_owner.pane_id, dock_seed.pane_id.to_string());
+        assert_eq!(restored.pane(&moved_owner.pane_id).unwrap().container, ContainerKind::Dock);
+        assert_eq!(restored.surface(&surface.to_string()).unwrap().generation, generation);
+        assert!(restored.pane(&workspace_pane.to_string()).unwrap().surface_ids.is_empty());
     }
 }
