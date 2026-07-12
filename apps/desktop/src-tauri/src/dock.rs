@@ -1495,3 +1495,7 @@ mod tests {
         assert_eq!(session.windows[0].window_id.as_deref(), Some("main"));
     }
 }
+
+#[cfg(test)]
+#[path = "dock/direct_transaction_red.rs"]
+mod direct_transaction_red;
