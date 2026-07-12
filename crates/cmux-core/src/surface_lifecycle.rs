@@ -1,0 +1,1160 @@
+//! Authoritative pane/surface lifecycle state.
+//!
+//! `SessionWorkspaceSnapshot::surfaces` is the persistence authority. Layout
+//! panes retain only topology, order, and pane-local selection. Runtime and
+//! owner maps here are derived indexes and are never serialized.
+
+use crate::session::{
+    SessionPaneLayoutSnapshot, SessionPanelTerminalStartupSnapshot, SessionSurfaceKindSnapshot,
+    SessionSurfaceMetadataSnapshot, SessionSurfaceSnapshot, SessionSurfaceTerminalStartupSnapshot,
+    SessionTabManagerSnapshot, SessionWorkspaceLayoutSnapshot,
+};
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashMap};
+use thiserror::Error;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContainerKind {
+    Workspace,
+    Dock,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SurfaceKind {
+    Terminal,
+    Browser {
+        url: String,
+    },
+    AgentSession {
+        provider: String,
+        renderer: String,
+        working_directory: Option<String>,
+    },
+    Markdown {
+        path: String,
+    },
+    File {
+        path: String,
+    },
+    Diff {
+        token: String,
+        request_path: Option<String>,
+    },
+    ProjectSidebar,
+    RightSidebarTool,
+    RemoteTerminal {
+        remote_session_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurfaceMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_title: Option<String>,
+    #[serde(default)]
+    pub pinned: bool,
+    #[serde(default)]
+    pub unread: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reported_directory: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory_provenance: Option<String>,
+    #[serde(default)]
+    pub directory_apply_count: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalStartup {
+    pub command: Option<String>,
+    pub working_directory: Option<String>,
+    pub initial_input: Option<String>,
+    pub environment: Option<BTreeMap<String, String>>,
+    pub tmux_start_command: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeHandle(String);
+impl RuntimeHandle {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+    pub fn id(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneRecord {
+    pub pane_id: String,
+    pub window_id: String,
+    pub workspace_id: String,
+    pub container: ContainerKind,
+    pub surface_ids: Vec<String>,
+    pub selected_surface_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceRecord {
+    pub surface_id: String,
+    pub pane_id: String,
+    pub generation: u64,
+    pub kind: SurfaceKind,
+    pub metadata: SurfaceMetadata,
+    pub terminal_startup: TerminalStartup,
+    pub runtime: Option<RuntimeHandle>,
+    pub is_workspace_focused: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct PersistedSurfaceRecord {
+    surface_id: String,
+    pane_id: String,
+    generation: u64,
+    kind: SurfaceKind,
+    metadata: SurfaceMetadata,
+    #[serde(default)]
+    terminal_startup: TerminalStartup,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LifecycleSnapshot {
+    #[serde(default = "snapshot_version")]
+    pub version: u32,
+    #[serde(default)]
+    pub panes: Vec<PaneRecord>,
+    #[serde(default)]
+    pub focused_surfaces: BTreeMap<String, String>,
+    #[serde(default)]
+    surfaces: Vec<PersistedSurfaceRecord>,
+}
+fn snapshot_version() -> u32 {
+    2
+}
+impl LifecycleSnapshot {
+    pub fn from_json(value: serde_json::Value) -> Result<Self, serde_json::Error> {
+        serde_json::from_value(value)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PaneSeed {
+    pub pane_id: String,
+    pub window_id: String,
+    pub workspace_id: String,
+    pub container: ContainerKind,
+}
+#[derive(Debug, Clone)]
+pub struct SurfaceSeed {
+    pub surface_id: String,
+    pub pane_id: String,
+    pub kind: SurfaceKind,
+    pub metadata: SurfaceMetadata,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Owner {
+    pub window_id: String,
+    pub workspace_id: String,
+    pub pane_id: String,
+    pub surface_id: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reservation {
+    pub surface_id: String,
+    pub generation: u64,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttachOutcome {
+    Attached,
+    StaleCleaned,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MoveFailure {
+    Attach,
+}
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum LifecycleError {
+    #[error("pane not found: {0}")]
+    PaneNotFound(String),
+    #[error("surface not found: {0}")]
+    SurfaceNotFound(String),
+    #[error("duplicate pane: {0}")]
+    DuplicatePane(String),
+    #[error("duplicate surface: {0}")]
+    DuplicateSurface(String),
+    #[error("invalid lifecycle snapshot: {0}")]
+    Invalid(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct LegacyPaneSnapshot {
+    pub pane_id: String,
+    pub window_id: String,
+    pub workspace_id: String,
+    pub panel_ids: Vec<String>,
+    pub selected_panel_id: Option<String>,
+    pub pane_surface_kind: Option<String>,
+    pub per_panel_kinds: Vec<(String, String)>,
+    pub panel_titles: Vec<(String, String)>,
+    pub panel_pins: Vec<(String, bool)>,
+    pub browser_urls: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SurfaceLifecycleModel {
+    panes: BTreeMap<String, PaneRecord>,
+    surfaces: BTreeMap<String, SurfaceRecord>,
+    focused_surfaces: BTreeMap<String, String>,
+    surface_owners: HashMap<String, Owner>,
+    runtime_owners: HashMap<String, String>,
+    last_generation: HashMap<String, u64>,
+    pending_pwd: HashMap<String, String>,
+    pending_remote_pwd: HashMap<(String, String), String>,
+    reconciled_remote_generation: HashMap<String, u64>,
+}
+
+impl SurfaceLifecycleModel {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn add_pane(&mut self, seed: PaneSeed) -> Result<(), LifecycleError> {
+        if self.panes.contains_key(&seed.pane_id) {
+            return Err(LifecycleError::DuplicatePane(seed.pane_id));
+        }
+        self.panes.insert(
+            seed.pane_id.clone(),
+            PaneRecord {
+                pane_id: seed.pane_id,
+                window_id: seed.window_id,
+                workspace_id: seed.workspace_id,
+                container: seed.container,
+                surface_ids: Vec::new(),
+                selected_surface_id: String::new(),
+            },
+        );
+        Ok(())
+    }
+
+    pub fn reserve_surface(&mut self, seed: SurfaceSeed) -> Result<Reservation, LifecycleError> {
+        if self.surfaces.contains_key(&seed.surface_id) {
+            return Err(LifecycleError::DuplicateSurface(seed.surface_id));
+        }
+        let pane = self
+            .panes
+            .get_mut(&seed.pane_id)
+            .ok_or_else(|| LifecycleError::PaneNotFound(seed.pane_id.clone()))?;
+        let generation = self
+            .last_generation
+            .get(&seed.surface_id)
+            .copied()
+            .unwrap_or(0)
+            + 1;
+        self.last_generation
+            .insert(seed.surface_id.clone(), generation);
+        if !pane.surface_ids.contains(&seed.surface_id) {
+            pane.surface_ids.push(seed.surface_id.clone());
+        }
+        if pane.selected_surface_id.is_empty() {
+            pane.selected_surface_id = seed.surface_id.clone();
+        }
+        let owner = Owner {
+            window_id: pane.window_id.clone(),
+            workspace_id: pane.workspace_id.clone(),
+            pane_id: pane.pane_id.clone(),
+            surface_id: seed.surface_id.clone(),
+        };
+        self.surface_owners.insert(seed.surface_id.clone(), owner);
+        self.surfaces.insert(
+            seed.surface_id.clone(),
+            SurfaceRecord {
+                surface_id: seed.surface_id.clone(),
+                pane_id: seed.pane_id,
+                generation,
+                kind: seed.kind,
+                metadata: seed.metadata,
+                terminal_startup: TerminalStartup::default(),
+                runtime: None,
+                is_workspace_focused: false,
+            },
+        );
+        Ok(Reservation {
+            surface_id: seed.surface_id,
+            generation,
+        })
+    }
+
+    pub fn reserve_remote_arrival(
+        &mut self,
+        surface_id: &str,
+        pane_id: &str,
+        remote_session_id: &str,
+    ) -> Result<Reservation, LifecycleError> {
+        self.reserve_surface(SurfaceSeed {
+            surface_id: surface_id.into(),
+            pane_id: pane_id.into(),
+            kind: SurfaceKind::RemoteTerminal {
+                remote_session_id: remote_session_id.into(),
+            },
+            metadata: SurfaceMetadata::default(),
+        })
+    }
+
+    pub fn pane(&self, id: &str) -> Option<&PaneRecord> {
+        self.panes.get(id)
+    }
+    pub fn surface(&self, id: &str) -> Option<&SurfaceRecord> {
+        self.surfaces.get(id)
+    }
+    pub fn surface_mut(&mut self, id: &str) -> Option<&mut SurfaceRecord> {
+        self.surfaces.get_mut(id)
+    }
+    pub fn focused_surface(&self, workspace_id: &str) -> Option<&str> {
+        self.focused_surfaces.get(workspace_id).map(String::as_str)
+    }
+    pub fn owner_of_surface(&self, id: &str) -> Option<&Owner> {
+        self.surface_owners.get(id)
+    }
+    pub fn owner_of_runtime(&self, id: &str) -> Option<&Owner> {
+        self.runtime_owners
+            .get(id)
+            .and_then(|surface| self.surface_owners.get(surface))
+    }
+
+    pub fn select_in_pane(&mut self, surface_id: &str) -> Result<(), LifecycleError> {
+        let owner = self
+            .surface_owners
+            .get(surface_id)
+            .ok_or_else(|| LifecycleError::SurfaceNotFound(surface_id.into()))?
+            .clone();
+        self.panes
+            .get_mut(&owner.pane_id)
+            .unwrap()
+            .selected_surface_id = surface_id.into();
+        Ok(())
+    }
+
+    pub fn focus_surface(&mut self, surface_id: &str) -> Result<(), LifecycleError> {
+        let owner = self
+            .surface_owners
+            .get(surface_id)
+            .ok_or_else(|| LifecycleError::SurfaceNotFound(surface_id.into()))?
+            .clone();
+        if let Some(old) = self
+            .focused_surfaces
+            .insert(owner.workspace_id, surface_id.into())
+        {
+            if let Some(record) = self.surfaces.get_mut(&old) {
+                record.is_workspace_focused = false;
+            }
+        }
+        self.surfaces
+            .get_mut(surface_id)
+            .unwrap()
+            .is_workspace_focused = true;
+        self.select_in_pane(surface_id)
+    }
+
+    pub fn attach_runtime(
+        &mut self,
+        surface_id: &str,
+        generation: u64,
+        runtime: RuntimeHandle,
+    ) -> AttachOutcome {
+        let Some(record) = self.surfaces.get_mut(surface_id) else {
+            return AttachOutcome::StaleCleaned;
+        };
+        if record.generation != generation {
+            return AttachOutcome::StaleCleaned;
+        }
+        if let Some(old) = record.runtime.replace(runtime.clone()) {
+            self.runtime_owners.remove(old.id());
+        }
+        self.runtime_owners.insert(runtime.0, surface_id.into());
+        AttachOutcome::Attached
+    }
+
+    pub fn close_surface(&mut self, surface_id: &str) -> Result<SurfaceRecord, LifecycleError> {
+        let owner = self
+            .surface_owners
+            .remove(surface_id)
+            .ok_or_else(|| LifecycleError::SurfaceNotFound(surface_id.into()))?;
+        let record = self.surfaces.remove(surface_id).unwrap();
+        if let Some(runtime) = &record.runtime {
+            self.runtime_owners.remove(runtime.id());
+        }
+        self.pending_pwd.remove(surface_id);
+        let pane = self.panes.get_mut(&owner.pane_id).unwrap();
+        pane.surface_ids.retain(|id| id != surface_id);
+        if pane.selected_surface_id == surface_id {
+            pane.selected_surface_id = pane.surface_ids.first().cloned().unwrap_or_default();
+        }
+        if self
+            .focused_surfaces
+            .get(&owner.workspace_id)
+            .is_some_and(|id| id == surface_id)
+        {
+            self.focused_surfaces.remove(&owner.workspace_id);
+            if let Some(next) = self
+                .panes
+                .values()
+                .filter(|p| p.workspace_id == owner.workspace_id)
+                .flat_map(|p| p.surface_ids.iter())
+                .next()
+                .cloned()
+            {
+                self.focused_surfaces
+                    .insert(owner.workspace_id, next.clone());
+                if let Some(row) = self.surfaces.get_mut(&next) {
+                    row.is_workspace_focused = true;
+                }
+            }
+        }
+        Ok(record)
+    }
+
+    pub fn move_surface(
+        &mut self,
+        surface_id: &str,
+        pane_id: &str,
+        index: usize,
+    ) -> Result<(), LifecycleError> {
+        self.move_surface_inner(surface_id, pane_id, index)
+    }
+    pub fn move_surface_with_failure(
+        &mut self,
+        surface_id: &str,
+        pane_id: &str,
+        index: usize,
+        failure: MoveFailure,
+    ) -> Result<(), MoveFailure> {
+        let before = self.clone();
+        if self.move_surface_inner(surface_id, pane_id, index).is_err()
+            || failure == MoveFailure::Attach
+        {
+            *self = before;
+            return Err(failure);
+        }
+        Ok(())
+    }
+    fn move_surface_inner(
+        &mut self,
+        surface_id: &str,
+        pane_id: &str,
+        index: usize,
+    ) -> Result<(), LifecycleError> {
+        let old = self
+            .surface_owners
+            .get(surface_id)
+            .ok_or_else(|| LifecycleError::SurfaceNotFound(surface_id.into()))?
+            .clone();
+        if !self.panes.contains_key(pane_id) {
+            return Err(LifecycleError::PaneNotFound(pane_id.into()));
+        }
+        let old_pane = self.panes.get_mut(&old.pane_id).unwrap();
+        old_pane.surface_ids.retain(|id| id != surface_id);
+        if old_pane.selected_surface_id == surface_id {
+            old_pane.selected_surface_id =
+                old_pane.surface_ids.first().cloned().unwrap_or_default();
+        }
+        let destination = self.panes.get_mut(pane_id).unwrap();
+        let at = index.min(destination.surface_ids.len());
+        destination.surface_ids.insert(at, surface_id.into());
+        if destination.selected_surface_id.is_empty() {
+            destination.selected_surface_id = surface_id.into();
+        }
+        let owner = self.surface_owners.get_mut(surface_id).unwrap();
+        owner.window_id = destination.window_id.clone();
+        owner.workspace_id = destination.workspace_id.clone();
+        owner.pane_id = pane_id.into();
+        self.surfaces.get_mut(surface_id).unwrap().pane_id = pane_id.into();
+        if self
+            .focused_surfaces
+            .get(&old.workspace_id)
+            .is_some_and(|id| id == surface_id)
+            && old.workspace_id != destination.workspace_id
+        {
+            self.focused_surfaces.remove(&old.workspace_id);
+            self.surfaces
+                .get_mut(surface_id)
+                .unwrap()
+                .is_workspace_focused = false;
+        }
+        Ok(())
+    }
+
+    pub fn begin_respawn(
+        &mut self,
+        surface_id: &str,
+        command: &str,
+        working_directory: Option<&str>,
+    ) -> Result<Reservation, LifecycleError> {
+        let record = self
+            .surfaces
+            .get_mut(surface_id)
+            .ok_or_else(|| LifecycleError::SurfaceNotFound(surface_id.into()))?;
+        if !matches!(
+            record.kind,
+            SurfaceKind::Terminal | SurfaceKind::RemoteTerminal { .. }
+        ) {
+            return Err(LifecycleError::Invalid("respawn requires terminal".into()));
+        }
+        if let Some(runtime) = record.runtime.take() {
+            self.runtime_owners.remove(runtime.id());
+        }
+        record.generation += 1;
+        self.last_generation
+            .insert(surface_id.into(), record.generation);
+        record.terminal_startup.command = Some(command.into());
+        record.terminal_startup.working_directory = working_directory.map(str::to_owned);
+        Ok(Reservation {
+            surface_id: surface_id.into(),
+            generation: record.generation,
+        })
+    }
+
+    pub fn queue_pending_pwd(
+        &mut self,
+        surface_id: &str,
+        path: &str,
+    ) -> Result<(), LifecycleError> {
+        if !self.surfaces.contains_key(surface_id) {
+            return Err(LifecycleError::SurfaceNotFound(surface_id.into()));
+        }
+        self.pending_pwd.insert(surface_id.into(), path.into());
+        Ok(())
+    }
+    pub fn has_pending_pwd(&self, surface_id: &str) -> bool {
+        self.pending_pwd.contains_key(surface_id)
+    }
+    pub fn queue_remote_pwd(
+        &mut self,
+        workspace_id: &str,
+        remote_id: Option<&str>,
+        path: &str,
+    ) -> Result<(), LifecycleError> {
+        let key =
+            remote_id.ok_or_else(|| LifecycleError::Invalid("remote identity required".into()))?;
+        self.pending_remote_pwd
+            .insert((workspace_id.into(), key.into()), path.into());
+        Ok(())
+    }
+    pub fn has_pending_remote_pwd(&self, workspace_id: &str, remote_id: &str) -> bool {
+        self.pending_remote_pwd
+            .contains_key(&(workspace_id.into(), remote_id.into()))
+    }
+    pub fn reconcile_remote_arrival(&mut self, surface_id: &str, generation: u64) -> AttachOutcome {
+        let Some(record) = self.surfaces.get(surface_id) else {
+            return AttachOutcome::StaleCleaned;
+        };
+        if record.generation != generation {
+            return AttachOutcome::StaleCleaned;
+        }
+        if self.reconciled_remote_generation.get(surface_id) == Some(&generation) {
+            return AttachOutcome::Attached;
+        }
+        let remote_id = match &record.kind {
+            SurfaceKind::RemoteTerminal { remote_session_id } => remote_session_id.clone(),
+            _ => return AttachOutcome::StaleCleaned,
+        };
+        let workspace = self.surface_owners[surface_id].workspace_id.clone();
+        if let Some(path) = self.pending_remote_pwd.remove(&(workspace, remote_id)) {
+            let metadata = &mut self.surfaces.get_mut(surface_id).unwrap().metadata;
+            metadata.reported_directory = Some(path);
+            metadata.directory_provenance = Some("remote_report".into());
+            metadata.directory_apply_count += 1;
+        }
+        self.reconciled_remote_generation
+            .insert(surface_id.into(), generation);
+        AttachOutcome::Attached
+    }
+
+    pub fn snapshot(&self) -> LifecycleSnapshot {
+        LifecycleSnapshot {
+            version: 2,
+            panes: self.panes.values().cloned().collect(),
+            focused_surfaces: self.focused_surfaces.clone(),
+            surfaces: self
+                .surfaces
+                .values()
+                .map(|s| PersistedSurfaceRecord {
+                    surface_id: s.surface_id.clone(),
+                    pane_id: s.pane_id.clone(),
+                    generation: s.generation,
+                    kind: s.kind.clone(),
+                    metadata: s.metadata.clone(),
+                    terminal_startup: s.terminal_startup.clone(),
+                })
+                .collect(),
+        }
+    }
+    pub fn restore(snapshot: LifecycleSnapshot) -> Result<Self, LifecycleError> {
+        let mut model = Self::new();
+        for pane in snapshot.panes {
+            let pane_id = pane.pane_id.clone();
+            model.add_pane(PaneSeed {
+                pane_id: pane_id.clone(),
+                window_id: pane.window_id.clone(),
+                workspace_id: pane.workspace_id.clone(),
+                container: pane.container.clone(),
+            })?;
+            model.panes.insert(pane_id, pane);
+        }
+        for persisted in snapshot.surfaces {
+            if !model.panes.contains_key(&persisted.pane_id) {
+                return Err(LifecycleError::PaneNotFound(persisted.pane_id));
+            }
+            model
+                .last_generation
+                .insert(persisted.surface_id.clone(), persisted.generation);
+            model.surfaces.insert(
+                persisted.surface_id.clone(),
+                SurfaceRecord {
+                    surface_id: persisted.surface_id.clone(),
+                    pane_id: persisted.pane_id.clone(),
+                    generation: persisted.generation,
+                    kind: persisted.kind,
+                    metadata: persisted.metadata,
+                    terminal_startup: persisted.terminal_startup,
+                    runtime: None,
+                    is_workspace_focused: false,
+                },
+            );
+            let p = &model.panes[&persisted.pane_id];
+            model.surface_owners.insert(
+                persisted.surface_id.clone(),
+                Owner {
+                    window_id: p.window_id.clone(),
+                    workspace_id: p.workspace_id.clone(),
+                    pane_id: p.pane_id.clone(),
+                    surface_id: persisted.surface_id,
+                },
+            );
+        }
+        model.focused_surfaces = snapshot.focused_surfaces;
+        for id in model.focused_surfaces.values() {
+            if let Some(surface) = model.surfaces.get_mut(id) {
+                surface.is_workspace_focused = true;
+            }
+        }
+        model.validate_indexes()?;
+        Ok(model)
+    }
+
+    pub fn migrate_legacy(panes: Vec<LegacyPaneSnapshot>) -> Result<Self, LifecycleError> {
+        let mut model = Self::new();
+        for legacy in panes {
+            model.add_pane(PaneSeed {
+                pane_id: legacy.pane_id.clone(),
+                window_id: legacy.window_id,
+                workspace_id: legacy.workspace_id,
+                container: ContainerKind::Workspace,
+            })?;
+            for id in &legacy.panel_ids {
+                let explicit = legacy
+                    .per_panel_kinds
+                    .iter()
+                    .find(|(panel, _)| panel == id)
+                    .map(|(_, kind)| kind.as_str())
+                    .or(legacy.pane_surface_kind.as_deref())
+                    .unwrap_or("terminal");
+                let browser_url = legacy
+                    .browser_urls
+                    .iter()
+                    .find(|(panel, _)| panel == id)
+                    .map(|(_, url)| url.clone());
+                let kind = kind_from_legacy(explicit, browser_url);
+                let metadata = SurfaceMetadata {
+                    custom_title: legacy
+                        .panel_titles
+                        .iter()
+                        .find(|(panel, _)| panel == id)
+                        .map(|(_, title)| title.clone()),
+                    pinned: legacy
+                        .panel_pins
+                        .iter()
+                        .find(|(panel, _)| panel == id)
+                        .is_some_and(|(_, value)| *value),
+                    ..SurfaceMetadata::default()
+                };
+                model.reserve_surface(SurfaceSeed {
+                    surface_id: id.clone(),
+                    pane_id: legacy.pane_id.clone(),
+                    kind,
+                    metadata,
+                })?;
+            }
+            if let Some(selected) = legacy.selected_panel_id {
+                if model.surfaces.contains_key(&selected) {
+                    model.select_in_pane(&selected)?;
+                }
+            }
+        }
+        Ok(model)
+    }
+
+    pub fn from_session_snapshot(
+        window_id: &str,
+        tabs: &SessionTabManagerSnapshot,
+    ) -> Result<Self, LifecycleError> {
+        let mut model = Self::new();
+        for (workspace_index, workspace) in tabs.workspaces.iter().enumerate() {
+            let workspace_id = workspace
+                .workspace_id
+                .clone()
+                .unwrap_or_else(|| format!("workspace:{workspace_index}"));
+            if let Some(layout) = &workspace.layout {
+                add_layout_panes(&mut model, layout, window_id, &workspace_id)?;
+            }
+            if let Some(records) = &workspace.surfaces {
+                for persisted in records {
+                    let pane = model
+                        .panes
+                        .get_mut(&persisted.pane_id)
+                        .ok_or_else(|| LifecycleError::PaneNotFound(persisted.pane_id.clone()))?;
+                    if !pane.surface_ids.contains(&persisted.surface_id) {
+                        pane.surface_ids.push(persisted.surface_id.clone());
+                    }
+                    model
+                        .last_generation
+                        .insert(persisted.surface_id.clone(), persisted.generation);
+                    model
+                        .surfaces
+                        .insert(persisted.surface_id.clone(), record_from_session(persisted));
+                    model.surface_owners.insert(
+                        persisted.surface_id.clone(),
+                        Owner {
+                            window_id: window_id.into(),
+                            workspace_id: workspace_id.clone(),
+                            pane_id: persisted.pane_id.clone(),
+                            surface_id: persisted.surface_id.clone(),
+                        },
+                    );
+                }
+            } else {
+                migrate_workspace_legacy(&mut model, workspace, &workspace_id)?;
+            }
+            if let Some(focused) = &workspace.focused_panel_id {
+                if model.surfaces.contains_key(focused) {
+                    model
+                        .focused_surfaces
+                        .insert(workspace_id.clone(), focused.clone());
+                    model
+                        .surfaces
+                        .get_mut(focused)
+                        .unwrap()
+                        .is_workspace_focused = true;
+                }
+            }
+        }
+        model.validate_indexes()?;
+        Ok(model)
+    }
+
+    pub fn to_session_snapshot(
+        &self,
+        base: &SessionTabManagerSnapshot,
+    ) -> Result<SessionTabManagerSnapshot, LifecycleError> {
+        let mut projected = base.clone();
+        for (workspace_index, workspace) in projected.workspaces.iter_mut().enumerate() {
+            let workspace_id = workspace
+                .workspace_id
+                .clone()
+                .unwrap_or_else(|| format!("workspace:{workspace_index}"));
+            workspace.surfaces = Some(
+                self.panes
+                    .values()
+                    .filter(|pane| pane.workspace_id == workspace_id)
+                    .flat_map(|pane| pane.surface_ids.iter())
+                    .filter_map(|id| self.surfaces.get(id))
+                    .map(record_to_session)
+                    .collect(),
+            );
+            workspace.focused_panel_id = self.focused_surfaces.get(&workspace_id).cloned();
+            workspace.panel_titles = None;
+            workspace.panel_pins = None;
+            workspace.panel_unreads = None;
+            workspace.panel_terminal_startups = None;
+            if let Some(layout) = workspace.layout.take() {
+                workspace.layout = project_layout(layout, &self.panes);
+            }
+        }
+        Ok(projected)
+    }
+
+    pub fn validate_indexes(&self) -> Result<(), LifecycleError> {
+        for (id, surface) in &self.surfaces {
+            let owner = self
+                .surface_owners
+                .get(id)
+                .ok_or_else(|| LifecycleError::Invalid(format!("missing owner for {id}")))?;
+            if owner.pane_id != surface.pane_id
+                || !self
+                    .panes
+                    .get(&owner.pane_id)
+                    .is_some_and(|pane| pane.surface_ids.contains(id))
+            {
+                return Err(LifecycleError::Invalid(format!(
+                    "owner/order mismatch for {id}"
+                )));
+            }
+        }
+        for (runtime, surface) in &self.runtime_owners {
+            if self
+                .surfaces
+                .get(surface)
+                .and_then(|row| row.runtime.as_ref())
+                .map(RuntimeHandle::id)
+                != Some(runtime.as_str())
+            {
+                return Err(LifecycleError::Invalid(format!(
+                    "runtime index mismatch for {runtime}"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn add_layout_panes(
+    model: &mut SurfaceLifecycleModel,
+    layout: &SessionWorkspaceLayoutSnapshot,
+    window: &str,
+    workspace: &str,
+) -> Result<(), LifecycleError> {
+    match layout {
+        SessionWorkspaceLayoutSnapshot::Pane(pane) => {
+            let pane_id = pane.pane_id.clone().unwrap_or_else(|| {
+                pane.panel_ids
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| format!("pane:{workspace}"))
+            });
+            model.add_pane(PaneSeed {
+                pane_id: pane_id.clone(),
+                window_id: window.into(),
+                workspace_id: workspace.into(),
+                container: ContainerKind::Workspace,
+            })?;
+            let row = model.panes.get_mut(&pane_id).unwrap();
+            row.surface_ids = pane.panel_ids.clone();
+            row.selected_surface_id = pane
+                .selected_panel_id
+                .clone()
+                .or_else(|| pane.panel_ids.first().cloned())
+                .unwrap_or_default();
+        }
+        SessionWorkspaceLayoutSnapshot::Split(split) => {
+            add_layout_panes(model, &split.first, window, workspace)?;
+            add_layout_panes(model, &split.second, window, workspace)?;
+        }
+    }
+    Ok(())
+}
+
+fn migrate_workspace_legacy(
+    model: &mut SurfaceLifecycleModel,
+    workspace: &crate::session::SessionWorkspaceSnapshot,
+    workspace_id: &str,
+) -> Result<(), LifecycleError> {
+    let pane_ids: Vec<String> = model
+        .panes
+        .values()
+        .filter(|p| p.workspace_id == workspace_id)
+        .map(|p| p.pane_id.clone())
+        .collect();
+    for pane_id in pane_ids {
+        let pane = model.panes[&pane_id].clone();
+        let legacy_pane = find_pane(workspace.layout.as_ref(), &pane_id);
+        for id in pane.surface_ids {
+            let mut kind_name = legacy_pane
+                .and_then(|p| p.surface_kind.as_deref())
+                .unwrap_or("terminal");
+            let browser_selected = legacy_pane.is_some_and(|p| {
+                p.browser_url.is_some() && p.selected_panel_id.as_deref() == Some(id.as_str())
+            });
+            if browser_selected {
+                kind_name = "browser";
+            }
+            let browser_url = if browser_selected {
+                legacy_pane.and_then(|p| p.browser_url.clone())
+            } else {
+                None
+            };
+            let metadata = SurfaceMetadata {
+                custom_title: workspace
+                    .panel_titles
+                    .as_ref()
+                    .and_then(|rows| rows.iter().find(|r| r.panel_id == id))
+                    .and_then(|r| r.custom_title.clone()),
+                pinned: workspace
+                    .panel_pins
+                    .as_ref()
+                    .and_then(|rows| rows.iter().find(|r| r.panel_id == id))
+                    .is_some_and(|r| r.is_pinned),
+                unread: workspace
+                    .panel_unreads
+                    .as_ref()
+                    .and_then(|rows| rows.iter().find(|r| r.panel_id == id))
+                    .is_some_and(|r| r.is_unread),
+                ..SurfaceMetadata::default()
+            };
+            let reservation = model.reserve_surface(SurfaceSeed {
+                surface_id: id.clone(),
+                pane_id: pane_id.clone(),
+                kind: kind_from_legacy(kind_name, browser_url),
+                metadata,
+            })?;
+            let record = model.surfaces.get_mut(&id).unwrap();
+            record.generation = reservation.generation;
+            if let Some(startup) = workspace
+                .panel_terminal_startups
+                .as_ref()
+                .and_then(|rows| rows.iter().find(|r| r.panel_id == id))
+            {
+                record.terminal_startup = startup_from_legacy(startup);
+            }
+        }
+        if !pane.selected_surface_id.is_empty()
+            && model.surfaces.contains_key(&pane.selected_surface_id)
+        {
+            model.select_in_pane(&pane.selected_surface_id)?;
+        }
+    }
+    Ok(())
+}
+
+fn kind_from_legacy(kind: &str, browser_url: Option<String>) -> SurfaceKind {
+    match kind {
+        "browser" => SurfaceKind::Browser {
+            url: browser_url.unwrap_or_default(),
+        },
+        "agent" | "agent_session" | "agent-session" => SurfaceKind::AgentSession {
+            provider: "codex".into(),
+            renderer: "react".into(),
+            working_directory: None,
+        },
+        "markdown" => SurfaceKind::Markdown {
+            path: String::new(),
+        },
+        "file" => SurfaceKind::File {
+            path: String::new(),
+        },
+        "diff" => SurfaceKind::Diff {
+            token: String::new(),
+            request_path: None,
+        },
+        "project_sidebar" => SurfaceKind::ProjectSidebar,
+        "right_sidebar_tool" => SurfaceKind::RightSidebarTool,
+        "remote_terminal" => SurfaceKind::RemoteTerminal {
+            remote_session_id: String::new(),
+        },
+        _ => SurfaceKind::Terminal,
+    }
+}
+
+fn find_pane<'a>(
+    layout: Option<&'a SessionWorkspaceLayoutSnapshot>,
+    pane_id: &str,
+) -> Option<&'a SessionPaneLayoutSnapshot> {
+    match layout? {
+        SessionWorkspaceLayoutSnapshot::Pane(p) if p.pane_id.as_deref() == Some(pane_id) => Some(p),
+        SessionWorkspaceLayoutSnapshot::Pane(_) => None,
+        SessionWorkspaceLayoutSnapshot::Split(s) => {
+            find_pane(Some(&s.first), pane_id).or_else(|| find_pane(Some(&s.second), pane_id))
+        }
+    }
+}
+
+fn project_layout(
+    layout: SessionWorkspaceLayoutSnapshot,
+    panes: &BTreeMap<String, PaneRecord>,
+) -> Option<SessionWorkspaceLayoutSnapshot> {
+    match layout {
+        SessionWorkspaceLayoutSnapshot::Pane(mut old) => {
+            let id = old.pane_id.clone()?;
+            let pane = panes.get(&id)?;
+            if pane.surface_ids.is_empty() {
+                return None;
+            }
+            old.panel_ids = pane.surface_ids.clone();
+            old.selected_panel_id =
+                Some(pane.selected_surface_id.clone()).filter(|s| !s.is_empty());
+            old.surface_kind = None;
+            old.markdown_file_path = None;
+            old.file_path = None;
+            old.diff_viewer_token = None;
+            old.diff_viewer_request_path = None;
+            old.browser_url = None;
+            old.browser_proxy_url = None;
+            old.browser_back_history = None;
+            old.browser_forward_history = None;
+            old.browser_omnibar_visible = None;
+            old.browser_focus_mode_active = None;
+            old.browser_developer_tools_visible = None;
+            old.browser_developer_tools_panel = None;
+            old.browser_page_zoom = None;
+            Some(SessionWorkspaceLayoutSnapshot::Pane(old))
+        }
+        SessionWorkspaceLayoutSnapshot::Split(mut split) => {
+            let first = project_layout(*split.first, panes);
+            let second = project_layout(*split.second, panes);
+            match (first, second) {
+                (Some(a), Some(b)) => {
+                    split.first = Box::new(a);
+                    split.second = Box::new(b);
+                    Some(SessionWorkspaceLayoutSnapshot::Split(split))
+                }
+                (Some(one), None) | (None, Some(one)) => Some(one),
+                (None, None) => None,
+            }
+        }
+    }
+}
+
+fn startup_from_legacy(value: &SessionPanelTerminalStartupSnapshot) -> TerminalStartup {
+    TerminalStartup {
+        command: value.initial_terminal_command.clone(),
+        working_directory: None,
+        initial_input: value.initial_terminal_input.clone(),
+        environment: value.initial_terminal_environment.clone(),
+        tmux_start_command: None,
+    }
+}
+
+fn record_from_session(value: &SessionSurfaceSnapshot) -> SurfaceRecord {
+    SurfaceRecord {
+        surface_id: value.surface_id.clone(),
+        pane_id: value.pane_id.clone(),
+        generation: value.generation,
+        kind: kind_from_session(&value.kind),
+        metadata: metadata_from_session(&value.metadata),
+        terminal_startup: value
+            .terminal_startup
+            .as_ref()
+            .map(startup_from_session)
+            .unwrap_or_default(),
+        runtime: None,
+        is_workspace_focused: false,
+    }
+}
+fn record_to_session(value: &SurfaceRecord) -> SessionSurfaceSnapshot {
+    SessionSurfaceSnapshot {
+        surface_id: value.surface_id.clone(),
+        pane_id: value.pane_id.clone(),
+        generation: value.generation,
+        kind: kind_to_session(&value.kind),
+        metadata: metadata_to_session(&value.metadata),
+        terminal_startup: matches!(
+            value.kind,
+            SurfaceKind::Terminal | SurfaceKind::RemoteTerminal { .. }
+        )
+        .then(|| startup_to_session(&value.terminal_startup)),
+    }
+}
+fn kind_from_session(value: &SessionSurfaceKindSnapshot) -> SurfaceKind {
+    match value {
+        SessionSurfaceKindSnapshot::Terminal => SurfaceKind::Terminal,
+        SessionSurfaceKindSnapshot::Browser { url } => SurfaceKind::Browser { url: url.clone() },
+        SessionSurfaceKindSnapshot::AgentSession {
+            provider,
+            renderer,
+            working_directory,
+        } => SurfaceKind::AgentSession {
+            provider: provider.clone(),
+            renderer: renderer.clone(),
+            working_directory: working_directory.clone(),
+        },
+        SessionSurfaceKindSnapshot::Markdown { path } => {
+            SurfaceKind::Markdown { path: path.clone() }
+        }
+        SessionSurfaceKindSnapshot::File { path } => SurfaceKind::File { path: path.clone() },
+        SessionSurfaceKindSnapshot::Diff {
+            token,
+            request_path,
+        } => SurfaceKind::Diff {
+            token: token.clone(),
+            request_path: request_path.clone(),
+        },
+        SessionSurfaceKindSnapshot::ProjectSidebar => SurfaceKind::ProjectSidebar,
+        SessionSurfaceKindSnapshot::RightSidebarTool => SurfaceKind::RightSidebarTool,
+        SessionSurfaceKindSnapshot::RemoteTerminal { remote_session_id } => {
+            SurfaceKind::RemoteTerminal {
+                remote_session_id: remote_session_id.clone(),
+            }
+        }
+    }
+}
+fn kind_to_session(value: &SurfaceKind) -> SessionSurfaceKindSnapshot {
+    match value {
+        SurfaceKind::Terminal => SessionSurfaceKindSnapshot::Terminal,
+        SurfaceKind::Browser { url } => SessionSurfaceKindSnapshot::Browser { url: url.clone() },
+        SurfaceKind::AgentSession {
+            provider,
+            renderer,
+            working_directory,
+        } => SessionSurfaceKindSnapshot::AgentSession {
+            provider: provider.clone(),
+            renderer: renderer.clone(),
+            working_directory: working_directory.clone(),
+        },
+        SurfaceKind::Markdown { path } => {
+            SessionSurfaceKindSnapshot::Markdown { path: path.clone() }
+        }
+        SurfaceKind::File { path } => SessionSurfaceKindSnapshot::File { path: path.clone() },
+        SurfaceKind::Diff {
+            token,
+            request_path,
+        } => SessionSurfaceKindSnapshot::Diff {
+            token: token.clone(),
+            request_path: request_path.clone(),
+        },
+        SurfaceKind::ProjectSidebar => SessionSurfaceKindSnapshot::ProjectSidebar,
+        SurfaceKind::RightSidebarTool => SessionSurfaceKindSnapshot::RightSidebarTool,
+        SurfaceKind::RemoteTerminal { remote_session_id } => {
+            SessionSurfaceKindSnapshot::RemoteTerminal {
+                remote_session_id: remote_session_id.clone(),
+            }
+        }
+    }
+}
+fn metadata_from_session(v: &SessionSurfaceMetadataSnapshot) -> SurfaceMetadata {
+    SurfaceMetadata {
+        custom_title: v.custom_title.clone(),
+        pinned: v.pinned,
+        unread: v.unread,
+        reported_directory: v.reported_directory.clone(),
+        directory_provenance: v.directory_provenance.clone(),
+        directory_apply_count: v.directory_apply_count,
+    }
+}
+fn metadata_to_session(v: &SurfaceMetadata) -> SessionSurfaceMetadataSnapshot {
+    SessionSurfaceMetadataSnapshot {
+        custom_title: v.custom_title.clone(),
+        pinned: v.pinned,
+        unread: v.unread,
+        reported_directory: v.reported_directory.clone(),
+        directory_provenance: v.directory_provenance.clone(),
+        directory_apply_count: v.directory_apply_count,
+    }
+}
+fn startup_from_session(v: &SessionSurfaceTerminalStartupSnapshot) -> TerminalStartup {
+    TerminalStartup {
+        command: v.command.clone(),
+        working_directory: v.working_directory.clone(),
+        initial_input: v.initial_input.clone(),
+        environment: v.environment.clone(),
+        tmux_start_command: v.tmux_start_command.clone(),
+    }
+}
+fn startup_to_session(v: &TerminalStartup) -> SessionSurfaceTerminalStartupSnapshot {
+    SessionSurfaceTerminalStartupSnapshot {
+        command: v.command.clone(),
+        working_directory: v.working_directory.clone(),
+        initial_input: v.initial_input.clone(),
+        environment: v.environment.clone(),
+        tmux_start_command: v.tmux_start_command.clone(),
+    }
+}

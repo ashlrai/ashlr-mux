@@ -655,6 +655,11 @@ pub struct SessionWorkspaceSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub focused_panel_id: Option<String>,
+    /// Authoritative, ordered-by-pane surface records.  Old snapshots omit
+    /// this field and are migrated from the layout/parallel metadata at load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub surfaces: Option<Vec<SessionSurfaceSnapshot>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub panel_titles: Option<Vec<SessionPanelTitleSnapshot>>,
@@ -765,6 +770,109 @@ pub struct SessionWorkspaceSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub is_pinned: Option<bool>,
+}
+
+/// Persisted per-surface state. Runtime handles are intentionally absent: they
+/// are rebound after restore using `generation` as the stale-callback fence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionSurfaceSnapshot {
+    pub surface_id: String,
+    pub pane_id: String,
+    #[serde(default = "default_surface_generation")]
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub generation: u64,
+    pub kind: SessionSurfaceKindSnapshot,
+    #[serde(default)]
+    pub metadata: SessionSurfaceMetadataSnapshot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub terminal_startup: Option<SessionSurfaceTerminalStartupSnapshot>,
+}
+
+fn default_surface_generation() -> u64 {
+    1
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[cfg_attr(
+    feature = "ts",
+    derive(TS),
+    ts(export, tag = "type", rename_all = "snake_case")
+)]
+pub enum SessionSurfaceKindSnapshot {
+    Terminal,
+    Browser {
+        url: String,
+    },
+    AgentSession {
+        provider: String,
+        renderer: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        working_directory: Option<String>,
+    },
+    Markdown {
+        path: String,
+    },
+    File {
+        path: String,
+    },
+    Diff {
+        token: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_path: Option<String>,
+    },
+    ProjectSidebar,
+    RightSidebarTool,
+    RemoteTerminal {
+        remote_session_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionSurfaceMetadataSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub custom_title: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pinned: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub unread: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub reported_directory: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub directory_provenance: Option<String>,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub directory_apply_count: u64,
+}
+
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionSurfaceTerminalStartupSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub working_directory: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub initial_input: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub environment: Option<std::collections::BTreeMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub tmux_start_command: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
