@@ -2645,3 +2645,97 @@ fn terminal_replace_success_leaves_exactly_the_replacement_runtime() {
     assert!(!registry.live.contains(&1));
     assert!(registry.live.contains(&2));
 }
+
+#[test]
+fn browser_teardown_prepares_all_authority_before_physically_closing_webview() {
+    #[derive(Default)]
+    struct BrowserState {
+        authoritative: bool,
+        physically_open: bool,
+        calls: Vec<&'static str>,
+    }
+
+    let state = std::rc::Rc::new(std::cell::RefCell::new(BrowserState {
+        authoritative: true,
+        physically_open: true,
+        calls: Vec::new(),
+    }));
+    let prepare_state = state.clone();
+    let close_state = state.clone();
+    let commit_state = state.clone();
+
+    let result = strict_browser_runtime_teardown_transaction(
+        || {
+            let mut state = prepare_state.borrow_mut();
+            state.calls.push("lock_webviews");
+            state.calls.push("lock_network_records");
+            Err::<(), String>("browser network record state lock poisoned".into())
+        },
+        |_| {
+            let mut state = close_state.borrow_mut();
+            state.calls.push("close_webview");
+            state.physically_open = false;
+            Ok(())
+        },
+        |_| {
+            let mut state = commit_state.borrow_mut();
+            state.calls.push("remove_authority");
+            state.authoritative = false;
+            Ok(())
+        },
+    );
+
+    assert_eq!(
+        result.unwrap_err(),
+        "browser network record state lock poisoned"
+    );
+    let state = state.borrow();
+    assert_eq!(state.calls, vec!["lock_webviews", "lock_network_records"]);
+    assert!(
+        state.physically_open,
+        "lock failure must precede webview.close"
+    );
+    assert!(
+        state.authoritative,
+        "failed preparation must retain the live authoritative entry"
+    );
+}
+
+#[test]
+fn browser_teardown_closes_then_removes_only_after_all_authority_is_prepared() {
+    let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let prepare_calls = calls.clone();
+    let close_calls = calls.clone();
+    let commit_calls = calls.clone();
+
+    strict_browser_runtime_teardown_transaction(
+        || {
+            prepare_calls.borrow_mut().extend([
+                "lock_webviews",
+                "lock_network_records",
+                "lock_init_scripts",
+            ]);
+            Ok(())
+        },
+        |_| {
+            close_calls.borrow_mut().push("close_webview");
+            Ok(())
+        },
+        |_| {
+            commit_calls.borrow_mut().push("remove_authority");
+            Ok(())
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        calls.borrow().as_slice(),
+        [
+            "lock_webviews",
+            "lock_network_records",
+            "lock_init_scripts",
+            "close_webview",
+            "remove_authority",
+        ]
+    );
+}
