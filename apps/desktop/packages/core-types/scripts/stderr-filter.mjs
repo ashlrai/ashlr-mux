@@ -9,19 +9,37 @@ export function filterTsRsDiagnostics(stderr) {
       kept.push(lines[index++]);
       continue;
     }
-    let end = index + 1;
-    let known = false;
-    for (; end < lines.length; end += 1) {
-      const line = lines[end].trimEnd();
-      if (line === END) {
-        known = true;
-        end += 1;
-        break;
+    let cursor = index + 1;
+    let attribute = "";
+    let valid = lines[cursor]?.trimEnd() === "  |";
+    cursor += 1;
+    if (valid && lines[cursor]?.startsWith("  | #[serde(")) {
+      attribute = lines[cursor].slice("  | ".length).trim();
+      cursor += 1;
+      while (cursor < lines.length && lines[cursor].trimEnd() !== "  |") {
+        const line = lines[cursor].trimEnd();
+        if (/^(warning|error)(\[|:)/.test(line)) break;
+        attribute += line.trim();
+        cursor += 1;
       }
-      if (/^(warning|error)(\[|:)/.test(line)) break;
     }
-    if (known) index = end;
-    else kept.push(lines[index++]);
+    const normalizedAttribute = attribute.replace(/=\s*"/g, '= "');
+    const knownAttribute = /^#\[serde\((?:rename = "[^"]+", )?(?:default, )?skip_serializing_if = "(?:Option::is_none|Vec::is_empty|is_false)"\)\]$/.test(normalizedAttribute);
+    const complete =
+      valid &&
+      knownAttribute &&
+      lines[cursor]?.trimEnd() === "  |" &&
+      lines[cursor + 1]?.trimEnd() === END;
+    if (complete) {
+      index = cursor + 2;
+      continue;
+    }
+    let preserveThrough = index + 1;
+    while (preserveThrough < lines.length) {
+      if (lines[preserveThrough++].trimEnd() === END) break;
+    }
+    kept.push(...lines.slice(index, preserveThrough));
+    index = preserveThrough;
   }
   return kept.join("");
 }
