@@ -120,7 +120,7 @@
       "external_failure": "external_open_failed / Failed to open URL externally / {url}",
       "external_success": "window id/ref; workspace/pane/surface ids+refs null; created_split=false, opened_externally=true, browser_disabled=true, placement_strategy=external_browser_disabled, url"
     },
-    "remote_tmux": "Reject unsupported options before mutation. Successful routed create/split returns accepted=true, routed=remote-tmux, type, window/workspace ids+refs, and null pane/surface created identities until the remote arrival event reconciles state.",
+    "remote_tmux": "Remote routing is selected from an already-resolved remote tmux mirror workspace, never from request-supplied remote_pty_session_id or remote_context fields. Reject unsupported options before mutation. Successful routed create/split returns accepted=true, routed=remote-tmux, type, window/workspace ids+refs, and null pane/surface created identities until the remote arrival event reconciles state.",
     "events": "Lifecycle events come from authoritative model transitions. Successful surface.action/tab.action additionally maps to one surface.action socket-domain completion event; failures and surface.current/list/report_pwd do not emit completion events.",
     "sources": [
       "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/ControlRoutingSelectors.swift",
@@ -209,7 +209,7 @@
         "invalid_state/No split ancestor for absolute pane resize",
         "invalid_state/No <orientation> split ancestor for pane",
         "invalid_state/Pane has no adjacent border in direction <direction>",
-        "internal_error/Failed to resize pane"
+        "internal_error/Failed to set split divider position with split_id data"
       ],
       "success": "Return window/workspace/pane/split ids+refs, old_divider_position, new_divider_position, plus absolute_axis+target_pixels or direction+amount. Divider movement is clamped to 0.1...0.9.",
       "state_events_persistence": "Mutate the correct split ancestor in the authoritative pane tree, emit the canonical pane resize event once, preserve selection/focus unless explicitly specified by the method contract, and persist restored divider geometry.",
@@ -226,7 +226,7 @@
         "routing": "shared selectors; pane_id else focused pane",
         "type": "terminal default; browser/markdown/filePreview/rightSidebarTool/agentSession tokens; unknown token falls back terminal",
         "agent_session": "provider_id then provider, default codex, valid codex|claude|claudecode|opencode; renderer_kind then renderer, default react, valid react|solid",
-        "terminal_browser": "url, working_directory, initial_command, tmux_start_command, remote_pty_session_id, remote_context, startup_environment then initial_env, focus=false",
+        "terminal_browser": "url, working_directory, initial_command, tmux_start_command, remote_pty_session_id, remote_context (trimmed raw string token: inherit|local|cloud), startup_environment then initial_env, focus=false",
         "placement": "workspace|dock; Dock supports only canonical permitted terminal/browser kinds"
       },
       "errors": [
@@ -388,7 +388,7 @@
         "metadata": "rename(trimmed title response), clear_name, pin/unpin(pinned response), mark_read/mark_unread",
         "presentation_runtime": "reload browser-only; toggle_full_width_tab with result boolean",
         "create": "duplicate browser-only; new_terminal_right; new_browser_right. Insert immediately right but not before pinned prefix; created ids/refs or remote accepted/null shape.",
-        "close": "close_left/right/others within target pane, skip pinned, preserve last surface; return closed/skipped_pinned",
+        "close": "close_left/right/others within target pane, skip pinned, preserve last surface; return integer closed/skipped_pinned counts",
         "move": "move_to_new_workspace/detach aliases require >1 source surfaces; move same id and metadata, return source and created destination identities"
       },
       "errors": "Exact unavailable, Missing action, Workspace/Tab/focused/pane not found, Unknown tab action with ordered supported_actions, invalid title/URL/state, browser-only, create/duplicate/move failures, browser-disabled errors.",

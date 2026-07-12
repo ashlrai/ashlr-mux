@@ -45,6 +45,21 @@ fn two_window_snapshot() -> AppSessionSnapshot {
     snapshot
 }
 
+fn mark_remote_tmux_workspace(
+    snapshot: AppSessionSnapshot,
+    window_index: usize,
+) -> AppSessionSnapshot {
+    let mut encoded = serde_json::to_value(snapshot).expect("encode remote fixture");
+    encoded["windows"][window_index]["tab_manager"]["workspaces"][0]["remote"] = json!({
+        "enabled": true,
+        "state": "connected",
+        "connected": true,
+        "transport": "tmux",
+        "destination": "remote-session-1"
+    });
+    serde_json::from_value(encoded).expect("decode remote fixture")
+}
+
 fn intended_mixed_surface_records() -> Value {
     json!([
         {
@@ -433,14 +448,28 @@ fn dock_and_remote_create_require_real_typed_effects_not_counter_payloads() {
             if Some(dock_surface_id.as_str()) == value["dock_surface_id"].as_str()
     )));
 
-    let remote = transition(
+    let ignored_request_metadata = transition(
         &test_snapshot(),
         "pane.create",
         json!({
             "direction": "right",
             "remote_pty_session_id": "remote-session-1",
-            "remote_context": {"transport": "tmux"}
+            "remote_context": "cloud"
         }),
+    );
+    let value = ok_value(&ignored_request_metadata);
+    assert!(value.get("routed").is_none());
+    assert!(value["pane_id"].is_string());
+    assert!(!ignored_request_metadata
+        .effects
+        .iter()
+        .any(|effect| matches!(effect, LifecycleEffect::RemoteCreate { .. })));
+
+    let remote_snapshot = mark_remote_tmux_workspace(test_snapshot(), 0);
+    let remote = transition(
+        &remote_snapshot,
+        "pane.create",
+        json!({"direction": "right"}),
     );
     let value = ok_value(&remote);
     assert_eq!(value["accepted"], json!(true));
@@ -530,7 +559,7 @@ fn report_pwd_preserves_raw_path_and_reconciles_pending_remote_once() {
     assert_eq!(ok_value(&recorded)["path"], json!(" C:/repo "));
     assert!(recorded.events.is_empty());
 
-    let mut remote = two_window_snapshot();
+    let mut remote = mark_remote_tmux_workspace(two_window_snapshot(), 1);
     remote.windows[1].tab_manager.workspaces[0].layout = None;
     remote.windows[1].tab_manager.workspaces[0].surfaces = Some(Vec::new());
     remote.windows[1].tab_manager.workspaces[0].focused_panel_id = None;
@@ -745,8 +774,8 @@ fn action_matrix_and_close_range_skip_pinned_and_preserve_last_surface() {
         json!({"surface_id": "surface-terminal", "action": "close-right"}),
     );
     let value = ok_value(&close_right);
-    assert_eq!(value["closed"], json!([]));
-    assert_eq!(value["skipped_pinned"], json!(["surface-browser"]));
+    assert_eq!(value["closed"], json!(0));
+    assert_eq!(value["skipped_pinned"], json!(1));
 
     let close_last = transition(
         &snapshot,
