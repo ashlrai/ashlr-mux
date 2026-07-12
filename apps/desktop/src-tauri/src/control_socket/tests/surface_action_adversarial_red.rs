@@ -5,7 +5,8 @@ use super::pane_surface_lifecycle::{
 };
 use super::*;
 use cmux_core::session::{
-    SessionSurfaceKindSnapshot, SessionSurfaceMetadataSnapshot, SessionSurfaceSnapshot,
+    SessionSplitOrientation, SessionSurfaceKindSnapshot, SessionSurfaceMetadataSnapshot,
+    SessionSurfaceSnapshot,
 };
 use cmux_core::surface_lifecycle::SurfaceLifecycleModel;
 
@@ -270,6 +271,27 @@ fn remote_action_snapshot() -> AppSessionSnapshot {
         "persistent_daemon_slot": "remote-session-1"
     });
     serde_json::from_value(encoded).unwrap()
+}
+
+fn remote_split_snapshot() -> AppSessionSnapshot {
+    let mut snapshot = remote_action_snapshot();
+    snapshot.windows[0].tab_manager.workspaces[0]
+        .surfaces
+        .as_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|surface| surface.surface_id == A)
+        .unwrap()
+        .kind = SessionSurfaceKindSnapshot::RemoteTerminal {
+        remote_session_id: Some("%34".into()),
+        remote_context: None,
+        arrival_generation: Some(1),
+    };
+    snapshot
+}
+
+fn remote_pane_create(snapshot: &AppSessionSnapshot, params: Value) -> LifecycleTransition {
+    dispatch_with(snapshot, "pane.create", params, &context(true))
 }
 
 #[test]
@@ -692,22 +714,42 @@ fn production_remote_split_format_crosses_ssh_as_one_safe_shell_command() {
 }
 
 #[test]
-fn production_remote_tmux_command_rejects_line_breaks_and_controls() {
-    let unsafe_results = [
-        "/srv/repo\rbreak",
-        "/srv/repo\nbreak",
-        "/srv/repo\u{0007}break",
-    ]
-    .map(|unsafe_directory| {
+fn production_remote_tmux_command_omits_unusable_cwd_and_trims_safe_cwd() {
+    let placement_only =
+        vec!["tmux new-window -d -a -t '@7' -P -F '#{window_id}\t#{pane_id}'".to_string()];
+    let unusable = [
+        None,
+        Some(""),
+        Some("   "),
+        Some("/srv/repo\rbreak"),
+        Some("/srv/repo\nbreak"),
+        Some("/srv/repo\0break"),
+        Some("/srv/repo\u{0007}break"),
+    ];
+    let actual = unusable.map(|working_directory| {
         remote_tmux_create_argv(&RemoteTmuxCreateSpec {
             operation: "new-window",
             focus: false,
             source_target: Some("@7"),
-            working_directory: Some(unsafe_directory),
+            working_directory,
         })
-        .is_err()
+        .unwrap_or_else(|error| vec![format!("ERROR: {error}")])
     });
-    assert_eq!(unsafe_results, [true, true, true]);
+    assert!(
+        actual.iter().all(|command| command == &placement_only),
+        "{actual:?}"
+    );
+
+    assert_eq!(
+        remote_tmux_create_argv(&RemoteTmuxCreateSpec {
+            operation: "new-window",
+            focus: false,
+            source_target: Some("@7"),
+            working_directory: Some("  /srv/repo with spaces  "),
+        })
+        .unwrap(),
+        ["tmux new-window -d -a -t '@7' -c '/srv/repo with spaces' -P -F '#{window_id}\t#{pane_id}'"]
+    );
 }
 
 #[test]
@@ -792,5 +834,250 @@ fn production_arrival_scheduler_only_compensates_source_loss_or_final_failure() 
     assert!(
         scheduler.contains("SourceMissing") && scheduler.contains("CompensateKillWindow"),
         "only source loss or exhausted commit failure may compensate kill-window"
+    );
+}
+
+#[test]
+fn remote_pane_create_resolves_terminal_source_and_direction_before_routing() {
+    let snapshot = remote_split_snapshot();
+    let mut actual = Vec::new();
+    let mut expected = Vec::new();
+    for (direction, tmux_flag, orientation) in
+        [("right", "-h", "horizontal"), ("down", "-v", "vertical")]
+    {
+        let transition = remote_pane_create(
+            &snapshot,
+            json!({"surface_id": A, "direction": direction, "type": "terminal"}),
+        );
+        let remote = serialized_effect(&transition, "RemoteCreate");
+        actual.push(json!({
+            "source_surface_id": remote["source_surface_id"],
+            "source_remote_pane_id": remote["source_remote_pane_id"],
+            "split_direction": remote["split_direction"],
+            "split_orientation": remote["split_orientation"],
+        }));
+        expected.push(json!({
+            "source_surface_id": A,
+            "source_remote_pane_id": "%34",
+            "split_direction": tmux_flag,
+            "split_orientation": orientation,
+        }));
+    }
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn production_remote_split_command_targets_the_resolved_tmux_pane() {
+    assert_eq!(
+        remote_tmux_create_argv(&RemoteTmuxCreateSpec {
+            operation: "split-window",
+            focus: false,
+            source_target: Some("@7.%34"),
+            working_directory: None,
+        })
+        .unwrap(),
+        ["tmux split-window -d -h -t '@7.%34' -P -F '#{pane_id}'"]
+    );
+
+    let production = include_str!("../../control_socket.rs");
+    assert!(production.contains("RemoteTmuxSplitDirection"));
+    assert!(production.contains("split_direction: RemoteTmuxSplitDirection"));
+    assert!(production.contains("valid_tmux_split_target"));
+}
+
+#[test]
+fn production_remote_split_observation_is_strict_before_stage_or_rollback() {
+    let parse_contract = |output: &str| {
+        let line = output
+            .strip_suffix("\r\n")
+            .or_else(|| output.strip_suffix('\n'))
+            .unwrap_or(output);
+        !line.contains(['\r', '\n']) && valid_tmux_identity(line, '%')
+    };
+    assert!(parse_contract("%34\n"));
+    assert!(parse_contract("%34\r\n"));
+    for invalid in [
+        "",
+        "%",
+        "%x",
+        "%34x",
+        "%34\textra",
+        "%34\nextra\n",
+        "%34\r",
+        "%34\u{0007}",
+        "@34\n",
+    ] {
+        assert!(!parse_contract(invalid), "{invalid:?}");
+    }
+
+    let production = include_str!("../../control_socket.rs");
+    assert!(production.contains("fn parse_remote_tmux_pane_observation("));
+    assert!(
+        production.contains("parse_remote_tmux_pane_observation(&raw_output)"),
+        "split identity must be parsed before immediate arrival is staged"
+    );
+}
+
+#[test]
+fn remote_pane_create_rejects_missing_explicit_source_before_effects() {
+    let snapshot = remote_split_snapshot();
+    let missing = remote_pane_create(
+        &snapshot,
+        json!({"surface_id": "40000000-0000-0000-0000-000000000099", "direction": "right"}),
+    );
+    assert_error(&missing, "not_found", "No source surface to split");
+    assert!(missing.effects.is_empty());
+}
+
+#[test]
+fn remote_pane_create_routes_only_terminal_and_preserves_browser_behavior() {
+    let transition = remote_pane_create(
+        &remote_split_snapshot(),
+        json!({
+            "surface_id": A,
+            "direction": "right",
+            "type": "browser",
+            "url": "https://split.test"
+        }),
+    );
+    assert!(transition
+        .effects
+        .iter()
+        .any(|effect| matches!(effect, LifecycleEffect::BrowserAttach { .. })));
+    assert!(!transition
+        .effects
+        .iter()
+        .any(|effect| matches!(effect, LifecycleEffect::RemoteCreate { .. })));
+    assert_ne!(transition.snapshot, remote_split_snapshot());
+}
+
+#[test]
+fn remote_pane_create_rejects_insert_first_and_unsupported_options_before_effects() {
+    let snapshot = remote_split_snapshot();
+    let cases = [
+        json!({"surface_id": A, "direction": "left"}),
+        json!({"surface_id": A, "direction": "up"}),
+        json!({"surface_id": A, "direction": "right", "working_directory": "/srv/repo"}),
+        json!({"surface_id": A, "direction": "right", "initial_command": "echo hi"}),
+        json!({"surface_id": A, "direction": "right", "command": "echo hi"}),
+        json!({"surface_id": A, "direction": "right", "tmux_start_command": "tmux attach"}),
+        json!({"surface_id": A, "direction": "right", "startup_environment": {"A":"B"}}),
+        json!({"surface_id": A, "direction": "right", "initial_divider_position": 0.4}),
+    ];
+    let actual = cases.map(|params| {
+        let transition = remote_pane_create(&snapshot, params);
+        (
+            matches!(transition.result, ControlCallResult::Err { ref code, .. } if code == "invalid_params"),
+            transition.snapshot == snapshot,
+            transition.effects.is_empty(),
+        )
+    });
+    assert_eq!(actual, [(true, true, true); 8]);
+
+    let left = remote_pane_create(&snapshot, json!({"surface_id": A, "direction": "left"}));
+    let data = assert_error(
+        &left,
+        "invalid_params",
+        "Not supported when targeting a remote tmux mirror workspace (the request is routed to tmux and these options cannot be applied): direction=left/up",
+    );
+    assert_eq!(data["unsupported"], json!(["direction=left/up"]));
+    assert_eq!(data["routed_target"], "remote-tmux");
+}
+
+#[test]
+fn remote_split_arrival_carries_source_orientation_into_topology_and_event() {
+    let lifecycle = include_str!("../pane_surface_lifecycle.rs");
+    for contract in [
+        "split_orientation: Option<SessionSplitOrientation>",
+        "source_pane_id: Option<String>",
+        "arrival.anchor_surface_id",
+        "arrival.split_orientation",
+    ] {
+        assert!(
+            lifecycle.contains(contract),
+            "missing split arrival contract: {contract}"
+        );
+    }
+    let production = include_str!("../../control_socket.rs");
+    for contract in [
+        "\"source_pane_id\":arrival.source_pane_id",
+        "\"orientation\":arrival.split_orientation",
+    ] {
+        assert!(
+            production.contains(contract),
+            "missing split event contract: {contract}"
+        );
+    }
+}
+
+#[test]
+fn remote_split_reconciliation_splits_the_requested_source_pane() {
+    fn pane_ids(layout: &SessionWorkspaceLayoutSnapshot) -> Vec<String> {
+        match layout {
+            SessionWorkspaceLayoutSnapshot::Pane(pane) => pane.pane_id.iter().cloned().collect(),
+            SessionWorkspaceLayoutSnapshot::Split(split) => {
+                let mut ids = pane_ids(&split.first);
+                ids.extend(pane_ids(&split.second));
+                ids
+            }
+        }
+    }
+    fn has_direct_pair(
+        layout: &SessionWorkspaceLayoutSnapshot,
+        source_pane: &str,
+        created_pane: &str,
+        orientation: SessionSplitOrientation,
+    ) -> bool {
+        let SessionWorkspaceLayoutSnapshot::Split(split) = layout else {
+            return false;
+        };
+        let first = pane_ids(&split.first);
+        let second = pane_ids(&split.second);
+        let direct = first.iter().any(|id| id == source_pane)
+            && second.iter().any(|id| id == created_pane)
+            && split.orientation == orientation;
+        direct
+            || has_direct_pair(&split.first, source_pane, created_pane, orientation.clone())
+            || has_direct_pair(&split.second, source_pane, created_pane, orientation)
+    }
+
+    let first_split = dispatch_with(
+        &action_snapshot(),
+        "pane.create",
+        json!({"surface_id": A, "direction": "right", "type": "terminal"}),
+        &context(true),
+    );
+    let created = ok(&first_split);
+    let source_surface = created["surface_id"].as_str().unwrap();
+    let source_pane = created["pane_id"].as_str().unwrap();
+    let remote_pane = "30000000-0000-0000-0000-000000000099";
+    let remote_surface = "40000000-0000-0000-0000-000000000099";
+    let mut arrival = super::pane_surface_lifecycle::RuntimeArrival::remote(
+        W1,
+        WS1,
+        remote_pane,
+        remote_surface,
+        "%99",
+        1,
+    );
+    arrival.anchor_surface_id = Some(source_surface.into());
+    arrival.focused = true;
+    let reconciled =
+        super::pane_surface_lifecycle::reconcile_runtime_arrival(&first_split.snapshot, arrival);
+    let layout = reconciled.snapshot.windows[0].tab_manager.workspaces[0]
+        .layout
+        .as_ref()
+        .unwrap();
+    let topology_correct = has_direct_pair(
+        layout,
+        source_pane,
+        remote_pane,
+        SessionSplitOrientation::Horizontal,
+    );
+    let model = SurfaceLifecycleModel::from_app_session_snapshot(&reconciled.snapshot).unwrap();
+    assert_eq!(
+        (topology_correct, model.focused_surface(WS1)),
+        (true, Some(remote_surface)),
+        "supported right/down arrivals split after their requested source and honor focus"
     );
 }
