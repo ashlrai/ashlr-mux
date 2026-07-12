@@ -2617,9 +2617,9 @@ fn tab_action_params(args: &[String]) -> Result<serde_json::Value, CliError> {
     let mut params = lifecycle_scope_params(&parsed)?;
     params.insert("action".into(), serde_json::json!(action));
     if let Some(tab) = parsed.value(&["--tab"]) {
-        apply_validated_surface_selector(tab, &mut params)?;
+        apply_validated_surface_selector(tab, true, &mut params)?;
     } else if let Some(surface) = parsed.value(&["--surface", "--surface-id", "--surface-ref"]) {
-        apply_validated_surface_selector(surface, &mut params)?;
+        apply_validated_surface_selector(surface, false, &mut params)?;
     }
     if let Some(title) = title {
         params.insert("title".into(), serde_json::json!(title));
@@ -2657,7 +2657,7 @@ fn respawn_pane_params(args: &[String]) -> Result<serde_json::Value, CliError> {
     )?;
     let mut params = lifecycle_scope_params(&parsed)?;
     if let Some(surface) = parsed.value(&["--surface", "--surface-id", "--surface-ref"]) {
-        apply_validated_surface_selector(surface, &mut params)?;
+        apply_validated_surface_selector(surface, false, &mut params)?;
     }
     let requested = parsed
         .value(&["--command"])
@@ -2727,8 +2727,7 @@ fn lifecycle_scope_params(
     let mut params = serde_json::Map::new();
     apply_lifecycle_workspace_selector(parsed, &mut params)?;
     apply_window_scope_selector(parsed, &mut params);
-    if (params.contains_key("window_id") || params.contains_key("window_ref"))
-        && !params.contains_key("workspace_id")
+    if !params.contains_key("workspace_id")
         && !params.contains_key("workspace_ref")
         && !params.contains_key("workspace_index")
     {
@@ -2760,19 +2759,40 @@ fn parse_optional_bool(parsed: &ParsedArgs, name: &str) -> Result<Option<bool>, 
 
 fn apply_validated_surface_selector(
     raw: &str,
+    allow_tab_ref: bool,
     params: &mut serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), CliError> {
-    let value = raw.trim();
+    let trimmed = raw.trim();
+    let value = if allow_tab_ref {
+        trimmed
+            .split_once(':')
+            .filter(|(kind, index)| {
+                kind.eq_ignore_ascii_case("tab")
+                    && !index.is_empty()
+                    && index.chars().all(|ch| ch.is_ascii_digit())
+            })
+            .map(|(_, index)| format!("surface:{index}"))
+            .unwrap_or_else(|| trimmed.to_string())
+    } else {
+        trimmed.to_string()
+    };
     let valid_reference = value
         .strip_prefix("surface:")
         .is_some_and(|index| !index.is_empty() && index.chars().all(|ch| ch.is_ascii_digit()));
     if value.chars().all(|ch| ch.is_ascii_digit()) || valid_reference {
-        apply_surface_selector_value(value, "surface_id", params);
-    } else if uuid::Uuid::parse_str(value).is_ok() {
+        if value.chars().all(|ch| ch.is_ascii_digit()) {
+            params.insert(
+                "surface_index".into(),
+                serde_json::json!(value.parse::<u64>().unwrap_or_default()),
+            );
+        } else {
+            params.insert("surface_ref".into(), serde_json::json!(value));
+        }
+    } else if uuid::Uuid::parse_str(&value).is_ok() {
         params.insert("surface_id".into(), serde_json::json!(value));
     } else {
         return Err(CliError::new(format!(
-            "Invalid surface handle: {value} (expected UUID, ref like surface:1, or index)"
+            "Invalid surface handle: {trimmed} (expected UUID, ref like surface:1, or index)"
         )));
     }
     Ok(())

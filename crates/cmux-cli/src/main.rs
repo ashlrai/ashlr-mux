@@ -757,6 +757,7 @@ fn run_lifecycle_command(
 ) -> Result<(), CliError> {
     let mut request_params = params.clone();
     normalize_workspace_params(options, method, &mut request_params)?;
+    normalize_lifecycle_surface_params(options, &mut request_params)?;
     let result = call_control_command(options, method, &request_params)?;
     let id_format = options.id_format.as_deref().unwrap_or("refs");
     if options.json_output {
@@ -1035,6 +1036,84 @@ fn normalize_workspace_params(
         .ok_or_else(|| CliError::new("Workspace not found"))?;
     object.remove("workspace_ref");
     object.insert("workspace_id".into(), serde_json::json!(id));
+    Ok(())
+}
+
+#[cfg(windows)]
+fn normalize_lifecycle_surface_params(
+    options: &GlobalOptions,
+    params: &mut serde_json::Value,
+) -> Result<(), CliError> {
+    let Some(object) = params.as_object_mut() else {
+        return Ok(());
+    };
+    let surface_index = object
+        .remove("surface_index")
+        .and_then(|value| value.as_u64());
+    let surface_ref = object
+        .get("surface_ref")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let surface_id = object
+        .get("surface_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let target = surface_ref.as_deref().or(surface_id.as_deref());
+    if surface_index.is_none() && target.is_none() {
+        return Ok(());
+    }
+
+    let window_scoped = object.get("window_id").is_some() || object.get("window_ref").is_some();
+    if surface_index.is_none() && !window_scoped {
+        if let Some(surface_ref) = surface_ref {
+            object.remove("surface_ref");
+            object.insert("surface_id".into(), serde_json::json!(surface_ref));
+        }
+        return Ok(());
+    }
+
+    let mut list_params = serde_json::Map::new();
+    for key in ["workspace_id", "window_id"] {
+        if let Some(value) = object.get(key) {
+            list_params.insert(key.into(), value.clone());
+        }
+    }
+    let listed = call_control_command(
+        options,
+        "surface.list",
+        &serde_json::Value::Object(list_params),
+    )?;
+    let surfaces = listed
+        .get("surfaces")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let matched = surfaces.iter().find(|surface| {
+        surface_index.is_some_and(|index| {
+            surface.get("index").and_then(serde_json::Value::as_u64) == Some(index)
+        }) || target.is_some_and(|target| {
+            ["surface_id", "id", "surface_ref", "ref"]
+                .iter()
+                .filter_map(|key| surface.get(*key).and_then(serde_json::Value::as_str))
+                .any(|candidate| candidate == target)
+        })
+    });
+    let matched = matched.ok_or_else(|| {
+        CliError::new(if surface_index.is_some() {
+            "Surface index not found"
+        } else {
+            "Surface not found in window"
+        })
+    })?;
+    let handle = matched
+        .get("surface_id")
+        .or_else(|| matched.get("id"))
+        .or_else(|| matched.get("surface_ref"))
+        .or_else(|| matched.get("ref"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| CliError::new("Surface not found"))?;
+    object.remove("surface_ref");
+    object.insert("surface_id".into(), serde_json::json!(handle));
     Ok(())
 }
 

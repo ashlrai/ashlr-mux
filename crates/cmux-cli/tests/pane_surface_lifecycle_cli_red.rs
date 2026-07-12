@@ -288,7 +288,7 @@ fn tab_action_normalizes_workspace_indexes_and_preserves_ref_uuid_precedence() {
 fn tab_action_normalizes_numeric_and_tab_ref_surfaces_in_scope() {
     let mapped = control_command_for(
         "tab-action",
-        &["pin".into(), "--tab".into(), "tab:9".into()],
+        &["pin".into(), "--tab".into(), "TAB:9".into()],
     )
     .unwrap()
     .expect("tab-action must be mapped");
@@ -893,7 +893,17 @@ fn backend_errors_keep_nonzero_exit_empty_stdout_and_exact_stderr() {
             data: None,
         },
     );
-    let output = executable(Some(&pipe), &["tab-action", "pin", "--surface", SURFACE_ID]);
+    let output = executable(
+        Some(&pipe),
+        &[
+            "tab-action",
+            "pin",
+            "--workspace",
+            WORKSPACE_ID,
+            "--surface",
+            SURFACE_ID,
+        ],
+    );
     assert_failure(output, "Error: unavailable: TabManager not available\n");
     assert_eq!(
         request_rx.recv_timeout(Duration::from_secs(5)).unwrap().0,
@@ -903,12 +913,21 @@ fn backend_errors_keep_nonzero_exit_empty_stdout_and_exact_stderr() {
 
 #[test]
 fn respawn_pane_executable_preserves_command_and_selector_precedence() {
-    let (pipe, request_rx) = spawn_server(
+    let (pipe, request_rx) = spawn_method_server(
         "respawn-pane-command",
-        ok(json!({
-            "surface_id":SURFACE_ID, "surface_ref":"surface:4",
-            "workspace_id":WORKSPACE_ID, "workspace_ref":"workspace:2"
-        })),
+        HashMap::from([
+            (
+                "surface.list".into(),
+                json!({"surfaces":[{"id":SURFACE_ID,"ref":"surface:4"}]}),
+            ),
+            (
+                "surface.respawn".into(),
+                json!({
+                    "surface_id":SURFACE_ID, "surface_ref":"surface:4",
+                    "workspace_id":WORKSPACE_ID, "workspace_ref":"workspace:2"
+                }),
+            ),
+        ]),
     );
     let command_text = "echo \"two words\" && echo it's";
     let output = Command::new(env!("CARGO_BIN_EXE_cmux"))
@@ -937,6 +956,14 @@ fn respawn_pane_executable_preserves_command_and_selector_precedence() {
     assert_eq!(String::from_utf8(output.stdout).unwrap(), "OK\n");
     assert!(output.stderr.is_empty());
 
+    let (method, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(method, "surface.list");
+    assert_eq!(
+        Value::Object(params),
+        json!({
+            "window_id":WINDOW_ID, "workspace_id":WORKSPACE_ID
+        })
+    );
     let (method, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
     assert_eq!(method, "surface.respawn");
     let params = Value::Object(params);

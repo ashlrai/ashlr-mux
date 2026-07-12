@@ -404,7 +404,7 @@
         "CLI/CMUXCLI+MoveTabToNewWorkspace.swift:3-45"
       ],
       "usage": "tab-action --action <name> [--tab] [--surface] [--workspace] [--window] [--title] [--url] [--focus true|false]",
-      "precedence": "--action else first positional; action lowercases and replaces hyphens with underscores without trimming or rewriting spaces (frozen e1825d40 behavior); --tab over --surface; explicit workspace/window suppress inappropriate ambient CMUX_TAB_ID/CMUX_SURFACE_ID; window then workspace then tab normalization; workspace-only request omits surface for server focused resolution; focus always sent default false.",
+      "precedence": "--action else first positional; action lowercases and replaces hyphens with underscores without trimming or rewriting spaces (frozen e1825d40 behavior); --tab over --surface and tab:N canonicalizes to surface:N; bare numeric workspace/surface selectors are zero-based indexes resolved through list calls; explicit workspace/window suppress inappropriate ambient CMUX_TAB_ID/CMUX_SURFACE_ID; window then workspace then tab normalization; absent workspace resolves workspace.current, while a workspace-only request omits surface for server focused resolution; focus always sent default false.",
       "errors_output": "Exact parse/unknown flag/rename title/focus/normalizer errors. Calls tab.action. Text: OK action=... optional tab/workspace/closed/full_width_tab_mode/created/created_workspace; JSON and --id-format exact; no deprecation warning.",
       "state_events_persistence": "Pure façade; no shadow state or duplicate event.",
       "windows_gap": "classified/help-classified only; no concrete help, mapping, formatting, process-contract test, or backend route"
