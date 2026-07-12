@@ -61,16 +61,10 @@ fn every_production_panel_reservation_is_fenced_before_fetch_add() {
         "pub(crate) fn move_workspace_to_window_for_control(",
         "pub(crate) fn new_workspace_for_control(",
         "pub(crate) fn new_workspace_in_window_for_control(",
-        "pub(crate) fn new_browser_workspace_for_control(",
-        "pub(crate) fn reopen_closed_browser_tab_for_control(",
         "pub(crate) fn split_panel_for_control(",
         "pub(crate) fn new_terminal_tab_for_control(",
-        "pub(crate) fn split_browser_for_control(",
         "fn open_ssh_url_request(",
-        "pub fn session_split_browser(",
         "pub fn session_new_workspace(",
-        "pub fn session_new_browser_workspace(",
-        "pub fn session_reopen_closed_browser_tab(",
     ];
     assert_eq!(
         session.matches("state.next_panel.fetch_add").count(),
