@@ -339,7 +339,7 @@ fn function_source<'a>(source: &'a str, signature: &str) -> &'a str {
 }
 
 #[test]
-fn production_writers_and_callers_use_typed_fallible_paths_while_diff_is_untouched() {
+fn production_writers_and_callers_use_typed_fallible_paths_with_durable_diff() {
     let session = include_str!("../session.rs");
     let zoom = function_source(session, "pub fn session_set_browser_zoom(");
     let zoom_compact: String = zoom
@@ -426,13 +426,10 @@ fn production_writers_and_callers_use_typed_fallible_paths_while_diff_is_untouch
     assert!(markdown_context.contains("Err(") || markdown_context.contains("eprintln!"));
 
     let diff = function_source(session, "pub(crate) fn open_diff_viewer_in_panel(");
-    let diff_compact: String = diff
-        .chars()
-        .filter(|character| !character.is_whitespace())
-        .collect();
-    assert!(diff.contains("Option<AppSessionSnapshot>"));
-    assert!(diff_compact.contains(".snapshot.lock()"));
-    assert!(diff.contains("notify_session_changed("));
+    assert!(diff.contains("Result<Option<AppSessionSnapshot>, String>"));
+    assert!(diff.contains("transact_value_if_changed("));
+    assert!(!diff.contains("snapshot.lock()"));
+    assert!(!diff.contains("notify_session_changed("));
 
     let web = include_str!("../../../web/src/hooks/useSession.ts");
     for public in ["session_set_browser_zoom", "session_rename_workspace"] {
