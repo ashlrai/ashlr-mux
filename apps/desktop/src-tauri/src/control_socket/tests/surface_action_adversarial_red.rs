@@ -2134,24 +2134,149 @@ fn direct_remote_close_allows_a_single_surface_pane_when_workspace_has_other_sur
     )));
 }
 
+fn pending_remote_departure() -> pane_surface_lifecycle::RuntimeDeparture {
+    pane_surface_lifecycle::RuntimeDeparture {
+        window_id: W1.into(),
+        workspace_id: WS1.into(),
+        pane_id: P1.into(),
+        surface_id: B.into(),
+        generation: 1,
+    }
+}
+
 #[test]
-fn production_remote_departure_is_typed_retried_and_observably_retained() {
-    let production = include_str!("../../control_socket.rs");
-    for contract in [
-        "enum RuntimeDepartureCommitOutcome",
-        "RuntimeDepartureCommitOutcome::Committed",
-        "RuntimeDepartureCommitOutcome::DuplicateOrStale",
-        "REMOTE_OBSERVATION_MAX_RETRIES",
-        "pending_reconciliation",
-        "surface.close_failed",
-    ] {
+fn successful_remote_window_kill_registers_authoritative_target_and_local_departure() {
+    let departure = pending_remote_departure();
+    let mut registry = RemoteWindowDepartureRegistry::default();
+    let key = retain_remote_window_departure_after_kill(
+        &mut registry,
+        "mirror.example",
+        "@42",
+        departure.clone(),
+    )
+    .unwrap();
+
+    let pending = registry
+        .get(&key)
+        .expect("successful kill must be registered");
+    assert_eq!(pending.destination, "mirror.example");
+    assert_eq!(pending.remote_window_id, "@42");
+    assert_eq!(pending.departure, departure);
+    assert_eq!(registry.len(), 1);
+
+    assert!(retain_remote_window_departure_after_kill(
+        &mut registry,
+        "mirror.example",
+        "@42; kill-server",
+        pending_remote_departure(),
+    )
+    .is_err());
+    assert_eq!(registry.len(), 1);
+}
+
+#[test]
+fn remote_window_departure_registry_waits_for_authoritative_absence() {
+    let mut registry = RemoteWindowDepartureRegistry::default();
+    let key = registry.register(PendingRemoteWindowDeparture {
+        destination: "mirror.example".into(),
+        remote_window_id: "@42".into(),
+        departure: pending_remote_departure(),
+    });
+
+    assert_eq!(
+        registry.record_observation(&key, RemoteWindowPresenceObservation::Present),
+        RemoteWindowDepartureAction::RetainAndPoll,
+        "a successful kill command is not itself an authoritative departure"
+    );
+    assert!(registry.contains(&key));
+    assert_eq!(
+        registry.record_observation(&key, RemoteWindowPresenceObservation::Absent),
+        RemoteWindowDepartureAction::CommitDeparture,
+    );
+    assert!(
+        registry.contains(&key),
+        "absence authorizes commit but must not discard the repair record"
+    );
+}
+
+#[test]
+fn remote_window_departure_registry_retains_query_and_commit_failures_without_retry_ceiling() {
+    let mut registry = RemoteWindowDepartureRegistry::default();
+    let key = registry.register(PendingRemoteWindowDeparture {
+        destination: "mirror.example".into(),
+        remote_window_id: "@42".into(),
+        departure: pending_remote_departure(),
+    });
+
+    for _ in 0..(REMOTE_OBSERVATION_MAX_RETRIES + 3) {
+        assert_eq!(
+            registry.record_observation(&key, RemoteWindowPresenceObservation::QueryFailed),
+            RemoteWindowDepartureAction::RetainAndPoll,
+        );
+        assert!(registry.contains(&key));
+    }
+    assert!(!registry.record_commit_result(
+        &key,
+        Err("session snapshot is temporarily unavailable".into()),
+    ));
+    assert!(registry.contains(&key));
+
+    assert!(registry.record_commit_result(&key, Ok(RuntimeDepartureCommitOutcome::Committed)));
+    assert!(!registry.contains(&key));
+}
+
+#[test]
+fn remote_window_departure_registry_removes_duplicate_or_stale_completion() {
+    let mut registry = RemoteWindowDepartureRegistry::default();
+    let key = registry.register(PendingRemoteWindowDeparture {
+        destination: "mirror.example".into(),
+        remote_window_id: "@42".into(),
+        departure: pending_remote_departure(),
+    });
+
+    assert!(
+        registry.record_commit_result(&key, Ok(RuntimeDepartureCommitOutcome::DuplicateOrStale))
+    );
+    assert!(registry.is_empty());
+}
+
+#[test]
+fn remote_close_failed_pending_payload_exists_only_for_a_registered_repair() {
+    let mut registry = RemoteWindowDepartureRegistry::default();
+    let key = registry.register(PendingRemoteWindowDeparture {
+        destination: "mirror.example".into(),
+        remote_window_id: "@42".into(),
+        departure: pending_remote_departure(),
+    });
+
+    let payload = registry
+        .pending_failure_payload(&key, "temporary persistence failure")
+        .expect("registered repair must have an observable pending payload");
+    assert_eq!(payload["pending_reconciliation"], true);
+    assert_eq!(payload["remote_window_id"], "@42");
+    assert_eq!(payload["surface_id"], B);
+
+    assert!(registry.record_commit_result(&key, Ok(RuntimeDepartureCommitOutcome::Committed)));
+    assert!(registry
+        .pending_failure_payload(&key, "stale failure")
+        .is_none());
+}
+
+#[test]
+fn remote_tmux_list_windows_command_and_parser_are_exact_and_injection_safe() {
+    assert_eq!(
+        remote_tmux_list_windows_command(),
+        vec!["tmux list-windows -F '#{window_id}'".to_string()]
+    );
+    assert_eq!(
+        parse_remote_tmux_window_ids("@1\r\n@42\n@900\n").unwrap(),
+        vec!["@1".to_string(), "@42".to_string(), "@900".to_string()]
+    );
+    assert!(parse_remote_tmux_window_ids("").unwrap().is_empty());
+    for unsafe_output in ["42\n", "@42 extra\n", "@42; touch owned\n", "@-1\n"] {
         assert!(
-            production.contains(contract),
-            "missing hardened departure contract: {contract}"
+            parse_remote_tmux_window_ids(unsafe_output).is_err(),
+            "accepted unsafe list-windows output: {unsafe_output:?}"
         );
     }
-    assert!(
-        !production.contains("let _ = commit_runtime_departure_for_control(&app, departure)"),
-        "successful remote close must not silently abandon failed local departure"
-    );
 }
