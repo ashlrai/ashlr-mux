@@ -6809,12 +6809,14 @@ fn workspace_set_description(
         return invalid_params("Missing or invalid workspace selector");
     };
     let state = app.state::<SessionState>();
-    workspace_current(&set_workspace_description_for_control(
-        app,
-        &state,
-        index as i64,
-        &description,
-    ))
+    match set_workspace_description_for_control(app, &state, index as i64, &description) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_reset_color(
@@ -6826,11 +6828,14 @@ fn workspace_reset_color(
         return invalid_params("Missing or invalid workspace selector");
     };
     let state = app.state::<SessionState>();
-    workspace_current(&reset_workspace_color_for_control(
-        app,
-        &state,
-        index as i64,
-    ))
+    match reset_workspace_color_for_control(app, &state, index as i64) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_set_progress(
@@ -7343,13 +7348,20 @@ fn workspace_set_unread(
     let preferred_panel_id =
         string_param(params, &["preferred_panel_id", "panel_id", "surface_id"]);
     let state = app.state::<SessionState>();
-    workspace_current(&set_workspace_unread_for_control(
+    match set_workspace_unread_for_control(
         app,
         &state,
         index as i64,
         preferred_panel_id.as_deref(),
         unread,
-    ))
+    ) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_set_pinned(
@@ -7364,12 +7376,14 @@ fn workspace_set_pinned(
         return invalid_params("Missing or invalid workspace selector");
     };
     let state = app.state::<SessionState>();
-    workspace_current(&set_workspace_pinned_for_control(
-        app,
-        &state,
-        index as i64,
-        pinned,
-    ))
+    match set_workspace_pinned_for_control(app, &state, index as i64, pinned) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_remote_status(
@@ -7547,9 +7561,14 @@ fn workspace_group_set_collapsed(
         return invalid_params("Missing or invalid collapsed flag");
     };
     let state = app.state::<SessionState>();
-    workspace_current(&set_group_collapsed_for_control(
-        app, &state, &group_id, collapsed,
-    ))
+    match set_group_collapsed_for_control(app, &state, &group_id, collapsed) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn surface_split(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
@@ -9215,10 +9234,14 @@ fn surface_set_title(
         return invalid_params("Missing or invalid surface selector");
     };
     let state = app.state::<SessionState>();
-    surface_list_from_params(
-        &set_panel_title_for_control(app, &state, &panel_id, &title),
-        params,
-    )
+    match set_panel_title_for_control(app, &state, &panel_id, &title) {
+        Ok(snapshot) => surface_list_from_params(&snapshot, params),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn surface_set_pinned(
@@ -9233,10 +9256,14 @@ fn surface_set_pinned(
         return invalid_params("Missing or invalid surface selector");
     };
     let state = app.state::<SessionState>();
-    surface_list_from_params(
-        &set_panel_pinned_for_control(app, &state, &panel_id, pinned),
-        params,
-    )
+    match set_panel_pinned_for_control(app, &state, &panel_id, pinned) {
+        Ok(snapshot) => surface_list_from_params(&snapshot, params),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn surface_set_unread(
@@ -9251,10 +9278,14 @@ fn surface_set_unread(
         return invalid_params("Missing or invalid surface selector");
     };
     let state = app.state::<SessionState>();
-    surface_list_from_params(
-        &set_panel_unread_for_control(app, &state, &panel_id, unread),
-        params,
-    )
+    match set_panel_unread_for_control(app, &state, &panel_id, unread) {
+        Ok(snapshot) => surface_list_from_params(&snapshot, params),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]

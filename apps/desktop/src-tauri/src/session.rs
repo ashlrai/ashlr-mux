@@ -5551,38 +5551,18 @@ pub(crate) fn set_workspace_description_for_control(
     state: &SessionState,
     index: i64,
     description: &str,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_workspace_description(&mut guard, index, description);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_set_workspace_description(snapshot, index, description)
+    })
 }
 
 pub(crate) fn reset_workspace_color_for_control(
     app: &AppHandle,
     state: &SessionState,
     index: i64,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_reset_workspace_color(&mut guard, index);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| apply_reset_workspace_color(snapshot, index))
 }
 
 pub(crate) fn set_workspace_sidebar_progress_for_control(
@@ -5739,19 +5719,11 @@ pub(crate) fn set_workspace_unread_for_control(
     index: i64,
     preferred_panel_id: Option<&str>,
     unread: bool,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_workspace_unread(&mut guard, index, preferred_panel_id, unread);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let unread_at = current_unix_timestamp_seconds();
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_set_workspace_unread_at(snapshot, index, preferred_panel_id, unread, unread_at)
+    })
 }
 
 pub(crate) fn set_workspace_pinned_for_control(
@@ -5759,19 +5731,10 @@ pub(crate) fn set_workspace_pinned_for_control(
     state: &SessionState,
     index: i64,
     pinned: bool,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_workspace_pinned(&mut guard, index, pinned);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_set_workspace_pinned(snapshot, index, pinned)
+    })
 }
 
 pub(crate) fn reorder_workspaces_for_control(
@@ -5895,19 +5858,10 @@ pub(crate) fn set_group_collapsed_for_control(
     state: &SessionState,
     group_id: &str,
     collapsed: bool,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_group_collapsed(&mut guard, group_id, collapsed);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_set_group_collapsed(snapshot, group_id, collapsed)
+    })
 }
 
 pub(crate) fn set_panel_title_for_control(
@@ -5915,19 +5869,10 @@ pub(crate) fn set_panel_title_for_control(
     state: &SessionState,
     panel_id: &str,
     title: &str,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_panel_title(&mut guard, panel_id, title);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_set_panel_title(snapshot, panel_id, title)
+    })
 }
 
 pub(crate) fn set_process_title_for_panel(
@@ -5959,19 +5904,10 @@ pub(crate) fn set_panel_pinned_for_control(
     state: &SessionState,
     panel_id: &str,
     pinned: bool,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_panel_pinned(&mut guard, panel_id, pinned);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_set_panel_pinned(snapshot, panel_id, pinned)
+    })
 }
 
 pub(crate) fn set_panel_unread_for_control(
@@ -5979,19 +5915,11 @@ pub(crate) fn set_panel_unread_for_control(
     state: &SessionState,
     panel_id: &str,
     unread: bool,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_panel_unread(&mut guard, panel_id, unread);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let unread_at = current_unix_timestamp_seconds();
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_set_panel_unread_at(snapshot, panel_id, unread, unread_at)
+    })
 }
 
 pub(crate) fn set_panel_listening_ports_for_control(
@@ -7291,19 +7219,9 @@ pub fn session_set_group_collapsed(
     state: State<'_, SessionState>,
     group_id: String,
     collapsed: bool,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_group_collapsed(&mut guard, &group_id, collapsed);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = set_group_collapsed_for_control(&app, &state, &group_id, collapsed)?;
+    Ok(snapshot)
 }
 
 /// Rename the workspace at `index`. Canonical `Workspace.setCustomTitle`
@@ -7346,19 +7264,9 @@ pub fn session_set_workspace_description(
     state: State<'_, SessionState>,
     index: i64,
     description: String,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_workspace_description(&mut guard, index, &description);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = set_workspace_description_for_control(&app, &state, index, &description)?;
+    Ok(snapshot)
 }
 
 /// Clear the custom workspace tab color at `index`. Emits
@@ -7368,19 +7276,9 @@ pub fn session_reset_workspace_color(
     app: AppHandle,
     state: State<'_, SessionState>,
     index: i64,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_reset_workspace_color(&mut guard, index);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = reset_workspace_color_for_control(&app, &state, index)?;
+    Ok(snapshot)
 }
 
 /// Set or clear a panel/tab custom title in the active workspace. Empty or
@@ -7391,19 +7289,9 @@ pub fn session_set_panel_title(
     state: State<'_, SessionState>,
     panel_id: String,
     title: String,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_panel_title(&mut guard, &panel_id, &title);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = set_panel_title_for_control(&app, &state, &panel_id, &title)?;
+    Ok(snapshot)
 }
 
 /// Pin or unpin a panel/tab in the active workspace.
@@ -7413,19 +7301,9 @@ pub fn session_set_panel_pinned(
     state: State<'_, SessionState>,
     panel_id: String,
     pinned: bool,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_panel_pinned(&mut guard, &panel_id, pinned);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = set_panel_pinned_for_control(&app, &state, &panel_id, pinned)?;
+    Ok(snapshot)
 }
 
 /// Mark a panel/tab read or unread in the active workspace.
@@ -7435,19 +7313,9 @@ pub fn session_set_panel_unread(
     state: State<'_, SessionState>,
     panel_id: String,
     unread: bool,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_panel_unread(&mut guard, &panel_id, unread);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = set_panel_unread_for_control(&app, &state, &panel_id, unread)?;
+    Ok(snapshot)
 }
 
 /// Mark a workspace read or unread.
@@ -7458,20 +7326,15 @@ pub fn session_set_workspace_unread(
     index: i64,
     unread: bool,
     preferred_panel_id: Option<String>,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed =
-            apply_set_workspace_unread(&mut guard, index, preferred_panel_id.as_deref(), unread);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = set_workspace_unread_for_control(
+        &app,
+        &state,
+        index,
+        preferred_panel_id.as_deref(),
+        unread,
+    )?;
+    Ok(snapshot)
 }
 
 /// Pin/unpin the workspace at `index`. Canonical
@@ -7490,19 +7353,9 @@ pub fn session_set_workspace_pinned(
     state: State<'_, SessionState>,
     index: i64,
     pinned: bool,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_workspace_pinned(&mut guard, index, pinned);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = set_workspace_pinned_for_control(&app, &state, index, pinned)?;
+    Ok(snapshot)
 }
 
 /// Reorder the workspace at `index` toward `toIndex`. Canonical
