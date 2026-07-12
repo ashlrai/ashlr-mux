@@ -12,6 +12,8 @@ import type { SessionPanelTerminalStartupSnapshot } from "./SessionPanelTerminal
 import type { SessionPanelTitleSnapshot } from "./SessionPanelTitleSnapshot";
 import type { SessionPanelTtySnapshot } from "./SessionPanelTtySnapshot";
 import type { SessionPanelUnreadSnapshot } from "./SessionPanelUnreadSnapshot";
+import type { SessionPendingRemotePwdSnapshot } from "./SessionPendingRemotePwdSnapshot";
+import type { SessionSurfaceSnapshot } from "./SessionSurfaceSnapshot";
 import type { SessionWorkspaceAgentPidSnapshot } from "./SessionWorkspaceAgentPidSnapshot";
 import type { SessionWorkspaceLayoutSnapshot } from "./SessionWorkspaceLayoutSnapshot";
 import type { SessionWorkspaceRemoteSnapshot } from "./SessionWorkspaceRemoteSnapshot";
@@ -51,7 +53,17 @@ zoomed_panel_id?: string,
  * The panel whose pane currently owns keyboard focus. Canonical persists
  * this independently from each pane's selected tab.
  */
-focused_panel_id?: string, panel_titles?: Array<SessionPanelTitleSnapshot>, panel_pins?: Array<SessionPanelPinSnapshot>, panel_unreads?: Array<SessionPanelUnreadSnapshot>, restorable_agent_snapshots?: Array<SessionPanelRestorableAgentSnapshot>,
+focused_panel_id?: string,
+/**
+ * Authoritative, ordered-by-pane surface records.  Old snapshots omit
+ * this field and are migrated from the layout/parallel metadata at load.
+ */
+surfaces?: Array<SessionSurfaceSnapshot>,
+/**
+ * Directory reports received before a matching remote surface arrives.
+ * These are consumed exactly once by lifecycle reconciliation.
+ */
+pending_remote_pwds?: Array<SessionPendingRemotePwdSnapshot>, panel_titles?: Array<SessionPanelTitleSnapshot>, panel_pins?: Array<SessionPanelPinSnapshot>, panel_unreads?: Array<SessionPanelUnreadSnapshot>, restorable_agent_snapshots?: Array<SessionPanelRestorableAgentSnapshot>,
 /**
  * Workspace-level git branch fallback used only when no panel reports a
  * branch. Mirrors canonical `Workspace.gitBranch` as consumed by the

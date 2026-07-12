@@ -660,6 +660,11 @@ pub struct SessionWorkspaceSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub surfaces: Option<Vec<SessionSurfaceSnapshot>>,
+    /// Directory reports received before a matching remote surface arrives.
+    /// These are consumed exactly once by lifecycle reconciliation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub pending_remote_pwds: Option<Vec<SessionPendingRemotePwdSnapshot>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub panel_titles: Option<Vec<SessionPanelTitleSnapshot>>,
@@ -774,7 +779,7 @@ pub struct SessionWorkspaceSnapshot {
 
 /// Persisted per-surface state. Runtime handles are intentionally absent: they
 /// are rebound after restore using `generation` as the stale-callback fence.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SessionSurfaceSnapshot {
     pub surface_id: String,
@@ -794,7 +799,7 @@ fn default_surface_generation() -> u64 {
     1
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[cfg_attr(
     feature = "ts",
@@ -804,30 +809,73 @@ fn default_surface_generation() -> u64 {
 pub enum SessionSurfaceKindSnapshot {
     Terminal,
     Browser {
-        url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        proxy_url: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        back_history: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        forward_history: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        omnibar_visible: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        focus_mode_active: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        developer_tools_visible: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        developer_tools_panel: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional, type = "number"))]
+        page_zoom: Option<f64>,
     },
     AgentSession {
-        provider: String,
-        renderer: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        renderer: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         working_directory: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lifecycle: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        restorable_agent: Option<Box<SessionRestorableAgentSnapshot>>,
     },
     Markdown {
-        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
     },
     File {
-        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
     },
     Diff {
-        token: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        token: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         request_path: Option<String>,
     },
     ProjectSidebar,
     RightSidebarTool,
     RemoteTerminal {
-        remote_session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        remote_session_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional, type = "unknown"))]
+        remote_context: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional, type = "number"))]
+        arrival_generation: Option<u64>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionPendingRemotePwdSnapshot {
+    pub remote_session_id: String,
+    pub path: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

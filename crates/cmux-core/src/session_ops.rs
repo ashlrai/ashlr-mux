@@ -20,6 +20,28 @@ use crate::session::{
     SessionPanelUnreadSnapshot, SessionSplitLayoutSnapshot, SessionSplitOrientation,
     SessionTabManagerSnapshot, SessionWorkspaceLayoutSnapshot, SessionWorkspaceSnapshot,
 };
+use crate::surface_lifecycle::{LifecycleError, SurfaceLifecycleModel};
+
+/// Single production adapter for mutations of the authoritative persisted
+/// surface model. The caller's `AppSessionSnapshot` changes only after the
+/// model mutation and full reverse-index validation both succeed.
+pub fn with_surface_lifecycle<R>(
+    session: &mut crate::session::AppSessionSnapshot,
+    mutate: impl FnOnce(&mut SurfaceLifecycleModel) -> Result<R, LifecycleError>,
+) -> Result<R, LifecycleError> {
+    let base = session.clone();
+    let mut model = SurfaceLifecycleModel::from_app_session(&base)?;
+    let result = mutate(&mut model)?;
+    model.validate_indexes()?;
+    *session = model.to_app_session(&base)?;
+    Ok(result)
+}
+
+pub fn read_surface_lifecycle(
+    session: &crate::session::AppSessionSnapshot,
+) -> Result<SurfaceLifecycleModel, LifecycleError> {
+    SurfaceLifecycleModel::from_app_session(session)
+}
 use cmux_browser_history::{NavigationAvailability, SessionHistoryURLSanitizer};
 use cmux_workspaces::{
     assign_group, clamped_reorder_index, clamped_top_level_reorder_index, insertion_index,

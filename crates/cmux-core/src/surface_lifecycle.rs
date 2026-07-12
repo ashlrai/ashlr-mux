@@ -5,15 +5,16 @@
 //! owner maps here are derived indexes and are never serialized.
 
 use crate::session::{
-    SessionPaneLayoutSnapshot, SessionPanelTerminalStartupSnapshot, SessionSurfaceSnapshot,
-    SessionTabManagerSnapshot, SessionWorkspaceLayoutSnapshot,
+    AppSessionSnapshot, SessionPaneLayoutSnapshot, SessionPanelTerminalStartupSnapshot,
+    SessionPendingRemotePwdSnapshot, SessionSurfaceSnapshot, SessionTabManagerSnapshot,
+    SessionWorkspaceLayoutSnapshot,
 };
 pub use crate::session::{
     SessionSurfaceKindSnapshot as SurfaceKind, SessionSurfaceMetadataSnapshot as SurfaceMetadata,
     SessionSurfaceTerminalStartupSnapshot as TerminalStartup,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,7 +45,7 @@ pub struct PaneRecord {
     pub selected_surface_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SurfaceRecord {
     pub surface_id: String,
     pub pane_id: String,
@@ -56,7 +57,7 @@ pub struct SurfaceRecord {
     pub is_workspace_focused: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct PersistedSurfaceRecord {
     surface_id: String,
     pane_id: String,
@@ -67,7 +68,7 @@ struct PersistedSurfaceRecord {
     terminal_startup: TerminalStartup,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LifecycleSnapshot {
     #[serde(default = "snapshot_version")]
     pub version: u32,
@@ -118,9 +119,10 @@ pub enum AttachOutcome {
     Attached,
     StaleCleaned,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MoveFailure {
-    Attach,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MoveTransactionError<E> {
+    Model(LifecycleError),
+    Effect(E),
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -160,8 +162,9 @@ pub struct SurfaceLifecycleModel {
     runtime_owners: HashMap<String, String>,
     last_generation: HashMap<String, u64>,
     pending_pwd: HashMap<String, String>,
-    pending_remote_pwd: HashMap<(String, String), String>,
+    pending_remote_pwd: BTreeMap<(String, String), String>,
     reconciled_remote_generation: HashMap<String, u64>,
+    collapsed_panes: HashSet<String>,
 }
 
 impl SurfaceLifecycleModel {
@@ -245,7 +248,9 @@ impl SurfaceLifecycleModel {
             surface_id: surface_id.into(),
             pane_id: pane_id.into(),
             kind: SurfaceKind::RemoteTerminal {
-                remote_session_id: remote_session_id.into(),
+                remote_session_id: Some(remote_session_id.into()),
+                remote_context: None,
+                arrival_generation: None,
             },
             metadata: SurfaceMetadata::default(),
         })
@@ -257,8 +262,17 @@ impl SurfaceLifecycleModel {
     pub fn surface(&self, id: &str) -> Option<&SurfaceRecord> {
         self.surfaces.get(id)
     }
-    pub fn surface_mut(&mut self, id: &str) -> Option<&mut SurfaceRecord> {
-        self.surfaces.get_mut(id)
+    pub fn set_custom_title(
+        &mut self,
+        id: &str,
+        title: Option<String>,
+    ) -> Result<(), LifecycleError> {
+        self.surfaces
+            .get_mut(id)
+            .ok_or_else(|| LifecycleError::SurfaceNotFound(id.into()))?
+            .metadata
+            .custom_title = title;
+        Ok(())
     }
     pub fn focused_surface(&self, workspace_id: &str) -> Option<&str> {
         self.focused_surfaces.get(workspace_id).map(String::as_str)
@@ -312,6 +326,13 @@ impl SurfaceLifecycleModel {
         generation: u64,
         runtime: RuntimeHandle,
     ) -> AttachOutcome {
+        if self
+            .runtime_owners
+            .get(runtime.id())
+            .is_some_and(|owner| owner != surface_id)
+        {
+            return AttachOutcome::StaleCleaned;
+        }
         let Some(record) = self.surfaces.get_mut(surface_id) else {
             return AttachOutcome::StaleCleaned;
         };
@@ -322,6 +343,11 @@ impl SurfaceLifecycleModel {
             self.runtime_owners.remove(old.id());
         }
         self.runtime_owners.insert(runtime.0, surface_id.into());
+        if let Some(path) = self.pending_pwd.remove(surface_id) {
+            record.metadata.reported_directory = Some(path);
+            record.metadata.directory_provenance = Some("arrival_report".into());
+            record.metadata.directory_apply_count += 1;
+        }
         AttachOutcome::Attached
     }
 
@@ -335,16 +361,30 @@ impl SurfaceLifecycleModel {
             self.runtime_owners.remove(runtime.id());
         }
         self.pending_pwd.remove(surface_id);
+        if let SurfaceKind::RemoteTerminal {
+            remote_session_id: Some(remote_session_id),
+            ..
+        } = &record.kind
+        {
+            self.pending_remote_pwd
+                .remove(&(owner.workspace_id.clone(), remote_session_id.clone()));
+        }
+        self.reconciled_remote_generation.remove(surface_id);
         let pane = self.panes.get_mut(&owner.pane_id).unwrap();
         pane.surface_ids.retain(|id| id != surface_id);
         if pane.selected_surface_id == surface_id {
             pane.selected_surface_id = pane.surface_ids.first().cloned().unwrap_or_default();
+        }
+        if pane.surface_ids.is_empty() {
+            self.collapsed_panes.insert(owner.pane_id.clone());
         }
         if self
             .focused_surfaces
             .get(&owner.workspace_id)
             .is_some_and(|id| id == surface_id)
         {
+            // The removed record is returned to the caller, but it is no longer
+            // a live focused surface.
             self.focused_surfaces.remove(&owner.workspace_id);
             if let Some(next) = self
                 .panes
@@ -372,20 +412,26 @@ impl SurfaceLifecycleModel {
     ) -> Result<(), LifecycleError> {
         self.move_surface_inner(surface_id, pane_id, index)
     }
-    pub fn move_surface_with_failure(
+    /// Stage a move, run the desktop's real destination attach effect, and
+    /// commit only after that effect succeeds.
+    pub fn move_surface_transactionally<E, F>(
         &mut self,
         surface_id: &str,
         pane_id: &str,
         index: usize,
-        failure: MoveFailure,
-    ) -> Result<(), MoveFailure> {
-        let before = self.clone();
-        if self.move_surface_inner(surface_id, pane_id, index).is_err()
-            || failure == MoveFailure::Attach
-        {
-            *self = before;
-            return Err(failure);
-        }
+        attach: F,
+    ) -> Result<(), MoveTransactionError<E>>
+    where
+        F: FnOnce(&SurfaceRecord, &Owner) -> Result<(), E>,
+    {
+        let mut next = self.clone();
+        next.move_surface_inner(surface_id, pane_id, index)
+            .map_err(MoveTransactionError::Model)?;
+        attach(&next.surfaces[surface_id], &next.surface_owners[surface_id])
+            .map_err(MoveTransactionError::Effect)?;
+        next.validate_indexes()
+            .map_err(MoveTransactionError::Model)?;
+        *self = next;
         Ok(())
     }
     fn move_surface_inner(
@@ -402,34 +448,71 @@ impl SurfaceLifecycleModel {
         if !self.panes.contains_key(pane_id) {
             return Err(LifecycleError::PaneNotFound(pane_id.into()));
         }
+        let same_pane = old.pane_id == pane_id;
+        let was_selected = self.panes[&old.pane_id].selected_surface_id == surface_id;
+        let was_focused = self
+            .focused_surfaces
+            .get(&old.workspace_id)
+            .is_some_and(|id| id == surface_id);
         let old_pane = self.panes.get_mut(&old.pane_id).unwrap();
         old_pane.surface_ids.retain(|id| id != surface_id);
-        if old_pane.selected_surface_id == surface_id {
+        if was_selected && !same_pane {
             old_pane.selected_surface_id =
                 old_pane.surface_ids.first().cloned().unwrap_or_default();
         }
+        let source_became_empty = !same_pane && old_pane.surface_ids.is_empty();
         let destination = self.panes.get_mut(pane_id).unwrap();
         let at = index.min(destination.surface_ids.len());
         destination.surface_ids.insert(at, surface_id.into());
-        if destination.selected_surface_id.is_empty() {
+        self.collapsed_panes.remove(pane_id);
+        if destination.selected_surface_id.is_empty() || (same_pane && was_selected) {
             destination.selected_surface_id = surface_id.into();
         }
+        if source_became_empty {
+            self.collapsed_panes.insert(old.pane_id.clone());
+        }
+        let destination_workspace = destination.workspace_id.clone();
         let owner = self.surface_owners.get_mut(surface_id).unwrap();
         owner.window_id = destination.window_id.clone();
         owner.workspace_id = destination.workspace_id.clone();
         owner.pane_id = pane_id.into();
         self.surfaces.get_mut(surface_id).unwrap().pane_id = pane_id.into();
-        if self
-            .focused_surfaces
-            .get(&old.workspace_id)
-            .is_some_and(|id| id == surface_id)
-            && old.workspace_id != destination.workspace_id
-        {
+        if was_focused && old.workspace_id != destination_workspace {
             self.focused_surfaces.remove(&old.workspace_id);
             self.surfaces
                 .get_mut(surface_id)
                 .unwrap()
                 .is_workspace_focused = false;
+            if let Some(fallback) = self
+                .panes
+                .values()
+                .filter(|pane| pane.workspace_id == old.workspace_id)
+                .flat_map(|pane| pane.surface_ids.iter())
+                .next()
+                .cloned()
+            {
+                self.focused_surfaces
+                    .insert(old.workspace_id.clone(), fallback.clone());
+                self.surfaces
+                    .get_mut(&fallback)
+                    .unwrap()
+                    .is_workspace_focused = true;
+            }
+        }
+        if old.workspace_id != destination_workspace {
+            if let SurfaceKind::RemoteTerminal {
+                remote_session_id: Some(remote_session_id),
+                ..
+            } = &self.surfaces[surface_id].kind
+            {
+                if let Some(path) = self
+                    .pending_remote_pwd
+                    .remove(&(old.workspace_id, remote_session_id.clone()))
+                {
+                    self.pending_remote_pwd
+                        .insert((destination_workspace, remote_session_id.clone()), path);
+                }
+            }
         }
         Ok(())
     }
@@ -440,6 +523,12 @@ impl SurfaceLifecycleModel {
         command: &str,
         working_directory: Option<&str>,
     ) -> Result<Reservation, LifecycleError> {
+        let owner_workspace = self
+            .surface_owners
+            .get(surface_id)
+            .ok_or_else(|| LifecycleError::SurfaceNotFound(surface_id.into()))?
+            .workspace_id
+            .clone();
         let record = self
             .surfaces
             .get_mut(surface_id)
@@ -453,6 +542,16 @@ impl SurfaceLifecycleModel {
         if let Some(runtime) = record.runtime.take() {
             self.runtime_owners.remove(runtime.id());
         }
+        if let SurfaceKind::RemoteTerminal {
+            remote_session_id: Some(remote_session_id),
+            ..
+        } = &record.kind
+        {
+            self.pending_remote_pwd
+                .remove(&(owner_workspace, remote_session_id.clone()));
+        }
+        self.pending_pwd.remove(surface_id);
+        self.reconciled_remote_generation.remove(surface_id);
         record.generation += 1;
         self.last_generation
             .insert(surface_id.into(), record.generation);
@@ -469,8 +568,8 @@ impl SurfaceLifecycleModel {
         surface_id: &str,
         path: &str,
     ) -> Result<(), LifecycleError> {
-        if !self.surfaces.contains_key(surface_id) {
-            return Err(LifecycleError::SurfaceNotFound(surface_id.into()));
+        if surface_id.is_empty() {
+            return Err(LifecycleError::Invalid("surface identity required".into()));
         }
         self.pending_pwd.insert(surface_id.into(), path.into());
         Ok(())
@@ -505,7 +604,10 @@ impl SurfaceLifecycleModel {
             return AttachOutcome::Attached;
         }
         let remote_id = match &record.kind {
-            SurfaceKind::RemoteTerminal { remote_session_id } => remote_session_id.clone(),
+            SurfaceKind::RemoteTerminal {
+                remote_session_id: Some(remote_session_id),
+                ..
+            } => remote_session_id.clone(),
             _ => return AttachOutcome::StaleCleaned,
         };
         let workspace = self.surface_owners[surface_id].workspace_id.clone();
@@ -555,32 +657,49 @@ impl SurfaceLifecycleModel {
             if !model.panes.contains_key(&persisted.pane_id) {
                 return Err(LifecycleError::PaneNotFound(persisted.pane_id));
             }
-            model
-                .last_generation
-                .insert(persisted.surface_id.clone(), persisted.generation);
-            model.surfaces.insert(
-                persisted.surface_id.clone(),
-                SurfaceRecord {
-                    surface_id: persisted.surface_id.clone(),
-                    pane_id: persisted.pane_id.clone(),
-                    generation: persisted.generation,
-                    kind: persisted.kind,
-                    metadata: persisted.metadata,
-                    terminal_startup: persisted.terminal_startup,
-                    runtime: None,
-                    is_workspace_focused: false,
-                },
-            );
+            if persisted.generation == 0
+                || model
+                    .last_generation
+                    .insert(persisted.surface_id.clone(), persisted.generation)
+                    .is_some()
+                || model
+                    .surfaces
+                    .insert(
+                        persisted.surface_id.clone(),
+                        SurfaceRecord {
+                            surface_id: persisted.surface_id.clone(),
+                            pane_id: persisted.pane_id.clone(),
+                            generation: persisted.generation,
+                            kind: persisted.kind,
+                            metadata: persisted.metadata,
+                            terminal_startup: persisted.terminal_startup,
+                            runtime: None,
+                            is_workspace_focused: false,
+                        },
+                    )
+                    .is_some()
+            {
+                return Err(LifecycleError::Invalid(format!(
+                    "duplicate or invalid surface {}",
+                    persisted.surface_id
+                )));
+            }
             let p = &model.panes[&persisted.pane_id];
-            model.surface_owners.insert(
-                persisted.surface_id.clone(),
-                Owner {
-                    window_id: p.window_id.clone(),
-                    workspace_id: p.workspace_id.clone(),
-                    pane_id: p.pane_id.clone(),
-                    surface_id: persisted.surface_id,
-                },
-            );
+            if model
+                .surface_owners
+                .insert(
+                    persisted.surface_id.clone(),
+                    Owner {
+                        window_id: p.window_id.clone(),
+                        workspace_id: p.workspace_id.clone(),
+                        pane_id: p.pane_id.clone(),
+                        surface_id: persisted.surface_id,
+                    },
+                )
+                .is_some()
+            {
+                return Err(LifecycleError::Invalid("duplicate surface owner".into()));
+            }
         }
         model.focused_surfaces = snapshot.focused_surfaces;
         for id in model.focused_surfaces.values() {
@@ -661,40 +780,75 @@ impl SurfaceLifecycleModel {
                 for persisted in records {
                     let pane = model
                         .panes
-                        .get_mut(&persisted.pane_id)
+                        .get(&persisted.pane_id)
                         .ok_or_else(|| LifecycleError::PaneNotFound(persisted.pane_id.clone()))?;
                     if !pane.surface_ids.contains(&persisted.surface_id) {
-                        pane.surface_ids.push(persisted.surface_id.clone());
+                        return Err(LifecycleError::Invalid(format!(
+                            "surface {} missing from pane order {}",
+                            persisted.surface_id, persisted.pane_id
+                        )));
                     }
-                    model
-                        .last_generation
-                        .insert(persisted.surface_id.clone(), persisted.generation);
-                    model
-                        .surfaces
-                        .insert(persisted.surface_id.clone(), record_from_session(persisted));
-                    model.surface_owners.insert(
-                        persisted.surface_id.clone(),
-                        Owner {
-                            window_id: window_id.into(),
-                            workspace_id: workspace_id.clone(),
-                            pane_id: persisted.pane_id.clone(),
-                            surface_id: persisted.surface_id.clone(),
-                        },
-                    );
+                    if persisted.generation == 0
+                        || model
+                            .last_generation
+                            .insert(persisted.surface_id.clone(), persisted.generation)
+                            .is_some()
+                        || model
+                            .surfaces
+                            .insert(persisted.surface_id.clone(), record_from_session(persisted))
+                            .is_some()
+                        || model
+                            .surface_owners
+                            .insert(
+                                persisted.surface_id.clone(),
+                                Owner {
+                                    window_id: window_id.into(),
+                                    workspace_id: workspace_id.clone(),
+                                    pane_id: persisted.pane_id.clone(),
+                                    surface_id: persisted.surface_id.clone(),
+                                },
+                            )
+                            .is_some()
+                    {
+                        return Err(LifecycleError::Invalid(format!(
+                            "duplicate or invalid surface {}",
+                            persisted.surface_id
+                        )));
+                    }
                 }
             } else {
                 migrate_workspace_legacy(&mut model, workspace, &workspace_id)?;
             }
             if let Some(focused) = &workspace.focused_panel_id {
-                if model.surfaces.contains_key(focused) {
-                    model
-                        .focused_surfaces
-                        .insert(workspace_id.clone(), focused.clone());
-                    model
-                        .surfaces
-                        .get_mut(focused)
-                        .unwrap()
-                        .is_workspace_focused = true;
+                if !model
+                    .surface_owners
+                    .get(focused)
+                    .is_some_and(|owner| owner.workspace_id == workspace_id)
+                {
+                    return Err(LifecycleError::Invalid(format!(
+                        "stale focused surface {focused}"
+                    )));
+                }
+                model
+                    .focused_surfaces
+                    .insert(workspace_id.clone(), focused.clone());
+                model
+                    .surfaces
+                    .get_mut(focused)
+                    .unwrap()
+                    .is_workspace_focused = true;
+            }
+            for pending in workspace.pending_remote_pwds.as_deref().unwrap_or_default() {
+                let key = (workspace_id.clone(), pending.remote_session_id.clone());
+                if model
+                    .pending_remote_pwd
+                    .insert(key, pending.path.clone())
+                    .is_some()
+                {
+                    return Err(LifecycleError::Invalid(format!(
+                        "duplicate pending remote pwd {}",
+                        pending.remote_session_id
+                    )));
                 }
             }
         }
@@ -702,8 +856,99 @@ impl SurfaceLifecycleModel {
         Ok(model)
     }
 
+    /// Build one application-wide authority. Public surface/pane identities and
+    /// their reverse indexes are validated across all windows, not per window.
+    pub fn from_app_session(snapshot: &AppSessionSnapshot) -> Result<Self, LifecycleError> {
+        let mut merged = Self::new();
+        for (index, window) in snapshot.windows.iter().enumerate() {
+            let window_id = window
+                .window_id
+                .clone()
+                .unwrap_or_else(|| format!("window:{index}"));
+            let part = Self::from_session_snapshot(&window_id, &window.tab_manager)?;
+            merged.merge(part)?;
+        }
+        merged.validate_indexes()?;
+        Ok(merged)
+    }
+
+    fn merge(&mut self, other: Self) -> Result<(), LifecycleError> {
+        for (id, pane) in other.panes {
+            if self.panes.insert(id.clone(), pane).is_some() {
+                return Err(LifecycleError::DuplicatePane(id));
+            }
+        }
+        for (id, surface) in other.surfaces {
+            if self.surfaces.insert(id.clone(), surface).is_some() {
+                return Err(LifecycleError::DuplicateSurface(id));
+            }
+        }
+        for (id, owner) in other.surface_owners {
+            if self.surface_owners.insert(id.clone(), owner).is_some() {
+                return Err(LifecycleError::DuplicateSurface(id));
+            }
+        }
+        for (id, generation) in other.last_generation {
+            if self
+                .last_generation
+                .insert(id.clone(), generation)
+                .is_some()
+            {
+                return Err(LifecycleError::DuplicateSurface(id));
+            }
+        }
+        for (workspace, focused) in other.focused_surfaces {
+            if self
+                .focused_surfaces
+                .insert(workspace.clone(), focused)
+                .is_some()
+            {
+                return Err(LifecycleError::Invalid(format!(
+                    "duplicate workspace identity {workspace}"
+                )));
+            }
+        }
+        for (key, path) in other.pending_remote_pwd {
+            if self.pending_remote_pwd.insert(key.clone(), path).is_some() {
+                return Err(LifecycleError::Invalid(format!(
+                    "duplicate pending remote identity {}",
+                    key.1
+                )));
+            }
+        }
+        Ok(())
+    }
+
     pub fn to_session_snapshot(
         &self,
+        base: &SessionTabManagerSnapshot,
+    ) -> Result<SessionTabManagerSnapshot, LifecycleError> {
+        let window_id = self
+            .panes
+            .values()
+            .next()
+            .map(|pane| pane.window_id.as_str());
+        self.project_tab_manager(window_id, base)
+    }
+
+    pub fn to_app_session(
+        &self,
+        base: &AppSessionSnapshot,
+    ) -> Result<AppSessionSnapshot, LifecycleError> {
+        let mut projected = base.clone();
+        for (index, window) in projected.windows.iter_mut().enumerate() {
+            let window_id = window
+                .window_id
+                .clone()
+                .unwrap_or_else(|| format!("window:{index}"));
+            window.tab_manager = self.project_tab_manager(Some(&window_id), &window.tab_manager)?;
+        }
+        Ok(projected)
+    }
+
+    fn project_tab_manager(
+        &self,
+        window_id: Option<&str>,
         base: &SessionTabManagerSnapshot,
     ) -> Result<SessionTabManagerSnapshot, LifecycleError> {
         let mut projected = base.clone();
@@ -715,25 +960,87 @@ impl SurfaceLifecycleModel {
             workspace.surfaces = Some(
                 self.panes
                     .values()
-                    .filter(|pane| pane.workspace_id == workspace_id)
+                    .filter(|pane| {
+                        pane.workspace_id == workspace_id
+                            && window_id.is_none_or(|window| pane.window_id == window)
+                    })
                     .flat_map(|pane| pane.surface_ids.iter())
                     .filter_map(|id| self.surfaces.get(id))
                     .map(record_to_session)
                     .collect(),
             );
             workspace.focused_panel_id = self.focused_surfaces.get(&workspace_id).cloned();
+            let pending = self
+                .pending_remote_pwd
+                .iter()
+                .filter(|((owner, _), _)| owner == &workspace_id)
+                .map(
+                    |((_, remote_session_id), path)| SessionPendingRemotePwdSnapshot {
+                        remote_session_id: remote_session_id.clone(),
+                        path: path.clone(),
+                    },
+                )
+                .collect::<Vec<_>>();
+            workspace.pending_remote_pwds = (!pending.is_empty()).then_some(pending);
             workspace.panel_titles = None;
             workspace.panel_pins = None;
             workspace.panel_unreads = None;
             workspace.panel_terminal_startups = None;
             if let Some(layout) = workspace.layout.take() {
-                workspace.layout = project_layout(layout, &self.panes);
+                workspace.layout = project_layout(layout, &self.panes, &self.collapsed_panes);
             }
         }
         Ok(projected)
     }
 
     pub fn validate_indexes(&self) -> Result<(), LifecycleError> {
+        let mut ordered = HashSet::new();
+        for pane in self.panes.values() {
+            let mut within_pane = HashSet::new();
+            for id in &pane.surface_ids {
+                if !within_pane.insert(id) || !ordered.insert(id) {
+                    return Err(LifecycleError::Invalid(format!(
+                        "duplicate pane order surface {id}"
+                    )));
+                }
+                let surface = self.surfaces.get(id).ok_or_else(|| {
+                    LifecycleError::Invalid(format!("pane order references missing surface {id}"))
+                })?;
+                let owner = self
+                    .surface_owners
+                    .get(id)
+                    .ok_or_else(|| LifecycleError::Invalid(format!("missing owner for {id}")))?;
+                if surface.pane_id != pane.pane_id
+                    || owner.pane_id != pane.pane_id
+                    || owner.workspace_id != pane.workspace_id
+                    || owner.window_id != pane.window_id
+                    || owner.surface_id != *id
+                {
+                    return Err(LifecycleError::Invalid(format!(
+                        "owner/order mismatch for {id}"
+                    )));
+                }
+            }
+            if pane.surface_ids.is_empty() {
+                if !pane.selected_surface_id.is_empty() {
+                    return Err(LifecycleError::Invalid(format!(
+                        "empty pane {} has selection",
+                        pane.pane_id
+                    )));
+                }
+            } else if !pane.surface_ids.contains(&pane.selected_surface_id) {
+                return Err(LifecycleError::Invalid(format!(
+                    "stale pane selection {}",
+                    pane.selected_surface_id
+                )));
+            }
+        }
+        if ordered.len() != self.surfaces.len() || self.surface_owners.len() != self.surfaces.len()
+        {
+            return Err(LifecycleError::Invalid(
+                "surface/index cardinality mismatch".into(),
+            ));
+        }
         for (id, surface) in &self.surfaces {
             let owner = self
                 .surface_owners
@@ -750,6 +1057,25 @@ impl SurfaceLifecycleModel {
                 )));
             }
         }
+        let mut runtime_ids = HashSet::new();
+        for (id, surface) in &self.surfaces {
+            if let Some(runtime) = &surface.runtime {
+                if !runtime_ids.insert(runtime.id())
+                    || self.runtime_owners.get(runtime.id()).map(String::as_str)
+                        != Some(id.as_str())
+                {
+                    return Err(LifecycleError::Invalid(format!(
+                        "duplicate runtime {}",
+                        runtime.id()
+                    )));
+                }
+            }
+        }
+        if runtime_ids.len() != self.runtime_owners.len() {
+            return Err(LifecycleError::Invalid(
+                "runtime index cardinality mismatch".into(),
+            ));
+        }
         for (runtime, surface) in &self.runtime_owners {
             if self
                 .surfaces
@@ -760,6 +1086,29 @@ impl SurfaceLifecycleModel {
             {
                 return Err(LifecycleError::Invalid(format!(
                     "runtime index mismatch for {runtime}"
+                )));
+            }
+        }
+        for (workspace, focused) in &self.focused_surfaces {
+            let owner = self.surface_owners.get(focused).ok_or_else(|| {
+                LifecycleError::Invalid(format!("stale focused surface {focused}"))
+            })?;
+            if &owner.workspace_id != workspace
+                || !self
+                    .surfaces
+                    .get(focused)
+                    .is_some_and(|surface| surface.is_workspace_focused)
+            {
+                return Err(LifecycleError::Invalid(format!(
+                    "focused owner mismatch for {focused}"
+                )));
+            }
+        }
+        for (id, surface) in &self.surfaces {
+            let should_focus = self.focused_surfaces.values().any(|focused| focused == id);
+            if surface.is_workspace_focused != should_focus {
+                return Err(LifecycleError::Invalid(format!(
+                    "focused flag mismatch for {id}"
                 )));
             }
         }
@@ -850,10 +1199,54 @@ fn migrate_workspace_legacy(
                     .is_some_and(|r| r.is_unread),
                 ..SurfaceMetadata::default()
             };
+            let mut kind = kind_from_legacy(kind_name, browser_url);
+            if let Some(legacy) = legacy_pane {
+                kind = match kind {
+                    SurfaceKind::Browser { url, .. } => SurfaceKind::Browser {
+                        url,
+                        proxy_url: legacy.browser_proxy_url.clone(),
+                        back_history: legacy.browser_back_history.clone(),
+                        forward_history: legacy.browser_forward_history.clone(),
+                        omnibar_visible: legacy.browser_omnibar_visible,
+                        focus_mode_active: legacy.browser_focus_mode_active,
+                        developer_tools_visible: legacy.browser_developer_tools_visible,
+                        developer_tools_panel: legacy.browser_developer_tools_panel.clone(),
+                        page_zoom: legacy.browser_page_zoom,
+                    },
+                    SurfaceKind::Markdown { .. } => SurfaceKind::Markdown {
+                        path: legacy.markdown_file_path.clone(),
+                    },
+                    SurfaceKind::File { .. } => SurfaceKind::File {
+                        path: legacy.file_path.clone(),
+                    },
+                    SurfaceKind::Diff { .. } => SurfaceKind::Diff {
+                        token: legacy.diff_viewer_token.clone(),
+                        request_path: legacy.diff_viewer_request_path.clone(),
+                    },
+                    other => other,
+                };
+            }
+            if matches!(kind, SurfaceKind::AgentSession { .. }) {
+                if let Some(agent) = workspace
+                    .restorable_agent_snapshots
+                    .as_ref()
+                    .and_then(|rows| rows.iter().find(|row| row.panel_id == id))
+                    .map(|row| row.snapshot.clone())
+                {
+                    kind = SurfaceKind::AgentSession {
+                        provider: Some(agent.kind.clone()),
+                        renderer: None,
+                        working_directory: agent.working_directory.clone(),
+                        session_id: Some(agent.session_id.clone()),
+                        lifecycle: None,
+                        restorable_agent: Some(Box::new(agent)),
+                    };
+                }
+            }
             let reservation = model.reserve_surface(SurfaceSeed {
                 surface_id: id.clone(),
                 pane_id: pane_id.clone(),
-                kind: kind_from_legacy(kind_name, browser_url),
+                kind,
                 metadata,
             })?;
             let record = model.surfaces.get_mut(&id).unwrap();
@@ -878,27 +1271,36 @@ fn migrate_workspace_legacy(
 fn kind_from_legacy(kind: &str, browser_url: Option<String>) -> SurfaceKind {
     match kind {
         "browser" => SurfaceKind::Browser {
-            url: browser_url.unwrap_or_default(),
+            url: browser_url,
+            proxy_url: None,
+            back_history: None,
+            forward_history: None,
+            omnibar_visible: None,
+            focus_mode_active: None,
+            developer_tools_visible: None,
+            developer_tools_panel: None,
+            page_zoom: None,
         },
         "agent" | "agent_session" | "agent-session" => SurfaceKind::AgentSession {
-            provider: "codex".into(),
-            renderer: "react".into(),
+            provider: None,
+            renderer: None,
             working_directory: None,
+            session_id: None,
+            lifecycle: None,
+            restorable_agent: None,
         },
-        "markdown" => SurfaceKind::Markdown {
-            path: String::new(),
-        },
-        "file" => SurfaceKind::File {
-            path: String::new(),
-        },
+        "markdown" => SurfaceKind::Markdown { path: None },
+        "file" => SurfaceKind::File { path: None },
         "diff" => SurfaceKind::Diff {
-            token: String::new(),
+            token: None,
             request_path: None,
         },
         "project_sidebar" => SurfaceKind::ProjectSidebar,
         "right_sidebar_tool" => SurfaceKind::RightSidebarTool,
         "remote_terminal" => SurfaceKind::RemoteTerminal {
-            remote_session_id: String::new(),
+            remote_session_id: None,
+            remote_context: None,
+            arrival_generation: None,
         },
         _ => SurfaceKind::Terminal,
     }
@@ -909,7 +1311,13 @@ fn find_pane<'a>(
     pane_id: &str,
 ) -> Option<&'a SessionPaneLayoutSnapshot> {
     match layout? {
-        SessionWorkspaceLayoutSnapshot::Pane(p) if p.pane_id.as_deref() == Some(pane_id) => Some(p),
+        SessionWorkspaceLayoutSnapshot::Pane(p)
+            if p.pane_id.as_deref() == Some(pane_id)
+                || (p.pane_id.is_none()
+                    && p.panel_ids.first().map(String::as_str) == Some(pane_id)) =>
+        {
+            Some(p)
+        }
         SessionWorkspaceLayoutSnapshot::Pane(_) => None,
         SessionWorkspaceLayoutSnapshot::Split(s) => {
             find_pane(Some(&s.first), pane_id).or_else(|| find_pane(Some(&s.second), pane_id))
@@ -920,15 +1328,20 @@ fn find_pane<'a>(
 fn project_layout(
     layout: SessionWorkspaceLayoutSnapshot,
     panes: &BTreeMap<String, PaneRecord>,
+    collapsed_panes: &HashSet<String>,
 ) -> Option<SessionWorkspaceLayoutSnapshot> {
     match layout {
         SessionWorkspaceLayoutSnapshot::Pane(mut old) => {
-            let id = old.pane_id.clone()?;
+            let id = old
+                .pane_id
+                .clone()
+                .or_else(|| old.panel_ids.first().cloned())?;
             let pane = panes.get(&id)?;
-            if pane.surface_ids.is_empty() {
+            if collapsed_panes.contains(&id) {
                 return None;
             }
             old.panel_ids = pane.surface_ids.clone();
+            old.pane_id = Some(id);
             old.selected_panel_id =
                 Some(pane.selected_surface_id.clone()).filter(|s| !s.is_empty());
             old.surface_kind = None;
@@ -948,8 +1361,8 @@ fn project_layout(
             Some(SessionWorkspaceLayoutSnapshot::Pane(old))
         }
         SessionWorkspaceLayoutSnapshot::Split(mut split) => {
-            let first = project_layout(*split.first, panes);
-            let second = project_layout(*split.second, panes);
+            let first = project_layout(*split.first, panes, collapsed_panes);
+            let second = project_layout(*split.second, panes, collapsed_panes);
             match (first, second) {
                 (Some(a), Some(b)) => {
                     split.first = Box::new(a);
@@ -992,10 +1405,10 @@ fn record_to_session(value: &SurfaceRecord) -> SessionSurfaceSnapshot {
         generation: value.generation,
         kind: value.kind.clone(),
         metadata: value.metadata.clone(),
-        terminal_startup: matches!(
+        terminal_startup: (matches!(
             value.kind,
             SurfaceKind::Terminal | SurfaceKind::RemoteTerminal { .. }
-        )
+        ) && value.terminal_startup != TerminalStartup::default())
         .then(|| value.terminal_startup.clone()),
     }
 }

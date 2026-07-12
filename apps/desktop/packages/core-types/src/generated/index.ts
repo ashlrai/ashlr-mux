@@ -70,10 +70,15 @@ export type { SessionPanelTerminalStartupSnapshot } from "./SessionPanelTerminal
 export type { SessionPanelTitleSnapshot } from "./SessionPanelTitleSnapshot";
 export type { SessionPanelTtySnapshot } from "./SessionPanelTtySnapshot";
 export type { SessionPanelUnreadSnapshot } from "./SessionPanelUnreadSnapshot";
+export type { SessionPendingRemotePwdSnapshot } from "./SessionPendingRemotePwdSnapshot";
 export type { SessionPullRequestStatusSnapshot } from "./SessionPullRequestStatusSnapshot";
 export type { SessionRestorableAgentSnapshot } from "./SessionRestorableAgentSnapshot";
 export type { SessionSplitLayoutSnapshot } from "./SessionSplitLayoutSnapshot";
 export type { SessionSplitOrientation } from "./SessionSplitOrientation";
+export type { SessionSurfaceKindSnapshot } from "./SessionSurfaceKindSnapshot";
+export type { SessionSurfaceMetadataSnapshot } from "./SessionSurfaceMetadataSnapshot";
+export type { SessionSurfaceSnapshot } from "./SessionSurfaceSnapshot";
+export type { SessionSurfaceTerminalStartupSnapshot } from "./SessionSurfaceTerminalStartupSnapshot";
 export type { SessionTabManagerSnapshot } from "./SessionTabManagerSnapshot";
 export type { SessionWindowSnapshot } from "./SessionWindowSnapshot";
 export type { SessionWorkspaceAgentPidSnapshot } from "./SessionWorkspaceAgentPidSnapshot";
