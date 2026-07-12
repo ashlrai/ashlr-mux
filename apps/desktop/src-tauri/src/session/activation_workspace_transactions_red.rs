@@ -30,9 +30,12 @@ impl DeferredPanelIdsRed {
         Option<String>,
         Vec<SessionPanelTerminalStartupSnapshot>,
     )> {
-        let temporary = AtomicU64::new(self.base + self.used);
-        let built = session_layout_from_cmux(layout, &temporary)?;
-        self.used = temporary.load(Ordering::Relaxed) - self.base;
+        let mut ids = DeferredPanelIds {
+            base: self.base,
+            used: self.used,
+        };
+        let built = session_layout_from_cmux(layout, &mut ids)?;
+        self.used = ids.used;
         Some(built)
     }
 

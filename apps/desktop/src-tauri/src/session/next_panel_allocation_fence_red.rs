@@ -57,12 +57,8 @@ fn reservation_is_fenced(body: &str) -> bool {
 fn every_production_panel_reservation_is_fenced_before_fetch_add() {
     let session = include_str!("../session.rs");
     let routes = [
-        "pub(crate) fn new_workspace_for_control(",
-        "pub(crate) fn new_workspace_in_window_for_control(",
         "pub(crate) fn split_panel_for_control(",
         "pub(crate) fn new_terminal_tab_for_control(",
-        "fn open_ssh_url_request(",
-        "pub fn session_new_workspace(",
     ];
     assert_eq!(
         session.matches("state.next_panel.fetch_add").count(),
@@ -84,21 +80,21 @@ fn every_production_panel_reservation_is_fenced_before_fetch_add() {
 }
 
 #[test]
-fn canonical_layout_allocations_are_inside_the_callers_outer_gate() {
+fn canonical_layout_candidates_are_inside_the_callers_outer_gate() {
     let session = include_str!("../session.rs");
     let helper = function_source(session, "fn session_layout_from_cmux(");
-    assert!(helper.contains("next_panel.fetch_add(1, Ordering::Relaxed)"));
+    assert!(helper.contains("&mut DeferredPanelIds"));
+    assert!(helper.contains("ids.next()"));
+    assert!(!helper.contains("AtomicU64"));
 
     let caller = compact(function_source(
         session,
-        "pub(crate) fn new_workspace_in_window_for_control(",
+        "fn transact_new_workspace_in_window(",
     ));
     let gate = caller
-        .find("state.lock_control_mutation()")
-        .or_else(|| caller.find("state.snapshot.lock_gate()"))
-        .or_else(|| caller.find("state.snapshot.lock()"))
+        .find("authority.lock_gate()")
         .expect("layout caller must acquire the shared gate");
-    let reserve = caller.find("state.next_panel.fetch_add").unwrap();
+    let reserve = caller.find("DeferredPanelIds::new(").unwrap();
     let build = caller.find("session_layout_from_cmux(").unwrap();
     assert!(gate < reserve && reserve < build);
     assert!(!caller[gate..build].contains("drop("));
