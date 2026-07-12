@@ -43,6 +43,7 @@ fn surface(id: &str, pane_id: &str, kind: SessionSurfaceKindSnapshot) -> Session
 fn browser(url: &str) -> SessionSurfaceKindSnapshot {
     SessionSurfaceKindSnapshot::Browser {
         url: Some(url.into()),
+        profile: None,
         proxy_url: None,
         back_history: None,
         forward_history: None,
