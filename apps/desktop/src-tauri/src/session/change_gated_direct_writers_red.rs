@@ -307,6 +307,12 @@ fn all_seven_production_commands_route_through_the_shared_fallible_session_state
                 "{} bypasses the shared typed focus-navigation helper",
                 case.command
             );
+        } else if case.command == "session_toggle_split_zoom" {
+            assert!(
+                compact.contains("toggle_split_zoom_for_control(&app,&state,"),
+                "{} bypasses the shared pane-layout helper",
+                case.command
+            );
         } else {
             assert!(
                 compact.contains("state.transact_snapshot_if_changed(&app,"),

@@ -233,11 +233,19 @@ fn all_three_production_commands_route_through_the_shared_fallible_always_publis
             "{} did not preserve Result<AppSessionSnapshot, String>",
             case.command
         );
-        assert!(
-            compact.contains("state.transact_snapshot_always(&app,"),
-            "{} bypasses SessionState::transact_snapshot_always",
-            case.command
-        );
+        if case.command == "session_equalize_dividers" {
+            assert!(
+                compact.contains("equalize_dividers_for_control(&app,&state)"),
+                "{} bypasses the shared pane-layout helper",
+                case.command
+            );
+        } else {
+            assert!(
+                compact.contains("state.transact_snapshot_always(&app,"),
+                "{} bypasses SessionState::transact_snapshot_always",
+                case.command
+            );
+        }
         assert!(
             !compact.contains("state.snapshot.lock()")
                 && !compact.contains("notify_session_changed("),
