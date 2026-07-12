@@ -3125,6 +3125,7 @@ pub(crate) fn commit_lifecycle_snapshot_for_control(
     app: &AppHandle,
     state: &SessionState,
     candidate: &AppSessionSnapshot,
+    record_derived_events: bool,
 ) -> Result<AppSessionSnapshot, String> {
     cmux_core::surface_lifecycle::SurfaceLifecycleModel::from_app_session(candidate)
         .and_then(|model| model.validate_indexes())
@@ -3156,7 +3157,9 @@ pub(crate) fn commit_lifecycle_snapshot_for_control(
         guard.clone()
     };
     record_workspace_focus_history(state, &committed);
-    crate::control_socket::record_session_changed_event(app, &committed);
+    if record_derived_events {
+        crate::control_socket::record_session_changed_event(app, &committed);
+    }
     emit_session_changed(app, &committed);
     crate::window_title::refresh_window_titles(app, &committed);
     crate::window::emit_window_states(app);

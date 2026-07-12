@@ -57,6 +57,8 @@ pub(super) enum LifecycleEffect {
     RemoteCreate {
         remote_session_id: String,
         destination: String,
+        window_id: String,
+        workspace_id: String,
         kind: String,
     },
     ActivateWindow {
@@ -124,7 +126,7 @@ pub(super) fn commit_lifecycle_transition<E: LifecycleEffectExecutor>(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct RuntimeArrival {
+pub(crate) struct RuntimeArrival {
     pub window_id: String,
     pub workspace_id: String,
     pub pane_id: String,
@@ -178,6 +180,19 @@ pub(super) fn reconcile_runtime_arrival(
     arrival: RuntimeArrival,
 ) -> RuntimeReconciliation {
     let mut next = snapshot.clone();
+    let Ok(existing_model) = SurfaceLifecycleModel::from_app_session(&next) else {
+        return RuntimeReconciliation { snapshot: next };
+    };
+    if let Some(existing) = existing_model.surface(&arrival.surface_id) {
+        // The same generation is an idempotent duplicate. Any other
+        // generation is a stale callback; neither may rewrite topology.
+        let _same_generation = existing.generation == arrival.generation;
+        return RuntimeReconciliation { snapshot: next };
+    }
+    if arrival.generation == 0 {
+        return RuntimeReconciliation { snapshot: next };
+    }
+    next = existing_model.to_app_session(&next).unwrap_or(next);
     let Some(window_index) = next
         .windows
         .iter()
@@ -194,45 +209,79 @@ pub(super) fn reconcile_runtime_arrival(
         return RuntimeReconciliation { snapshot: next };
     };
     let workspace = &mut next.windows[window_index].tab_manager.workspaces[workspace_index];
-    if workspace
-        .surfaces
-        .as_deref()
-        .unwrap_or_default()
-        .iter()
-        .any(|record| record.surface_id == arrival.surface_id)
-    {
-        return RuntimeReconciliation { snapshot: next };
-    }
     let pending_path = workspace.pending_remote_pwds.as_mut().and_then(|pending| {
         pending
             .iter()
-            .position(|item| item.remote_session_id == arrival.surface_id)
+            .position(|item| {
+                item.remote_session_id == arrival.remote_session_id
+                    || item.remote_session_id == arrival.surface_id
+            })
             .map(|index| pending.remove(index).path)
     });
-    let mut layout = session_ops::single_pane(&arrival.surface_id);
-    let SessionWorkspaceLayoutSnapshot::Pane(pane) = &mut layout else {
-        unreachable!()
+    match workspace.layout.as_mut() {
+        None => {
+            let mut layout = session_ops::single_pane(&arrival.surface_id);
+            let SessionWorkspaceLayoutSnapshot::Pane(pane) = &mut layout else {
+                unreachable!()
+            };
+            pane.pane_id = Some(arrival.pane_id.clone());
+            workspace.layout = Some(layout);
+        }
+        Some(layout) if find_pane(Some(layout), &arrival.pane_id).is_some() => {
+            let anchor = find_pane(Some(layout), &arrival.pane_id)
+                .and_then(|pane| pane.panel_ids.last())
+                .cloned();
+            if let Some(anchor) = anchor {
+                session_ops::add_panel_to_pane(layout, &anchor, &arrival.surface_id);
+            }
+        }
+        Some(layout) => {
+            let Some(anchor) = layout_surface_ids(layout).into_iter().next() else {
+                return RuntimeReconciliation { snapshot: next };
+            };
+            if !session_ops::split_pane(
+                layout,
+                &anchor,
+                SessionSplitOrientation::Horizontal,
+                &arrival.surface_id,
+                false,
+            ) {
+                return RuntimeReconciliation { snapshot: next };
+            }
+            assign_created_ids(layout, &arrival.surface_id, &arrival.pane_id, None);
+        }
+    }
+    workspace.surfaces.get_or_insert_with(Vec::new).push(
+        cmux_core::session::SessionSurfaceSnapshot {
+            surface_id: arrival.surface_id.clone(),
+            pane_id: arrival.pane_id.clone(),
+            generation: arrival.generation,
+            kind: SessionSurfaceKindSnapshot::RemoteTerminal {
+                remote_session_id: Some(arrival.remote_session_id.clone()),
+                remote_context: None,
+                arrival_generation: Some(arrival.generation),
+            },
+            metadata: cmux_core::session::SessionSurfaceMetadataSnapshot {
+                directory_provenance: pending_path.as_ref().map(|_| "remote_report".into()),
+                reported_directory: pending_path,
+                ..Default::default()
+            },
+            terminal_startup: None,
+        },
+    );
+    let Ok(model) = SurfaceLifecycleModel::from_app_session(&next) else {
+        return RuntimeReconciliation {
+            snapshot: snapshot.clone(),
+        };
     };
-    pane.pane_id = Some(arrival.pane_id.clone());
-    workspace.layout = Some(layout);
-    workspace.focused_panel_id = Some(arrival.surface_id.clone());
-    workspace.surfaces = Some(vec![cmux_core::session::SessionSurfaceSnapshot {
-        surface_id: arrival.surface_id,
-        pane_id: arrival.pane_id,
-        generation: arrival.generation,
-        kind: SessionSurfaceKindSnapshot::RemoteTerminal {
-            remote_session_id: Some(arrival.remote_session_id),
-            remote_context: None,
-            arrival_generation: Some(arrival.generation),
-        },
-        metadata: cmux_core::session::SessionSurfaceMetadataSnapshot {
-            reported_directory: pending_path,
-            directory_provenance: Some("remote_report".into()),
-            ..Default::default()
-        },
-        terminal_startup: None,
-    }]);
-    RuntimeReconciliation { snapshot: next }
+    let Ok(projected) = model.to_app_session(&next) else {
+        return RuntimeReconciliation {
+            snapshot: snapshot.clone(),
+        };
+    };
+    RuntimeReconciliation {
+        snapshot: projected,
+    }
 }
 
 pub(super) fn dispatch_lifecycle_request(
@@ -245,7 +294,7 @@ pub(super) fn dispatch_lifecycle_request(
         "surface.current" => surface_current(snapshot, params, context),
         "surface.list" => surface_list(snapshot, params, context),
         "surface.create" => surface_create(snapshot, params, context),
-        "surface.action" | "tab.action" => surface_action(snapshot, params),
+        "surface.action" | "tab.action" => surface_action(snapshot, method, params),
         "surface.report_pwd" => surface_report_pwd(snapshot, params),
         "surface.respawn" => surface_respawn(snapshot, params),
         "surface.close" => surface_close(snapshot, params, context),
@@ -489,6 +538,21 @@ fn kind_name(kind: &SessionSurfaceKindSnapshot) -> &'static str {
     }
 }
 
+fn creation_origin(kind: &SessionSurfaceKindSnapshot, split: bool) -> &'static str {
+    match (kind, split) {
+        (SessionSurfaceKindSnapshot::Browser { .. }, true) => "browser_split",
+        (SessionSurfaceKindSnapshot::Browser { .. }, false) => "browser_tab",
+        (SessionSurfaceKindSnapshot::Markdown { .. }, true) => "markdown_split",
+        (SessionSurfaceKindSnapshot::Markdown { .. }, false) => "markdown_tab",
+        (SessionSurfaceKindSnapshot::File { .. }, true) => "file_preview_split",
+        (SessionSurfaceKindSnapshot::File { .. }, false) => "file_preview_tab",
+        (SessionSurfaceKindSnapshot::RightSidebarTool, true) => "right_sidebar_tool_split",
+        (SessionSurfaceKindSnapshot::RightSidebarTool, false) => "right_sidebar_tool_tab",
+        (_, true) => "terminal_split",
+        (_, false) => "terminal_tab",
+    }
+}
+
 fn parse_kind(
     params: &Map<String, Value>,
 ) -> Result<SessionSurfaceKindSnapshot, (&'static str, &'static str, Option<Value>)> {
@@ -581,8 +645,14 @@ fn parse_kind(
     }
 }
 
-fn event(name: &'static str, payload: Value) -> LifecycleEvent {
-    let field = |key: &str| payload.get(key).and_then(Value::as_str).map(str::to_owned);
+fn owned_event(
+    name: &'static str,
+    window_id: &str,
+    workspace_id: &str,
+    pane_id: Option<&str>,
+    surface_id: Option<&str>,
+    extra: Value,
+) -> LifecycleEvent {
     LifecycleEvent {
         name,
         category: if name.starts_with("pane.") {
@@ -590,12 +660,35 @@ fn event(name: &'static str, payload: Value) -> LifecycleEvent {
         } else {
             "surface"
         },
-        source: "control_socket.lifecycle",
-        window_id: field("window_id"),
-        workspace_id: field("workspace_id"),
-        pane_id: field("pane_id"),
-        surface_id: field("surface_id"),
-        payload,
+        source: "workspace.lifecycle",
+        window_id: Some(window_id.to_owned()),
+        workspace_id: Some(workspace_id.to_owned()),
+        pane_id: pane_id.map(str::to_owned),
+        surface_id: surface_id.map(str::to_owned),
+        payload: extra,
+    }
+}
+
+fn socket_completion_event(
+    name: &'static str,
+    method: &'static str,
+    params: &Map<String, Value>,
+    result: &Value,
+    owner: &cmux_core::surface_lifecycle::Owner,
+) -> LifecycleEvent {
+    LifecycleEvent {
+        name,
+        category: if name.starts_with("pane.") {
+            "pane"
+        } else {
+            "surface"
+        },
+        source: "socket.v2",
+        window_id: Some(owner.window_id.clone()),
+        workspace_id: Some(owner.workspace_id.clone()),
+        pane_id: Some(owner.pane_id.clone()),
+        surface_id: Some(owner.surface_id.clone()),
+        payload: json!({"method":method,"params":params,"result":result}),
     }
 }
 
@@ -894,7 +987,14 @@ fn surface_create(
     ok_transition(
         next,
         json!({"window_id":scope.window_id,"workspace_id":scope.workspace_id,"pane_id":pane_id,"surface_id":surface_id,"type":kind_name(&kind)}),
-        vec![event("surface.created", json!({"surface_id":surface_id}))],
+        vec![owned_event(
+            "surface.created",
+            &scope.window_id,
+            &scope.workspace_id,
+            Some(&pane_id),
+            Some(&surface_id),
+            json!({"surface_id":surface_id,"pane_id":pane_id,"kind":kind_name(&kind),"origin":creation_origin(&kind, false),"focused":params.get("focus").and_then(Value::as_bool).unwrap_or(false)}),
+        )],
         vec![effect, LifecycleEffect::PersistSession],
     )
 }
@@ -914,6 +1014,7 @@ fn find_pane<'a>(
 
 fn surface_action(
     snapshot: &AppSessionSnapshot,
+    method: &str,
     params: &Map<String, Value>,
 ) -> LifecycleTransition {
     let action = params
@@ -1044,13 +1145,22 @@ fn surface_action(
         ("tab_id".into(), json!(surface_id)),
     ]);
     payload.extend(extras);
+    let result = Value::Object(payload);
+    let completion = socket_completion_event(
+        "surface.action",
+        if method == "tab.action" {
+            "tab.action"
+        } else {
+            "surface.action"
+        },
+        params,
+        &result,
+        &owner,
+    );
     ok_transition(
         next,
-        Value::Object(payload),
-        vec![event(
-            "surface.action",
-            json!({"surface_id":surface_id,"action":action}),
-        )],
+        result,
+        vec![completion],
         vec![LifecycleEffect::PersistSession],
     )
 }
@@ -1203,7 +1313,7 @@ fn surface_respawn(
     ok_transition(
         next,
         json!({"window_id":owner.window_id,"workspace_id":owner.workspace_id,"surface_id":surface_id,"type":"terminal"}),
-        vec![event("surface.respawned", json!({"surface_id":surface_id}))],
+        vec![],
         vec![
             LifecycleEffect::TerminalReplace {
                 surface_id: surface_id.into(),
@@ -1277,7 +1387,14 @@ fn surface_close(
     ok_transition(
         next,
         json!({"window_id":owner.window_id,"workspace_id":owner.workspace_id,"surface_id":surface_id}),
-        vec![event("surface.closed", json!({"surface_id":surface_id}))],
+        vec![owned_event(
+            "surface.closed",
+            &owner.window_id,
+            &owner.workspace_id,
+            Some(&owner.pane_id),
+            Some(&surface_id),
+            json!({}),
+        )],
         vec![
             LifecycleEffect::RuntimeTeardown {
                 surface_id,
@@ -1324,7 +1441,14 @@ fn surface_focus(
     ok_transition(
         next,
         json!({"window_id":owner.window_id,"workspace_id":owner.workspace_id,"surface_id":surface_id}),
-        vec![event("surface.focused", json!({"surface_id":surface_id}))],
+        vec![owned_event(
+            "surface.focused",
+            &owner.window_id,
+            &owner.workspace_id,
+            Some(&owner.pane_id),
+            Some(surface_id),
+            json!({}),
+        )],
         vec![
             LifecycleEffect::ActivateWindow {
                 window_id: owner.window_id,
@@ -1404,10 +1528,13 @@ fn surface_move(
     }
     let owner = model.owner_of_surface(surface_id).cloned().unwrap();
     let next = model.to_app_session(snapshot).unwrap();
+    let result = json!({"window_id":owner.window_id,"workspace_id":owner.workspace_id,"pane_id":owner.pane_id,"surface_id":surface_id});
+    let completion =
+        socket_completion_event("surface.moved", "surface.move", params, &result, &owner);
     ok_transition(
         next,
-        json!({"window_id":owner.window_id,"workspace_id":owner.workspace_id,"pane_id":owner.pane_id,"surface_id":surface_id}),
-        vec![event("surface.moved", json!({"surface_id":surface_id}))],
+        result,
+        vec![completion],
         vec![LifecycleEffect::PersistSession],
     )
 }
@@ -1444,7 +1571,14 @@ fn pane_focus(snapshot: &AppSessionSnapshot, params: &Map<String, Value>) -> Lif
     ok_transition(
         next,
         json!({"window_id":pane.window_id,"workspace_id":pane.workspace_id,"pane_id":pane_id,"surface_id":selected}),
-        vec![event("pane.focused", json!({"pane_id":pane_id}))],
+        vec![owned_event(
+            "pane.focused",
+            &pane.window_id,
+            &pane.workspace_id,
+            Some(pane_id),
+            Some(&selected),
+            json!({}),
+        )],
         vec![
             LifecycleEffect::ActivateWindow {
                 window_id: pane.window_id,
@@ -1548,10 +1682,21 @@ fn pane_resize(
             )
         }
     };
+    let result_payload = json!({"window_id":scope.window_id,"workspace_id":scope.workspace_id,"pane_id":pane_id,"split_id":result.split_id,"old_divider_position":result.old_divider_position,"new_divider_position":result.new_divider_position});
+    let completion = LifecycleEvent {
+        name: "pane.resized",
+        category: "pane",
+        source: "socket.v2",
+        window_id: Some(scope.window_id.clone()),
+        workspace_id: Some(scope.workspace_id.clone()),
+        pane_id: Some(pane_id.clone()),
+        surface_id: None,
+        payload: json!({"method":"pane.resize","params":params,"result":result_payload}),
+    };
     ok_transition(
         next,
-        json!({"window_id":scope.window_id,"workspace_id":scope.workspace_id,"pane_id":pane_id,"split_id":result.split_id,"old_divider_position":result.old_divider_position,"new_divider_position":result.new_divider_position}),
-        vec![event("pane.resized", json!({"pane_id":pane_id}))],
+        result_payload,
+        vec![completion],
         vec![LifecycleEffect::PersistSession],
     )
 }
@@ -1614,6 +1759,8 @@ fn pane_create(
                     .as_str()
                     .unwrap_or("remote")
                     .to_owned(),
+                window_id: scope.window_id,
+                workspace_id: scope.workspace_id,
                 kind: "terminal".into(),
             }],
         );
@@ -1639,6 +1786,8 @@ fn pane_create(
     let Some(source) = source else {
         return error(snapshot, "not_found", "No source surface to split", None);
     };
+    let source_pane_id =
+        session_ops::pane_id_containing_surface(workspace, &source).map(str::to_owned);
     let surface_id = Uuid::new_v4().to_string();
     let Some(layout) = workspace.layout.as_mut() else {
         return error(snapshot, "not_found", "No source surface to split", None);
@@ -1730,8 +1879,22 @@ fn pane_create(
         next,
         json!({"window_id":scope.window_id,"workspace_id":scope.workspace_id,"pane_id":pane_id,"surface_id":surface_id,"type":kind_name(&kind)}),
         vec![
-            event("pane.created", json!({"pane_id":pane_id})),
-            event("surface.created", json!({"surface_id":surface_id})),
+            owned_event(
+                "pane.created",
+                &scope.window_id,
+                &scope.workspace_id,
+                Some(&pane_id),
+                Some(&surface_id),
+                json!({"pane_id":pane_id,"source_pane_id":source_pane_id,"orientation":params.get("direction"),"surface_id":surface_id,"origin":creation_origin(&kind, true)}),
+            ),
+            owned_event(
+                "surface.created",
+                &scope.window_id,
+                &scope.workspace_id,
+                Some(&pane_id),
+                Some(&surface_id),
+                json!({"surface_id":surface_id,"pane_id":pane_id,"kind":kind_name(&kind),"origin":creation_origin(&kind, true),"focused":params.get("focus").and_then(Value::as_bool).unwrap_or(false)}),
+            ),
         ],
         effects,
     )

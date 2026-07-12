@@ -349,16 +349,17 @@ fn lifecycle_events_carry_complete_owner_envelopes() {
     );
     let value = ok_value(&created);
     for event in &created.events {
-        assert_eq!(event.source, "control_socket.lifecycle");
+        assert_eq!(event.source, "workspace.lifecycle");
         assert!(matches!(event.category, "pane" | "surface"));
         assert_eq!(event.window_id.as_deref(), Some("window-1"));
         assert_eq!(event.workspace_id.as_deref(), Some("workspace-1"));
         assert_eq!(event.pane_id.as_deref(), value["pane_id"].as_str());
         assert_eq!(event.surface_id.as_deref(), value["surface_id"].as_str());
-        assert_eq!(event.payload["window_id"], value["window_id"]);
-        assert_eq!(event.payload["workspace_id"], value["workspace_id"]);
         assert_eq!(event.payload["pane_id"], value["pane_id"]);
         assert_eq!(event.payload["surface_id"], value["surface_id"]);
+        assert!(event.payload.get("window_id").is_none());
+        assert!(event.payload.get("workspace_id").is_none());
+        assert_eq!(event.payload["origin"], "browser_split");
     }
 
     let action = transition(
@@ -371,6 +372,7 @@ fn lifecycle_events_carry_complete_owner_envelopes() {
         .iter()
         .find(|event| event.name == "surface.action")
         .unwrap();
+    assert_eq!(completion.source, "socket.v2");
     assert_eq!(completion.window_id.as_deref(), Some("window-1"));
     assert_eq!(completion.workspace_id.as_deref(), Some("workspace-1"));
     assert_eq!(completion.pane_id.as_deref(), value["pane_id"].as_str());
@@ -378,6 +380,9 @@ fn lifecycle_events_carry_complete_owner_envelopes() {
         completion.surface_id.as_deref(),
         value["surface_id"].as_str()
     );
+    assert_eq!(completion.payload["method"], "surface.action");
+    assert_eq!(completion.payload["params"]["action"], "pin");
+    assert_eq!(completion.payload["result"]["pinned"], true);
 }
 
 #[test]
@@ -665,6 +670,53 @@ fn report_pwd_preserves_raw_path_and_reconciles_pending_remote_once() {
     );
     assert_eq!(first.directory_apply_count("arriving-surface"), 1);
     assert_eq!(second.directory_apply_count("arriving-surface"), 1);
+}
+
+#[test]
+fn runtime_arrival_preserves_nonempty_topology_and_fences_duplicate_and_stale_callbacks() {
+    let remote = mark_remote_tmux_workspace(two_window_snapshot(), 1);
+    let pending = transition(
+        &remote,
+        "surface.report_pwd",
+        json!({"workspace_id":"workspace-2","surface_id":"arriving-surface","path":"C:/remote"}),
+    );
+    let arrival = RuntimeArrival::remote(
+        "window-2",
+        "workspace-2",
+        "pane-remote",
+        "arriving-surface",
+        "remote-42",
+        1,
+    );
+    let first = reconcile_runtime_arrival(&pending.snapshot, arrival.clone());
+    let model = SurfaceLifecycleModel::from_app_session_snapshot(&first.snapshot).unwrap();
+    assert!(model.surface("surface-2").is_some());
+    assert!(model.surface("arriving-surface").is_some());
+    assert_eq!(
+        model.owner_of_surface("surface-2").unwrap().pane_id,
+        "pane-2"
+    );
+    assert_eq!(
+        model.owner_of_surface("arriving-surface").unwrap().pane_id,
+        "pane-remote"
+    );
+    assert_eq!(first.directory_apply_count("arriving-surface"), 1);
+    assert_eq!(
+        reconcile_runtime_arrival(&first.snapshot, arrival).snapshot,
+        first.snapshot
+    );
+    let stale = RuntimeArrival::remote(
+        "window-2",
+        "workspace-2",
+        "pane-remote",
+        "arriving-surface",
+        "remote-42",
+        0,
+    );
+    assert_eq!(
+        reconcile_runtime_arrival(&first.snapshot, stale).snapshot,
+        first.snapshot
+    );
 }
 
 #[test]

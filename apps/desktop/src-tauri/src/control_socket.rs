@@ -1495,8 +1495,14 @@ struct ProductionLifecycleExecutor<'a> {
     candidate: Option<AppSessionSnapshot>,
     staged: Vec<pane_surface_lifecycle::LifecycleEffect>,
     staged_terminals: Vec<(String, u32, bool)>,
-    staged_remote_panes: Vec<(String, String)>,
+    staged_remote_panes: Vec<StagedRemotePane>,
     staged_browsers: Vec<(String, Option<String>)>,
+}
+
+struct StagedRemotePane {
+    destination: String,
+    pane_token: String,
+    arrival: pane_surface_lifecycle::RuntimeArrival,
 }
 
 impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExecutor<'_> {
@@ -1560,7 +1566,12 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
                 )?;
                 self.staged_terminals.push((surface_id.clone(), id, true));
             }
-            pane_surface_lifecycle::LifecycleEffect::RemoteCreate { destination, .. } => {
+            pane_surface_lifecycle::LifecycleEffect::RemoteCreate {
+                destination,
+                window_id,
+                workspace_id,
+                ..
+            } => {
                 let output = Command::new("ssh")
                     .args(["-T", "-o", "BatchMode=yes", destination])
                     .args(["tmux", "split-window", "-d", "-P", "-F", "#{pane_id}"])
@@ -1573,8 +1584,18 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
                 if pane_id.is_empty() {
                     return Err("remote tmux split returned no pane identity".to_string());
                 }
-                self.staged_remote_panes
-                    .push((destination.clone(), pane_id));
+                self.staged_remote_panes.push(StagedRemotePane {
+                    destination: destination.clone(),
+                    pane_token: pane_id.clone(),
+                    arrival: pane_surface_lifecycle::RuntimeArrival::remote(
+                        window_id,
+                        workspace_id,
+                        Uuid::new_v4().to_string(),
+                        Uuid::new_v4().to_string(),
+                        pane_id,
+                        1,
+                    ),
+                });
             }
             pane_surface_lifecycle::LifecycleEffect::BrowserAttach {
                 surface_id, url, ..
@@ -1613,7 +1634,7 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
             )?;
         }
         let state = self.app.state::<SessionState>();
-        commit_lifecycle_snapshot_for_control(self.app, state.inner(), candidate)?;
+        commit_lifecycle_snapshot_for_control(self.app, state.inner(), candidate, false)?;
         let terminal_state = self.app.state::<TerminalState>();
         for (surface_id, id, replace) in &self.staged_terminals {
             if *replace {
@@ -1647,6 +1668,9 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
                 pane_surface_lifecycle::LifecycleEffect::PersistSession => {}
             }
         }
+        for remote in &self.staged_remote_panes {
+            commit_runtime_arrival_for_control(self.app, remote.arrival.clone())?;
+        }
         self.staged.clear();
         self.staged_terminals.clear();
         self.staged_remote_panes.clear();
@@ -1660,10 +1684,10 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
                 let _ = terminal_close_id_for_control(state.inner(), id);
             }
         }
-        for (destination, pane_id) in self.staged_remote_panes.drain(..) {
+        for remote in self.staged_remote_panes.drain(..) {
             let _ = Command::new("ssh")
-                .args(["-T", "-o", "BatchMode=yes", &destination])
-                .args(["tmux", "kill-pane", "-t", &pane_id])
+                .args(["-T", "-o", "BatchMode=yes", &remote.destination])
+                .args(["tmux", "kill-pane", "-t", &remote.pane_token])
                 .status();
         }
         if let Some(state) = self.app.try_state::<BrowserWebviewState>() {
@@ -1724,25 +1748,13 @@ fn handle_pane_surface_lifecycle_request(
                 data: None,
             });
     if matches!(result, ControlCallResult::Ok(_)) {
-        for completion in completion_events.into_iter().filter(|event| {
-            matches!(
-                event.name,
-                "surface.action" | "pane.resized" | "surface.respawned"
-            )
-        }) {
-            let mut payload = completion.payload;
-            if let Value::Object(object) = &mut payload {
-                object
-                    .entry("window_id")
-                    .or_insert(json!(completion.window_id));
-                object
-                    .entry("workspace_id")
-                    .or_insert(json!(completion.workspace_id));
-                object.entry("pane_id").or_insert(json!(completion.pane_id));
-                object
-                    .entry("surface_id")
-                    .or_insert(json!(completion.surface_id));
-            }
+        let suppressed = completion_events
+            .iter()
+            .filter(|event| event.source == "workspace.lifecycle")
+            .map(|event| event.name)
+            .collect::<HashSet<_>>();
+        record_session_changed_event_suppressing(app, &target, &suppressed);
+        for completion in completion_events {
             record_event(
                 app,
                 completion.name,
@@ -1750,12 +1762,54 @@ fn handle_pane_surface_lifecycle_request(
                 completion.source,
                 completion.window_id,
                 completion.workspace_id,
+                completion.pane_id,
                 completion.surface_id,
-                payload,
+                completion.payload,
             );
         }
     }
     result
+}
+
+fn commit_runtime_arrival_for_control(
+    app: &AppHandle,
+    arrival: pane_surface_lifecycle::RuntimeArrival,
+) -> Result<(), String> {
+    let current = snapshot(app);
+    let reconciled = pane_surface_lifecycle::reconcile_runtime_arrival(&current, arrival.clone());
+    if reconciled.snapshot == current {
+        return Ok(());
+    }
+    let state = app.state::<SessionState>();
+    commit_lifecycle_snapshot_for_control(app, state.inner(), &reconciled.snapshot, false)?;
+    record_session_changed_event_suppressing(
+        app,
+        &reconciled.snapshot,
+        &HashSet::from(["pane.created", "surface.created"]),
+    );
+    record_event(
+        app,
+        "pane.created",
+        "pane",
+        "workspace.lifecycle",
+        Some(arrival.window_id.clone()),
+        Some(arrival.workspace_id.clone()),
+        Some(arrival.pane_id.clone()),
+        Some(arrival.surface_id.clone()),
+        json!({"pane_id":arrival.pane_id,"source_pane_id":null,"orientation":null,"surface_id":arrival.surface_id,"origin":"terminal_split"}),
+    );
+    record_event(
+        app,
+        "surface.created",
+        "surface",
+        "workspace.lifecycle",
+        Some(arrival.window_id),
+        Some(arrival.workspace_id),
+        Some(arrival.pane_id.clone()),
+        Some(arrival.surface_id.clone()),
+        json!({"surface_id":arrival.surface_id,"pane_id":arrival.pane_id,"kind":"terminal","origin":"terminal_split","focused":false}),
+    );
+    Ok(())
 }
 
 fn decorate_lifecycle_result_refs(app: &AppHandle, result: &mut ControlCallResult) {
@@ -1849,6 +1903,14 @@ fn surface_ref_from_tab_ref(reference: &str) -> Option<String> {
 }
 
 pub(crate) fn record_session_changed_event(app: &AppHandle, snapshot: &AppSessionSnapshot) {
+    record_session_changed_event_suppressing(app, snapshot, &HashSet::new());
+}
+
+fn record_session_changed_event_suppressing(
+    app: &AppHandle,
+    snapshot: &AppSessionSnapshot,
+    suppressed_names: &HashSet<&str>,
+) {
     let Some(state) = app.try_state::<ControlEventState>() else {
         return;
     };
@@ -1864,6 +1926,14 @@ pub(crate) fn record_session_changed_event(app: &AppHandle, snapshot: &AppSessio
     };
     for (key, summary) in &current {
         for event in derived_session_event_specs(previous.get(key), summary) {
+            if suppressed_names.contains(event.name) {
+                continue;
+            }
+            let pane_id = event
+                .payload
+                .get("pane_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
             record_event(
                 app,
                 event.name,
@@ -1871,6 +1941,7 @@ pub(crate) fn record_session_changed_event(app: &AppHandle, snapshot: &AppSessio
                 event.source,
                 event.window_id,
                 event.workspace_id,
+                pane_id,
                 event.surface_id,
                 event.payload,
             );
@@ -1887,6 +1958,14 @@ pub(crate) fn record_session_changed_event(app: &AppHandle, snapshot: &AppSessio
             workspaces: Vec::new(),
         };
         for event in derived_session_event_specs(Some(previous_summary), &empty) {
+            if suppressed_names.contains(event.name) {
+                continue;
+            }
+            let pane_id = event
+                .payload
+                .get("pane_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
             record_event(
                 app,
                 event.name,
@@ -1894,6 +1973,7 @@ pub(crate) fn record_session_changed_event(app: &AppHandle, snapshot: &AppSessio
                 event.source,
                 event.window_id,
                 event.workspace_id,
+                pane_id,
                 event.surface_id,
                 event.payload,
             );
@@ -2248,6 +2328,39 @@ fn append_surface_diff_events(
         .iter()
         .map(|workspace| (workspace.key.as_str(), workspace))
         .collect();
+    let previous_owners = previous
+        .workspaces
+        .iter()
+        .flat_map(|workspace| {
+            workspace
+                .surface_ids
+                .iter()
+                .map(move |id| (id.as_str(), workspace))
+        })
+        .collect::<HashMap<_, _>>();
+    let current_owners = current
+        .workspaces
+        .iter()
+        .flat_map(|workspace| {
+            workspace
+                .surface_ids
+                .iter()
+                .map(move |id| (id.as_str(), workspace))
+        })
+        .collect::<HashMap<_, _>>();
+    let moved = current_owners
+        .iter()
+        .filter_map(|(surface_id, destination)| {
+            previous_owners
+                .get(surface_id)
+                .filter(|source| source.key != destination.key)
+                .map(|source| ((*surface_id).to_string(), *source, *destination))
+        })
+        .collect::<Vec<_>>();
+    let moved_ids = moved
+        .iter()
+        .map(|(surface_id, _, _)| surface_id.as_str())
+        .collect::<HashSet<_>>();
     for workspace in &current.workspaces {
         let Some(previous_workspace) = previous_by_key.get(workspace.key.as_str()) else {
             for surface_id in &workspace.surface_ids {
@@ -2269,7 +2382,9 @@ fn append_surface_diff_events(
         let current_surfaces: HashSet<&str> =
             workspace.surface_ids.iter().map(String::as_str).collect();
         for surface_id in &workspace.surface_ids {
-            if !previous_surfaces.contains(surface_id.as_str()) {
+            if !moved_ids.contains(surface_id.as_str())
+                && !previous_surfaces.contains(surface_id.as_str())
+            {
                 events.push(surface_event_spec(
                     "surface.created",
                     current,
@@ -2280,7 +2395,9 @@ fn append_surface_diff_events(
             }
         }
         for surface_id in &previous_workspace.surface_ids {
-            if !current_surfaces.contains(surface_id.as_str()) {
+            if !moved_ids.contains(surface_id.as_str())
+                && !current_surfaces.contains(surface_id.as_str())
+            {
                 events.push(surface_event_spec(
                     "surface.closed",
                     current,
@@ -2307,6 +2424,9 @@ fn append_surface_diff_events(
             continue;
         }
         for surface_id in &workspace.surface_ids {
+            if moved_ids.contains(surface_id.as_str()) {
+                continue;
+            }
             events.push(surface_event_spec(
                 "surface.closed",
                 current,
@@ -2795,6 +2915,7 @@ fn record_event(
     source: &str,
     window_id: Option<String>,
     workspace_id: Option<String>,
+    pane_id: Option<String>,
     surface_id: Option<String>,
     payload: Value,
 ) {
@@ -2808,10 +2929,6 @@ fn record_event(
     let seq = guard.next_seq;
     guard.next_seq = guard.next_seq.saturating_add(1);
     let boot_id = guard.boot_id.clone();
-    let pane_id = payload
-        .get("pane_id")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
     let event = json!({
         "type": "event",
         "protocol": EVENT_STREAM_PROTOCOL,
@@ -3340,6 +3457,7 @@ fn record_resolved_workspace_rename_event(
         event.source,
         event.window_id,
         event.workspace_id,
+        None,
         event.surface_id,
         event.payload,
     );
@@ -15462,6 +15580,44 @@ mod tests {
             .find(|event| event.name == "surface.closed")
             .expect("surface closed event");
         assert_eq!(closed_surface.surface_id, Some("surface-a".to_string()));
+    }
+
+    #[test]
+    fn derived_session_events_emit_one_move_without_close_create_duplicates() {
+        let previous = event_summary(
+            vec![
+                event_workspace(
+                    "workspace-a",
+                    "Alpha",
+                    0,
+                    &["surface-a", "surface-b"],
+                    Some("surface-a"),
+                ),
+                event_workspace("workspace-b", "Beta", 1, &["surface-c"], Some("surface-c")),
+            ],
+            0,
+        );
+        let current = event_summary(
+            vec![
+                event_workspace("workspace-a", "Alpha", 0, &["surface-b"], Some("surface-b")),
+                event_workspace(
+                    "workspace-b",
+                    "Beta",
+                    1,
+                    &["surface-c", "surface-a"],
+                    Some("surface-a"),
+                ),
+            ],
+            1,
+        );
+        let events = derived_session_event_specs(Some(&previous), &current);
+        assert!(!events.iter().any(|event| {
+            event.name == "surface.moved" && event.surface_id.as_deref() == Some("surface-a")
+        }));
+        assert!(!events.iter().any(|event| {
+            matches!(event.name, "surface.created" | "surface.closed")
+                && event.surface_id.as_deref() == Some("surface-a")
+        }));
     }
 
     #[test]
