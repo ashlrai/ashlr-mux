@@ -4420,17 +4420,8 @@ pub(crate) fn select_workspace_in_window_for_control(
 pub(crate) fn equalize_dividers_for_control(
     app: &AppHandle,
     state: &SessionState,
-) -> AppSessionSnapshot {
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        apply_equalize_dividers(&mut guard);
-        guard.clone()
-    };
-    notify_session_changed(app, &snapshot);
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_always(app, apply_equalize_dividers)
 }
 
 pub(crate) fn new_workspace_for_control(
@@ -5353,13 +5344,12 @@ pub(crate) fn resize_pane_for_control(
     intent: PaneResizeControlIntent,
     width: f64,
     height: f64,
-) -> Result<(session_ops::PaneResizeResult, AppSessionSnapshot), PaneResizeControlError> {
-    let (resized, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let workspace = guard
+) -> Result<
+    (session_ops::PaneResizeResult, AppSessionSnapshot),
+    PaneTopologyControlError<PaneResizeControlError>,
+> {
+    state.transact_pane_topology(app, |snapshot| {
+        let workspace = snapshot
             .windows
             .get_mut(window_index)
             .and_then(|window| window.tab_manager.workspaces.get_mut(workspace_index))
@@ -5383,10 +5373,8 @@ pub(crate) fn resize_pane_for_control(
             ),
         }
         .map_err(PaneResizeControlError::Pane)?;
-        (resized, guard.clone())
-    };
-    notify_session_changed(app, &snapshot);
-    Ok((resized, snapshot))
+        Ok(resized)
+    })
 }
 
 pub(crate) fn new_terminal_tab_for_control(
@@ -5540,19 +5528,8 @@ pub(crate) fn toggle_split_zoom_for_control(
     app: &AppHandle,
     state: &SessionState,
     panel_id: &str,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_toggle_split_zoom(&mut guard, panel_id);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| apply_toggle_split_zoom(snapshot, panel_id))
 }
 
 pub(crate) fn move_panel_to_new_workspace_for_control(
@@ -6573,7 +6550,8 @@ pub fn session_equalize_dividers(
     app: AppHandle,
     state: State<'_, SessionState>,
 ) -> Result<AppSessionSnapshot, String> {
-    state.transact_snapshot_always(&app, apply_equalize_dividers)
+    let snapshot = equalize_dividers_for_control(&app, &state)?;
+    Ok(snapshot)
 }
 
 /// Toggle split zoom for the active pane. When zoomed, the web workspace renders
@@ -6584,9 +6562,8 @@ pub fn session_toggle_split_zoom(
     state: State<'_, SessionState>,
     panel_id: String,
 ) -> Result<AppSessionSnapshot, String> {
-    state.transact_snapshot_if_changed(&app, |snapshot| {
-        apply_toggle_split_zoom(snapshot, &panel_id)
-    })
+    let snapshot = toggle_split_zoom_for_control(&app, &state, &panel_id)?;
+    Ok(snapshot)
 }
 
 /// Set the active workspace layout mode. `"canvas"` enables freeform canvas

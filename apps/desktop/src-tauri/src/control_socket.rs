@@ -6747,7 +6747,14 @@ fn workspace_last(app: &AppHandle, params: &serde_json::Map<String, Value>) -> C
 
 fn workspace_equalize_splits(app: &AppHandle) -> ControlCallResult {
     let state = app.state::<SessionState>();
-    workspace_current(&equalize_dividers_for_control(app, &state))
+    match equalize_dividers_for_control(app, &state) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_set_description(
@@ -8966,23 +8973,25 @@ fn pane_resize(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Cont
         height,
     ) {
         Ok(result) => result,
-        Err(PaneResizeControlError::WorkspaceNotFound) => {
+        Err(PaneTopologyControlError::Operation(PaneResizeControlError::WorkspaceNotFound)) => {
             return ControlCallResult::Err {
                 code: "not_found".to_string(),
                 message: "Workspace not found".to_string(),
                 data: None,
             };
         }
-        Err(PaneResizeControlError::Pane(session_ops::PaneResizeError::PaneNotFoundInTree)) => {
+        Err(PaneTopologyControlError::Operation(PaneResizeControlError::Pane(
+            session_ops::PaneResizeError::PaneNotFoundInTree,
+        ))) => {
             return ControlCallResult::Err {
                 code: "not_found".to_string(),
                 message: "Pane not found in split tree".to_string(),
                 data: None,
             };
         }
-        Err(PaneResizeControlError::Pane(
+        Err(PaneTopologyControlError::Operation(PaneResizeControlError::Pane(
             session_ops::PaneResizeError::NoOrientationSplitAncestor,
-        )) => {
+        ))) => {
             let message = match intent {
                 PaneResizeControlIntent::Absolute { .. } => {
                     "No split ancestor for absolute pane resize".to_string()
@@ -9003,7 +9012,9 @@ fn pane_resize(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Cont
                 data: None,
             };
         }
-        Err(PaneResizeControlError::Pane(session_ops::PaneResizeError::NoAdjacentBorder)) => {
+        Err(PaneTopologyControlError::Operation(PaneResizeControlError::Pane(
+            session_ops::PaneResizeError::NoAdjacentBorder,
+        ))) => {
             let direction = match intent {
                 PaneResizeControlIntent::Relative { direction, .. } => match direction {
                     session_ops::PaneResizeDirection::Left => "left",
@@ -9019,10 +9030,19 @@ fn pane_resize(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Cont
                 data: None,
             };
         }
-        Err(PaneResizeControlError::Pane(session_ops::PaneResizeError::MissingSplitIdentity)) => {
+        Err(PaneTopologyControlError::Operation(PaneResizeControlError::Pane(
+            session_ops::PaneResizeError::MissingSplitIdentity,
+        ))) => {
             return ControlCallResult::Err {
                 code: "internal_error".to_string(),
                 message: "Failed to resize pane".to_string(),
+                data: None,
+            };
+        }
+        Err(PaneTopologyControlError::Publication(message)) => {
+            return ControlCallResult::Err {
+                code: "internal".to_string(),
+                message,
                 data: None,
             };
         }
@@ -10486,10 +10506,14 @@ fn surface_toggle_split_zoom(
         return invalid_params("Missing or invalid surface selector");
     };
     let state = app.state::<SessionState>();
-    surface_list_from_params(
-        &toggle_split_zoom_for_control(app, &state, &panel_id),
-        params,
-    )
+    match toggle_split_zoom_for_control(app, &state, &panel_id) {
+        Ok(snapshot) => surface_list_from_params(&snapshot, params),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn browser_back(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
