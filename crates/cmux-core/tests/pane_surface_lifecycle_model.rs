@@ -5,10 +5,10 @@
 //! arrays cannot satisfy these invariants, so this test-only commit must not
 //! compile until the model exists.
 
-use cmux_core::session::SessionTabManagerSnapshot;
+use cmux_core::session::{AppSessionSnapshot, SessionTabManagerSnapshot};
 use cmux_core::surface_lifecycle::{
-    AttachOutcome, ContainerKind, LegacyPaneSnapshot, LifecycleSnapshot, MoveFailure, PaneSeed,
-    RuntimeHandle, SurfaceKind, SurfaceLifecycleModel, SurfaceMetadata, SurfaceSeed,
+    AttachOutcome, ContainerKind, LegacyPaneSnapshot, LifecycleSnapshot, MoveTransactionError,
+    PaneSeed, RuntimeHandle, SurfaceKind, SurfaceLifecycleModel, SurfaceMetadata, SurfaceSeed,
 };
 
 fn pane(id: &str, workspace_id: &str) -> PaneSeed {
@@ -29,6 +29,20 @@ fn surface(id: &str, pane_id: &str, kind: SurfaceKind) -> SurfaceSeed {
     }
 }
 
+fn browser(url: &str) -> SurfaceKind {
+    SurfaceKind::Browser {
+        url: Some(url.into()),
+        proxy_url: None,
+        back_history: None,
+        forward_history: None,
+        omnibar_visible: None,
+        focus_mode_active: None,
+        developer_tools_visible: None,
+        developer_tools_panel: None,
+        page_zoom: None,
+    }
+}
+
 #[test]
 fn heterogeneous_surfaces_are_authoritative_records_not_pane_wide_state() {
     let mut model = SurfaceLifecycleModel::new();
@@ -40,9 +54,7 @@ fn heterogeneous_surfaces_are_authoritative_records_not_pane_wide_state() {
         .reserve_surface(surface(
             "browser-1",
             "pane-1",
-            SurfaceKind::Browser {
-                url: "https://example.test".into(),
-            },
+            browser("https://example.test"),
         ))
         .unwrap();
     model
@@ -50,7 +62,7 @@ fn heterogeneous_surfaces_are_authoritative_records_not_pane_wide_state() {
             "markdown-1",
             "pane-1",
             SurfaceKind::Markdown {
-                path: "C:/repo/README.md".into(),
+                path: Some("C:/repo/README.md".into()),
             },
         ))
         .unwrap();
@@ -156,10 +168,8 @@ fn close_removes_runtime_pending_metadata_and_owner_indexes_once() {
     );
     model.queue_pending_pwd("surface-1", "C:/repo").unwrap();
     model
-        .surface_mut("surface-1")
-        .unwrap()
-        .metadata
-        .custom_title = Some("api".into());
+        .set_custom_title("surface-1", Some("api".into()))
+        .unwrap();
 
     let closed = model.close_surface("surface-1").unwrap();
     assert_eq!(closed.surface_id, "surface-1");
@@ -176,13 +186,7 @@ fn move_transfers_the_complete_record_and_failed_attach_rolls_back() {
     let mut model = SurfaceLifecycleModel::new();
     model.add_pane(pane("pane-a", "workspace-a")).unwrap();
     model.add_pane(pane("pane-b", "workspace-b")).unwrap();
-    let mut seed = surface(
-        "browser-1",
-        "pane-a",
-        SurfaceKind::Browser {
-            url: "https://example.test".into(),
-        },
-    );
+    let mut seed = surface("browser-1", "pane-a", browser("https://example.test"));
     seed.metadata.custom_title = Some("docs".into());
     seed.metadata.pinned = true;
     model.reserve_surface(seed).unwrap();
@@ -207,8 +211,8 @@ fn move_transfers_the_complete_record_and_failed_attach_rolls_back() {
 
     let before = model.snapshot();
     assert_eq!(
-        model.move_surface_with_failure("browser-1", "pane-a", 0, MoveFailure::Attach),
-        Err(MoveFailure::Attach)
+        model.move_surface_transactionally("browser-1", "pane-a", 0, |_, _| Err("attach")),
+        Err(MoveTransactionError::Effect("attach"))
     );
     assert_eq!(model.snapshot(), before);
 }
@@ -289,6 +293,50 @@ fn pending_pwd_applies_once_to_the_matching_arrival_generation() {
             .directory_apply_count,
         1
     );
+}
+
+#[test]
+fn surface_pwd_queued_before_runtime_arrival_applies_once_on_attach() {
+    let mut model = SurfaceLifecycleModel::new();
+    model.add_pane(pane("pane-1", "workspace-1")).unwrap();
+    model.queue_pending_pwd("surface-1", "C:/early").unwrap();
+    let token = model
+        .reserve_surface(surface("surface-1", "pane-1", SurfaceKind::Terminal))
+        .unwrap();
+    assert_eq!(
+        model
+            .surface("surface-1")
+            .unwrap()
+            .metadata
+            .reported_directory,
+        None
+    );
+    assert_eq!(
+        model.attach_runtime(
+            "surface-1",
+            token.generation,
+            RuntimeHandle::new("runtime-1")
+        ),
+        AttachOutcome::Attached
+    );
+    assert_eq!(
+        model
+            .surface("surface-1")
+            .unwrap()
+            .metadata
+            .reported_directory
+            .as_deref(),
+        Some("C:/early")
+    );
+    assert_eq!(
+        model
+            .surface("surface-1")
+            .unwrap()
+            .metadata
+            .directory_apply_count,
+        1
+    );
+    assert!(!model.has_pending_pwd("surface-1"));
 }
 
 #[test]
@@ -556,11 +604,11 @@ fn browser_and_nonterminal_kind_state_round_trips_losslessly() {
             "workspace_id": "workspace-1", "process_title": "mixed",
             "layout": {"type":"pane","pane":{"pane_id":"pane-1","panel_ids":["browser","markdown","file","diff","remote","agent"],"selected_panel_id":"browser"}},
             "surfaces": [
-                {"surface_id":"browser","pane_id":"pane-1","generation":1,"kind":{"type":"browser","url":"https://now.test","proxy_url":"socks5://127.0.0.1:9","back_history":["https://back.test"],"forward_history":["https://forward.test"],"omnibar_visible":false,"focus_mode_active":true,"developer_tools_visible":true,"developer_tools_panel":"console","page_zoom_millis":1250},"metadata":{}},
+                {"surface_id":"browser","pane_id":"pane-1","generation":1,"kind":{"type":"browser","url":"https://now.test","proxy_url":"socks5://127.0.0.1:9","back_history":["https://back.test"],"forward_history":["https://forward.test"],"omnibar_visible":false,"focus_mode_active":true,"developer_tools_visible":true,"developer_tools_panel":"console","page_zoom":1.23456789},"metadata":{}},
                 {"surface_id":"markdown","pane_id":"pane-1","generation":1,"kind":{"type":"markdown","path":"README.md"},"metadata":{}},
                 {"surface_id":"file","pane_id":"pane-1","generation":1,"kind":{"type":"file","path":"src/main.rs"},"metadata":{}},
                 {"surface_id":"diff","pane_id":"pane-1","generation":1,"kind":{"type":"diff","token":"diff-7","request_path":"/changes"},"metadata":{}},
-                {"surface_id":"remote","pane_id":"pane-1","generation":1,"kind":{"type":"remote_terminal","remote_session_id":"pty-9","remote_context":"ssh://box","arrival_generation":4},"metadata":{}},
+                {"surface_id":"remote","pane_id":"pane-1","generation":1,"kind":{"type":"remote_terminal","remote_session_id":"pty-9","remote_context":{"transport":"ssh","host":"box"},"arrival_generation":4},"metadata":{}},
                 {"surface_id":"agent","pane_id":"pane-1","generation":1,"kind":{"type":"agent_session","provider":"codex","renderer":"react","working_directory":"C:/repo","session_id":"agent-42","lifecycle":"running"},"metadata":{}}
             ]
         }]
@@ -572,6 +620,37 @@ fn browser_and_nonterminal_kind_state_round_trips_losslessly() {
         output["workspaces"][0]["surfaces"],
         input["workspaces"][0]["surfaces"]
     );
+}
+
+#[test]
+fn legacy_optional_kind_identities_remain_absent_instead_of_becoming_empty_defaults() {
+    let tabs: SessionTabManagerSnapshot = serde_json::from_value(serde_json::json!({
+        "workspaces":[
+            {"workspace_id":"browser-ws","process_title":"browser","layout":{"type":"pane","pane":{"pane_id":"browser-pane","panel_ids":["browser"],"surface_kind":"browser"}}},
+            {"workspace_id":"markdown-ws","process_title":"markdown","layout":{"type":"pane","pane":{"pane_id":"markdown-pane","panel_ids":["markdown"],"surface_kind":"markdown"}}},
+            {"workspace_id":"file-ws","process_title":"file","layout":{"type":"pane","pane":{"pane_id":"file-pane","panel_ids":["file"],"surface_kind":"file"}}},
+            {"workspace_id":"diff-ws","process_title":"diff","layout":{"type":"pane","pane":{"pane_id":"diff-pane","panel_ids":["diff"],"surface_kind":"diff"}}},
+            {"workspace_id":"remote-ws","process_title":"remote","layout":{"type":"pane","pane":{"pane_id":"remote-pane","panel_ids":["remote"],"surface_kind":"remote_terminal"}}},
+            {"workspace_id":"agent-ws","process_title":"agent","layout":{"type":"pane","pane":{"pane_id":"agent-pane","panel_ids":["agent"],"surface_kind":"agent"}}}
+        ]
+    })).unwrap();
+    let model = SurfaceLifecycleModel::from_session_snapshot("window-1", &tabs).unwrap();
+    let json = serde_json::to_value(model.to_session_snapshot(&tabs).unwrap()).unwrap();
+    for (index, forbidden) in [
+        (0, "url"),
+        (1, "path"),
+        (2, "path"),
+        (3, "token"),
+        (4, "remote_session_id"),
+        (5, "provider"),
+    ] {
+        assert!(json["workspaces"][index]["surfaces"][0]["kind"]
+            .get(forbidden)
+            .is_none());
+    }
+    assert!(json["workspaces"][5]["surfaces"][0]["kind"]
+        .get("renderer")
+        .is_none());
 }
 
 #[test]
@@ -697,4 +776,60 @@ fn pending_remote_pwd_is_persisted_moved_applied_once_and_cleaned_on_close_or_re
         .unwrap();
     restored.close_surface("surface-1").unwrap();
     assert!(!restored.has_pending_remote_pwd("workspace-b", "remote-1"));
+}
+
+#[test]
+fn constrained_metadata_mutation_preserves_indexes_and_rejects_missing_ids() {
+    let mut model = SurfaceLifecycleModel::new();
+    model.add_pane(pane("pane-1", "workspace-1")).unwrap();
+    model
+        .reserve_surface(surface("surface-1", "pane-1", SurfaceKind::Terminal))
+        .unwrap();
+    model
+        .set_custom_title("surface-1", Some("api".into()))
+        .unwrap();
+    assert_eq!(
+        model
+            .surface("surface-1")
+            .unwrap()
+            .metadata
+            .custom_title
+            .as_deref(),
+        Some("api")
+    );
+    assert!(model.set_custom_title("ghost", Some("bad".into())).is_err());
+    assert!(model.validate_indexes().is_ok());
+}
+
+#[test]
+fn app_wide_authority_moves_across_windows_atomically_and_projects_both() {
+    let base: AppSessionSnapshot = serde_json::from_value(serde_json::json!({
+        "version":1,"created_at":0,"windows":[
+            {"window_id":"window-a","tab_manager":{"workspaces":[{"workspace_id":"workspace-a","process_title":"a","focused_panel_id":"surface-a","layout":{"type":"pane","pane":{"pane_id":"pane-a","panel_ids":["surface-a"],"selected_panel_id":"surface-a"}},"surfaces":[{"surface_id":"surface-a","pane_id":"pane-a","generation":1,"kind":{"type":"terminal"},"metadata":{"custom_title":"api"}}]}]}},
+            {"window_id":"window-b","tab_manager":{"workspaces":[{"workspace_id":"workspace-b","process_title":"b","focused_panel_id":"surface-b","layout":{"type":"pane","pane":{"pane_id":"pane-b","panel_ids":["surface-b"],"selected_panel_id":"surface-b"}},"surfaces":[{"surface_id":"surface-b","pane_id":"pane-b","generation":1,"kind":{"type":"terminal"},"metadata":{}}]}]}}
+        ]
+    })).unwrap();
+    let mut model = SurfaceLifecycleModel::from_app_session(&base).unwrap();
+    let before = model.snapshot();
+    assert_eq!(
+        model.move_surface_transactionally("surface-a", "pane-b", 1, |_, _| Err("attach")),
+        Err(MoveTransactionError::Effect("attach"))
+    );
+    assert_eq!(model.snapshot(), before);
+    model.move_surface("surface-a", "pane-b", 1).unwrap();
+    assert_eq!(
+        model.owner_of_surface("surface-a").unwrap().window_id,
+        "window-b"
+    );
+    let projected = serde_json::to_value(model.to_app_session(&base).unwrap()).unwrap();
+    assert!(projected["windows"][0]["tab_manager"]["workspaces"][0]["layout"].is_null());
+    assert_eq!(
+        projected["windows"][1]["tab_manager"]["workspaces"][0]["layout"]["pane"]["panel_ids"],
+        serde_json::json!(["surface-b", "surface-a"])
+    );
+    assert_eq!(
+        projected["windows"][1]["tab_manager"]["workspaces"][0]["surfaces"][1]["metadata"]
+            ["custom_title"],
+        "api"
+    );
 }
