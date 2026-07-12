@@ -104,6 +104,9 @@ pub(super) enum LifecycleEffect {
         target_pane_id: Option<String>,
         source_surface_id: Option<String>,
         source_remote_pane_id: Option<String>,
+        source_pane_id: Option<String>,
+        split_direction: Option<super::RemoteTmuxSplitDirection>,
+        split_orientation: Option<SessionSplitOrientation>,
         kind: String,
         tmux_operation: &'static str,
         arrival_policy: &'static str,
@@ -211,6 +214,8 @@ pub(crate) struct RuntimeArrival {
     pub creates_pane: bool,
     pub anchor_surface_id: Option<String>,
     pub focused: bool,
+    pub split_orientation: Option<SessionSplitOrientation>,
+    pub source_pane_id: Option<String>,
 }
 
 impl RuntimeArrival {
@@ -232,6 +237,8 @@ impl RuntimeArrival {
             creates_pane: true,
             anchor_surface_id: None,
             focused: false,
+            split_orientation: None,
+            source_pane_id: None,
         }
     }
 
@@ -255,6 +262,8 @@ impl RuntimeArrival {
             creates_pane: false,
             anchor_surface_id: Some(anchor_surface_id.into()),
             focused,
+            split_orientation: None,
+            source_pane_id: None,
         }
     }
 }
@@ -314,6 +323,8 @@ pub(super) fn reconcile_runtime_arrival(
         return RuntimeReconciliation { snapshot: next };
     };
     let workspace = &mut next.windows[window_index].tab_manager.workspaces[workspace_index];
+    let requested_anchor = arrival.anchor_surface_id.clone();
+    let requested_orientation = arrival.split_orientation.clone();
     let pending_path = workspace.pending_remote_pwds.as_mut().and_then(|pending| {
         pending
             .iter()
@@ -346,13 +357,19 @@ pub(super) fn reconcile_runtime_arrival(
         }
         Some(_) if !arrival.creates_pane => return RuntimeReconciliation { snapshot: next },
         Some(layout) => {
-            let Some(anchor) = layout_surface_ids(layout).into_iter().next() else {
+            let surface_ids = layout_surface_ids(layout);
+            let anchor = match requested_anchor.clone() {
+                Some(anchor) if surface_ids.contains(&anchor) => Some(anchor),
+                Some(_) => None,
+                None => surface_ids.into_iter().next(),
+            };
+            let Some(anchor) = anchor else {
                 return RuntimeReconciliation { snapshot: next };
             };
             if !session_ops::split_pane(
                 layout,
                 &anchor,
-                SessionSplitOrientation::Horizontal,
+                requested_orientation.unwrap_or(SessionSplitOrientation::Horizontal),
                 &arrival.surface_id,
                 false,
             ) {
@@ -414,11 +431,11 @@ pub(super) fn reconcile_runtime_arrival(
                 snapshot: snapshot.clone(),
             };
         }
-        if arrival.focused && model.focus_surface(&arrival.surface_id).is_err() {
-            return RuntimeReconciliation {
-                snapshot: snapshot.clone(),
-            };
-        }
+    }
+    if arrival.focused && model.focus_surface(&arrival.surface_id).is_err() {
+        return RuntimeReconciliation {
+            snapshot: snapshot.clone(),
+        };
     }
     let Ok(projected) = model.to_app_session(&next) else {
         return RuntimeReconciliation {
@@ -1873,6 +1890,9 @@ fn apply_create_right_action(
                 target_pane_id: Some(owner.pane_id.clone()),
                 source_surface_id: Some(surface_id.to_string()),
                 source_remote_pane_id: source_remote_pane_id.clone(),
+                source_pane_id: Some(owner.pane_id.clone()),
+                split_direction: None,
+                split_orientation: None,
                 kind: "terminal".into(),
                 tmux_operation: "new-window",
                 arrival_policy: "runtime-window-add",
@@ -3128,14 +3148,96 @@ fn pane_create(
         Ok(scope) => scope,
         Err((code, message)) => return error(snapshot, code, message, None),
     };
-    let workspace_value = serde_json::to_value(
-        &snapshot.windows[scope.window_index].tab_manager.workspaces[scope.workspace_index],
-    )
-    .unwrap();
-    if method == "pane.create"
+    let kind = match parse_kind(params) {
+        Ok(kind) => kind,
+        Err((code, message, data)) => return error(snapshot, code, message, data),
+    };
+    let workspace =
+        &snapshot.windows[scope.window_index].tab_manager.workspaces[scope.workspace_index];
+    let source = params
+        .get("surface_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| workspace.focused_panel_id.clone())
+        .or_else(|| {
+            workspace
+                .layout
+                .as_ref()
+                .and_then(|layout| layout_surface_ids(layout).into_iter().next())
+        });
+    let Some(source) = source.filter(|source| {
+        workspace
+            .layout
+            .as_ref()
+            .is_some_and(|layout| layout_surface_ids(layout).contains(source))
+    }) else {
+        return error(snapshot, "not_found", "No source surface to split", None);
+    };
+    let source_pane_id =
+        session_ops::pane_id_containing_surface(workspace, &source).map(str::to_owned);
+    let source_record = workspace
+        .surfaces
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .find(|record| record.surface_id == source);
+    let source_remote_pane_id = source_record.and_then(|record| match &record.kind {
+        SessionSurfaceKindSnapshot::RemoteTerminal {
+            remote_session_id: Some(remote_session_id),
+            ..
+        } if super::valid_tmux_identity(remote_session_id, '%') => Some(remote_session_id.clone()),
+        _ => None,
+    });
+    let workspace_value = serde_json::to_value(workspace).unwrap();
+    let remote_tmux = method == "pane.create"
         && workspace_value["remote"]["connected"] == json!(true)
-        && workspace_value["remote"]["transport"] == json!("tmux")
+        && workspace_value["remote"]["transport"] == json!("tmux");
+    if remote_tmux
+        && matches!(kind, SessionSurfaceKindSnapshot::Terminal)
+        && source_remote_pane_id.is_some()
     {
+        let mut unsupported = Vec::new();
+        if insert_first {
+            unsupported.push("direction=left/up".to_string());
+        }
+        if params.contains_key("working_directory") {
+            unsupported.push("working_directory".into());
+        }
+        if params.contains_key("initial_command") || params.contains_key("command") {
+            unsupported.push("initial_command".into());
+        }
+        if params.contains_key("tmux_start_command") {
+            unsupported.push("tmux_start_command".into());
+        }
+        if params.get("startup_environment").is_some_and(|value| {
+            !value.is_null()
+                && value
+                    .as_object()
+                    .is_none_or(|environment| !environment.is_empty())
+        }) {
+            unsupported.push("startup_environment".into());
+        }
+        if params.contains_key("initial_divider_position") {
+            unsupported.push("initial_divider_position".into());
+        }
+        if !unsupported.is_empty() {
+            return error(
+                snapshot,
+                "invalid_params",
+                &format!("Not supported when targeting a remote tmux mirror workspace (the request is routed to tmux and these options cannot be applied): {}", unsupported.join(", ")),
+                Some(json!({"unsupported":unsupported,"routed_target":"remote-tmux"})),
+            );
+        }
+        let (split_direction, split_orientation) = match orientation {
+            SessionSplitOrientation::Horizontal => (
+                super::RemoteTmuxSplitDirection::Horizontal,
+                SessionSplitOrientation::Horizontal,
+            ),
+            SessionSplitOrientation::Vertical => (
+                super::RemoteTmuxSplitDirection::Vertical,
+                SessionSplitOrientation::Vertical,
+            ),
+        };
         let remote = workspace_value["remote"]["destination"]
             .as_str()
             .unwrap_or("remote")
@@ -3153,8 +3255,11 @@ fn pane_create(
                 window_id: scope.window_id,
                 workspace_id: scope.workspace_id,
                 target_pane_id: None,
-                source_surface_id: None,
-                source_remote_pane_id: None,
+                source_surface_id: Some(source.clone()),
+                source_remote_pane_id,
+                source_pane_id,
+                split_direction: Some(split_direction),
+                split_orientation: Some(split_orientation),
                 kind: "terminal".into(),
                 tmux_operation: "split-window",
                 arrival_policy: "runtime-pane-add",
@@ -3167,7 +3272,7 @@ fn pane_create(
                 working_directory: None,
                 working_directory_source_surface_id: None,
                 observation_source: "tmux-split-window-output",
-                observation_phase: "commit",
+                observation_phase: "after-action-completion",
                 pending_reconciliation: true,
                 observation_failure_policy: "fail-action",
                 commit_failure_policy: "rollback",
@@ -3176,27 +3281,12 @@ fn pane_create(
             }],
         );
     }
-    let kind = match parse_kind(params) {
-        Ok(kind) => kind,
-        Err((code, message, data)) => return error(snapshot, code, message, data),
-    };
+    if remote_tmux && matches!(kind, SessionSurfaceKindSnapshot::Terminal) {
+        return error(snapshot, "internal_error", "Failed to create pane", None);
+    }
     let mut next = snapshot.clone();
     let workspace =
         &mut next.windows[scope.window_index].tab_manager.workspaces[scope.workspace_index];
-    let source = params
-        .get("surface_id")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .or_else(|| workspace.focused_panel_id.clone())
-        .or_else(|| {
-            workspace
-                .layout
-                .as_ref()
-                .and_then(|layout| layout_surface_ids(layout).into_iter().next())
-        });
-    let Some(source) = source else {
-        return error(snapshot, "not_found", "No source surface to split", None);
-    };
     let source_pane_id =
         session_ops::pane_id_containing_surface(workspace, &source).map(str::to_owned);
     let surface_id = Uuid::new_v4().to_string();

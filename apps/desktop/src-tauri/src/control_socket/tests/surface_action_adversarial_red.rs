@@ -919,6 +919,29 @@ fn production_remote_split_observation_is_strict_before_stage_or_rollback() {
 }
 
 #[test]
+fn remote_split_observation_is_deferred_through_the_handler_queue() {
+    let production = include_str!("../../control_socket.rs");
+    let executor_start = production
+        .find("impl pane_surface_lifecycle::LifecycleEffectExecutor")
+        .unwrap();
+    let handler_start = production
+        .find("fn handle_pane_surface_lifecycle_request")
+        .unwrap();
+    let executor = &production[executor_start..handler_start];
+    assert!(executor.contains("deferred_remote_reconciliations.extend"));
+    assert!(
+        !executor.contains("commit_runtime_arrival_for_control(self.app, arrival.clone())"),
+        "split observations must not reconcile inside commit_staged"
+    );
+    let handler = &production[handler_start..];
+    let completion = handler.find("for completion in completion_events").unwrap();
+    let flush = handler
+        .find("executor.flush_deferred_remote_reconciliations(")
+        .unwrap();
+    assert!(flush > completion);
+}
+
+#[test]
 fn remote_pane_create_rejects_missing_explicit_source_before_effects() {
     let snapshot = remote_split_snapshot();
     let missing = remote_pane_create(
@@ -982,6 +1005,80 @@ fn remote_pane_create_rejects_insert_first_and_unsupported_options_before_effect
     );
     assert_eq!(data["unsupported"], json!(["direction=left/up"]));
     assert_eq!(data["routed_target"], "remote-tmux");
+}
+
+#[test]
+fn remote_pane_create_reports_all_unsupported_options_in_canonical_order() {
+    let snapshot = remote_split_snapshot();
+    let transition = remote_pane_create(
+        &snapshot,
+        json!({
+            "surface_id": A,
+            "direction": "left",
+            "working_directory": "/srv/repo",
+            "command": "echo hi",
+            "tmux_start_command": "tmux attach",
+            "startup_environment": {"A":"B"},
+            "initial_divider_position": 0.4
+        }),
+    );
+    let data = assert_error(
+        &transition,
+        "invalid_params",
+        "Not supported when targeting a remote tmux mirror workspace (the request is routed to tmux and these options cannot be applied): direction=left/up, working_directory, initial_command, tmux_start_command, startup_environment, initial_divider_position",
+    );
+    assert_eq!(
+        data["unsupported"],
+        json!([
+            "direction=left/up",
+            "working_directory",
+            "initial_command",
+            "tmux_start_command",
+            "startup_environment",
+            "initial_divider_position"
+        ])
+    );
+
+    for startup_environment in [Value::Null, json!({})] {
+        let accepted = remote_pane_create(
+            &snapshot,
+            json!({
+                "surface_id": A,
+                "direction": "right",
+                "startup_environment": startup_environment
+            }),
+        );
+        assert!(matches!(accepted.result, ControlCallResult::Ok(_)));
+    }
+}
+
+#[test]
+fn mirror_workspace_terminal_split_without_live_remote_source_never_creates_local_panel() {
+    let mut snapshot = remote_split_snapshot();
+    snapshot.windows[0].tab_manager.workspaces[0]
+        .surfaces
+        .as_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|surface| surface.surface_id == A)
+        .unwrap()
+        .kind = SessionSurfaceKindSnapshot::Terminal;
+    let transition = remote_pane_create(
+        &snapshot,
+        json!({"surface_id": A, "direction": "right", "type": "terminal"}),
+    );
+    assert_error(&transition, "internal_error", "Failed to create pane");
+    assert_eq!(transition.snapshot, snapshot);
+    assert!(transition.effects.is_empty());
+}
+
+#[test]
+fn remote_split_source_disappearance_is_typed_for_kill_pane_compensation() {
+    let production = include_str!("../../control_socket.rs");
+    assert!(production.contains("arrival.source_pane_id.as_deref()"));
+    assert!(production.contains("RuntimeArrivalCommitOutcome::SourceMissing"));
+    assert!(production.contains("remote_tmux_kill_command(remote.target"));
+    assert!(production.contains("RemoteTmuxTarget::Pane"));
 }
 
 #[test]

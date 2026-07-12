@@ -571,7 +571,19 @@ fn dock_and_remote_create_require_real_typed_effects_not_counter_payloads() {
         .iter()
         .any(|effect| matches!(effect, LifecycleEffect::RemoteCreate { .. })));
 
-    let remote_snapshot = mark_remote_tmux_workspace(test_snapshot(), 0);
+    let mut remote_snapshot = mark_remote_tmux_workspace(test_snapshot(), 0);
+    let mut lifecycle = SurfaceLifecycleModel::from_app_session_snapshot(&remote_snapshot).unwrap();
+    lifecycle
+        .replace_kind(
+            "surface-1",
+            SessionSurfaceKindSnapshot::RemoteTerminal {
+                remote_session_id: Some("%1".into()),
+                remote_context: None,
+                arrival_generation: Some(1),
+            },
+        )
+        .unwrap();
+    remote_snapshot = lifecycle.to_app_session(&remote_snapshot).unwrap();
     let remote = transition(
         &remote_snapshot,
         "pane.create",
