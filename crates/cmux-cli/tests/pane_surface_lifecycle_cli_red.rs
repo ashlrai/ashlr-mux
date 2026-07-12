@@ -981,6 +981,57 @@ fn explicit_empty_values_and_title_joining_are_frozen_exact() {
     let default_shell =
         std::env::var("ComSpec").unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".into());
     assert_eq!(respawn.params["tmux_start_command"], default_shell);
+
+    let rename_error = control_command_for(
+        "tab-action",
+        &["rename".into(), "--title".into(), "".into()],
+    )
+    .unwrap_err();
+    assert_eq!(
+        rename_error.message,
+        "tab-action rename requires --title <text> (or a trailing title)"
+    );
+    let pin = control_command_for("tab-action", &["pin".into(), "--title".into(), "".into()])
+        .unwrap()
+        .unwrap();
+    assert!(pin.params.get("title").is_none());
+}
+
+#[test]
+fn respawn_window_without_workspace_uses_window_focused_surface() {
+    let (pipe, request_rx) = spawn_method_server(
+        "respawn-window-focus",
+        HashMap::from([
+            (
+                "system.identify".into(),
+                json!({"focused":{"surface_id":SURFACE_ID}}),
+            ),
+            ("surface.respawn".into(), json!({"surface_id":SURFACE_ID})),
+        ]),
+    );
+    let output = executable(
+        Some(&pipe),
+        &[
+            "respawn-pane",
+            "--window",
+            WINDOW_ID,
+            "--command",
+            "echo ok",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let (method, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(method, "system.identify");
+    assert_eq!(Value::Object(params), json!({"window_id":WINDOW_ID}));
+    let (method, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(method, "surface.respawn");
+    assert_eq!(params.get("window_id"), Some(&json!(WINDOW_ID)));
+    assert_eq!(params.get("surface_id"), Some(&json!(SURFACE_ID)));
+    assert!(params.get("workspace_id").is_none());
 }
 
 #[test]
