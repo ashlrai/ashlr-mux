@@ -18104,4 +18104,7 @@ mod tests {
 
     #[path = "surface_action_exhaustive_red.rs"]
     mod surface_action_exhaustive_red;
+
+    #[path = "dock_api_adversarial_red.rs"]
+    mod dock_api_adversarial_red;
 }
