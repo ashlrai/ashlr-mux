@@ -10160,9 +10160,14 @@ fn surface_move_to_new_workspace(
         return invalid_params("Missing or invalid surface selector");
     };
     let state = app.state::<SessionState>();
-    workspace_current(&move_panel_to_new_workspace_for_control(
-        app, &state, &panel_id,
-    ))
+    match move_panel_to_new_workspace_for_control(app, &state, &panel_id) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn surface_open_browser(

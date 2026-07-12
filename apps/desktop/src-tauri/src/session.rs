@@ -5481,19 +5481,10 @@ pub(crate) fn move_panel_to_new_workspace_for_control(
     app: &AppHandle,
     state: &SessionState,
     panel_id: &str,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_move_panel_to_new_workspace(&mut guard, panel_id);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_move_panel_to_new_workspace(snapshot, panel_id)
+    })
 }
 
 pub(crate) fn set_workspace_description_for_control(
@@ -7195,19 +7186,8 @@ pub fn session_move_panel_to_new_workspace(
     app: AppHandle,
     state: State<'_, SessionState>,
     panel_id: String,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_move_panel_to_new_workspace(&mut guard, &panel_id);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    move_panel_to_new_workspace_for_control(&app, &state, &panel_id)
 }
 
 #[tauri::command]
