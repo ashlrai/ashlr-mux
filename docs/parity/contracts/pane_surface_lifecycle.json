@@ -405,7 +405,7 @@
       ],
       "usage": "tab-action --action <name> [--tab] [--surface] [--workspace] [--window] [--title] [--url] [--focus true|false]",
       "precedence": "--action else first positional; action lowercases and replaces hyphens with underscores without trimming or rewriting spaces (frozen e1825d40 behavior); --tab over --surface and tab:N canonicalizes to surface:N; bare numeric workspace/surface selectors are zero-based indexes resolved through list calls; explicit workspace/window suppress inappropriate ambient CMUX_TAB_ID/CMUX_SURFACE_ID; window then workspace then tab normalization; absent workspace resolves workspace.current, while a workspace-only request omits surface for server focused resolution; focus always sent default false.",
-      "errors_output": "Exact parse/unknown flag/rename title/focus/normalizer errors. Calls tab.action. Text: OK action=... optional tab/workspace/closed/full_width_tab_mode/created/created_workspace; JSON and --id-format exact; no deprecation warning.",
+      "errors_output": "Exact parse/unknown flag/rename title/focus/normalizer errors. Calls tab.action. Text: OK action=... optional tab/workspace/closed/full_width_tab_mode/created/created_workspace; JSON and --id-format exact; no deprecation warning. Subcommand --help is byte-for-byte frozen help; bare `help` remains top-level and ignores following arguments.",
       "state_events_persistence": "Pure façade; no shadow state or duplicate event.",
       "windows_gap": "classified/help-classified only; no concrete help, mapping, formatting, process-contract test, or backend route"
     },
@@ -419,7 +419,7 @@
       "usage": "respawn-pane [--workspace] [--surface] [--window] [--command <cmd> | trailing command]",
       "precedence": "Window command/global override; workspace explicit else CMUX_WORKSPACE_ID only without window; surface normalized in window/workspace with focused fallback. --command else trailing tokens after optional --; trim; empty defaults to exec ${SHELL:-/bin/zsh} -l.",
       "wire": "Call surface.respawn with command=/bin/sh -c <single-quoted final command> and tmux_start_command=<unwrapped final command>, plus normalized ids. Windows must use a native shell-wrapper equivalent that preserves command text/quoting semantics.",
-      "output": "Backend errors nonzero; success text OK; JSON formatted payload; exact help documents flags/default focused surface.",
+      "output": "Backend errors nonzero; success text OK; JSON formatted payload; subcommand --help is byte-for-byte frozen help documenting flags/default focused surface. Windows runtime adapts only the POSIX shell launcher to a PowerShell-safe native ComSpec invocation; help wording requires no platform divergence.",
       "state_events_persistence": "Pure façade over respawn; no separate process or session state.",
       "windows_gap": "classified/help-classified only; no concrete help/mapping/normalization/wrapper/output/process-contract test"
     }

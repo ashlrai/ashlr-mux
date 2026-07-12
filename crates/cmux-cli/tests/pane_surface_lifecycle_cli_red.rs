@@ -151,7 +151,7 @@ fn tab_action_parser_maps_action_selectors_title_url_and_focus() {
             "workspace_id": WORKSPACE_ID,
             "window_id": WINDOW_ID,
             "url": "https://example.test/a b",
-            "title": "trailing title",
+            "title": "trailing   title",
             "focus": true,
         })
     );
@@ -613,7 +613,7 @@ fn tab_action_executable_honors_ambient_and_explicit_selector_precedence() {
             "action": "rename",
             "workspace_id": WORKSPACE_ID,
             "surface_id": SURFACE_ID,
-            "title": "build logs",
+            "title": "build  logs",
             "focus": false,
         })
     );
