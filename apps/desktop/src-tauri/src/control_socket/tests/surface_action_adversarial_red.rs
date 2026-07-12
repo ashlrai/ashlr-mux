@@ -1699,3 +1699,63 @@ fn disabled_tmux_fallback_new_terminal_right_still_inherits_source_cwd() {
     assert_eq!(value["startup_cwd"], "/srv/disabled fallback");
     assert_eq!(value["effect_cwd"], "/srv/disabled fallback");
 }
+
+#[test]
+fn enabled_disconnected_or_reconnecting_mirror_new_terminal_never_creates_local_orphan() {
+    let mut actual = Vec::new();
+    for state in ["disconnected", "reconnecting"] {
+        for explicit_source in [true, false] {
+            let mut snapshot = remote_action_snapshot();
+            let workspace = &mut snapshot.windows[0].tab_manager.workspaces[0];
+            let remote = workspace.remote.as_mut().unwrap();
+            remote.enabled = true;
+            remote.connected = false;
+            remote.state = state.into();
+            workspace.focused_panel_id = Some(A.into());
+            let params = if explicit_source {
+                json!({"surface_id": A, "action": "new-terminal-right", "focus": false})
+            } else {
+                json!({"action": "new-terminal-right", "focus": false})
+            };
+            let transition = dispatch(&snapshot, params);
+            let (exact_error, data) = match &transition.result {
+                ControlCallResult::Err {
+                    code,
+                    message,
+                    data,
+                } => (
+                    code == "internal_error" && message == "Failed to create tab",
+                    data.clone().map(Value::from).unwrap_or(Value::Null),
+                ),
+                ControlCallResult::Ok(_) => (false, Value::Null),
+            };
+            actual.push(json!({
+                "state": state,
+                "explicit_source": explicit_source,
+                "exact_error": exact_error,
+                "data": data,
+                "snapshot_unchanged": transition.snapshot == snapshot,
+                "effects": transition.effects.len(),
+                "events": transition.events.len(),
+                "surface_count": transition.snapshot.windows[0].tab_manager.workspaces[0]
+                    .surfaces.as_ref().unwrap().len(),
+            }));
+        }
+    }
+    let expected_surface_count = remote_action_snapshot().windows[0].tab_manager.workspaces[0]
+        .surfaces
+        .as_ref()
+        .unwrap()
+        .len();
+    assert!(
+        actual.iter().all(|row| {
+            row["exact_error"] == true
+                && row["data"].is_null()
+                && row["snapshot_unchanged"] == true
+                && row["effects"] == 0
+                && row["events"] == 0
+                && row["surface_count"] == expected_surface_count
+        }),
+        "{actual:#?}"
+    );
+}
