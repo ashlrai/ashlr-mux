@@ -182,17 +182,23 @@ fn route_launch_arguments(app: &tauri::AppHandle, args: &[String], cwd: &Path) {
     }
     for directory in cmux_core::launch_arguments::launch_open_directories(args, cwd) {
         let directory = directory.to_string_lossy().into_owned();
-        session::new_workspace_for_control(
+        match session::new_workspace_for_control(
             app,
             app.state::<session::SessionState>().inner(),
             Some(&directory),
             None,
             None,
             None,
-        );
-        if let Some(window) = app.get_webview_window("main") {
-            let _ = window.show();
-            let _ = window.set_focus();
+        ) {
+            Ok(_) => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+            Err(error) => {
+                eprintln!("[launch] failed to open workspace for {directory:?}: {error}");
+            }
         }
     }
 }
@@ -234,14 +240,16 @@ fn open_claude_code_integration_installer(app: &tauri::AppHandle) {
     } else {
         Some(environment)
     };
-    let _snapshot = session::session_new_workspace(
+    if let Err(error) = session::session_new_workspace(
         app.clone(),
         app.state::<session::SessionState>(),
         None,
         Some(command),
         None,
         environment,
-    );
+    ) {
+        eprintln!("[integration] failed to open Claude Code installer: {error}");
+    }
 }
 
 fn claude_code_integration_installer_command(cli_path: Option<&Path>) -> String {

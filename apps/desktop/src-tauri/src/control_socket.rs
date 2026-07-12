@@ -5196,7 +5196,7 @@ fn workspace_create(app: &AppHandle, params: &serde_json::Map<String, Value>) ->
         )
     });
     let state = app.state::<SessionState>();
-    let Some((result, created_index)) = new_workspace_in_window_for_control(
+    let (result, created_index) = match new_workspace_in_window_for_control(
         app,
         &state,
         window_index,
@@ -5217,12 +5217,22 @@ fn workspace_create(app: &AppHandle, params: &serde_json::Map<String, Value>) ->
         layout,
         group_insert_index,
         false,
-    ) else {
-        return ControlCallResult::Err {
-            code: "internal_error".to_string(),
-            message: "Failed to create workspace".to_string(),
-            data: None,
-        };
+    ) {
+        Ok(Some(created)) => created,
+        Ok(None) => {
+            return ControlCallResult::Err {
+                code: "internal".to_string(),
+                message: "Failed to create workspace".to_string(),
+                data: None,
+            };
+        }
+        Err(message) => {
+            return ControlCallResult::Err {
+                code: "internal".to_string(),
+                message,
+                data: None,
+            };
+        }
     };
     let window = &result.windows[window_index];
     let workspace = &window.tab_manager.workspaces[created_index];
@@ -6127,12 +6137,22 @@ fn workspace_close(app: &AppHandle, params: &serde_json::Map<String, Value>) -> 
 
 fn workspace_reopen_closed(app: &AppHandle) -> ControlCallResult {
     let state = app.state::<SessionState>();
-    let Some(snapshot) = reopen_closed_workspace_for_control(app, &state) else {
-        return ControlCallResult::Err {
-            code: "not_found".to_string(),
-            message: "No recently closed workspace".to_string(),
-            data: None,
-        };
+    let snapshot = match reopen_closed_workspace_for_control(app, &state) {
+        Ok(Some(snapshot)) => snapshot,
+        Ok(None) => {
+            return ControlCallResult::Err {
+                code: "not_found".to_string(),
+                message: "No recently closed workspace".to_string(),
+                data: None,
+            };
+        }
+        Err(message) => {
+            return ControlCallResult::Err {
+                code: "internal".to_string(),
+                message,
+                data: None,
+            };
+        }
     };
     workspace_current(&snapshot)
 }

@@ -4837,6 +4837,59 @@ pub(crate) fn equalize_dividers_for_control(
     state.transact_snapshot_always(app, apply_equalize_dividers)
 }
 
+#[derive(Debug)]
+struct DeferredPanelIds {
+    base: u64,
+    used: u64,
+}
+
+impl DeferredPanelIds {
+    fn new(counter: &AtomicU64) -> Self {
+        Self {
+            base: counter.load(Ordering::Relaxed),
+            used: 0,
+        }
+    }
+
+    fn next(&mut self) -> String {
+        let panel_id = format!("surface-{}", self.base + self.used);
+        self.used += 1;
+        panel_id
+    }
+
+    fn commit(self, counter: &AtomicU64) {
+        counter.fetch_add(self.used, Ordering::Relaxed);
+    }
+}
+
+fn transact_new_workspace(
+    authority: &GatedSnapshot,
+    next_panel: &AtomicU64,
+    publication: &mut impl SnapshotPublicationOperations,
+    current_directory: Option<&str>,
+    initial_terminal_command: Option<&str>,
+    initial_terminal_input: Option<&str>,
+    initial_terminal_environment: Option<BTreeMap<String, String>>,
+) -> Result<AppSessionSnapshot, String> {
+    let _transaction_guard = authority.lock_gate();
+    let current = transaction_current_snapshot(authority)?;
+    let mut ids = DeferredPanelIds::new(next_panel);
+    let new_panel_id = ids.next();
+    let mut candidate = current.clone();
+    apply_new_workspace(
+        &mut candidate,
+        &new_panel_id,
+        current_directory,
+        initial_terminal_command,
+        initial_terminal_input,
+        initial_terminal_environment,
+    );
+    let committed =
+        publish_snapshot_transaction(authority, Some(&current), &candidate, publication)?;
+    ids.commit(next_panel);
+    Ok(committed)
+}
+
 pub(crate) fn new_workspace_for_control(
     app: &AppHandle,
     state: &SessionState,
@@ -4844,35 +4897,25 @@ pub(crate) fn new_workspace_for_control(
     initial_terminal_command: Option<&str>,
     initial_terminal_input: Option<&str>,
     initial_terminal_environment: Option<BTreeMap<String, String>>,
-) -> AppSessionSnapshot {
-    let _allocation_guard = state.snapshot.lock_gate();
-    let new_panel_id = format!(
-        "surface-{}",
-        state.next_panel.fetch_add(1, Ordering::Relaxed)
-    );
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        apply_new_workspace(
-            &mut guard,
-            &new_panel_id,
-            current_directory,
-            initial_terminal_command,
-            initial_terminal_input,
-            initial_terminal_environment,
-        );
-        guard.clone()
-    };
-    notify_session_changed(app, &snapshot);
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let mut publication =
+        ProductionSnapshotPublicationOperations::with_deferred_next_panel_reseed(app, state);
+    transact_new_workspace(
+        &state.snapshot,
+        &state.next_panel,
+        &mut publication,
+        current_directory,
+        initial_terminal_command,
+        initial_terminal_input,
+        initial_terminal_environment,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn new_workspace_in_window_for_control(
-    app: &AppHandle,
-    state: &SessionState,
+fn transact_new_workspace_in_window(
+    authority: &GatedSnapshot,
+    next_panel: &AtomicU64,
+    publication: &mut impl SnapshotPublicationOperations,
     window_index: usize,
     current_directory: Option<&str>,
     initial_terminal_command: Option<&str>,
@@ -4884,18 +4927,21 @@ pub(crate) fn new_workspace_in_window_for_control(
     layout: Option<CmuxLayoutNode>,
     group_insert_index: Option<usize>,
     focus: bool,
-) -> Option<(AppSessionSnapshot, usize)> {
-    let _allocation_guard = state.snapshot.lock_gate();
-    let new_panel_id = format!(
-        "surface-{}",
-        state.next_panel.fetch_add(1, Ordering::Relaxed)
-    );
-    let (snapshot, created_index) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let tabs = &mut guard.windows.get_mut(window_index)?.tab_manager;
+) -> Result<Option<(AppSessionSnapshot, usize)>, String> {
+    let _transaction_guard = authority.lock_gate();
+    let current = transaction_current_snapshot(authority)?;
+    if current.windows.get(window_index).is_none() {
+        return Ok(None);
+    }
+    let mut ids = DeferredPanelIds::new(next_panel);
+    let new_panel_id = ids.next();
+    let mut candidate = current.clone();
+    let created_index = {
+        let tabs = &mut candidate
+            .windows
+            .get_mut(window_index)
+            .expect("validated window")
+            .tab_manager;
         let previous_selected_id = tabs
             .selected_workspace_index
             .and_then(|index| usize::try_from(index).ok())
@@ -4903,7 +4949,11 @@ pub(crate) fn new_workspace_in_window_for_control(
             .and_then(|workspace| workspace.workspace_id.clone());
         let previous_selected_index = tabs.selected_workspace_index;
         session_ops::new_workspace(tabs, &new_panel_id);
-        let mut created_index = usize::try_from(tabs.selected_workspace_index?).ok()?;
+        let mut created_index = usize::try_from(
+            tabs.selected_workspace_index
+                .expect("new workspace is selected"),
+        )
+        .expect("selected workspace index is non-negative");
         if let Some(insert_index) = group_insert_index {
             let workspace = tabs.workspaces.remove(created_index);
             let insert_index = insert_index.min(tabs.workspaces.len());
@@ -4911,13 +4961,17 @@ pub(crate) fn new_workspace_in_window_for_control(
             created_index = insert_index;
             tabs.selected_workspace_index = Some(created_index as i64);
         }
-        let workspace = tabs.workspaces.get_mut(created_index)?;
+        let workspace = tabs
+            .workspaces
+            .get_mut(created_index)
+            .expect("selected workspace exists");
         if let Some(current_directory) = current_directory {
             workspace.current_directory = Some(current_directory.to_owned());
         }
         workspace.initial_terminal_command = initial_terminal_command.map(str::to_owned);
+        let initial_terminal_environment = initial_terminal_environment.unwrap_or_default();
         let mut effective_environment = workspace_environment.clone().unwrap_or_default();
-        effective_environment.extend(initial_terminal_environment.unwrap_or_default());
+        effective_environment.extend(initial_terminal_environment.clone());
         workspace.initial_terminal_environment =
             (!effective_environment.is_empty()).then_some(effective_environment);
         workspace.custom_title = title.map(str::to_owned);
@@ -4928,9 +4982,13 @@ pub(crate) fn new_workspace_in_window_for_control(
             workspace_environment.filter(|environment| !environment.is_empty());
         if let Some(layout) = layout {
             let (layout, focused_panel_id, mut terminal_startups) =
-                session_layout_from_cmux(layout, &state.next_panel)?;
+                match session_layout_from_cmux(layout, &mut ids) {
+                    Some(layout) => layout,
+                    None => return Ok(None),
+                };
             for startup in &mut terminal_startups {
                 let mut environment = workspace.workspace_environment.clone().unwrap_or_default();
+                environment.extend(initial_terminal_environment.clone());
                 environment.extend(
                     startup
                         .initial_terminal_environment
@@ -4958,12 +5016,50 @@ pub(crate) fn new_workspace_in_window_for_control(
                 .map(|index| index as i64)
                 .or(previous_selected_index);
         }
-        ensure_workspace_ids(&mut guard);
-        ensure_pane_ids(&mut guard);
-        (guard.clone(), created_index)
+        created_index
     };
-    notify_session_changed(app, &snapshot);
-    Some((snapshot, created_index))
+    ensure_workspace_ids(&mut candidate);
+    ensure_pane_ids(&mut candidate);
+    let committed =
+        publish_snapshot_transaction(authority, Some(&current), &candidate, publication)?;
+    ids.commit(next_panel);
+    Ok(Some((committed, created_index)))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn new_workspace_in_window_for_control(
+    app: &AppHandle,
+    state: &SessionState,
+    window_index: usize,
+    current_directory: Option<&str>,
+    initial_terminal_command: Option<&str>,
+    initial_terminal_environment: Option<BTreeMap<String, String>>,
+    title: Option<&str>,
+    description: Option<&str>,
+    workspace_environment: Option<BTreeMap<String, String>>,
+    group_id: Option<&str>,
+    layout: Option<CmuxLayoutNode>,
+    group_insert_index: Option<usize>,
+    focus: bool,
+) -> Result<Option<(AppSessionSnapshot, usize)>, String> {
+    let mut publication =
+        ProductionSnapshotPublicationOperations::with_deferred_next_panel_reseed(app, state);
+    transact_new_workspace_in_window(
+        &state.snapshot,
+        &state.next_panel,
+        &mut publication,
+        window_index,
+        current_directory,
+        initial_terminal_command,
+        initial_terminal_environment,
+        title,
+        description,
+        workspace_environment,
+        group_id,
+        layout,
+        group_insert_index,
+        focus,
+    )
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -5024,32 +5120,36 @@ fn apply_reopen_closed_workspace(
     true
 }
 
+fn transact_reopen_closed_workspace(
+    authority: &GatedSnapshot,
+    history: &Mutex<Vec<ClosedWorkspaceSnapshot>>,
+    publication: &mut impl SnapshotPublicationOperations,
+) -> Result<Option<AppSessionSnapshot>, String> {
+    let _transaction_guard = authority.lock_gate();
+    let mut history = history
+        .lock()
+        .expect("closed workspace history mutex poisoned");
+    let current = transaction_current_snapshot(authority)?;
+    let Some(closed) = history.last().cloned() else {
+        return Ok(None);
+    };
+    let mut candidate = current.clone();
+    if !apply_reopen_closed_workspace(&mut candidate, closed) {
+        return Ok(None);
+    }
+    let committed =
+        publish_snapshot_transaction(authority, Some(&current), &candidate, publication)?;
+    history.pop();
+    Ok(Some(committed))
+}
+
 pub(crate) fn reopen_closed_workspace_for_control(
     app: &AppHandle,
     state: &SessionState,
-) -> Option<AppSessionSnapshot> {
-    let closed = state
-        .closed_workspaces
-        .lock()
-        .expect("closed workspace history mutex poisoned")
-        .pop()?;
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        if !apply_reopen_closed_workspace(&mut guard, closed.clone()) {
-            state
-                .closed_workspaces
-                .lock()
-                .expect("closed workspace history mutex poisoned")
-                .push(closed);
-            return None;
-        }
-        guard.clone()
-    };
-    notify_session_changed(app, &snapshot);
-    Some(snapshot)
+) -> Result<Option<AppSessionSnapshot>, String> {
+    let mut publication =
+        ProductionSnapshotPublicationOperations::new(app, state, DerivedEventPolicy::Record);
+    transact_reopen_closed_workspace(&state.snapshot, &state.closed_workspaces, &mut publication)
 }
 
 fn remote_workspace_rename_intent(
@@ -5094,7 +5194,7 @@ fn remote_workspace_rename_request(
 
 fn session_layout_from_cmux(
     node: CmuxLayoutNode,
-    next_panel: &AtomicU64,
+    ids: &mut DeferredPanelIds,
 ) -> Option<(
     SessionWorkspaceLayoutSnapshot,
     Option<String>,
@@ -5102,7 +5202,7 @@ fn session_layout_from_cmux(
 )> {
     fn build(
         node: CmuxLayoutNode,
-        next_panel: &AtomicU64,
+        ids: &mut DeferredPanelIds,
         focused: &mut Option<String>,
         startups: &mut Vec<SessionPanelTerminalStartupSnapshot>,
     ) -> Option<SessionWorkspaceLayoutSnapshot> {
@@ -5116,8 +5216,7 @@ fn session_layout_from_cmux(
                 let mut selected_kind = None;
                 let mut selected_url = None;
                 for surface in pane.surfaces {
-                    let panel_id =
-                        format!("surface-{}", next_panel.fetch_add(1, Ordering::Relaxed));
+                    let panel_id = ids.next();
                     let is_terminal = surface.surface_type == CmuxSurfaceType::Terminal;
                     if selected_panel_id.is_none() || surface.focus == Some(true) {
                         selected_panel_id = Some(panel_id.clone());
@@ -5159,8 +5258,8 @@ fn session_layout_from_cmux(
             }
             CmuxLayoutNode::Split(split) => {
                 let mut children = split.children.into_iter();
-                let first = build(children.next()?, next_panel, focused, startups)?;
-                let second = build(children.next()?, next_panel, focused, startups)?;
+                let first = build(children.next()?, ids, focused, startups)?;
+                let second = build(children.next()?, ids, focused, startups)?;
                 if children.next().is_some() {
                     return None;
                 }
@@ -5182,7 +5281,7 @@ fn session_layout_from_cmux(
 
     let mut focused = None;
     let mut startups = Vec::new();
-    let layout = build(node, next_panel, &mut focused, &mut startups)?;
+    let layout = build(node, ids, &mut focused, &mut startups)?;
     Some((layout, focused, startups))
 }
 
@@ -6850,30 +6949,52 @@ fn select_workspace_by_id(
     })
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum OpenSshUrlControlError {
+    NotFound(String),
+    Publication(String),
+}
+
+impl std::fmt::Display for OpenSshUrlControlError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound(message) | Self::Publication(message) => formatter.write_str(message),
+        }
+    }
+}
+
 fn open_ssh_url_request(
     app: &AppHandle,
-    state: &State<'_, SessionState>,
+    state: &SessionState,
     request: &cmux_ssh::CmuxSSHURLRequest,
-) -> Result<(bool, AppSessionSnapshot, String), String> {
-    let _allocation_guard = state.snapshot.lock_gate();
-    let new_panel_id = format!(
-        "surface-{}",
-        state.next_panel.fetch_add(1, Ordering::Relaxed)
-    );
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let anchor_panel_id = active_panel_id(&guard)
-            .ok_or_else(|| "no active terminal pane is available for SSH URL".to_string())?;
-        if !apply_ssh_url_request(&mut guard, &anchor_panel_id, &new_panel_id, request) {
-            return Err(format!("no pane holds panel id {anchor_panel_id}"));
-        }
-        (true, guard.clone())
-    };
-    notify_session_changed(app, &snapshot);
-    Ok((changed, snapshot, new_panel_id))
+) -> Result<(bool, AppSessionSnapshot, String), OpenSshUrlControlError> {
+    let _transact_guard = state.snapshot.lock_gate();
+    let current = transaction_current_snapshot(&state.snapshot)
+        .map_err(OpenSshUrlControlError::Publication)?;
+    let anchor_panel_id = active_panel_id(&current).ok_or_else(|| {
+        OpenSshUrlControlError::NotFound(
+            "no active terminal pane is available for SSH URL".to_string(),
+        )
+    })?;
+    let mut ids = DeferredPanelIds::new(&state.next_panel);
+    let new_panel_id = ids.next();
+    let mut candidate = current.clone();
+    if !apply_ssh_url_request(&mut candidate, &anchor_panel_id, &new_panel_id, request) {
+        return Err(OpenSshUrlControlError::NotFound(format!(
+            "no pane holds panel id {anchor_panel_id}"
+        )));
+    }
+    let mut publication =
+        ProductionSnapshotPublicationOperations::with_deferred_next_panel_reseed(app, state);
+    let snapshot = publish_snapshot_transaction(
+        &state.snapshot,
+        Some(&current),
+        &candidate,
+        &mut publication,
+    )
+    .map_err(OpenSshUrlControlError::Publication)?;
+    ids.commit(&state.next_panel);
+    Ok((true, snapshot, new_panel_id))
 }
 
 fn parse_ssh_uri(uri: &str) -> Result<cmux_ssh::CmuxSSHURLRequest, String> {
@@ -7141,29 +7262,15 @@ pub fn session_new_workspace(
     initial_terminal_command: Option<String>,
     initial_terminal_input: Option<String>,
     initial_terminal_environment: Option<BTreeMap<String, String>>,
-) -> AppSessionSnapshot {
-    let _allocation_guard = state.snapshot.lock_gate();
-    let new_panel_id = format!(
-        "surface-{}",
-        state.next_panel.fetch_add(1, Ordering::Relaxed)
-    );
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        apply_new_workspace(
-            &mut guard,
-            &new_panel_id,
-            current_directory.as_deref(),
-            initial_terminal_command.as_deref(),
-            initial_terminal_input.as_deref(),
-            initial_terminal_environment,
-        );
-        guard.clone()
-    };
-    notify_session_changed(&app, &snapshot);
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    new_workspace_for_control(
+        &app,
+        &state,
+        current_directory.as_deref(),
+        initial_terminal_command.as_deref(),
+        initial_terminal_input.as_deref(),
+        initial_terminal_environment,
+    )
 }
 
 /// Create a new browser workspace, select it, and bind its initial URL.
@@ -7194,7 +7301,7 @@ pub fn session_reopen_closed_workspace(
     app: AppHandle,
     state: State<'_, SessionState>,
 ) -> Result<AppSessionSnapshot, String> {
-    reopen_closed_workspace_for_control(&app, &state)
+    reopen_closed_workspace_for_control(&app, &state)?
         .ok_or_else(|| "No recently closed workspace".to_string())
 }
 
@@ -7250,7 +7357,8 @@ pub fn session_handle_ssh_uri(
     uri: String,
 ) -> Result<SessionSshUriHandleReply, String> {
     let request = parse_ssh_uri(&uri)?;
-    let (changed, _snapshot, panel_id) = open_ssh_url_request(&app, &state, &request)?;
+    let (changed, _snapshot, panel_id) =
+        open_ssh_url_request(&app, &state, &request).map_err(|error| error.to_string())?;
     Ok(SessionSshUriHandleReply {
         handled: true,
         changed,
@@ -9130,12 +9238,15 @@ mod tests {
         }))
         .unwrap();
         let next = AtomicU64::new(10);
+        let mut ids = DeferredPanelIds::new(&next);
 
         let (layout, focused, startups) =
-            session_layout_from_cmux(layout, &next).expect("valid canonical layout");
+            session_layout_from_cmux(layout, &mut ids).expect("valid canonical layout");
 
         assert!(matches!(layout, SessionWorkspaceLayoutSnapshot::Split(_)));
         assert_eq!(focused.as_deref(), Some("surface-11"));
+        assert_eq!(next.load(Ordering::Relaxed), 10);
+        assert_eq!(ids.used, 2);
         assert_eq!(startups.len(), 1);
         assert_eq!(
             startups[0].initial_terminal_command.as_deref(),
