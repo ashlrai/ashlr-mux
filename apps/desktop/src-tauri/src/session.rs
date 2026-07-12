@@ -121,6 +121,10 @@ mod browser_view_state_red;
 #[path = "session/pure_typed_writers_red.rs"]
 mod pure_typed_writers_red;
 
+#[cfg(test)]
+#[path = "session/diff_durable_publication_red.rs"]
+mod diff_durable_publication_red;
+
 impl Default for SessionState {
     fn default() -> Self {
         let snapshot = initial_snapshot(FIRST_PANEL_ID);

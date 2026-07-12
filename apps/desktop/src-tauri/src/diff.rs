@@ -560,3 +560,7 @@ mod tests {
         assert_eq!(state.pending_count(Some(&workspace_id)), 0);
     }
 }
+
+#[cfg(test)]
+#[path = "diff/unregister_starter_red.rs"]
+mod unregister_starter_red;
