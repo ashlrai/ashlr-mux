@@ -654,3 +654,143 @@ fn browser_disabled_completion_uses_null_result_owners() {
     assert_eq!(completion.pane_id, None);
     assert_eq!(completion.surface_id, None);
 }
+
+#[test]
+fn production_remote_tmux_commands_cross_ssh_as_one_safe_shell_command() {
+    let focused = remote_tmux_create_argv(&RemoteTmuxCreateSpec {
+        operation: "new-window",
+        focus: true,
+        source_target: Some("@7"),
+        working_directory: Some("/srv/repo with spaces/it's-here"),
+    })
+    .unwrap();
+    assert_eq!(
+        focused,
+        vec![
+            "tmux new-window -a -t @7 -c '/srv/repo with spaces/it'\"'\"'s-here' \
+             -P -F '#{window_id}\t#{pane_id}'"
+                .replace("\n", "")
+        ],
+        "ssh joins multiple argv entries into an unquoted remote shell command"
+    );
+}
+
+#[test]
+fn production_remote_split_format_crosses_ssh_as_one_safe_shell_command() {
+    let split = remote_tmux_create_argv(&RemoteTmuxCreateSpec {
+        operation: "split-window",
+        focus: true,
+        source_target: None,
+        working_directory: None,
+    })
+    .unwrap();
+    assert_eq!(
+        split,
+        vec!["tmux split-window -d -P -F '#{pane_id}'"],
+        "split output format must also survive the remote shell"
+    );
+}
+
+#[test]
+fn production_remote_tmux_command_rejects_line_breaks_and_controls() {
+    let unsafe_results = [
+        "/srv/repo\rbreak",
+        "/srv/repo\nbreak",
+        "/srv/repo\u{0007}break",
+    ]
+    .map(|unsafe_directory| {
+        remote_tmux_create_argv(&RemoteTmuxCreateSpec {
+            operation: "new-window",
+            focus: false,
+            source_target: Some("@7"),
+            working_directory: Some(unsafe_directory),
+        })
+        .is_err()
+    });
+    assert_eq!(unsafe_results, [true, true, true]);
+}
+
+#[test]
+fn production_remote_source_lookup_uses_the_safe_command_builder() {
+    let production = include_str!("../../control_socket.rs");
+    assert!(
+        production.contains("remote_tmux_source_window_command("),
+        "source-window lookup needs the same safe single-command builder seam"
+    );
+    assert!(
+        !production.contains("pane_token,\n                                \"#{window_id}\""),
+        "raw tmux formats must never be passed as ssh argv"
+    );
+}
+
+#[test]
+fn deferred_remote_arrival_is_flushed_only_after_action_completion_publication() {
+    let production = include_str!("../../control_socket.rs");
+    let executor_start = production
+        .find("impl pane_surface_lifecycle::LifecycleEffectExecutor")
+        .unwrap();
+    let handler_start = production
+        .find("fn handle_pane_surface_lifecycle_request")
+        .unwrap();
+    let executor = &production[executor_start..handler_start];
+    assert!(
+        !executor.contains("schedule_remote_window_reconciliation("),
+        "commit_staged may enqueue identity, but must not spawn reconciliation"
+    );
+
+    let handler_end = production[handler_start..]
+        .find("\nfn commit_runtime_arrival_for_control")
+        .map(|offset| handler_start + offset)
+        .unwrap();
+    let handler = &production[handler_start..handler_end];
+    let completion_publication = handler
+        .rfind("for completion in completion_events")
+        .expect("handler must publish action completion events");
+    let deferred_flush = handler
+        .find("executor.flush_deferred_remote_reconciliations(")
+        .expect("handler needs an explicit deferred reconciliation queue seam");
+    assert!(
+        deferred_flush > completion_publication,
+        "deferred surface.created must be impossible before surface.action completion"
+    );
+}
+
+#[test]
+fn production_arrival_commit_has_typed_noop_and_compensation_outcomes() {
+    let production = include_str!("../../control_socket.rs");
+    let missing = [
+        "enum RuntimeArrivalCommitOutcome",
+        "Committed",
+        "DuplicateOrStale",
+        "SourceMissing",
+        "Result<RuntimeArrivalCommitOutcome, String>",
+    ]
+    .into_iter()
+    .filter(|contract| !production.contains(contract))
+    .collect::<Vec<_>>();
+    assert!(missing.is_empty(), "missing typed contracts: {missing:?}");
+}
+
+#[test]
+fn production_arrival_scheduler_only_compensates_source_loss_or_final_failure() {
+    let production = include_str!("../../control_socket.rs");
+    let scheduler_start = production
+        .find("fn schedule_remote_window_reconciliation")
+        .unwrap();
+    let scheduler_end = production[scheduler_start..]
+        .find("\nfn should_focus_window_after_remote_arrival")
+        .map(|offset| scheduler_start + offset)
+        .unwrap();
+    let scheduler = &production[scheduler_start..scheduler_end];
+    assert!(scheduler.contains("RuntimeArrivalCommitOutcome::Committed"));
+    assert!(scheduler.contains("RuntimeArrivalCommitOutcome::DuplicateOrStale"));
+    assert!(scheduler.contains("RuntimeArrivalCommitOutcome::SourceMissing"));
+    assert!(
+        scheduler.contains("DuplicateOrStale => return"),
+        "duplicate/stale callbacks are successful idempotent no-ops"
+    );
+    assert!(
+        scheduler.contains("SourceMissing") && scheduler.contains("CompensateKillWindow"),
+        "only source loss or exhausted commit failure may compensate kill-window"
+    );
+}
