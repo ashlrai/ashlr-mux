@@ -1645,7 +1645,9 @@ fn push_lifecycle_id_alias_field(
     let Some(mut handle) = format_id_pair(id, reference, id_format) else {
         return;
     };
-    handle = handle.replacen("surface:", "tab:", 1);
+    if matches!(label, "tab" | "created") {
+        handle = handle.replacen("surface:", "tab:", 1);
+    }
     fields.push(format!("{label}={handle}"));
 }
 
@@ -1657,17 +1659,14 @@ fn push_lifecycle_id_field(
     ref_key: &str,
     id_format: &str,
 ) {
-    let Some(mut handle) = format_id_pair(
-        result.get(id_key).and_then(serde_json::Value::as_str),
-        result.get(ref_key).and_then(serde_json::Value::as_str),
+    push_lifecycle_id_alias_field(
+        fields,
+        result,
+        label,
+        [id_key, id_key],
+        [ref_key, ref_key],
         id_format,
-    ) else {
-        return;
-    };
-    if matches!(label, "tab" | "created") {
-        handle = handle.replacen("surface:", "tab:", 1);
-    }
-    fields.push(format!("{label}={handle}"));
+    );
 }
 
 fn format_workspace_entries(result: &serde_json::Value) -> String {
