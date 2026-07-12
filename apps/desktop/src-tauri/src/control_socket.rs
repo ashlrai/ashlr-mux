@@ -76,8 +76,8 @@ use crate::session::{
     toggle_browser_developer_tools_for_control, toggle_browser_focus_mode_for_control,
     toggle_browser_omnibar_for_control, toggle_split_zoom_for_control, PaneFocusControlError,
     PaneLastControlError, PaneResizeControlError, PaneResizeControlIntent,
-    ReorderWorkspacesManyControlError, SessionState, WorkspaceLastControlError,
-    WorkspaceRemoteControlConfig, WorkspaceRenameResolution,
+    ReorderWorkspacesManyControlError, SessionState, TerminalPanelCreateError,
+    WorkspaceLastControlError, WorkspaceRemoteControlConfig, WorkspaceRenameResolution,
 };
 use crate::terminal::{
     scan_listening_ports_for_root_pid, scan_panel_listening_ports, terminal_clear_history_panel,
@@ -7473,8 +7473,13 @@ fn surface_split(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Co
         initial_terminal_environment,
     ) {
         Ok(snapshot) => surface_list_from_params(&snapshot, params),
-        Err(message) => ControlCallResult::Err {
+        Err(TerminalPanelCreateError::NotFound(message)) => ControlCallResult::Err {
             code: "not_found".to_string(),
+            message,
+            data: None,
+        },
+        Err(TerminalPanelCreateError::Publication(message)) => ControlCallResult::Err {
+            code: "internal".to_string(),
             message,
             data: None,
         },
@@ -7501,8 +7506,13 @@ fn surface_new_terminal_tab(
         initial_terminal_environment,
     ) {
         Ok(snapshot) => surface_list_from_params(&snapshot, params),
-        Err(message) => ControlCallResult::Err {
+        Err(TerminalPanelCreateError::NotFound(message)) => ControlCallResult::Err {
             code: "not_found".to_string(),
+            message,
+            data: None,
+        },
+        Err(TerminalPanelCreateError::Publication(message)) => ControlCallResult::Err {
+            code: "internal".to_string(),
             message,
             data: None,
         },

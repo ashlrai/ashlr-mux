@@ -145,18 +145,12 @@ impl SessionState {
         app: &AppHandle,
         mutation: impl FnOnce(&mut AppSessionSnapshot) -> Result<R, String>,
     ) -> Result<(R, AppSessionSnapshot), String> {
-        let _control_guard = self.lock_control_mutation()?;
-        let expected = self.snapshot_for_lifecycle()?;
-        let mut next = expected.clone();
-        let result = mutation(&mut next)?;
         let mut operations = ProductionSnapshotPublicationOperations {
             app,
             state: self,
             derived_events: DerivedEventPolicy::Record,
         };
-        let committed =
-            publish_snapshot_transaction(&self.snapshot, Some(&expected), &next, &mut operations)?;
-        Ok((result, committed))
+        transact_lifecycle_snapshot(&self.snapshot, &mut operations, mutation)
     }
 
     pub(crate) fn transact_snapshot_if_changed(
@@ -212,6 +206,23 @@ fn publish_snapshot_transaction(
     operations.update_event_baseline(&committed);
     operations.emit(&committed)?;
     Ok(committed)
+}
+
+fn transact_lifecycle_snapshot<R>(
+    authority: &GatedSnapshot,
+    operations: &mut impl SnapshotPublicationOperations,
+    mutation: impl FnOnce(&mut AppSessionSnapshot) -> Result<R, String>,
+) -> Result<(R, AppSessionSnapshot), String> {
+    let _transaction_gate = authority.lock_gate();
+    let current = authority
+        .lock()
+        .map_err(|_| "Session state is unavailable".to_string())?
+        .clone();
+    let mut candidate = current.clone();
+    let result = mutation(&mut candidate)?;
+    let committed =
+        publish_snapshot_transaction(authority, Some(&current), &candidate, operations)?;
+    Ok((result, committed))
 }
 
 fn transact_snapshot_if_changed(
@@ -4927,6 +4938,20 @@ pub(crate) fn rename_workspace_in_window_for_control(
     Ok(Some((snapshot, resolution)))
 }
 
+#[derive(Debug)]
+pub(crate) enum TerminalPanelCreateError {
+    NotFound(String),
+    Publication(String),
+}
+
+impl std::fmt::Display for TerminalPanelCreateError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound(message) | Self::Publication(message) => formatter.write_str(message),
+        }
+    }
+}
+
 pub(crate) fn split_panel_for_control(
     app: &AppHandle,
     state: &SessionState,
@@ -4936,18 +4961,33 @@ pub(crate) fn split_panel_for_control(
     initial_terminal_command: Option<&str>,
     initial_terminal_input: Option<&str>,
     initial_terminal_environment: Option<BTreeMap<String, String>>,
-) -> Result<AppSessionSnapshot, String> {
+) -> Result<AppSessionSnapshot, TerminalPanelCreateError> {
+    let control_mutation = state.lock_control_mutation();
+    let _control_guard = control_mutation.map_err(TerminalPanelCreateError::Publication)?;
+    let mut validation = state
+        .snapshot_for_lifecycle()
+        .map_err(TerminalPanelCreateError::Publication)?;
+    if !apply_split_with_terminal_startup(
+        &mut validation,
+        panel_id,
+        orientation.clone(),
+        "surface-validation",
+        insert_first,
+        initial_terminal_command,
+        initial_terminal_input,
+        initial_terminal_environment.clone(),
+    ) {
+        return Err(TerminalPanelCreateError::NotFound(format!(
+            "no pane holds panel id {panel_id}"
+        )));
+    }
     let new_panel_id = format!(
         "surface-{}",
         state.next_panel.fetch_add(1, Ordering::Relaxed)
     );
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
+    let transaction = state.transact_lifecycle(app, |snapshot| {
         if !apply_split_with_terminal_startup(
-            &mut guard,
+            snapshot,
             panel_id,
             orientation,
             &new_panel_id,
@@ -4956,12 +4996,15 @@ pub(crate) fn split_panel_for_control(
             initial_terminal_input,
             initial_terminal_environment,
         ) {
-            return Err(format!("no pane holds panel id {panel_id}"));
+            return Err(format!(
+                "validated pane disappeared for panel id {panel_id}"
+            ));
         }
-        guard.clone()
-    };
-    notify_session_changed(app, &snapshot);
-    Ok(snapshot)
+        Ok(())
+    });
+    transaction
+        .map(|(_, snapshot)| snapshot)
+        .map_err(TerminalPanelCreateError::Publication)
 }
 
 pub(crate) fn split_off_surface_for_control(
@@ -5264,30 +5307,46 @@ pub(crate) fn new_terminal_tab_for_control(
     initial_terminal_command: Option<&str>,
     initial_terminal_input: Option<&str>,
     initial_terminal_environment: Option<BTreeMap<String, String>>,
-) -> Result<AppSessionSnapshot, String> {
+) -> Result<AppSessionSnapshot, TerminalPanelCreateError> {
+    let control_mutation = state.lock_control_mutation();
+    let _control_guard = control_mutation.map_err(TerminalPanelCreateError::Publication)?;
+    let mut validation = state
+        .snapshot_for_lifecycle()
+        .map_err(TerminalPanelCreateError::Publication)?;
+    if !apply_new_terminal_tab(
+        &mut validation,
+        panel_id,
+        "surface-validation",
+        initial_terminal_command,
+        initial_terminal_input,
+        initial_terminal_environment.clone(),
+    ) {
+        return Err(TerminalPanelCreateError::NotFound(format!(
+            "no pane holds panel id {panel_id}"
+        )));
+    }
     let new_panel_id = format!(
         "surface-{}",
         state.next_panel.fetch_add(1, Ordering::Relaxed)
     );
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
+    let transaction = state.transact_lifecycle(app, |snapshot| {
         if !apply_new_terminal_tab(
-            &mut guard,
+            snapshot,
             panel_id,
             &new_panel_id,
             initial_terminal_command,
             initial_terminal_input,
             initial_terminal_environment,
         ) {
-            return Err(format!("no pane holds panel id {panel_id}"));
+            return Err(format!(
+                "validated pane disappeared for panel id {panel_id}"
+            ));
         }
-        guard.clone()
-    };
-    notify_session_changed(app, &snapshot);
-    Ok(snapshot)
+        Ok(())
+    });
+    transaction
+        .map(|(_, snapshot)| snapshot)
+        .map_err(TerminalPanelCreateError::Publication)
 }
 
 pub(crate) fn split_browser_for_control(
@@ -6318,31 +6377,17 @@ pub fn session_split(
     initial_terminal_input: Option<String>,
     initial_terminal_environment: Option<BTreeMap<String, String>>,
 ) -> Result<AppSessionSnapshot, String> {
-    let new_panel_id = format!(
-        "surface-{}",
-        state.next_panel.fetch_add(1, Ordering::Relaxed)
-    );
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        if !apply_split_with_terminal_startup(
-            &mut guard,
-            &panel_id,
-            orientation,
-            &new_panel_id,
-            insert_first.unwrap_or(false),
-            initial_terminal_command.as_deref(),
-            initial_terminal_input.as_deref(),
-            initial_terminal_environment,
-        ) {
-            return Err(format!("no pane holds panel id {panel_id}"));
-        }
-        guard.clone()
-    };
-    notify_session_changed(&app, &snapshot);
-    Ok(snapshot)
+    split_panel_for_control(
+        &app,
+        &state,
+        &panel_id,
+        orientation,
+        insert_first.unwrap_or(false),
+        initial_terminal_command.as_deref(),
+        initial_terminal_input.as_deref(),
+        initial_terminal_environment,
+    )
+    .map_err(|error| error.to_string())
 }
 
 /// Add a new terminal tab beside `panel_id` in the same pane.
@@ -6355,29 +6400,15 @@ pub fn session_new_terminal_tab(
     initial_terminal_input: Option<String>,
     initial_terminal_environment: Option<BTreeMap<String, String>>,
 ) -> Result<AppSessionSnapshot, String> {
-    let new_panel_id = format!(
-        "surface-{}",
-        state.next_panel.fetch_add(1, Ordering::Relaxed)
-    );
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        if !apply_new_terminal_tab(
-            &mut guard,
-            &panel_id,
-            &new_panel_id,
-            initial_terminal_command.as_deref(),
-            initial_terminal_input.as_deref(),
-            initial_terminal_environment,
-        ) {
-            return Err(format!("no pane holds panel id {panel_id}"));
-        }
-        guard.clone()
-    };
-    notify_session_changed(&app, &snapshot);
-    Ok(snapshot)
+    new_terminal_tab_for_control(
+        &app,
+        &state,
+        &panel_id,
+        initial_terminal_command.as_deref(),
+        initial_terminal_input.as_deref(),
+        initial_terminal_environment,
+    )
+    .map_err(|error| error.to_string())
 }
 
 /// Split the pane holding `panel_id`, making the new pane a browser surface.
