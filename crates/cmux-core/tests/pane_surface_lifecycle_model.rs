@@ -547,3 +547,154 @@ fn close_move_and_respawn_project_back_into_the_real_session_schema() {
     assert!(workspace.get("panel_unreads").is_none());
     assert!(workspace.get("panel_terminal_startups").is_none());
 }
+
+#[test]
+fn browser_and_nonterminal_kind_state_round_trips_losslessly() {
+    let input = serde_json::json!({
+        "selected_workspace_index": 0,
+        "workspaces": [{
+            "workspace_id": "workspace-1", "process_title": "mixed",
+            "layout": {"type":"pane","pane":{"pane_id":"pane-1","panel_ids":["browser","markdown","file","diff","remote","agent"],"selected_panel_id":"browser"}},
+            "surfaces": [
+                {"surface_id":"browser","pane_id":"pane-1","generation":1,"kind":{"type":"browser","url":"https://now.test","proxy_url":"socks5://127.0.0.1:9","back_history":["https://back.test"],"forward_history":["https://forward.test"],"omnibar_visible":false,"focus_mode_active":true,"developer_tools_visible":true,"developer_tools_panel":"console","page_zoom_millis":1250},"metadata":{}},
+                {"surface_id":"markdown","pane_id":"pane-1","generation":1,"kind":{"type":"markdown","path":"README.md"},"metadata":{}},
+                {"surface_id":"file","pane_id":"pane-1","generation":1,"kind":{"type":"file","path":"src/main.rs"},"metadata":{}},
+                {"surface_id":"diff","pane_id":"pane-1","generation":1,"kind":{"type":"diff","token":"diff-7","request_path":"/changes"},"metadata":{}},
+                {"surface_id":"remote","pane_id":"pane-1","generation":1,"kind":{"type":"remote_terminal","remote_session_id":"pty-9","remote_context":"ssh://box","arrival_generation":4},"metadata":{}},
+                {"surface_id":"agent","pane_id":"pane-1","generation":1,"kind":{"type":"agent_session","provider":"codex","renderer":"react","working_directory":"C:/repo","session_id":"agent-42","lifecycle":"running"},"metadata":{}}
+            ]
+        }]
+    });
+    let tabs: SessionTabManagerSnapshot = serde_json::from_value(input.clone()).unwrap();
+    let model = SurfaceLifecycleModel::from_session_snapshot("window-1", &tabs).unwrap();
+    let output = serde_json::to_value(model.to_session_snapshot(&tabs).unwrap()).unwrap();
+    assert_eq!(
+        output["workspaces"][0]["surfaces"],
+        input["workspaces"][0]["surfaces"]
+    );
+}
+
+#[test]
+fn legacy_pane_identity_is_materialized_before_projection() {
+    let legacy: SessionTabManagerSnapshot = serde_json::from_value(serde_json::json!({
+        "workspaces":[{"workspace_id":"workspace-1","process_title":"shell","layout":{"type":"pane","pane":{"panel_ids":["surface-1"],"selected_panel_id":"surface-1"}}}]
+    })).unwrap();
+    let model = SurfaceLifecycleModel::from_session_snapshot("window-1", &legacy).unwrap();
+    let projected = serde_json::to_value(model.to_session_snapshot(&legacy).unwrap()).unwrap();
+    assert_eq!(projected["workspaces"][0]["layout"]["type"], "pane");
+    assert_eq!(
+        projected["workspaces"][0]["layout"]["pane"]["pane_id"],
+        "surface-1"
+    );
+    assert_eq!(
+        projected["workspaces"][0]["layout"]["pane"]["panel_ids"],
+        serde_json::json!(["surface-1"])
+    );
+}
+
+#[test]
+fn malformed_authoritative_snapshots_are_rejected_not_silently_reconciled() {
+    for surfaces in [
+        serde_json::json!([
+            {"surface_id":"dup","pane_id":"pane-1","generation":1,"kind":{"type":"terminal"},"metadata":{}},
+            {"surface_id":"dup","pane_id":"pane-1","generation":2,"kind":{"type":"terminal"},"metadata":{}}
+        ]),
+        serde_json::json!([
+            {"surface_id":"surface-1","pane_id":"missing-pane","generation":1,"kind":{"type":"terminal"},"metadata":{}}
+        ]),
+    ] {
+        let tabs: SessionTabManagerSnapshot = serde_json::from_value(serde_json::json!({
+            "workspaces":[{"workspace_id":"workspace-1","process_title":"bad","layout":{"type":"pane","pane":{"pane_id":"pane-1","panel_ids":["surface-1"],"selected_panel_id":"surface-1"}},"surfaces":surfaces}]
+        })).unwrap();
+        assert!(SurfaceLifecycleModel::from_session_snapshot("window-1", &tabs).is_err());
+    }
+
+    let stale: SessionTabManagerSnapshot = serde_json::from_value(serde_json::json!({
+        "workspaces":[{"workspace_id":"workspace-1","process_title":"bad","focused_panel_id":"ghost","layout":{"type":"pane","pane":{"pane_id":"pane-1","panel_ids":["surface-1"],"selected_panel_id":"ghost"}},"surfaces":[{"surface_id":"surface-1","pane_id":"pane-1","generation":1,"kind":{"type":"terminal"},"metadata":{}}]}]
+    })).unwrap();
+    assert!(SurfaceLifecycleModel::from_session_snapshot("window-1", &stale).is_err());
+}
+
+#[test]
+fn one_runtime_handle_cannot_attach_to_two_live_surfaces() {
+    let mut model = SurfaceLifecycleModel::new();
+    model.add_pane(pane("pane-1", "workspace-1")).unwrap();
+    let a = model
+        .reserve_surface(surface("a", "pane-1", SurfaceKind::Terminal))
+        .unwrap();
+    let b = model
+        .reserve_surface(surface("b", "pane-1", SurfaceKind::Terminal))
+        .unwrap();
+    assert_eq!(
+        model.attach_runtime("a", a.generation, RuntimeHandle::new("runtime")),
+        AttachOutcome::Attached
+    );
+    assert_eq!(
+        model.attach_runtime("b", b.generation, RuntimeHandle::new("runtime")),
+        AttachOutcome::StaleCleaned
+    );
+    assert_eq!(model.owner_of_runtime("runtime").unwrap().surface_id, "a");
+    assert_eq!(model.surface("b").unwrap().runtime, None);
+    assert!(model.validate_indexes().is_ok());
+}
+
+#[test]
+fn moves_preserve_same_pane_selection_and_rehome_source_workspace_focus() {
+    let mut model = SurfaceLifecycleModel::new();
+    model.add_pane(pane("pane-a", "workspace-a")).unwrap();
+    model.add_pane(pane("pane-b", "workspace-b")).unwrap();
+    for (id, pane_id) in [("a1", "pane-a"), ("a2", "pane-a"), ("b1", "pane-b")] {
+        model
+            .reserve_surface(surface(id, pane_id, SurfaceKind::Terminal))
+            .unwrap();
+    }
+    model.select_in_pane("a2").unwrap();
+    model.focus_surface("a2").unwrap();
+    model.move_surface("a2", "pane-a", 0).unwrap();
+    assert_eq!(model.pane("pane-a").unwrap().selected_surface_id, "a2");
+    model.move_surface("a2", "pane-b", 1).unwrap();
+    assert_eq!(model.focused_surface("workspace-a"), Some("a1"));
+    assert!(model.surface("a1").unwrap().is_workspace_focused);
+    assert!(!model.surface("a2").unwrap().is_workspace_focused);
+}
+
+#[test]
+fn pending_remote_pwd_is_persisted_moved_applied_once_and_cleaned_on_close_or_respawn() {
+    let mut model = SurfaceLifecycleModel::new();
+    model.add_pane(pane("pane-a", "workspace-a")).unwrap();
+    model.add_pane(pane("pane-b", "workspace-b")).unwrap();
+    model
+        .queue_remote_pwd("workspace-a", Some("remote-1"), "/srv/a")
+        .unwrap();
+    let base: SessionTabManagerSnapshot = serde_json::from_value(serde_json::json!({
+        "workspaces":[
+            {"workspace_id":"workspace-a","process_title":"a","layout":{"type":"pane","pane":{"pane_id":"pane-a","panel_ids":[]}}},
+            {"workspace_id":"workspace-b","process_title":"b","layout":{"type":"pane","pane":{"pane_id":"pane-b","panel_ids":[]}}}
+        ]
+    })).unwrap();
+    let persisted = model.to_session_snapshot(&base).unwrap();
+    let mut restored =
+        SurfaceLifecycleModel::from_session_snapshot("window-1", &persisted).unwrap();
+    assert!(restored.has_pending_remote_pwd("workspace-a", "remote-1"));
+    let token = restored
+        .reserve_remote_arrival("surface-1", "pane-a", "remote-1")
+        .unwrap();
+    restored.move_surface("surface-1", "pane-b", 0).unwrap();
+    assert!(restored.has_pending_remote_pwd("workspace-b", "remote-1"));
+    restored.reconcile_remote_arrival("surface-1", token.generation);
+    assert_eq!(
+        restored
+            .surface("surface-1")
+            .unwrap()
+            .metadata
+            .directory_apply_count,
+        1
+    );
+    restored.begin_respawn("surface-1", "pwsh", None).unwrap();
+    assert!(!restored.has_pending_remote_pwd("workspace-b", "remote-1"));
+    restored
+        .queue_remote_pwd("workspace-b", Some("remote-1"), "/srv/b")
+        .unwrap();
+    restored.close_surface("surface-1").unwrap();
+    assert!(!restored.has_pending_remote_pwd("workspace-b", "remote-1"));
+}
