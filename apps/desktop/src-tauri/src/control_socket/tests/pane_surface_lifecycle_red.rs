@@ -1082,6 +1082,18 @@ fn dock_api_create_returns_owner_and_dock_scoped_identities_and_commits_runtime_
             .effects
             .iter()
             .any(|effect| matches!(effect, LifecycleEffect::ActivateWindow { .. })));
+        assert!(!transition
+            .effects
+            .iter()
+            .any(|effect| matches!(effect, LifecycleEffect::DockReveal { .. })));
+        assert_eq!(
+            transition
+                .effects
+                .iter()
+                .filter(|effect| matches!(effect, LifecycleEffect::DockChanged { .. }))
+                .count(),
+            1
+        );
 
         let model = SurfaceLifecycleModel::from_app_session(&transition.snapshot).unwrap();
         let record = model
@@ -1200,6 +1212,105 @@ fn dock_api_validation_precedes_browser_fallback_and_rejects_non_dock_kinds() {
             json!({"type":"markdown"})
         );
     }
+}
+
+#[test]
+fn dock_api_combined_invalid_inputs_follow_frozen_validation_and_owner_precedence() {
+    let invalid_provider = main_transition(
+        &main_window_snapshot(),
+        "surface.create",
+        json!({"placement":"dock","type":"agentSession","provider":"invalid"}),
+        false,
+        false,
+    );
+    assert_error(
+        &invalid_provider,
+        "invalid_params",
+        "Invalid provider (codex|claude|opencode)",
+    );
+
+    let unsupported_before_disabled = main_transition(
+        &main_window_snapshot(),
+        "surface.create",
+        json!({"placement":"dock","type":"markdown"}),
+        false,
+        false,
+    );
+    assert_error(
+        &unsupported_before_disabled,
+        "invalid_params",
+        "Dock placement supports only terminal and browser surfaces",
+    );
+
+    let direction_before_placement = main_transition(
+        &main_window_snapshot(),
+        "pane.create",
+        json!({"placement":"invalid","direction":"diagonal"}),
+        true,
+        true,
+    );
+    assert_error(
+        &direction_before_placement,
+        "invalid_params",
+        "Missing or invalid direction (left|right|up|down)",
+    );
+    let divider_before_placement = main_transition(
+        &main_window_snapshot(),
+        "pane.create",
+        json!({"placement":"invalid","direction":"right","initial_divider_position":"wide"}),
+        true,
+        true,
+    );
+    assert_error(
+        &divider_before_placement,
+        "invalid_params",
+        "initial_divider_position must be numeric",
+    );
+
+    let invalid_url = main_transition(
+        &main_window_snapshot(),
+        "surface.create",
+        json!({"placement":"dock","type":"browser","url":"http://["}),
+        true,
+        false,
+    );
+    assert_eq!(
+        assert_error(&invalid_url, "invalid_params", "Invalid URL"),
+        json!({"url":"http://["})
+    );
+
+    let mut snapshot = two_window_snapshot();
+    snapshot.windows[0].window_id = Some("main".into());
+    let created = DockStore
+        .create(
+            &mut snapshot,
+            "main",
+            DockCreateRequest {
+                focus: true,
+                ..DockCreateRequest::default()
+            },
+        )
+        .unwrap();
+    let conflict = main_transition(
+        &snapshot,
+        "surface.create",
+        json!({"placement":"dock","window_id":"window-2","pane_id":created.pane_id.to_string()}),
+        true,
+        true,
+    );
+    assert_error(
+        &conflict,
+        "invalid_params",
+        "Conflicting Dock routing selectors",
+    );
+    let unresolved = main_transition(
+        &snapshot,
+        "surface.create",
+        json!({"placement":"dock","window_id":"missing-window"}),
+        true,
+        true,
+    );
+    assert_error(&unresolved, "unavailable", "TabManager not available");
 }
 
 #[test]
@@ -1338,6 +1449,18 @@ fn dock_api_read_focus_and_close_route_through_the_main_owner() {
             .surface_id,
         second.surface_id
     );
+    assert!(focused.effects.iter().any(|effect| matches!(
+        effect,
+        LifecycleEffect::DockReveal { owner_id } if owner_id == "main"
+    )));
+    assert_eq!(
+        focused
+            .effects
+            .iter()
+            .filter(|effect| matches!(effect, LifecycleEffect::DockChanged { .. }))
+            .count(),
+        1
+    );
 
     let closed = main_transition(
         &focused.snapshot,
@@ -1354,6 +1477,14 @@ fn dock_api_read_focus_and_close_route_through_the_main_owner() {
         .list(&closed.snapshot, "main")
         .iter()
         .all(|surface| surface.surface_id != second.surface_id));
+    assert_eq!(
+        closed
+            .effects
+            .iter()
+            .filter(|effect| matches!(effect, LifecycleEffect::DockChanged { .. }))
+            .count(),
+        1
+    );
     let closed_event = closed
         .events
         .iter()

@@ -1531,6 +1531,7 @@ fn migrate_workspace_legacy(
                 kind = match kind {
                     SurfaceKind::Browser { url, .. } => SurfaceKind::Browser {
                         url,
+                        profile: None,
                         proxy_url: legacy.browser_proxy_url.clone(),
                         back_history: legacy.browser_back_history.clone(),
                         forward_history: legacy.browser_forward_history.clone(),
@@ -1609,6 +1610,7 @@ fn kind_from_legacy(kind: &str, browser_url: Option<String>) -> SurfaceKind {
     match kind {
         "browser" => SurfaceKind::Browser {
             url: browser_url,
+            profile: None,
             proxy_url: None,
             back_history: None,
             forward_history: None,

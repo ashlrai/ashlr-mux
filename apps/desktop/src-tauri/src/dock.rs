@@ -27,7 +27,9 @@ pub(crate) enum DockSurfaceKind {
 pub(crate) enum DockPlacement {
     #[default]
     Tab,
+    SplitLeft,
     SplitRight,
+    SplitUp,
     SplitDown,
 }
 
@@ -203,7 +205,10 @@ impl DockStore {
                 .or_else(|| focused_pane_id(&before, owner_id))
                 .or_else(|| first_pane_id(session, owner_id))
                 .unwrap_or_else(Uuid::new_v4),
-            DockPlacement::SplitRight | DockPlacement::SplitDown => Uuid::new_v4(),
+            DockPlacement::SplitLeft
+            | DockPlacement::SplitRight
+            | DockPlacement::SplitUp
+            | DockPlacement::SplitDown => Uuid::new_v4(),
         };
         if before.pane(&pane_id.to_string()).is_none() {
             add_dock_pane(
@@ -223,6 +228,7 @@ impl DockStore {
             DockSurfaceKind::Terminal => SessionSurfaceKindSnapshot::Terminal,
             DockSurfaceKind::Browser => SessionSurfaceKindSnapshot::Browser {
                 url: Some(request.url.clone().unwrap_or_else(|| "about:blank".into())),
+                profile: request.browser_profile,
                 proxy_url: None,
                 back_history: None,
                 forward_history: None,
@@ -259,11 +265,7 @@ impl DockStore {
                 )
                 .map_err(|error| error.to_string())?;
         }
-        if request.focus
-            || lifecycle
-                .focused_surface(&dock_workspace_id(owner_id))
-                .is_none()
-        {
+        if request.focus {
             lifecycle
                 .focus_surface(&surface_id.to_string())
                 .map_err(|error| error.to_string())?;
@@ -476,17 +478,22 @@ fn add_dock_pane(
         return Err("Dock pane not found".into());
     }
     let source = source_pane.ok_or_else(|| "Dock source pane not found".to_string())?;
-    let orientation = if placement == DockPlacement::SplitRight {
+    let orientation = if matches!(
+        placement,
+        DockPlacement::SplitLeft | DockPlacement::SplitRight
+    ) {
         SessionSplitOrientation::Horizontal
     } else {
         SessionSplitOrientation::Vertical
     };
+    let insert_first = matches!(placement, DockPlacement::SplitLeft | DockPlacement::SplitUp);
     dock.layout = Some(split_at(
         layout,
         source,
         new_pane,
         orientation,
         divider.unwrap_or(0.5).clamp(0.1, 0.9),
+        insert_first,
     )?);
     Ok(())
 }
@@ -497,18 +504,24 @@ fn split_at(
     new_pane: SessionWorkspaceLayoutSnapshot,
     orientation: SessionSplitOrientation,
     divider: f64,
+    insert_first: bool,
 ) -> Result<SessionWorkspaceLayoutSnapshot, String> {
     match layout {
         SessionWorkspaceLayoutSnapshot::Pane(pane)
             if pane.pane_id.as_deref() == Some(&source.to_string()) =>
         {
+            let (first, second) = if insert_first {
+                (new_pane, SessionWorkspaceLayoutSnapshot::Pane(pane))
+            } else {
+                (SessionWorkspaceLayoutSnapshot::Pane(pane), new_pane)
+            };
             Ok(SessionWorkspaceLayoutSnapshot::Split(
                 SessionSplitLayoutSnapshot {
                     split_id: Some(Uuid::new_v4().to_string()),
                     orientation,
                     divider_position: divider,
-                    first: Box::new(SessionWorkspaceLayoutSnapshot::Pane(pane)),
-                    second: Box::new(new_pane),
+                    first: Box::new(first),
+                    second: Box::new(second),
                 },
             ))
         }
@@ -521,6 +534,7 @@ fn split_at(
                     new_pane,
                     orientation,
                     divider,
+                    insert_first,
                 )?);
             } else {
                 split.second = Box::new(split_at(
@@ -529,6 +543,7 @@ fn split_at(
                     new_pane,
                     orientation,
                     divider,
+                    insert_first,
                 )?);
             }
             Ok(SessionWorkspaceLayoutSnapshot::Split(split))
@@ -670,15 +685,27 @@ fn collect_layout(
             });
         }
         SessionWorkspaceLayoutSnapshot::Split(split) => {
-            collect_layout(&split.first, placement, divider, lifecycle, panes, surfaces);
-            let placement = if split.orientation == SessionSplitOrientation::Horizontal {
+            let first_placement = if split.orientation == SessionSplitOrientation::Horizontal {
+                "split_left"
+            } else {
+                "split_up"
+            };
+            collect_layout(
+                &split.first,
+                first_placement,
+                Some(split.divider_position),
+                lifecycle,
+                panes,
+                surfaces,
+            );
+            let second_placement = if split.orientation == SessionSplitOrientation::Horizontal {
                 "split_right"
             } else {
                 "split_down"
             };
             collect_layout(
                 &split.second,
-                placement,
+                second_placement,
                 Some(split.divider_position),
                 lifecycle,
                 panes,
@@ -699,11 +726,11 @@ fn surface_snapshot(lifecycle: &SurfaceLifecycleModel, id: &str) -> Option<DockS
             _ => "Terminal".into(),
         });
     let (kind, runtime) = match &record.kind {
-        SessionSurfaceKindSnapshot::Browser { url, .. } => (
+        SessionSurfaceKindSnapshot::Browser { url, profile, .. } => (
             DockSurfaceKind::Browser,
             DockRuntimeIntent::Browser {
                 url: url.clone().unwrap_or_else(|| "about:blank".into()),
-                profile: None,
+                profile: profile.clone(),
             },
         ),
         _ => (
@@ -929,6 +956,78 @@ mod tests {
             first.surface_id
         );
         assert_eq!(store.list(&session, &owner).len(), 2);
+    }
+
+    #[test]
+    fn all_split_directions_preserve_insertion_side_and_orientation() {
+        for (placement, expected) in [
+            (DockPlacement::SplitLeft, "split_left"),
+            (DockPlacement::SplitRight, "split_right"),
+            (DockPlacement::SplitUp, "split_up"),
+            (DockPlacement::SplitDown, "split_down"),
+        ] {
+            let (mut session, owner) = app();
+            let source = DockStore
+                .create(&mut session, &owner, terminal("source"))
+                .unwrap();
+            let created = DockStore
+                .create(
+                    &mut session,
+                    &owner,
+                    DockCreateRequest {
+                        placement,
+                        source_surface_id: Some(source.surface_id),
+                        focus: false,
+                        ..terminal("split")
+                    },
+                )
+                .unwrap();
+            let snapshot = DockStore.snapshot(&session, &owner);
+            assert_eq!(snapshot.pane(created.pane_id).unwrap().placement, expected);
+        }
+    }
+
+    #[test]
+    fn unfocused_create_stays_unfocused_and_browser_profile_round_trips() {
+        let (mut session, owner) = app();
+        let terminal = DockStore
+            .create(
+                &mut session,
+                &owner,
+                DockCreateRequest {
+                    focus: false,
+                    ..terminal("quiet")
+                },
+            )
+            .unwrap();
+        assert!(DockStore.current(&session, &owner).is_none());
+        let browser = DockStore
+            .create(
+                &mut session,
+                &owner,
+                DockCreateRequest {
+                    kind: DockSurfaceKind::Browser,
+                    pane_id: Some(terminal.pane_id),
+                    url: Some("https://profile.test".into()),
+                    browser_profile: Some("isolated".into()),
+                    focus: false,
+                    ..DockCreateRequest::default()
+                },
+            )
+            .unwrap();
+        let restored = decode_session(&encode_session(&session).unwrap()).unwrap();
+        assert_eq!(
+            DockStore
+                .snapshot(&restored, &owner)
+                .surface(browser.surface_id)
+                .unwrap()
+                .runtime,
+            DockRuntimeIntent::Browser {
+                url: "https://profile.test".into(),
+                profile: Some("isolated".into()),
+            }
+        );
+        assert!(DockStore.current(&restored, &owner).is_none());
     }
 
     #[test]

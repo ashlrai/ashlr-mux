@@ -66,6 +66,19 @@ impl Default for RightSidebarState {
 }
 
 impl RightSidebarState {
+    pub(crate) fn reveal_dock_for_control(&self) -> Result<Option<RightSidebarChanged>, String> {
+        let before = self.snapshot();
+        match self.apply_control("set", Some("dock"), true)? {
+            RightSidebarControlOutcome::Changed(_change)
+                if before.visible && before.mode == "dock" =>
+            {
+                Ok(None)
+            }
+            RightSidebarControlOutcome::Changed(change) => Ok(Some(change)),
+            RightSidebarControlOutcome::State(_) => Ok(None),
+        }
+    }
+
     pub fn update_from_ui(
         &self,
         visible: bool,
@@ -305,6 +318,28 @@ mod tests {
                 mode: "find".to_string(),
                 focus: true,
             })
+        );
+    }
+
+    #[test]
+    fn dock_reveal_helper_selects_and_focuses_the_enabled_dock_mode() {
+        let state = RightSidebarState::default();
+        state.set_beta_settings(false, true);
+        assert_eq!(
+            state.reveal_dock_for_control().unwrap(),
+            Some(RightSidebarChanged {
+                visible: true,
+                mode: "dock".to_string(),
+                focus: true,
+            })
+        );
+        assert_eq!(state.reveal_dock_for_control().unwrap(), None);
+        assert_eq!(
+            state.snapshot(),
+            RightSidebarSnapshot {
+                visible: true,
+                mode: "dock".to_string(),
+            }
         );
     }
 

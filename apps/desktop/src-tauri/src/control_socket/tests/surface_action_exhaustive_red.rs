@@ -74,6 +74,7 @@ fn action_snapshot() -> AppSessionSnapshot {
             BROWSER,
             SessionSurfaceKindSnapshot::Browser {
                 url: Some("https://example.test/docs".into()),
+                profile: None,
                 proxy_url: None,
                 back_history: None,
                 forward_history: None,

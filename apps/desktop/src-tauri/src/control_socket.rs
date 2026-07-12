@@ -31,6 +31,7 @@ use crate::browser::{
     browser_webview_command_for_control, BrowserNetworkRequestsQuery, BrowserWebviewState,
 };
 use crate::diff::DiffState;
+use crate::dock::DockRuntimeIntent;
 use crate::session::{
     append_workspace_sidebar_log_for_control, break_pane_for_control, browser_go_back_for_control,
     browser_go_forward_for_control, clear_browser_history_for_control,
@@ -1562,14 +1563,48 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
         &mut self,
         effect: &pane_surface_lifecycle::LifecycleEffect,
     ) -> Result<(), Self::Error> {
-        if matches!(
-            effect,
-            pane_surface_lifecycle::LifecycleEffect::DockCreate { .. }
-        ) {
-            return Err("Dock unavailable".to_string());
-        }
         let terminal_state = self.app.state::<TerminalState>();
         match effect {
+            pane_surface_lifecycle::LifecycleEffect::DockCreate {
+                dock_surface_id,
+                intent,
+                ..
+            } => match intent {
+                DockRuntimeIntent::Terminal {
+                    working_directory,
+                    command,
+                    environment,
+                    tmux_start_command,
+                } => {
+                    let startup = command.as_deref().or(tmux_start_command.as_deref());
+                    let id = terminal_open_for_control(
+                        self.app,
+                        terminal_state.inner(),
+                        Some(dock_surface_id),
+                        working_directory.as_deref(),
+                        startup,
+                        None,
+                        (!environment.is_empty()).then_some(environment.clone()),
+                        None,
+                        None,
+                    )?;
+                    self.staged_terminals
+                        .push((dock_surface_id.clone(), id, false));
+                }
+                DockRuntimeIntent::Browser { url, .. } => {
+                    let state = self.app.state::<BrowserWebviewState>();
+                    browser_attach_webview_for_control(
+                        self.app,
+                        state.inner(),
+                        dock_surface_id,
+                        Some(url),
+                        None,
+                        false,
+                    )?;
+                    self.staged_browsers
+                        .push((dock_surface_id.clone(), Some(url.clone())));
+                }
+            },
             pane_surface_lifecycle::LifecycleEffect::TerminalCreate {
                 surface_id,
                 command,
@@ -1715,7 +1750,28 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
                 | pane_surface_lifecycle::LifecycleEffect::ExternalBrowserOpen { .. }
                 | pane_surface_lifecycle::LifecycleEffect::UiSurfaceAttach { .. } => {}
                 pane_surface_lifecycle::LifecycleEffect::RemoteCreate { .. } => {}
-                pane_surface_lifecycle::LifecycleEffect::DockCreate { .. } => unreachable!(),
+                pane_surface_lifecycle::LifecycleEffect::DockCreate { .. } => {}
+                pane_surface_lifecycle::LifecycleEffect::DockReveal { owner_id } => {
+                    let change = self
+                        .app
+                        .state::<crate::right_sidebar::RightSidebarState>()
+                        .reveal_dock_for_control();
+                    if let Ok(Some(change)) = change {
+                        let _ = self
+                            .app
+                            .emit(crate::right_sidebar::RIGHT_SIDEBAR_CHANGED_EVENT, change);
+                    }
+                    if let Some(window) = self.app.get_webview_window(owner_id) {
+                        let _ = window.set_focus();
+                    }
+                }
+                pane_surface_lifecycle::LifecycleEffect::DockChanged { owner_id } => {
+                    let snapshot = self
+                        .app
+                        .state::<crate::dock::DockStore>()
+                        .snapshot(candidate, owner_id);
+                    let _ = self.app.emit(crate::dock::DOCK_CHANGED_EVENT, snapshot);
+                }
                 pane_surface_lifecycle::LifecycleEffect::PersistSession => {}
             }
         }
@@ -1773,7 +1829,9 @@ fn handle_pane_surface_lifecycle_request(
         &pane_surface_lifecycle::LifecycleDispatchContext {
             viewport_size,
             browser_enabled: app.try_state::<BrowserWebviewState>().is_some(),
-            dock_available: false,
+            dock_available: app
+                .try_state::<crate::right_sidebar::RightSidebarState>()
+                .is_some_and(|state| state.beta_settings().dock_enabled),
             active_window_id,
         },
     );

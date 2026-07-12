@@ -223,7 +223,7 @@ pub fn terminal_open(
     initial_input: Option<String>,
     environment: Option<BTreeMap<String, String>>,
 ) -> Result<u32, String> {
-    terminal_open_for_control(
+    terminal_open_with_policy(
         &app,
         state.inner(),
         panel_id.as_deref(),
@@ -233,6 +233,7 @@ pub fn terminal_open(
         environment,
         cols,
         rows,
+        true,
     )
 }
 
@@ -247,6 +248,59 @@ pub(crate) fn terminal_open_for_control(
     cols: Option<u16>,
     rows: Option<u16>,
 ) -> Result<u32, String> {
+    terminal_open_with_policy(
+        app,
+        state,
+        panel_id,
+        cwd,
+        initial_command,
+        initial_input,
+        environment,
+        cols,
+        rows,
+        false,
+    )
+}
+
+fn reusable_panel_session_id<'a>(
+    mut sessions: impl Iterator<Item = (u32, Option<&'a str>)>,
+    panel_id: Option<&str>,
+    reuse_existing: bool,
+) -> Option<u32> {
+    let panel_id = reuse_existing.then_some(panel_id).flatten()?;
+    sessions.find_map(|(id, candidate)| (candidate == Some(panel_id)).then_some(id))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn terminal_open_with_policy(
+    app: &AppHandle,
+    state: &TerminalState,
+    panel_id: Option<&str>,
+    cwd: Option<&str>,
+    initial_command: Option<&str>,
+    initial_input: Option<&str>,
+    environment: Option<BTreeMap<String, String>>,
+    cols: Option<u16>,
+    rows: Option<u16>,
+    reuse_existing: bool,
+) -> Result<u32, String> {
+    let panel_id = panel_id.and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    });
+    let mut sessions = state
+        .sessions
+        .lock()
+        .expect("terminal sessions mutex poisoned");
+    if let Some(existing) = reusable_panel_session_id(
+        sessions
+            .iter()
+            .map(|(id, session)| (*id, session.panel_id.as_deref())),
+        panel_id.as_deref(),
+        reuse_existing,
+    ) {
+        return Ok(existing);
+    }
     let size = ConPtySize::new(cols.unwrap_or(80).max(1), rows.unwrap_or(24).max(1));
     let command = default_shell_command(cwd, initial_command, environment);
 
@@ -264,11 +318,6 @@ pub(crate) fn terminal_open_for_control(
 
     let id = state.next_id.fetch_add(1, Ordering::Relaxed);
     let root_pid = pty.process_id();
-    let panel_id = panel_id.and_then(|value| {
-        let trimmed = value.trim();
-        (!trimmed.is_empty()).then(|| trimmed.to_string())
-    });
-
     let grid = Arc::new(Mutex::new(TerminalGrid::new(GridSize::new(
         size.cols as usize,
         size.rows as usize,
@@ -281,20 +330,16 @@ pub(crate) fn terminal_open_for_control(
         .spawn(move || pump_reader(pump_app, id, pump_panel_id, pump_grid, reader))
         .map_err(|e| e.to_string())?;
 
-    state
-        .sessions
-        .lock()
-        .expect("terminal sessions mutex poisoned")
-        .insert(
-            id,
-            TerminalSession {
-                pty,
-                writer,
-                grid,
-                panel_id,
-                root_pid,
-            },
-        );
+    sessions.insert(
+        id,
+        TerminalSession {
+            pty,
+            writer,
+            grid,
+            panel_id,
+            root_pid,
+        },
+    );
 
     Ok(id)
 }
@@ -1012,10 +1057,26 @@ mod tests {
 
     use super::{
         base64_encode, default_shell_command, descendant_pid_set, ports_for_pid_set,
-        tcp_port_from_owner_pid_row, terminal_runtime_snapshot_from_processes, terminal_text,
-        ProcessSnapshotEntry, TerminalTitleParser,
+        reusable_panel_session_id, tcp_port_from_owner_pid_row,
+        terminal_runtime_snapshot_from_processes, terminal_text, ProcessSnapshotEntry,
+        TerminalTitleParser,
     };
     use cmux_terminal::engine::{GridSize, TerminalGrid};
+
+    #[test]
+    fn ui_attach_reuses_staged_panel_but_control_replace_reserves_a_new_session() {
+        let staged = [(41_u32, Some("dock-surface")), (42, Some("other"))];
+        assert_eq!(
+            reusable_panel_session_id(staged.into_iter(), Some("dock-surface"), true),
+            Some(41),
+            "the UI open attaches to the one staged live terminal"
+        );
+        assert_eq!(
+            reusable_panel_session_id(staged.into_iter(), Some("dock-surface"), false),
+            None,
+            "control staging, including TerminalReplace, must create a distinct session"
+        );
+    }
 
     #[test]
     fn base64_matches_rfc_test_vectors() {

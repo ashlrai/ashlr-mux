@@ -4,11 +4,16 @@ use cmux_core::session::{
 };
 use cmux_core::session_ops::{self, PaneResizeDirection};
 use cmux_core::surface_lifecycle::{
-    CloseIntent, SurfaceLifecycleModel, SurfaceMetadata, SurfaceSeed, TerminalStartup,
+    CloseIntent, ContainerKind, SurfaceLifecycleModel, SurfaceMetadata, SurfaceSeed,
+    TerminalStartup,
 };
 use cmux_ipc::{ControlCallResult, JsonValue};
 use serde_json::{json, Map, Value};
 use uuid::Uuid;
+
+use crate::dock::{
+    DockCreateRequest, DockPlacement, DockRuntimeIntent, DockStore, DockSurfaceKind,
+};
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub(super) struct LifecycleEvent {
@@ -59,8 +64,15 @@ pub(super) enum LifecycleEffect {
     },
     DockCreate {
         dock_surface_id: String,
+        generation: u64,
         kind: String,
-        url: Option<String>,
+        intent: DockRuntimeIntent,
+    },
+    DockReveal {
+        owner_id: String,
+    },
+    DockChanged {
+        owner_id: String,
     },
     RemoteCreate {
         remote_session_id: String,
@@ -571,6 +583,11 @@ fn parse_kind(
     match raw.to_ascii_lowercase().replace(['-', '_'], "").as_str() {
         "browser" => Ok(SessionSurfaceKindSnapshot::Browser {
             url: params.get("url").and_then(Value::as_str).map(str::to_owned),
+            profile: params
+                .get("browser_profile")
+                .or_else(|| params.get("profile"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
             proxy_url: None,
             back_history: None,
             forward_history: None,
@@ -700,11 +717,102 @@ fn socket_completion_event(
     }
 }
 
+fn public_owner_ids(
+    model: &SurfaceLifecycleModel,
+    owner: &cmux_core::surface_lifecycle::Owner,
+) -> (String, String) {
+    let window_id = owner.window_id.clone();
+    let workspace_id = if model
+        .pane(&owner.pane_id)
+        .is_some_and(|pane| pane.container == ContainerKind::Dock)
+    {
+        window_id.clone()
+    } else {
+        owner.workspace_id.clone()
+    };
+    (window_id, workspace_id)
+}
+
+fn dock_owner_from_workspace_selector(
+    snapshot: &AppSessionSnapshot,
+    params: &Map<String, Value>,
+) -> Option<String> {
+    if let Some(selector) = params.get("workspace_id").and_then(Value::as_str) {
+        if let Some(owner) = snapshot
+            .windows
+            .iter()
+            .find(|window| {
+                window.window_id.as_deref() == Some(selector) && window.dock.as_ref().is_some()
+            })
+            .and_then(|window| window.window_id.clone())
+        {
+            return Some(owner);
+        }
+    }
+    let model = SurfaceLifecycleModel::from_app_session(snapshot).ok()?;
+    let owner = params
+        .get("surface_id")
+        .and_then(Value::as_str)
+        .and_then(|id| model.owner_of_surface(id))
+        .or_else(|| {
+            let pane_id = params.get("pane_id").and_then(Value::as_str)?;
+            let pane = model.pane(pane_id)?;
+            (pane.container == ContainerKind::Dock)
+                .then(|| pane.surface_ids.first())
+                .flatten()
+                .and_then(|id| model.owner_of_surface(id))
+        })?;
+    model
+        .pane(&owner.pane_id)
+        .is_some_and(|pane| pane.container == ContainerKind::Dock)
+        .then(|| owner.window_id.clone())
+}
+
+fn dock_surface_current(snapshot: &AppSessionSnapshot, owner_id: &str) -> LifecycleTransition {
+    let current = DockStore.current(snapshot, owner_id);
+    read_transition(
+        snapshot,
+        json!({
+            "window_id":owner_id,
+            "workspace_id":owner_id,
+            "pane_id":current.as_ref().map(|surface| surface.pane_id.to_string()),
+            "surface_id":current.as_ref().map(|surface| surface.surface_id.to_string()),
+            "surface_type":current.as_ref().map(|surface| if surface.kind == DockSurfaceKind::Browser { "browser" } else { "terminal" }),
+        }),
+    )
+}
+
+fn dock_surface_list(snapshot: &AppSessionSnapshot, owner_id: &str) -> LifecycleTransition {
+    let dock = DockStore.snapshot(snapshot, owner_id);
+    let rows = dock
+        .surfaces
+        .iter()
+        .enumerate()
+        .map(|(index, surface)| {
+            json!({
+                "id":surface.surface_id.to_string(),
+                "index":index,
+                "type":if surface.kind == DockSurfaceKind::Browser { "browser" } else { "terminal" },
+                "title":surface.title,
+                "focused":dock.focused_pane_id == Some(surface.pane_id) && DockStore.current(snapshot, owner_id).is_some_and(|current| current.surface_id == surface.surface_id),
+                "pane_id":surface.pane_id.to_string(),
+            })
+        })
+        .collect::<Vec<_>>();
+    read_transition(
+        snapshot,
+        json!({"window_id":owner_id,"workspace_id":owner_id,"surfaces":rows}),
+    )
+}
+
 fn surface_current(
     snapshot: &AppSessionSnapshot,
     params: &Map<String, Value>,
     context: &LifecycleDispatchContext,
 ) -> LifecycleTransition {
+    if let Some(owner_id) = dock_owner_from_workspace_selector(snapshot, params) {
+        return dock_surface_current(snapshot, &owner_id);
+    }
     let scope = match scope(snapshot, params, context) {
         Ok(scope) => scope,
         Err((code, message)) => return error(snapshot, code, message, None),
@@ -760,6 +868,9 @@ fn surface_list(
     params: &Map<String, Value>,
     context: &LifecycleDispatchContext,
 ) -> LifecycleTransition {
+    if let Some(owner_id) = dock_owner_from_workspace_selector(snapshot, params) {
+        return dock_surface_list(snapshot, &owner_id);
+    }
     let scope = match scope(snapshot, params, context) {
         Ok(scope) => scope,
         Err((code, message)) => return error(snapshot, code, message, None),
@@ -856,6 +967,335 @@ fn surface_list(
     )
 }
 
+fn requested_placement(
+    params: &Map<String, Value>,
+) -> Result<&str, (&'static str, &'static str, Option<Value>)> {
+    let placement = params
+        .get("placement")
+        .and_then(Value::as_str)
+        .unwrap_or("workspace");
+    if matches!(placement, "workspace" | "dock") {
+        Ok(placement)
+    } else {
+        Err((
+            "invalid_params",
+            "placement must be one of: workspace, dock",
+            Some(json!({"placement":placement})),
+        ))
+    }
+}
+
+fn dock_owner_id(
+    snapshot: &AppSessionSnapshot,
+    params: &Map<String, Value>,
+    context: &LifecycleDispatchContext,
+) -> Result<String, (&'static str, &'static str)> {
+    let model = SurfaceLifecycleModel::from_app_session(snapshot)
+        .map_err(|_| ("internal_error", "Invalid surface lifecycle state"))?;
+    let mut implied = Vec::new();
+    if let Some(workspace_id) = params.get("workspace_id").and_then(Value::as_str) {
+        if let Some(window_id) = snapshot.windows.iter().find_map(|window| {
+            (window.window_id.as_deref() == Some(workspace_id)
+                || window
+                    .tab_manager
+                    .workspaces
+                    .iter()
+                    .any(|workspace| workspace.workspace_id.as_deref() == Some(workspace_id)))
+            .then(|| window.window_id.clone())
+            .flatten()
+        }) {
+            implied.push(window_id);
+        } else {
+            return Err(("not_found", "Workspace not found"));
+        }
+    }
+    if let Some(surface_id) = params.get("surface_id").and_then(Value::as_str) {
+        let owner = model
+            .owner_of_surface(surface_id)
+            .ok_or(("not_found", "Surface not found"))?;
+        implied.push(owner.window_id.clone());
+    }
+    if let Some(pane_id) = params.get("pane_id").and_then(Value::as_str) {
+        let pane = model.pane(pane_id).ok_or(("not_found", "Pane not found"))?;
+        implied.push(pane.window_id.clone());
+    }
+    if implied.windows(2).any(|owners| owners[0] != owners[1]) {
+        return Err(("invalid_params", "Conflicting Dock routing selectors"));
+    }
+    let implied = implied.into_iter().next();
+    if let Some(explicit) = params.get("window_id").filter(|value| !value.is_null()) {
+        let requested = explicit
+            .as_str()
+            .ok_or(("unavailable", "TabManager not available"))?;
+        if !snapshot
+            .windows
+            .iter()
+            .any(|window| window.window_id.as_deref() == Some(requested))
+        {
+            return Err(("unavailable", "TabManager not available"));
+        }
+        if implied.as_deref().is_some_and(|owner| owner != requested) {
+            return Err(("invalid_params", "Conflicting Dock routing selectors"));
+        }
+        return Ok(requested.to_owned());
+    }
+    if let Some(implied) = implied {
+        return Ok(implied);
+    }
+    context
+        .active_window_id
+        .as_deref()
+        .and_then(|active| {
+            snapshot
+                .windows
+                .iter()
+                .any(|window| window.window_id.as_deref() == Some(active))
+                .then(|| active.to_owned())
+        })
+        .or_else(|| snapshot.windows.first()?.window_id.clone())
+        .ok_or(("unavailable", "TabManager not available"))
+}
+
+fn parse_dock_kind(
+    params: &Map<String, Value>,
+) -> Result<DockSurfaceKind, (&'static str, &'static str, Option<Value>)> {
+    let raw = params
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("terminal");
+    match raw.to_ascii_lowercase().replace(['-', '_'], "").as_str() {
+        "terminal" => Ok(DockSurfaceKind::Terminal),
+        "browser" => Ok(DockSurfaceKind::Browser),
+        "agentsession" | "markdown" | "filepreview" | "file" | "rightsidebartool"
+        | "projectsidebar" | "diff" => Err((
+            "invalid_params",
+            "Dock placement supports only terminal and browser surfaces",
+            Some(json!({"type":raw})),
+        )),
+        _ => Ok(DockSurfaceKind::Terminal),
+    }
+}
+
+fn dock_placement_for_method(
+    method: &str,
+    params: &Map<String, Value>,
+) -> Result<DockPlacement, (&'static str, &'static str)> {
+    if method != "pane.create" {
+        return Ok(DockPlacement::Tab);
+    }
+    match params.get("direction").and_then(Value::as_str) {
+        Some(direction) if matches!(direction.to_ascii_lowercase().as_str(), "left" | "l") => {
+            Ok(DockPlacement::SplitLeft)
+        }
+        Some(direction) if matches!(direction.to_ascii_lowercase().as_str(), "right" | "r") => {
+            Ok(DockPlacement::SplitRight)
+        }
+        Some(direction) if matches!(direction.to_ascii_lowercase().as_str(), "up" | "u") => {
+            Ok(DockPlacement::SplitUp)
+        }
+        Some(direction) if matches!(direction.to_ascii_lowercase().as_str(), "down" | "d") => {
+            Ok(DockPlacement::SplitDown)
+        }
+        _ => Err((
+            "invalid_params",
+            "Missing or invalid direction (left|right|up|down)",
+        )),
+    }
+}
+
+fn dock_request(
+    method: &str,
+    params: &Map<String, Value>,
+    kind: DockSurfaceKind,
+) -> Result<DockCreateRequest, (&'static str, &'static str)> {
+    let parse_uuid = |key: &str| {
+        params
+            .get(key)
+            .and_then(Value::as_str)
+            .and_then(|id| Uuid::parse_str(id).ok())
+    };
+    Ok(DockCreateRequest {
+        kind,
+        title: params
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        pane_id: parse_uuid("pane_id"),
+        source_surface_id: parse_uuid("surface_id"),
+        placement: dock_placement_for_method(method, params)?,
+        initial_divider_position: params
+            .get("initial_divider_position")
+            .and_then(Value::as_f64),
+        working_directory: params
+            .get("working_directory")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        command: params
+            .get("initial_command")
+            .or_else(|| params.get("command"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        url: params.get("url").and_then(Value::as_str).map(str::to_owned),
+        browser_profile: params
+            .get("browser_profile")
+            .or_else(|| params.get("profile"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        focus: params
+            .get("focus")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        ..DockCreateRequest::default()
+    })
+}
+
+fn dock_create(
+    snapshot: &AppSessionSnapshot,
+    method: &str,
+    params: &Map<String, Value>,
+    context: &LifecycleDispatchContext,
+) -> LifecycleTransition {
+    let kind = match parse_dock_kind(params) {
+        Ok(kind) => kind,
+        Err((code, message, data)) => return error(snapshot, code, message, data),
+    };
+    if !context.dock_available {
+        return error(
+            snapshot,
+            "invalid_params",
+            "Dock placement is disabled",
+            Some(json!({"placement":"dock"})),
+        );
+    }
+    let owner_id = match dock_owner_id(snapshot, params, context) {
+        Ok(owner_id) => owner_id,
+        Err((code, message)) => return error(snapshot, code, message, None),
+    };
+    if kind == DockSurfaceKind::Browser {
+        if let Some(raw) = params.get("url").and_then(Value::as_str) {
+            if url::Url::parse("https://cmux.invalid/")
+                .ok()
+                .and_then(|base| base.join(raw).ok())
+                .is_none()
+            {
+                return error(
+                    snapshot,
+                    "invalid_params",
+                    "Invalid URL",
+                    Some(json!({"url":raw})),
+                );
+            }
+        }
+    }
+    if kind == DockSurfaceKind::Browser && !context.browser_enabled {
+        let Some(url) = params.get("url").and_then(Value::as_str) else {
+            return error(
+                snapshot,
+                "browser_disabled",
+                "cmux browser is disabled",
+                None,
+            );
+        };
+        let result = json!({"window_id":owner_id,"workspace_id":null,"pane_id":null,"surface_id":null,"created_split":false,"opened_externally":true,"browser_disabled":true,"placement_strategy":"external_browser_disabled","url":url});
+        return ok_transition(
+            snapshot.clone(),
+            result.clone(),
+            vec![],
+            vec![LifecycleEffect::ExternalBrowserOpen { url: url.into() }],
+        );
+    }
+    let request = match dock_request(method, params, kind) {
+        Ok(request) => request,
+        Err((code, message)) => return error(snapshot, code, message, None),
+    };
+    let mut next = snapshot.clone();
+    let created = match DockStore.create(&mut next, &owner_id, request) {
+        Ok(created) => created,
+        Err(_) => {
+            return error(
+                snapshot,
+                "internal_error",
+                "Failed to create Dock surface",
+                None,
+            )
+        }
+    };
+    let Some(surface) = DockStore
+        .snapshot(&next, &owner_id)
+        .surfaces
+        .into_iter()
+        .find(|surface| surface.surface_id == created.surface_id)
+    else {
+        return error(
+            snapshot,
+            "internal_error",
+            "Failed to create Dock surface",
+            None,
+        );
+    };
+    let pane_id = created.pane_id.to_string();
+    let surface_id = created.surface_id.to_string();
+    let type_name = if kind == DockSurfaceKind::Browser {
+        "browser"
+    } else {
+        "terminal"
+    };
+    let origin = if method == "pane.create" {
+        format!("{type_name}_split")
+    } else {
+        format!("{type_name}_tab")
+    };
+    let result = json!({
+        "window_id":owner_id,
+        "workspace_id":owner_id,
+        "placement":"dock",
+        "pane_id":null,
+        "pane_ref":null,
+        "surface_id":null,
+        "surface_ref":null,
+        "dock_pane_id":pane_id,
+        "dock_surface_id":surface_id,
+        "type":type_name,
+    });
+    let mut events = Vec::new();
+    if method == "pane.create" {
+        events.push(owned_event(
+            "pane.created",
+            &owner_id,
+            &owner_id,
+            Some(&pane_id),
+            Some(&surface_id),
+            json!({"pane_id":pane_id,"surface_id":surface_id,"origin":origin}),
+        ));
+    }
+    events.push(owned_event(
+        "surface.created",
+        &owner_id,
+        &owner_id,
+        Some(&pane_id),
+        Some(&surface_id),
+        json!({"surface_id":surface_id,"pane_id":pane_id,"kind":type_name,"origin":origin,"focused":params.get("focus").and_then(Value::as_bool).unwrap_or(false)}),
+    ));
+    let mut effects = vec![LifecycleEffect::DockCreate {
+        dock_surface_id: surface_id,
+        generation: created.generation,
+        kind: type_name.into(),
+        intent: surface.runtime,
+    }];
+    if params.get("focus").and_then(Value::as_bool) == Some(true) {
+        effects.push(LifecycleEffect::DockReveal {
+            owner_id: owner_id.clone(),
+        });
+    }
+    effects.extend([
+        LifecycleEffect::DockChanged {
+            owner_id: owner_id.clone(),
+        },
+        LifecycleEffect::PersistSession,
+    ]);
+    ok_transition(next, result, events, effects)
+}
+
 fn surface_create(
     snapshot: &AppSessionSnapshot,
     params: &Map<String, Value>,
@@ -865,21 +1305,12 @@ fn surface_create(
         Ok(kind) => kind,
         Err((code, message, data)) => return error(snapshot, code, message, data),
     };
-    if params.get("placement").and_then(Value::as_str) == Some("dock") {
-        if !context.dock_available {
-            return error(snapshot, "unavailable", "Dock unavailable", None);
-        }
-        let id = Uuid::new_v4().to_string();
-        return ok_transition(
-            snapshot.clone(),
-            json!({"placement":"dock", "pane_id": null, "surface_id": null, "dock_pane_id": null, "dock_surface_id": id, "type": kind_name(&kind)}),
-            vec![],
-            vec![LifecycleEffect::DockCreate {
-                dock_surface_id: id,
-                kind: kind_name(&kind).into(),
-                url: params.get("url").and_then(Value::as_str).map(str::to_owned),
-            }],
-        );
+    let placement = match requested_placement(params) {
+        Ok(placement) => placement,
+        Err((code, message, data)) => return error(snapshot, code, message, data),
+    };
+    if placement == "dock" {
+        return dock_create(snapshot, "surface.create", params, context);
     }
     let scope = match scope(snapshot, params, context) {
         Ok(scope) => scope,
@@ -1275,6 +1706,11 @@ fn apply_create_right_action(
     } else if browser {
         SessionSurfaceKindSnapshot::Browser {
             url: Some(raw_url.unwrap_or("about:blank").into()),
+            profile: params
+                .get("browser_profile")
+                .or_else(|| params.get("profile"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
             proxy_url: None,
             back_history: None,
             forward_history: None,
@@ -1955,6 +2391,13 @@ fn surface_close(
         .and_then(Value::as_str)
         .map(str::to_owned)
         .or_else(|| {
+            dock_owner_from_workspace_selector(snapshot, params).and_then(|owner_id| {
+                model
+                    .focused_surface(&format!("dock:{owner_id}"))
+                    .map(str::to_owned)
+            })
+        })
+        .or_else(|| {
             scope(snapshot, params, context).ok().and_then(|scope| {
                 model
                     .focused_surface(&scope.workspace_id)
@@ -1973,6 +2416,10 @@ fn surface_close(
         );
     };
     let generation = model.surface(&surface_id).unwrap().generation;
+    let is_dock = model
+        .pane(&owner.pane_id)
+        .is_some_and(|pane| pane.container == ContainerKind::Dock);
+    let (window_id, workspace_id) = public_owner_ids(&model, &owner);
     if let Err(problem) = model.close_surface(&surface_id, CloseIntent::Explicit) {
         return if problem.to_string().contains("last surface") {
             error(
@@ -1991,24 +2438,28 @@ fn surface_close(
         };
     }
     let next = model.to_app_session(snapshot).unwrap();
+    let mut effects = vec![LifecycleEffect::RuntimeTeardown {
+        surface_id: surface_id.clone(),
+        generation,
+    }];
+    if is_dock {
+        effects.push(LifecycleEffect::DockChanged {
+            owner_id: window_id.clone(),
+        });
+    }
+    effects.push(LifecycleEffect::PersistSession);
     ok_transition(
         next,
-        json!({"window_id":owner.window_id,"workspace_id":owner.workspace_id,"surface_id":surface_id}),
+        json!({"window_id":window_id,"workspace_id":workspace_id,"surface_id":surface_id}),
         vec![owned_event(
             "surface.closed",
-            &owner.window_id,
-            &owner.workspace_id,
+            &window_id,
+            &workspace_id,
             Some(&owner.pane_id),
             Some(&surface_id),
             json!({}),
         )],
-        vec![
-            LifecycleEffect::RuntimeTeardown {
-                surface_id,
-                generation,
-            },
-            LifecycleEffect::PersistSession,
-        ],
+        effects,
     )
 }
 
@@ -2043,25 +2494,38 @@ fn surface_focus(
             Some(json!({"surface_id":surface_id})),
         );
     };
+    let (window_id, workspace_id) = public_owner_ids(&model, &owner);
+    let is_dock = model
+        .pane(&owner.pane_id)
+        .is_some_and(|pane| pane.container == ContainerKind::Dock);
     let _ = model.focus_surface(surface_id);
     let next = model.to_app_session(snapshot).unwrap();
+    let mut effects = vec![LifecycleEffect::ActivateWindow {
+        window_id: window_id.clone(),
+    }];
+    if is_dock {
+        effects.extend([
+            LifecycleEffect::DockReveal {
+                owner_id: window_id.clone(),
+            },
+            LifecycleEffect::DockChanged {
+                owner_id: window_id.clone(),
+            },
+        ]);
+    }
+    effects.push(LifecycleEffect::PersistSession);
     ok_transition(
         next,
-        json!({"window_id":owner.window_id,"workspace_id":owner.workspace_id,"surface_id":surface_id}),
+        json!({"window_id":window_id,"workspace_id":workspace_id,"surface_id":surface_id}),
         vec![owned_event(
             "surface.focused",
-            &owner.window_id,
-            &owner.workspace_id,
+            &window_id,
+            &workspace_id,
             Some(&owner.pane_id),
             Some(surface_id),
             json!({}),
         )],
-        vec![
-            LifecycleEffect::ActivateWindow {
-                window_id: owner.window_id,
-            },
-            LifecycleEffect::PersistSession,
-        ],
+        effects,
     )
 }
 
@@ -2097,25 +2561,30 @@ fn surface_move(
             Some(json!({"surface_id":surface_id})),
         );
     }
-    let mut destination_params = params.clone();
-    destination_params.remove("surface_id");
-    let destination_scope = match scope(snapshot, &destination_params, context) {
-        Ok(scope) => scope,
-        Err((code, message)) => return error(snapshot, code, message, None),
-    };
+    let source_owner = model.owner_of_surface(surface_id).cloned();
+    let source_is_dock = source_owner
+        .as_ref()
+        .and_then(|owner| model.pane(&owner.pane_id))
+        .is_some_and(|pane| pane.container == ContainerKind::Dock);
     let destination_pane = params
         .get("pane_id")
         .and_then(Value::as_str)
         .map(str::to_owned)
         .or_else(|| {
-            model
-                .focused_surface(&destination_scope.workspace_id)
+            let mut destination_params = params.clone();
+            destination_params.remove("surface_id");
+            scope(snapshot, &destination_params, context)
+                .ok()
+                .and_then(|scope| model.focused_surface(&scope.workspace_id))
                 .and_then(|id| model.owner_of_surface(id))
                 .map(|owner| owner.pane_id.clone())
         });
     let Some(destination_pane) = destination_pane else {
         return error(snapshot, "not_found", "Destination pane not found", None);
     };
+    let destination_is_dock = model
+        .pane(&destination_pane)
+        .is_some_and(|pane| pane.container == ContainerKind::Dock);
     let index = params
         .get("index")
         .and_then(Value::as_u64)
@@ -2134,16 +2603,36 @@ fn surface_move(
         let _ = model.focus_surface(surface_id);
     }
     let owner = model.owner_of_surface(surface_id).cloned().unwrap();
+    let (window_id, workspace_id) = public_owner_ids(&model, &owner);
     let next = model.to_app_session(snapshot).unwrap();
-    let result = json!({"window_id":owner.window_id,"workspace_id":owner.workspace_id,"pane_id":owner.pane_id,"surface_id":surface_id});
-    let completion =
-        socket_completion_event("surface.moved", "surface.move", params, &result, &owner);
-    ok_transition(
-        next,
-        result,
-        vec![completion],
-        vec![LifecycleEffect::PersistSession],
-    )
+    let result = json!({"window_id":window_id,"workspace_id":workspace_id,"pane_id":owner.pane_id,"surface_id":surface_id});
+    let public_owner = cmux_core::surface_lifecycle::Owner {
+        window_id,
+        workspace_id,
+        ..owner
+    };
+    let completion = socket_completion_event(
+        "surface.moved",
+        "surface.move",
+        params,
+        &result,
+        &public_owner,
+    );
+    let mut effects = Vec::new();
+    if source_is_dock || destination_is_dock {
+        effects.push(LifecycleEffect::DockChanged {
+            owner_id: if source_is_dock {
+                source_owner
+                    .as_ref()
+                    .map(|owner| owner.window_id.clone())
+                    .unwrap_or_else(|| public_owner.window_id.clone())
+            } else {
+                public_owner.window_id.clone()
+            },
+        });
+    }
+    effects.push(LifecycleEffect::PersistSession);
+    ok_transition(next, result, vec![completion], effects)
 }
 
 fn pane_focus(snapshot: &AppSessionSnapshot, params: &Map<String, Value>) -> LifecycleTransition {
@@ -2340,6 +2829,26 @@ fn pane_create(
             )
         }
     };
+    if params.contains_key("initial_divider_position")
+        && params
+            .get("initial_divider_position")
+            .and_then(Value::as_f64)
+            .is_none()
+    {
+        return error(
+            snapshot,
+            "invalid_params",
+            "initial_divider_position must be numeric",
+            None,
+        );
+    }
+    let placement = match requested_placement(params) {
+        Ok(placement) => placement,
+        Err((code, message, data)) => return error(snapshot, code, message, data),
+    };
+    if placement == "dock" {
+        return dock_create(snapshot, "pane.create", params, context);
+    }
     let scope = match scope(snapshot, params, context) {
         Ok(scope) => scope,
         Err((code, message)) => return error(snapshot, code, message, None),
