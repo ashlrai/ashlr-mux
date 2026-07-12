@@ -630,9 +630,7 @@ fn production_helpers_window_commands_and_socket_use_fallible_compensating_paths
     assert!(close.contains("restore") || close.contains("rollback"));
     assert!(close.contains("show("));
     assert!(close.find("hide(").unwrap() < close.find("unregister_window_for_control(").unwrap());
-    assert!(
-        close.find("unregister_window_for_control(").unwrap() < close.find(".close(").unwrap()
-    );
+    assert!(close.find("unregister_window_for_control(").unwrap() < close.find(".close(").unwrap());
 
     let socket = include_str!("../control_socket.rs");
     let route = function_source(socket, "fn workspace_move_to_window(");

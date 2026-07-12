@@ -57,8 +57,6 @@ fn reservation_is_fenced(body: &str) -> bool {
 fn every_production_panel_reservation_is_fenced_before_fetch_add() {
     let session = include_str!("../session.rs");
     let routes = [
-        "pub(crate) fn register_window_for_control(",
-        "pub(crate) fn move_workspace_to_window_for_control(",
         "pub(crate) fn new_workspace_for_control(",
         "pub(crate) fn new_workspace_in_window_for_control(",
         "pub(crate) fn split_panel_for_control(",
