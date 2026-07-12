@@ -113,6 +113,10 @@ mod public_control_metadata_red;
 #[path = "session/runtime_model_facts_red.rs"]
 mod runtime_model_facts_red;
 
+#[cfg(test)]
+#[path = "session/browser_view_state_red.rs"]
+mod browser_view_state_red;
+
 impl Default for SessionState {
     fn default() -> Self {
         let snapshot = initial_snapshot(FIRST_PANEL_ID);
