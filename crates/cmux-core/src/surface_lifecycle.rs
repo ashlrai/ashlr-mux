@@ -6,8 +6,8 @@
 
 use crate::session::{
     AppSessionSnapshot, SessionPaneLayoutSnapshot, SessionPanelTerminalStartupSnapshot,
-    SessionPendingRemotePwdSnapshot, SessionSurfaceSnapshot, SessionTabManagerSnapshot,
-    SessionWorkspaceLayoutSnapshot,
+    SessionPendingRemotePwdSnapshot, SessionPendingSurfacePwdSnapshot, SessionSurfaceSnapshot,
+    SessionTabManagerSnapshot, SessionWorkspaceLayoutSnapshot,
 };
 pub use crate::session::{
     SessionSurfaceKindSnapshot as SurfaceKind, SessionSurfaceMetadataSnapshot as SurfaceMetadata,
@@ -16,6 +16,16 @@ pub use crate::session::{
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use thiserror::Error;
+
+fn synthetic_workspace_id(window_id: &str, index: usize) -> String {
+    const LEGACY_WORKSPACE_NAMESPACE: uuid::Uuid =
+        uuid::Uuid::from_u128(0x42f5_73ab_631f_5f20_8e1c_a654_9384_21ca);
+    uuid::Uuid::new_v5(
+        &LEGACY_WORKSPACE_NAMESPACE,
+        format!("{window_id}:workspace:{index}").as_bytes(),
+    )
+    .to_string()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -125,6 +135,12 @@ pub enum MoveTransactionError<E> {
     Effect(E),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseIntent {
+    Explicit,
+    Range,
+}
+
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum LifecycleError {
     #[error("pane not found: {0}")]
@@ -162,7 +178,7 @@ pub struct SurfaceLifecycleModel {
     surface_owners: HashMap<String, Owner>,
     runtime_owners: HashMap<String, String>,
     last_generation: HashMap<String, u64>,
-    pending_pwd: HashMap<String, String>,
+    pending_pwd: HashMap<String, (u64, String)>,
     pending_remote_pwd: BTreeMap<(String, String), String>,
     reconciled_remote_generation: HashMap<String, u64>,
     collapsed_panes: HashSet<String>,
@@ -410,14 +426,49 @@ impl SurfaceLifecycleModel {
             self.runtime_owners.remove(old.id());
         }
         self.runtime_owners.insert(runtime.0, surface_id.into());
-        if let Some(path) = self.pending_pwd.remove(surface_id) {
-            record.metadata.reported_directory = Some(path);
-            record.metadata.directory_provenance = Some("arrival_report".into());
+        if let Some((pending_generation, path)) = self.pending_pwd.remove(surface_id) {
+            if pending_generation == generation {
+                record.metadata.reported_directory = Some(path);
+                record.metadata.directory_provenance = Some("arrival_report".into());
+            }
         }
         AttachOutcome::Attached
     }
 
-    pub fn close_surface(&mut self, surface_id: &str) -> Result<SurfaceRecord, LifecycleError> {
+    pub fn close_surface(
+        &mut self,
+        surface_id: &str,
+        intent: CloseIntent,
+    ) -> Result<SurfaceRecord, LifecycleError> {
+        let owner = self
+            .surface_owners
+            .get(surface_id)
+            .ok_or_else(|| LifecycleError::SurfaceNotFound(surface_id.into()))?;
+        let count = self
+            .surface_owners
+            .values()
+            .filter(|candidate| {
+                candidate.window_id == owner.window_id
+                    && candidate.workspace_id == owner.workspace_id
+            })
+            .count();
+        if count <= 1 {
+            return Err(LifecycleError::Invalid(
+                "cannot close the last surface".into(),
+            ));
+        }
+        if intent == CloseIntent::Range && self.surfaces[surface_id].metadata.pinned {
+            return Err(LifecycleError::Invalid(
+                "pinned surface is protected from range close".into(),
+            ));
+        }
+        self.close_surface_unchecked(surface_id)
+    }
+
+    fn close_surface_unchecked(
+        &mut self,
+        surface_id: &str,
+    ) -> Result<SurfaceRecord, LifecycleError> {
         let owner = self
             .surface_owners
             .remove(surface_id)
@@ -471,14 +522,6 @@ impl SurfaceLifecycleModel {
         Ok(record)
     }
 
-    pub fn move_surface(
-        &mut self,
-        surface_id: &str,
-        pane_id: &str,
-        index: usize,
-    ) -> Result<(), LifecycleError> {
-        self.move_surface_inner(surface_id, pane_id, index)
-    }
     /// Stage a move, run the desktop's real destination attach effect, and
     /// commit only after that effect succeeds.
     pub fn move_surface_transactionally<E, F>(
@@ -636,10 +679,13 @@ impl SurfaceLifecycleModel {
         surface_id: &str,
         path: &str,
     ) -> Result<(), LifecycleError> {
-        if surface_id.is_empty() {
-            return Err(LifecycleError::Invalid("surface identity required".into()));
-        }
-        self.pending_pwd.insert(surface_id.into(), path.into());
+        let generation = self
+            .surfaces
+            .get(surface_id)
+            .ok_or_else(|| LifecycleError::SurfaceNotFound(surface_id.into()))?
+            .generation;
+        self.pending_pwd
+            .insert(surface_id.into(), (generation, path.into()));
         Ok(())
     }
     pub fn has_pending_pwd(&self, surface_id: &str) -> bool {
@@ -843,7 +889,7 @@ impl SurfaceLifecycleModel {
             let workspace_id = workspace
                 .workspace_id
                 .clone()
-                .unwrap_or_else(|| format!("workspace:{workspace_index}"));
+                .unwrap_or_else(|| synthetic_workspace_id(window_id, workspace_index));
             if let Some(layout) = &workspace.layout {
                 add_layout_panes(&mut model, layout, window_id, &workspace_id)?;
             }
@@ -922,6 +968,36 @@ impl SurfaceLifecycleModel {
                     )));
                 }
             }
+            for pending in workspace
+                .pending_surface_pwds
+                .as_deref()
+                .unwrap_or_default()
+            {
+                let owner = model
+                    .surface_owners
+                    .get(&pending.surface_id)
+                    .ok_or_else(|| {
+                        LifecycleError::Invalid(format!(
+                            "pending pwd references missing surface {}",
+                            pending.surface_id
+                        ))
+                    })?;
+                if owner.workspace_id != workspace_id
+                    || model.surfaces[&pending.surface_id].generation != pending.generation
+                    || model
+                        .pending_pwd
+                        .insert(
+                            pending.surface_id.clone(),
+                            (pending.generation, pending.path.clone()),
+                        )
+                        .is_some()
+                {
+                    return Err(LifecycleError::Invalid(format!(
+                        "invalid pending pwd {}",
+                        pending.surface_id
+                    )));
+                }
+            }
         }
         model.validate_indexes()?;
         Ok(model)
@@ -988,6 +1064,17 @@ impl SurfaceLifecycleModel {
                 )));
             }
         }
+        for (surface_id, pending) in other.pending_pwd {
+            if self
+                .pending_pwd
+                .insert(surface_id.clone(), pending)
+                .is_some()
+            {
+                return Err(LifecycleError::Invalid(format!(
+                    "duplicate pending surface identity {surface_id}"
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -1025,10 +1112,10 @@ impl SurfaceLifecycleModel {
     ) -> Result<SessionTabManagerSnapshot, LifecycleError> {
         let mut projected = base.clone();
         for (workspace_index, workspace) in projected.workspaces.iter_mut().enumerate() {
-            let workspace_id = workspace
-                .workspace_id
-                .clone()
-                .unwrap_or_else(|| format!("workspace:{workspace_index}"));
+            let workspace_id = workspace.workspace_id.clone().unwrap_or_else(|| {
+                synthetic_workspace_id(window_id.unwrap_or("window:0"), workspace_index)
+            });
+            workspace.workspace_id = Some(workspace_id.clone());
             workspace.surfaces = Some(
                 self.pane_order
                     .iter()
@@ -1055,6 +1142,25 @@ impl SurfaceLifecycleModel {
                 )
                 .collect::<Vec<_>>();
             workspace.pending_remote_pwds = (!pending.is_empty()).then_some(pending);
+            let pending_surface = self
+                .pending_pwd
+                .iter()
+                .filter_map(|(surface_id, (generation, path))| {
+                    self.surface_owners
+                        .get(surface_id)
+                        .filter(|owner| {
+                            owner.workspace_id == workspace_id
+                                && window_id.is_none_or(|window| owner.window_id == window)
+                        })
+                        .map(|_| SessionPendingSurfacePwdSnapshot {
+                            surface_id: surface_id.clone(),
+                            generation: *generation,
+                            path: path.clone(),
+                        })
+                })
+                .collect::<Vec<_>>();
+            workspace.pending_surface_pwds =
+                (!pending_surface.is_empty()).then_some(pending_surface);
             workspace.panel_titles = None;
             workspace.panel_pins = None;
             workspace.panel_unreads = None;
@@ -1135,6 +1241,17 @@ impl SurfaceLifecycleModel {
             {
                 return Err(LifecycleError::Invalid(format!(
                     "owner/order mismatch for {id}"
+                )));
+            }
+        }
+        for (surface_id, (generation, _)) in &self.pending_pwd {
+            if !self
+                .surfaces
+                .get(surface_id)
+                .is_some_and(|surface| surface.generation == *generation)
+            {
+                return Err(LifecycleError::Invalid(format!(
+                    "stale pending pwd {surface_id}"
                 )));
             }
         }
@@ -1253,7 +1370,11 @@ fn migrate_workspace_legacy(
                 .and_then(|p| p.surface_kind.as_deref())
                 .unwrap_or("terminal");
             let browser_selected = legacy_pane.is_some_and(|p| {
-                p.browser_url.is_some() && p.selected_panel_id.as_deref() == Some(id.as_str())
+                let target = p
+                    .selected_panel_id
+                    .as_deref()
+                    .or_else(|| p.panel_ids.first().map(String::as_str));
+                p.browser_url.is_some() && target == Some(id.as_str())
             });
             if browser_selected {
                 kind_name = "browser";

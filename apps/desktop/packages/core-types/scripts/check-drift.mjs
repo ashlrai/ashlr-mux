@@ -22,6 +22,23 @@ function snapshot(dir) {
 const { dir: tmp } = generateTemp();
 try {
   const fresh = snapshot(tmp);
+  const surfaceKind = fresh.get("SessionSurfaceKindSnapshot.ts") ?? "";
+  for (const property of [
+    "url",
+    "proxy_url",
+    "provider",
+    "renderer",
+    "path",
+    "token",
+    "remote_session_id",
+  ]) {
+    if (!surfaceKind.includes(`${property}?:`)) {
+      throw new Error(`SessionSurfaceKindSnapshot.${property} must be optional`);
+    }
+    if (surfaceKind.includes(`${property}: string | null`)) {
+      throw new Error(`SessionSurfaceKindSnapshot.${property} must not be required nullable`);
+    }
+  }
   let committed;
   try {
     committed = snapshot(GENERATED_DIR);

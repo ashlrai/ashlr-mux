@@ -667,6 +667,9 @@ pub struct SessionWorkspaceSnapshot {
     pub pending_remote_pwds: Option<Vec<SessionPendingRemotePwdSnapshot>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
+    pub pending_surface_pwds: Option<Vec<SessionPendingSurfacePwdSnapshot>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
     pub panel_titles: Option<Vec<SessionPanelTitleSnapshot>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
@@ -810,20 +813,28 @@ pub enum SessionSurfaceKindSnapshot {
     Terminal,
     Browser {
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
         url: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
         proxy_url: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
         back_history: Option<Vec<String>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
         forward_history: Option<Vec<String>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
         omnibar_visible: Option<bool>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
         focus_mode_active: Option<bool>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
         developer_tools_visible: Option<bool>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
         developer_tools_panel: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[cfg_attr(feature = "ts", ts(optional, type = "number"))]
@@ -831,36 +842,47 @@ pub enum SessionSurfaceKindSnapshot {
     },
     AgentSession {
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
         provider: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
         renderer: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
         working_directory: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
         session_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
         lifecycle: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
         restorable_agent: Option<Box<SessionRestorableAgentSnapshot>>,
     },
     Markdown {
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
         path: Option<String>,
     },
     File {
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
         path: Option<String>,
     },
     Diff {
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
         token: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
         request_path: Option<String>,
     },
     ProjectSidebar,
     RightSidebarTool,
     RemoteTerminal {
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
         remote_session_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[cfg_attr(feature = "ts", ts(optional, type = "unknown"))]
@@ -875,6 +897,15 @@ pub enum SessionSurfaceKindSnapshot {
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SessionPendingRemotePwdSnapshot {
     pub remote_session_id: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionPendingSurfacePwdSnapshot {
+    pub surface_id: String,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub generation: u64,
     pub path: String,
 }
 

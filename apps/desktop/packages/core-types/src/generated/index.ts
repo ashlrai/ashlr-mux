@@ -71,6 +71,7 @@ export type { SessionPanelTitleSnapshot } from "./SessionPanelTitleSnapshot";
 export type { SessionPanelTtySnapshot } from "./SessionPanelTtySnapshot";
 export type { SessionPanelUnreadSnapshot } from "./SessionPanelUnreadSnapshot";
 export type { SessionPendingRemotePwdSnapshot } from "./SessionPendingRemotePwdSnapshot";
+export type { SessionPendingSurfacePwdSnapshot } from "./SessionPendingSurfacePwdSnapshot";
 export type { SessionPullRequestStatusSnapshot } from "./SessionPullRequestStatusSnapshot";
 export type { SessionRestorableAgentSnapshot } from "./SessionRestorableAgentSnapshot";
 export type { SessionSplitLayoutSnapshot } from "./SessionSplitLayoutSnapshot";

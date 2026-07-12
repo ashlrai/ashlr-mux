@@ -43,31 +43,6 @@ fn legacy_browser_url_survives_missing_selection_without_fabricating_multiple_ur
 }
 
 #[test]
-fn generated_surface_kind_options_are_optional_not_required_nullable() {
-    let generated = include_str!(
-        "../../../apps/desktop/packages/core-types/src/generated/SessionSurfaceKindSnapshot.ts"
-    );
-    for property in [
-        "url",
-        "proxy_url",
-        "provider",
-        "renderer",
-        "path",
-        "token",
-        "remote_session_id",
-    ] {
-        assert!(
-            generated.contains(&format!("{property}?:")),
-            "{property} must be optional: {generated}"
-        );
-        assert!(
-            !generated.contains(&format!("{property}: string | null")),
-            "{property} must not be required nullable"
-        );
-    }
-}
-
-#[test]
 fn guarded_close_rejects_last_surface_and_range_close_skips_pinned() {
     let mut model = SurfaceLifecycleModel::new();
     model.add_pane(pane("pane-1", "workspace-1")).unwrap();
@@ -154,6 +129,7 @@ fn missing_workspace_ids_materialize_globally_unique_stable_ids() {
         })
         .collect::<Vec<_>>();
     assert_ne!(ids[0], ids[1]);
+    assert!(ids.iter().all(|id| uuid::Uuid::parse_str(id).is_ok()));
     let second = SurfaceLifecycleModel::from_app_session(&first)
         .unwrap()
         .to_app_session(&first)
@@ -192,6 +168,12 @@ fn browser(url: &str) -> SurfaceKind {
         developer_tools_panel: None,
         page_zoom: None,
     }
+}
+
+fn move_ok(model: &mut SurfaceLifecycleModel, surface_id: &str, pane_id: &str, index: usize) {
+    model
+        .move_surface_transactionally(surface_id, pane_id, index, |_, _| Ok::<_, ()>(()))
+        .unwrap();
 }
 
 #[test]
@@ -272,10 +254,15 @@ fn pane_selection_is_distinct_from_workspace_focus() {
 fn stable_identity_and_generation_reject_stale_create_callbacks() {
     let mut model = SurfaceLifecycleModel::new();
     model.add_pane(pane("pane-1", "workspace-1")).unwrap();
+    model
+        .reserve_surface(surface("guard", "pane-1", SurfaceKind::Terminal))
+        .unwrap();
     let first = model
         .reserve_surface(surface("surface-1", "pane-1", SurfaceKind::Terminal))
         .unwrap();
-    model.close_surface("surface-1").unwrap();
+    model
+        .close_surface("surface-1", CloseIntent::Explicit)
+        .unwrap();
     let second = model
         .reserve_surface(surface("surface-1", "pane-1", SurfaceKind::Terminal))
         .unwrap();
@@ -309,6 +296,9 @@ fn stable_identity_and_generation_reject_stale_create_callbacks() {
 fn close_removes_runtime_pending_metadata_and_owner_indexes_once() {
     let mut model = SurfaceLifecycleModel::new();
     model.add_pane(pane("pane-1", "workspace-1")).unwrap();
+    model
+        .reserve_surface(surface("guard", "pane-1", SurfaceKind::Terminal))
+        .unwrap();
     let token = model
         .reserve_surface(surface("surface-1", "pane-1", SurfaceKind::Terminal))
         .unwrap();
@@ -331,14 +321,18 @@ fn close_removes_runtime_pending_metadata_and_owner_indexes_once() {
     model
         .set_terminal_startup("surface-1", Default::default())
         .unwrap();
-    let closed = model.close_surface("surface-1").unwrap();
+    let closed = model
+        .close_surface("surface-1", CloseIntent::Explicit)
+        .unwrap();
     assert_eq!(closed.surface_id, "surface-1");
     assert_eq!(closed.runtime.unwrap().id(), "runtime-1");
     assert!(model.surface("surface-1").is_none());
     assert!(model.owner_of_surface("surface-1").is_none());
     assert!(model.owner_of_runtime("runtime-1").is_none());
     assert!(!model.has_pending_pwd("surface-1"));
-    assert!(model.close_surface("surface-1").is_err());
+    assert!(model
+        .close_surface("surface-1", CloseIntent::Explicit)
+        .is_err());
 }
 
 #[test]
@@ -352,7 +346,7 @@ fn move_transfers_the_complete_record_and_failed_attach_rolls_back() {
     model.reserve_surface(seed).unwrap();
     model.queue_pending_pwd("browser-1", "C:/docs").unwrap();
 
-    model.move_surface("browser-1", "pane-b", 0).unwrap();
+    move_ok(&mut model, "browser-1", "pane-b", 0);
     assert_eq!(
         model.owner_of_surface("browser-1").unwrap().pane_id,
         "pane-b"
@@ -451,10 +445,10 @@ fn pending_pwd_applies_once_to_the_matching_arrival_generation() {
 fn surface_pwd_queued_before_runtime_arrival_applies_once_on_attach() {
     let mut model = SurfaceLifecycleModel::new();
     model.add_pane(pane("pane-1", "workspace-1")).unwrap();
-    model.queue_pending_pwd("surface-1", "C:/early").unwrap();
     let token = model
         .reserve_surface(surface("surface-1", "pane-1", SurfaceKind::Terminal))
         .unwrap();
+    model.queue_pending_pwd("surface-1", "C:/early").unwrap();
     assert_eq!(
         model
             .surface("surface-1")
@@ -699,8 +693,10 @@ fn close_move_and_respawn_project_back_into_the_real_session_schema() {
     .unwrap();
     let mut model = SurfaceLifecycleModel::from_session_snapshot("window-1", &base).unwrap();
 
-    model.close_surface("browser-a").unwrap();
-    model.move_surface("terminal-a", "pane-b", 1).unwrap();
+    model
+        .close_surface("browser-a", CloseIntent::Explicit)
+        .unwrap();
+    move_ok(&mut model, "terminal-a", "pane-b", 1);
     let respawn = model
         .begin_respawn("terminal-a", "pwsh -NoProfile", Some("C:/repo"))
         .unwrap();
@@ -827,7 +823,7 @@ fn focus_fallback_uses_layout_insertion_order_not_lexical_pane_id() {
             .unwrap();
     }
     model.focus_surface("m").unwrap();
-    model.close_surface("m").unwrap();
+    model.close_surface("m", CloseIntent::Explicit).unwrap();
     assert_eq!(model.focused_surface("workspace-1"), Some("z"));
 }
 
@@ -907,9 +903,9 @@ fn moves_preserve_same_pane_selection_and_rehome_source_workspace_focus() {
     }
     model.select_in_pane("a2").unwrap();
     model.focus_surface("a2").unwrap();
-    model.move_surface("a2", "pane-a", 0).unwrap();
+    move_ok(&mut model, "a2", "pane-a", 0);
     assert_eq!(model.pane("pane-a").unwrap().selected_surface_id, "a2");
-    model.move_surface("a2", "pane-b", 1).unwrap();
+    move_ok(&mut model, "a2", "pane-b", 1);
     assert_eq!(model.focused_surface("workspace-a"), Some("a1"));
     assert!(model.surface("a1").unwrap().is_workspace_focused);
     assert!(!model.surface("a2").unwrap().is_workspace_focused);
@@ -936,7 +932,10 @@ fn pending_remote_pwd_is_persisted_moved_applied_once_and_cleaned_on_close_or_re
     let token = restored
         .reserve_remote_arrival("surface-1", "pane-a", "remote-1")
         .unwrap();
-    restored.move_surface("surface-1", "pane-b", 0).unwrap();
+    restored
+        .reserve_surface(surface("guard", "pane-b", SurfaceKind::Terminal))
+        .unwrap();
+    move_ok(&mut restored, "surface-1", "pane-b", 0);
     assert!(restored.has_pending_remote_pwd("workspace-b", "remote-1"));
     restored.reconcile_remote_arrival("surface-1", token.generation);
     assert_eq!(
@@ -953,7 +952,9 @@ fn pending_remote_pwd_is_persisted_moved_applied_once_and_cleaned_on_close_or_re
     restored
         .queue_remote_pwd("workspace-b", Some("remote-1"), "/srv/b")
         .unwrap();
-    restored.close_surface("surface-1").unwrap();
+    restored
+        .close_surface("surface-1", CloseIntent::Explicit)
+        .unwrap();
     assert!(!restored.has_pending_remote_pwd("workspace-b", "remote-1"));
 }
 
@@ -1034,7 +1035,7 @@ fn app_wide_authority_moves_across_windows_atomically_and_projects_both() {
         Err(MoveTransactionError::Effect("attach"))
     );
     assert_eq!(model.snapshot(), before);
-    model.move_surface("surface-a", "pane-b", 1).unwrap();
+    move_ok(&mut model, "surface-a", "pane-b", 1);
     assert_eq!(
         model.owner_of_surface("surface-a").unwrap().window_id,
         "window-b"

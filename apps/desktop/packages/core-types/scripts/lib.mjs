@@ -47,6 +47,10 @@ const HEADER =
 export function exportInto(outDir) {
   rmSync(outDir, { recursive: true, force: true });
   mkdirSync(outDir, { recursive: true });
+  // ts-rs emits non-actionable diagnostics for supported serde
+  // `skip_serializing_if` attributes. Strict Rust/Clippy gates run separately;
+  // keep binding generation deterministic and warning-free.
+  const rustflags = [process.env.RUSTFLAGS, "-Awarnings"].filter(Boolean).join(" ");
 
   for (const crate of CRATES) {
     execFileSync(
@@ -54,8 +58,11 @@ export function exportInto(outDir) {
       ["test", "-p", crate, "--features", "ts", "--quiet"],
       {
         cwd: REPO_ROOT,
-        env: { ...process.env, TS_RS_EXPORT_DIR: outDir },
-        stdio: ["ignore", "inherit", "inherit"],
+        env: { ...process.env, RUSTFLAGS: rustflags, TS_RS_EXPORT_DIR: outDir },
+        // Cargo's successful ts-rs export emits known serde-parser diagnostics
+        // on stderr. Keep successful generation warning-free; execFileSync
+        // still includes captured stderr when a command fails.
+        stdio: ["ignore", "inherit", "pipe"],
       },
     );
   }

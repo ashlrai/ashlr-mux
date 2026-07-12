@@ -13,6 +13,7 @@ import type { SessionPanelTitleSnapshot } from "./SessionPanelTitleSnapshot";
 import type { SessionPanelTtySnapshot } from "./SessionPanelTtySnapshot";
 import type { SessionPanelUnreadSnapshot } from "./SessionPanelUnreadSnapshot";
 import type { SessionPendingRemotePwdSnapshot } from "./SessionPendingRemotePwdSnapshot";
+import type { SessionPendingSurfacePwdSnapshot } from "./SessionPendingSurfacePwdSnapshot";
 import type { SessionSurfaceSnapshot } from "./SessionSurfaceSnapshot";
 import type { SessionWorkspaceAgentPidSnapshot } from "./SessionWorkspaceAgentPidSnapshot";
 import type { SessionWorkspaceLayoutSnapshot } from "./SessionWorkspaceLayoutSnapshot";
@@ -63,7 +64,7 @@ surfaces?: Array<SessionSurfaceSnapshot>,
  * Directory reports received before a matching remote surface arrives.
  * These are consumed exactly once by lifecycle reconciliation.
  */
-pending_remote_pwds?: Array<SessionPendingRemotePwdSnapshot>, panel_titles?: Array<SessionPanelTitleSnapshot>, panel_pins?: Array<SessionPanelPinSnapshot>, panel_unreads?: Array<SessionPanelUnreadSnapshot>, restorable_agent_snapshots?: Array<SessionPanelRestorableAgentSnapshot>,
+pending_remote_pwds?: Array<SessionPendingRemotePwdSnapshot>, pending_surface_pwds?: Array<SessionPendingSurfacePwdSnapshot>, panel_titles?: Array<SessionPanelTitleSnapshot>, panel_pins?: Array<SessionPanelPinSnapshot>, panel_unreads?: Array<SessionPanelUnreadSnapshot>, restorable_agent_snapshots?: Array<SessionPanelRestorableAgentSnapshot>,
 /**
  * Workspace-level git branch fallback used only when no panel reports a
  * branch. Mirrors canonical `Workspace.gitBranch` as consumed by the
