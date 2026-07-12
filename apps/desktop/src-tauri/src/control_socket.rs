@@ -17914,4 +17914,7 @@ mod tests {
 
     #[path = "pane_surface_lifecycle_red.rs"]
     mod pane_surface_lifecycle_red;
+
+    #[path = "surface_action_exhaustive_red.rs"]
+    mod surface_action_exhaustive_red;
 }
