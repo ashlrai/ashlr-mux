@@ -248,6 +248,61 @@ fn register_unregister_exact_outcomes_and_missing_or_main_noops() {
 }
 
 #[test]
+fn production_missing_main_repairs_first_window_without_allocating() {
+    let mut before = initial();
+    before.windows[0].window_id = None;
+    let authority = GatedSnapshot::new(before.clone());
+    let next_panel = AtomicU64::new(8);
+    let mut publication = RecordingPublication::new(&before);
+
+    let RegisterWindowOutcome::Registered(committed) =
+        transact_register_window(&authority, &next_panel, &mut publication, "main").unwrap()
+    else {
+        panic!("main repaired")
+    };
+    assert_eq!(committed.windows[0].window_id.as_deref(), Some("main"));
+    assert_eq!(publication.calls, ["persist", "baseline", "emit"]);
+    assert_eq!(next_panel.load(Ordering::Relaxed), 8);
+}
+
+#[test]
+fn production_removed_window_restore_preserves_intervening_session_changes() {
+    let mut before = initial();
+    before.windows.push(aux_window("aux", "surface-2"));
+    ensure_workspace_ids(&mut before);
+    ensure_pane_ids(&mut before);
+    let authority = GatedSnapshot::new(before.clone());
+    let mut removal_publication = RecordingPublication::new(&before);
+    let UnregisterWindowOutcome::Removed { snapshot, lease } =
+        transact_unregister_window(&authority, &mut removal_publication, "aux").unwrap()
+    else {
+        panic!("removed")
+    };
+
+    let mut intervening = snapshot.clone();
+    intervening.windows[0].tab_manager.workspaces[0].custom_title = Some("kept".into());
+    let mut intervening_publication = RecordingPublication::new(&snapshot);
+    publish_snapshot_transaction(
+        &authority,
+        Some(&snapshot),
+        &intervening,
+        &mut intervening_publication,
+    )
+    .unwrap();
+
+    let mut restore_publication = RecordingPublication::new(&intervening);
+    let restored =
+        transact_restore_removed_window(&authority, &mut restore_publication, &lease).unwrap();
+    assert_eq!(
+        restored.windows[0].tab_manager.workspaces[0]
+            .custom_title
+            .as_deref(),
+        Some("kept")
+    );
+    assert_eq!(restored.windows[1], before.windows[1]);
+}
+
+#[test]
 fn register_unregister_and_move_persist_failures_preserve_all_authority() {
     for operation in ["register", "unregister", "move"] {
         let mut before = initial();
@@ -575,7 +630,9 @@ fn production_helpers_window_commands_and_socket_use_fallible_compensating_paths
     assert!(close.contains("restore") || close.contains("rollback"));
     assert!(close.contains("show("));
     assert!(close.find("hide(").unwrap() < close.find("unregister_window_for_control(").unwrap());
-    assert!(close.find("unregister_window_for_control(").unwrap() < close.find("close(").unwrap());
+    assert!(
+        close.find("unregister_window_for_control(").unwrap() < close.find(".close(").unwrap()
+    );
 
     let socket = include_str!("../control_socket.rs");
     let route = function_source(socket, "fn workspace_move_to_window(");
