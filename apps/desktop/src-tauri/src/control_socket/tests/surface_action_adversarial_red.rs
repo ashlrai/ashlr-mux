@@ -9,6 +9,7 @@ use cmux_core::session::{
     SessionSurfaceSnapshot,
 };
 use cmux_core::surface_lifecycle::SurfaceLifecycleModel;
+use serde_json::Map;
 
 const W1: &str = "10000000-0000-0000-0000-000000000001";
 const W2: &str = "10000000-0000-0000-0000-000000000002";
@@ -1347,4 +1348,187 @@ fn remote_split_reconciliation_splits_the_requested_source_pane() {
         (true, Some(remote_surface)),
         "supported right/down arrivals split after their requested source and honor focus"
     );
+}
+
+fn created_root_divider(transition: &LifecycleTransition) -> f64 {
+    let _ = ok(transition);
+    let layout = transition.snapshot.windows[0].tab_manager.workspaces[0]
+        .layout
+        .as_ref()
+        .unwrap();
+    let SessionWorkspaceLayoutSnapshot::Split(split) = layout else {
+        panic!("expected created split")
+    };
+    split.divider_position
+}
+
+#[test]
+fn v2_double_parser_accepts_bool_numbers_and_strings_but_rejects_nonfinite() {
+    let parsed = [
+        json!(true),
+        json!(false),
+        json!(1),
+        json!(0.4),
+        json!(" 0.3 "),
+        json!("NaN"),
+        json!("inf"),
+        json!("-inf"),
+        Value::Null,
+    ]
+    .map(|value| {
+        let params = value
+            .is_null()
+            .then(Map::new)
+            .unwrap_or_else(|| Map::from_iter([("initial_divider_position".into(), value)]));
+        f64_param(&params, &["initial_divider_position"])
+    });
+    assert_eq!(
+        parsed,
+        [
+            Some(1.0),
+            Some(0.0),
+            Some(1.0),
+            Some(0.4),
+            Some(0.3),
+            None,
+            None,
+            None,
+            None,
+        ]
+    );
+}
+
+#[test]
+fn local_pane_create_applies_clamped_v2_double_divider_values() {
+    let cases = [
+        (json!(true), 0.9),
+        (json!(false), 0.1),
+        (json!(1), 0.9),
+        (json!(-1), 0.1),
+        (json!(0.4), 0.4),
+        (json!(" 0.3 "), 0.3),
+        (json!("2"), 0.9),
+    ];
+    let actual = cases.map(|(divider, expected)| {
+        let transition = dispatch_with(
+            &action_snapshot(),
+            "pane.create",
+            json!({
+                "surface_id": A,
+                "direction": "right",
+                "initial_divider_position": divider,
+            }),
+            &context(true),
+        );
+        let actual = matches!(transition.result, ControlCallResult::Ok(_))
+            .then(|| created_root_divider(&transition))
+            .unwrap_or(f64::NAN);
+        (actual, expected)
+    });
+    assert!(
+        actual
+            .iter()
+            .all(|(actual, expected)| (actual - expected).abs() < f64::EPSILON),
+        "{actual:?}"
+    );
+}
+
+#[test]
+fn pane_create_rejects_nonfinite_divider_strings_before_any_route_or_mutation() {
+    for snapshot in [action_snapshot(), remote_split_snapshot()] {
+        for divider in ["NaN", "inf", "-inf"] {
+            let transition = remote_pane_create(
+                &snapshot,
+                json!({
+                    "surface_id": A,
+                    "direction": "right",
+                    "initial_divider_position": divider,
+                }),
+            );
+            assert_error(
+                &transition,
+                "invalid_params",
+                "initial_divider_position must be numeric",
+            );
+            assert_eq!(transition.snapshot, snapshot);
+            assert!(transition.effects.is_empty());
+        }
+    }
+}
+
+#[test]
+fn enabled_remote_mirror_aggregates_boolean_divider_as_unsupported() {
+    for divider in [false, true] {
+        let snapshot = remote_split_snapshot();
+        let transition = remote_pane_create(
+            &snapshot,
+            json!({
+                "surface_id": A,
+                "direction": "right",
+                "initial_divider_position": divider,
+            }),
+        );
+        let data = assert_error(
+            &transition,
+            "invalid_params",
+            "Not supported when targeting a remote tmux mirror workspace (the request is routed to tmux and these options cannot be applied): initial_divider_position",
+        );
+        assert_eq!(data["unsupported"], json!(["initial_divider_position"]));
+        assert_eq!(transition.snapshot, snapshot);
+        assert!(transition.effects.is_empty());
+    }
+}
+
+#[test]
+fn disabled_tmux_record_uses_local_pane_create_even_if_stale_connected() {
+    let mut snapshot = remote_split_snapshot();
+    let remote = snapshot.windows[0].tab_manager.workspaces[0]
+        .remote
+        .as_mut()
+        .unwrap();
+    remote.enabled = false;
+    remote.connected = true;
+    remote.state = "connected".into();
+    let transition = remote_pane_create(
+        &snapshot,
+        json!({"surface_id": A, "direction": "right", "type": "terminal"}),
+    );
+    let value = ok(&transition);
+    assert!(value["pane_id"].is_string());
+    assert!(value["surface_id"].is_string());
+    assert_ne!(transition.snapshot, snapshot);
+    assert!(transition
+        .effects
+        .iter()
+        .any(|effect| matches!(effect, LifecycleEffect::TerminalCreate { .. })));
+    assert!(!transition
+        .effects
+        .iter()
+        .any(|effect| matches!(effect, LifecycleEffect::RemoteCreate { .. })));
+}
+
+#[test]
+fn disabled_tmux_record_uses_local_new_terminal_right_even_if_stale_connected() {
+    let mut snapshot = remote_action_snapshot();
+    let remote = snapshot.windows[0].tab_manager.workspaces[0]
+        .remote
+        .as_mut()
+        .unwrap();
+    remote.enabled = false;
+    remote.connected = true;
+    remote.state = "connected".into();
+    let transition = dispatch(
+        &snapshot,
+        json!({"surface_id": A, "action": "new-terminal-right", "focus": false}),
+    );
+    assert!(ok(&transition)["created_surface_id"].is_string());
+    assert_ne!(transition.snapshot, snapshot);
+    assert!(transition
+        .effects
+        .iter()
+        .any(|effect| matches!(effect, LifecycleEffect::TerminalCreate { .. })));
+    assert!(!transition
+        .effects
+        .iter()
+        .any(|effect| matches!(effect, LifecycleEffect::RemoteCreate { .. })));
 }
