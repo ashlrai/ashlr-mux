@@ -1131,6 +1131,8 @@ mod tests {
         fail_create: bool,
         fail_publish: bool,
         fail_teardown: bool,
+        fail_rollback: bool,
+        staged_runtime_live: bool,
     }
 
     impl DockRuntimeEffects for RecordingRuntime {
@@ -1143,9 +1145,12 @@ mod tests {
                 panic!("expected create")
             };
             self.events.push(format!("stage:{owner_id}:{surface_id}"));
-            (!self.fail_create)
-                .then_some(())
-                .ok_or_else(|| "create failed".into())
+            if self.fail_create {
+                Err("create failed".into())
+            } else {
+                self.staged_runtime_live = true;
+                Ok(())
+            }
         }
 
         fn teardown(&mut self, operation: &DockRuntimeOperation) -> Result<(), String> {
@@ -1160,13 +1165,19 @@ mod tests {
 
         fn publish_staged(&mut self) -> Result<(), String> {
             self.events.push("publish".into());
-            (!self.fail_publish)
-                .then_some(())
-                .ok_or_else(|| "publish failed".into())
+            if self.fail_publish {
+                Err("publish failed".into())
+            } else {
+                self.staged_runtime_live = false;
+                Ok(())
+            }
         }
 
         fn rollback_staged(&mut self) {
             self.events.push("rollback".into());
+            if !self.fail_rollback {
+                self.staged_runtime_live = false;
+            }
         }
     }
 
@@ -1444,6 +1455,41 @@ mod tests {
         );
         assert_eq!(session, before_close);
         assert!(failing_close.events[0].starts_with("teardown:"));
+    }
+
+    #[test]
+    fn direct_publish_and_runtime_rollback_failures_are_aggregated_without_silent_leak() {
+        let (mut session, owner) = app();
+        let before = session.clone();
+        let mut runtime = RecordingRuntime {
+            fail_publish: true,
+            fail_rollback: true,
+            ..RecordingRuntime::default()
+        };
+
+        let error = create_with_runtime(
+            &mut session,
+            &DockStore,
+            &owner,
+            terminal("publish and rollback fail"),
+            &mut runtime,
+        )
+        .unwrap_err();
+        let mut violations = Vec::new();
+        if !error.contains("publish failed") || !error.contains("rollback failed") {
+            violations.push(format!(
+                "primary and rollback failures were not aggregated: {error}"
+            ));
+        }
+        if runtime.staged_runtime_live && !error.contains("rollback failed") {
+            violations.push(
+                "failed rollback left the staged runtime live without reporting the leak".into(),
+            );
+        }
+        if session != before {
+            violations.push("failed direct Dock create changed the authoritative snapshot".into());
+        }
+        assert!(violations.is_empty(), "{}", violations.join("; "));
     }
 
     #[test]

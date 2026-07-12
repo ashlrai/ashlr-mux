@@ -89,6 +89,39 @@ impl SessionState {
             .map_err(|_| "Session control mutation gate is unavailable".to_string())
     }
 
+    #[cfg(test)]
+    /// Exercises the exact snapshot-lock and mutation primitives used by the
+    /// structural (`session_new_terminal_tab`), focus (`session_focus_panel`),
+    /// and metadata (`session_set_process_title`) Tauri writer categories.
+    pub(crate) fn exercise_ui_writer_for_test(
+        &self,
+        category: TestUiWriterCategory,
+    ) -> Result<(), String> {
+        let mut snapshot = self
+            .snapshot
+            .lock()
+            .map_err(|_| "Session state is unavailable".to_string())?;
+        match category {
+            TestUiWriterCategory::Structural => {
+                let _ = apply_new_terminal_tab(
+                    &mut snapshot,
+                    FIRST_PANEL_ID,
+                    "surface-ui-writer",
+                    None,
+                    None,
+                    None,
+                );
+            }
+            TestUiWriterCategory::Focus => {
+                let _ = apply_focus_panel(&mut snapshot, FIRST_PANEL_ID);
+            }
+            TestUiWriterCategory::Metadata => {
+                let _ = apply_set_process_title(&mut snapshot, FIRST_PANEL_ID, "writer-title");
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn snapshot_for_lifecycle(&self) -> Result<AppSessionSnapshot, String> {
         self.snapshot
             .lock()
@@ -113,6 +146,14 @@ impl SessionState {
         notify_session_changed(app, &next);
         Ok(result)
     }
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TestUiWriterCategory {
+    Structural,
+    Focus,
+    Metadata,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

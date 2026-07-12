@@ -241,6 +241,88 @@ fn session_control_mutation_gate_serializes_complete_transactions() {
 }
 
 #[test]
+fn representative_ui_session_writers_share_the_control_mutation_gate() {
+    use crate::session::TestUiWriterCategory;
+
+    let state = Arc::new(SessionState::default());
+    let control_transaction = state.lock_control_mutation().unwrap();
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let (completed_tx, completed_rx) = mpsc::channel();
+    let mut threads = Vec::new();
+    for category in [
+        TestUiWriterCategory::Structural,
+        TestUiWriterCategory::Focus,
+        TestUiWriterCategory::Metadata,
+    ] {
+        let state = Arc::clone(&state);
+        let ready = ready_tx.clone();
+        let completed = completed_tx.clone();
+        threads.push(std::thread::spawn(move || {
+            ready.send(category).unwrap();
+            state.exercise_ui_writer_for_test(category).unwrap();
+            completed.send(category).unwrap();
+        }));
+    }
+    drop(ready_tx);
+    drop(completed_tx);
+    for _ in 0..3 {
+        ready_rx.recv().unwrap();
+    }
+
+    let mut early = Vec::new();
+    for _ in 0..3 {
+        if let Ok(category) = completed_rx.recv_timeout(Duration::from_millis(50)) {
+            early.push(category);
+        }
+    }
+    drop(control_transaction);
+    for thread in threads {
+        thread.join().unwrap();
+    }
+    assert!(
+        early.is_empty(),
+        "UI session writers bypassed the control mutation gate: {early:?}"
+    );
+}
+
+#[test]
+fn lifecycle_commit_error_preserves_primary_failure_and_appends_rollback_failure() {
+    struct PrimaryAndRollbackFailure;
+
+    impl LifecycleEffectExecutor for PrimaryAndRollbackFailure {
+        type Error = String;
+
+        fn stage(&mut self, _effect: &LifecycleEffect) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn commit_staged(&mut self) -> Result<(), Self::Error> {
+            Err("primary commit failure".into())
+        }
+
+        fn rollback_staged(&mut self) -> Result<(), Self::Error> {
+            Err("rollback compensation failure".into())
+        }
+    }
+
+    let before = test_snapshot();
+    let transition = transition(
+        &before,
+        "surface.create",
+        json!({"type":"terminal", "focus":false}),
+    );
+    let mut published = before.clone();
+    let error =
+        commit_lifecycle_transition(&mut published, transition, &mut PrimaryAndRollbackFailure)
+            .unwrap_err();
+    assert!(
+        error.contains("primary commit failure") && error.contains("rollback compensation failure"),
+        "transaction error lost one failure: {error}"
+    );
+    assert_eq!(published, before);
+}
+
+#[test]
 fn stale_restore_keeps_intervening_authority_and_runtime_inventory_coherent() {
     // This interleaving is reachable in production: named_pipe::accept_loop
     // serves every accepted connection in its own tokio::spawn task. A second
