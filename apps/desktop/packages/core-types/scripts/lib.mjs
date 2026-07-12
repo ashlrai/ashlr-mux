@@ -10,7 +10,8 @@
 //
 // Runtime-agnostic: uses only `node:*` builtins, so it runs under both `bun`
 // and `node`.
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
+import { filterTsRsDiagnostics } from "./stderr-filter.mjs";
 import {
   cpSync,
   mkdirSync,
@@ -47,24 +48,28 @@ const HEADER =
 export function exportInto(outDir) {
   rmSync(outDir, { recursive: true, force: true });
   mkdirSync(outDir, { recursive: true });
-  // ts-rs emits non-actionable diagnostics for supported serde
-  // `skip_serializing_if` attributes. Strict Rust/Clippy gates run separately;
-  // keep binding generation deterministic and warning-free.
-  const rustflags = [process.env.RUSTFLAGS, "-Awarnings"].filter(Boolean).join(" ");
-
   for (const crate of CRATES) {
-    execFileSync(
+    const result = spawnSync(
       "cargo",
       ["test", "-p", crate, "--features", "ts", "--quiet"],
       {
         cwd: REPO_ROOT,
-        env: { ...process.env, RUSTFLAGS: rustflags, TS_RS_EXPORT_DIR: outDir },
-        // Cargo's successful ts-rs export emits known serde-parser diagnostics
-        // on stderr. Keep successful generation warning-free; execFileSync
-        // still includes captured stderr when a command fails.
-        stdio: ["ignore", "inherit", "pipe"],
+        env: {
+          ...process.env,
+          CARGO_BUILD_JOBS: "1",
+          CARGO_TERM_COLOR: "never",
+          NO_COLOR: "1",
+          TS_RS_EXPORT_DIR: outDir,
+        },
+        encoding: "utf8",
       },
     );
+    if (result.stdout) process.stdout.write(result.stdout);
+    const unexpected = filterTsRsDiagnostics(result.stderr ?? "");
+    if (unexpected) process.stderr.write(unexpected);
+    if (result.status !== 0) {
+      throw new Error(`cargo test failed for ${crate} with status ${result.status}`);
+    }
   }
 
   // Normalize the ts-rs file header so generated files carry a clear

@@ -178,7 +178,7 @@ pub struct SurfaceLifecycleModel {
     surface_owners: HashMap<String, Owner>,
     runtime_owners: HashMap<String, String>,
     last_generation: HashMap<String, u64>,
-    pending_pwd: HashMap<String, (u64, String)>,
+    pending_pwd: BTreeMap<String, (u64, String)>,
     pending_remote_pwd: BTreeMap<(String, String), String>,
     reconciled_remote_generation: HashMap<String, u64>,
     collapsed_panes: HashSet<String>,
