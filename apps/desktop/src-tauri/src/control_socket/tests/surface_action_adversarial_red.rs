@@ -667,7 +667,7 @@ fn production_remote_tmux_commands_cross_ssh_as_one_safe_shell_command() {
     assert_eq!(
         focused,
         vec![
-            "tmux new-window -a -t @7 -c '/srv/repo with spaces/it'\"'\"'s-here' \
+            "tmux new-window -a -t '@7' -c '/srv/repo with spaces/it'\"'\"'s-here' \
              -P -F '#{window_id}\t#{pane_id}'"
                 .replace("\n", "")
         ],

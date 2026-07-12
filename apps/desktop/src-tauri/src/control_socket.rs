@@ -1514,6 +1514,7 @@ struct ProductionLifecycleExecutor<'a> {
     staged: Vec<pane_surface_lifecycle::LifecycleEffect>,
     staged_terminals: Vec<(String, u32, bool)>,
     staged_remote_creations: Vec<StagedRemoteCreation>,
+    deferred_remote_reconciliations: Vec<StagedRemoteCreation>,
     staged_browsers: Vec<(String, String, Option<String>)>,
     dock_journal: DockCommitJournal<DockRuntimeClaim, DockTeardownCompensation>,
 }
@@ -1636,6 +1637,24 @@ impl RemoteTmuxTarget {
     fn permits_immediate_arrival(self, arrival_policy: &str) -> bool {
         self == Self::Pane && arrival_policy == "runtime-pane-add"
     }
+
+    fn identity_prefix(self) -> char {
+        match self {
+            Self::Pane => '%',
+            Self::Window => '@',
+        }
+    }
+}
+
+fn remote_tmux_kill_command(target: RemoteTmuxTarget, token: &str) -> Result<Vec<String>, String> {
+    if !valid_tmux_identity(token, target.identity_prefix()) {
+        return Err("invalid tmux rollback identity".into());
+    }
+    Ok(vec![format!(
+        "tmux {} -t {}",
+        target.rollback_operation(),
+        shell_quote_remote(token)?,
+    )])
 }
 
 struct RemoteTmuxCreateSpec<'a> {
@@ -1647,29 +1666,57 @@ struct RemoteTmuxCreateSpec<'a> {
 
 fn remote_tmux_create_argv(spec: &RemoteTmuxCreateSpec<'_>) -> Result<Vec<String>, String> {
     let target = RemoteTmuxTarget::for_create(spec.operation)?;
-    let mut args = vec!["tmux".into(), spec.operation.into()];
+    let mut parts = vec!["tmux".to_string(), spec.operation.to_string()];
     if target == RemoteTmuxTarget::Pane || !spec.focus {
-        args.push("-d".into());
+        parts.push("-d".into());
     }
     if target == RemoteTmuxTarget::Window {
-        args.extend([
-            "-a".into(),
-            "-t".into(),
-            spec.source_target.unwrap_or("{end}").into(),
-        ]);
+        let source = spec.source_target.unwrap_or("{end}");
+        if source != "{end}" && !valid_tmux_identity(source, '@') {
+            return Err("invalid tmux source window identity".into());
+        }
+        parts.extend(["-a".into(), "-t".into(), shell_quote_remote(source)?]);
         if let (Some(_), Some(directory)) = (spec.source_target, spec.working_directory) {
-            args.extend(["-c".into(), directory.into()]);
+            parts.extend(["-c".into(), shell_quote_remote(directory)?]);
         }
     }
-    args.extend([
+    parts.extend([
         "-P".into(),
         "-F".into(),
-        match target {
-            RemoteTmuxTarget::Pane => "#{pane_id}".into(),
-            RemoteTmuxTarget::Window => "#{window_id}\t#{pane_id}".into(),
-        },
+        quote_tmux_format(match target {
+            RemoteTmuxTarget::Pane => "#{pane_id}",
+            RemoteTmuxTarget::Window => "#{window_id}\t#{pane_id}",
+        }),
     ]);
-    Ok(args)
+    Ok(vec![parts.join(" ")])
+}
+
+fn remote_tmux_source_window_command(pane_token: &str) -> Result<Vec<String>, String> {
+    if !valid_tmux_identity(pane_token, '%') {
+        return Err("invalid tmux source pane identity".into());
+    }
+    Ok(vec![format!(
+        "tmux display-message -p -t {} {}",
+        shell_quote_remote(pane_token)?,
+        quote_tmux_format("#{window_id}"),
+    )])
+}
+
+fn shell_quote_remote(value: &str) -> Result<String, String> {
+    if value.chars().any(|character| character.is_control()) {
+        return Err("remote shell value contains control characters".into());
+    }
+    Ok(format!("'{}'", value.replace('\'', "'\"'\"'")))
+}
+
+fn quote_tmux_format(value: &str) -> String {
+    format!("'{value}'")
+}
+
+fn valid_tmux_identity(value: &str, prefix: char) -> bool {
+    value.strip_prefix(prefix).is_some_and(|digits| {
+        !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1679,11 +1726,22 @@ struct RemoteTmuxObservation {
 }
 
 fn parse_remote_tmux_observation(output: &str) -> Result<RemoteTmuxObservation, String> {
-    let line = output.trim();
+    let line = output
+        .strip_suffix("\r\n")
+        .or_else(|| output.strip_suffix('\n'))
+        .unwrap_or(output);
+    if line.is_empty()
+        || line.contains(['\r', '\n'])
+        || line
+            .chars()
+            .any(|character| character.is_control() && character != '\t')
+    {
+        return Err("remote tmux create returned invalid window observation".into());
+    }
     let (window_token, pane_token) = line.split_once('\t').ok_or_else(|| {
         "remote tmux create returned no authoritative window observation".to_string()
     })?;
-    if !window_token.starts_with('@') || !pane_token.starts_with('%') {
+    if !valid_tmux_identity(window_token, '@') || !valid_tmux_identity(pane_token, '%') {
         return Err("remote tmux create returned invalid window observation".into());
     }
     Ok(RemoteTmuxObservation {
@@ -1786,17 +1844,22 @@ fn schedule_remote_window_reconciliation(app: &AppHandle, remote: StagedRemoteCr
         let mut attempt = 0;
         let failure = loop {
             match commit_runtime_arrival_for_control(&app, arrival.clone()) {
-                Ok(true) => {
-                    if should_focus_window_after_remote_arrival(remote.focus, true) {
-                        if let Some(window) = app.get_webview_window(&remote.window_id) {
-                            let _ = window.set_focus();
+                Ok(outcome) => match outcome {
+                    RuntimeArrivalCommitOutcome::Committed => {
+                        if should_focus_window_after_remote_arrival(remote.focus, true) {
+                            if let Some(window) = app.get_webview_window(&remote.window_id) {
+                                let _ = window.set_focus();
+                            }
                         }
+                        return;
                     }
-                    return;
-                }
-                Ok(false) => {
-                    break "Remote source tab disappeared before window arrival".to_string();
-                }
+                    RuntimeArrivalCommitOutcome::DuplicateOrStale => return,
+                    RuntimeArrivalCommitOutcome::SourceMissing => {
+                        let action = RemoteObservationAction::CompensateKillWindow;
+                        debug_assert_eq!(action, RemoteObservationAction::CompensateKillWindow);
+                        break "Remote source tab disappeared before window arrival".to_string();
+                    }
+                },
                 Err(error) => {
                     if remote_observation_action(true, Some(&error), attempt)
                         != RemoteObservationAction::RetainAndRetry
@@ -1807,12 +1870,17 @@ fn schedule_remote_window_reconciliation(app: &AppHandle, remote: StagedRemoteCr
                 }
             }
         };
-        let compensation = Command::new("ssh")
-            .args(["-T", "-o", "BatchMode=yes", &remote.destination])
-            .args(["tmux", "kill-window", "-t", &observation.window_token])
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false);
+        let compensation =
+            remote_tmux_kill_command(RemoteTmuxTarget::Window, &observation.window_token)
+                .and_then(|command| {
+                    Command::new("ssh")
+                        .args(["-T", "-o", "BatchMode=yes", &remote.destination])
+                        .args(command)
+                        .status()
+                        .map_err(|error| error.to_string())
+                })
+                .map(|status| status.success())
+                .unwrap_or(false);
         record_event(
             &app,
             "surface.create_failed",
@@ -1879,6 +1947,12 @@ fn shell_execute_succeeded(code: isize) -> bool {
 }
 
 impl ProductionLifecycleExecutor<'_> {
+    fn flush_deferred_remote_reconciliations(&mut self) {
+        for remote in self.deferred_remote_reconciliations.drain(..) {
+            schedule_remote_window_reconciliation(self.app, remote);
+        }
+    }
+
     fn compensate_dock_teardown(
         app: &AppHandle,
         compensation: DockTeardownCompensation,
@@ -1941,16 +2015,14 @@ impl ProductionLifecycleExecutor<'_> {
             }
         }
         for remote in self.staged_remote_creations.drain(..) {
-            let _ = Command::new("ssh")
-                .args(["-T", "-o", "BatchMode=yes", &remote.destination])
-                .args([
-                    "tmux",
-                    remote.target.rollback_operation(),
-                    "-t",
-                    &remote.token,
-                ])
-                .status();
+            if let Ok(command) = remote_tmux_kill_command(remote.target, &remote.token) {
+                let _ = Command::new("ssh")
+                    .args(["-T", "-o", "BatchMode=yes", &remote.destination])
+                    .args(command)
+                    .status();
+            }
         }
+        self.deferred_remote_reconciliations.clear();
         if let Some(state) = app.try_state::<BrowserWebviewState>() {
             for (_, surface_id, _) in self.staged_browsers.drain(..) {
                 let _ = browser_close_webview_for_control(state.inner(), &surface_id);
@@ -2051,23 +2123,17 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
                 let target = RemoteTmuxTarget::for_create(tmux_operation)?;
                 let source_target = if target == RemoteTmuxTarget::Window {
                     source_remote_pane_id.as_ref().and_then(|pane_token| {
+                        let command = remote_tmux_source_window_command(pane_token).ok()?;
                         let output = Command::new("ssh")
                             .args(["-T", "-o", "BatchMode=yes", destination])
-                            .args([
-                                "tmux",
-                                "display-message",
-                                "-p",
-                                "-t",
-                                pane_token,
-                                "#{window_id}",
-                            ])
+                            .args(command)
                             .output()
                             .ok()?;
                         if !output.status.success() {
                             return None;
                         }
                         let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                        token.starts_with('@').then_some(token)
+                        valid_tmux_identity(&token, '@').then_some(token)
                     })
                 } else {
                     None
@@ -2356,9 +2422,12 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
                 commit_runtime_arrival_for_control(self.app, arrival.clone())?;
             }
         }
-        for remote in self.staged_remote_creations.iter().cloned() {
-            schedule_remote_window_reconciliation(self.app, remote);
-        }
+        self.deferred_remote_reconciliations.extend(
+            self.staged_remote_creations
+                .iter()
+                .filter(|remote| remote.observation.is_some())
+                .cloned(),
+        );
         self.staged.clear();
         self.staged_terminals.clear();
         self.staged_remote_creations.clear();
@@ -2471,6 +2540,7 @@ fn handle_pane_surface_lifecycle_request(
         staged: Vec::new(),
         staged_terminals: Vec::new(),
         staged_remote_creations: Vec::new(),
+        deferred_remote_reconciliations: Vec::new(),
         staged_browsers: Vec::new(),
         dock_journal: DockCommitJournal::default(),
     };
@@ -2523,20 +2593,55 @@ fn handle_pane_surface_lifecycle_request(
                 completion.payload,
             );
         }
+        executor.flush_deferred_remote_reconciliations();
     }
     result
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeArrivalCommitOutcome {
+    Committed,
+    DuplicateOrStale,
+    SourceMissing,
 }
 
 fn commit_runtime_arrival_for_control(
     app: &AppHandle,
     arrival: pane_surface_lifecycle::RuntimeArrival,
-) -> Result<bool, String> {
+) -> Result<RuntimeArrivalCommitOutcome, String> {
     let state = app.state::<SessionState>();
     let _control_guard = state.lock_control_mutation()?;
     let current = current_session_snapshot(&state);
+    let model = cmux_core::surface_lifecycle::SurfaceLifecycleModel::from_app_session(&current)
+        .map_err(|error| error.to_string())?;
+    if arrival.generation == 0 || model.surface(&arrival.surface_id).is_some() {
+        return Ok(RuntimeArrivalCommitOutcome::DuplicateOrStale);
+    }
+    let scope_exists =
+        current.windows.iter().any(|window| {
+            window.window_id.as_deref() == Some(&arrival.window_id)
+                && window.tab_manager.workspaces.iter().any(|workspace| {
+                    workspace.workspace_id.as_deref() == Some(&arrival.workspace_id)
+                })
+        });
+    if !scope_exists {
+        return Ok(RuntimeArrivalCommitOutcome::SourceMissing);
+    }
+    if !arrival.creates_pane {
+        let source_matches = arrival.anchor_surface_id.as_ref().is_some_and(|source| {
+            model.owner_of_surface(source).is_some_and(|owner| {
+                owner.window_id == arrival.window_id
+                    && owner.workspace_id == arrival.workspace_id
+                    && owner.pane_id == arrival.pane_id
+            })
+        });
+        if !source_matches {
+            return Ok(RuntimeArrivalCommitOutcome::SourceMissing);
+        }
+    }
     let reconciled = pane_surface_lifecycle::reconcile_runtime_arrival(&current, arrival.clone());
     if reconciled.snapshot == current {
-        return Ok(false);
+        return Ok(RuntimeArrivalCommitOutcome::DuplicateOrStale);
     }
     commit_lifecycle_snapshot_for_control(app, state.inner(), &reconciled.snapshot, false)?;
     record_session_changed_event_suppressing(
@@ -2569,7 +2674,7 @@ fn commit_runtime_arrival_for_control(
         Some(arrival.surface_id.clone()),
         json!({"surface_id":arrival.surface_id,"pane_id":arrival.pane_id,"kind":"terminal","origin":origin,"focused":arrival.focused}),
     );
-    Ok(true)
+    Ok(RuntimeArrivalCommitOutcome::Committed)
 }
 
 fn runtime_arrival_event_semantics(
@@ -18597,18 +18702,7 @@ mod tests {
         };
         assert_eq!(
             remote_tmux_create_argv(&focused).unwrap(),
-            [
-                "tmux",
-                "new-window",
-                "-a",
-                "-t",
-                "@7",
-                "-c",
-                "/srv/repo with spaces",
-                "-P",
-                "-F",
-                "#{window_id}\t#{pane_id}",
-            ]
+            ["tmux new-window -a -t '@7' -c '/srv/repo with spaces' -P -F '#{window_id}\t#{pane_id}'"]
         );
 
         let background = RemoteTmuxCreateSpec {
@@ -18617,19 +18711,7 @@ mod tests {
         };
         assert_eq!(
             remote_tmux_create_argv(&background).unwrap(),
-            [
-                "tmux",
-                "new-window",
-                "-d",
-                "-a",
-                "-t",
-                "@7",
-                "-c",
-                "/srv/repo with spaces",
-                "-P",
-                "-F",
-                "#{window_id}\t#{pane_id}",
-            ]
+            ["tmux new-window -d -a -t '@7' -c '/srv/repo with spaces' -P -F '#{window_id}\t#{pane_id}'"]
         );
 
         let fallback = RemoteTmuxCreateSpec {
@@ -18640,17 +18722,7 @@ mod tests {
         };
         assert_eq!(
             remote_tmux_create_argv(&fallback).unwrap(),
-            [
-                "tmux",
-                "new-window",
-                "-d",
-                "-a",
-                "-t",
-                "{end}",
-                "-P",
-                "-F",
-                "#{window_id}\t#{pane_id}",
-            ]
+            ["tmux new-window -d -a -t '{end}' -P -F '#{window_id}\t#{pane_id}'"]
         );
 
         let split = RemoteTmuxCreateSpec {
@@ -18661,8 +18733,21 @@ mod tests {
         };
         assert_eq!(
             remote_tmux_create_argv(&split).unwrap(),
-            ["tmux", "split-window", "-d", "-P", "-F", "#{pane_id}"]
+            ["tmux split-window -d -P -F '#{pane_id}'"]
         );
+        assert_eq!(
+            remote_tmux_source_window_command("%7").unwrap(),
+            ["tmux display-message -p -t '%7' '#{window_id}'"]
+        );
+        for invalid in ["@", "@x", "@7;echo", "@７"] {
+            assert!(remote_tmux_create_argv(&RemoteTmuxCreateSpec {
+                operation: "new-window",
+                focus: false,
+                source_target: Some(invalid),
+                working_directory: None,
+            })
+            .is_err());
+        }
     }
 
     #[test]
@@ -18670,6 +18755,18 @@ mod tests {
         let observation = parse_remote_tmux_observation("@12\t%34\n").unwrap();
         assert_eq!(observation.window_token, "@12");
         assert_eq!(observation.pane_token, "%34");
+        assert_eq!(
+            parse_remote_tmux_observation("@12\t%34\r\n").unwrap(),
+            observation
+        );
+        for invalid in [
+            "@12\t%34\textra\n",
+            "@12x\t%34\n",
+            "@12\t%34\nextra\n",
+            "@12\t%x\n",
+        ] {
+            assert!(parse_remote_tmux_observation(invalid).is_err());
+        }
         assert_eq!(
             remote_observation_action(true, None, 0),
             RemoteObservationAction::Reconcile
