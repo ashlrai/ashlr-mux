@@ -63,6 +63,8 @@ impl ControlCommand {
                 | "workspace.close"
                 | "workspace.select"
                 | "workspace.rename"
+                | "tab.action"
+                | "surface.respawn"
         ) {
             return self;
         }
@@ -85,14 +87,23 @@ impl ControlCommand {
         };
         if !matches!(
             self.method.as_str(),
-            "workspace.list" | "workspace.current" | "workspace.create" | "workspace.rename"
+            "workspace.list"
+                | "workspace.current"
+                | "workspace.create"
+                | "workspace.rename"
+                | "tab.action"
+                | "surface.respawn"
         ) {
             return self;
         }
         let Some(params) = self.params.as_object_mut() else {
             return self;
         };
-        if !params.contains_key("window_id") && !params.contains_key("window_ref") {
+        if !params.contains_key("window_id")
+            && !params.contains_key("window_ref")
+            && !params.contains_key("workspace_id")
+            && !params.contains_key("workspace_ref")
+        {
             params
                 .entry("surface_id")
                 .or_insert_with(|| serde_json::json!(surface_id));
@@ -188,6 +199,8 @@ fn workspace_scoped_method(method: &str) -> bool {
             | "browser.clear_history"
             | "browser.toggle_omnibar"
             | "browser.toggle_focus_mode"
+            | "tab.action"
+            | "surface.respawn"
             | "browser.toggle_developer_tools"
             | "browser.show_developer_tools"
             | "browser.network.requests"
@@ -449,6 +462,11 @@ pub fn control_command_for(
         "rename-tab" => Some(ControlCommand::new(
             "surface.rename",
             surface_title_params(args)?,
+        )),
+        "tab-action" => Some(ControlCommand::new("tab.action", tab_action_params(args)?)),
+        "respawn-pane" => Some(ControlCommand::new(
+            "surface.respawn",
+            respawn_pane_params(args)?,
         )),
         "move-tab-to-new-workspace" => Some(ControlCommand::new(
             "surface.move_to_new_workspace",
@@ -2550,6 +2568,215 @@ fn surface_selector_params(args: &[String]) -> Result<serde_json::Value, CliErro
     Ok(serde_json::Value::Object(params))
 }
 
+fn tab_action_params(args: &[String]) -> Result<serde_json::Value, CliError> {
+    let parsed = ParsedArgs::parse(args)?;
+    validate_legacy_flags(
+        "tab-action",
+        &parsed,
+        &[
+            "--action",
+            "--tab",
+            "--surface",
+            "--surface-id",
+            "--surface-ref",
+            "--workspace",
+            "--workspace-id",
+            "--workspace-ref",
+            "--window",
+            "--window-id",
+            "--title",
+            "--url",
+            "--focus",
+        ],
+    )?;
+    let action_from_flag = parsed.value(&["--action"]);
+    let action = action_from_flag
+        .map(String::as_str)
+        .or_else(|| parsed.first_positional())
+        .map(normalize_action_name)
+        .filter(|action| !action.is_empty())
+        .ok_or_else(|| CliError::new("tab-action requires --action <name>"))?;
+
+    let title_positionals = if action_from_flag.is_some() {
+        parsed.positionals.as_slice()
+    } else {
+        parsed.positionals.get(1..).unwrap_or_default()
+    };
+    let positional_title = join_trimmed(title_positionals);
+    let title = parsed
+        .value(&["--title"])
+        .map(|title| title.trim().to_string())
+        .filter(|title| !title.is_empty())
+        .or(positional_title);
+    if action == "rename" && title.is_none() {
+        return Err(CliError::new(
+            "tab-action rename requires --title <text> (or a trailing title)",
+        ));
+    }
+
+    let mut params = serde_json::Map::new();
+    params.insert("action".into(), serde_json::json!(action));
+    apply_lifecycle_workspace_selector(&parsed, &mut params);
+    apply_window_scope_selector(&parsed, &mut params);
+    if let Some(tab) = parsed.value(&["--tab"]) {
+        apply_validated_surface_selector(tab, &mut params)?;
+    } else if let Some(surface) = parsed.value(&["--surface", "--surface-id", "--surface-ref"]) {
+        apply_validated_surface_selector(surface, &mut params)?;
+    }
+    if params.contains_key("window_id") || params.contains_key("window_ref") {
+        if !params.contains_key("workspace_id") && !params.contains_key("workspace_ref") {
+            params.insert("resolve_current_workspace".into(), serde_json::json!(true));
+        }
+    }
+    if let Some(title) = title {
+        params.insert("title".into(), serde_json::json!(title));
+    }
+    if let Some(url) = parsed
+        .value(&["--url"])
+        .map(|url| url.trim())
+        .filter(|url| !url.is_empty())
+    {
+        params.insert("url".into(), serde_json::json!(url));
+    }
+    params.insert(
+        "focus".into(),
+        serde_json::json!(parse_optional_bool(&parsed, "--focus")?.unwrap_or(false)),
+    );
+    Ok(serde_json::Value::Object(params))
+}
+
+fn respawn_pane_params(args: &[String]) -> Result<serde_json::Value, CliError> {
+    let parsed = ParsedArgs::parse(args)?;
+    validate_legacy_flags(
+        "respawn-pane",
+        &parsed,
+        &[
+            "--workspace",
+            "--workspace-id",
+            "--workspace-ref",
+            "--surface",
+            "--surface-id",
+            "--surface-ref",
+            "--window",
+            "--window-id",
+            "--command",
+        ],
+    )?;
+    let mut params = serde_json::Map::new();
+    apply_lifecycle_workspace_selector(&parsed, &mut params);
+    apply_window_scope_selector(&parsed, &mut params);
+    if let Some(surface) = parsed.value(&["--surface", "--surface-id", "--surface-ref"]) {
+        apply_validated_surface_selector(surface, &mut params)?;
+    }
+    if (params.contains_key("window_id") || params.contains_key("window_ref"))
+        && !params.contains_key("workspace_id")
+        && !params.contains_key("workspace_ref")
+    {
+        params.insert("resolve_current_workspace".into(), serde_json::json!(true));
+    }
+
+    let requested = parsed
+        .value(&["--command"])
+        .map(|command| command.trim().to_string())
+        .filter(|command| !command.is_empty())
+        .or_else(|| join_trimmed(&parsed.positionals));
+    let default_shell = native_windows_shell();
+    let start_command = requested.unwrap_or_else(|| default_shell.clone());
+    params.insert(
+        "command".into(),
+        serde_json::json!(native_shell_wrapper(&default_shell, &start_command)),
+    );
+    params.insert(
+        "tmux_start_command".into(),
+        serde_json::json!(start_command),
+    );
+    Ok(serde_json::Value::Object(params))
+}
+
+fn normalize_action_name(action: &str) -> String {
+    action
+        .trim()
+        .chars()
+        .map(|character| match character {
+            '-' | ' ' => '_',
+            other => other.to_ascii_lowercase(),
+        })
+        .collect()
+}
+
+fn apply_lifecycle_workspace_selector(
+    parsed: &ParsedArgs,
+    params: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    if let Some(reference) = parsed.value(&["--workspace-ref"]) {
+        params.insert("workspace_ref".into(), serde_json::json!(reference));
+    } else if let Some(value) = parsed.value(&["--workspace", "--workspace-id"]) {
+        if value.chars().all(|ch| ch.is_ascii_digit()) {
+            params.insert(
+                "workspace_ref".into(),
+                serde_json::json!(format!("workspace:{value}")),
+            );
+        } else if value.starts_with("workspace:") {
+            params.insert("workspace_ref".into(), serde_json::json!(value));
+        } else {
+            params.insert("workspace_id".into(), serde_json::json!(value));
+        }
+    }
+}
+
+fn join_trimmed(parts: &[String]) -> Option<String> {
+    let joined = parts
+        .iter()
+        .map(|part| part.trim())
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    (!joined.is_empty()).then_some(joined)
+}
+
+fn parse_optional_bool(parsed: &ParsedArgs, name: &str) -> Result<Option<bool>, CliError> {
+    parsed
+        .value(&[name])
+        .map(|value| match value.trim() {
+            "true" => Ok(true),
+            "false" => Ok(false),
+            _ => Err(CliError::new(format!("{name} must be true|false"))),
+        })
+        .transpose()
+}
+
+fn apply_validated_surface_selector(
+    raw: &str,
+    params: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<(), CliError> {
+    let value = raw.trim();
+    let valid_reference = value
+        .strip_prefix("surface:")
+        .is_some_and(|index| !index.is_empty() && index.chars().all(|ch| ch.is_ascii_digit()));
+    if value.chars().all(|ch| ch.is_ascii_digit()) || valid_reference {
+        apply_surface_selector_value(value, "surface_id", params);
+    } else if uuid::Uuid::parse_str(value).is_ok() {
+        params.insert("surface_id".into(), serde_json::json!(value));
+    } else {
+        return Err(CliError::new(format!(
+            "Invalid surface handle: {value} (expected UUID, ref like surface:1, or index)"
+        )));
+    }
+    Ok(())
+}
+
+fn native_windows_shell() -> String {
+    std::env::var("ComSpec")
+        .ok()
+        .map(|shell| shell.trim().to_string())
+        .filter(|shell| !shell.is_empty())
+        .unwrap_or_else(|| r"C:\Windows\System32\cmd.exe".to_string())
+}
+
+fn native_shell_wrapper(shell: &str, command: &str) -> String {
+    format!("\"{shell}\" /d /s /c \"{command}\"")
+}
+
 fn surface_read_text_params(
     args: &[String],
     command_label: &str,
@@ -4110,6 +4337,7 @@ fn takes_value(arg: &str) -> bool {
         "--after"
             | "--after-surface"
             | "--after-workspace"
+            | "--action"
             | "--amount"
             | "--before"
             | "--before-surface"

@@ -134,6 +134,12 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
         "identify" => Some(
             "Usage:\n  cmux identify\n\nPrints desktop/control-socket identity metadata.",
         ),
+        "tab-action" => Some(
+            "Usage: cmux tab-action --action <name> [flags]\n\nRuns a tab action through the desktop control socket.\n\nFlags:\n  --action <name>             Action name (or provide it as the first positional)\n  --tab <id|ref|index>        Tab target; takes precedence over --surface\n  --surface <id|ref|index>    Surface target\n  --workspace <id|ref|index>  Workspace context\n  --window <id|ref|index>     Window context\n  --title <text>              Title for rename and related actions\n  --url <url>                 URL for browser-tab actions\n  --focus <true|false>        Focus the result (default: false)\n\nTab context (default: $CMUX_TAB_ID, then $CMUX_SURFACE_ID, then focused tab).",
+        ),
+        "respawn-pane" => Some(
+            "Usage: cmux respawn-pane [--workspace <id|ref|index>] [--surface <id|ref|index>] [--window <id|ref|index>] [--command <cmd> | <cmd>]\n\nRespawns a terminal surface using the native Windows shell.\n\nFlags:\n  --workspace <id|ref|index>  Workspace context\n  --surface <id|ref|index>    Surface context (default: focused surface)\n  --window <id|ref|index>     Window context\n  --command <cmd>             Command to run (or provide trailing command tokens)",
+        ),
         "list-windows" => Some("Usage:\n  cmux list-windows\n\nLists desktop windows."),
         "current-window" => Some(
             "Usage:\n  cmux current-window\n\nPrints the active desktop window ID.",

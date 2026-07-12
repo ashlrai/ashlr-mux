@@ -122,7 +122,21 @@ pub fn classify_command(
 
     // 3-10. Name-routed no-socket commands.
     match command {
-        "help" => return PreSocketAction::Help,
+        "help" => {
+            return command_args
+                .first()
+                .map_or(PreSocketAction::Help, |target| {
+                    if command_has_usage_entry(target) {
+                        PreSocketAction::SubcommandHelp {
+                            command: target.clone(),
+                        }
+                    } else {
+                        PreSocketAction::UnknownCommandHelp {
+                            command: target.clone(),
+                        }
+                    }
+                })
+        }
         "remote-daemon-status" => return PreSocketAction::RemoteDaemonStatus,
         "vm-pty-connect" => return PreSocketAction::VmPtyConnect,
         "docs" => return PreSocketAction::Docs,

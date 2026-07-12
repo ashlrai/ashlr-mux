@@ -116,13 +116,24 @@ fn dispatch(
         DispatchPlan::RunVmPtyConnect(args) => cmux_cli::vm_pty_connect::run_vm_pty_connect(&args),
         DispatchPlan::RunControl(control) => {
             let ambient_workspace_id = std::env::var(CMUX_WORKSPACE_ID_ENV).ok();
-            let ambient_surface_id = std::env::var(CMUX_SURFACE_ID_ENV).ok();
-            let control = if options.window_id.is_some() {
-                control.with_window_id(options.window_id.as_deref())
+            let ambient_surface_id = if command == "tab-action" {
+                std::env::var("CMUX_TAB_ID")
+                    .ok()
+                    .or_else(|| std::env::var(CMUX_SURFACE_ID_ENV).ok())
+            } else if command == "respawn-pane" {
+                None
+            } else {
+                std::env::var(CMUX_SURFACE_ID_ENV).ok()
+            };
+            let control = control.with_window_id(options.window_id.as_deref());
+            let has_window_scope = control.params.get("window_id").is_some()
+                || control.params.get("window_ref").is_some();
+            let control = if options.window_id.is_some() || has_window_scope {
+                control
             } else {
                 control
-                    .with_ambient_workspace_id(ambient_workspace_id.as_deref())
                     .with_ambient_surface_id(ambient_surface_id.as_deref())
+                    .with_ambient_workspace_id(ambient_workspace_id.as_deref())
             };
             if matches!(
                 command,
@@ -135,6 +146,8 @@ fn dispatch(
                     | "rename-window"
             ) {
                 run_legacy_workspace_command(options, command, &control.method, &control.params)
+            } else if matches!(command, "tab-action" | "respawn-pane") {
+                run_lifecycle_command(options, &control.method, &control.params)
             } else {
                 run_control_command(options, &control.method, &control.params)
             }
@@ -725,6 +738,37 @@ fn run_control_command(
     Ok(())
 }
 
+#[cfg(not(windows))]
+fn run_lifecycle_command(
+    _options: &GlobalOptions,
+    _method: &str,
+    _params: &serde_json::Value,
+) -> Result<(), CliError> {
+    Err(CliError::new(
+        "socket commands are only supported on Windows in this build",
+    ))
+}
+
+#[cfg(windows)]
+fn run_lifecycle_command(
+    options: &GlobalOptions,
+    method: &str,
+    params: &serde_json::Value,
+) -> Result<(), CliError> {
+    let mut request_params = params.clone();
+    normalize_workspace_params(options, method, &mut request_params)?;
+    let result = call_control_command(options, method, &request_params)?;
+    let id_format = options.id_format.as_deref().unwrap_or("refs");
+    if options.json_output {
+        let mut formatted = result;
+        filter_id_format(&mut formatted, id_format);
+        println!("{}", serde_json::to_string(&formatted).unwrap_or_default());
+    } else {
+        println!("{}", format_lifecycle_text(method, &result, id_format));
+    }
+    Ok(())
+}
+
 #[cfg(windows)]
 fn run_legacy_workspace_command(
     options: &GlobalOptions,
@@ -751,7 +795,7 @@ fn run_legacy_workspace_command(
         .as_object_mut()
         .and_then(|params| params.remove("__post_create_command"))
         .and_then(|value| value.as_str().map(str::to_owned));
-    normalize_legacy_workspace_params(options, method, &mut request_params)?;
+    normalize_workspace_params(options, method, &mut request_params)?;
     let has_layout = request_params.get("layout").is_some();
     let result = call_control_command(options, method, &request_params)?;
     if command == "close-workspace" {
@@ -843,7 +887,7 @@ fn filter_id_format(value: &mut serde_json::Value, id_format: &str) {
 }
 
 #[cfg(windows)]
-fn normalize_legacy_workspace_params(
+fn normalize_workspace_params(
     options: &GlobalOptions,
     method: &str,
     params: &mut serde_json::Value,
@@ -896,7 +940,11 @@ fn normalize_legacy_workspace_params(
 
     if !matches!(
         method,
-        "workspace.close" | "workspace.select" | "workspace.rename"
+        "workspace.close"
+            | "workspace.select"
+            | "workspace.rename"
+            | "tab.action"
+            | "surface.respawn"
     ) {
         return Ok(());
     }
@@ -1324,6 +1372,63 @@ fn format_control_result(method: &str, result: &serde_json::Value) -> String {
         "pane.resize" => format!("OK {}", control_handle(result, "pane")),
         _ => serde_json::to_string(result).unwrap_or_default(),
     }
+}
+
+fn format_lifecycle_text(method: &str, result: &serde_json::Value, id_format: &str) -> String {
+    if method == "surface.respawn" {
+        return "OK".to_string();
+    }
+    let mut fields = vec![format!(
+        "action={}",
+        result
+            .get("action")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+    )];
+    for (label, id_key, ref_key) in [
+        ("tab", "surface_id", "surface_ref"),
+        ("workspace", "workspace_id", "workspace_ref"),
+    ] {
+        if let Some(handle) = format_id_pair(
+            result.get(id_key).and_then(serde_json::Value::as_str),
+            result.get(ref_key).and_then(serde_json::Value::as_str),
+            id_format,
+        ) {
+            let handle = if label == "tab" {
+                handle.replacen("surface:", "tab:", 1)
+            } else {
+                handle
+            };
+            fields.push(format!("{label}={handle}"));
+        }
+    }
+    for key in ["closed", "full_width_tab_mode"] {
+        if let Some(value) = result.get(key) {
+            fields.push(format!("{key}={value}"));
+        }
+    }
+    for (label, id_key, ref_key) in [
+        ("created", "created_surface_id", "created_surface_ref"),
+        (
+            "created_workspace",
+            "created_workspace_id",
+            "created_workspace_ref",
+        ),
+    ] {
+        if let Some(handle) = format_id_pair(
+            result.get(id_key).and_then(serde_json::Value::as_str),
+            result.get(ref_key).and_then(serde_json::Value::as_str),
+            id_format,
+        ) {
+            let handle = if label == "created" {
+                handle.replacen("surface:", "tab:", 1)
+            } else {
+                handle
+            };
+            fields.push(format!("{label}={handle}"));
+        }
+    }
+    format!("OK {}", fields.join(" "))
 }
 
 fn format_workspace_entries(result: &serde_json::Value) -> String {
