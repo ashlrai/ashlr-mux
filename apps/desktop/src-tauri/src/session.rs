@@ -93,6 +93,10 @@ mod surface_move_reorder_red;
 #[path = "session/focus_navigation_red.rs"]
 mod focus_navigation_red;
 
+#[cfg(test)]
+#[path = "session/pane_layout_red.rs"]
+mod pane_layout_red;
+
 impl Default for SessionState {
     fn default() -> Self {
         let snapshot = initial_snapshot(FIRST_PANEL_ID);
