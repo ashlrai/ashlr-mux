@@ -54,27 +54,27 @@ use crate::session::{
     new_terminal_tab_for_control, new_workspace_in_window_for_control, open_browser_url_in_panel,
     open_custom_sidebar_in_panel, open_diff_viewer_in_panel, open_file_in_panel,
     open_markdown_file_in_panel, reconnect_workspace_remote_for_control,
-    register_window_for_control, rename_workspace_in_window_for_control,
-    reopen_closed_browser_tab_for_control, reopen_closed_workspace_for_control,
-    reorder_surface_for_control, reorder_workspaces_for_control,
-    reorder_workspaces_many_for_control, reset_workspace_color_for_control,
-    reset_workspace_sidebar_metadata_for_control, resize_pane_for_control,
-    restore_previous_launch_for_control, select_adjacent_panel_for_control,
-    select_last_workspace_for_control, select_workspace_for_control,
-    select_workspace_in_window_for_control, select_workspace_surface, set_browser_zoom_for_control,
-    set_group_collapsed_for_control, set_panel_listening_ports_for_control,
-    set_panel_pinned_for_control, set_panel_shell_activity_for_control,
-    set_panel_title_for_control, set_panel_tty_for_control, set_panel_unread_for_control,
-    set_surface_kind_for_control, set_workspace_agent_listening_ports_for_control,
-    set_workspace_agent_pid_for_control, set_workspace_description_for_control,
-    set_workspace_panel_pull_request_for_control, set_workspace_pinned_for_control,
-    set_workspace_sidebar_metadata_block_for_control, set_workspace_sidebar_metadata_for_control,
-    set_workspace_sidebar_progress_for_control, set_workspace_sidebar_status_for_control,
-    set_workspace_unread_for_control, show_browser_developer_tools_for_control,
-    split_browser_for_control, split_off_surface_for_control, split_panel_for_control,
-    start_direct_browser_proxy_for_control, swap_panes_for_control,
-    toggle_browser_developer_tools_for_control, toggle_browser_focus_mode_for_control,
-    toggle_browser_omnibar_for_control, toggle_split_zoom_for_control, BrowserPanelCreateError,
+    rename_workspace_in_window_for_control, reopen_closed_browser_tab_for_control,
+    reopen_closed_workspace_for_control, reorder_surface_for_control,
+    reorder_workspaces_for_control, reorder_workspaces_many_for_control,
+    reset_workspace_color_for_control, reset_workspace_sidebar_metadata_for_control,
+    resize_pane_for_control, restore_previous_launch_for_control,
+    select_adjacent_panel_for_control, select_last_workspace_for_control,
+    select_workspace_for_control, select_workspace_in_window_for_control, select_workspace_surface,
+    set_browser_zoom_for_control, set_group_collapsed_for_control,
+    set_panel_listening_ports_for_control, set_panel_pinned_for_control,
+    set_panel_shell_activity_for_control, set_panel_title_for_control, set_panel_tty_for_control,
+    set_panel_unread_for_control, set_surface_kind_for_control,
+    set_workspace_agent_listening_ports_for_control, set_workspace_agent_pid_for_control,
+    set_workspace_description_for_control, set_workspace_panel_pull_request_for_control,
+    set_workspace_pinned_for_control, set_workspace_sidebar_metadata_block_for_control,
+    set_workspace_sidebar_metadata_for_control, set_workspace_sidebar_progress_for_control,
+    set_workspace_sidebar_status_for_control, set_workspace_unread_for_control,
+    show_browser_developer_tools_for_control, split_browser_for_control,
+    split_off_surface_for_control, split_panel_for_control, start_direct_browser_proxy_for_control,
+    swap_panes_for_control, toggle_browser_developer_tools_for_control,
+    toggle_browser_focus_mode_for_control, toggle_browser_omnibar_for_control,
+    toggle_split_zoom_for_control, BrowserPanelCreateError, MoveWorkspaceToWindowControlError,
     PaneFocusControlError, PaneLastControlError, PaneResizeControlError, PaneResizeControlIntent,
     PaneTopologyControlError, ReorderWorkspacesManyControlError, SessionState,
     SurfacePositionControlError, TerminalPanelCreateError, WorkspaceLastControlError,
@@ -6324,6 +6324,14 @@ fn workspace_id_for_window_move(
         .then_some(workspace_id)
 }
 
+fn focus_window_after_workspace_move(app: &AppHandle, label: &str, focus: bool) {
+    if focus {
+        if let Some(window) = app.get_webview_window(label) {
+            let _ = window.set_focus();
+        }
+    }
+}
+
 fn workspace_move_to_window(
     app: &AppHandle,
     params: &serde_json::Map<String, Value>,
@@ -6357,7 +6365,6 @@ fn workspace_move_to_window(
         };
     };
     let state = app.state::<SessionState>();
-    register_window_for_control(app, &state, &window_identity.label);
     let focus = bool_param(params, &["focus"]).unwrap_or(false);
     let result = match move_workspace_to_window_for_control(
         app,
@@ -6367,7 +6374,7 @@ fn workspace_move_to_window(
         focus,
     ) {
         Ok(result) => result,
-        Err(session_ops::MoveWorkspaceToWindowError::WorkspaceNotFound) => {
+        Err(MoveWorkspaceToWindowControlError::NotFound) => {
             return ControlCallResult::Err {
                 code: "not_found".to_string(),
                 message: "Workspace not found".to_string(),
@@ -6378,23 +6385,14 @@ fn workspace_move_to_window(
                 ),
             };
         }
-        Err(session_ops::MoveWorkspaceToWindowError::WindowNotFound) => {
+        Err(MoveWorkspaceToWindowControlError::Publication(message)) => {
             return ControlCallResult::Err {
-                code: "not_found".to_string(),
-                message: "Window not found".to_string(),
-                data: Some(
-                    json!({"window_id": window_identity.id})
-                        .try_into()
-                        .unwrap_or(JsonValue::Null),
-                ),
+                code: "internal".to_string(),
+                message,
+                data: None,
             };
         }
     };
-    if focus {
-        if let Some(window) = app.get_webview_window(&window_identity.label) {
-            let _ = window.set_focus();
-        }
-    }
     let Some(target_window) = result
         .windows
         .iter()
@@ -6406,6 +6404,7 @@ fn workspace_move_to_window(
             data: None,
         };
     };
+    focus_window_after_workspace_move(app, &window_identity.label, focus);
     let workspace_ref_value = target_window
         .tab_manager
         .workspaces
