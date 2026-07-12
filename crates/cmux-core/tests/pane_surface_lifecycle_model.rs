@@ -116,6 +116,24 @@ fn pending_surface_pwd_restarts_applies_once_and_rejects_ghosts() {
 }
 
 #[test]
+fn pending_surface_pwd_serialization_is_stable_across_insertion_order() {
+    fn projected(order: [&str; 2]) -> serde_json::Value {
+        let base: SessionTabManagerSnapshot = serde_json::from_value(serde_json::json!({
+            "workspaces":[{"workspace_id":"workspace-1","process_title":"shell","layout":{"type":"pane","pane":{"pane_id":"pane-1","panel_ids":["a","b"]}},"surfaces":[
+                {"surface_id":"a","pane_id":"pane-1","generation":1,"kind":{"type":"terminal"},"metadata":{}},
+                {"surface_id":"b","pane_id":"pane-1","generation":1,"kind":{"type":"terminal"},"metadata":{}}
+            ]}]
+        })).unwrap();
+        let mut model = SurfaceLifecycleModel::from_session_snapshot("window-1", &base).unwrap();
+        for id in order {
+            model.queue_pending_pwd(id, &format!("C:/{id}")).unwrap();
+        }
+        serde_json::to_value(model.to_session_snapshot(&base).unwrap()).unwrap()
+    }
+    assert_eq!(projected(["a", "b"]), projected(["b", "a"]));
+}
+
+#[test]
 fn missing_workspace_ids_materialize_globally_unique_stable_ids() {
     let legacy: AppSessionSnapshot = serde_json::from_value(serde_json::json!({"version":1,"created_at":0,"windows":[
         {"window_id":"window-a","tab_manager":{"workspaces":[{"process_title":"a","layout":null}]}},
