@@ -1853,11 +1853,9 @@ fn apply_create_right_action(
         else {
             return error(snapshot, "internal_error", "Failed to create tab", None);
         };
-        if workspace
-            .remote
-            .as_ref()
-            .is_some_and(|remote| remote.connected && remote.transport.as_deref() == Some("tmux"))
-        {
+        if workspace.remote.as_ref().is_some_and(|remote| {
+            remote.enabled && remote.connected && remote.transport.as_deref() == Some("tmux")
+        }) {
             let focused = super::bool_param(params, &["focus"]).unwrap_or(false);
             let source_remote_pane_id = match &source_record.kind {
                 SessionSurfaceKindSnapshot::RemoteTerminal {
@@ -3094,7 +3092,11 @@ fn pane_resize(
     )
 }
 
-fn remote_tmux_unsupported_options(params: &Map<String, Value>, insert_first: bool) -> Vec<String> {
+fn remote_tmux_unsupported_options(
+    params: &Map<String, Value>,
+    insert_first: bool,
+    initial_divider_position: Option<f64>,
+) -> Vec<String> {
     let mut unsupported = Vec::new();
     if insert_first {
         unsupported.push("direction=left/up".to_string());
@@ -3116,7 +3118,7 @@ fn remote_tmux_unsupported_options(params: &Map<String, Value>, insert_first: bo
     {
         unsupported.push("startup_environment".into());
     }
-    if super::f64_param(params, &["initial_divider_position"]).is_some() {
+    if initial_divider_position.is_some() {
         unsupported.push("initial_divider_position".into());
     }
     unsupported
@@ -3154,18 +3156,17 @@ fn pane_create(
             )
         }
     };
-    if params
-        .get("initial_divider_position")
-        .is_some_and(|value| !value.is_null())
-        && super::f64_param(params, &["initial_divider_position"]).is_none()
-    {
-        return error(
-            snapshot,
-            "invalid_params",
-            "initial_divider_position must be numeric",
-            None,
-        );
-    }
+    let initial_divider_position = match super::initial_divider_position_param(params) {
+        Ok(value) => value,
+        Err(()) => {
+            return error(
+                snapshot,
+                "invalid_params",
+                "initial_divider_position must be numeric",
+                None,
+            )
+        }
+    };
     let placement = match requested_placement(params) {
         Ok(placement) => placement,
         Err((code, message, data)) => return error(snapshot, code, message, data),
@@ -3219,10 +3220,12 @@ fn pane_create(
     });
     let remote = workspace.remote.as_ref();
     let remote_tmux = method == "pane.create"
-        && remote.and_then(|remote| remote.transport.as_deref()) == Some("tmux")
+        && remote
+            .is_some_and(|remote| remote.enabled && remote.transport.as_deref() == Some("tmux"))
         && matches!(kind, SessionSurfaceKindSnapshot::Terminal);
     if remote_tmux {
-        let unsupported = remote_tmux_unsupported_options(params, insert_first);
+        let unsupported =
+            remote_tmux_unsupported_options(params, insert_first, initial_divider_position);
         if !unsupported.is_empty() {
             return error(
                 snapshot,
@@ -3299,14 +3302,7 @@ fn pane_create(
         return error(snapshot, "internal_error", "Failed to create pane", None);
     }
     let pane_id = Uuid::new_v4().to_string();
-    assign_created_ids(
-        layout,
-        &surface_id,
-        &pane_id,
-        params
-            .get("initial_divider_position")
-            .and_then(Value::as_f64),
-    );
+    assign_created_ids(layout, &surface_id, &pane_id, initial_divider_position);
     if let Some(records) = workspace.surfaces.as_mut() {
         records.push(cmux_core::session::SessionSurfaceSnapshot {
             surface_id: surface_id.clone(),

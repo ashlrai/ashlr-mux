@@ -1380,7 +1380,7 @@ fn v2_double_parser_accepts_bool_numbers_and_strings_but_rejects_nonfinite() {
             .is_null()
             .then(Map::new)
             .unwrap_or_else(|| Map::from_iter([("initial_divider_position".into(), value)]));
-        f64_param(&params, &["initial_divider_position"])
+        v2_double_param(&params, &["initial_divider_position"])
     });
     assert_eq!(
         parsed,

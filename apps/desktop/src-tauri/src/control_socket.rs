@@ -14504,6 +14504,34 @@ fn f64_param(params: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<f
     })
 }
 
+fn v2_double_param(params: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<f64> {
+    keys.iter().find_map(|key| {
+        let value = params.get(*key)?;
+        value
+            .as_bool()
+            .map(|value| if value { 1.0 } else { 0.0 })
+            .or_else(|| value.as_f64())
+            .or_else(|| {
+                value
+                    .as_str()
+                    .map(str::trim)
+                    .and_then(|value| value.parse::<f64>().ok())
+            })
+            .filter(|value| value.is_finite())
+    })
+}
+
+fn initial_divider_position_param(
+    params: &serde_json::Map<String, Value>,
+) -> Result<Option<f64>, ()> {
+    match params.get("initial_divider_position") {
+        None | Some(Value::Null) => Ok(None),
+        Some(_) => v2_double_param(params, &["initial_divider_position"])
+            .map(|value| Some(value.clamp(0.1, 0.9)))
+            .ok_or(()),
+    }
+}
+
 fn ports_param(params: &serde_json::Map<String, Value>) -> Option<Vec<u16>> {
     let value = params
         .get("ports")
