@@ -26,9 +26,10 @@ mod pane_surface_lifecycle;
 
 use crate::browser::{
     browser_add_init_script_for_control, browser_attach_webview_for_control,
-    browser_clear_network_requests_for_control, browser_close_webview_for_control,
-    browser_eval_for_control, browser_network_requests_for_control,
-    browser_webview_command_for_control, BrowserNetworkRequestsQuery, BrowserWebviewState,
+    browser_clear_network_requests_for_control, browser_close_webview_strict_for_control,
+    browser_eval_for_control, browser_has_webview_for_control,
+    browser_network_requests_for_control, browser_webview_command_for_control,
+    BrowserNetworkRequestsQuery, BrowserWebviewState,
 };
 use crate::diff::DiffState;
 use crate::dock::{
@@ -80,9 +81,9 @@ use crate::session::{
 };
 use crate::terminal::{
     scan_listening_ports_for_root_pid, scan_panel_listening_ports, terminal_clear_history_panel,
-    terminal_close_id_for_control, terminal_close_panel_except_for_control,
-    terminal_close_panel_for_control, terminal_grid_size_for_panel, terminal_open_for_control,
-    terminal_read_panel, terminal_runtime_snapshots, terminal_write_panel, TerminalState,
+    terminal_grid_size_for_panel, terminal_ids_for_panel_for_control, terminal_open_for_control,
+    terminal_read_panel, terminal_remove_id_for_control, terminal_runtime_snapshots,
+    terminal_shutdown_id_preserving_authority_for_control, terminal_write_panel, TerminalState,
 };
 
 const CONTROL_PIPE_BASE_NAME: &str = "cmux";
@@ -1507,6 +1508,147 @@ fn handle_control_request(app: &AppHandle, mut request: ControlRequest) -> Contr
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum LifecycleRuntimeKind {
+    Terminal,
+    Browser,
+}
+
+trait LifecycleRuntimeRegistry {
+    fn runtime_ids(&self, kind: LifecycleRuntimeKind, surface_id: &str) -> Vec<u32>;
+    fn shutdown_runtime(&mut self, kind: LifecycleRuntimeKind, id: u32) -> Result<(), String>;
+    fn remove_runtime(
+        &mut self,
+        kind: LifecycleRuntimeKind,
+        surface_id: &str,
+        id: u32,
+    ) -> Result<(), String>;
+    fn restore_runtime(
+        &mut self,
+        kind: LifecycleRuntimeKind,
+        surface_id: &str,
+        id: u32,
+    ) -> Result<(), String>;
+}
+
+fn combine_failures(failures: Vec<String>) -> Result<(), String> {
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
+}
+
+fn strict_lifecycle_runtime_teardown(
+    registry: &mut impl LifecycleRuntimeRegistry,
+    kind: LifecycleRuntimeKind,
+    surface_id: &str,
+) -> Result<(), String> {
+    for id in registry.runtime_ids(kind, surface_id) {
+        registry.shutdown_runtime(kind, id)?;
+        if let Err(remove_error) = registry.remove_runtime(kind, surface_id, id) {
+            let mut failures = vec![remove_error];
+            if let Err(restore_error) = registry.restore_runtime(kind, surface_id, id) {
+                failures.push(restore_error);
+            }
+            return combine_failures(failures);
+        }
+    }
+    Ok(())
+}
+
+fn commit_terminal_runtime_replacement(
+    registry: &mut impl LifecycleRuntimeRegistry,
+    surface_id: &str,
+    replacement_id: u32,
+) -> Result<(), String> {
+    let old_ids = registry
+        .runtime_ids(LifecycleRuntimeKind::Terminal, surface_id)
+        .into_iter()
+        .filter(|id| *id != replacement_id)
+        .collect::<Vec<_>>();
+    for old_id in old_ids {
+        if let Err(retirement_error) =
+            registry.shutdown_runtime(LifecycleRuntimeKind::Terminal, old_id)
+        {
+            let mut failures = vec![retirement_error];
+            failures.extend(
+                compensate_terminal_replacement(registry, surface_id, replacement_id).err(),
+            );
+            return combine_failures(failures);
+        }
+        if let Err(remove_error) =
+            registry.remove_runtime(LifecycleRuntimeKind::Terminal, surface_id, old_id)
+        {
+            let mut failures = vec![remove_error];
+            failures.extend(
+                registry
+                    .restore_runtime(LifecycleRuntimeKind::Terminal, surface_id, old_id)
+                    .err(),
+            );
+            failures.extend(
+                compensate_terminal_replacement(registry, surface_id, replacement_id).err(),
+            );
+            return combine_failures(failures);
+        }
+    }
+    Ok(())
+}
+
+fn compensate_terminal_replacement(
+    registry: &mut impl LifecycleRuntimeRegistry,
+    surface_id: &str,
+    replacement_id: u32,
+) -> Result<(), String> {
+    let shutdown_error = registry
+        .shutdown_runtime(LifecycleRuntimeKind::Terminal, replacement_id)
+        .err();
+    let remove_error = registry
+        .remove_runtime(LifecycleRuntimeKind::Terminal, surface_id, replacement_id)
+        .err();
+    combine_failures(shutdown_error.into_iter().chain(remove_error).collect())
+}
+
+#[derive(Default)]
+struct LifecycleRollbackPlan {
+    terminal_ids: Vec<u32>,
+    remote_targets: Vec<String>,
+    browser_surface_ids: Vec<String>,
+}
+
+trait LifecycleRollbackOperations {
+    fn rollback_dock(&mut self) -> Result<(), String>;
+    fn cleanup_terminal(&mut self, id: u32) -> Result<(), String>;
+    fn cleanup_remote(&mut self, target: &str) -> Result<(), String>;
+    fn cleanup_browser(&mut self, surface_id: &str) -> Result<(), String>;
+}
+
+fn run_lifecycle_rollback_cleanup(
+    plan: &LifecycleRollbackPlan,
+    operations: &mut impl LifecycleRollbackOperations,
+) -> Result<(), String> {
+    let mut failures = Vec::new();
+    if let Err(error) = operations.rollback_dock() {
+        failures.push(error);
+    }
+    for id in &plan.terminal_ids {
+        if let Err(error) = operations.cleanup_terminal(*id) {
+            failures.push(error);
+        }
+    }
+    for target in &plan.remote_targets {
+        if let Err(error) = operations.cleanup_remote(target) {
+            failures.push(error);
+        }
+    }
+    for surface_id in &plan.browser_surface_ids {
+        if let Err(error) = operations.cleanup_browser(surface_id) {
+            failures.push(error);
+        }
+    }
+    combine_failures(failures)
+}
+
 struct ProductionLifecycleExecutor<'a> {
     app: &'a AppHandle,
     candidate: Option<AppSessionSnapshot>,
@@ -1523,6 +1665,67 @@ struct ProductionLifecycleExecutor<'a> {
 struct DockTeardownCompensation {
     owner_id: String,
     operation: DockRuntimeOperation,
+}
+
+struct ProductionLifecycleRuntimeRegistry<'a> {
+    terminal: &'a TerminalState,
+    browser: &'a BrowserWebviewState,
+    browser_surface_id: Option<&'a str>,
+}
+
+impl LifecycleRuntimeRegistry for ProductionLifecycleRuntimeRegistry<'_> {
+    fn runtime_ids(&self, kind: LifecycleRuntimeKind, surface_id: &str) -> Vec<u32> {
+        match kind {
+            LifecycleRuntimeKind::Terminal => {
+                terminal_ids_for_panel_for_control(self.terminal, surface_id)
+            }
+            LifecycleRuntimeKind::Browser => (self.browser_surface_id == Some(surface_id)
+                && browser_has_webview_for_control(self.browser, surface_id).unwrap_or(true))
+            .then_some(0)
+            .into_iter()
+            .collect(),
+        }
+    }
+
+    fn shutdown_runtime(&mut self, kind: LifecycleRuntimeKind, id: u32) -> Result<(), String> {
+        match kind {
+            LifecycleRuntimeKind::Terminal => {
+                terminal_shutdown_id_preserving_authority_for_control(self.terminal, id)
+            }
+            LifecycleRuntimeKind::Browser => {
+                let surface_id = self
+                    .browser_surface_id
+                    .ok_or_else(|| "browser runtime identity is unavailable".to_string())?;
+                browser_close_webview_strict_for_control(self.browser, surface_id)
+            }
+        }
+    }
+
+    fn remove_runtime(
+        &mut self,
+        kind: LifecycleRuntimeKind,
+        surface_id: &str,
+        id: u32,
+    ) -> Result<(), String> {
+        match kind {
+            LifecycleRuntimeKind::Terminal => terminal_remove_id_for_control(self.terminal, id),
+            LifecycleRuntimeKind::Browser => {
+                let _ = (surface_id, id);
+                Ok(())
+            }
+        }
+    }
+
+    fn restore_runtime(
+        &mut self,
+        _kind: LifecycleRuntimeKind,
+        _surface_id: &str,
+        _id: u32,
+    ) -> Result<(), String> {
+        // Production removal is the final infallible registry step. If it
+        // reports an error, the authoritative entry was not removed.
+        Ok(())
+    }
 }
 
 struct DockCommitJournal<C, T> {
@@ -2402,6 +2605,81 @@ fn shell_execute_succeeded(code: isize) -> bool {
     code > 32
 }
 
+struct ProductionLifecycleRollbackOperations<'a> {
+    app: &'a AppHandle,
+    previous: Option<AppSessionSnapshot>,
+    candidate: Option<AppSessionSnapshot>,
+    dock_journal: DockCommitJournal<DockRuntimeClaim, DockTeardownCompensation>,
+    remote_creations: Vec<StagedRemoteCreation>,
+}
+
+impl LifecycleRollbackOperations for ProductionLifecycleRollbackOperations<'_> {
+    fn rollback_dock(&mut self) -> Result<(), String> {
+        let app = self.app;
+        let previous = self.previous.as_ref();
+        let candidate = self.candidate.as_ref();
+        std::mem::take(&mut self.dock_journal)
+            .rollback(|step| match step {
+                DockRollbackStep::RestoreSnapshot => {
+                    let previous = previous.ok_or_else(|| {
+                        "previous lifecycle snapshot was not prepared".to_string()
+                    })?;
+                    let candidate = candidate
+                        .ok_or_else(|| "lifecycle candidate was not prepared".to_string())?;
+                    commit_lifecycle_snapshot_for_control_if_current(
+                        app,
+                        app.state::<SessionState>().inner(),
+                        candidate,
+                        previous,
+                        false,
+                    )
+                    .map(|_| ())
+                }
+                DockRollbackStep::RollbackClaim(claim) => rollback_runtime_claim(app, claim),
+                DockRollbackStep::RecreateTeardown(teardown) => {
+                    ProductionLifecycleExecutor::compensate_dock_teardown(app, teardown)
+                }
+            })
+            .map_err(|errors| format!("Lifecycle rollback failed: {errors}"))
+    }
+
+    fn cleanup_terminal(&mut self, id: u32) -> Result<(), String> {
+        let state = self
+            .app
+            .try_state::<TerminalState>()
+            .ok_or_else(|| "terminal runtime state is unavailable".to_string())?;
+        terminal_shutdown_id_preserving_authority_for_control(state.inner(), id)?;
+        terminal_remove_id_for_control(state.inner(), id)
+    }
+
+    fn cleanup_remote(&mut self, target: &str) -> Result<(), String> {
+        let index = self
+            .remote_creations
+            .iter()
+            .position(|remote| remote.token == target)
+            .ok_or_else(|| format!("remote rollback target {target} is unavailable"))?;
+        let remote = self.remote_creations.remove(index);
+        let command = remote_tmux_kill_command(remote.target, target)?;
+        let status = Command::new("ssh")
+            .args(["-T", "-o", "BatchMode=yes", &remote.destination])
+            .args(command)
+            .status()
+            .map_err(|error| format!("failed to launch remote rollback: {error}"))?;
+        status
+            .success()
+            .then_some(())
+            .ok_or_else(|| format!("remote rollback exited with {status}"))
+    }
+
+    fn cleanup_browser(&mut self, surface_id: &str) -> Result<(), String> {
+        let state = self
+            .app
+            .try_state::<BrowserWebviewState>()
+            .ok_or_else(|| "browser runtime state is unavailable".to_string())?;
+        browser_close_webview_strict_for_control(state.inner(), surface_id)
+    }
+}
+
 impl ProductionLifecycleExecutor<'_> {
     fn flush_deferred_remote_reconciliations(&mut self) {
         for remote in self.deferred_remote_reconciliations.drain(..) {
@@ -2445,57 +2723,37 @@ impl ProductionLifecycleExecutor<'_> {
     }
 
     fn rollback_resources(&mut self) -> Result<(), String> {
-        let app = self.app;
-        let previous = self.previous.take();
-        let candidate = self.candidate.clone();
-        let dock_rollback = std::mem::take(&mut self.dock_journal).rollback(|step| match step {
-            DockRollbackStep::RestoreSnapshot => {
-                let previous = previous
-                    .as_ref()
-                    .ok_or_else(|| "previous lifecycle snapshot was not prepared".to_string())?;
-                let candidate = candidate
-                    .as_ref()
-                    .ok_or_else(|| "lifecycle candidate was not prepared".to_string())?;
-                commit_lifecycle_snapshot_for_control_if_current(
-                    app,
-                    app.state::<SessionState>().inner(),
-                    candidate,
-                    previous,
-                    false,
-                )
-                .map(|_| ())
-            }
-            DockRollbackStep::RollbackClaim(claim) => rollback_runtime_claim(app, claim),
-            DockRollbackStep::RecreateTeardown(teardown) => {
-                Self::compensate_dock_teardown(app, teardown)
-            }
-        });
-
-        if let Some(state) = app.try_state::<TerminalState>() {
-            for (_, id, _) in self.staged_terminals.drain(..) {
-                let _ = terminal_close_id_for_control(state.inner(), id);
-            }
-        }
-        for remote in self.staged_remote_creations.drain(..) {
-            if let Ok(command) = remote_tmux_kill_command(remote.target, &remote.token) {
-                let _ = Command::new("ssh")
-                    .args(["-T", "-o", "BatchMode=yes", &remote.destination])
-                    .args(command)
-                    .status();
-            }
-        }
+        let plan = LifecycleRollbackPlan {
+            terminal_ids: self
+                .staged_terminals
+                .drain(..)
+                .map(|(_, id, _)| id)
+                .collect(),
+            remote_targets: self
+                .staged_remote_creations
+                .iter()
+                .map(|remote| remote.token.clone())
+                .collect(),
+            browser_surface_ids: self
+                .staged_browsers
+                .drain(..)
+                .map(|(_, surface_id, _)| surface_id)
+                .collect(),
+        };
+        let mut operations = ProductionLifecycleRollbackOperations {
+            app: self.app,
+            previous: self.previous.take(),
+            candidate: self.candidate.take(),
+            dock_journal: std::mem::take(&mut self.dock_journal),
+            remote_creations: self.staged_remote_creations.drain(..).collect(),
+        };
+        let rollback = run_lifecycle_rollback_cleanup(&plan, &mut operations);
         self.deferred_remote_reconciliations.clear();
         for key in self.deferred_remote_departures.drain(..) {
             schedule_remote_window_departure_reconciliation(self.app, key);
         }
-        if let Some(state) = app.try_state::<BrowserWebviewState>() {
-            for (_, surface_id, _) in self.staged_browsers.drain(..) {
-                let _ = browser_close_webview_for_control(state.inner(), &surface_id);
-            }
-        }
         self.staged.clear();
-        self.candidate = None;
-        dock_rollback.map_err(|errors| format!("Lifecycle rollback failed: {errors}"))
+        rollback
     }
 }
 
@@ -2746,12 +3004,24 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
                             model.surface(surface_id).map(|record| record.kind.clone())
                         })
                     });
+                    let mut registry = ProductionLifecycleRuntimeRegistry {
+                        terminal: terminal_state.inner(),
+                        browser: browser_state.inner(),
+                        browser_surface_id: Some(surface_id),
+                    };
                     let teardown = match kind {
                         Some(SessionSurfaceKindSnapshot::Browser { .. }) => {
-                            browser_close_webview_for_control(browser_state.inner(), surface_id)
+                            strict_lifecycle_runtime_teardown(
+                                &mut registry,
+                                LifecycleRuntimeKind::Browser,
+                                surface_id,
+                            )
                         }
-                        _ => terminal_close_panel_for_control(terminal_state.inner(), surface_id)
-                            .map(|_| ()),
+                        _ => strict_lifecycle_runtime_teardown(
+                            &mut registry,
+                            LifecycleRuntimeKind::Terminal,
+                            surface_id,
+                        ),
                     };
                     if *must_succeed && teardown.is_err() {
                         return Err((*failure_message).to_string());
@@ -2804,13 +3074,23 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
             )?;
         }
         let terminal_state = self.app.state::<TerminalState>();
-        for (surface_id, id, replace) in &self.staged_terminals {
-            if *replace {
-                let _ = terminal_close_panel_except_for_control(
-                    terminal_state.inner(),
-                    surface_id,
-                    *id,
-                );
+        let replacements = self
+            .staged_terminals
+            .iter()
+            .filter(|(_, _, replace)| *replace)
+            .cloned()
+            .collect::<Vec<_>>();
+        for (surface_id, id, _) in replacements {
+            let mut registry = ProductionLifecycleRuntimeRegistry {
+                terminal: terminal_state.inner(),
+                browser: browser_state.inner(),
+                browser_surface_id: None,
+            };
+            if let Err(error) = commit_terminal_runtime_replacement(&mut registry, &surface_id, id)
+            {
+                self.staged_terminals
+                    .retain(|(_, staged_id, _)| *staged_id != id);
+                return Err(error);
             }
         }
         for effect in &self.staged {
@@ -2825,6 +3105,8 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
                     generation,
                     dock_intent,
                     phase,
+                    must_succeed,
+                    failure_message,
                     ..
                 } if *phase == "commit" => {
                     if let Some(intent) = dock_intent {
@@ -2833,7 +3115,10 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
                             generation: *generation,
                             intent: intent.clone(),
                         };
-                        let _ = teardown_runtime_for_control(self.app, &operation);
+                        let teardown = teardown_runtime_for_control(self.app, &operation);
+                        if *must_succeed && teardown.is_err() {
+                            return Err((*failure_message).to_string());
+                        }
                     } else {
                         let kind = self.previous.as_ref().and_then(|previous| {
                             cmux_core::surface_lifecycle::SurfaceLifecycleModel::from_app_session(
@@ -2844,19 +3129,27 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
                                 model.surface(surface_id).map(|record| record.kind.clone())
                             })
                         });
-                        match kind {
+                        let mut registry = ProductionLifecycleRuntimeRegistry {
+                            terminal: terminal_state.inner(),
+                            browser: browser_state.inner(),
+                            browser_surface_id: Some(surface_id),
+                        };
+                        let teardown = match kind {
                             Some(SessionSurfaceKindSnapshot::Browser { .. }) => {
-                                let _ = browser_close_webview_for_control(
-                                    browser_state.inner(),
+                                strict_lifecycle_runtime_teardown(
+                                    &mut registry,
+                                    LifecycleRuntimeKind::Browser,
                                     surface_id,
-                                );
+                                )
                             }
-                            _ => {
-                                let _ = terminal_close_panel_for_control(
-                                    terminal_state.inner(),
-                                    surface_id,
-                                );
-                            }
+                            _ => strict_lifecycle_runtime_teardown(
+                                &mut registry,
+                                LifecycleRuntimeKind::Terminal,
+                                surface_id,
+                            ),
+                        };
+                        if *must_succeed && teardown.is_err() {
+                            return Err((*failure_message).to_string());
                         }
                     }
                     self.app

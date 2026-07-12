@@ -388,26 +388,30 @@ pub(crate) fn terminal_close_id_for_control(
     }
 }
 
-pub(crate) fn terminal_close_panel_except_for_control(
+pub(crate) fn terminal_ids_for_panel_for_control(
     state: &TerminalState,
     panel_id: &str,
-    keep_id: u32,
+) -> Vec<u32> {
+    state
+        .live_sessions()
+        .iter()
+        .filter_map(|(id, session)| (session.panel_id.as_deref() == Some(panel_id)).then_some(*id))
+        .collect()
+}
+
+pub(crate) fn terminal_shutdown_id_preserving_authority_for_control(
+    state: &TerminalState,
+    id: u32,
 ) -> Result<(), String> {
-    let removed = {
-        let mut sessions = state.live_sessions();
-        let ids = sessions
-            .iter()
-            .filter_map(|(id, session)| {
-                (*id != keep_id && session.panel_id.as_deref() == Some(panel_id)).then_some(*id)
-            })
-            .collect::<Vec<_>>();
-        ids.into_iter()
-            .filter_map(|id| sessions.remove(&id))
-            .collect::<Vec<_>>()
-    };
-    for mut session in removed {
-        session.pty.kill().map_err(|error| error.to_string())?;
-    }
+    let mut sessions = state.live_sessions();
+    let session = sessions
+        .get_mut(&id)
+        .ok_or_else(|| format!("terminal runtime {id} is unavailable"))?;
+    session.pty.kill().map_err(|error| error.to_string())
+}
+
+pub(crate) fn terminal_remove_id_for_control(state: &TerminalState, id: u32) -> Result<(), String> {
+    state.live_sessions().remove(&id);
     Ok(())
 }
 

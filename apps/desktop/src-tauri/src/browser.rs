@@ -277,6 +277,48 @@ pub(crate) fn browser_close_webview_for_control(
     child.webview.close().map_err(|error| error.to_string())
 }
 
+pub(crate) fn browser_close_webview_strict_for_control(
+    state: &BrowserWebviewState,
+    panel_id: &str,
+) -> Result<(), String> {
+    let (webview, label) = {
+        let webviews = state
+            .webviews
+            .lock()
+            .map_err(|_| "browser webview state lock poisoned".to_string())?;
+        let child = webviews
+            .get(panel_id)
+            .ok_or_else(|| format!("browser runtime {panel_id} is unavailable"))?;
+        (child.webview.clone(), child.label.clone())
+    };
+    webview.close().map_err(|error| error.to_string())?;
+
+    let mut webviews = state
+        .webviews
+        .lock()
+        .map_err(|_| "browser webview state lock poisoned".to_string())?;
+    let mut network_records = state
+        .network_records
+        .lock()
+        .map_err(|_| "browser network record state lock poisoned".to_string())?;
+    let mut init_scripts = state
+        .init_scripts
+        .lock()
+        .map_err(|_| "browser init script state lock poisoned".to_string())?;
+    let same_runtime = webviews
+        .get(panel_id)
+        .is_some_and(|child| child.label == label);
+    if !same_runtime {
+        return Err(format!(
+            "browser runtime {panel_id} changed during teardown"
+        ));
+    }
+    webviews.remove(panel_id);
+    network_records.remove(panel_id);
+    init_scripts.remove(panel_id);
+    Ok(())
+}
+
 pub(crate) fn browser_has_webview_for_control(
     state: &BrowserWebviewState,
     panel_id: &str,
