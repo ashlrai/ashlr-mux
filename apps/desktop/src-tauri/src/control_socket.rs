@@ -1505,6 +1505,48 @@ struct StagedRemotePane {
     arrival: pane_surface_lifecycle::RuntimeArrival,
 }
 
+#[cfg(windows)]
+fn open_external_url_checked(url: &str) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let operation: Vec<u16> = "open".encode_utf16().chain(Some(0)).collect();
+    let target: Vec<u16> = std::ffi::OsStr::new(url)
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            PCWSTR(operation.as_ptr()),
+            PCWSTR(target.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    shell_execute_succeeded(result.0 as isize)
+        .then_some(())
+        .ok_or_else(|| "Failed to open URL externally".to_string())
+}
+
+#[cfg(not(windows))]
+fn open_external_url_checked(url: &str) -> Result<(), String> {
+    Command::new("xdg-open")
+        .arg(url)
+        .status()
+        .map_err(|_| "Failed to open URL externally".to_string())?
+        .success()
+        .then_some(())
+        .ok_or_else(|| "Failed to open URL externally".to_string())
+}
+
+fn shell_execute_succeeded(code: isize) -> bool {
+    code > 32
+}
+
 impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExecutor<'_> {
     type Error = String;
 
@@ -1611,6 +1653,13 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
                 )?;
                 self.staged_browsers.push((surface_id.clone(), url.clone()));
             }
+            pane_surface_lifecycle::LifecycleEffect::BrowserReload { surface_id } => {
+                let state = self.app.state::<BrowserWebviewState>();
+                browser_webview_command_for_control(state.inner(), surface_id, "reload")?;
+            }
+            pane_surface_lifecycle::LifecycleEffect::ExternalBrowserOpen { url } => {
+                open_external_url_checked(url)?;
+            }
             _ => {}
         }
         self.staged.push(effect.clone());
@@ -1662,6 +1711,8 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
                 pane_surface_lifecycle::LifecycleEffect::TerminalCreate { .. }
                 | pane_surface_lifecycle::LifecycleEffect::TerminalReplace { .. }
                 | pane_surface_lifecycle::LifecycleEffect::BrowserAttach { .. }
+                | pane_surface_lifecycle::LifecycleEffect::BrowserReload { .. }
+                | pane_surface_lifecycle::LifecycleEffect::ExternalBrowserOpen { .. }
                 | pane_surface_lifecycle::LifecycleEffect::UiSurfaceAttach { .. } => {}
                 pane_surface_lifecycle::LifecycleEffect::RemoteCreate { .. } => {}
                 pane_surface_lifecycle::LifecycleEffect::DockCreate { .. } => unreachable!(),
@@ -1730,6 +1781,10 @@ fn handle_pane_surface_lifecycle_request(
     if !transition.changed {
         return transition.result;
     }
+    let external_url = transition.effects.iter().find_map(|effect| match effect {
+        pane_surface_lifecycle::LifecycleEffect::ExternalBrowserOpen { url } => Some(url.clone()),
+        _ => None,
+    });
     let completion_events = transition.events.clone();
     let mut target = current;
     let mut executor = ProductionLifecycleExecutor {
@@ -1742,10 +1797,21 @@ fn handle_pane_surface_lifecycle_request(
     };
     let result =
         pane_surface_lifecycle::commit_lifecycle_transition(&mut target, transition, &mut executor)
-            .unwrap_or_else(|message| ControlCallResult::Err {
-                code: "internal_error".into(),
-                message,
-                data: None,
+            .unwrap_or_else(|message| {
+                if message == "Failed to open URL externally" {
+                    ControlCallResult::Err {
+                        code: "external_open_failed".into(),
+                        message,
+                        data: external_url
+                            .and_then(|url| JsonValue::try_from(json!({"url":url})).ok()),
+                    }
+                } else {
+                    ControlCallResult::Err {
+                        code: "internal_error".into(),
+                        message,
+                        data: None,
+                    }
+                }
             });
     if matches!(result, ControlCallResult::Ok(_)) {
         let suppressed = completion_events
@@ -1812,30 +1878,53 @@ fn commit_runtime_arrival_for_control(
     Ok(())
 }
 
+const LIFECYCLE_ID_REF_FIELDS: [(&str, &str, &str); 10] = [
+    ("window_id", "window_ref", "window"),
+    ("source_window_id", "source_window_ref", "window"),
+    ("workspace_id", "workspace_ref", "workspace"),
+    ("source_workspace_id", "source_workspace_ref", "workspace"),
+    ("created_workspace_id", "created_workspace_ref", "workspace"),
+    ("pane_id", "pane_ref", "pane"),
+    ("surface_id", "surface_ref", "surface"),
+    ("created_surface_id", "created_surface_ref", "surface"),
+    ("tab_id", "tab_ref", "surface"),
+    ("created_tab_id", "created_tab_ref", "surface"),
+];
+
 fn decorate_lifecycle_result_refs(app: &AppHandle, result: &mut ControlCallResult) {
     let ControlCallResult::Ok(payload) = result else {
         return;
     };
     let mut value = Value::from(payload.clone());
-    fn decorate(app: &AppHandle, value: &mut Value, row_is_surface: bool) {
+    decorate_lifecycle_value_refs(&mut value, &mut |kind, id| {
+        control_handle_ref(app, kind, id)
+    });
+    if let Ok(decorated) = JsonValue::try_from(value) {
+        *payload = decorated;
+    }
+}
+
+fn decorate_lifecycle_value_refs(
+    value: &mut Value,
+    mint: &mut impl FnMut(&'static str, &str) -> String,
+) {
+    fn decorate(
+        value: &mut Value,
+        row_is_surface: bool,
+        mint: &mut impl FnMut(&'static str, &str) -> String,
+    ) {
         match value {
             Value::Array(values) => {
                 for value in values {
-                    decorate(app, value, true);
+                    decorate(value, true, mint);
                 }
             }
             Value::Object(object) => {
-                for (id_key, ref_key, kind) in [
-                    ("window_id", "window_ref", "window"),
-                    ("workspace_id", "workspace_ref", "workspace"),
-                    ("pane_id", "pane_ref", "pane"),
-                    ("surface_id", "surface_ref", "surface"),
-                    ("tab_id", "tab_ref", "surface"),
-                ] {
+                for (id_key, ref_key, kind) in LIFECYCLE_ID_REF_FIELDS {
                     if let Some(id) = object.get(id_key) {
                         let reference = id.as_str().map(|id| {
-                            let reference = control_handle_ref(app, kind, id);
-                            if ref_key == "tab_ref" {
+                            let reference = mint(kind, id);
+                            if matches!(ref_key, "tab_ref" | "created_tab_ref") {
                                 tab_ref_from_surface_ref(&reference)
                             } else {
                                 reference
@@ -1848,20 +1937,17 @@ fn decorate_lifecycle_result_refs(app: &AppHandle, result: &mut ControlCallResul
                     if let Some(id) = object.get("id").and_then(Value::as_str).map(str::to_owned) {
                         object
                             .entry("ref")
-                            .or_insert_with(|| json!(control_handle_ref(app, "surface", &id)));
+                            .or_insert_with(|| json!(mint("surface", &id)));
                     }
                 }
                 for child in object.values_mut() {
-                    decorate(app, child, false);
+                    decorate(child, false, mint);
                 }
             }
             _ => {}
         }
     }
-    decorate(app, &mut value, false);
-    if let Ok(decorated) = JsonValue::try_from(value) {
-        *payload = decorated;
-    }
+    decorate(value, false, mint);
 }
 
 fn resolve_request_handle_refs(app: &AppHandle, params: &mut serde_json::Map<String, Value>) {
@@ -17910,6 +17996,49 @@ mod tests {
             None,
             "UUIDs bypass the ref registry and remain unchanged"
         );
+    }
+
+    #[test]
+    fn shell_execute_codes_only_succeed_above_documented_error_range() {
+        for code in [isize::MIN, 0, 2, 31, 32] {
+            assert!(!shell_execute_succeeded(code), "code {code}");
+        }
+        for code in [33, 42, isize::MAX] {
+            assert!(shell_execute_succeeded(code), "code {code}");
+        }
+    }
+
+    #[test]
+    fn lifecycle_result_decoration_covers_source_created_and_tab_id_families() {
+        let mut value = json!({
+            "window_id": "window-current",
+            "source_window_id": "window-source",
+            "workspace_id": "workspace-current",
+            "source_workspace_id": "workspace-source",
+            "created_workspace_id": "workspace-created",
+            "pane_id": "pane-current",
+            "surface_id": "surface-current",
+            "created_surface_id": "surface-created",
+            "tab_id": "surface-current",
+            "created_tab_id": "surface-created",
+            "nullable": { "created_surface_id": null },
+            "rows": [{ "id": "surface-row" }]
+        });
+        let mut registry = ControlHandleRegistry::default();
+        decorate_lifecycle_value_refs(&mut value, &mut |kind, id| registry.mint(kind, id));
+
+        assert_eq!(value["window_ref"], "window:1");
+        assert_eq!(value["source_window_ref"], "window:2");
+        assert_eq!(value["workspace_ref"], "workspace:1");
+        assert_eq!(value["source_workspace_ref"], "workspace:2");
+        assert_eq!(value["created_workspace_ref"], "workspace:3");
+        assert_eq!(value["pane_ref"], "pane:1");
+        assert_eq!(value["surface_ref"], "surface:1");
+        assert_eq!(value["created_surface_ref"], "surface:2");
+        assert_eq!(value["tab_ref"], "tab:1");
+        assert_eq!(value["created_tab_ref"], "tab:2");
+        assert_eq!(value["nullable"]["created_surface_ref"], Value::Null);
+        assert_eq!(value["rows"][0]["ref"], "surface:3");
     }
 
     #[path = "pane_surface_lifecycle_red.rs"]
