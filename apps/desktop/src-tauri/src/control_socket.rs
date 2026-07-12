@@ -76,8 +76,9 @@ use crate::session::{
     toggle_browser_developer_tools_for_control, toggle_browser_focus_mode_for_control,
     toggle_browser_omnibar_for_control, toggle_split_zoom_for_control, PaneFocusControlError,
     PaneLastControlError, PaneResizeControlError, PaneResizeControlIntent,
-    ReorderWorkspacesManyControlError, SessionState, TerminalPanelCreateError,
-    WorkspaceLastControlError, WorkspaceRemoteControlConfig, WorkspaceRenameResolution,
+    PaneTopologyControlError, ReorderWorkspacesManyControlError, SessionState,
+    TerminalPanelCreateError, WorkspaceLastControlError, WorkspaceRemoteControlConfig,
+    WorkspaceRenameResolution,
 };
 use crate::terminal::{
     scan_listening_ports_for_root_pid, scan_panel_listening_ports, terminal_clear_history_panel,
@@ -7748,7 +7749,9 @@ fn surface_split_off(
         focus,
     ) {
         Ok(result) => result,
-        Err(session_ops::SplitOffSurfaceError::WouldEmptySourcePane) => {
+        Err(PaneTopologyControlError::Operation(
+            session_ops::SplitOffSurfaceError::WouldEmptySourcePane,
+        )) => {
             return ControlCallResult::Err {
                 code: "invalid_state".to_string(),
                 message: "splitting off would leave the source pane empty".to_string(),
@@ -7759,10 +7762,19 @@ fn surface_split_off(
                 ),
             };
         }
-        Err(session_ops::SplitOffSurfaceError::SurfaceNotFound) => {
+        Err(PaneTopologyControlError::Operation(
+            session_ops::SplitOffSurfaceError::SurfaceNotFound,
+        )) => {
             return ControlCallResult::Err {
                 code: "not_found".to_string(),
                 message: "Surface not found".to_string(),
+                data: None,
+            };
+        }
+        Err(PaneTopologyControlError::Publication(message)) => {
+            return ControlCallResult::Err {
+                code: "internal".to_string(),
+                message,
                 data: None,
             };
         }
@@ -8369,27 +8381,40 @@ fn pane_swap(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Contro
         focus,
     ) {
         Ok(result) => result,
-        Err(session_ops::PaneSwapError::SamePane) => {
+        Err(PaneTopologyControlError::Operation(session_ops::PaneSwapError::SamePane)) => {
             return invalid_params("pane_id and target_pane_id must be different");
         }
-        Err(session_ops::PaneSwapError::SourcePaneNotFound) => {
+        Err(PaneTopologyControlError::Operation(
+            session_ops::PaneSwapError::SourcePaneNotFound,
+        )) => {
             return ControlCallResult::Err {
                 code: "not_found".to_string(),
                 message: "Source pane not found".to_string(),
                 data: None,
             };
         }
-        Err(session_ops::PaneSwapError::TargetPaneNotFound) => {
+        Err(PaneTopologyControlError::Operation(
+            session_ops::PaneSwapError::TargetPaneNotFound,
+        )) => {
             return ControlCallResult::Err {
                 code: "not_found".to_string(),
                 message: "Target pane not found in source workspace".to_string(),
                 data: None,
             };
         }
-        Err(session_ops::PaneSwapError::BothPanesNeedSurface) => {
+        Err(PaneTopologyControlError::Operation(
+            session_ops::PaneSwapError::BothPanesNeedSurface,
+        )) => {
             return ControlCallResult::Err {
                 code: "invalid_state".to_string(),
                 message: "Both panes must have a selected surface".to_string(),
+                data: None,
+            };
+        }
+        Err(PaneTopologyControlError::Publication(message)) => {
+            return ControlCallResult::Err {
+                code: "internal".to_string(),
+                message,
                 data: None,
             };
         }
@@ -8548,14 +8573,16 @@ fn pane_break(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Contr
         focus,
     ) {
         Ok(result) => result,
-        Err(session_ops::PaneBreakError::WorkspaceNotFound) => {
+        Err(PaneTopologyControlError::Operation(
+            session_ops::PaneBreakError::WorkspaceNotFound,
+        )) => {
             return ControlCallResult::Err {
                 code: "not_found".to_string(),
                 message: "Workspace not found".to_string(),
                 data: None,
             };
         }
-        Err(session_ops::PaneBreakError::SurfaceNotFound) => {
+        Err(PaneTopologyControlError::Operation(session_ops::PaneBreakError::SurfaceNotFound)) => {
             return ControlCallResult::Err {
                 code: "not_found".to_string(),
                 message: "Surface not found".to_string(),
@@ -8566,10 +8593,17 @@ fn pane_break(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Contr
                 ),
             };
         }
-        Err(session_ops::PaneBreakError::DetachFailed) => {
+        Err(PaneTopologyControlError::Operation(session_ops::PaneBreakError::DetachFailed)) => {
             return ControlCallResult::Err {
                 code: "internal_error".to_string(),
                 message: "Failed to detach source surface".to_string(),
+                data: None,
+            };
+        }
+        Err(PaneTopologyControlError::Publication(message)) => {
+            return ControlCallResult::Err {
+                code: "internal".to_string(),
+                message,
                 data: None,
             };
         }

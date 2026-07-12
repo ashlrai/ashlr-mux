@@ -161,6 +161,19 @@ impl SessionState {
         transact_lifecycle_snapshot(&self.snapshot, &mut operations, mutation)
     }
 
+    pub(crate) fn transact_pane_topology<R, E>(
+        &self,
+        app: &AppHandle,
+        mutation: impl FnOnce(&mut AppSessionSnapshot) -> Result<R, E>,
+    ) -> Result<(R, AppSessionSnapshot), PaneTopologyControlError<E>> {
+        let mut operations = ProductionSnapshotPublicationOperations {
+            app,
+            state: self,
+            derived_events: DerivedEventPolicy::Record,
+        };
+        transact_pane_topology_snapshot(&self.snapshot, &mut operations, mutation)
+    }
+
     pub(crate) fn transact_snapshot_if_changed(
         &self,
         app: &AppHandle,
@@ -221,15 +234,34 @@ fn transact_lifecycle_snapshot<R>(
     operations: &mut impl SnapshotPublicationOperations,
     mutation: impl FnOnce(&mut AppSessionSnapshot) -> Result<R, String>,
 ) -> Result<(R, AppSessionSnapshot), String> {
+    transact_pane_topology_snapshot(authority, operations, mutation).map_err(|error| match error {
+        PaneTopologyControlError::Operation(error)
+        | PaneTopologyControlError::Publication(error) => error,
+    })
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PaneTopologyControlError<E> {
+    Operation(E),
+    Publication(String),
+}
+
+fn transact_pane_topology_snapshot<R, E>(
+    authority: &GatedSnapshot,
+    operations: &mut impl SnapshotPublicationOperations,
+    mutation: impl FnOnce(&mut AppSessionSnapshot) -> Result<R, E>,
+) -> Result<(R, AppSessionSnapshot), PaneTopologyControlError<E>> {
     let _transaction_gate = authority.lock_gate();
     let current = authority
         .lock()
-        .map_err(|_| "Session state is unavailable".to_string())?
+        .map_err(|_| {
+            PaneTopologyControlError::Publication("Session state is unavailable".to_string())
+        })?
         .clone();
     let mut candidate = current.clone();
-    let result = mutation(&mut candidate)?;
-    let committed =
-        publish_snapshot_transaction(authority, Some(&current), &candidate, operations)?;
+    let result = mutation(&mut candidate).map_err(PaneTopologyControlError::Operation)?;
+    let committed = publish_snapshot_transaction(authority, Some(&current), &candidate, operations)
+        .map_err(PaneTopologyControlError::Publication)?;
     Ok((result, committed))
 }
 
@@ -5024,29 +5056,24 @@ pub(crate) fn split_off_surface_for_control(
     orientation: SessionSplitOrientation,
     insert_first: bool,
     focus: bool,
-) -> Result<AppSessionSnapshot, session_ops::SplitOffSurfaceError> {
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let workspace = guard
+) -> Result<AppSessionSnapshot, PaneTopologyControlError<session_ops::SplitOffSurfaceError>> {
+    let transaction = state.transact_pane_topology(app, |snapshot| {
+        let workspace = snapshot
             .windows
             .get_mut(window_index)
             .and_then(|window| window.tab_manager.workspaces.get_mut(workspace_index))
             .ok_or(session_ops::SplitOffSurfaceError::SurfaceNotFound)?;
         session_ops::split_off_surface(workspace, panel_id, orientation, insert_first)?;
         if focus {
-            guard.windows[window_index]
+            snapshot.windows[window_index]
                 .tab_manager
                 .selected_workspace_index = Some(workspace_index as i64);
-            sync_window_selected_workspace_id(&mut guard.windows[window_index]);
+            sync_window_selected_workspace_id(&mut snapshot.windows[window_index]);
         }
-        ensure_pane_ids(&mut guard);
-        guard.clone()
-    };
-    notify_session_changed(app, &snapshot);
-    Ok(snapshot)
+        ensure_pane_ids(snapshot);
+        Ok(())
+    });
+    transaction.map(|(_, snapshot)| snapshot)
 }
 
 pub(crate) fn swap_panes_for_control(
@@ -5057,13 +5084,12 @@ pub(crate) fn swap_panes_for_control(
     source_pane_id: &str,
     target_pane_id: &str,
     focus: bool,
-) -> Result<(session_ops::PaneSwapResult, AppSessionSnapshot), session_ops::PaneSwapError> {
-    let (swap, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let workspace = guard
+) -> Result<
+    (session_ops::PaneSwapResult, AppSessionSnapshot),
+    PaneTopologyControlError<session_ops::PaneSwapError>,
+> {
+    state.transact_pane_topology(app, |snapshot| {
+        let workspace = snapshot
             .windows
             .get_mut(window_index)
             .and_then(|window| window.tab_manager.workspaces.get_mut(workspace_index))
@@ -5071,15 +5097,13 @@ pub(crate) fn swap_panes_for_control(
         let swap =
             session_ops::swap_selected_pane_surfaces(workspace, source_pane_id, target_pane_id)?;
         if focus {
-            guard.windows[window_index]
+            snapshot.windows[window_index]
                 .tab_manager
                 .selected_workspace_index = Some(workspace_index as i64);
-            sync_window_selected_workspace_id(&mut guard.windows[window_index]);
+            sync_window_selected_workspace_id(&mut snapshot.windows[window_index]);
         }
-        (swap, guard.clone())
-    };
-    notify_session_changed(app, &snapshot);
-    Ok((swap, snapshot))
+        Ok(swap)
+    })
 }
 
 pub(crate) fn break_pane_for_control(
@@ -5089,25 +5113,22 @@ pub(crate) fn break_pane_for_control(
     workspace_index: usize,
     panel_id: &str,
     focus: bool,
-) -> Result<(session_ops::PaneBreakResult, AppSessionSnapshot), session_ops::PaneBreakError> {
-    let (broken, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let tabs = &mut guard
+) -> Result<
+    (session_ops::PaneBreakResult, AppSessionSnapshot),
+    PaneTopologyControlError<session_ops::PaneBreakError>,
+> {
+    state.transact_pane_topology(app, |snapshot| {
+        let tabs = &mut snapshot
             .windows
             .get_mut(window_index)
             .ok_or(session_ops::PaneBreakError::WorkspaceNotFound)?
             .tab_manager;
         let broken =
             session_ops::break_surface_to_new_workspace(tabs, workspace_index, panel_id, focus)?;
-        ensure_workspace_ids(&mut guard);
-        ensure_pane_ids(&mut guard);
-        (broken, guard.clone())
-    };
-    notify_session_changed(app, &snapshot);
-    Ok((broken, snapshot))
+        ensure_workspace_ids(snapshot);
+        ensure_pane_ids(snapshot);
+        Ok(broken)
+    })
 }
 
 #[derive(Debug)]
