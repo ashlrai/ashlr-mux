@@ -285,6 +285,189 @@ fn tab_action_normalizes_workspace_indexes_and_preserves_ref_uuid_precedence() {
 }
 
 #[test]
+fn tab_action_normalizes_numeric_and_tab_ref_surfaces_in_scope() {
+    let mapped = control_command_for(
+        "tab-action",
+        &["pin".into(), "--tab".into(), "tab:9".into()],
+    )
+    .unwrap()
+    .expect("tab-action must be mapped");
+    assert_eq!(mapped.params["surface_ref"], "surface:9");
+
+    let (pipe, request_rx) = spawn_method_server(
+        "tab-action-surface-index",
+        HashMap::from([
+            (
+                "surface.list".into(),
+                json!({"surfaces":[{"index":2,"id":SURFACE_ID,"ref":"surface:9"}]}),
+            ),
+            ("tab.action".into(), json!({"action":"pin"})),
+        ]),
+    );
+    let output = executable(
+        Some(&pipe),
+        &[
+            "tab-action",
+            "pin",
+            "--workspace",
+            WORKSPACE_ID,
+            "--tab",
+            "2",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let (method, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(method, "surface.list");
+    assert_eq!(Value::Object(params), json!({"workspace_id":WORKSPACE_ID}));
+    let (method, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(method, "tab.action");
+    assert_eq!(
+        Value::Object(params),
+        json!({
+            "action":"pin", "workspace_id":WORKSPACE_ID,
+            "surface_id":SURFACE_ID, "focus":false
+        })
+    );
+}
+
+#[test]
+fn explicit_window_validates_surface_refs_before_tab_action() {
+    let (pipe, request_rx) = spawn_method_server(
+        "tab-action-window-surface-ref",
+        HashMap::from([
+            (
+                "surface.list".into(),
+                json!({"surfaces":[{"index":8,"id":SURFACE_ID,"ref":"surface:9"}]}),
+            ),
+            ("tab.action".into(), json!({"action":"pin"})),
+        ]),
+    );
+    let output = executable(
+        Some(&pipe),
+        &[
+            "tab-action",
+            "pin",
+            "--window",
+            WINDOW_ID,
+            "--workspace",
+            WORKSPACE_ID,
+            "--tab",
+            "tab:9",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let (method, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(method, "surface.list");
+    assert_eq!(
+        Value::Object(params),
+        json!({
+            "window_id":WINDOW_ID, "workspace_id":WORKSPACE_ID
+        })
+    );
+    let (method, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(method, "tab.action");
+    assert_eq!(
+        Value::Object(params),
+        json!({
+            "action":"pin", "window_id":WINDOW_ID,
+            "workspace_id":WORKSPACE_ID, "surface_id":SURFACE_ID, "focus":false
+        })
+    );
+}
+
+#[test]
+fn respawn_pane_resolves_numeric_surface_without_changing_focused_fallback() {
+    let (pipe, request_rx) = spawn_method_server(
+        "respawn-pane-surface-index",
+        HashMap::from([
+            (
+                "surface.list".into(),
+                json!({"surfaces":[{"index":2,"id":SURFACE_ID,"ref":"surface:9"}]}),
+            ),
+            (
+                "surface.respawn".into(),
+                json!({"surface_id":SURFACE_ID,"workspace_id":WORKSPACE_ID}),
+            ),
+        ]),
+    );
+    let output = executable(
+        Some(&pipe),
+        &[
+            "respawn-pane",
+            "--workspace",
+            WORKSPACE_ID,
+            "--surface",
+            "2",
+            "--command",
+            "echo ok",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let (method, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(method, "surface.list");
+    assert_eq!(Value::Object(params), json!({"workspace_id":WORKSPACE_ID}));
+    let (method, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(method, "surface.respawn");
+    let params = Value::Object(params);
+    assert_eq!(params["workspace_id"], WORKSPACE_ID);
+    assert_eq!(params["surface_id"], SURFACE_ID);
+    assert_eq!(params["tmux_start_command"], "echo ok");
+}
+
+#[test]
+fn no_context_lifecycle_commands_resolve_current_workspace_before_server_focus() {
+    for (tag, args, final_method) in [
+        (
+            "tab-action-current-workspace",
+            vec!["tab-action", "pin"],
+            "tab.action",
+        ),
+        (
+            "respawn-pane-current-workspace",
+            vec!["respawn-pane", "--command", "echo ok"],
+            "surface.respawn",
+        ),
+    ] {
+        let (pipe, request_rx) = spawn_method_server(
+            tag,
+            HashMap::from([
+                (
+                    "workspace.current".into(),
+                    json!({"workspace_id":WORKSPACE_ID,"workspace_ref":"workspace:4"}),
+                ),
+                (final_method.into(), json!({"action":"pin"})),
+            ]),
+        );
+        let output = executable(Some(&pipe), &args);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            request_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            ("workspace.current".into(), serde_json::Map::new())
+        );
+        let (method, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(method, final_method);
+        assert_eq!(params.get("workspace_id"), Some(&json!(WORKSPACE_ID)));
+        assert!(params.get("surface_id").is_none());
+    }
+}
+
+#[test]
 fn help_command_and_flag_routes_remain_distinct() {
     let top = executable(None, &["help"]);
     assert!(top.status.success());
