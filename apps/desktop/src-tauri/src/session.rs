@@ -3397,27 +3397,25 @@ pub(crate) fn open_diff_viewer_in_panel(
     panel_id: &str,
     token: &str,
     request_path: &str,
-) -> Option<AppSessionSnapshot> {
-    let normalized_request_path = normalize_diff_request_path(request_path)?;
+) -> Result<Option<AppSessionSnapshot>, String> {
+    let Some(normalized_request_path) = normalize_diff_request_path(request_path) else {
+        return Ok(None);
+    };
     if !diff_state.has_registered_request(
         token.trim(),
         &normalized_request_path,
         std::time::SystemTime::now(),
     ) {
-        return None;
+        return Ok(None);
     }
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        if !apply_open_diff_viewer(&mut guard, panel_id, token, &normalized_request_path) {
-            return None;
-        }
-        guard.clone()
-    };
-    notify_session_changed(app, &snapshot);
-    Some(snapshot)
+    let (resolved, snapshot) = state
+        .transact_value_if_changed(app, |snapshot| {
+            let resolved =
+                apply_open_diff_viewer(snapshot, panel_id, token, &normalized_request_path);
+            Ok::<_, std::convert::Infallible>((resolved, resolved))
+        })
+        .map_err(collapse_infallible_publication_error)?;
+    Ok(resolved.then_some(snapshot))
 }
 
 pub(crate) fn open_browser_url_in_panel(
@@ -6675,7 +6673,7 @@ pub fn session_open_diff_viewer(
         &panel_id,
         &token,
         request_path.as_deref().unwrap_or("/index.html"),
-    )
+    )?
     .ok_or_else(|| format!("unable to open diff viewer in pane {panel_id}"))
 }
 

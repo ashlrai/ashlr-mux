@@ -10604,14 +10604,19 @@ fn surface_open_diff(
         return invalid_params("Missing or invalid surface selector");
     };
     let diff_state = app.state::<DiffState>();
-    let (token, request_path) = match string_param(params, &["token", "diff_token"]) {
+    let (token, request_path, created_token) = match string_param(params, &["token", "diff_token"])
+    {
         Some(token) => (
             token,
             string_param(params, &["request_path", "path"])
                 .unwrap_or_else(|| "/index.html".to_string()),
+            None,
         ),
         None => match diff_state.create_starter_session(SystemTime::now()) {
-            Ok(created) => (created.token, created.request_path),
+            Ok(created) => {
+                let created_token = created.token.clone();
+                (created.token, created.request_path, Some(created_token))
+            }
             Err(message) => {
                 return ControlCallResult::Err {
                     code: "internal_error".to_string(),
@@ -10623,12 +10628,27 @@ fn surface_open_diff(
     };
     let state = app.state::<SessionState>();
     match open_diff_viewer_in_panel(app, &state, &diff_state, &panel_id, &token, &request_path) {
-        Some(snapshot) => surface_list_from_params(&snapshot, params),
-        None => ControlCallResult::Err {
-            code: "not_found".to_string(),
-            message: format!("unable to open diff viewer in pane {panel_id}"),
-            data: None,
-        },
+        Ok(Some(snapshot)) => surface_list_from_params(&snapshot, params),
+        Ok(None) => {
+            if let Some(token) = created_token.as_deref() {
+                diff_state.unregister_starter_session(token);
+            }
+            ControlCallResult::Err {
+                code: "not_found".to_string(),
+                message: format!("unable to open diff viewer in pane {panel_id}"),
+                data: None,
+            }
+        }
+        Err(message) => {
+            if let Some(token) = created_token.as_deref() {
+                diff_state.unregister_starter_session(token);
+            }
+            ControlCallResult::Err {
+                code: "internal".to_string(),
+                message,
+                data: None,
+            }
+        }
     }
 }
 

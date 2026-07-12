@@ -99,6 +99,17 @@ impl DiffState {
         })
     }
 
+    /// Revoke an owned starter session and best-effort remove its files.
+    /// Registry removal happens first so cleanup failure cannot leave the token
+    /// usable or replace the publication error that triggered compensation.
+    pub fn unregister_starter_session(&self, token: &str) -> bool {
+        let removed = self.registry.unregister(token);
+        if removed {
+            let _ = std::fs::remove_dir_all(self.trusted_root.join(token));
+        }
+        removed
+    }
+
     /// Resolve a `cmux-diff-viewer` scheme request to the on-disk file + MIME to
     /// serve, if its token has a live session that registered the path. Delegates
     /// to the pure [`crate::schemes::resolve_diff_request`] against this state's
@@ -384,6 +395,27 @@ mod tests {
         assert!(html.contains("cmux-diff-viewer-config"));
         assert!(html.contains(r#""statusMessage":"Diff viewer ready."#));
         assert!(html.contains(r#"src="/main.mjs""#));
+    }
+
+    #[test]
+    fn unregister_starter_session_revokes_and_removes_owned_files() {
+        let store_dir = tempfile::tempdir().unwrap();
+        let root_dir = tempfile::tempdir().unwrap();
+        let state = DiffState::with_dirs(store_dir.path().to_path_buf(), root_dir.path());
+        let created = state
+            .create_starter_session(SystemTime::now())
+            .expect("starter session");
+        let session_dir = root_dir.path().join(&created.token);
+
+        assert!(session_dir.is_dir());
+        assert!(state.unregister_starter_session(&created.token));
+        assert!(!state.has_registered_request(
+            &created.token,
+            &created.request_path,
+            SystemTime::now()
+        ));
+        assert!(!session_dir.exists());
+        assert!(!state.unregister_starter_session(&created.token));
     }
 
     // The command's gate+delegate is exercised through the core `dispatch` with
