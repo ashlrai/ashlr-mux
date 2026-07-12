@@ -6067,7 +6067,14 @@ fn notification_open_selected(
 
 fn session_restore_previous_launch(app: &AppHandle) -> ControlCallResult {
     let state = app.state::<SessionState>();
-    workspace_current(&restore_previous_launch_for_control(app, &state))
+    match restore_previous_launch_for_control(app, &state) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_close(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {

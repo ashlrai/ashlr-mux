@@ -197,11 +197,8 @@ impl SessionState {
         app: &AppHandle,
         mutation: impl FnOnce(&mut AppSessionSnapshot) -> Result<R, String>,
     ) -> Result<(R, AppSessionSnapshot), String> {
-        let mut operations = ProductionSnapshotPublicationOperations {
-            app,
-            state: self,
-            derived_events: DerivedEventPolicy::Record,
-        };
+        let mut operations =
+            ProductionSnapshotPublicationOperations::new(app, self, DerivedEventPolicy::Record);
         transact_lifecycle_snapshot(&self.snapshot, &mut operations, mutation)
     }
 
@@ -210,11 +207,8 @@ impl SessionState {
         app: &AppHandle,
         mutation: impl FnOnce(&mut AppSessionSnapshot) -> Result<R, E>,
     ) -> Result<(R, AppSessionSnapshot), PaneTopologyControlError<E>> {
-        let mut operations = ProductionSnapshotPublicationOperations {
-            app,
-            state: self,
-            derived_events: DerivedEventPolicy::Record,
-        };
+        let mut operations =
+            ProductionSnapshotPublicationOperations::new(app, self, DerivedEventPolicy::Record);
         transact_pane_topology_snapshot(&self.snapshot, &mut operations, mutation)
     }
 
@@ -223,11 +217,8 @@ impl SessionState {
         app: &AppHandle,
         mutation: impl FnOnce(&mut AppSessionSnapshot) -> bool,
     ) -> Result<AppSessionSnapshot, String> {
-        let mut operations = ProductionSnapshotPublicationOperations {
-            app,
-            state: self,
-            derived_events: DerivedEventPolicy::Record,
-        };
+        let mut operations =
+            ProductionSnapshotPublicationOperations::new(app, self, DerivedEventPolicy::Record);
         transact_snapshot_if_changed(&self.snapshot, &mut operations, mutation)
     }
 
@@ -236,11 +227,8 @@ impl SessionState {
         app: &AppHandle,
         mutation: impl FnOnce(&mut AppSessionSnapshot) -> Result<bool, E>,
     ) -> Result<AppSessionSnapshot, PaneTopologyControlError<E>> {
-        let mut operations = ProductionSnapshotPublicationOperations {
-            app,
-            state: self,
-            derived_events: DerivedEventPolicy::Record,
-        };
+        let mut operations =
+            ProductionSnapshotPublicationOperations::new(app, self, DerivedEventPolicy::Record);
         transact_result_if_changed_snapshot(&self.snapshot, &mut operations, mutation)
     }
 
@@ -249,11 +237,8 @@ impl SessionState {
         app: &AppHandle,
         mutation: impl FnOnce(&mut AppSessionSnapshot) -> Result<(R, bool), E>,
     ) -> Result<(R, AppSessionSnapshot), PaneTopologyControlError<E>> {
-        let mut operations = ProductionSnapshotPublicationOperations {
-            app,
-            state: self,
-            derived_events: DerivedEventPolicy::Record,
-        };
+        let mut operations =
+            ProductionSnapshotPublicationOperations::new(app, self, DerivedEventPolicy::Record);
         transact_value_if_changed_snapshot(&self.snapshot, &mut operations, mutation)
     }
 
@@ -262,11 +247,8 @@ impl SessionState {
         app: &AppHandle,
         mutation: impl FnOnce(&mut AppSessionSnapshot) -> bool,
     ) -> Result<AppSessionSnapshot, String> {
-        let mut operations = ProductionSnapshotPublicationOperations {
-            app,
-            state: self,
-            derived_events: DerivedEventPolicy::Record,
-        };
+        let mut operations =
+            ProductionSnapshotPublicationOperations::new(app, self, DerivedEventPolicy::Record);
         transact_snapshot_always(&self.snapshot, &mut operations, mutation)
     }
 }
@@ -3322,6 +3304,31 @@ struct ProductionSnapshotPublicationOperations<'a> {
     app: &'a AppHandle,
     state: &'a SessionState,
     derived_events: DerivedEventPolicy,
+    reseed_next_panel: bool,
+}
+
+impl<'a> ProductionSnapshotPublicationOperations<'a> {
+    fn new(
+        app: &'a AppHandle,
+        state: &'a SessionState,
+        derived_events: DerivedEventPolicy,
+    ) -> Self {
+        Self {
+            app,
+            state,
+            derived_events,
+            reseed_next_panel: true,
+        }
+    }
+
+    fn with_deferred_next_panel_reseed(app: &'a AppHandle, state: &'a SessionState) -> Self {
+        Self {
+            app,
+            state,
+            derived_events: DerivedEventPolicy::Record,
+            reseed_next_panel: false,
+        }
+    }
 }
 
 impl SnapshotPublicationOperations for ProductionSnapshotPublicationOperations<'_> {
@@ -3330,9 +3337,11 @@ impl SnapshotPublicationOperations for ProductionSnapshotPublicationOperations<'
     }
 
     fn update_event_baseline(&mut self, candidate: &AppSessionSnapshot) {
-        self.state
-            .next_panel
-            .fetch_max(next_panel_counter(candidate), Ordering::Relaxed);
+        if self.reseed_next_panel {
+            self.state
+                .next_panel
+                .fetch_max(next_panel_counter(candidate), Ordering::Relaxed);
+        }
         record_workspace_focus_history(self.state, candidate);
         if matches!(self.derived_events, DerivedEventPolicy::Record) {
             crate::control_socket::record_session_changed_event(self.app, candidate);
@@ -3632,15 +3641,15 @@ fn commit_lifecycle_snapshot_for_control_inner(
         .and_then(|model| model.validate_indexes())
         .map_err(|error| error.to_string())?;
 
-    let mut operations = ProductionSnapshotPublicationOperations {
+    let mut operations = ProductionSnapshotPublicationOperations::new(
         app,
         state,
-        derived_events: if record_derived_events {
+        if record_derived_events {
             DerivedEventPolicy::Record
         } else {
             DerivedEventPolicy::Suppress
         },
-    };
+    );
     publish_snapshot_transaction(&state.snapshot, expected, candidate, &mut operations)
 }
 
@@ -6099,31 +6108,46 @@ pub(crate) fn clear_workspace_panel_pull_request_for_control(
     })
 }
 
+fn restore_previous_launch_transaction(
+    authority: &GatedSnapshot,
+    next_panel: &AtomicU64,
+    publication: &mut impl SnapshotPublicationOperations,
+    load_previous: impl FnOnce() -> Option<AppSessionSnapshot>,
+) -> Result<AppSessionSnapshot, String> {
+    let _restore_gate = authority.lock_gate();
+    let (reseed, snapshot) =
+        transact_value_if_changed_snapshot(authority, publication, |candidate| {
+            let Some(mut restored) = load_previous() else {
+                return Ok::<_, std::convert::Infallible>((None, false));
+            };
+            ensure_workspace_ids(&mut restored);
+            ensure_pane_ids(&mut restored);
+            let reseed = next_panel_counter(&restored);
+            *candidate = restored;
+            Ok((Some(reseed), true))
+        })
+        .map_err(collapse_infallible_publication_error)?;
+    if let Some(reseed) = reseed {
+        next_panel.store(reseed, Ordering::Relaxed);
+    }
+    Ok(snapshot)
+}
+
 pub(crate) fn restore_previous_launch_for_control(
     app: &AppHandle,
     state: &SessionState,
-) -> AppSessionSnapshot {
-    let Some(mut restored) =
-        session_snapshot_paths(app).and_then(|(_current, previous)| load_snapshot_file(&previous))
-    else {
-        return current_session_snapshot(state);
-    };
-
-    ensure_workspace_ids(&mut restored);
-    ensure_pane_ids(&mut restored);
-    let next_panel = next_panel_counter(&restored);
-
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        *guard = restored;
-        state.next_panel.store(next_panel, Ordering::Relaxed);
-        guard.clone()
-    };
-    notify_session_changed(app, &snapshot);
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let mut publication =
+        ProductionSnapshotPublicationOperations::with_deferred_next_panel_reseed(app, state);
+    restore_previous_launch_transaction(
+        &state.snapshot,
+        &state.next_panel,
+        &mut publication,
+        || {
+            session_snapshot_paths(app)
+                .and_then(|(_current, previous)| load_snapshot_file(&previous))
+        },
+    )
 }
 
 /// Restore the previous launch's persisted session snapshot if one exists.
@@ -6134,7 +6158,7 @@ pub(crate) fn restore_previous_launch_for_control(
 pub fn session_restore_previous_launch(
     app: AppHandle,
     state: State<'_, SessionState>,
-) -> AppSessionSnapshot {
+) -> Result<AppSessionSnapshot, String> {
     restore_previous_launch_for_control(&app, &state)
 }
 
