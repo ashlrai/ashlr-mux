@@ -125,6 +125,10 @@ mod pure_typed_writers_red;
 #[path = "session/diff_durable_publication_red.rs"]
 mod diff_durable_publication_red;
 
+#[cfg(test)]
+#[path = "session/restore_previous_launch_red.rs"]
+mod restore_previous_launch_red;
+
 impl Default for SessionState {
     fn default() -> Self {
         let snapshot = initial_snapshot(FIRST_PANEL_ID);
