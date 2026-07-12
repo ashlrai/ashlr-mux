@@ -85,6 +85,10 @@ mod move_panel_workspace_red;
 #[path = "session/pane_topology_red.rs"]
 mod pane_topology_red;
 
+#[cfg(test)]
+#[path = "session/surface_move_reorder_red.rs"]
+mod surface_move_reorder_red;
+
 impl Default for SessionState {
     fn default() -> Self {
         let snapshot = initial_snapshot(FIRST_PANEL_ID);
