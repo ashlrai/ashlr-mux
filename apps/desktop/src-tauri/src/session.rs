@@ -65,6 +65,10 @@ pub struct SessionState {
     remote_workspace_rename_controller: Arc<dyn RemoteWorkspaceRenameController>,
 }
 
+#[cfg(test)]
+#[path = "session/change_gated_direct_writers_red.rs"]
+mod change_gated_direct_writers_red;
+
 impl Default for SessionState {
     fn default() -> Self {
         let snapshot = initial_snapshot(FIRST_PANEL_ID);
