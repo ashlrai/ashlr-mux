@@ -73,6 +73,10 @@ mod change_gated_direct_writers_red;
 #[path = "session/always_publish_direct_writers_red.rs"]
 mod always_publish_direct_writers_red;
 
+#[cfg(test)]
+#[path = "session/terminal_structural_writers_red.rs"]
+mod terminal_structural_writers_red;
+
 impl Default for SessionState {
     fn default() -> Self {
         let snapshot = initial_snapshot(FIRST_PANEL_ID);
