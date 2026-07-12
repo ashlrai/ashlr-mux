@@ -117,6 +117,10 @@ mod runtime_model_facts_red;
 #[path = "session/browser_view_state_red.rs"]
 mod browser_view_state_red;
 
+#[cfg(test)]
+#[path = "session/pure_typed_writers_red.rs"]
+mod pure_typed_writers_red;
+
 impl Default for SessionState {
     fn default() -> Self {
         let snapshot = initial_snapshot(FIRST_PANEL_ID);

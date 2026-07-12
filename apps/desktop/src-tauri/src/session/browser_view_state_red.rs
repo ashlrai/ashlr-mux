@@ -348,7 +348,8 @@ fn mutator_wrappers_public_duplicates_and_sockets_share_one_fallible_gate() {
         .collect();
     assert!(strict_zoom.contains("Result<AppSessionSnapshot, String>"));
     assert!(strict_zoom.contains("apply_set_browser_zoom("));
-    assert!(strict_zoom_compact.contains(".snapshot.lock()"));
+    assert!(!strict_zoom_compact.contains(".snapshot.lock()"));
+    assert!(!strict_zoom.contains("notify_session_changed("));
     assert!(strict_zoom.contains("unable to set browser zoom for pane"));
     assert!(!strict_zoom.contains("set_browser_zoom_for_control("));
 }
