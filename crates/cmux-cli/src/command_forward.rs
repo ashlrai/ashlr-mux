@@ -2720,13 +2720,7 @@ fn parse_frozen_option(args: &[String], name: &str) -> (Option<String>, Vec<Stri
 }
 
 fn normalize_action_name(action: &str) -> String {
-    action
-        .chars()
-        .map(|character| match character {
-            '-' => '_',
-            other => other.to_ascii_lowercase(),
-        })
-        .collect()
+    action.to_lowercase().replace('-', "_")
 }
 
 fn is_frozen_handle_ref(value: &str) -> bool {
