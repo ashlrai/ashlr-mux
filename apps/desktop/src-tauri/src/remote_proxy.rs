@@ -1015,7 +1015,77 @@ struct RemoteWorkspaceProxyRuntime {
     panel_brokers: HashMap<String, LoopbackProxyBroker>,
 }
 
+pub(crate) struct WorkspacePanelBrokerLease {
+    workspace_id: String,
+    panel_id: String,
+    proxy_url: String,
+    prior: Option<LoopbackProxyBroker>,
+}
+
+impl WorkspacePanelBrokerLease {
+    pub(crate) fn proxy_url(&self) -> &str {
+        &self.proxy_url
+    }
+}
+
 impl RemoteProxyBrokerState {
+    pub(crate) fn prepare_workspace_panel_broker(
+        &self,
+        workspace_id: &str,
+        panel_id: &str,
+        observer: Option<Arc<dyn ProxyTrafficObserver>>,
+    ) -> Result<WorkspacePanelBrokerLease, String> {
+        if panel_id.trim().is_empty() {
+            return Err("panel id is required to start a pane proxy broker".to_string());
+        }
+        let mut guard = self
+            .brokers
+            .lock()
+            .expect("remote proxy broker state mutex poisoned");
+        let runtime = guard
+            .get_mut(workspace_id)
+            .ok_or_else(|| "workspace remote proxy runtime is not running".to_string())?;
+        let process = runtime
+            ._process
+            .as_ref()
+            .ok_or_else(|| "workspace remote proxy runtime has no daemon process".to_string())?;
+        let connector = Arc::new(process.connector());
+        let broker = LoopbackProxyBroker::start_with_observer(0, connector, observer)?;
+        let proxy_url = broker.proxy_url();
+        let prior = runtime.panel_brokers.insert(panel_id.to_string(), broker);
+        Ok(WorkspacePanelBrokerLease {
+            workspace_id: workspace_id.to_string(),
+            panel_id: panel_id.to_string(),
+            proxy_url,
+            prior,
+        })
+    }
+
+    pub(crate) fn rollback_workspace_panel_broker(&self, lease: WorkspacePanelBrokerLease) {
+        let mut guard = self
+            .brokers
+            .lock()
+            .expect("remote proxy broker state mutex poisoned");
+        let Some(runtime) = guard.get_mut(&lease.workspace_id) else {
+            return;
+        };
+        let owns_current = runtime
+            .panel_brokers
+            .get(&lease.panel_id)
+            .is_some_and(|broker| broker.proxy_url() == lease.proxy_url);
+        if !owns_current {
+            return;
+        }
+        let prepared = runtime.panel_brokers.remove(&lease.panel_id);
+        if let Some(prior) = lease.prior {
+            runtime.panel_brokers.insert(lease.panel_id, prior);
+        }
+        drop(guard);
+        drop(prepared);
+    }
+
+    pub(crate) fn commit_workspace_panel_broker(&self, _lease: WorkspacePanelBrokerLease) {}
+
     pub(crate) fn start_workspace_broker(
         &self,
         workspace_id: &str,

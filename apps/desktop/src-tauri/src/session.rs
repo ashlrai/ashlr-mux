@@ -3439,27 +3439,244 @@ pub(crate) fn open_diff_viewer_in_panel(
     Ok(resolved.then_some(snapshot))
 }
 
+struct BrowserProxyLease(crate::remote_proxy::WorkspacePanelBrokerLease);
+
+impl BrowserProxyLease {
+    fn proxy_url(&self) -> &str {
+        self.0.proxy_url()
+    }
+}
+
+trait BrowserProxyEffects {
+    fn prepare(
+        &mut self,
+        snapshot: &AppSessionSnapshot,
+        panel_id: &str,
+    ) -> Option<BrowserProxyLease>;
+    fn rollback(&mut self, lease: BrowserProxyLease);
+    fn commit(&mut self, lease: BrowserProxyLease);
+}
+
+struct ProductionBrowserProxyEffects<'a> {
+    app: &'a AppHandle,
+}
+
+impl BrowserProxyEffects for ProductionBrowserProxyEffects<'_> {
+    fn prepare(
+        &mut self,
+        snapshot: &AppSessionSnapshot,
+        panel_id: &str,
+    ) -> Option<BrowserProxyLease> {
+        let workspace_id = workspace_id_for_panel_in_snapshot(snapshot, panel_id)?;
+        let observer = Arc::new(PanelBrowserProxyObserver {
+            app: self.app.clone(),
+            panel_id: panel_id.to_string(),
+        });
+        self.app
+            .state::<crate::remote_proxy::RemoteProxyBrokerState>()
+            .prepare_workspace_panel_broker(&workspace_id, panel_id, Some(observer))
+            .ok()
+            .map(BrowserProxyLease)
+    }
+
+    fn rollback(&mut self, lease: BrowserProxyLease) {
+        self.app
+            .state::<crate::remote_proxy::RemoteProxyBrokerState>()
+            .rollback_workspace_panel_broker(lease.0);
+    }
+
+    fn commit(&mut self, lease: BrowserProxyLease) {
+        self.app
+            .state::<crate::remote_proxy::RemoteProxyBrokerState>()
+            .commit_workspace_panel_broker(lease.0);
+    }
+}
+
+fn bind_browser_proxy_lease(
+    snapshot: &mut AppSessionSnapshot,
+    panel_id: &str,
+    lease: Option<&BrowserProxyLease>,
+) {
+    let Some(lease) = lease else {
+        return;
+    };
+    let Some(layout) = active_layout_slot(snapshot).and_then(Option::as_mut) else {
+        return;
+    };
+    set_layout_browser_proxy_url_for_panel(layout, panel_id, Some(lease.proxy_url()));
+}
+
+fn publish_browser_candidate(
+    authority: &GatedSnapshot,
+    publication: &mut impl SnapshotPublicationOperations,
+    proxy: &mut impl BrowserProxyEffects,
+    current: &AppSessionSnapshot,
+    mut candidate: AppSessionSnapshot,
+    panel_id: &str,
+) -> Result<AppSessionSnapshot, String> {
+    let lease = proxy.prepare(&candidate, panel_id);
+    bind_browser_proxy_lease(&mut candidate, panel_id, lease.as_ref());
+    match publish_snapshot_transaction(authority, Some(current), &candidate, publication) {
+        Ok(committed) => {
+            if let Some(lease) = lease {
+                proxy.commit(lease);
+            }
+            Ok(committed)
+        }
+        Err(message) => {
+            if let Some(lease) = lease {
+                proxy.rollback(lease);
+            }
+            Err(message)
+        }
+    }
+}
+
+fn browser_transaction_current(authority: &GatedSnapshot) -> Result<AppSessionSnapshot, String> {
+    authority
+        .lock()
+        .map(|snapshot| snapshot.clone())
+        .map_err(|_| "Session state is unavailable".to_string())
+}
+
+fn transact_open_browser_url(
+    authority: &GatedSnapshot,
+    publication: &mut impl SnapshotPublicationOperations,
+    proxy: &mut impl BrowserProxyEffects,
+    panel_id: &str,
+    url: Option<&str>,
+) -> Result<Option<AppSessionSnapshot>, String> {
+    let _transaction_guard = authority.lock_gate();
+    let current = browser_transaction_current(authority)?;
+    let mut candidate = current.clone();
+    if !apply_open_browser_url(&mut candidate, panel_id, url) {
+        return Ok(None);
+    }
+    publish_browser_candidate(authority, publication, proxy, &current, candidate, panel_id)
+        .map(Some)
+}
+
+#[derive(Debug)]
+pub(crate) enum BrowserPanelCreateError {
+    NotFound(String),
+    Publication(String),
+}
+
+impl std::fmt::Display for BrowserPanelCreateError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound(message) | Self::Publication(message) => formatter.write_str(message),
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn transact_split_browser(
+    authority: &GatedSnapshot,
+    next_panel: &AtomicU64,
+    publication: &mut impl SnapshotPublicationOperations,
+    proxy: &mut impl BrowserProxyEffects,
+    panel_id: &str,
+    orientation: SessionSplitOrientation,
+    insert_first: bool,
+    url: Option<&str>,
+) -> Result<AppSessionSnapshot, BrowserPanelCreateError> {
+    let _transaction_guard = authority.lock_gate();
+    let current =
+        browser_transaction_current(authority).map_err(BrowserPanelCreateError::Publication)?;
+    let new_panel_id = format!("surface-{}", next_panel.load(Ordering::Relaxed));
+    let mut candidate = current.clone();
+    if !apply_split(
+        &mut candidate,
+        panel_id,
+        orientation,
+        &new_panel_id,
+        insert_first,
+    ) {
+        return Err(BrowserPanelCreateError::NotFound(format!(
+            "no pane holds panel id {panel_id}"
+        )));
+    }
+    apply_open_browser_url(&mut candidate, &new_panel_id, url);
+    let committed = publish_browser_candidate(
+        authority,
+        publication,
+        proxy,
+        &current,
+        candidate,
+        &new_panel_id,
+    )
+    .map_err(BrowserPanelCreateError::Publication)?;
+    next_panel.fetch_add(1, Ordering::Relaxed);
+    Ok(committed)
+}
+
+fn transact_new_browser_workspace(
+    authority: &GatedSnapshot,
+    next_panel: &AtomicU64,
+    publication: &mut impl SnapshotPublicationOperations,
+    proxy: &mut impl BrowserProxyEffects,
+    url: Option<&str>,
+) -> Result<AppSessionSnapshot, String> {
+    let _transaction_guard = authority.lock_gate();
+    let current = browser_transaction_current(authority)?;
+    let new_panel_id = format!("surface-{}", next_panel.load(Ordering::Relaxed));
+    let mut candidate = current.clone();
+    apply_new_workspace(&mut candidate, &new_panel_id, None, None, None, None);
+    apply_open_browser_url(&mut candidate, &new_panel_id, url);
+    let committed = publish_browser_candidate(
+        authority,
+        publication,
+        proxy,
+        &current,
+        candidate,
+        &new_panel_id,
+    )?;
+    next_panel.fetch_add(1, Ordering::Relaxed);
+    Ok(committed)
+}
+
+fn transact_reopen_closed_browser_tab(
+    authority: &GatedSnapshot,
+    next_panel: &AtomicU64,
+    history: &Mutex<Vec<ClosedBrowserTabSnapshot>>,
+    publication: &mut impl SnapshotPublicationOperations,
+    proxy: &mut impl BrowserProxyEffects,
+) -> Result<AppSessionSnapshot, String> {
+    let _transaction_guard = authority.lock_gate();
+    let mut history = history
+        .lock()
+        .expect("closed browser history mutex poisoned");
+    let current = browser_transaction_current(authority)?;
+    let Some(tab) = history.last().cloned() else {
+        return Ok(current);
+    };
+    let new_panel_id = format!("surface-{}", next_panel.load(Ordering::Relaxed));
+    let mut candidate = current.clone();
+    apply_reopen_closed_browser_tab(&mut candidate, &tab, &new_panel_id);
+    let committed = publish_browser_candidate(
+        authority,
+        publication,
+        proxy,
+        &current,
+        candidate,
+        &new_panel_id,
+    )?;
+    history.pop();
+    next_panel.fetch_add(1, Ordering::Relaxed);
+    Ok(committed)
+}
+
 pub(crate) fn open_browser_url_in_panel(
     app: &AppHandle,
     state: &SessionState,
     panel_id: &str,
     url: Option<&str>,
-) -> Option<AppSessionSnapshot> {
-    let mut snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        if !apply_open_browser_url(&mut guard, panel_id, url) {
-            return None;
-        }
-        guard.clone()
-    };
-    if let Some(updated) = start_panel_browser_proxy_for_control(app, state, &snapshot, panel_id) {
-        snapshot = updated;
-    }
-    notify_session_changed(app, &snapshot);
-    Some(snapshot)
+) -> Result<Option<AppSessionSnapshot>, String> {
+    let mut publication =
+        ProductionSnapshotPublicationOperations::new(app, state, DerivedEventPolicy::Record);
+    let mut proxy = ProductionBrowserProxyEffects { app };
+    transact_open_browser_url(&state.snapshot, &mut publication, &mut proxy, panel_id, url)
 }
 
 fn mutate_browser_for_control<F>(
@@ -4185,6 +4402,7 @@ fn start_panel_browser_proxy_for_control(
     snapshot: &AppSessionSnapshot,
     panel_id: &str,
 ) -> Option<AppSessionSnapshot> {
+    let _proxy_guard = state.snapshot.lock_gate();
     let workspace_id = workspace_id_for_panel_in_snapshot(snapshot, panel_id)?;
     let observer = Arc::new(PanelBrowserProxyObserver {
         app: app.clone(),
@@ -4218,6 +4436,7 @@ pub(crate) fn start_direct_browser_proxy_for_control(
     panel_id: &str,
     target_override: Option<crate::remote_proxy::ProxyTarget>,
 ) -> Result<(AppSessionSnapshot, String), String> {
+    let _proxy_guard = state.snapshot.lock_gate();
     let workspace_id = workspace_id_for_panel_in_snapshot(snapshot, panel_id)
         .ok_or_else(|| "browser panel is not attached to a workspace".to_string())?;
     let observer = Arc::new(PanelBrowserProxyObserver {
@@ -4836,53 +5055,33 @@ pub(crate) fn new_browser_workspace_for_control(
     app: &AppHandle,
     state: &SessionState,
     url: Option<&str>,
-) -> AppSessionSnapshot {
-    let _allocation_guard = state.snapshot.lock_gate();
-    let new_panel_id = format!(
-        "surface-{}",
-        state.next_panel.fetch_add(1, Ordering::Relaxed)
-    );
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        apply_new_workspace(&mut guard, &new_panel_id, None, None, None, None);
-        apply_open_browser_url(&mut guard, &new_panel_id, url);
-        guard.clone()
-    };
-    notify_session_changed(app, &snapshot);
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let mut publication =
+        ProductionSnapshotPublicationOperations::with_deferred_next_panel_reseed(app, state);
+    let mut proxy = ProductionBrowserProxyEffects { app };
+    transact_new_browser_workspace(
+        &state.snapshot,
+        &state.next_panel,
+        &mut publication,
+        &mut proxy,
+        url,
+    )
 }
 
 pub(crate) fn reopen_closed_browser_tab_for_control(
     app: &AppHandle,
     state: &SessionState,
-) -> AppSessionSnapshot {
-    let _allocation_guard = state.snapshot.lock_gate();
-    let Some(tab) = ({
-        let mut history = state
-            .closed_browser_tabs
-            .lock()
-            .expect("closed browser history mutex poisoned");
-        history.pop()
-    }) else {
-        return current_session_snapshot(state);
-    };
-    let new_panel_id = format!(
-        "surface-{}",
-        state.next_panel.fetch_add(1, Ordering::Relaxed)
-    );
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        apply_reopen_closed_browser_tab(&mut guard, &tab, &new_panel_id);
-        guard.clone()
-    };
-    notify_session_changed(app, &snapshot);
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let mut publication =
+        ProductionSnapshotPublicationOperations::with_deferred_next_panel_reseed(app, state);
+    let mut proxy = ProductionBrowserProxyEffects { app };
+    transact_reopen_closed_browser_tab(
+        &state.snapshot,
+        &state.next_panel,
+        &state.closed_browser_tabs,
+        &mut publication,
+        &mut proxy,
+    )
 }
 
 pub(crate) fn close_workspace_in_window_for_control(
@@ -5496,36 +5695,20 @@ pub(crate) fn split_browser_for_control(
     orientation: SessionSplitOrientation,
     insert_first: bool,
     url: Option<&str>,
-) -> Result<AppSessionSnapshot, String> {
-    let _allocation_guard = state.snapshot.lock_gate();
-    let new_panel_id = format!(
-        "surface-{}",
-        state.next_panel.fetch_add(1, Ordering::Relaxed)
-    );
-    let mut snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        if !apply_split(
-            &mut guard,
-            panel_id,
-            orientation,
-            &new_panel_id,
-            insert_first,
-        ) {
-            return Err(format!("no pane holds panel id {panel_id}"));
-        }
-        apply_open_browser_url(&mut guard, &new_panel_id, url);
-        guard.clone()
-    };
-    if let Some(updated) =
-        start_panel_browser_proxy_for_control(app, state, &snapshot, &new_panel_id)
-    {
-        snapshot = updated;
-    }
-    notify_session_changed(app, &snapshot);
-    Ok(snapshot)
+) -> Result<AppSessionSnapshot, BrowserPanelCreateError> {
+    let mut publication =
+        ProductionSnapshotPublicationOperations::with_deferred_next_panel_reseed(app, state);
+    let mut proxy = ProductionBrowserProxyEffects { app };
+    transact_split_browser(
+        &state.snapshot,
+        &state.next_panel,
+        &mut publication,
+        &mut proxy,
+        panel_id,
+        orientation,
+        insert_first,
+        url,
+    )
 }
 
 pub(crate) fn close_panel_for_control(
@@ -6250,35 +6433,15 @@ pub fn session_split_browser(
     insert_first: Option<bool>,
     url: Option<String>,
 ) -> Result<AppSessionSnapshot, String> {
-    let _allocation_guard = state.snapshot.lock_gate();
-    let new_panel_id = format!(
-        "surface-{}",
-        state.next_panel.fetch_add(1, Ordering::Relaxed)
-    );
-    let mut snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        if !apply_split(
-            &mut guard,
-            &panel_id,
-            orientation,
-            &new_panel_id,
-            insert_first.unwrap_or(false),
-        ) {
-            return Err(format!("no pane holds panel id {panel_id}"));
-        }
-        apply_open_browser_url(&mut guard, &new_panel_id, url.as_deref());
-        guard.clone()
-    };
-    if let Some(updated) =
-        start_panel_browser_proxy_for_control(&app, &state, &snapshot, &new_panel_id)
-    {
-        snapshot = updated;
-    }
-    notify_session_changed(&app, &snapshot);
-    Ok(snapshot)
+    split_browser_for_control(
+        &app,
+        &state,
+        &panel_id,
+        orientation,
+        insert_first.unwrap_or(false),
+        url.as_deref(),
+    )
+    .map_err(|error| error.to_string())
 }
 
 /// Close the pane/panel `panel_id`. Emits `cmux://session-changed` and returns
@@ -6730,7 +6893,7 @@ pub fn session_open_browser_url(
     panel_id: String,
     url: Option<String>,
 ) -> Result<AppSessionSnapshot, String> {
-    open_browser_url_in_panel(&app, &state, &panel_id, url.as_deref())
+    open_browser_url_in_panel(&app, &state, &panel_id, url.as_deref())?
         .ok_or_else(|| format!("unable to open browser in pane {panel_id}"))
 }
 
@@ -6874,23 +7037,8 @@ pub fn session_new_browser_workspace(
     app: AppHandle,
     state: State<'_, SessionState>,
     url: Option<String>,
-) -> AppSessionSnapshot {
-    let _allocation_guard = state.snapshot.lock_gate();
-    let new_panel_id = format!(
-        "surface-{}",
-        state.next_panel.fetch_add(1, Ordering::Relaxed)
-    );
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        apply_new_workspace(&mut guard, &new_panel_id, None, None, None, None);
-        apply_open_browser_url(&mut guard, &new_panel_id, url.as_deref());
-        guard.clone()
-    };
-    notify_session_changed(&app, &snapshot);
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    new_browser_workspace_for_control(&app, &state, url.as_deref())
 }
 
 /// Reopen the most recent browser pane/workspace that disappeared, restoring
@@ -6901,31 +7049,8 @@ pub fn session_new_browser_workspace(
 pub fn session_reopen_closed_browser_tab(
     app: AppHandle,
     state: State<'_, SessionState>,
-) -> AppSessionSnapshot {
-    let _allocation_guard = state.snapshot.lock_gate();
-    let Some(tab) = ({
-        let mut history = state
-            .closed_browser_tabs
-            .lock()
-            .expect("closed browser history mutex poisoned");
-        history.pop()
-    }) else {
-        return current_session_snapshot(&state);
-    };
-    let new_panel_id = format!(
-        "surface-{}",
-        state.next_panel.fetch_add(1, Ordering::Relaxed)
-    );
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        apply_reopen_closed_browser_tab(&mut guard, &tab, &new_panel_id);
-        guard.clone()
-    };
-    notify_session_changed(&app, &snapshot);
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    reopen_closed_browser_tab_for_control(&app, &state)
 }
 
 /// Reopen the most recently closed workspace with its complete session model.

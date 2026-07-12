@@ -74,8 +74,8 @@ use crate::session::{
     split_browser_for_control, split_off_surface_for_control, split_panel_for_control,
     start_direct_browser_proxy_for_control, swap_panes_for_control,
     toggle_browser_developer_tools_for_control, toggle_browser_focus_mode_for_control,
-    toggle_browser_omnibar_for_control, toggle_split_zoom_for_control, PaneFocusControlError,
-    PaneLastControlError, PaneResizeControlError, PaneResizeControlIntent,
+    toggle_browser_omnibar_for_control, toggle_split_zoom_for_control, BrowserPanelCreateError,
+    PaneFocusControlError, PaneLastControlError, PaneResizeControlError, PaneResizeControlIntent,
     PaneTopologyControlError, ReorderWorkspacesManyControlError, SessionState,
     SurfacePositionControlError, TerminalPanelCreateError, WorkspaceLastControlError,
     WorkspaceRemoteControlConfig, WorkspaceRenameResolution, WorkspaceSelectControlError,
@@ -5411,11 +5411,14 @@ fn workspace_create_browser(
 ) -> ControlCallResult {
     let url = raw_string_param(params, &["url"]);
     let state = app.state::<SessionState>();
-    workspace_current(&new_browser_workspace_for_control(
-        app,
-        &state,
-        url.as_deref(),
-    ))
+    match new_browser_workspace_for_control(app, &state, url.as_deref()) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn config_reload(app: &AppHandle) -> ControlCallResult {
@@ -7692,8 +7695,13 @@ fn surface_split_browser(
         url.as_deref(),
     ) {
         Ok(snapshot) => surface_list_from_params(&snapshot, params),
-        Err(message) => ControlCallResult::Err {
+        Err(BrowserPanelCreateError::NotFound(message)) => ControlCallResult::Err {
             code: "not_found".to_string(),
+            message,
+            data: None,
+        },
+        Err(BrowserPanelCreateError::Publication(message)) => ControlCallResult::Err {
+            code: "internal".to_string(),
             message,
             data: None,
         },
@@ -10450,10 +10458,15 @@ fn surface_open_browser(
     let url = string_param(params, &["url"]);
     let state = app.state::<SessionState>();
     match open_browser_url_in_panel(app, &state, &panel_id, url.as_deref()) {
-        Some(snapshot) => surface_list_from_params(&snapshot, params),
-        None => ControlCallResult::Err {
+        Ok(Some(snapshot)) => surface_list_from_params(&snapshot, params),
+        Ok(None) => ControlCallResult::Err {
             code: "not_found".to_string(),
             message: format!("unable to open browser in pane {panel_id}"),
+            data: None,
+        },
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
             data: None,
         },
     }
@@ -10509,8 +10522,13 @@ fn browser_open_split(
                 None => surface_list_from_params(&snapshot, params),
             }
         }
-        Err(message) => ControlCallResult::Err {
+        Err(BrowserPanelCreateError::NotFound(message)) => ControlCallResult::Err {
             code: "not_found".to_string(),
+            message,
+            data: None,
+        },
+        Err(BrowserPanelCreateError::Publication(message)) => ControlCallResult::Err {
+            code: "internal".to_string(),
             message,
             data: None,
         },
@@ -10536,13 +10554,20 @@ fn browser_navigate(app: &AppHandle, params: &serde_json::Map<String, Value>) ->
     }
     let state = app.state::<SessionState>();
     match open_browser_url_in_panel(app, &state, &panel_id, Some(&url)) {
-        Some(snapshot) => match browser_surface_payload(&snapshot, workspace_index, &panel_id) {
-            Some(payload) => ok(payload),
-            None => invalid_params("Missing or invalid surface selector"),
-        },
-        None => ControlCallResult::Err {
+        Ok(Some(snapshot)) => {
+            match browser_surface_payload(&snapshot, workspace_index, &panel_id) {
+                Some(payload) => ok(payload),
+                None => invalid_params("Missing or invalid surface selector"),
+            }
+        }
+        Ok(None) => ControlCallResult::Err {
             code: "not_found".to_string(),
             message: format!("unable to navigate browser surface {panel_id}"),
+            data: None,
+        },
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
             data: None,
         },
     }
@@ -13383,7 +13408,14 @@ fn debug_browser_attach_webview(
 
 fn browser_reopen_closed(app: &AppHandle) -> ControlCallResult {
     let state = app.state::<SessionState>();
-    workspace_current(&reopen_closed_browser_tab_for_control(app, &state))
+    match reopen_closed_browser_tab_for_control(app, &state) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn browser_clear_history(
