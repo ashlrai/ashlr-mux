@@ -173,6 +173,70 @@ fn persistence_failure_preserves_every_authority_and_counter() {
     assert_eq!(next_panel.load(Ordering::Relaxed), 27);
 }
 
+struct BlockingEmitPublication {
+    emitted: std::sync::mpsc::Sender<()>,
+    resume: std::sync::mpsc::Receiver<()>,
+}
+
+impl SnapshotPublicationOperations for BlockingEmitPublication {
+    fn persist(&mut self, _candidate: &AppSessionSnapshot) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn update_event_baseline(&mut self, _candidate: &AppSessionSnapshot) {}
+
+    fn emit(&mut self, _candidate: &AppSessionSnapshot) -> Result<(), String> {
+        self.emitted.send(()).unwrap();
+        self.resume.recv().unwrap();
+        Ok(())
+    }
+}
+
+#[test]
+fn restored_authority_and_counter_are_atomic_to_concurrent_allocators() {
+    let current = initial_snapshot("surface-1");
+    let restored = restored_without_stable_ids();
+    let authority = GatedSnapshot::new(current);
+    let next_panel = AtomicU64::new(2);
+    let (emitted_tx, emitted_rx) = std::sync::mpsc::channel();
+    let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+    let (attempted_tx, attempted_rx) = std::sync::mpsc::channel();
+    let (allocated_tx, allocated_rx) = std::sync::mpsc::channel();
+
+    std::thread::scope(|scope| {
+        let restore = scope.spawn(|| {
+            let mut publication = BlockingEmitPublication {
+                emitted: emitted_tx,
+                resume: resume_rx,
+            };
+            restore_previous_launch_transaction(&authority, &next_panel, &mut publication, || {
+                Some(restored)
+            })
+            .unwrap()
+        });
+        emitted_rx.recv().unwrap();
+
+        let allocator = scope.spawn(|| {
+            attempted_tx.send(()).unwrap();
+            let _gate = authority.lock_gate();
+            let allocated = next_panel.fetch_add(1, Ordering::Relaxed);
+            allocated_tx.send(allocated).unwrap();
+        });
+        attempted_rx.recv().unwrap();
+        assert_eq!(
+            allocated_rx.recv_timeout(std::time::Duration::from_millis(50)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        );
+
+        resume_tx.send(()).unwrap();
+        let committed = restore.join().unwrap();
+        allocator.join().unwrap();
+        assert_eq!(allocated_rx.recv().unwrap(), 10);
+        assert_eq!(next_panel.load(Ordering::Relaxed), 11);
+        assert_eq!(*authority.lock().unwrap(), committed);
+    });
+}
+
 fn function_source<'a>(source: &'a str, signature: &str) -> &'a str {
     let start = source
         .find(signature)
@@ -207,6 +271,7 @@ fn production_restore_has_injectable_transaction_and_fallible_routes() {
     assert!(transaction.contains("ensure_pane_ids("));
     assert!(transaction.contains("next_panel_counter("));
     assert!(transaction.contains("load_previous"));
+    assert!(transaction.contains("authority.lock_gate()"));
     let publish = transaction
         .find("transact_value_if_changed_snapshot(")
         .unwrap();
