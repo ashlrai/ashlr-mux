@@ -1759,3 +1759,327 @@ fn enabled_disconnected_or_reconnecting_mirror_new_terminal_never_creates_local_
         "{actual:#?}"
     );
 }
+
+fn remote_window_tabs_snapshot(connected: bool) -> AppSessionSnapshot {
+    let mut snapshot = remote_split_snapshot();
+    let workspace = &mut snapshot.windows[0].tab_manager.workspaces[0];
+    let remote = workspace.remote.as_mut().unwrap();
+    remote.enabled = true;
+    remote.connected = connected;
+    remote.state = if connected {
+        "connected"
+    } else {
+        "reconnecting"
+    }
+    .into();
+    for (surface_id, pane_token) in [(A, "%31"), (B, "%32"), (C, "%33")] {
+        workspace
+            .surfaces
+            .as_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|surface| surface.surface_id == surface_id)
+            .unwrap()
+            .kind = SessionSurfaceKindSnapshot::RemoteTerminal {
+            remote_session_id: Some(pane_token.into()),
+            remote_context: None,
+            arrival_generation: Some(1),
+        };
+    }
+    snapshot
+}
+
+#[test]
+fn remote_mirror_rename_plans_safe_authoritative_window_rename_without_blocking_local_title() {
+    let snapshot = remote_window_tabs_snapshot(true);
+    let transition = dispatch(
+        &snapshot,
+        json!({"surface_id": A, "action": "rename", "title": "  O'Brien Workspace  "}),
+    );
+    assert_eq!(ok(&transition)["title"], "O'Brien Workspace");
+    assert_eq!(
+        model(&transition.snapshot)
+            .surface(A)
+            .unwrap()
+            .metadata
+            .custom_title
+            .as_deref(),
+        Some("O'Brien Workspace")
+    );
+    let rename = serialized_effect(&transition, "RemoteWindowRename");
+    assert_eq!(rename["source_remote_pane_id"], "%31");
+    assert_eq!(rename["title"], "O'Brien Workspace");
+    assert_eq!(rename["phase"], "commit");
+    assert_eq!(rename["arrival_policy"], "local-metadata-immediate");
+    assert_eq!(rename["must_succeed"], false);
+}
+
+#[test]
+fn remote_mirror_rename_omits_unsafe_or_unroutable_remote_effect_but_keeps_local_result() {
+    let cases = [
+        (
+            remote_window_tabs_snapshot(false),
+            "Local While Offline",
+            false,
+        ),
+        (remote_window_tabs_snapshot(true), "unsafe\nremote", false),
+    ];
+    for (snapshot, title, expect_remote) in cases {
+        let transition = dispatch(
+            &snapshot,
+            json!({"surface_id": A, "action": "rename", "title": title}),
+        );
+        assert_eq!(ok(&transition)["title"], title.trim());
+        assert_eq!(
+            model(&transition.snapshot)
+                .surface(A)
+                .unwrap()
+                .metadata
+                .custom_title
+                .as_deref(),
+            Some(title.trim())
+        );
+        assert_eq!(
+            transition.effects.iter().any(|effect| {
+                serde_json::to_value(effect)
+                    .unwrap()
+                    .get("RemoteWindowRename")
+                    .is_some()
+            }),
+            expect_remote
+        );
+    }
+
+    let cleared = dispatch(
+        &remote_window_tabs_snapshot(true),
+        json!({"surface_id": A, "action": "clear-name"}),
+    );
+    let _ = ok(&cleared);
+    assert!(!cleared.effects.iter().any(|effect| {
+        serde_json::to_value(effect)
+            .unwrap()
+            .get("RemoteWindowRename")
+            .is_some()
+    }));
+}
+
+#[test]
+fn production_remote_window_rename_command_is_single_safe_and_authoritative() {
+    let production = include_str!("../../control_socket.rs");
+    for contract in [
+        "fn remote_tmux_rename_window_command(",
+        "tmux rename-window -t {} {}",
+        "remote_tmux_source_window_command",
+        "RemoteWindowRename",
+    ] {
+        assert!(
+            production.contains(contract),
+            "missing rename contract: {contract}"
+        );
+    }
+    assert!(
+        production.contains("'\"'\"'"),
+        "apostrophes require safe shell quoting"
+    );
+}
+
+#[test]
+fn production_remote_window_close_uses_authoritative_deferred_departure() {
+    let production = include_str!("../../control_socket.rs");
+    let lifecycle = include_str!("../pane_surface_lifecycle.rs");
+    for contract in [
+        "RemoteWindowClose",
+        "remote_tmux_source_window_command",
+        "remote_tmux_kill_command",
+        "schedule_remote_window_departure_reconciliation",
+    ] {
+        assert!(
+            production.contains(contract),
+            "missing close production contract: {contract}"
+        );
+    }
+    for contract in [
+        "struct RuntimeDeparture",
+        "reconcile_runtime_departure",
+        "runtime-window-close",
+    ] {
+        assert!(
+            lifecycle.contains(contract),
+            "missing departure contract: {contract}"
+        );
+    }
+}
+
+#[test]
+fn connected_remote_range_closes_defer_departure_without_local_close_events() {
+    let snapshot = remote_window_tabs_snapshot(true);
+    for (action, expected_tokens, expected_closed) in [
+        ("close-right", vec!["%32", "%33"], 2),
+        ("close-others", vec!["%32", "%33"], 2),
+        ("close-left", Vec::<&str>::new(), 0),
+    ] {
+        let transition = dispatch(&snapshot, json!({"surface_id": A, "action": action}));
+        assert_eq!(ok(&transition)["closed"], expected_closed);
+        assert_eq!(transition.snapshot, snapshot);
+        let encoded = serde_json::to_value(&transition.effects).unwrap();
+        let actual_tokens = encoded
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|effect| effect.get("RemoteWindowClose"))
+            .filter_map(|effect| effect["source_remote_pane_id"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(actual_tokens, expected_tokens);
+        assert!(encoded
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|effect| effect.get("RemoteWindowClose"))
+            .all(|effect| effect["must_succeed"] == false));
+        assert!(!transition
+            .effects
+            .iter()
+            .any(|effect| matches!(effect, LifecycleEffect::RuntimeTeardown { .. })));
+        assert!(!transition
+            .events
+            .iter()
+            .any(|event| event.name == "surface.closed"));
+    }
+}
+
+#[test]
+fn disconnected_remote_range_candidates_are_unclosed_and_never_removed_locally() {
+    for state in ["disconnected", "reconnecting"] {
+        let mut snapshot = remote_window_tabs_snapshot(false);
+        snapshot.windows[0].tab_manager.workspaces[0]
+            .remote
+            .as_mut()
+            .unwrap()
+            .state = state.into();
+        let transition = dispatch(&snapshot, json!({"surface_id": A, "action": "close-right"}));
+        let value = ok(&transition);
+        assert_eq!(value["closed"], 0);
+        assert_eq!(value["skipped_pinned"], 0);
+        assert_eq!(transition.snapshot, snapshot);
+        assert!(transition.effects.is_empty());
+        assert!(transition
+            .events
+            .iter()
+            .all(|event| event.name != "surface.closed"));
+    }
+}
+
+#[test]
+fn mixed_remote_and_local_range_close_preserves_each_candidate_semantics() {
+    let mut snapshot = remote_window_tabs_snapshot(true);
+    snapshot.windows[0].tab_manager.workspaces[0]
+        .surfaces
+        .as_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|surface| surface.surface_id == C)
+        .unwrap()
+        .kind = SessionSurfaceKindSnapshot::Terminal;
+    let transition = dispatch(&snapshot, json!({"surface_id": A, "action": "close-right"}));
+    assert_eq!(ok(&transition)["closed"], 2);
+    assert!(model(&transition.snapshot).surface(B).is_some());
+    assert!(model(&transition.snapshot).surface(C).is_none());
+    let encoded = serde_json::to_value(&transition.effects).unwrap();
+    assert_eq!(
+        encoded
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|effect| effect.get("RemoteWindowClose"))
+            .filter_map(|effect| effect["source_remote_pane_id"].as_str())
+            .collect::<Vec<_>>(),
+        vec!["%32"]
+    );
+    assert_eq!(
+        transition
+            .effects
+            .iter()
+            .filter(|effect| matches!(effect, LifecycleEffect::RuntimeTeardown { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        transition
+            .events
+            .iter()
+            .filter(|event| event.name == "surface.closed")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn direct_surface_close_routes_remote_window_and_defers_local_departure() {
+    let snapshot = remote_window_tabs_snapshot(true);
+    let transition = dispatch_with(
+        &snapshot,
+        "surface.close",
+        json!({"surface_id": B}),
+        &context(true),
+    );
+    assert_eq!(ok(&transition)["surface_id"], B);
+    assert_eq!(transition.snapshot, snapshot);
+    let close = serialized_effect(&transition, "RemoteWindowClose");
+    assert_eq!(close["source_remote_pane_id"], "%32");
+    assert_eq!(close["departure_policy"], "runtime-window-close");
+    assert_eq!(close["must_succeed"], true);
+    assert!(!transition
+        .effects
+        .iter()
+        .any(|effect| matches!(effect, LifecycleEffect::RuntimeTeardown { .. })));
+    assert!(transition
+        .events
+        .iter()
+        .all(|event| event.name != "surface.closed"));
+}
+
+#[test]
+fn direct_surface_close_disconnected_remote_fails_without_local_removal() {
+    let snapshot = remote_window_tabs_snapshot(false);
+    let transition = dispatch_with(
+        &snapshot,
+        "surface.close",
+        json!({"surface_id": B}),
+        &context(true),
+    );
+    let data = assert_error(&transition, "internal_error", "Failed to close surface");
+    assert_eq!(data["surface_id"], B);
+    assert_eq!(transition.snapshot, snapshot);
+    assert!(transition.effects.is_empty());
+    assert!(transition.events.is_empty());
+}
+
+#[test]
+fn direct_surface_close_last_surface_guard_precedes_remote_routing() {
+    let mut snapshot = remote_window_tabs_snapshot(true);
+    let workspace = &mut snapshot.windows[0].tab_manager.workspaces[0];
+    workspace
+        .surfaces
+        .as_mut()
+        .unwrap()
+        .retain(|surface| surface.surface_id == A);
+    let SessionWorkspaceLayoutSnapshot::Pane(pane) = workspace.layout.as_mut().unwrap() else {
+        unreachable!()
+    };
+    pane.panel_ids = vec![A.into()];
+    pane.selected_panel_id = Some(A.into());
+    let transition = dispatch_with(
+        &snapshot,
+        "surface.close",
+        json!({"surface_id": A}),
+        &context(true),
+    );
+    assert_error(
+        &transition,
+        "invalid_state",
+        "Cannot close the last surface",
+    );
+    assert_eq!(transition.snapshot, snapshot);
+    assert!(transition.effects.is_empty());
+    assert!(transition.events.is_empty());
+}
