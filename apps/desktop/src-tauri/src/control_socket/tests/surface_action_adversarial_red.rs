@@ -982,9 +982,9 @@ fn remote_pane_create_rejects_insert_first_and_unsupported_options_before_effect
         json!({"surface_id": A, "direction": "up"}),
         json!({"surface_id": A, "direction": "right", "working_directory": "/srv/repo"}),
         json!({"surface_id": A, "direction": "right", "initial_command": "echo hi"}),
-        json!({"surface_id": A, "direction": "right", "command": "echo hi"}),
         json!({"surface_id": A, "direction": "right", "tmux_start_command": "tmux attach"}),
         json!({"surface_id": A, "direction": "right", "startup_environment": {"A":"B"}}),
+        json!({"surface_id": A, "direction": "right", "initial_env": {"A":"B"}}),
         json!({"surface_id": A, "direction": "right", "initial_divider_position": 0.4}),
     ];
     let actual = cases.map(|params| {
@@ -1016,7 +1016,7 @@ fn remote_pane_create_reports_all_unsupported_options_in_canonical_order() {
             "surface_id": A,
             "direction": "left",
             "working_directory": "/srv/repo",
-            "command": "echo hi",
+            "initial_command": "echo hi",
             "tmux_start_command": "tmux attach",
             "startup_environment": {"A":"B"},
             "initial_divider_position": 0.4
@@ -1050,6 +1050,174 @@ fn remote_pane_create_reports_all_unsupported_options_in_canonical_order() {
         );
         assert!(matches!(accepted.result, ControlCallResult::Ok(_)));
     }
+}
+
+#[test]
+fn remote_pane_create_unsupported_options_use_coordinator_parsed_values() {
+    let snapshot = remote_split_snapshot();
+    let omitted = [
+        json!({"working_directory": null}),
+        json!({"working_directory": ""}),
+        json!({"working_directory": "   \r\n"}),
+        json!({"initial_command": null}),
+        json!({"initial_command": ""}),
+        json!({"initial_command": "   "}),
+        json!({"tmux_start_command": null}),
+        json!({"tmux_start_command": ""}),
+        json!({"command": "ignored legacy alias"}),
+        json!({"initial_divider_position": null}),
+        json!({"startup_environment": null}),
+        json!({"startup_environment": {}}),
+        json!({"startup_environment": {"   ": "ignored"}}),
+    ];
+    let actual = omitted.map(|extra| {
+        let mut params = json!({"surface_id": A, "direction": "right"});
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let transition = remote_pane_create(&snapshot, params);
+        (
+            matches!(transition.result, ControlCallResult::Ok(_)),
+            transition.snapshot == snapshot,
+            transition
+                .effects
+                .iter()
+                .any(|effect| matches!(effect, LifecycleEffect::RemoteCreate { .. })),
+        )
+    });
+    assert_eq!(actual, [(true, true, true); 13]);
+
+    for params in [
+        json!({"surface_id": A, "direction": "right", "initial_env": {"  A  ": ""}}),
+        json!({"surface_id": A, "direction": "right", "startup_environment": null, "initial_env": {"A": "B"}}),
+    ] {
+        let transition = remote_pane_create(&snapshot, params);
+        let data = assert_error(
+            &transition,
+            "invalid_params",
+            "Not supported when targeting a remote tmux mirror workspace (the request is routed to tmux and these options cannot be applied): startup_environment",
+        );
+        assert_eq!(data["unsupported"], json!(["startup_environment"]));
+    }
+}
+
+#[test]
+fn mirror_unsupported_options_precede_connection_and_live_source_routing() {
+    let mut disconnected = remote_split_snapshot();
+    let workspace = &mut disconnected.windows[0].tab_manager.workspaces[0];
+    workspace.remote.as_mut().unwrap().connected = false;
+    workspace.remote.as_mut().unwrap().state = "reconnecting".into();
+    let transition = remote_pane_create(
+        &disconnected,
+        json!({"surface_id": A, "direction": "left", "working_directory": "/srv/repo"}),
+    );
+    let data = assert_error(
+        &transition,
+        "invalid_params",
+        "Not supported when targeting a remote tmux mirror workspace (the request is routed to tmux and these options cannot be applied): direction=left/up, working_directory",
+    );
+    assert_eq!(
+        data["unsupported"],
+        json!(["direction=left/up", "working_directory"])
+    );
+    assert_eq!(transition.snapshot, disconnected);
+    assert!(transition.effects.is_empty());
+
+    let mut bootstrap = remote_split_snapshot();
+    bootstrap.windows[0].tab_manager.workspaces[0]
+        .surfaces
+        .as_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|surface| surface.surface_id == A)
+        .unwrap()
+        .kind = SessionSurfaceKindSnapshot::Terminal;
+    let transition = remote_pane_create(
+        &bootstrap,
+        json!({"surface_id": A, "direction": "right", "initial_command": "echo hi"}),
+    );
+    assert_error(
+        &transition,
+        "invalid_params",
+        "Not supported when targeting a remote tmux mirror workspace (the request is routed to tmux and these options cannot be applied): initial_command",
+    );
+    assert_eq!(transition.snapshot, bootstrap);
+    assert!(transition.effects.is_empty());
+}
+
+#[test]
+fn disconnected_or_reconnecting_mirror_split_never_creates_a_local_orphan() {
+    for state in ["disconnected", "reconnecting"] {
+        let mut snapshot = remote_split_snapshot();
+        let remote = snapshot.windows[0].tab_manager.workspaces[0]
+            .remote
+            .as_mut()
+            .unwrap();
+        remote.connected = false;
+        remote.state = state.into();
+        let transition = remote_pane_create(
+            &snapshot,
+            json!({"surface_id": A, "direction": "right", "type": "terminal"}),
+        );
+        assert_error(&transition, "internal_error", "Failed to create pane");
+        assert_eq!(transition.snapshot, snapshot, "{state}");
+        assert!(transition.effects.is_empty(), "{state}");
+    }
+}
+
+#[test]
+fn remote_split_uses_tmux_active_pane_semantics_independent_of_requested_focus() {
+    let snapshot = remote_split_snapshot();
+    let mut plans = Vec::new();
+    for requested_focus in [false, true] {
+        let transition = remote_pane_create(
+            &snapshot,
+            json!({"surface_id": A, "direction": "right", "focus": requested_focus}),
+        );
+        let remote = serialized_effect(&transition, "RemoteCreate");
+        plans.push(json!({
+            "focus": remote["focus"],
+            "focus_mode": remote["focus_mode"],
+            "activate_window": remote["activate_window"],
+        }));
+    }
+    assert_eq!(
+        plans,
+        vec![
+            json!({"focus": true, "focus_mode": "tmux-active", "activate_window": false}),
+            json!({"focus": true, "focus_mode": "tmux-active", "activate_window": false}),
+        ]
+    );
+}
+
+#[test]
+fn production_remote_split_command_is_never_detached_by_requested_focus() {
+    for requested_focus in [false, true] {
+        assert_eq!(
+            remote_tmux_create_argv_with_split(
+                &RemoteTmuxCreateSpec {
+                    operation: "split-window",
+                    focus: requested_focus,
+                    source_target: Some("@7.%34"),
+                    working_directory: None,
+                },
+                Some(RemoteTmuxSplitDirection::Horizontal),
+            )
+            .unwrap(),
+            ["tmux split-window -h -t '@7.%34' -P -F '#{pane_id}'"]
+        );
+    }
+}
+
+#[test]
+fn remote_split_requested_focus_never_activates_the_app_window() {
+    let production = include_str!("../../control_socket.rs");
+    assert!(
+        production.contains("remote.target == RemoteTmuxTarget::Window")
+            && production.contains("should_focus_window_after_remote_arrival"),
+        "requested focus may activate an app window only for remote new-window, never split-window"
+    );
 }
 
 #[test]
