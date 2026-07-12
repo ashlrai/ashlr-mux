@@ -321,7 +321,16 @@ fn close_removes_runtime_pending_metadata_and_owner_indexes_once() {
     model
         .set_custom_title("surface-1", Some("api".into()))
         .unwrap();
-
+    model
+        .update_metadata("surface-1", |metadata| {
+            metadata.pinned = true;
+            metadata.unread = true;
+            metadata.reported_directory = Some("C:/repo".into());
+        })
+        .unwrap();
+    model
+        .set_terminal_startup("surface-1", Default::default())
+        .unwrap();
     let closed = model.close_surface("surface-1").unwrap();
     assert_eq!(closed.surface_id, "surface-1");
     assert_eq!(closed.runtime.unwrap().id(), "runtime-1");
@@ -432,18 +441,10 @@ fn pending_pwd_applies_once_to_the_matching_arrival_generation() {
         record.metadata.reported_directory.as_deref(),
         Some("/srv/app")
     );
-    assert_eq!(record.metadata.directory_apply_count, 1);
     assert!(!model.has_pending_remote_pwd("workspace-1", "remote-42"));
-
+    let applied = record.metadata.clone();
     model.reconcile_remote_arrival("surface-1", token.generation);
-    assert_eq!(
-        model
-            .surface("surface-1")
-            .unwrap()
-            .metadata
-            .directory_apply_count,
-        1
-    );
+    assert_eq!(model.surface("surface-1").unwrap().metadata, applied);
 }
 
 #[test]
@@ -478,14 +479,6 @@ fn surface_pwd_queued_before_runtime_arrival_applies_once_on_attach() {
             .reported_directory
             .as_deref(),
         Some("C:/early")
-    );
-    assert_eq!(
-        model
-            .surface("surface-1")
-            .unwrap()
-            .metadata
-            .directory_apply_count,
-        1
     );
     assert!(!model.has_pending_pwd("surface-1"));
 }
@@ -805,6 +798,40 @@ fn legacy_optional_kind_identities_remain_absent_instead_of_becoming_empty_defau
 }
 
 #[test]
+fn terminal_resume_binding_and_unread_timestamp_migrate_without_parallel_authority() {
+    let tabs: SessionTabManagerSnapshot = serde_json::from_value(serde_json::json!({
+        "workspaces":[{"workspace_id":"workspace-1","process_title":"terminal","layout":{"type":"pane","pane":{"pane_id":"pane-1","panel_ids":["terminal-1"]}},
+            "panel_unreads":[{"panel_id":"terminal-1","is_unread":true,"unread_at":1234}],
+            "restorable_agent_snapshots":[{"panel_id":"terminal-1","snapshot":{"kind":"codex","session_id":"session-7","working_directory":"C:/repo","resume_command":"codex resume session-7"}}]
+        }]
+    })).unwrap();
+    let model = SurfaceLifecycleModel::from_session_snapshot("window-1", &tabs).unwrap();
+    let output = serde_json::to_value(model.to_session_snapshot(&tabs).unwrap()).unwrap();
+    let workspace = &output["workspaces"][0];
+    assert_eq!(workspace["surfaces"][0]["metadata"]["unread_at"], 1234);
+    assert_eq!(
+        workspace["surfaces"][0]["terminal_startup"]["resume_binding"]["session_id"],
+        "session-7"
+    );
+    assert!(workspace.get("panel_unreads").is_none());
+    assert!(workspace.get("restorable_agent_snapshots").is_none());
+}
+
+#[test]
+fn focus_fallback_uses_layout_insertion_order_not_lexical_pane_id() {
+    let mut model = SurfaceLifecycleModel::new();
+    for (pane_id, surface_id) in [("z-first", "z"), ("a-second", "a"), ("m-third", "m")] {
+        model.add_pane(pane(pane_id, "workspace-1")).unwrap();
+        model
+            .reserve_surface(surface(surface_id, pane_id, SurfaceKind::Terminal))
+            .unwrap();
+    }
+    model.focus_surface("m").unwrap();
+    model.close_surface("m").unwrap();
+    assert_eq!(model.focused_surface("workspace-1"), Some("z"));
+}
+
+#[test]
 fn legacy_pane_identity_is_materialized_before_projection() {
     let legacy: SessionTabManagerSnapshot = serde_json::from_value(serde_json::json!({
         "workspaces":[{"workspace_id":"workspace-1","process_title":"shell","layout":{"type":"pane","pane":{"panel_ids":["surface-1"],"selected_panel_id":"surface-1"}}}]
@@ -917,8 +944,9 @@ fn pending_remote_pwd_is_persisted_moved_applied_once_and_cleaned_on_close_or_re
             .surface("surface-1")
             .unwrap()
             .metadata
-            .directory_apply_count,
-        1
+            .reported_directory
+            .as_deref(),
+        Some("/srv/a")
     );
     restored.begin_respawn("surface-1", "pwsh", None).unwrap();
     assert!(!restored.has_pending_remote_pwd("workspace-b", "remote-1"));
@@ -939,6 +967,16 @@ fn constrained_metadata_mutation_preserves_indexes_and_rejects_missing_ids() {
     model
         .set_custom_title("surface-1", Some("api".into()))
         .unwrap();
+    model
+        .update_metadata("surface-1", |metadata| {
+            metadata.pinned = true;
+            metadata.unread = true;
+            metadata.reported_directory = Some("C:/repo".into());
+        })
+        .unwrap();
+    model
+        .set_terminal_startup("surface-1", Default::default())
+        .unwrap();
     assert_eq!(
         model
             .surface("surface-1")
@@ -948,7 +986,36 @@ fn constrained_metadata_mutation_preserves_indexes_and_rejects_missing_ids() {
             .as_deref(),
         Some("api")
     );
+    assert!(model.surface("surface-1").unwrap().metadata.pinned);
+    assert!(model.surface("surface-1").unwrap().metadata.unread);
     assert!(model.set_custom_title("ghost", Some("bad".into())).is_err());
+    assert!(model.validate_indexes().is_ok());
+}
+
+#[test]
+fn constrained_kind_replacement_invalidates_runtime_and_remote_pending_state() {
+    let mut model = SurfaceLifecycleModel::new();
+    model.add_pane(pane("pane-1", "workspace-1")).unwrap();
+    let token = model
+        .reserve_remote_arrival("surface-1", "pane-1", "remote-1")
+        .unwrap();
+    model.attach_runtime(
+        "surface-1",
+        token.generation,
+        RuntimeHandle::new("runtime-1"),
+    );
+    model
+        .queue_remote_pwd("workspace-1", Some("remote-1"), "/srv")
+        .unwrap();
+    let replacement = model
+        .replace_kind("surface-1", browser("https://example.test"))
+        .unwrap();
+    assert!(replacement.generation > token.generation);
+    assert!(model.owner_of_runtime("runtime-1").is_none());
+    assert!(!model.has_pending_remote_pwd("workspace-1", "remote-1"));
+    assert!(model
+        .set_terminal_startup("surface-1", Default::default())
+        .is_err());
     assert!(model.validate_indexes().is_ok());
 }
 

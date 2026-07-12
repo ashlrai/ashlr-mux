@@ -889,18 +889,14 @@ pub struct SessionSurfaceMetadataSnapshot {
     #[serde(default, skip_serializing_if = "is_false")]
     pub unread: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional, type = "number"))]
+    pub unread_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub reported_directory: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub directory_provenance: Option<String>,
-    #[serde(default, skip_serializing_if = "is_zero_u64")]
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
-    pub directory_apply_count: u64,
-}
-
-fn is_zero_u64(value: &u64) -> bool {
-    *value == 0
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -921,6 +917,9 @@ pub struct SessionSurfaceTerminalStartupSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub tmux_start_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub resume_binding: Option<Box<SessionRestorableAgentSnapshot>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
