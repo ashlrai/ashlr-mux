@@ -220,7 +220,7 @@ fn direct_close_persist_failure_recreates_the_exact_runtime_once() {
                     panic!("expected teardown operation")
                 };
                 assert_eq!(surface_id, &teardown.runtime.surface_id);
-                assert_eq!(generation, teardown.runtime.generation);
+                assert_eq!(*generation, teardown.runtime.generation);
                 assert!(
                     inventory
                         .borrow_mut()
@@ -230,7 +230,7 @@ fn direct_close_persist_failure_recreates_the_exact_runtime_once() {
                 );
                 recreation_log
                     .borrow_mut()
-                    .push((surface_id.clone(), generation));
+                    .push((surface_id.clone(), *generation));
                 Ok(())
             }
         },
