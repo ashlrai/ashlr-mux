@@ -11,7 +11,7 @@
 //! chunk can split a multi-byte sequence at an arbitrary boundary; the webview
 //! decodes with `atob` and feeds the raw `Uint8Array` to `term.write`.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -153,16 +153,205 @@ impl TerminalTitleParser {
 
 /// Managed Tauri state: the set of open terminal sessions keyed by id.
 #[derive(Default)]
+struct TerminalRuntimeRegistry {
+    sessions: HashMap<u32, TerminalSession>,
+    reserved_session_ids: BTreeSet<u32>,
+    reserved_panel_ids: BTreeSet<String>,
+}
+
+#[derive(Default)]
 pub struct TerminalState {
-    sessions: Mutex<HashMap<u32, TerminalSession>>,
+    registry: Mutex<TerminalRuntimeRegistry>,
     next_id: AtomicU32,
 }
 
 impl TerminalState {
-    fn live_sessions(&self) -> MutexGuard<'_, HashMap<u32, TerminalSession>> {
-        self.sessions
+    fn runtime_registry(&self) -> MutexGuard<'_, TerminalRuntimeRegistry> {
+        self.registry
             .lock()
-            .expect("terminal sessions mutex poisoned")
+            .expect("terminal runtime registry mutex poisoned")
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) struct TerminalPanelRuntimeLease {
+    panel_ids: BTreeSet<String>,
+    sessions: BTreeMap<u32, TerminalSession>,
+}
+
+#[allow(dead_code)]
+pub(crate) struct TerminalPanelRollbackError {
+    pub(crate) message: String,
+    pub(crate) lease: TerminalPanelRuntimeLease,
+}
+
+#[allow(dead_code)]
+pub(crate) struct TerminalPanelFinalizeError {
+    pub(crate) failures: Vec<String>,
+    pub(crate) retry: TerminalPanelRuntimeLease,
+}
+
+#[allow(dead_code)]
+pub(crate) fn detach_terminal_panels_for_control(
+    state: &TerminalState,
+    panel_ids: &BTreeSet<String>,
+) -> Result<TerminalPanelRuntimeLease, String> {
+    let panel_ids = panel_ids
+        .iter()
+        .filter_map(|panel_id| {
+            let panel_id = panel_id.trim();
+            (!panel_id.is_empty()).then(|| panel_id.to_string())
+        })
+        .collect::<BTreeSet<_>>();
+    let mut registry = state.runtime_registry();
+    if let Some(panel_id) = panel_ids
+        .iter()
+        .find(|panel_id| registry.reserved_panel_ids.contains(*panel_id))
+    {
+        return Err(format!("terminal panel {panel_id} is already reserved"));
+    }
+    let session_ids = registry
+        .sessions
+        .iter()
+        .filter_map(|(id, session)| {
+            session
+                .panel_id
+                .as_ref()
+                .is_some_and(|panel_id| panel_ids.contains(panel_id))
+                .then_some(*id)
+        })
+        .collect::<BTreeSet<_>>();
+    if let Some(id) = session_ids
+        .iter()
+        .find(|id| registry.reserved_session_ids.contains(id))
+    {
+        return Err(format!("terminal session {id} is already reserved"));
+    }
+
+    let mut sessions = BTreeMap::new();
+    for id in &session_ids {
+        sessions.insert(
+            *id,
+            registry
+                .sessions
+                .remove(id)
+                .expect("prechecked terminal session"),
+        );
+    }
+    registry
+        .reserved_panel_ids
+        .extend(panel_ids.iter().cloned());
+    registry.reserved_session_ids.extend(session_ids);
+    Ok(TerminalPanelRuntimeLease {
+        panel_ids,
+        sessions,
+    })
+}
+
+#[allow(dead_code)]
+pub(crate) fn rollback_terminal_panels_for_control(
+    state: &TerminalState,
+    lease: TerminalPanelRuntimeLease,
+) -> Result<(), TerminalPanelRollbackError> {
+    let mut registry = state.runtime_registry();
+    let ownership_lost = lease
+        .panel_ids
+        .iter()
+        .any(|panel_id| !registry.reserved_panel_ids.contains(panel_id))
+        || lease
+            .sessions
+            .keys()
+            .any(|id| !registry.reserved_session_ids.contains(id));
+    let collision = lease
+        .sessions
+        .keys()
+        .any(|id| registry.sessions.contains_key(id))
+        || registry.sessions.values().any(|session| {
+            session
+                .panel_id
+                .as_ref()
+                .is_some_and(|panel_id| lease.panel_ids.contains(panel_id))
+        });
+    if ownership_lost || collision {
+        return Err(TerminalPanelRollbackError {
+            message: "terminal rollback collision".to_string(),
+            lease,
+        });
+    }
+
+    for (id, session) in lease.sessions {
+        registry.sessions.insert(id, session);
+        registry.reserved_session_ids.remove(&id);
+    }
+    for panel_id in lease.panel_ids {
+        registry.reserved_panel_ids.remove(&panel_id);
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub(crate) fn finalize_terminal_panels_for_control(
+    state: &TerminalState,
+    lease: TerminalPanelRuntimeLease,
+) -> Result<(), TerminalPanelFinalizeError> {
+    let guard = state.runtime_registry();
+    let ownership_lost = lease
+        .panel_ids
+        .iter()
+        .any(|panel_id| !guard.reserved_panel_ids.contains(panel_id))
+        || lease
+            .sessions
+            .keys()
+            .any(|id| !guard.reserved_session_ids.contains(id));
+    drop(guard);
+    if ownership_lost {
+        return Err(TerminalPanelFinalizeError {
+            failures: vec!["terminal finalize reservation lost".to_string()],
+            retry: lease,
+        });
+    }
+
+    let TerminalPanelRuntimeLease {
+        panel_ids,
+        sessions,
+    } = lease;
+    let mut failures = Vec::new();
+    let mut retry_sessions = BTreeMap::new();
+    let mut completed_ids = Vec::new();
+    for (id, mut session) in sessions {
+        match session.pty.kill() {
+            Ok(()) => completed_ids.push(id),
+            Err(error) => {
+                failures.push(format!("terminal runtime {id} kill failed: {error}"));
+                retry_sessions.insert(id, session);
+            }
+        }
+    }
+    let retry_panel_ids = retry_sessions
+        .values()
+        .filter_map(|session| session.panel_id.clone())
+        .collect::<BTreeSet<_>>();
+
+    let mut registry = state.runtime_registry();
+    for id in completed_ids {
+        registry.reserved_session_ids.remove(&id);
+    }
+    for panel_id in panel_ids {
+        if !retry_panel_ids.contains(&panel_id) {
+            registry.reserved_panel_ids.remove(&panel_id);
+        }
+    }
+    if retry_sessions.is_empty() {
+        Ok(())
+    } else {
+        drop(registry);
+        Err(TerminalPanelFinalizeError {
+            failures,
+            retry: TerminalPanelRuntimeLease {
+                panel_ids: retry_panel_ids,
+                sessions: retry_sessions,
+            },
+        })
     }
 }
 
@@ -296,15 +485,26 @@ fn terminal_open_with_policy(
         let trimmed = value.trim();
         (!trimmed.is_empty()).then(|| trimmed.to_string())
     });
-    let mut sessions = state.live_sessions();
+    let mut registry = state.runtime_registry();
+    if let Some(panel_id) = panel_id
+        .as_ref()
+        .filter(|panel_id| registry.reserved_panel_ids.contains(*panel_id))
+    {
+        return Err(format!("terminal panel {panel_id} is reserved"));
+    }
     if let Some(existing) = reusable_panel_session_id(
-        sessions
+        registry
+            .sessions
             .iter()
             .map(|(id, session)| (*id, session.panel_id.as_deref())),
         panel_id.as_deref(),
         reuse_existing,
     ) {
         return Ok(existing);
+    }
+    let id = state.next_id.fetch_add(1, Ordering::Relaxed);
+    if registry.reserved_session_ids.contains(&id) {
+        return Err(format!("terminal session {id} is reserved"));
     }
     let size = ConPtySize::new(cols.unwrap_or(80).max(1), rows.unwrap_or(24).max(1));
     let command = default_shell_command(cwd, initial_command, environment);
@@ -321,7 +521,6 @@ fn terminal_open_with_policy(
         writer.flush().map_err(|e| e.to_string())?;
     }
 
-    let id = state.next_id.fetch_add(1, Ordering::Relaxed);
     let root_pid = pty.process_id();
     let grid = Arc::new(Mutex::new(TerminalGrid::new(GridSize::new(
         size.cols as usize,
@@ -335,7 +534,7 @@ fn terminal_open_with_policy(
         .spawn(move || pump_reader(pump_app, id, pump_panel_id, pump_grid, reader))
         .map_err(|e| e.to_string())?;
 
-    sessions.insert(
+    registry.sessions.insert(
         id,
         TerminalSession {
             pty,
@@ -351,7 +550,8 @@ fn terminal_open_with_policy(
 
 pub(crate) fn terminal_has_panel_for_control(state: &TerminalState, panel_id: &str) -> bool {
     state
-        .live_sessions()
+        .runtime_registry()
+        .sessions
         .values()
         .any(|session| session.panel_id.as_deref() == Some(panel_id))
 }
@@ -361,7 +561,8 @@ pub(crate) fn terminal_ids_for_panel_for_control(
     panel_id: &str,
 ) -> Vec<u32> {
     state
-        .live_sessions()
+        .runtime_registry()
+        .sessions
         .iter()
         .filter_map(|(id, session)| (session.panel_id.as_deref() == Some(panel_id)).then_some(*id))
         .collect()
@@ -371,15 +572,23 @@ pub(crate) fn terminal_shutdown_id_preserving_authority_for_control(
     state: &TerminalState,
     id: u32,
 ) -> Result<(), String> {
-    let mut sessions = state.live_sessions();
-    let session = sessions
+    let mut registry = state.runtime_registry();
+    if registry.reserved_session_ids.contains(&id) {
+        return Err(format!("terminal session {id} is reserved"));
+    }
+    let session = registry
+        .sessions
         .get_mut(&id)
         .ok_or_else(|| format!("terminal runtime {id} is unavailable"))?;
     session.pty.kill().map_err(|error| error.to_string())
 }
 
 pub(crate) fn terminal_remove_id_for_control(state: &TerminalState, id: u32) -> Result<(), String> {
-    state.live_sessions().remove(&id);
+    let mut registry = state.runtime_registry();
+    if registry.reserved_session_ids.contains(&id) {
+        return Err(format!("terminal session {id} is reserved"));
+    }
+    registry.sessions.remove(&id);
     Ok(())
 }
 
@@ -390,11 +599,12 @@ pub fn terminal_write(
     id: u32,
     data: String,
 ) -> Result<(), String> {
-    let mut sessions = state
+    let mut registry = state.runtime_registry();
+    if registry.reserved_session_ids.contains(&id) {
+        return Err(format!("terminal session {id} is reserved"));
+    }
+    let session = registry
         .sessions
-        .lock()
-        .expect("terminal sessions mutex poisoned");
-    let session = sessions
         .get_mut(&id)
         .ok_or_else(|| format!("unknown terminal session {id}"))?;
     session
@@ -414,11 +624,12 @@ pub(crate) fn terminal_write_panel(
     if normalized_panel_id.is_empty() {
         return Err("missing terminal panel id".to_string());
     }
-    let mut sessions = state
+    let mut registry = state.runtime_registry();
+    if registry.reserved_panel_ids.contains(normalized_panel_id) {
+        return Err(format!("terminal panel {normalized_panel_id} is reserved"));
+    }
+    let session = registry
         .sessions
-        .lock()
-        .expect("terminal sessions mutex poisoned");
-    let session = sessions
         .values_mut()
         .find(|session| session.panel_id.as_deref() == Some(normalized_panel_id))
         .ok_or_else(|| format!("unknown terminal panel {normalized_panel_id}"))?;
@@ -441,11 +652,12 @@ pub(crate) fn terminal_read_panel(
         return Err("missing terminal panel id".to_string());
     }
     let grid = {
-        let sessions = state
+        let registry = state.runtime_registry();
+        if registry.reserved_panel_ids.contains(normalized_panel_id) {
+            return Err(format!("terminal panel {normalized_panel_id} is reserved"));
+        }
+        registry
             .sessions
-            .lock()
-            .expect("terminal sessions mutex poisoned");
-        sessions
             .values()
             .find(|session| session.panel_id.as_deref() == Some(normalized_panel_id))
             .map(|session| session.grid.clone())
@@ -466,11 +678,12 @@ pub(crate) fn terminal_clear_history_panel(
         return Err("missing terminal panel id".to_string());
     }
     let grid = {
-        let sessions = state
+        let registry = state.runtime_registry();
+        if registry.reserved_panel_ids.contains(normalized_panel_id) {
+            return Err(format!("terminal panel {normalized_panel_id} is reserved"));
+        }
+        registry
             .sessions
-            .lock()
-            .expect("terminal sessions mutex poisoned");
-        sessions
             .values()
             .find(|session| session.panel_id.as_deref() == Some(normalized_panel_id))
             .map(|session| session.grid.clone())
@@ -493,11 +706,9 @@ fn terminal_text(
 
 pub(crate) fn terminal_runtime_snapshots(state: &TerminalState) -> Vec<TerminalRuntimeSnapshot> {
     let sessions = {
-        let sessions = state
+        let registry = state.runtime_registry();
+        let mut sessions: Vec<_> = registry
             .sessions
-            .lock()
-            .expect("terminal sessions mutex poisoned");
-        let mut sessions: Vec<_> = sessions
             .iter()
             .map(|(id, session)| (*id, session.panel_id.clone(), session.root_pid))
             .collect();
@@ -517,14 +728,17 @@ pub(crate) fn terminal_grid_size_for_panel(
     state: &TerminalState,
     panel_id: &str,
 ) -> Option<GridSize> {
-    let grid = state
+    let registry = state.registry.lock().ok()?;
+    if registry.reserved_panel_ids.contains(panel_id) {
+        return None;
+    }
+    let grid = registry
         .sessions
-        .lock()
-        .ok()?
         .values()
         .find(|session| session.panel_id.as_deref() == Some(panel_id))?
         .grid
         .clone();
+    drop(registry);
     grid.lock().ok().map(|grid| grid.size())
 }
 
@@ -536,11 +750,12 @@ pub fn terminal_resize(
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    let mut sessions = state
+    let mut registry = state.runtime_registry();
+    if registry.reserved_session_ids.contains(&id) {
+        return Err(format!("terminal session {id} is reserved"));
+    }
+    let session = registry
         .sessions
-        .lock()
-        .expect("terminal sessions mutex poisoned");
-    let session = sessions
         .get_mut(&id)
         .ok_or_else(|| format!("unknown terminal session {id}"))?;
     session
@@ -559,11 +774,13 @@ pub fn terminal_resize(
 /// severed output pipe and exits on its own.
 #[tauri::command]
 pub fn terminal_close(state: State<'_, TerminalState>, id: u32) -> Result<(), String> {
-    let removed = state
-        .sessions
-        .lock()
-        .expect("terminal sessions mutex poisoned")
-        .remove(&id);
+    let removed = {
+        let mut registry = state.runtime_registry();
+        if registry.reserved_session_ids.contains(&id) {
+            return Err(format!("terminal session {id} is reserved"));
+        }
+        registry.sessions.remove(&id)
+    };
     if let Some(mut session) = removed {
         let _ = session.pty.kill();
     }
@@ -594,11 +811,12 @@ pub(crate) fn scan_panel_listening_ports(
         return Err("missing terminal panel id".to_string());
     }
     let id = {
-        let sessions = terminal_state
+        let registry = terminal_state.runtime_registry();
+        if registry.reserved_panel_ids.contains(normalized_panel_id) {
+            return Err(format!("terminal panel {normalized_panel_id} is reserved"));
+        }
+        registry
             .sessions
-            .lock()
-            .expect("terminal sessions mutex poisoned");
-        sessions
             .iter()
             .find_map(|(id, session)| {
                 (session.panel_id.as_deref() == Some(normalized_panel_id)).then_some(*id)
@@ -615,11 +833,12 @@ pub(crate) fn scan_terminal_listening_ports(
     id: u32,
 ) -> Result<TerminalListeningPorts, String> {
     let (panel_id, root_pid) = {
-        let sessions = terminal_state
+        let registry = terminal_state.runtime_registry();
+        if registry.reserved_session_ids.contains(&id) {
+            return Err(format!("terminal session {id} is reserved"));
+        }
+        let session = registry
             .sessions
-            .lock()
-            .expect("terminal sessions mutex poisoned");
-        let session = sessions
             .get(&id)
             .ok_or_else(|| format!("unknown terminal session {id}"))?;
         (session.panel_id.clone(), session.root_pid)
