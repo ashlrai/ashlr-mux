@@ -1515,7 +1515,7 @@ struct ProductionLifecycleExecutor<'a> {
     staged_terminals: Vec<(String, u32, bool)>,
     staged_remote_creations: Vec<StagedRemoteCreation>,
     deferred_remote_reconciliations: Vec<StagedRemoteCreation>,
-    deferred_remote_departures: Vec<pane_surface_lifecycle::RuntimeDeparture>,
+    deferred_remote_departures: Vec<String>,
     staged_browsers: Vec<(String, String, Option<String>)>,
     dock_journal: DockCommitJournal<DockRuntimeClaim, DockTeardownCompensation>,
 }
@@ -1765,6 +1765,140 @@ fn remote_tmux_rename_window_command(
     )])
 }
 
+fn remote_tmux_list_windows_command() -> Vec<String> {
+    vec!["tmux list-windows -F '#{window_id}'".into()]
+}
+
+fn parse_remote_tmux_window_ids(output: &str) -> Result<Vec<String>, String> {
+    if output.is_empty() {
+        return Ok(Vec::new());
+    }
+    let normalized = output.replace("\r\n", "\n");
+    if normalized.contains('\r') || !normalized.ends_with('\n') {
+        return Err("invalid tmux window list output".into());
+    }
+    normalized
+        .lines()
+        .map(|line| {
+            valid_tmux_identity(line, '@')
+                .then(|| line.to_string())
+                .ok_or_else(|| "invalid tmux window list identity".into())
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingRemoteWindowDeparture {
+    destination: String,
+    remote_window_id: String,
+    departure: pane_surface_lifecycle::RuntimeDeparture,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoteWindowPresenceObservation {
+    Present,
+    Absent,
+    QueryFailed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoteWindowDepartureAction {
+    RetainAndPoll,
+    CommitDeparture,
+}
+
+#[derive(Default)]
+struct RemoteWindowDepartureRegistry {
+    next_key: u64,
+    pending: BTreeMap<String, PendingRemoteWindowDeparture>,
+}
+
+impl RemoteWindowDepartureRegistry {
+    fn register(&mut self, pending: PendingRemoteWindowDeparture) -> String {
+        self.next_key = self.next_key.saturating_add(1);
+        let key = format!("remote-window-departure-{}", self.next_key);
+        self.pending.insert(key.clone(), pending);
+        key
+    }
+
+    fn get(&self, key: &str) -> Option<&PendingRemoteWindowDeparture> {
+        self.pending.get(key)
+    }
+
+    fn contains(&self, key: &str) -> bool {
+        self.pending.contains_key(key)
+    }
+
+    fn len(&self) -> usize {
+        self.pending.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
+
+    fn record_observation(
+        &mut self,
+        key: &str,
+        observation: RemoteWindowPresenceObservation,
+    ) -> RemoteWindowDepartureAction {
+        if !self.pending.contains_key(key) {
+            return RemoteWindowDepartureAction::RetainAndPoll;
+        }
+        match observation {
+            RemoteWindowPresenceObservation::Absent => RemoteWindowDepartureAction::CommitDeparture,
+            RemoteWindowPresenceObservation::Present
+            | RemoteWindowPresenceObservation::QueryFailed => {
+                RemoteWindowDepartureAction::RetainAndPoll
+            }
+        }
+    }
+
+    fn record_commit_result(
+        &mut self,
+        key: &str,
+        result: Result<RuntimeDepartureCommitOutcome, String>,
+    ) -> bool {
+        if result.is_ok() {
+            self.pending.remove(key);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn pending_failure_payload(&self, key: &str, message: &str) -> Option<Value> {
+        let pending = self.pending.get(key)?;
+        Some(json!({
+            "surface_id": pending.departure.surface_id,
+            "remote_window_id": pending.remote_window_id,
+            "message": message,
+            "pending_reconciliation": true,
+        }))
+    }
+}
+
+fn retain_remote_window_departure_after_kill(
+    registry: &mut RemoteWindowDepartureRegistry,
+    destination: &str,
+    remote_window_id: &str,
+    departure: pane_surface_lifecycle::RuntimeDeparture,
+) -> Result<String, String> {
+    if !valid_tmux_identity(remote_window_id, '@') {
+        return Err("invalid killed tmux window identity".into());
+    }
+    Ok(registry.register(PendingRemoteWindowDeparture {
+        destination: destination.into(),
+        remote_window_id: remote_window_id.into(),
+        departure,
+    }))
+}
+
+#[derive(Default)]
+pub struct RemoteWindowDepartureRegistryState {
+    registry: Mutex<RemoteWindowDepartureRegistry>,
+}
+
 fn run_remote_tmux_command(destination: &str, command: Vec<String>) -> Result<String, String> {
     let output = Command::new("ssh")
         .args(["-T", "-o", "BatchMode=yes", destination])
@@ -1790,10 +1924,10 @@ fn execute_remote_tmux_window_mutation(
     destination: &str,
     pane_token: &str,
     command: impl FnOnce(&str) -> Result<Vec<String>, String>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let window_token = remote_tmux_window_for_pane(destination, pane_token)?;
     run_remote_tmux_command(destination, command(&window_token)?)?;
-    Ok(())
+    Ok(window_token)
 }
 
 fn shell_quote_remote(value: &str) -> Result<String, String> {
@@ -2034,42 +2168,73 @@ fn schedule_remote_window_reconciliation(app: &AppHandle, remote: StagedRemoteCr
     });
 }
 
-fn schedule_remote_window_departure_reconciliation(
-    app: &AppHandle,
-    departure: pane_surface_lifecycle::RuntimeDeparture,
-) {
+fn schedule_remote_window_departure_reconciliation(app: &AppHandle, key: String) {
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let mut attempts = 0;
-        loop {
-            match commit_runtime_departure_for_control(&app, departure.clone()) {
-                Ok(RuntimeDepartureCommitOutcome::Committed)
-                | Ok(RuntimeDepartureCommitOutcome::DuplicateOrStale) => return,
-                Err(_) if attempts < REMOTE_OBSERVATION_MAX_RETRIES => {
-                    attempts += 1;
-                    continue;
-                }
-                Err(error) => {
-                    record_event(
-                        &app,
-                        "surface.close_failed",
-                        "surface",
-                        "workspace.lifecycle",
-                        Some(departure.window_id.clone()),
-                        Some(departure.workspace_id.clone()),
-                        Some(departure.pane_id.clone()),
-                        Some(departure.surface_id.clone()),
-                        json!({
-                            "surface_id": departure.surface_id,
-                            "message": error,
-                            "attempts": attempts + 1,
-                            "pending_reconciliation": true,
-                        }),
-                    );
+        let state = app.state::<RemoteWindowDepartureRegistryState>();
+        let pending = match state.registry.lock() {
+            Ok(registry) => registry.get(&key).cloned(),
+            Err(_) => None,
+        };
+        let Some(pending) = pending else {
+            return;
+        };
+        let observation =
+            run_remote_tmux_command(&pending.destination, remote_tmux_list_windows_command())
+                .and_then(|output| parse_remote_tmux_window_ids(&output))
+                .map(|window_ids| {
+                    if window_ids.contains(&pending.remote_window_id) {
+                        RemoteWindowPresenceObservation::Present
+                    } else {
+                        RemoteWindowPresenceObservation::Absent
+                    }
+                })
+                .unwrap_or(RemoteWindowPresenceObservation::QueryFailed);
+        let action = state
+            .registry
+            .lock()
+            .map(|mut registry| registry.record_observation(&key, observation))
+            .unwrap_or(RemoteWindowDepartureAction::RetainAndPoll);
+        let failure = match action {
+            RemoteWindowDepartureAction::RetainAndPoll => (observation
+                == RemoteWindowPresenceObservation::QueryFailed)
+                .then_some("Failed to query remote window departure".to_string()),
+            RemoteWindowDepartureAction::CommitDeparture => {
+                let result = commit_runtime_departure_for_control(&app, pending.departure.clone());
+                let error = result.as_ref().err().cloned();
+                let completed = state
+                    .registry
+                    .lock()
+                    .map(|mut registry| registry.record_commit_result(&key, result))
+                    .unwrap_or(false);
+                if completed {
                     return;
                 }
+                error.or_else(|| Some("Failed to commit remote window departure".into()))
+            }
+        };
+        if let Some(message) = failure {
+            let payload = state
+                .registry
+                .lock()
+                .ok()
+                .and_then(|registry| registry.pending_failure_payload(&key, &message));
+            if let Some(payload) = payload {
+                record_event(
+                    &app,
+                    "surface.close_failed",
+                    "surface",
+                    "workspace.lifecycle",
+                    Some(pending.departure.window_id.clone()),
+                    Some(pending.departure.workspace_id.clone()),
+                    Some(pending.departure.pane_id.clone()),
+                    Some(pending.departure.surface_id.clone()),
+                    payload,
+                );
             }
         }
+        thread::sleep(Duration::from_millis(250));
+        schedule_remote_window_departure_reconciliation(&app, key);
     });
 }
 
@@ -2202,7 +2367,9 @@ impl ProductionLifecycleExecutor<'_> {
             }
         }
         self.deferred_remote_reconciliations.clear();
-        self.deferred_remote_departures.clear();
+        for key in self.deferred_remote_departures.drain(..) {
+            schedule_remote_window_departure_reconciliation(self.app, key);
+        }
         if let Some(state) = app.try_state::<BrowserWebviewState>() {
             for (_, surface_id, _) in self.staged_browsers.drain(..) {
                 let _ = browser_close_webview_for_control(state.inner(), &surface_id);
@@ -2620,6 +2787,11 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
                     must_succeed,
                     ..
                 } => {
+                    let registry_state = self.app.state::<RemoteWindowDepartureRegistryState>();
+                    let mut registry = registry_state
+                        .registry
+                        .lock()
+                        .map_err(|_| "remote departure registry lock poisoned".to_string())?;
                     let result = execute_remote_tmux_window_mutation(
                         destination,
                         source_remote_pane_id,
@@ -2627,8 +2799,11 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
                             remote_tmux_kill_command(RemoteTmuxTarget::Window, window_token)
                         },
                     );
-                    if result.is_ok() {
-                        self.deferred_remote_departures.push(
+                    if let Ok(remote_window_id) = &result {
+                        let key = retain_remote_window_departure_after_kill(
+                            &mut registry,
+                            destination,
+                            remote_window_id,
                             pane_surface_lifecycle::RuntimeDeparture {
                                 window_id: window_id.clone(),
                                 workspace_id: workspace_id.clone(),
@@ -2636,7 +2811,8 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
                                 surface_id: surface_id.clone(),
                                 generation: *generation,
                             },
-                        );
+                        )?;
+                        self.deferred_remote_departures.push(key);
                     } else if *must_succeed {
                         result?;
                     }
