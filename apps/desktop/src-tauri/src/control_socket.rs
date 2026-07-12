@@ -10,8 +10,8 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
 use cmux_core::session::{
     AppSessionSnapshot, SessionPaneLayoutSnapshot, SessionPanelShellActivityStateSnapshot,
-    SessionPullRequestStatusSnapshot, SessionSplitOrientation, SessionWorkspaceLayoutSnapshot,
-    SessionWorkspaceSnapshot,
+    SessionPullRequestStatusSnapshot, SessionSplitOrientation, SessionSurfaceKindSnapshot,
+    SessionWorkspaceLayoutSnapshot, SessionWorkspaceSnapshot,
 };
 use cmux_core::session_ops;
 use cmux_ipc::{ControlCallResult, ControlRequest, ControlStream, JsonValue};
@@ -5907,6 +5907,16 @@ fn resolve_pane_surfaces_target(
 
 fn pane_surfaces(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
     let current = snapshot(app);
+    let lifecycle = match session_ops::read_surface_lifecycle(&current) {
+        Ok(model) => model,
+        Err(error) => {
+            return ControlCallResult::Err {
+                code: "invalid_state".to_string(),
+                message: format!("Invalid surface lifecycle: {error}"),
+                data: None,
+            };
+        }
+    };
     let Some(requested_window) = split_off_window_index(app, &current, params) else {
         return ControlCallResult::Err {
             code: "unavailable".to_string(),
@@ -5946,17 +5956,20 @@ fn pane_surfaces(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Co
                 .map(str::to_string)
         })
         .collect::<Vec<_>>();
-    let surface_type = pane.surface_kind.as_deref().unwrap_or("terminal");
     let surfaces = pane
         .panel_ids
         .iter()
         .enumerate()
         .map(|(index, panel_id)| {
+            let surface_type = lifecycle
+                .surface(panel_id)
+                .map(|surface| surface_kind_label(&surface.kind))
+                .unwrap_or_else(|| pane.surface_kind.as_deref().unwrap_or("terminal"));
             json!({
                 "id": panel_id,
                 "ref": workspace_surface_ids.iter().position(|id| id == panel_id).map(surface_ref),
                 "index": index,
-                "title": panel_title(&workspace.panel_titles, panel_id).unwrap_or_else(|| surface_type.to_string()),
+                "title": lifecycle.surface(panel_id).and_then(|surface| surface.metadata.custom_title.clone()).or_else(|| panel_title(&workspace.panel_titles, panel_id)).unwrap_or_else(|| surface_type.to_string()),
                 "type": surface_type,
                 "selected": pane.selected_panel_id.as_deref() == Some(panel_id.as_str()),
             })
@@ -13374,6 +13387,20 @@ fn surfaces_for_workspace(workspace: &SessionWorkspaceSnapshot) -> Vec<Value> {
     rows
 }
 
+fn surface_kind_label(kind: &SessionSurfaceKindSnapshot) -> &'static str {
+    match kind {
+        SessionSurfaceKindSnapshot::Terminal => "terminal",
+        SessionSurfaceKindSnapshot::Browser { .. } => "browser",
+        SessionSurfaceKindSnapshot::AgentSession { .. } => "agent-session",
+        SessionSurfaceKindSnapshot::Markdown { .. } => "markdown",
+        SessionSurfaceKindSnapshot::File { .. } => "file",
+        SessionSurfaceKindSnapshot::Diff { .. } => "diff",
+        SessionSurfaceKindSnapshot::ProjectSidebar => "project-sidebar",
+        SessionSurfaceKindSnapshot::RightSidebarTool => "right-sidebar-tool",
+        SessionSurfaceKindSnapshot::RemoteTerminal { .. } => "remote-terminal",
+    }
+}
+
 fn collect_surfaces(
     layout: &SessionWorkspaceLayoutSnapshot,
     workspace: &SessionWorkspaceSnapshot,
@@ -13400,49 +13427,125 @@ fn collect_pane_surfaces(
             .as_deref()
             .map(|selected| selected == panel_id)
             .unwrap_or(index_in_pane == 0);
-        let surface_type = pane.surface_kind.as_deref().unwrap_or("terminal");
-        let browser_back_count = pane
-            .browser_back_history
+        let record = workspace
+            .surfaces
             .as_ref()
-            .map(Vec::len)
-            .unwrap_or(0);
-        let browser_forward_count = pane
-            .browser_forward_history
-            .as_ref()
-            .map(Vec::len)
-            .unwrap_or(0);
+            .and_then(|records| records.iter().find(|record| record.surface_id == *panel_id));
+        let surface_type = record
+            .map(|record| surface_kind_label(&record.kind))
+            .unwrap_or_else(|| pane.surface_kind.as_deref().unwrap_or("terminal"));
+        let (browser_back_history, browser_forward_history) =
+            match record.map(|record| &record.kind) {
+                Some(SessionSurfaceKindSnapshot::Browser {
+                    back_history,
+                    forward_history,
+                    ..
+                }) => (back_history.as_deref(), forward_history.as_deref()),
+                _ => (
+                    pane.browser_back_history.as_deref(),
+                    pane.browser_forward_history.as_deref(),
+                ),
+            };
+        let browser_back_count = browser_back_history.map(<[String]>::len).unwrap_or(0);
+        let browser_forward_count = browser_forward_history.map(<[String]>::len).unwrap_or(0);
         let browser_availability = cmux_core::session_ops::browser_navigation_availability(
-            pane.browser_back_history.as_deref(),
-            pane.browser_forward_history.as_deref(),
+            browser_back_history,
+            browser_forward_history,
         );
         let terminal_startup = panel_terminal_startup(&workspace.panel_terminal_startups, panel_id);
         let restorable_agent =
             panel_restorable_agent(&workspace.restorable_agent_snapshots, panel_id);
-        let (initial_command, initial_input, initial_environment) = match terminal_startup {
-            Some(startup) => (
-                startup.initial_terminal_command.clone(),
-                startup.initial_terminal_input.clone(),
-                startup.initial_terminal_environment.clone(),
+        let authoritative_resume = record
+            .and_then(|record| record.terminal_startup.as_ref())
+            .and_then(|startup| startup.resume_binding.as_deref());
+        let (initial_command, initial_input, initial_environment) =
+            match record.and_then(|record| record.terminal_startup.as_ref()) {
+                Some(startup) => (
+                    startup.command.clone(),
+                    startup.initial_input.clone(),
+                    startup.environment.clone(),
+                ),
+                None => match terminal_startup {
+                    Some(startup) => (
+                        startup.initial_terminal_command.clone(),
+                        startup.initial_terminal_input.clone(),
+                        startup.initial_terminal_environment.clone(),
+                    ),
+                    None => (
+                        workspace.initial_terminal_command.clone(),
+                        workspace.initial_terminal_input.clone(),
+                        workspace.initial_terminal_environment.clone(),
+                    ),
+                },
+            };
+        let authoritative_title = record.and_then(|record| record.metadata.custom_title.clone());
+        let (markdown_file_path, file_path, diff_viewer_token, diff_viewer_request_path) =
+            match record.map(|record| &record.kind) {
+                Some(SessionSurfaceKindSnapshot::Markdown { path }) => {
+                    (path.clone(), None, None, None)
+                }
+                Some(SessionSurfaceKindSnapshot::File { path }) => (None, path.clone(), None, None),
+                Some(SessionSurfaceKindSnapshot::Diff {
+                    token,
+                    request_path,
+                }) => (None, None, token.clone(), request_path.clone()),
+                _ => (
+                    pane.markdown_file_path.clone(),
+                    pane.file_path.clone(),
+                    pane.diff_viewer_token.clone(),
+                    pane.diff_viewer_request_path.clone(),
+                ),
+            };
+        let (
+            browser_url,
+            browser_proxy_url,
+            browser_omnibar_visible,
+            browser_focus_mode_active,
+            browser_developer_tools_visible,
+            browser_developer_tools_panel,
+            browser_page_zoom,
+        ) = match record.map(|record| &record.kind) {
+            Some(SessionSurfaceKindSnapshot::Browser {
+                url,
+                proxy_url,
+                omnibar_visible,
+                focus_mode_active,
+                developer_tools_visible,
+                developer_tools_panel,
+                page_zoom,
+                ..
+            }) => (
+                url.clone(),
+                proxy_url.clone(),
+                omnibar_visible.unwrap_or(true),
+                focus_mode_active.unwrap_or(false),
+                developer_tools_visible.unwrap_or(false),
+                developer_tools_panel.clone(),
+                *page_zoom,
             ),
-            None => (
-                workspace.initial_terminal_command.clone(),
-                workspace.initial_terminal_input.clone(),
-                workspace.initial_terminal_environment.clone(),
+            _ => (
+                pane.browser_url.clone(),
+                pane.browser_proxy_url.clone(),
+                pane.browser_omnibar_visible.unwrap_or(true),
+                pane.browser_focus_mode_active.unwrap_or(false),
+                pane.browser_developer_tools_visible.unwrap_or(false),
+                pane.browser_developer_tools_panel.clone(),
+                pane.browser_page_zoom,
             ),
         };
         rows.push(json!({
             "id": panel_id,
             "ref": surface_ref(index),
             "type": surface_type,
-            "title": panel_title(&workspace.panel_titles, panel_id).unwrap_or_else(|| surface_type.to_string()),
+            "title": authoritative_title.clone().or_else(|| panel_title(&workspace.panel_titles, panel_id)).unwrap_or_else(|| surface_type.to_string()),
             "focused": selected,
             "pane_id": pane.pane_id,
             "pane_ref": pane.pane_id.as_ref().map(|_| format!("pane:{}", index + 1)),
             "selected_in_pane": selected,
-            "custom_title": panel_title(&workspace.panel_titles, panel_id),
-            "pinned": panel_pinned(&workspace.panel_pins, panel_id),
-            "unread": panel_unread(&workspace.panel_unreads, panel_id),
-            "requested_working_directory": workspace.current_directory.clone(),
+            "custom_title": authoritative_title.or_else(|| panel_title(&workspace.panel_titles, panel_id)),
+            "pinned": record.map(|record| record.metadata.pinned).unwrap_or_else(|| panel_pinned(&workspace.panel_pins, panel_id)),
+            "unread": record.map(|record| record.metadata.unread).unwrap_or_else(|| panel_unread(&workspace.panel_unreads, panel_id)),
+            "requested_working_directory": record.and_then(|record| record.terminal_startup.as_ref()).and_then(|startup| startup.working_directory.clone()).or_else(|| record.and_then(|record| record.metadata.reported_directory.clone())).or_else(|| workspace.current_directory.clone()),
             "initial_command": initial_command,
             "initial_input": initial_input,
             "initial_environment": initial_environment,
@@ -13451,23 +13554,23 @@ fn collect_pane_surfaces(
             "tty_name": panel_tty(workspace, panel_id),
             "shell_activity": panel_shell_activity(workspace, panel_id),
             "shell_activity_state": panel_shell_activity(workspace, panel_id),
-            "tmux_start_command": Value::Null,
-            "resume_binding": restorable_agent.map(restorable_agent_binding_payload),
-            "markdown_file_path": pane.markdown_file_path.clone(),
-            "file_path": pane.file_path.clone(),
-            "diff_viewer_token": pane.diff_viewer_token.clone(),
-            "diff_viewer_request_path": pane.diff_viewer_request_path.clone(),
-            "browser_url": pane.browser_url.clone(),
-            "browser_proxy_url": pane.browser_proxy_url.clone(),
+            "tmux_start_command": record.and_then(|record| record.terminal_startup.as_ref()).and_then(|startup| startup.tmux_start_command.clone()),
+            "resume_binding": authoritative_resume.or(restorable_agent).map(restorable_agent_binding_payload),
+            "markdown_file_path": markdown_file_path,
+            "file_path": file_path,
+            "diff_viewer_token": diff_viewer_token,
+            "diff_viewer_request_path": diff_viewer_request_path,
+            "browser_url": browser_url,
+            "browser_proxy_url": browser_proxy_url,
             "browser_can_go_back": browser_availability.can_go_back,
             "browser_can_go_forward": browser_availability.can_go_forward,
             "browser_back_history_count": browser_back_count,
             "browser_forward_history_count": browser_forward_count,
-            "browser_omnibar_visible": pane.browser_omnibar_visible.unwrap_or(true),
-            "browser_focus_mode_active": pane.browser_focus_mode_active.unwrap_or(false),
-            "browser_developer_tools_visible": pane.browser_developer_tools_visible.unwrap_or(false),
-            "browser_developer_tools_panel": pane.browser_developer_tools_panel.clone(),
-            "browser_page_zoom": pane.browser_page_zoom,
+            "browser_omnibar_visible": browser_omnibar_visible,
+            "browser_focus_mode_active": browser_focus_mode_active,
+            "browser_developer_tools_visible": browser_developer_tools_visible,
+            "browser_developer_tools_panel": browser_developer_tools_panel,
+            "browser_page_zoom": browser_page_zoom,
         }));
     }
 }
