@@ -11,8 +11,16 @@ use cmux_core::{
     },
 };
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
+
+use crate::browser::{
+    browser_attach_webview_for_control, browser_close_webview_for_control, BrowserWebviewState,
+};
+use crate::terminal::{
+    terminal_close_id_for_control, terminal_close_panel_for_control, terminal_open_for_control,
+    TerminalState,
+};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -129,6 +137,7 @@ pub(crate) enum DockRuntimeOperation {
     Teardown {
         surface_id: Uuid,
         generation: u64,
+        intent: DockRuntimeIntent,
     },
 }
 
@@ -176,15 +185,17 @@ impl DockStore {
     where
         E: ToString,
     {
-        let generation = model(session)?
-            .surface(&surface_id.to_string())
-            .ok_or_else(|| "Dock surface not found".to_string())?
-            .generation;
+        let surface = self
+            .snapshot(session, owner_id)
+            .surface(surface_id)
+            .cloned()
+            .ok_or_else(|| "Dock surface not found".to_string())?;
         let mut next = session.clone();
         self.close(&mut next, owner_id, surface_id)?;
         stage_runtime(&DockRuntimeOperation::Teardown {
             surface_id,
-            generation,
+            generation: surface.generation,
+            intent: surface.runtime,
         })
         .map_err(|error| error.to_string())?;
         *session = next;
@@ -768,6 +779,203 @@ fn empty_snapshot(owner_id: &str) -> DockSnapshot {
 
 pub(crate) const DOCK_CHANGED_EVENT: &str = "cmux://dock-changed";
 
+trait DockRuntimeEffects {
+    fn stage_create(
+        &mut self,
+        owner_id: &str,
+        operation: &DockRuntimeOperation,
+    ) -> Result<(), String>;
+    fn publish_staged(&mut self) -> Result<(), String>;
+    fn rollback_staged(&mut self);
+    fn teardown(&mut self, operation: &DockRuntimeOperation) -> Result<(), String>;
+}
+
+fn create_with_runtime(
+    snapshot: &mut AppSessionSnapshot,
+    store: &DockStore,
+    owner_id: &str,
+    request: DockCreateRequest,
+    runtime: &mut impl DockRuntimeEffects,
+) -> Result<DockCreateResult, String> {
+    store.create_transactionally(snapshot, owner_id, request, |operation| {
+        runtime.stage_create(owner_id, operation)?;
+        if let Err(error) = runtime.publish_staged() {
+            runtime.rollback_staged();
+            return Err(error);
+        }
+        Ok(())
+    })
+}
+
+fn close_with_runtime(
+    snapshot: &mut AppSessionSnapshot,
+    store: &DockStore,
+    owner_id: &str,
+    surface_id: Uuid,
+    runtime: &mut impl DockRuntimeEffects,
+) -> Result<(), String> {
+    store.close_transactionally(snapshot, owner_id, surface_id, |operation| {
+        runtime.teardown(operation)
+    })
+}
+
+pub(crate) enum DockRuntimeClaim {
+    Terminal {
+        id: u32,
+    },
+    Browser {
+        owner_id: String,
+        surface_id: String,
+        url: String,
+    },
+}
+
+pub(crate) fn stage_runtime_for_control(
+    app: &AppHandle,
+    owner_id: &str,
+    operation: &DockRuntimeOperation,
+) -> Result<DockRuntimeClaim, String> {
+    let DockRuntimeOperation::Create {
+        surface_id, intent, ..
+    } = operation
+    else {
+        return Err("Expected Dock create runtime operation".into());
+    };
+    match intent {
+        DockRuntimeIntent::Terminal {
+            working_directory,
+            command,
+            environment,
+            tmux_start_command,
+        } => terminal_open_for_control(
+            app,
+            app.state::<TerminalState>().inner(),
+            Some(&surface_id.to_string()),
+            working_directory.as_deref(),
+            command.as_deref().or(tmux_start_command.as_deref()),
+            None,
+            (!environment.is_empty()).then_some(environment.clone()),
+            None,
+            None,
+        )
+        .map(|id| DockRuntimeClaim::Terminal { id }),
+        DockRuntimeIntent::Browser { url, .. } => {
+            browser_attach_webview_for_control(
+                app,
+                app.state::<BrowserWebviewState>().inner(),
+                owner_id,
+                &surface_id.to_string(),
+                Some(url),
+                None,
+                false,
+            )?;
+            Ok(DockRuntimeClaim::Browser {
+                owner_id: owner_id.into(),
+                surface_id: surface_id.to_string(),
+                url: url.clone(),
+            })
+        }
+    }
+}
+
+pub(crate) fn publish_runtime_claim(
+    app: &AppHandle,
+    claim: &DockRuntimeClaim,
+) -> Result<(), String> {
+    if let DockRuntimeClaim::Browser {
+        owner_id,
+        surface_id,
+        url,
+    } = claim
+    {
+        browser_attach_webview_for_control(
+            app,
+            app.state::<BrowserWebviewState>().inner(),
+            owner_id,
+            surface_id,
+            Some(url),
+            None,
+            true,
+        )?;
+    }
+    Ok(())
+}
+
+pub(crate) fn rollback_runtime_claim(app: &AppHandle, claim: DockRuntimeClaim) {
+    match claim {
+        DockRuntimeClaim::Terminal { id } => {
+            let _ = terminal_close_id_for_control(app.state::<TerminalState>().inner(), id);
+        }
+        DockRuntimeClaim::Browser { surface_id, .. } => {
+            let _ = browser_close_webview_for_control(
+                app.state::<BrowserWebviewState>().inner(),
+                &surface_id,
+            );
+        }
+    }
+}
+
+pub(crate) fn teardown_runtime_for_control(
+    app: &AppHandle,
+    operation: &DockRuntimeOperation,
+) -> Result<(), String> {
+    let DockRuntimeOperation::Teardown {
+        surface_id, intent, ..
+    } = operation
+    else {
+        return Err("Expected Dock teardown runtime operation".into());
+    };
+    match intent {
+        DockRuntimeIntent::Terminal { .. } => {
+            terminal_close_panel_for_control(
+                app.state::<TerminalState>().inner(),
+                &surface_id.to_string(),
+            )?;
+        }
+        DockRuntimeIntent::Browser { .. } => {
+            browser_close_webview_for_control(
+                app.state::<BrowserWebviewState>().inner(),
+                &surface_id.to_string(),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+struct ProductionDockRuntime<'a> {
+    app: &'a AppHandle,
+    staged: Option<DockRuntimeClaim>,
+}
+
+impl DockRuntimeEffects for ProductionDockRuntime<'_> {
+    fn stage_create(
+        &mut self,
+        owner_id: &str,
+        operation: &DockRuntimeOperation,
+    ) -> Result<(), String> {
+        self.staged = Some(stage_runtime_for_control(self.app, owner_id, operation)?);
+        Ok(())
+    }
+
+    fn publish_staged(&mut self) -> Result<(), String> {
+        if let Some(claim) = self.staged.as_ref() {
+            publish_runtime_claim(self.app, claim)?;
+        }
+        self.staged = None;
+        Ok(())
+    }
+
+    fn rollback_staged(&mut self) {
+        if let Some(claim) = self.staged.take() {
+            rollback_runtime_claim(self.app, claim);
+        }
+    }
+
+    fn teardown(&mut self, operation: &DockRuntimeOperation) -> Result<(), String> {
+        teardown_runtime_for_control(self.app, operation)
+    }
+}
+
 fn emit_snapshot(
     app: &AppHandle,
     session: &AppSessionSnapshot,
@@ -775,8 +983,7 @@ fn emit_snapshot(
     owner_id: &str,
 ) -> Result<DockSnapshot, String> {
     let snapshot = store.snapshot(session, owner_id);
-    app.emit(DOCK_CHANGED_EVENT, &snapshot)
-        .map_err(|error| error.to_string())?;
+    let _ = app.emit(DOCK_CHANGED_EVENT, &snapshot);
     Ok(snapshot)
 }
 
@@ -797,11 +1004,17 @@ pub(crate) fn dock_create(
     state: State<'_, DockStore>,
     session: State<'_, crate::session::SessionState>,
 ) -> Result<DockSnapshot, String> {
-    session.transact_lifecycle(&app, |snapshot| {
-        state
-            .create_transactionally(snapshot, &owner_id, request, |_| Ok::<_, String>(()))
-            .map(|_| ())
-    })?;
+    let mut runtime = ProductionDockRuntime {
+        app: &app,
+        staged: None,
+    };
+    let transaction = session.transact_lifecycle(&app, |snapshot| {
+        create_with_runtime(snapshot, state.inner(), &owner_id, request, &mut runtime).map(|_| ())
+    });
+    if let Err(error) = transaction {
+        runtime.rollback_staged();
+        return Err(error);
+    }
     emit_snapshot(
         &app,
         &session.snapshot_for_lifecycle()?,
@@ -866,8 +1079,12 @@ pub(crate) fn dock_close(
     session: State<'_, crate::session::SessionState>,
 ) -> Result<DockSnapshot, String> {
     let surface_id = Uuid::parse_str(&surface_id).map_err(|_| "Invalid Dock surface identity")?;
+    let mut runtime = ProductionDockRuntime {
+        app: &app,
+        staged: None,
+    };
     session.transact_lifecycle(&app, |snapshot| {
-        state.close_transactionally(snapshot, &owner_id, surface_id, |_| Ok::<_, String>(()))
+        close_with_runtime(snapshot, state.inner(), &owner_id, surface_id, &mut runtime)
     })?;
     emit_snapshot(
         &app,
@@ -881,6 +1098,51 @@ pub(crate) fn dock_close(
 mod tests {
     use super::*;
     use cmux_core::session::{decode_session, encode_session};
+
+    #[derive(Default)]
+    struct RecordingRuntime {
+        events: Vec<String>,
+        fail_create: bool,
+        fail_publish: bool,
+        fail_teardown: bool,
+    }
+
+    impl DockRuntimeEffects for RecordingRuntime {
+        fn stage_create(
+            &mut self,
+            owner_id: &str,
+            operation: &DockRuntimeOperation,
+        ) -> Result<(), String> {
+            let DockRuntimeOperation::Create { surface_id, .. } = operation else {
+                panic!("expected create")
+            };
+            self.events.push(format!("stage:{owner_id}:{surface_id}"));
+            (!self.fail_create)
+                .then_some(())
+                .ok_or_else(|| "create failed".into())
+        }
+
+        fn teardown(&mut self, operation: &DockRuntimeOperation) -> Result<(), String> {
+            let DockRuntimeOperation::Teardown { surface_id, .. } = operation else {
+                panic!("expected teardown")
+            };
+            self.events.push(format!("teardown:{surface_id}"));
+            (!self.fail_teardown)
+                .then_some(())
+                .ok_or_else(|| "teardown failed".into())
+        }
+
+        fn publish_staged(&mut self) -> Result<(), String> {
+            self.events.push("publish".into());
+            (!self.fail_publish)
+                .then_some(())
+                .ok_or_else(|| "publish failed".into())
+        }
+
+        fn rollback_staged(&mut self) {
+            self.events.push("rollback".into());
+        }
+    }
 
     fn app() -> (AppSessionSnapshot, String) {
         let state = crate::session::SessionState::default();
@@ -1080,6 +1342,82 @@ mod tests {
             .unwrap_err();
         assert_eq!(error, "runtime unavailable");
         assert_eq!(session, before);
+    }
+
+    #[test]
+    fn direct_runtime_seam_stages_before_create_and_tears_down_before_close_publication() {
+        let (mut session, owner) = app();
+        let before = session.clone();
+        let mut failing_create = RecordingRuntime {
+            fail_create: true,
+            ..RecordingRuntime::default()
+        };
+        assert_eq!(
+            create_with_runtime(
+                &mut session,
+                &DockStore,
+                &owner,
+                terminal("fail"),
+                &mut failing_create,
+            )
+            .unwrap_err(),
+            "create failed"
+        );
+        assert_eq!(session, before);
+        assert_eq!(failing_create.events.len(), 1);
+
+        let mut failing_publish = RecordingRuntime {
+            fail_publish: true,
+            ..RecordingRuntime::default()
+        };
+        assert_eq!(
+            create_with_runtime(
+                &mut session,
+                &DockStore,
+                &owner,
+                terminal("fail publish"),
+                &mut failing_publish,
+            )
+            .unwrap_err(),
+            "publish failed"
+        );
+        assert_eq!(session, before);
+        assert!(failing_publish.events[0].starts_with(&format!("stage:{owner}:")));
+        assert_eq!(
+            &failing_publish.events[1..],
+            &["publish".to_string(), "rollback".to_string()]
+        );
+
+        let mut runtime = RecordingRuntime::default();
+        let created = create_with_runtime(
+            &mut session,
+            &DockStore,
+            &owner,
+            terminal("live"),
+            &mut runtime,
+        )
+        .unwrap();
+        assert!(runtime.events[0].starts_with(&format!("stage:{owner}:")));
+        assert_eq!(runtime.events.last().map(String::as_str), Some("publish"));
+
+        let before_close = session.clone();
+        let mut failing_close = RecordingRuntime {
+            fail_teardown: true,
+            ..RecordingRuntime::default()
+        };
+        assert_eq!(
+            close_with_runtime(
+                &mut session,
+                &DockStore,
+                &owner,
+                created.surface_id,
+                &mut failing_close,
+            )
+            .unwrap_err(),
+            "teardown failed"
+        );
+        assert_eq!(session, before_close);
+        assert!(failing_close.events[0].starts_with("teardown:"));
     }
 
     #[test]

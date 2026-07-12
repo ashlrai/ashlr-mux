@@ -31,7 +31,10 @@ use crate::browser::{
     browser_webview_command_for_control, BrowserNetworkRequestsQuery, BrowserWebviewState,
 };
 use crate::diff::DiffState;
-use crate::dock::DockRuntimeIntent;
+use crate::dock::{
+    publish_runtime_claim, rollback_runtime_claim, stage_runtime_for_control, DockRuntimeClaim,
+    DockRuntimeOperation,
+};
 use crate::session::{
     append_workspace_sidebar_log_for_control, break_pane_for_control, browser_go_back_for_control,
     browser_go_forward_for_control, clear_browser_history_for_control,
@@ -1497,7 +1500,8 @@ struct ProductionLifecycleExecutor<'a> {
     staged: Vec<pane_surface_lifecycle::LifecycleEffect>,
     staged_terminals: Vec<(String, u32, bool)>,
     staged_remote_panes: Vec<StagedRemotePane>,
-    staged_browsers: Vec<(String, Option<String>)>,
+    staged_browsers: Vec<(String, String, Option<String>)>,
+    staged_dock: Vec<DockRuntimeClaim>,
 }
 
 struct StagedRemotePane {
@@ -1566,45 +1570,21 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
         let terminal_state = self.app.state::<TerminalState>();
         match effect {
             pane_surface_lifecycle::LifecycleEffect::DockCreate {
+                owner_id,
                 dock_surface_id,
+                generation,
                 intent,
                 ..
-            } => match intent {
-                DockRuntimeIntent::Terminal {
-                    working_directory,
-                    command,
-                    environment,
-                    tmux_start_command,
-                } => {
-                    let startup = command.as_deref().or(tmux_start_command.as_deref());
-                    let id = terminal_open_for_control(
-                        self.app,
-                        terminal_state.inner(),
-                        Some(dock_surface_id),
-                        working_directory.as_deref(),
-                        startup,
-                        None,
-                        (!environment.is_empty()).then_some(environment.clone()),
-                        None,
-                        None,
-                    )?;
-                    self.staged_terminals
-                        .push((dock_surface_id.clone(), id, false));
-                }
-                DockRuntimeIntent::Browser { url, .. } => {
-                    let state = self.app.state::<BrowserWebviewState>();
-                    browser_attach_webview_for_control(
-                        self.app,
-                        state.inner(),
-                        dock_surface_id,
-                        Some(url),
-                        None,
-                        false,
-                    )?;
-                    self.staged_browsers
-                        .push((dock_surface_id.clone(), Some(url.clone())));
-                }
-            },
+            } => {
+                let operation = DockRuntimeOperation::Create {
+                    surface_id: Uuid::parse_str(dock_surface_id)
+                        .map_err(|_| "Invalid Dock surface identity".to_string())?,
+                    generation: *generation,
+                    intent: intent.clone(),
+                };
+                self.staged_dock
+                    .push(stage_runtime_for_control(self.app, owner_id, &operation)?);
+            }
             pane_surface_lifecycle::LifecycleEffect::TerminalCreate {
                 surface_id,
                 command,
@@ -1677,16 +1657,33 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
             pane_surface_lifecycle::LifecycleEffect::BrowserAttach {
                 surface_id, url, ..
             } => {
+                let window_id = self
+                    .candidate
+                    .as_ref()
+                    .and_then(|candidate| {
+                        cmux_core::surface_lifecycle::SurfaceLifecycleModel::from_app_session(
+                            candidate,
+                        )
+                        .ok()
+                    })
+                    .and_then(|model| {
+                        model
+                            .owner_of_surface(surface_id)
+                            .map(|owner| owner.window_id.clone())
+                    })
+                    .unwrap_or_else(|| "main".into());
                 let state = self.app.state::<BrowserWebviewState>();
                 browser_attach_webview_for_control(
                     self.app,
                     state.inner(),
+                    &window_id,
                     surface_id,
                     url.as_deref(),
                     None,
                     false,
                 )?;
-                self.staged_browsers.push((surface_id.clone(), url.clone()));
+                self.staged_browsers
+                    .push((window_id, surface_id.clone(), url.clone()));
             }
             pane_surface_lifecycle::LifecycleEffect::BrowserReload { surface_id } => {
                 let state = self.app.state::<BrowserWebviewState>();
@@ -1694,6 +1691,20 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
             }
             pane_surface_lifecycle::LifecycleEffect::ExternalBrowserOpen { url } => {
                 open_external_url_checked(url)?;
+            }
+            pane_surface_lifecycle::LifecycleEffect::RuntimeTeardown {
+                surface_id,
+                failure_message,
+                ..
+            } => {
+                terminal_close_panel_for_control(terminal_state.inner(), surface_id)
+                    .map_err(|_| (*failure_message).to_string())?;
+                let browser_state = self.app.state::<BrowserWebviewState>();
+                browser_close_webview_for_control(browser_state.inner(), surface_id)
+                    .map_err(|_| (*failure_message).to_string())?;
+                self.app
+                    .state::<crate::remote_proxy::RemoteProxyBrokerState>()
+                    .stop_panel_broker(surface_id);
             }
             _ => {}
         }
@@ -1707,18 +1718,22 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
             .as_ref()
             .ok_or_else(|| "lifecycle candidate was not prepared".to_string())?;
         let browser_state = self.app.state::<BrowserWebviewState>();
-        for (surface_id, url) in &self.staged_browsers {
+        let state = self.app.state::<SessionState>();
+        commit_lifecycle_snapshot_for_control(self.app, state.inner(), candidate, false)?;
+        for claim in self.staged_dock.drain(..) {
+            let _ = publish_runtime_claim(self.app, &claim);
+        }
+        for (window_id, surface_id, url) in &self.staged_browsers {
             browser_attach_webview_for_control(
                 self.app,
                 browser_state.inner(),
+                window_id,
                 surface_id,
                 url.as_deref(),
                 None,
                 true,
             )?;
         }
-        let state = self.app.state::<SessionState>();
-        commit_lifecycle_snapshot_for_control(self.app, state.inner(), candidate, false)?;
         let terminal_state = self.app.state::<TerminalState>();
         for (surface_id, id, replace) in &self.staged_terminals {
             if *replace {
@@ -1736,13 +1751,7 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
                         let _ = window.set_focus();
                     }
                 }
-                pane_surface_lifecycle::LifecycleEffect::RuntimeTeardown { surface_id, .. } => {
-                    let _ = terminal_close_panel_for_control(terminal_state.inner(), surface_id);
-                    let _ = browser_close_webview_for_control(browser_state.inner(), surface_id);
-                    self.app
-                        .state::<crate::remote_proxy::RemoteProxyBrokerState>()
-                        .stop_panel_broker(surface_id);
-                }
+                pane_surface_lifecycle::LifecycleEffect::RuntimeTeardown { .. } => {}
                 pane_surface_lifecycle::LifecycleEffect::TerminalCreate { .. }
                 | pane_surface_lifecycle::LifecycleEffect::TerminalReplace { .. }
                 | pane_surface_lifecycle::LifecycleEffect::BrowserAttach { .. }
@@ -1765,7 +1774,7 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
                         let _ = window.set_focus();
                     }
                 }
-                pane_surface_lifecycle::LifecycleEffect::DockChanged { owner_id } => {
+                pane_surface_lifecycle::LifecycleEffect::DockChanged { owner_id, .. } => {
                     let snapshot = self
                         .app
                         .state::<crate::dock::DockStore>()
@@ -1798,9 +1807,12 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
                 .status();
         }
         if let Some(state) = self.app.try_state::<BrowserWebviewState>() {
-            for (surface_id, _) in self.staged_browsers.drain(..) {
+            for (_, surface_id, _) in self.staged_browsers.drain(..) {
                 let _ = browser_close_webview_for_control(state.inner(), &surface_id);
             }
+        }
+        for claim in self.staged_dock.drain(..) {
+            rollback_runtime_claim(self.app, claim);
         }
         self.staged.clear();
         self.candidate = None;
@@ -1843,6 +1855,19 @@ fn handle_pane_surface_lifecycle_request(
         pane_surface_lifecycle::LifecycleEffect::ExternalBrowserOpen { url } => Some(url.clone()),
         _ => None,
     });
+    let lifecycle_failure = transition.effects.iter().find_map(|effect| match effect {
+        pane_surface_lifecycle::LifecycleEffect::DockCreate {
+            failure_code,
+            failure_message,
+            ..
+        }
+        | pane_surface_lifecycle::LifecycleEffect::RuntimeTeardown {
+            failure_code,
+            failure_message,
+            ..
+        } => Some(((*failure_code).to_string(), (*failure_message).to_string())),
+        _ => None,
+    });
     let completion_events = transition.events.clone();
     let mut target = current;
     let mut executor = ProductionLifecycleExecutor {
@@ -1852,6 +1877,7 @@ fn handle_pane_surface_lifecycle_request(
         staged_terminals: Vec::new(),
         staged_remote_panes: Vec::new(),
         staged_browsers: Vec::new(),
+        staged_dock: Vec::new(),
     };
     let result =
         pane_surface_lifecycle::commit_lifecycle_transition(&mut target, transition, &mut executor)
@@ -1864,9 +1890,12 @@ fn handle_pane_surface_lifecycle_request(
                             .and_then(|url| JsonValue::try_from(json!({"url":url})).ok()),
                     }
                 } else {
+                    let (code, mapped_message) = lifecycle_failure
+                        .clone()
+                        .unwrap_or_else(|| ("internal_error".into(), message.clone()));
                     ControlCallResult::Err {
-                        code: "internal_error".into(),
-                        message,
+                        code,
+                        message: mapped_message,
                         data: None,
                     }
                 }
@@ -11361,6 +11390,7 @@ fn debug_browser_attach_webview(
     match browser_attach_webview_for_control(
         app,
         browser_state.inner(),
+        "main",
         &panel_id,
         Some(&url),
         proxy_url.as_deref(),
@@ -13477,14 +13507,21 @@ fn string_map_param(
 fn bool_param(params: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<bool> {
     keys.iter().find_map(|key| {
         params.get(*key).and_then(|value| {
-            value.as_bool().or_else(|| {
-                let normalized = value.as_str()?.trim().to_ascii_lowercase();
-                match normalized.as_str() {
-                    "1" | "true" | "yes" | "on" => Some(true),
-                    "0" | "false" | "no" | "off" => Some(false),
+            value
+                .as_bool()
+                .or_else(|| match value.as_i64() {
+                    Some(1) => Some(true),
+                    Some(0) => Some(false),
                     _ => None,
-                }
-            })
+                })
+                .or_else(|| {
+                    let normalized = value.as_str()?.trim().to_ascii_lowercase();
+                    match normalized.as_str() {
+                        "1" | "true" | "yes" | "on" => Some(true),
+                        "0" | "false" | "no" | "off" => Some(false),
+                        _ => None,
+                    }
+                })
         })
     })
 }

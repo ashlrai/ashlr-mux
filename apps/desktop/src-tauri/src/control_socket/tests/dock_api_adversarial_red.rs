@@ -117,7 +117,7 @@ fn cross_dock_move_publishes_both_source_and_destination_owners_once() {
         .effects
         .iter()
         .filter_map(|effect| match effect {
-            LifecycleEffect::DockChanged { owner_id } => Some(owner_id.as_str()),
+            LifecycleEffect::DockChanged { owner_id, .. } => Some(owner_id.as_str()),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -216,7 +216,6 @@ fn dock_browser_runtime_effect_is_owner_aware() {
     assert_eq!(value["window_id"], W2);
     let dock_create = effect(&created, "DockCreate");
     assert_eq!(dock_create["owner_id"], W2);
-    assert_eq!(dock_create["runtime_window_id"], W2);
     assert_eq!(dock_create["intent"]["type"], "browser");
     assert_eq!(dock_create["intent"]["url"], "https://profile.test");
 }

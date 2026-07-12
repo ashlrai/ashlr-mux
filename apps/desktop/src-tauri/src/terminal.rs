@@ -14,7 +14,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use cmux_terminal::conpty::{ConPty, ConPtyCommand, ConPtySize};
 use cmux_terminal::engine::{GridSize, TerminalGrid};
@@ -158,6 +158,14 @@ pub struct TerminalState {
     next_id: AtomicU32,
 }
 
+impl TerminalState {
+    fn live_sessions(&self) -> MutexGuard<'_, HashMap<u32, TerminalSession>> {
+        self.sessions
+            .lock()
+            .expect("terminal sessions mutex poisoned")
+    }
+}
+
 #[derive(Serialize, Clone)]
 struct TerminalOutput {
     id: u32,
@@ -288,10 +296,7 @@ fn terminal_open_with_policy(
         let trimmed = value.trim();
         (!trimmed.is_empty()).then(|| trimmed.to_string())
     });
-    let mut sessions = state
-        .sessions
-        .lock()
-        .expect("terminal sessions mutex poisoned");
+    let mut sessions = state.live_sessions();
     if let Some(existing) = reusable_panel_session_id(
         sessions
             .iter()
@@ -349,10 +354,7 @@ pub(crate) fn terminal_close_panel_for_control(
     panel_id: &str,
 ) -> Result<bool, String> {
     let removed = {
-        let mut sessions = state
-            .sessions
-            .lock()
-            .expect("terminal sessions mutex poisoned");
+        let mut sessions = state.live_sessions();
         let id = sessions.iter().find_map(|(id, session)| {
             (session.panel_id.as_deref() == Some(panel_id)).then_some(*id)
         });
@@ -370,11 +372,7 @@ pub(crate) fn terminal_close_id_for_control(
     state: &TerminalState,
     id: u32,
 ) -> Result<bool, String> {
-    let removed = state
-        .sessions
-        .lock()
-        .expect("terminal sessions mutex poisoned")
-        .remove(&id);
+    let removed = state.live_sessions().remove(&id);
     if let Some(mut session) = removed {
         session.pty.kill().map_err(|error| error.to_string())?;
         Ok(true)
@@ -389,10 +387,7 @@ pub(crate) fn terminal_close_panel_except_for_control(
     keep_id: u32,
 ) -> Result<(), String> {
     let removed = {
-        let mut sessions = state
-            .sessions
-            .lock()
-            .expect("terminal sessions mutex poisoned");
+        let mut sessions = state.live_sessions();
         let ids = sessions
             .iter()
             .filter_map(|(id, session)| {

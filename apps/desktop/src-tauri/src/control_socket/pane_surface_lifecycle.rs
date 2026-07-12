@@ -61,18 +61,28 @@ pub(super) enum LifecycleEffect {
     RuntimeTeardown {
         surface_id: String,
         generation: u64,
+        must_succeed: bool,
+        failure_code: &'static str,
+        failure_message: &'static str,
+        phase: &'static str,
     },
     DockCreate {
+        owner_id: String,
         dock_surface_id: String,
         generation: u64,
         kind: String,
         intent: DockRuntimeIntent,
+        failure_code: &'static str,
+        failure_message: &'static str,
+        visibility_phase: &'static str,
+        rollback: &'static str,
     },
     DockReveal {
         owner_id: String,
     },
     DockChanged {
         owner_id: String,
+        phase: &'static str,
     },
     RemoteCreate {
         remote_session_id: String,
@@ -1005,19 +1015,23 @@ fn dock_owner_id(
             .flatten()
         }) {
             implied.push(window_id);
-        } else {
+        } else if Uuid::parse_str(workspace_id).is_ok() {
             return Err(("not_found", "Workspace not found"));
         }
     }
     if let Some(surface_id) = params.get("surface_id").and_then(Value::as_str) {
-        let owner = model
-            .owner_of_surface(surface_id)
-            .ok_or(("not_found", "Surface not found"))?;
-        implied.push(owner.window_id.clone());
+        if let Some(owner) = model.owner_of_surface(surface_id) {
+            implied.push(owner.window_id.clone());
+        } else if Uuid::parse_str(surface_id).is_ok() {
+            return Err(("not_found", "Surface not found"));
+        }
     }
     if let Some(pane_id) = params.get("pane_id").and_then(Value::as_str) {
-        let pane = model.pane(pane_id).ok_or(("not_found", "Pane not found"))?;
-        implied.push(pane.window_id.clone());
+        if let Some(pane) = model.pane(pane_id) {
+            implied.push(pane.window_id.clone());
+        } else if Uuid::parse_str(pane_id).is_ok() {
+            return Err(("not_found", "Pane not found"));
+        }
     }
     if implied.windows(2).any(|owners| owners[0] != owners[1]) {
         return Err(("invalid_params", "Conflicting Dock routing selectors"));
@@ -1141,10 +1155,7 @@ fn dock_request(
             .or_else(|| params.get("profile"))
             .and_then(Value::as_str)
             .map(str::to_owned),
-        focus: params
-            .get("focus")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
+        focus: super::bool_param(params, &["focus"]).unwrap_or(false),
         ..DockCreateRequest::default()
     })
 }
@@ -1274,15 +1285,24 @@ fn dock_create(
         &owner_id,
         Some(&pane_id),
         Some(&surface_id),
-        json!({"surface_id":surface_id,"pane_id":pane_id,"kind":type_name,"origin":origin,"focused":params.get("focus").and_then(Value::as_bool).unwrap_or(false)}),
+        json!({"surface_id":surface_id,"pane_id":pane_id,"kind":type_name,"origin":origin,"focused":super::bool_param(params, &["focus"]).unwrap_or(false)}),
     ));
     let mut effects = vec![LifecycleEffect::DockCreate {
+        owner_id: owner_id.clone(),
         dock_surface_id: surface_id,
         generation: created.generation,
         kind: type_name.into(),
         intent: surface.runtime,
+        failure_code: "internal_error",
+        failure_message: if method == "pane.create" {
+            "Failed to create pane"
+        } else {
+            "Failed to create surface"
+        },
+        visibility_phase: "post_persist",
+        rollback: "teardown",
     }];
-    if params.get("focus").and_then(Value::as_bool) == Some(true) {
+    if super::bool_param(params, &["focus"]) == Some(true) {
         effects.push(LifecycleEffect::DockReveal {
             owner_id: owner_id.clone(),
         });
@@ -1290,6 +1310,7 @@ fn dock_create(
     effects.extend([
         LifecycleEffect::DockChanged {
             owner_id: owner_id.clone(),
+            phase: "post_persist",
         },
         LifecycleEffect::PersistSession,
     ]);
@@ -1388,11 +1409,7 @@ fn surface_create(
             },
         );
     }
-    if params
-        .get("focus")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
+    if super::bool_param(params, &["focus"]).unwrap_or(false) {
         let _ = model.focus_surface(&surface_id);
     }
     next = match model.to_app_session(&next) {
@@ -1561,6 +1578,10 @@ fn close_action_range(
             effects.push(LifecycleEffect::RuntimeTeardown {
                 surface_id: candidate.clone(),
                 generation: record.generation,
+                must_succeed: true,
+                failure_code: "internal_error",
+                failure_message: "Failed to close surface",
+                phase: "pre_publish",
             });
             lifecycle_events.push(owned_event(
                 "surface.closed",
@@ -2441,10 +2462,15 @@ fn surface_close(
     let mut effects = vec![LifecycleEffect::RuntimeTeardown {
         surface_id: surface_id.clone(),
         generation,
+        must_succeed: true,
+        failure_code: "internal_error",
+        failure_message: "Failed to close surface",
+        phase: "pre_publish",
     }];
     if is_dock {
         effects.push(LifecycleEffect::DockChanged {
             owner_id: window_id.clone(),
+            phase: "post_persist",
         });
     }
     effects.push(LifecycleEffect::PersistSession);
@@ -2510,6 +2536,7 @@ fn surface_focus(
             },
             LifecycleEffect::DockChanged {
                 owner_id: window_id.clone(),
+                phase: "post_persist",
             },
         ]);
     }
@@ -2595,11 +2622,7 @@ fn surface_move(
     {
         return error(snapshot, "internal_error", "Failed to move surface", None);
     }
-    if params
-        .get("focus")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
+    if super::bool_param(params, &["focus"]).unwrap_or(false) {
         let _ = model.focus_surface(surface_id);
     }
     let owner = model.owner_of_surface(surface_id).cloned().unwrap();
@@ -2619,16 +2642,19 @@ fn surface_move(
         &public_owner,
     );
     let mut effects = Vec::new();
-    if source_is_dock || destination_is_dock {
+    let mut dock_owners = Vec::new();
+    if source_is_dock {
+        if let Some(owner_id) = source_owner.as_ref().map(|owner| owner.window_id.clone()) {
+            dock_owners.push(owner_id);
+        }
+    }
+    if destination_is_dock && !dock_owners.contains(&public_owner.window_id) {
+        dock_owners.push(public_owner.window_id.clone());
+    }
+    for owner_id in dock_owners {
         effects.push(LifecycleEffect::DockChanged {
-            owner_id: if source_is_dock {
-                source_owner
-                    .as_ref()
-                    .map(|owner| owner.window_id.clone())
-                    .unwrap_or_else(|| public_owner.window_id.clone())
-            } else {
-                public_owner.window_id.clone()
-            },
+            owner_id,
+            phase: "post_persist",
         });
     }
     effects.push(LifecycleEffect::PersistSession);

@@ -174,14 +174,15 @@ pub async fn browser_attach_webview(
 pub(crate) fn browser_attach_webview_for_control(
     app: &AppHandle,
     state: &BrowserWebviewState,
+    window_id: &str,
     panel_id: &str,
     url: Option<&str>,
     proxy_url: Option<&str>,
     visible: bool,
 ) -> Result<BrowserWebviewReply, String> {
     let window = app
-        .get_window("main")
-        .ok_or_else(|| "main window is not available for browser WebView attach".to_string())?;
+        .get_window(window_id)
+        .ok_or_else(|| format!("{window_id} window is not available for browser WebView attach"))?;
     upsert_browser_webview(
         app,
         &window,
