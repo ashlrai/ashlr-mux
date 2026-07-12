@@ -89,6 +89,10 @@ mod pane_topology_red;
 #[path = "session/surface_move_reorder_red.rs"]
 mod surface_move_reorder_red;
 
+#[cfg(test)]
+#[path = "session/focus_navigation_red.rs"]
+mod focus_navigation_red;
+
 impl Default for SessionState {
     fn default() -> Self {
         let snapshot = initial_snapshot(FIRST_PANEL_ID);
