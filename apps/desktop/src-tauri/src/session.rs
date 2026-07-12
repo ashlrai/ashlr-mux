@@ -129,6 +129,10 @@ mod diff_durable_publication_red;
 #[path = "session/restore_previous_launch_red.rs"]
 mod restore_previous_launch_red;
 
+#[cfg(test)]
+#[path = "session/next_panel_allocation_fence_red.rs"]
+mod next_panel_allocation_fence_red;
+
 impl Default for SessionState {
     fn default() -> Self {
         let snapshot = initial_snapshot(FIRST_PANEL_ID);
