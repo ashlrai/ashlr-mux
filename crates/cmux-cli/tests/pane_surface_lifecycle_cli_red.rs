@@ -402,7 +402,7 @@ fn tab_action_formats_text_json_and_all_id_modes_exactly() {
         "created_workspace_id":"55555555-5555-4555-8555-555555555555",
         "created_workspace_ref":"workspace:6"
     });
-    let (pipe, _) = spawn_server("tab-action-text", ok(payload.clone()));
+    let (pipe, _request_rx) = spawn_server("tab-action-text", ok(payload.clone()));
     let output = executable(
         Some(&pipe),
         &["tab-action", "new-terminal-right", "--surface", SURFACE_ID],
@@ -435,7 +435,7 @@ fn tab_action_formats_text_json_and_all_id_modes_exactly() {
         ),
         ("both", "both", payload.clone()),
     ] {
-        let (pipe, _) = spawn_server(tag, ok(payload.clone()));
+        let (pipe, _request_rx) = spawn_server(tag, ok(payload.clone()));
         let output = executable(
             Some(&pipe),
             &[
