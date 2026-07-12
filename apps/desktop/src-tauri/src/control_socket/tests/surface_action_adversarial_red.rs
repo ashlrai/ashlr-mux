@@ -1,7 +1,7 @@
 //! Adversarial frozen-e1825d40 contracts not covered by the happy-path action matrix.
 
 use super::pane_surface_lifecycle::{
-    dispatch_lifecycle_request, LifecycleDispatchContext, LifecycleTransition,
+    dispatch_lifecycle_request, LifecycleDispatchContext, LifecycleEffect, LifecycleTransition,
 };
 use super::*;
 use cmux_core::session::{
@@ -136,6 +136,13 @@ fn assert_error(transition: &LifecycleTransition, code: &str, message: &str) -> 
     data.clone().map(Value::from).unwrap_or(Value::Null)
 }
 
+fn error_pair(transition: &LifecycleTransition) -> (&str, &str) {
+    let ControlCallResult::Err { code, message, .. } = &transition.result else {
+        panic!("expected error, got {:?}", transition.result)
+    };
+    (code.as_str(), message.as_str())
+}
+
 fn model(snapshot: &AppSessionSnapshot) -> SurfaceLifecycleModel {
     SurfaceLifecycleModel::from_app_session_snapshot(snapshot).unwrap()
 }
@@ -214,7 +221,7 @@ fn null_or_invalid_surface_selector_falls_through_to_tab_then_focus() {
 }
 
 #[test]
-fn manager_workspace_and_target_errors_precede_action_validation() {
+fn missing_action_precedes_workspace_and_target_resolution_after_manager_resolution() {
     let mut no_windows = action_snapshot();
     no_windows.windows.clear();
     assert_error(
@@ -224,20 +231,158 @@ fn manager_workspace_and_target_errors_precede_action_validation() {
     );
 
     let snapshot = action_snapshot();
-    assert_error(
-        &dispatch(
-            &snapshot,
-            json!({"workspace_id": WS2, "surface_id": A, "action": "future-action"}),
-        ),
-        "not_found",
-        "Workspace not found",
-    );
+    let missing_workspace = dispatch(&snapshot, json!({"workspace_id": WS2, "surface_id": A}));
     let mut no_focus = snapshot;
     no_focus.windows[0].tab_manager.workspaces[0].focused_panel_id = None;
-    assert_error(
-        &dispatch(&no_focus, json!({"action": "future-action"})),
-        "not_found",
-        "No focused tab",
+    let missing_focus = dispatch(&no_focus, json!({}));
+    assert_eq!(
+        vec![error_pair(&missing_workspace), error_pair(&missing_focus)],
+        vec![
+            ("invalid_params", "Missing action"),
+            ("invalid_params", "Missing action")
+        ]
+    );
+}
+
+fn remote_action_snapshot() -> AppSessionSnapshot {
+    let mut snapshot = action_snapshot();
+    let source = snapshot.windows[0].tab_manager.workspaces[0]
+        .surfaces
+        .as_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|row| row.surface_id == A)
+        .unwrap();
+    source.metadata.reported_directory = Some("/srv/repo with spaces".into());
+    source.metadata.directory_provenance = Some("remote_report".into());
+    let mut encoded = serde_json::to_value(&snapshot).unwrap();
+    encoded["windows"][0]["tab_manager"]["workspaces"][0]["remote"] = json!({
+        "enabled": true,
+        "connected": true,
+        "state": "connected",
+        "transport": "tmux",
+        "destination": "host.example",
+        "persistent_daemon_slot": "remote-session-1"
+    });
+    serde_json::from_value(encoded).unwrap()
+}
+
+#[test]
+fn remote_new_window_plan_preserves_focus_placement_and_confirmed_source_cwd() {
+    let snapshot = remote_action_snapshot();
+    let mut actual = Vec::new();
+    for focus in [true, false] {
+        let transition = dispatch(
+            &snapshot,
+            json!({"surface_id": A, "action": "new-terminal-right", "focus": focus}),
+        );
+        let remote = serialized_effect(&transition, "RemoteCreate");
+        actual.push(json!({
+            "focus": remote["focus"],
+            "focus_mode": remote["focus_mode"],
+            "placement": remote["placement"],
+            "source_surface_id": remote["source_surface_id"],
+            "working_directory": remote["working_directory"],
+            "working_directory_source_surface_id": remote["working_directory_source_surface_id"]
+        }));
+        assert_eq!(remote["source_surface_id"], A);
+    }
+    assert_eq!(
+        actual,
+        vec![
+            json!({
+                "focus": true,
+                "focus_mode": "focused",
+                "placement": "after-source-window",
+                "source_surface_id": A,
+                "working_directory": "/srv/repo with spaces",
+                "working_directory_source_surface_id": A
+            }),
+            json!({
+                "focus": false,
+                "focus_mode": "background",
+                "placement": "after-source-window",
+                "source_surface_id": A,
+                "working_directory": "/srv/repo with spaces",
+                "working_directory_source_surface_id": A
+            })
+        ]
+    );
+}
+
+#[test]
+fn remote_window_arrival_plan_uses_authoritative_notification_and_retains_failures() {
+    let transition = dispatch(
+        &remote_action_snapshot(),
+        json!({"surface_id": A, "action": "new-terminal-right"}),
+    );
+    let remote = serialized_effect(&transition, "RemoteCreate");
+    assert_eq!(
+        json!({
+            "arrival_policy": remote["arrival_policy"],
+            "observation_source": remote["observation_source"],
+            "pending_reconciliation": remote["pending_reconciliation"],
+            "observation_failure_policy": remote["observation_failure_policy"],
+            "commit_failure_policy": remote["commit_failure_policy"],
+            "fabricated_surface_id": remote["fabricated_surface_id"],
+            "fabricated_pane_id": remote["fabricated_pane_id"]
+        }),
+        json!({
+            "arrival_policy": "runtime-window-add",
+            "observation_source": "%window-add",
+            "pending_reconciliation": true,
+            "observation_failure_policy": "retain-pending-and-report",
+            "commit_failure_policy": "retain-pending-and-retry",
+            "fabricated_surface_id": null,
+            "fabricated_pane_id": null
+        })
+    );
+}
+
+#[test]
+fn unchanged_effect_only_actions_do_not_request_snapshot_persistence_or_publication() {
+    let local = action_snapshot();
+    let remote = remote_action_snapshot();
+    let transitions = [
+        (
+            dispatch(&local, json!({"surface_id": B, "action": "reload"})),
+            &local,
+        ),
+        (
+            dispatch_with(
+                &local,
+                "surface.action",
+                json!({
+                    "surface_id": B,
+                    "action": "new-browser-right",
+                    "url": "https://external.test"
+                }),
+                &context(false),
+            ),
+            &local,
+        ),
+        (
+            dispatch(
+                &remote,
+                json!({"surface_id": A, "action": "new-terminal-right"}),
+            ),
+            &remote,
+        ),
+    ];
+    let mut actual_changed = Vec::new();
+    for (transition, original) in transitions {
+        assert!(!transition.effects.is_empty());
+        assert_eq!(&transition.snapshot, original);
+        actual_changed.push(transition.changed);
+        assert!(!transition
+            .effects
+            .iter()
+            .any(|effect| { matches!(effect, LifecycleEffect::PersistSession) }));
+    }
+    assert_eq!(
+        actual_changed,
+        vec![false, false, false],
+        "reload, shell-open, and accepted remote create must not persist or publish session.changed"
     );
 }
 
