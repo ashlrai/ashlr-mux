@@ -6976,9 +6976,14 @@ fn workspace_set_agent_pid(
         return invalid_params("Missing or invalid workspace selector");
     };
     let state = app.state::<SessionState>();
-    workspace_current(&set_workspace_agent_pid_for_control(
-        app, &state, index, &key, pid,
-    ))
+    match set_workspace_agent_pid_for_control(app, &state, index, &key, pid) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_clear_agent_pid(
@@ -6993,7 +6998,16 @@ fn workspace_clear_agent_pid(
         return invalid_params("Missing or invalid workspace selector");
     };
     let state = app.state::<SessionState>();
-    let snapshot = clear_workspace_agent_pid_for_control(app, &state, index, &key);
+    let snapshot = match clear_workspace_agent_pid_for_control(app, &state, index, &key) {
+        Ok(snapshot) => snapshot,
+        Err(message) => {
+            return ControlCallResult::Err {
+                code: "internal".to_string(),
+                message,
+                data: None,
+            };
+        }
+    };
     let snapshot = refresh_workspace_agent_ports(app, &snapshot, index).unwrap_or(snapshot);
     workspace_current(&snapshot)
 }
@@ -7032,7 +7046,7 @@ fn workspace_report_pr(
         .and_then(|branch| (!branch.trim().is_empty()).then(|| branch.trim().to_string()));
     let is_stale = bool_param(params, &["stale", "is_stale", "isStale"]).unwrap_or(false);
     let state = app.state::<SessionState>();
-    workspace_current(&set_workspace_panel_pull_request_for_control(
+    match set_workspace_panel_pull_request_for_control(
         app,
         &state,
         workspace_index,
@@ -7043,7 +7057,14 @@ fn workspace_report_pr(
         status,
         branch,
         is_stale,
-    ))
+    ) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_clear_pr(
@@ -7061,12 +7082,14 @@ fn workspace_clear_pr(
         return invalid_params("Missing or invalid surface selector");
     };
     let state = app.state::<SessionState>();
-    workspace_current(&clear_workspace_panel_pull_request_for_control(
-        app,
-        &state,
-        workspace_index,
-        &panel_id,
-    ))
+    match clear_workspace_panel_pull_request_for_control(app, &state, workspace_index, &panel_id) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_report_meta(
@@ -9216,10 +9239,14 @@ fn surface_set_kind(app: &AppHandle, params: &serde_json::Map<String, Value>) ->
         return invalid_params("Invalid surface type");
     }
     let state = app.state::<SessionState>();
-    surface_list_from_params(
-        &set_surface_kind_for_control(app, &state, &panel_id, kind),
-        params,
-    )
+    match set_surface_kind_for_control(app, &state, &panel_id, kind) {
+        Ok(snapshot) => surface_list_from_params(&snapshot, params),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn surface_set_title(
@@ -9886,10 +9913,14 @@ fn surface_report_tty(
         return invalid_params("Missing or invalid surface selector");
     };
     let state = app.state::<SessionState>();
-    surface_list_from_params(
-        &set_panel_tty_for_control(app, &state, workspace_index, &panel_id, &tty),
-        params,
-    )
+    match set_panel_tty_for_control(app, &state, workspace_index, &panel_id, &tty) {
+        Ok(snapshot) => surface_list_from_params(&snapshot, params),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn surface_report_shell_state(
@@ -9909,16 +9940,20 @@ fn surface_report_shell_state(
         return invalid_params("Missing or invalid surface selector");
     };
     let state = app.state::<SessionState>();
-    surface_list_from_params(
-        &set_panel_shell_activity_for_control(
-            app,
-            &state,
-            workspace_index,
-            &panel_id,
-            shell_activity,
-        ),
-        params,
-    )
+    match set_panel_shell_activity_for_control(
+        app,
+        &state,
+        workspace_index,
+        &panel_id,
+        shell_activity,
+    ) {
+        Ok(snapshot) => surface_list_from_params(&snapshot, params),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn surface_clear_ports(
@@ -9943,10 +9978,14 @@ fn surface_set_ports(
         return invalid_params("Missing or invalid surface selector");
     };
     let state = app.state::<SessionState>();
-    surface_list_from_params(
-        &set_panel_listening_ports_for_control(app, &state, workspace_index, &panel_id, ports),
-        params,
-    )
+    match set_panel_listening_ports_for_control(app, &state, workspace_index, &panel_id, ports) {
+        Ok(snapshot) => surface_list_from_params(&snapshot, params),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn surface_ports_kick(
@@ -10020,12 +10059,7 @@ fn refresh_workspace_agent_ports(
     ports.sort_unstable();
     ports.dedup();
     let state = app.state::<SessionState>();
-    Ok(set_workspace_agent_listening_ports_for_control(
-        app,
-        &state,
-        workspace_index,
-        &ports,
-    ))
+    set_workspace_agent_listening_ports_for_control(app, &state, workspace_index, &ports)
 }
 
 fn surface_ports_kick_target(

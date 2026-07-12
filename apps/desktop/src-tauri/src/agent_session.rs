@@ -757,7 +757,7 @@ fn scan_agent_listening_ports(
             session_state,
             workspace_index,
             &ports,
-        );
+        )?;
         updates.push(AgentListeningPortsWorkspace {
             workspace_index,
             workspace_id: workspace.workspace_id.clone(),

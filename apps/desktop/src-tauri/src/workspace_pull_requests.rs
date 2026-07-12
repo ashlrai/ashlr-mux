@@ -75,16 +75,16 @@ pub fn workspace_git_refresh(
     session_state: State<'_, crate::session::SessionState>,
 ) -> Result<Vec<WorkspaceGitRefreshResult>, String> {
     let snapshot = crate::session::current_session_snapshot(&session_state);
-    Ok(refresh_workspace_git_facts(&app, &session_state, &snapshot))
+    refresh_workspace_git_facts(&app, &session_state, &snapshot)
 }
 
 fn refresh_workspace_git_facts(
     app: &AppHandle,
     session_state: &crate::session::SessionState,
     snapshot: &AppSessionSnapshot,
-) -> Vec<WorkspaceGitRefreshResult> {
+) -> Result<Vec<WorkspaceGitRefreshResult>, String> {
     let Some(window) = snapshot.windows.first() else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
 
     let mut results = Vec::new();
@@ -167,7 +167,7 @@ fn refresh_workspace_git_facts(
             git_branch,
             panel_branches,
             panel_pull_requests,
-        );
+        )?;
 
         let refreshed_branch = branch_probe.as_ref().map(|probe| probe.branch.clone());
         let refreshed_is_dirty = branch_probe
@@ -185,7 +185,7 @@ fn refresh_workspace_git_facts(
             error,
         });
     }
-    results
+    Ok(results)
 }
 
 fn panel_ids_from_layout(layout: &SessionWorkspaceLayoutSnapshot) -> Vec<String> {

@@ -630,7 +630,7 @@ pub(crate) fn scan_terminal_listening_ports(
         None => Vec::new(),
     };
     if let Some(panel_id) = panel_id.as_deref() {
-        session::set_panel_listening_ports_for_panel(app, session_state, panel_id, &ports);
+        session::set_panel_listening_ports_for_panel(app, session_state, panel_id, &ports)?;
     }
 
     Ok(TerminalListeningPorts {
@@ -660,7 +660,17 @@ fn pump_reader(
                 if let Some(panel_id) = panel_id.as_deref() {
                     for title in title_parser.consume(&buf[..n]) {
                         let state = app.state::<session::SessionState>();
-                        session::set_process_title_for_panel(&app, state.inner(), panel_id, &title);
+                        match session::set_process_title_for_panel(
+                            &app,
+                            state.inner(),
+                            panel_id,
+                            &title,
+                        ) {
+                            Ok(_) => {}
+                            Err(error) => {
+                                eprintln!("[terminal] failed to persist process title: {error}");
+                            }
+                        }
                     }
                 }
                 let payload = TerminalOutput {

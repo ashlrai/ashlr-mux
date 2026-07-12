@@ -2813,21 +2813,21 @@ fn apply_set_panel_tty(
     panel_id: &str,
     tty: &str,
 ) -> bool {
-    let Some(workspace) = snapshot
-        .windows
-        .first_mut()
-        .and_then(|window| window.tab_manager.workspaces.get_mut(workspace_index))
-    else {
-        return false;
-    };
-    set_workspace_panel_tty(workspace, panel_id, tty, current_unix_timestamp_seconds())
+    apply_set_panel_tty_at(
+        snapshot,
+        workspace_index,
+        panel_id,
+        tty,
+        current_unix_timestamp_seconds(),
+    )
 }
 
-fn apply_set_panel_shell_activity(
+fn apply_set_panel_tty_at(
     snapshot: &mut AppSessionSnapshot,
     workspace_index: usize,
     panel_id: &str,
-    state: SessionPanelShellActivityStateSnapshot,
+    tty: &str,
+    updated_at: i64,
 ) -> bool {
     let Some(workspace) = snapshot
         .windows
@@ -2836,7 +2836,39 @@ fn apply_set_panel_shell_activity(
     else {
         return false;
     };
-    set_workspace_panel_shell_activity(workspace, panel_id, state, current_unix_timestamp_seconds())
+    set_workspace_panel_tty(workspace, panel_id, tty, updated_at)
+}
+
+fn apply_set_panel_shell_activity(
+    snapshot: &mut AppSessionSnapshot,
+    workspace_index: usize,
+    panel_id: &str,
+    state: SessionPanelShellActivityStateSnapshot,
+) -> bool {
+    apply_set_panel_shell_activity_at(
+        snapshot,
+        workspace_index,
+        panel_id,
+        state,
+        current_unix_timestamp_seconds(),
+    )
+}
+
+fn apply_set_panel_shell_activity_at(
+    snapshot: &mut AppSessionSnapshot,
+    workspace_index: usize,
+    panel_id: &str,
+    state: SessionPanelShellActivityStateSnapshot,
+    updated_at: i64,
+) -> bool {
+    let Some(workspace) = snapshot
+        .windows
+        .first_mut()
+        .and_then(|window| window.tab_manager.workspaces.get_mut(workspace_index))
+    else {
+        return false;
+    };
+    set_workspace_panel_shell_activity(workspace, panel_id, state, updated_at)
 }
 
 fn apply_set_workspace_agent_listening_ports(
@@ -2860,6 +2892,22 @@ fn apply_set_workspace_agent_pid(
     key: &str,
     pid: u32,
 ) -> bool {
+    apply_set_workspace_agent_pid_at(
+        snapshot,
+        workspace_index,
+        key,
+        pid,
+        current_unix_timestamp_seconds(),
+    )
+}
+
+fn apply_set_workspace_agent_pid_at(
+    snapshot: &mut AppSessionSnapshot,
+    workspace_index: usize,
+    key: &str,
+    pid: u32,
+    updated_at: i64,
+) -> bool {
     let Some(workspace) = snapshot
         .windows
         .first_mut()
@@ -2867,7 +2915,7 @@ fn apply_set_workspace_agent_pid(
     else {
         return false;
     };
-    set_workspace_agent_pid(workspace, key, pid, current_unix_timestamp_seconds())
+    set_workspace_agent_pid(workspace, key, pid, updated_at)
 }
 
 fn apply_clear_workspace_agent_pid(
@@ -5506,17 +5554,10 @@ pub(crate) fn set_surface_kind_for_control(
     state: &SessionState,
     panel_id: &str,
     kind: Option<String>,
-) -> AppSessionSnapshot {
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        apply_set_surface_kind(&mut guard, panel_id, kind);
-        guard.clone()
-    };
-    notify_session_changed(app, &snapshot);
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_always(app, |snapshot| {
+        apply_set_surface_kind(snapshot, panel_id, kind)
+    })
 }
 
 pub(crate) fn select_adjacent_panel_for_control(
@@ -5884,23 +5925,11 @@ pub(crate) fn set_process_title_for_panel(
     state: &SessionState,
     panel_id: &str,
     title: &str,
-) -> AppSessionSnapshot {
+) -> Result<AppSessionSnapshot, String> {
     let panel_id = panel_id.trim();
-    if panel_id.is_empty() {
-        return current_session_snapshot(state);
-    }
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_process_title(&mut guard, panel_id, title);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_set_process_title(snapshot, panel_id, title)
+    })
 }
 
 pub(crate) fn set_panel_pinned_for_control(
@@ -5932,19 +5961,10 @@ pub(crate) fn set_panel_listening_ports_for_control(
     workspace_index: usize,
     panel_id: &str,
     ports: &[u16],
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_panel_listening_ports(&mut guard, workspace_index, panel_id, ports);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_set_panel_listening_ports(snapshot, workspace_index, panel_id, ports)
+    })
 }
 
 pub(crate) fn set_panel_tty_for_control(
@@ -5953,19 +5973,11 @@ pub(crate) fn set_panel_tty_for_control(
     workspace_index: usize,
     panel_id: &str,
     tty: &str,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_panel_tty(&mut guard, workspace_index, panel_id, tty);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let updated_at = current_unix_timestamp_seconds();
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_set_panel_tty_at(snapshot, workspace_index, panel_id, tty, updated_at)
+    })
 }
 
 pub(crate) fn set_panel_shell_activity_for_control(
@@ -5974,20 +5986,17 @@ pub(crate) fn set_panel_shell_activity_for_control(
     workspace_index: usize,
     panel_id: &str,
     shell_activity: SessionPanelShellActivityStateSnapshot,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed =
-            apply_set_panel_shell_activity(&mut guard, workspace_index, panel_id, shell_activity);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let updated_at = current_unix_timestamp_seconds();
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_set_panel_shell_activity_at(
+            snapshot,
+            workspace_index,
+            panel_id,
+            shell_activity,
+            updated_at,
+        )
+    })
 }
 
 pub(crate) fn set_panel_listening_ports_for_panel(
@@ -5995,17 +6004,10 @@ pub(crate) fn set_panel_listening_ports_for_panel(
     state: &SessionState,
     panel_id: &str,
     ports: &[u16],
-) -> AppSessionSnapshot {
+) -> Result<AppSessionSnapshot, String> {
     let panel_id = panel_id.trim();
-    if panel_id.is_empty() {
-        return current_session_snapshot(state);
-    }
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let workspace_index = guard.windows.first().and_then(|window| {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        let workspace_index = snapshot.windows.first().and_then(|window| {
             window.tab_manager.workspaces.iter().position(|workspace| {
                 workspace
                     .layout
@@ -6013,15 +6015,10 @@ pub(crate) fn set_panel_listening_ports_for_panel(
                     .is_some_and(|layout| session_ops::contains_panel(layout, panel_id))
             })
         });
-        let changed = workspace_index
-            .map(|index| apply_set_panel_listening_ports(&mut guard, index, panel_id, ports))
-            .unwrap_or(false);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+        workspace_index
+            .map(|index| apply_set_panel_listening_ports(snapshot, index, panel_id, ports))
+            .unwrap_or(false)
+    })
 }
 
 pub(crate) fn set_workspace_agent_listening_ports_for_control(
@@ -6029,19 +6026,10 @@ pub(crate) fn set_workspace_agent_listening_ports_for_control(
     state: &SessionState,
     workspace_index: usize,
     ports: &[u16],
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_workspace_agent_listening_ports(&mut guard, workspace_index, ports);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_set_workspace_agent_listening_ports(snapshot, workspace_index, ports)
+    })
 }
 
 pub(crate) fn set_workspace_agent_pid_for_control(
@@ -6050,19 +6038,11 @@ pub(crate) fn set_workspace_agent_pid_for_control(
     workspace_index: usize,
     key: &str,
     pid: u32,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_workspace_agent_pid(&mut guard, workspace_index, key, pid);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let updated_at = current_unix_timestamp_seconds();
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_set_workspace_agent_pid_at(snapshot, workspace_index, key, pid, updated_at)
+    })
 }
 
 pub(crate) fn clear_workspace_agent_pid_for_control(
@@ -6070,19 +6050,10 @@ pub(crate) fn clear_workspace_agent_pid_for_control(
     state: &SessionState,
     workspace_index: usize,
     key: &str,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_clear_workspace_agent_pid(&mut guard, workspace_index, key);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_clear_workspace_agent_pid(snapshot, workspace_index, key)
+    })
 }
 
 pub(crate) fn set_workspace_git_facts_for_control(
@@ -6092,25 +6063,16 @@ pub(crate) fn set_workspace_git_facts_for_control(
     git_branch: Option<SessionGitBranchSnapshot>,
     panel_git_branches: Vec<SessionPanelGitBranchSnapshot>,
     panel_pull_requests: Vec<SessionPanelPullRequestSnapshot>,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_workspace_git_facts(
-            &mut guard,
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_set_workspace_git_facts(
+            snapshot,
             workspace_index,
             git_branch,
             panel_git_branches,
             panel_pull_requests,
-        );
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+        )
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -6125,14 +6087,10 @@ pub(crate) fn set_workspace_panel_pull_request_for_control(
     status: SessionPullRequestStatusSnapshot,
     branch: Option<String>,
     is_stale: bool,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_workspace_panel_pull_request(
-            &mut guard,
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_set_workspace_panel_pull_request(
+            snapshot,
             workspace_index,
             panel_id,
             number,
@@ -6141,13 +6099,8 @@ pub(crate) fn set_workspace_panel_pull_request_for_control(
             status,
             branch,
             is_stale,
-        );
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+        )
+    })
 }
 
 pub(crate) fn clear_workspace_panel_pull_request_for_control(
@@ -6155,20 +6108,10 @@ pub(crate) fn clear_workspace_panel_pull_request_for_control(
     state: &SessionState,
     workspace_index: usize,
     panel_id: &str,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed =
-            apply_clear_workspace_panel_pull_request(&mut guard, workspace_index, panel_id);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_clear_workspace_panel_pull_request(snapshot, workspace_index, panel_id)
+    })
 }
 
 pub(crate) fn restore_previous_launch_for_control(
