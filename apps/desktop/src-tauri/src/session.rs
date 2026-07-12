@@ -3737,6 +3737,7 @@ pub(crate) fn move_workspace_to_window_for_control(
     target_window_id: &str,
     focus: bool,
 ) -> Result<AppSessionSnapshot, session_ops::MoveWorkspaceToWindowError> {
+    let _allocation_guard = state.snapshot.lock_gate();
     let bootstrap_panel_id = format!(
         "surface-{}",
         state.next_panel.fetch_add(1, Ordering::Relaxed)
@@ -4486,6 +4487,7 @@ pub(crate) fn new_workspace_for_control(
     initial_terminal_input: Option<&str>,
     initial_terminal_environment: Option<BTreeMap<String, String>>,
 ) -> AppSessionSnapshot {
+    let _allocation_guard = state.snapshot.lock_gate();
     let new_panel_id = format!(
         "surface-{}",
         state.next_panel.fetch_add(1, Ordering::Relaxed)
@@ -4525,6 +4527,7 @@ pub(crate) fn new_workspace_in_window_for_control(
     group_insert_index: Option<usize>,
     focus: bool,
 ) -> Option<(AppSessionSnapshot, usize)> {
+    let _allocation_guard = state.snapshot.lock_gate();
     let new_panel_id = format!(
         "surface-{}",
         state.next_panel.fetch_add(1, Ordering::Relaxed)
@@ -4830,6 +4833,7 @@ pub(crate) fn new_browser_workspace_for_control(
     state: &SessionState,
     url: Option<&str>,
 ) -> AppSessionSnapshot {
+    let _allocation_guard = state.snapshot.lock_gate();
     let new_panel_id = format!(
         "surface-{}",
         state.next_panel.fetch_add(1, Ordering::Relaxed)
@@ -4851,6 +4855,7 @@ pub(crate) fn reopen_closed_browser_tab_for_control(
     app: &AppHandle,
     state: &SessionState,
 ) -> AppSessionSnapshot {
+    let _allocation_guard = state.snapshot.lock_gate();
     let Some(tab) = ({
         let mut history = state
             .closed_browser_tabs
@@ -5488,6 +5493,7 @@ pub(crate) fn split_browser_for_control(
     insert_first: bool,
     url: Option<&str>,
 ) -> Result<AppSessionSnapshot, String> {
+    let _allocation_guard = state.snapshot.lock_gate();
     let new_panel_id = format!(
         "surface-{}",
         state.next_panel.fetch_add(1, Ordering::Relaxed)
@@ -6240,6 +6246,7 @@ pub fn session_split_browser(
     insert_first: Option<bool>,
     url: Option<String>,
 ) -> Result<AppSessionSnapshot, String> {
+    let _allocation_guard = state.snapshot.lock_gate();
     let new_panel_id = format!(
         "surface-{}",
         state.next_panel.fetch_add(1, Ordering::Relaxed)
@@ -6546,6 +6553,7 @@ fn open_ssh_url_request(
     state: &State<'_, SessionState>,
     request: &cmux_ssh::CmuxSSHURLRequest,
 ) -> Result<(bool, AppSessionSnapshot, String), String> {
+    let _allocation_guard = state.snapshot.lock_gate();
     let new_panel_id = format!(
         "surface-{}",
         state.next_panel.fetch_add(1, Ordering::Relaxed)
@@ -6832,6 +6840,7 @@ pub fn session_new_workspace(
     initial_terminal_input: Option<String>,
     initial_terminal_environment: Option<BTreeMap<String, String>>,
 ) -> AppSessionSnapshot {
+    let _allocation_guard = state.snapshot.lock_gate();
     let new_panel_id = format!(
         "surface-{}",
         state.next_panel.fetch_add(1, Ordering::Relaxed)
@@ -6862,6 +6871,7 @@ pub fn session_new_browser_workspace(
     state: State<'_, SessionState>,
     url: Option<String>,
 ) -> AppSessionSnapshot {
+    let _allocation_guard = state.snapshot.lock_gate();
     let new_panel_id = format!(
         "surface-{}",
         state.next_panel.fetch_add(1, Ordering::Relaxed)
@@ -6888,6 +6898,7 @@ pub fn session_reopen_closed_browser_tab(
     app: AppHandle,
     state: State<'_, SessionState>,
 ) -> AppSessionSnapshot {
+    let _allocation_guard = state.snapshot.lock_gate();
     let Some(tab) = ({
         let mut history = state
             .closed_browser_tabs
