@@ -224,13 +224,14 @@ fn lifecycle_registry_binds_every_public_method_to_the_production_route() {
             "{method} bypasses the shared production lifecycle dispatcher"
         );
     }
-    for dependency in ["pane.focus", "surface.split"] {
+    for dependency in ["pane.focus", "surface.split", "tab.action"] {
         assert_eq!(
             control_request_route_for_method(dependency),
             ControlRequestRoute::PaneSurfaceLifecycle,
             "{dependency} must mutate the authoritative lifecycle model"
         );
     }
+    assert!(CONTROL_SOCKET_METHODS.contains(&"tab.action"));
     assert_eq!(
         control_request_route_for_method("workspace.rename"),
         ControlRequestRoute::Legacy
@@ -516,6 +517,38 @@ fn current_and_list_run_through_shared_dispatch_without_focus_side_effects() {
     assert_eq!(rows[1]["selected_in_pane"], json!(true));
     assert_eq!(rows[1]["developer_tools_visible"], json!(true));
     assert!(rows[1].get("requested_working_directory").is_none());
+}
+
+#[test]
+fn surface_focus_requires_an_identity_and_commits_workspace_focus() {
+    let snapshot = mixed_surface_snapshot();
+    let invalid = transition(&snapshot, "surface.focus", json!({}));
+    assert_error(
+        &invalid,
+        "invalid_params",
+        "Missing or invalid surface_id",
+    );
+    assert!(!invalid.changed);
+
+    let focused = transition(
+        &snapshot,
+        "surface.focus",
+        json!({"surface_id": "surface-browser"}),
+    );
+    let value = ok_value(&focused);
+    assert_eq!(value["workspace_id"], json!("workspace-1"));
+    assert_eq!(value["surface_id"], json!("surface-browser"));
+    assert!(focused.changed);
+    assert_eq!(
+        focused.snapshot.windows[0].tab_manager.workspaces[0]
+            .focused_panel_id
+            .as_deref(),
+        Some("surface-browser")
+    );
+    assert!(focused.effects.iter().any(|effect| matches!(
+        effect,
+        LifecycleEffect::ActivateWindow { window_id } if window_id == "window-1"
+    )));
 }
 
 #[test]
