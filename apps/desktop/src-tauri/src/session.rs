@@ -137,6 +137,10 @@ mod next_panel_allocation_fence_red;
 #[path = "session/browser_proxy_transactions_red.rs"]
 mod browser_proxy_transactions_red;
 
+#[cfg(test)]
+#[path = "session/window_lifecycle_transactions_red.rs"]
+mod window_lifecycle_transactions_red;
+
 impl Default for SessionState {
     fn default() -> Self {
         let snapshot = initial_snapshot(FIRST_PANEL_ID);
