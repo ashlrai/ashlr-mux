@@ -1389,18 +1389,7 @@ fn format_lifecycle_text(method: &str, result: &serde_json::Value, id_format: &s
         ("tab", "surface_id", "surface_ref"),
         ("workspace", "workspace_id", "workspace_ref"),
     ] {
-        if let Some(handle) = format_id_pair(
-            result.get(id_key).and_then(serde_json::Value::as_str),
-            result.get(ref_key).and_then(serde_json::Value::as_str),
-            id_format,
-        ) {
-            let handle = if label == "tab" {
-                handle.replacen("surface:", "tab:", 1)
-            } else {
-                handle
-            };
-            fields.push(format!("{label}={handle}"));
-        }
+        push_lifecycle_id_field(&mut fields, result, label, id_key, ref_key, id_format);
     }
     for key in ["closed", "full_width_tab_mode"] {
         if let Some(value) = result.get(key) {
@@ -1415,20 +1404,30 @@ fn format_lifecycle_text(method: &str, result: &serde_json::Value, id_format: &s
             "created_workspace_ref",
         ),
     ] {
-        if let Some(handle) = format_id_pair(
-            result.get(id_key).and_then(serde_json::Value::as_str),
-            result.get(ref_key).and_then(serde_json::Value::as_str),
-            id_format,
-        ) {
-            let handle = if label == "created" {
-                handle.replacen("surface:", "tab:", 1)
-            } else {
-                handle
-            };
-            fields.push(format!("{label}={handle}"));
-        }
+        push_lifecycle_id_field(&mut fields, result, label, id_key, ref_key, id_format);
     }
     format!("OK {}", fields.join(" "))
+}
+
+fn push_lifecycle_id_field(
+    fields: &mut Vec<String>,
+    result: &serde_json::Value,
+    label: &str,
+    id_key: &str,
+    ref_key: &str,
+    id_format: &str,
+) {
+    let Some(mut handle) = format_id_pair(
+        result.get(id_key).and_then(serde_json::Value::as_str),
+        result.get(ref_key).and_then(serde_json::Value::as_str),
+        id_format,
+    ) else {
+        return;
+    };
+    if matches!(label, "tab" | "created") {
+        handle = handle.replacen("surface:", "tab:", 1);
+    }
+    fields.push(format!("{label}={handle}"));
 }
 
 fn format_workspace_entries(result: &serde_json::Value) -> String {

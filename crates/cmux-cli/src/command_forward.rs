@@ -2614,19 +2614,12 @@ fn tab_action_params(args: &[String]) -> Result<serde_json::Value, CliError> {
         ));
     }
 
-    let mut params = serde_json::Map::new();
+    let mut params = lifecycle_scope_params(&parsed);
     params.insert("action".into(), serde_json::json!(action));
-    apply_lifecycle_workspace_selector(&parsed, &mut params);
-    apply_window_scope_selector(&parsed, &mut params);
     if let Some(tab) = parsed.value(&["--tab"]) {
         apply_validated_surface_selector(tab, &mut params)?;
     } else if let Some(surface) = parsed.value(&["--surface", "--surface-id", "--surface-ref"]) {
         apply_validated_surface_selector(surface, &mut params)?;
-    }
-    if params.contains_key("window_id") || params.contains_key("window_ref") {
-        if !params.contains_key("workspace_id") && !params.contains_key("workspace_ref") {
-            params.insert("resolve_current_workspace".into(), serde_json::json!(true));
-        }
     }
     if let Some(title) = title {
         params.insert("title".into(), serde_json::json!(title));
@@ -2662,19 +2655,10 @@ fn respawn_pane_params(args: &[String]) -> Result<serde_json::Value, CliError> {
             "--command",
         ],
     )?;
-    let mut params = serde_json::Map::new();
-    apply_lifecycle_workspace_selector(&parsed, &mut params);
-    apply_window_scope_selector(&parsed, &mut params);
+    let mut params = lifecycle_scope_params(&parsed);
     if let Some(surface) = parsed.value(&["--surface", "--surface-id", "--surface-ref"]) {
         apply_validated_surface_selector(surface, &mut params)?;
     }
-    if (params.contains_key("window_id") || params.contains_key("window_ref"))
-        && !params.contains_key("workspace_id")
-        && !params.contains_key("workspace_ref")
-    {
-        params.insert("resolve_current_workspace".into(), serde_json::json!(true));
-    }
-
     let requested = parsed
         .value(&["--command"])
         .map(|command| command.trim().to_string())
@@ -2722,6 +2706,19 @@ fn apply_lifecycle_workspace_selector(
             params.insert("workspace_id".into(), serde_json::json!(value));
         }
     }
+}
+
+fn lifecycle_scope_params(parsed: &ParsedArgs) -> serde_json::Map<String, serde_json::Value> {
+    let mut params = serde_json::Map::new();
+    apply_lifecycle_workspace_selector(parsed, &mut params);
+    apply_window_scope_selector(parsed, &mut params);
+    if (params.contains_key("window_id") || params.contains_key("window_ref"))
+        && !params.contains_key("workspace_id")
+        && !params.contains_key("workspace_ref")
+    {
+        params.insert("resolve_current_workspace".into(), serde_json::json!(true));
+    }
+    params
 }
 
 fn join_trimmed(parts: &[String]) -> Option<String> {
