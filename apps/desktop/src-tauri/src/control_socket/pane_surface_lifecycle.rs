@@ -1794,6 +1794,19 @@ fn browser_disabled_outcome(
     )
 }
 
+fn normalized_local_action_working_directory(
+    reported_directory: Option<&str>,
+    startup_directory: Option<&str>,
+    workspace_directory: Option<&str>,
+) -> Option<String> {
+    [reported_directory, startup_directory, workspace_directory]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|directory| !directory.is_empty())
+        .map(str::to_owned)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn apply_create_right_action(
     snapshot: &AppSessionSnapshot,
@@ -1845,7 +1858,7 @@ fn apply_create_right_action(
     }
 
     let mut effects = Vec::new();
-    if action_kind == "new_terminal_right" {
+    let local_terminal_working_directory = if action_kind == "new_terminal_right" {
         let Some(workspace) = snapshot
             .windows
             .get(scope.window_index)
@@ -1853,6 +1866,11 @@ fn apply_create_right_action(
         else {
             return error(snapshot, "internal_error", "Failed to create tab", None);
         };
+        let local_working_directory = normalized_local_action_working_directory(
+            source_record.metadata.reported_directory.as_deref(),
+            source_record.terminal_startup.working_directory.as_deref(),
+            workspace.current_directory.as_deref(),
+        );
         if workspace.remote.as_ref().is_some_and(|remote| {
             remote.enabled && remote.connected && remote.transport.as_deref() == Some("tmux")
         }) {
@@ -1925,7 +1943,10 @@ fn apply_create_right_action(
             let completion = action_completion(method, params, &result, owner);
             return ok_transition(snapshot.clone(), result, vec![completion], effects);
         }
-    }
+        local_working_directory
+    } else {
+        None
+    };
 
     let kind = if action_kind == "duplicate" {
         source_record.kind
@@ -2006,17 +2027,18 @@ fn apply_create_right_action(
             },
         });
     } else {
-        if model
-            .set_terminal_startup(&created, TerminalStartup::default())
-            .is_err()
-        {
+        let startup = TerminalStartup {
+            working_directory: local_terminal_working_directory.clone(),
+            ..Default::default()
+        };
+        if model.set_terminal_startup(&created, startup).is_err() {
             return error(snapshot, "internal_error", "Failed to create tab", None);
         }
         effects.push(LifecycleEffect::TerminalCreate {
             surface_id: created.clone(),
             generation: reservation.generation,
             command: None,
-            working_directory: None,
+            working_directory: local_terminal_working_directory,
             failure_code: "internal_error",
             failure_message: "Failed to create tab",
         });

@@ -14511,12 +14511,7 @@ fn v2_double_param(params: &serde_json::Map<String, Value>, keys: &[&str]) -> Op
             .as_bool()
             .map(|value| if value { 1.0 } else { 0.0 })
             .or_else(|| value.as_f64())
-            .or_else(|| {
-                value
-                    .as_str()
-                    .map(str::trim)
-                    .and_then(|value| value.parse::<f64>().ok())
-            })
+            .or_else(|| value.as_str().and_then(|value| value.parse::<f64>().ok()))
             .filter(|value| value.is_finite())
     })
 }
