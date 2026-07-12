@@ -77,8 +77,8 @@ use crate::session::{
     toggle_browser_omnibar_for_control, toggle_split_zoom_for_control, PaneFocusControlError,
     PaneLastControlError, PaneResizeControlError, PaneResizeControlIntent,
     PaneTopologyControlError, ReorderWorkspacesManyControlError, SessionState,
-    TerminalPanelCreateError, WorkspaceLastControlError, WorkspaceRemoteControlConfig,
-    WorkspaceRenameResolution,
+    SurfacePositionControlError, TerminalPanelCreateError, WorkspaceLastControlError,
+    WorkspaceRemoteControlConfig, WorkspaceRenameResolution,
 };
 use crate::terminal::{
     scan_listening_ports_for_root_pid, scan_panel_listening_ports, terminal_clear_history_panel,
@@ -9450,7 +9450,7 @@ fn surface_move(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Con
         }
     };
     let state = app.state::<SessionState>();
-    let Some(result) = move_surface_for_control(
+    let result = match move_surface_for_control(
         app,
         &state,
         resolution.source_workspace_index,
@@ -9459,12 +9459,22 @@ fn surface_move(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Con
         &resolution.target_pane_id,
         resolution.destination_index,
         resolution.focus,
-    ) else {
-        return ControlCallResult::Err {
-            code: "internal_error".to_string(),
-            message: "Failed to move surface".to_string(),
-            data: None,
-        };
+    ) {
+        Ok(result) => result,
+        Err(PaneTopologyControlError::Operation(SurfacePositionControlError::InvalidRequest)) => {
+            return ControlCallResult::Err {
+                code: "internal_error".to_string(),
+                message: "Failed to move surface".to_string(),
+                data: None,
+            };
+        }
+        Err(PaneTopologyControlError::Publication(message)) => {
+            return ControlCallResult::Err {
+                code: "internal".to_string(),
+                message,
+                data: None,
+            };
+        }
     };
     let window = &result.windows[0];
     let workspace = &window.tab_manager.workspaces[resolution.target_workspace_index];
@@ -9562,19 +9572,29 @@ fn surface_reorder(app: &AppHandle, params: &serde_json::Map<String, Value>) -> 
     };
     let focus = bool_param(params, &["focus"]).unwrap_or(false);
     let state = app.state::<SessionState>();
-    let Some(result) = reorder_surface_for_control(
+    let result = match reorder_surface_for_control(
         app,
         &state,
         workspace_index,
         &panel_id,
         destination_index,
         focus,
-    ) else {
-        return ControlCallResult::Err {
-            code: "internal_error".to_string(),
-            message: "Failed to reorder surface".to_string(),
-            data: None,
-        };
+    ) {
+        Ok(result) => result,
+        Err(PaneTopologyControlError::Operation(SurfacePositionControlError::InvalidRequest)) => {
+            return ControlCallResult::Err {
+                code: "internal_error".to_string(),
+                message: "Failed to reorder surface".to_string(),
+                data: None,
+            };
+        }
+        Err(PaneTopologyControlError::Publication(message)) => {
+            return ControlCallResult::Err {
+                code: "internal".to_string(),
+                message,
+                data: None,
+            };
+        }
     };
     let window = &result.windows[0];
     let workspace = &window.tab_manager.workspaces[workspace_index];

@@ -191,6 +191,19 @@ impl SessionState {
         transact_snapshot_if_changed(&self.snapshot, &mut operations, mutation)
     }
 
+    pub(crate) fn transact_result_if_changed<E>(
+        &self,
+        app: &AppHandle,
+        mutation: impl FnOnce(&mut AppSessionSnapshot) -> Result<bool, E>,
+    ) -> Result<AppSessionSnapshot, PaneTopologyControlError<E>> {
+        let mut operations = ProductionSnapshotPublicationOperations {
+            app,
+            state: self,
+            derived_events: DerivedEventPolicy::Record,
+        };
+        transact_result_if_changed_snapshot(&self.snapshot, &mut operations, mutation)
+    }
+
     pub(crate) fn transact_snapshot_always(
         &self,
         app: &AppHandle,
@@ -274,7 +287,33 @@ fn transact_snapshot_if_changed(
     operations: &mut impl SnapshotPublicationOperations,
     mutation: impl FnOnce(&mut AppSessionSnapshot) -> bool,
 ) -> Result<AppSessionSnapshot, String> {
-    transact_snapshot(authority, operations, false, mutation)
+    match transact_result_if_changed_snapshot(authority, operations, |candidate| {
+        Ok::<_, std::convert::Infallible>(mutation(candidate))
+    }) {
+        Ok(snapshot) => Ok(snapshot),
+        Err(PaneTopologyControlError::Publication(error)) => Err(error),
+        Err(PaneTopologyControlError::Operation(error)) => match error {},
+    }
+}
+
+fn transact_result_if_changed_snapshot<E>(
+    authority: &GatedSnapshot,
+    operations: &mut impl SnapshotPublicationOperations,
+    mutation: impl FnOnce(&mut AppSessionSnapshot) -> Result<bool, E>,
+) -> Result<AppSessionSnapshot, PaneTopologyControlError<E>> {
+    let _transaction_gate = authority.lock_gate();
+    let current = authority
+        .lock()
+        .map_err(|_| {
+            PaneTopologyControlError::Publication("Session state is unavailable".to_string())
+        })?
+        .clone();
+    let mut candidate = current.clone();
+    if !mutation(&mut candidate).map_err(PaneTopologyControlError::Operation)? {
+        return Ok(current);
+    }
+    publish_snapshot_transaction(authority, Some(&current), &candidate, operations)
+        .map_err(PaneTopologyControlError::Publication)
 }
 
 fn transact_snapshot_always(
@@ -282,25 +321,14 @@ fn transact_snapshot_always(
     operations: &mut impl SnapshotPublicationOperations,
     mutation: impl FnOnce(&mut AppSessionSnapshot) -> bool,
 ) -> Result<AppSessionSnapshot, String> {
-    transact_snapshot(authority, operations, true, mutation)
-}
-
-fn transact_snapshot(
-    authority: &GatedSnapshot,
-    operations: &mut impl SnapshotPublicationOperations,
-    publish_unchanged: bool,
-    mutation: impl FnOnce(&mut AppSessionSnapshot) -> bool,
-) -> Result<AppSessionSnapshot, String> {
-    let _transaction_gate = authority.lock_gate();
-    let current = authority
-        .lock()
-        .map_err(|_| "Session state is unavailable".to_string())?
-        .clone();
-    let mut candidate = current.clone();
-    if !mutation(&mut candidate) && !publish_unchanged {
-        return Ok(current);
+    match transact_pane_topology_snapshot(authority, operations, |candidate| {
+        let _ = mutation(candidate);
+        Ok::<_, std::convert::Infallible>(())
+    }) {
+        Ok(((), snapshot)) => Ok(snapshot),
+        Err(PaneTopologyControlError::Publication(error)) => Err(error),
+        Err(PaneTopologyControlError::Operation(error)) => match error {},
     }
-    publish_snapshot_transaction(authority, Some(&current), &candidate, operations)
 }
 
 /// A snapshot mutex whose guards always participate in the control mutation
@@ -5873,25 +5901,24 @@ pub(crate) fn reorder_surface_for_control(
     panel_id: &str,
     destination_index: i64,
     focus: bool,
-) -> Option<AppSessionSnapshot> {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let workspace = guard
+) -> Result<AppSessionSnapshot, PaneTopologyControlError<SurfacePositionControlError>> {
+    state.transact_result_if_changed(app, |snapshot| {
+        let workspace = snapshot
             .windows
-            .first_mut()?
+            .first_mut()
+            .ok_or(SurfacePositionControlError::InvalidRequest)?
             .tab_manager
             .workspaces
-            .get_mut(workspace_index)?;
-        let changed = session_ops::reorder_surface(workspace, panel_id, destination_index, focus)?;
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    Some(snapshot)
+            .get_mut(workspace_index)
+            .ok_or(SurfacePositionControlError::InvalidRequest)?;
+        session_ops::reorder_surface(workspace, panel_id, destination_index, focus)
+            .ok_or(SurfacePositionControlError::InvalidRequest)
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SurfacePositionControlError {
+    InvalidRequest,
 }
 
 pub(crate) fn move_surface_for_control(
@@ -5903,14 +5930,14 @@ pub(crate) fn move_surface_for_control(
     target_pane_id: &str,
     destination_index: Option<i64>,
     focus: bool,
-) -> Option<AppSessionSnapshot> {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let tabs = &mut guard.windows.first_mut()?.tab_manager;
-        let changed = session_ops::move_surface(
+) -> Result<AppSessionSnapshot, PaneTopologyControlError<SurfacePositionControlError>> {
+    state.transact_result_if_changed(app, |snapshot| {
+        let tabs = &mut snapshot
+            .windows
+            .first_mut()
+            .ok_or(SurfacePositionControlError::InvalidRequest)?
+            .tab_manager;
+        session_ops::move_surface(
             tabs,
             source_workspace_index,
             panel_id,
@@ -5918,13 +5945,9 @@ pub(crate) fn move_surface_for_control(
             target_pane_id,
             destination_index,
             focus,
-        )?;
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    Some(snapshot)
+        )
+        .ok_or(SurfacePositionControlError::InvalidRequest)
+    })
 }
 
 pub(crate) fn reorder_workspaces_many_for_control(
