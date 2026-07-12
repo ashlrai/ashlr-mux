@@ -277,6 +277,17 @@ pub(crate) fn browser_close_webview_for_control(
     child.webview.close().map_err(|error| error.to_string())
 }
 
+pub(crate) fn browser_has_webview_for_control(
+    state: &BrowserWebviewState,
+    panel_id: &str,
+) -> Result<bool, String> {
+    state
+        .webviews
+        .lock()
+        .map(|webviews| webviews.contains_key(panel_id))
+        .map_err(|_| "browser webview state lock poisoned".to_string())
+}
+
 #[tauri::command]
 pub fn browser_webview_command(
     state: State<'_, BrowserWebviewState>,

@@ -368,6 +368,13 @@ pub(crate) fn terminal_close_panel_for_control(
     }
 }
 
+pub(crate) fn terminal_has_panel_for_control(state: &TerminalState, panel_id: &str) -> bool {
+    state
+        .live_sessions()
+        .values()
+        .any(|session| session.panel_id.as_deref() == Some(panel_id))
+}
+
 pub(crate) fn terminal_close_id_for_control(
     state: &TerminalState,
     id: u32,

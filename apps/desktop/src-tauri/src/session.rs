@@ -3154,9 +3154,52 @@ pub(crate) fn commit_lifecycle_snapshot_for_control(
     candidate: &AppSessionSnapshot,
     record_derived_events: bool,
 ) -> Result<AppSessionSnapshot, String> {
+    commit_lifecycle_snapshot_for_control_inner(app, state, None, candidate, record_derived_events)
+}
+
+pub(crate) fn commit_lifecycle_snapshot_for_control_if_current(
+    app: &AppHandle,
+    state: &SessionState,
+    expected: &AppSessionSnapshot,
+    candidate: &AppSessionSnapshot,
+    record_derived_events: bool,
+) -> Result<AppSessionSnapshot, String> {
+    commit_lifecycle_snapshot_for_control_inner(
+        app,
+        state,
+        Some(expected),
+        candidate,
+        record_derived_events,
+    )
+}
+
+pub(crate) fn ensure_lifecycle_snapshot_current(
+    current: &AppSessionSnapshot,
+    expected: &AppSessionSnapshot,
+) -> Result<(), String> {
+    (current == expected)
+        .then_some(())
+        .ok_or_else(|| "Stale lifecycle transition".to_string())
+}
+
+fn commit_lifecycle_snapshot_for_control_inner(
+    app: &AppHandle,
+    state: &SessionState,
+    expected: Option<&AppSessionSnapshot>,
+    candidate: &AppSessionSnapshot,
+    record_derived_events: bool,
+) -> Result<AppSessionSnapshot, String> {
     cmux_core::surface_lifecycle::SurfaceLifecycleModel::from_app_session(candidate)
         .and_then(|model| model.validate_indexes())
         .map_err(|error| error.to_string())?;
+
+    let mut guard = state
+        .snapshot
+        .lock()
+        .map_err(|_| "Session state is unavailable".to_string())?;
+    if let Some(expected) = expected {
+        ensure_lifecycle_snapshot_current(&guard, expected)?;
+    }
 
     if let Some((current, _)) = session_snapshot_paths(app) {
         let bytes = serde_json::to_vec_pretty(candidate).map_err(|error| error.to_string())?;
@@ -3172,17 +3215,12 @@ pub(crate) fn commit_lifecycle_snapshot_for_control(
         }
     }
 
-    let committed = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        *guard = candidate.clone();
-        state
-            .next_panel
-            .fetch_max(next_panel_counter(candidate), Ordering::Relaxed);
-        guard.clone()
-    };
+    *guard = candidate.clone();
+    state
+        .next_panel
+        .fetch_max(next_panel_counter(candidate), Ordering::Relaxed);
+    let committed = guard.clone();
+    drop(guard);
     record_workspace_focus_history(state, &committed);
     if record_derived_events {
         crate::control_socket::record_session_changed_event(app, &committed);

@@ -32,7 +32,8 @@ use crate::browser::{
 };
 use crate::diff::DiffState;
 use crate::dock::{
-    publish_runtime_claim, rollback_runtime_claim, stage_runtime_for_control, DockRuntimeClaim,
+    publish_runtime_claim, rollback_runtime_claim, runtime_exists_for_control,
+    stage_runtime_for_control, teardown_runtime_for_control, DockRuntimeClaim,
     DockRuntimeOperation,
 };
 use crate::session::{
@@ -44,9 +45,10 @@ use crate::session::{
     clear_workspace_sidebar_metadata_for_control, clear_workspace_sidebar_progress_for_control,
     clear_workspace_sidebar_status_for_control, close_panel_for_control,
     close_workspace_in_window_for_control, close_workspaces_for_control,
-    commit_lifecycle_snapshot_for_control, configure_workspace_remote_for_control,
-    current_session_snapshot, equalize_dividers_for_control, focus_last_pane_for_control,
-    focus_pane_for_control, move_panel_to_new_workspace_for_control, move_surface_for_control,
+    commit_lifecycle_snapshot_for_control, commit_lifecycle_snapshot_for_control_if_current,
+    configure_workspace_remote_for_control, current_session_snapshot,
+    equalize_dividers_for_control, focus_last_pane_for_control, focus_pane_for_control,
+    move_panel_to_new_workspace_for_control, move_surface_for_control,
     move_workspace_to_window_for_control, new_browser_workspace_for_control,
     new_terminal_tab_for_control, new_workspace_in_window_for_control, open_browser_url_in_panel,
     open_custom_sidebar_in_panel, open_diff_viewer_in_panel, open_file_in_panel,
@@ -1497,11 +1499,80 @@ fn handle_control_request(app: &AppHandle, mut request: ControlRequest) -> Contr
 struct ProductionLifecycleExecutor<'a> {
     app: &'a AppHandle,
     candidate: Option<AppSessionSnapshot>,
+    previous: Option<AppSessionSnapshot>,
     staged: Vec<pane_surface_lifecycle::LifecycleEffect>,
     staged_terminals: Vec<(String, u32, bool)>,
     staged_remote_panes: Vec<StagedRemotePane>,
     staged_browsers: Vec<(String, String, Option<String>)>,
-    staged_dock: Vec<DockRuntimeClaim>,
+    dock_journal: DockCommitJournal<DockRuntimeClaim, DockTeardownCompensation>,
+}
+
+struct DockTeardownCompensation {
+    owner_id: String,
+    operation: DockRuntimeOperation,
+}
+
+struct DockCommitJournal<C, T> {
+    claims: Vec<C>,
+    teardowns: Vec<T>,
+    snapshot_committed: bool,
+}
+
+enum DockRollbackStep<C, T> {
+    RestoreSnapshot,
+    RollbackClaim(C),
+    RecreateTeardown(T),
+}
+
+impl<C, T> Default for DockCommitJournal<C, T> {
+    fn default() -> Self {
+        Self {
+            claims: Vec::new(),
+            teardowns: Vec::new(),
+            snapshot_committed: false,
+        }
+    }
+}
+
+impl<C, T> DockCommitJournal<C, T> {
+    fn stage_claim(&mut self, claim: C) {
+        self.claims.push(claim);
+    }
+
+    fn stage_teardown(&mut self, teardown: T) {
+        self.teardowns.push(teardown);
+    }
+
+    fn commit_snapshot<E>(&mut self, commit: impl FnOnce() -> Result<(), E>) -> Result<(), E> {
+        commit()?;
+        self.snapshot_committed = true;
+        Ok(())
+    }
+
+    fn publish_claims<E>(&self, mut publish: impl FnMut(&C) -> Result<(), E>) -> Result<(), E> {
+        for claim in &self.claims {
+            publish(claim)?;
+        }
+        Ok(())
+    }
+
+    fn rollback<E>(mut self, mut apply: impl FnMut(DockRollbackStep<C, T>) -> Result<(), E>) {
+        if self.snapshot_committed {
+            let _ = apply(DockRollbackStep::RestoreSnapshot);
+        }
+        for claim in self.claims.drain(..) {
+            let _ = apply(DockRollbackStep::RollbackClaim(claim));
+        }
+        for teardown in self.teardowns.drain(..).rev() {
+            let _ = apply(DockRollbackStep::RecreateTeardown(teardown));
+        }
+    }
+
+    fn finish(&mut self) {
+        self.claims.clear();
+        self.teardowns.clear();
+        self.snapshot_committed = false;
+    }
 }
 
 struct StagedRemotePane {
@@ -1552,6 +1623,83 @@ fn shell_execute_succeeded(code: isize) -> bool {
     code > 32
 }
 
+impl ProductionLifecycleExecutor<'_> {
+    fn compensate_dock_teardown(
+        app: &AppHandle,
+        compensation: DockTeardownCompensation,
+    ) -> Result<(), String> {
+        let DockRuntimeOperation::Teardown {
+            surface_id,
+            generation,
+            intent,
+        } = compensation.operation
+        else {
+            return Err("Expected Dock teardown compensation".into());
+        };
+        let operation = DockRuntimeOperation::Create {
+            surface_id,
+            generation,
+            intent,
+        };
+        let claim = stage_runtime_for_control(app, &compensation.owner_id, &operation)?;
+        if let Err(error) = publish_runtime_claim(app, &claim) {
+            rollback_runtime_claim(app, claim);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn rollback_resources(&mut self) {
+        let app = self.app;
+        let previous = self.previous.take();
+        let candidate = self.candidate.clone();
+        std::mem::take(&mut self.dock_journal).rollback(|step| match step {
+            DockRollbackStep::RestoreSnapshot => {
+                let previous = previous
+                    .as_ref()
+                    .ok_or_else(|| "previous lifecycle snapshot was not prepared".to_string())?;
+                let candidate = candidate
+                    .as_ref()
+                    .ok_or_else(|| "lifecycle candidate was not prepared".to_string())?;
+                commit_lifecycle_snapshot_for_control_if_current(
+                    app,
+                    app.state::<SessionState>().inner(),
+                    candidate,
+                    previous,
+                    false,
+                )
+                .map(|_| ())
+            }
+            DockRollbackStep::RollbackClaim(claim) => {
+                rollback_runtime_claim(app, claim);
+                Ok(())
+            }
+            DockRollbackStep::RecreateTeardown(teardown) => {
+                Self::compensate_dock_teardown(app, teardown)
+            }
+        });
+
+        if let Some(state) = app.try_state::<TerminalState>() {
+            for (_, id, _) in self.staged_terminals.drain(..) {
+                let _ = terminal_close_id_for_control(state.inner(), id);
+            }
+        }
+        for remote in self.staged_remote_panes.drain(..) {
+            let _ = Command::new("ssh")
+                .args(["-T", "-o", "BatchMode=yes", &remote.destination])
+                .args(["tmux", "kill-pane", "-t", &remote.pane_token])
+                .status();
+        }
+        if let Some(state) = app.try_state::<BrowserWebviewState>() {
+            for (_, surface_id, _) in self.staged_browsers.drain(..) {
+                let _ = browser_close_webview_for_control(state.inner(), &surface_id);
+            }
+        }
+        self.staged.clear();
+        self.candidate = None;
+    }
+}
+
 impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExecutor<'_> {
     type Error = String;
 
@@ -1559,6 +1707,9 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
         cmux_core::surface_lifecycle::SurfaceLifecycleModel::from_app_session(candidate)
             .and_then(|model| model.validate_indexes())
             .map_err(|error| error.to_string())?;
+        if self.previous.is_none() {
+            return Err("previous lifecycle snapshot was not prepared".to_string());
+        }
         self.candidate = Some(candidate.clone());
         Ok(())
     }
@@ -1577,13 +1728,12 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
                 ..
             } => {
                 let operation = DockRuntimeOperation::Create {
-                    surface_id: Uuid::parse_str(dock_surface_id)
-                        .map_err(|_| "Invalid Dock surface identity".to_string())?,
+                    surface_id: dock_surface_id.clone(),
                     generation: *generation,
                     intent: intent.clone(),
                 };
-                self.staged_dock
-                    .push(stage_runtime_for_control(self.app, owner_id, &operation)?);
+                let claim = stage_runtime_for_control(self.app, owner_id, &operation)?;
+                self.dock_journal.stage_claim(claim);
             }
             pane_surface_lifecycle::LifecycleEffect::TerminalCreate {
                 surface_id,
@@ -1694,14 +1844,35 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
             }
             pane_surface_lifecycle::LifecycleEffect::RuntimeTeardown {
                 surface_id,
+                generation,
+                owner_id,
+                dock_intent,
                 failure_message,
                 ..
             } => {
-                terminal_close_panel_for_control(terminal_state.inner(), surface_id)
-                    .map_err(|_| (*failure_message).to_string())?;
-                let browser_state = self.app.state::<BrowserWebviewState>();
-                browser_close_webview_for_control(browser_state.inner(), surface_id)
-                    .map_err(|_| (*failure_message).to_string())?;
+                if let Some(intent) = dock_intent {
+                    let operation = DockRuntimeOperation::Teardown {
+                        surface_id: surface_id.clone(),
+                        generation: *generation,
+                        intent: intent.clone(),
+                    };
+                    if runtime_exists_for_control(self.app, &operation)
+                        .map_err(|_| (*failure_message).to_string())?
+                    {
+                        self.dock_journal.stage_teardown(DockTeardownCompensation {
+                            owner_id: owner_id.clone(),
+                            operation: operation.clone(),
+                        });
+                    }
+                    teardown_runtime_for_control(self.app, &operation)
+                        .map_err(|_| (*failure_message).to_string())?;
+                } else {
+                    terminal_close_panel_for_control(terminal_state.inner(), surface_id)
+                        .map_err(|_| (*failure_message).to_string())?;
+                    let browser_state = self.app.state::<BrowserWebviewState>();
+                    browser_close_webview_for_control(browser_state.inner(), surface_id)
+                        .map_err(|_| (*failure_message).to_string())?;
+                }
                 self.app
                     .state::<crate::remote_proxy::RemoteProxyBrokerState>()
                     .stop_panel_broker(surface_id);
@@ -1719,10 +1890,22 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
             .ok_or_else(|| "lifecycle candidate was not prepared".to_string())?;
         let browser_state = self.app.state::<BrowserWebviewState>();
         let state = self.app.state::<SessionState>();
-        commit_lifecycle_snapshot_for_control(self.app, state.inner(), candidate, false)?;
-        for claim in self.staged_dock.drain(..) {
-            let _ = publish_runtime_claim(self.app, &claim);
-        }
+        let previous = self
+            .previous
+            .as_ref()
+            .ok_or_else(|| "previous lifecycle snapshot was not prepared".to_string())?;
+        self.dock_journal.commit_snapshot(|| {
+            commit_lifecycle_snapshot_for_control_if_current(
+                self.app,
+                state.inner(),
+                previous,
+                candidate,
+                false,
+            )
+            .map(|_| ())
+        })?;
+        self.dock_journal
+            .publish_claims(|claim| publish_runtime_claim(self.app, claim))?;
         for (window_id, surface_id, url) in &self.staged_browsers {
             browser_attach_webview_for_control(
                 self.app,
@@ -1791,31 +1974,18 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
         self.staged_terminals.clear();
         self.staged_remote_panes.clear();
         self.staged_browsers.clear();
+        self.dock_journal.finish();
+        self.previous = None;
+        self.candidate = None;
         Ok(())
     }
 
     fn rollback_staged(&mut self) {
-        if let Some(state) = self.app.try_state::<TerminalState>() {
-            for (_, id, _) in self.staged_terminals.drain(..) {
-                let _ = terminal_close_id_for_control(state.inner(), id);
-            }
-        }
-        for remote in self.staged_remote_panes.drain(..) {
-            let _ = Command::new("ssh")
-                .args(["-T", "-o", "BatchMode=yes", &remote.destination])
-                .args(["tmux", "kill-pane", "-t", &remote.pane_token])
-                .status();
-        }
-        if let Some(state) = self.app.try_state::<BrowserWebviewState>() {
-            for (_, surface_id, _) in self.staged_browsers.drain(..) {
-                let _ = browser_close_webview_for_control(state.inner(), &surface_id);
-            }
-        }
-        for claim in self.staged_dock.drain(..) {
-            rollback_runtime_claim(self.app, claim);
-        }
-        self.staged.clear();
-        self.candidate = None;
+        self.rollback_resources();
+    }
+
+    fn rollback_committed(&mut self) {
+        self.rollback_resources();
     }
 }
 
@@ -1869,15 +2039,17 @@ fn handle_pane_surface_lifecycle_request(
         _ => None,
     });
     let completion_events = transition.events.clone();
+    let previous = current.clone();
     let mut target = current;
     let mut executor = ProductionLifecycleExecutor {
         app,
         candidate: None,
+        previous: Some(previous),
         staged: Vec::new(),
         staged_terminals: Vec::new(),
         staged_remote_panes: Vec::new(),
         staged_browsers: Vec::new(),
-        staged_dock: Vec::new(),
+        dock_journal: DockCommitJournal::default(),
     };
     let result =
         pane_surface_lifecycle::commit_lifecycle_transition(&mut target, transition, &mut executor)

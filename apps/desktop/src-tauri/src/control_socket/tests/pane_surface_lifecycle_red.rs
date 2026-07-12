@@ -1649,7 +1649,7 @@ fn dock_api_runtime_stage_receives_reserved_identity_generation_and_intent() {
                 assert_eq!(
                     operation,
                     &DockRuntimeOperation::Create {
-                        surface_id: reserved,
+                        surface_id: reserved.to_string(),
                         generation: 1,
                         intent: DockRuntimeIntent::Browser {
                             url: "https://runtime.test".into(),

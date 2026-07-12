@@ -61,6 +61,8 @@ pub(super) enum LifecycleEffect {
     RuntimeTeardown {
         surface_id: String,
         generation: u64,
+        owner_id: String,
+        dock_intent: Option<DockRuntimeIntent>,
         must_succeed: bool,
         failure_code: &'static str,
         failure_message: &'static str,
@@ -1015,15 +1017,11 @@ fn dock_owner_id(
             .flatten()
         }) {
             implied.push(window_id);
-        } else if Uuid::parse_str(workspace_id).is_ok() {
-            return Err(("not_found", "Workspace not found"));
         }
     }
     if let Some(surface_id) = params.get("surface_id").and_then(Value::as_str) {
         if let Some(owner) = model.owner_of_surface(surface_id) {
             implied.push(owner.window_id.clone());
-        } else if Uuid::parse_str(surface_id).is_ok() {
-            return Err(("not_found", "Surface not found"));
         }
     }
     if let Some(pane_id) = params.get("pane_id").and_then(Value::as_str) {
@@ -1578,6 +1576,9 @@ fn close_action_range(
             effects.push(LifecycleEffect::RuntimeTeardown {
                 surface_id: candidate.clone(),
                 generation: record.generation,
+                owner_id: owner.window_id.clone(),
+                dock_intent: (pane.container == ContainerKind::Dock)
+                    .then(|| DockRuntimeIntent::from_record(&record)),
                 must_succeed: true,
                 failure_code: "internal_error",
                 failure_message: "Failed to close surface",
@@ -2436,7 +2437,8 @@ fn surface_close(
             Some(json!({"surface_id":surface_id})),
         );
     };
-    let generation = model.surface(&surface_id).unwrap().generation;
+    let record = model.surface(&surface_id).unwrap().clone();
+    let generation = record.generation;
     let is_dock = model
         .pane(&owner.pane_id)
         .is_some_and(|pane| pane.container == ContainerKind::Dock);
@@ -2462,6 +2464,8 @@ fn surface_close(
     let mut effects = vec![LifecycleEffect::RuntimeTeardown {
         surface_id: surface_id.clone(),
         generation,
+        owner_id: owner.window_id.clone(),
+        dock_intent: is_dock.then(|| DockRuntimeIntent::from_record(&record)),
         must_succeed: true,
         failure_code: "internal_error",
         failure_message: "Failed to close surface",

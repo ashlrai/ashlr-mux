@@ -7,7 +7,8 @@ use cmux_core::{
         SessionSurfaceMetadataSnapshot, SessionWorkspaceLayoutSnapshot,
     },
     surface_lifecycle::{
-        CloseIntent, ContainerKind, SurfaceLifecycleModel, SurfaceSeed, TerminalStartup,
+        CloseIntent, ContainerKind, SurfaceLifecycleModel, SurfaceRecord, SurfaceSeed,
+        TerminalStartup,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -15,11 +16,12 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
 use crate::browser::{
-    browser_attach_webview_for_control, browser_close_webview_for_control, BrowserWebviewState,
+    browser_attach_webview_for_control, browser_close_webview_for_control,
+    browser_has_webview_for_control, BrowserWebviewState,
 };
 use crate::terminal::{
-    terminal_close_id_for_control, terminal_close_panel_for_control, terminal_open_for_control,
-    TerminalState,
+    terminal_close_id_for_control, terminal_close_panel_for_control,
+    terminal_has_panel_for_control, terminal_open_for_control, TerminalState,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,6 +74,27 @@ pub(crate) enum DockRuntimeIntent {
         url: String,
         profile: Option<String>,
     },
+}
+
+impl DockRuntimeIntent {
+    pub(crate) fn from_record(record: &SurfaceRecord) -> Self {
+        match &record.kind {
+            SessionSurfaceKindSnapshot::Browser { url, profile, .. } => Self::Browser {
+                url: url.clone().unwrap_or_else(|| "about:blank".into()),
+                profile: profile.clone(),
+            },
+            _ => Self::Terminal {
+                working_directory: record.terminal_startup.working_directory.clone(),
+                command: record.terminal_startup.command.clone(),
+                environment: record
+                    .terminal_startup
+                    .environment
+                    .clone()
+                    .unwrap_or_default(),
+                tmux_start_command: record.terminal_startup.tmux_start_command.clone(),
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,12 +153,12 @@ pub(crate) struct DockCreateResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DockRuntimeOperation {
     Create {
-        surface_id: Uuid,
+        surface_id: String,
         generation: u64,
         intent: DockRuntimeIntent,
     },
     Teardown {
-        surface_id: Uuid,
+        surface_id: String,
         generation: u64,
         intent: DockRuntimeIntent,
     },
@@ -166,7 +189,7 @@ impl DockStore {
             .cloned()
             .ok_or_else(|| "Created Dock surface is unavailable".to_string())?;
         stage_runtime(&DockRuntimeOperation::Create {
-            surface_id: created.surface_id,
+            surface_id: created.surface_id.to_string(),
             generation: created.generation,
             intent: surface.runtime,
         })
@@ -193,7 +216,7 @@ impl DockStore {
         let mut next = session.clone();
         self.close(&mut next, owner_id, surface_id)?;
         stage_runtime(&DockRuntimeOperation::Teardown {
-            surface_id,
+            surface_id: surface_id.to_string(),
             generation: surface.generation,
             intent: surface.runtime,
         })
@@ -736,28 +759,12 @@ fn surface_snapshot(lifecycle: &SurfaceLifecycleModel, id: &str) -> Option<DockS
             SessionSurfaceKindSnapshot::Browser { .. } => "Browser".into(),
             _ => "Terminal".into(),
         });
-    let (kind, runtime) = match &record.kind {
-        SessionSurfaceKindSnapshot::Browser { url, profile, .. } => (
-            DockSurfaceKind::Browser,
-            DockRuntimeIntent::Browser {
-                url: url.clone().unwrap_or_else(|| "about:blank".into()),
-                profile: profile.clone(),
-            },
-        ),
-        _ => (
-            DockSurfaceKind::Terminal,
-            DockRuntimeIntent::Terminal {
-                working_directory: record.terminal_startup.working_directory.clone(),
-                command: record.terminal_startup.command.clone(),
-                environment: record
-                    .terminal_startup
-                    .environment
-                    .clone()
-                    .unwrap_or_default(),
-                tmux_start_command: record.terminal_startup.tmux_start_command.clone(),
-            },
-        ),
+    let kind = if matches!(record.kind, SessionSurfaceKindSnapshot::Browser { .. }) {
+        DockSurfaceKind::Browser
+    } else {
+        DockSurfaceKind::Terminal
     };
+    let runtime = DockRuntimeIntent::from_record(record);
     Some(DockSurfaceSnapshot {
         surface_id: Uuid::parse_str(id).ok()?,
         pane_id: Uuid::parse_str(&record.pane_id).ok()?,
@@ -850,7 +857,7 @@ pub(crate) fn stage_runtime_for_control(
         } => terminal_open_for_control(
             app,
             app.state::<TerminalState>().inner(),
-            Some(&surface_id.to_string()),
+            Some(surface_id),
             working_directory.as_deref(),
             command.as_deref().or(tmux_start_command.as_deref()),
             None,
@@ -864,14 +871,14 @@ pub(crate) fn stage_runtime_for_control(
                 app,
                 app.state::<BrowserWebviewState>().inner(),
                 owner_id,
-                &surface_id.to_string(),
+                surface_id,
                 Some(url),
                 None,
                 false,
             )?;
             Ok(DockRuntimeClaim::Browser {
                 owner_id: owner_id.into(),
-                surface_id: surface_id.to_string(),
+                surface_id: surface_id.clone(),
                 url: url.clone(),
             })
         }
@@ -927,19 +934,37 @@ pub(crate) fn teardown_runtime_for_control(
     };
     match intent {
         DockRuntimeIntent::Terminal { .. } => {
-            terminal_close_panel_for_control(
-                app.state::<TerminalState>().inner(),
-                &surface_id.to_string(),
-            )?;
+            terminal_close_panel_for_control(app.state::<TerminalState>().inner(), surface_id)?;
         }
         DockRuntimeIntent::Browser { .. } => {
             browser_close_webview_for_control(
                 app.state::<BrowserWebviewState>().inner(),
-                &surface_id.to_string(),
+                surface_id,
             )?;
         }
     }
     Ok(())
+}
+
+pub(crate) fn runtime_exists_for_control(
+    app: &AppHandle,
+    operation: &DockRuntimeOperation,
+) -> Result<bool, String> {
+    let DockRuntimeOperation::Teardown {
+        surface_id, intent, ..
+    } = operation
+    else {
+        return Err("Expected Dock teardown runtime operation".into());
+    };
+    match intent {
+        DockRuntimeIntent::Terminal { .. } => Ok(terminal_has_panel_for_control(
+            app.state::<TerminalState>().inner(),
+            surface_id,
+        )),
+        DockRuntimeIntent::Browser { .. } => {
+            browser_has_webview_for_control(app.state::<BrowserWebviewState>().inner(), surface_id)
+        }
+    }
 }
 
 struct ProductionDockRuntime<'a> {

@@ -155,6 +155,22 @@ fn malformed_uuid_selectors_fall_back_like_frozen_routing_before_dock_creation()
         .iter()
         .any(|surface| surface.surface_id == seeded.surface_id));
 
+    for params in [
+        json!({"placement":"dock", "workspace_id":Uuid::new_v4(), "type":"terminal"}),
+        json!({"placement":"dock", "surface_id":Uuid::new_v4(), "type":"terminal"}),
+    ] {
+        let created = transition(&snapshot, "surface.create", params);
+        assert_eq!(ok(&created)["window_id"], W1);
+        snapshot = created.snapshot;
+    }
+
+    let missing_pane = transition(
+        &snapshot,
+        "surface.create",
+        json!({"placement":"dock", "pane_id":Uuid::new_v4(), "type":"terminal"}),
+    );
+    assert_error(&missing_pane, "not_found", "Pane not found");
+
     let unsupported = transition(
         &windows(),
         "surface.create",

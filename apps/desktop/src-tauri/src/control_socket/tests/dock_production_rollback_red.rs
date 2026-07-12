@@ -12,19 +12,28 @@ use std::collections::BTreeMap;
 struct RuntimeRecord {
     generation: u64,
     kind: String,
+    owner_id: String,
+}
+
+#[derive(Clone, Debug)]
+struct TeardownRecord {
+    surface_id: String,
+    runtime: RuntimeRecord,
+    intent: crate::dock::DockRuntimeIntent,
 }
 
 #[derive(Default)]
 struct ProductionDockFaultHarness {
     authoritative: AppSessionSnapshot,
+    previous: Option<AppSessionSnapshot>,
     candidate: Option<AppSessionSnapshot>,
-    effects: Vec<LifecycleEffect>,
     runtimes: BTreeMap<String, RuntimeRecord>,
-    staged_creates: BTreeMap<String, RuntimeRecord>,
+    journal: DockCommitJournal<(String, RuntimeRecord), TeardownRecord>,
     fail_dock_publish: bool,
     fail_persist: bool,
     teardown_log: Vec<String>,
     recreation_log: Vec<String>,
+    operation_log: Vec<String>,
 }
 
 impl ProductionDockFaultHarness {
@@ -35,17 +44,19 @@ impl ProductionDockFaultHarness {
         }
     }
 
-    fn seed_runtime(&mut self, surface_id: &str, generation: u64, kind: &str) {
+    fn seed_runtime(&mut self, surface_id: &str, generation: u64, kind: &str, owner_id: &str) {
         self.runtimes.insert(
             surface_id.to_string(),
             RuntimeRecord {
                 generation,
                 kind: kind.to_string(),
+                owner_id: owner_id.to_string(),
             },
         );
     }
 
     fn persist_candidate(&mut self) -> Result<(), &'static str> {
+        self.operation_log.push("persist:candidate".into());
         if self.fail_persist {
             return Err("injected Dock persistence failure");
         }
@@ -53,7 +64,8 @@ impl ProductionDockFaultHarness {
         Ok(())
     }
 
-    fn publish_dock(&self) -> Result<(), &'static str> {
+    fn publish_dock(&mut self, surface_id: &str) -> Result<(), &'static str> {
+        self.operation_log.push(format!("publish:{surface_id}"));
         if self.fail_dock_publish {
             Err("injected Dock publication failure")
         } else {
@@ -66,6 +78,7 @@ impl LifecycleEffectExecutor for ProductionDockFaultHarness {
     type Error = &'static str;
 
     fn prepare_transition(&mut self, candidate: &AppSessionSnapshot) -> Result<(), Self::Error> {
+        self.previous = Some(self.authoritative.clone());
         self.candidate = Some(candidate.clone());
         Ok(())
     }
@@ -73,54 +86,100 @@ impl LifecycleEffectExecutor for ProductionDockFaultHarness {
     fn stage(&mut self, effect: &LifecycleEffect) -> Result<(), Self::Error> {
         match effect {
             LifecycleEffect::DockCreate {
+                owner_id,
                 dock_surface_id,
                 generation,
                 kind,
                 ..
             } => {
-                self.staged_creates.insert(
+                self.operation_log
+                    .push(format!("stage_create:{dock_surface_id}"));
+                self.journal.stage_claim((
                     dock_surface_id.clone(),
                     RuntimeRecord {
                         generation: *generation,
                         kind: kind.clone(),
+                        owner_id: owner_id.clone(),
                     },
-                );
+                ));
             }
-            LifecycleEffect::RuntimeTeardown { surface_id, .. } => {
-                if self.runtimes.remove(surface_id).is_some() {
+            LifecycleEffect::RuntimeTeardown {
+                surface_id,
+                owner_id,
+                dock_intent,
+                ..
+            } => {
+                if let Some(runtime) = self.runtimes.remove(surface_id) {
+                    assert_eq!(&runtime.owner_id, owner_id);
                     self.teardown_log.push(surface_id.clone());
+                    self.operation_log.push(format!("teardown:{surface_id}"));
+                    self.journal.stage_teardown(TeardownRecord {
+                        surface_id: surface_id.clone(),
+                        runtime,
+                        intent: dock_intent.clone().expect("Dock teardown intent"),
+                    });
                 }
             }
             _ => {}
         }
-        self.effects.push(effect.clone());
         Ok(())
     }
 
     fn commit_staged(&mut self) -> Result<(), Self::Error> {
-        // This deliberately follows the production executor's current order:
-        // persist, publish staged runtime, then publish DockChanged. The RED
-        // assertions below describe the transactional behavior required when
-        // either of those post-stage boundaries fails.
-        self.persist_candidate()?;
-        for (surface_id, runtime) in std::mem::take(&mut self.staged_creates) {
-            self.runtimes.insert(surface_id, runtime);
+        let mut journal = std::mem::take(&mut self.journal);
+        let result = journal
+            .commit_snapshot(|| self.persist_candidate())
+            .and_then(|_| {
+                journal.publish_claims(|(surface_id, runtime)| {
+                    self.publish_dock(surface_id)?;
+                    self.runtimes.insert(surface_id.clone(), runtime.clone());
+                    Ok(())
+                })
+            });
+        if result.is_ok() {
+            journal.finish();
         }
-        for effect in self.effects.clone() {
-            if matches!(effect, LifecycleEffect::DockChanged { .. }) {
-                let _ = self.publish_dock();
-            }
-        }
-        Ok(())
+        self.journal = journal;
+        result
     }
 
     fn rollback_staged(&mut self) {
-        for (surface_id, _) in std::mem::take(&mut self.staged_creates) {
-            self.runtimes.remove(&surface_id);
-            self.teardown_log.push(surface_id);
-        }
-        self.effects.clear();
+        let previous = self.previous.take();
+        std::mem::take(&mut self.journal).rollback(|step| {
+            match step {
+                DockRollbackStep::RestoreSnapshot => {
+                    self.operation_log.push("restore:previous".into());
+                    self.authoritative = previous
+                        .as_ref()
+                        .expect("previous snapshot prepared")
+                        .clone();
+                }
+                DockRollbackStep::RollbackClaim((surface_id, _)) => {
+                    self.operation_log
+                        .push(format!("rollback_claim:{surface_id}"));
+                    self.runtimes.remove(&surface_id);
+                    self.teardown_log.push(surface_id);
+                }
+                DockRollbackStep::RecreateTeardown(teardown) => {
+                    let expected_kind = match teardown.intent {
+                        crate::dock::DockRuntimeIntent::Terminal { .. } => "terminal",
+                        crate::dock::DockRuntimeIntent::Browser { .. } => "browser",
+                    };
+                    assert_eq!(teardown.runtime.kind, expected_kind);
+                    let surface_id = teardown.surface_id;
+                    self.operation_log
+                        .push(format!("recreate_teardown:{surface_id}"));
+                    self.runtimes.insert(surface_id.clone(), teardown.runtime);
+                    self.recreation_log.push(surface_id);
+                }
+            }
+            Ok::<_, &'static str>(())
+        });
         self.candidate = None;
+    }
+
+    fn rollback_committed(&mut self) {
+        self.rollback_staged();
     }
 }
 
@@ -145,6 +204,20 @@ fn transition(snapshot: &AppSessionSnapshot, method: &str, params: Value) -> Lif
 }
 
 #[test]
+fn stale_snapshot_fence_rejects_intervening_authority_without_clobbering_it() {
+    let before = test_snapshot();
+    let mut intervening = before.clone();
+    intervening.windows[0].selected_workspace_id = Some("intervening-workspace".into());
+    let preserved = intervening.clone();
+
+    assert_eq!(
+        crate::session::ensure_lifecycle_snapshot_current(&intervening, &before),
+        Err("Stale lifecycle transition".into())
+    );
+    assert_eq!(intervening, preserved);
+}
+
+#[test]
 fn post_persist_dock_publish_failure_restores_authority_and_tears_down_staged_runtime() {
     let before = test_snapshot();
     let created = transition(
@@ -153,7 +226,8 @@ fn post_persist_dock_publish_failure_restores_authority_and_tears_down_staged_ru
         json!({
             "placement":"dock",
             "window_id":owner(&before),
-            "type":"terminal",
+            "type":"browser",
+            "url":"https://example.com",
             "focus":false,
         }),
     );
@@ -188,6 +262,16 @@ fn post_persist_dock_publish_failure_restores_authority_and_tears_down_staged_ru
     if published != before {
         violations.push("caller-visible snapshot changed after failure".to_string());
     }
+    assert_eq!(
+        production.operation_log,
+        vec![
+            format!("stage_create:{surface_id}"),
+            "persist:candidate".into(),
+            format!("publish:{surface_id}"),
+            "restore:previous".into(),
+            format!("rollback_claim:{surface_id}"),
+        ]
+    );
     assert!(violations.is_empty(), "{}", violations.join("; "));
 }
 
@@ -210,7 +294,7 @@ fn dock_close_persist_failure_recreates_original_runtime_and_keeps_snapshot_unch
     let closed = transition(&before, "surface.close", json!({"surface_id":surface_id}));
     let mut published = before.clone();
     let mut production = ProductionDockFaultHarness::new(before.clone());
-    production.seed_runtime(&surface_id, created.generation, "terminal");
+    production.seed_runtime(&surface_id, created.generation, "terminal", &owner_id);
     production.fail_persist = true;
 
     let result = commit_lifecycle_transition(&mut published, closed, &mut production);
@@ -229,5 +313,18 @@ fn dock_close_persist_failure_recreates_original_runtime_and_keeps_snapshot_unch
     if !production.recreation_log.contains(&surface_id) {
         violations.push("Dock runtime compensation was not observed".to_string());
     }
+    assert_eq!(production.runtimes[&surface_id].owner_id, owner_id);
+    assert_eq!(
+        production.runtimes[&surface_id].generation,
+        created.generation
+    );
+    assert_eq!(
+        production.operation_log,
+        vec![
+            format!("teardown:{surface_id}"),
+            "persist:candidate".into(),
+            format!("recreate_teardown:{surface_id}"),
+        ]
+    );
     assert!(violations.is_empty(), "{}", violations.join("; "));
 }
