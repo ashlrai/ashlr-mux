@@ -18144,4 +18144,7 @@ mod tests {
 
     #[path = "dock_api_adversarial_red.rs"]
     mod dock_api_adversarial_red;
+
+    #[path = "dock_production_rollback_red.rs"]
+    mod dock_production_rollback_red;
 }
