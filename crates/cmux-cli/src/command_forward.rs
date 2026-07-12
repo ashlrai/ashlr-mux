@@ -27,10 +27,7 @@ impl ControlCommand {
     }
 
     pub fn with_ambient_workspace_id(mut self, workspace_id: Option<&str>) -> Self {
-        let Some(workspace_id) = workspace_id
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        else {
+        let Some(workspace_id) = workspace_id.map(str::trim) else {
             return self;
         };
         if !workspace_scoped_method(&self.method) {
@@ -39,6 +36,16 @@ impl ControlCommand {
         let Some(params) = self.params.as_object_mut() else {
             return self;
         };
+        if params.contains_key("suppress_ambient_workspace") {
+            return self;
+        }
+        if workspace_id.is_empty()
+            && matches!(self.method.as_str(), "tab.action" | "surface.respawn")
+        {
+            params.remove("resolve_current_workspace");
+            params.insert("suppress_ambient_workspace".into(), serde_json::json!(true));
+            return self;
+        }
         if params.contains_key("workspace_id") || params.contains_key("workspace_ref") {
             return self;
         }
@@ -74,6 +81,9 @@ impl ControlCommand {
         let Some(params) = self.params.as_object_mut() else {
             return self;
         };
+        if params.contains_key("suppress_ambient_window") {
+            return self;
+        }
         if params.contains_key("window_id") || params.contains_key("window_ref") {
             return self;
         }
@@ -82,7 +92,7 @@ impl ControlCommand {
     }
 
     pub fn with_ambient_surface_id(mut self, surface_id: Option<&str>) -> Self {
-        let Some(surface_id) = surface_id.map(str::trim).filter(|value| !value.is_empty()) else {
+        let Some(surface_id) = surface_id.map(str::trim) else {
             return self;
         };
         if !matches!(
@@ -99,6 +109,17 @@ impl ControlCommand {
         let Some(params) = self.params.as_object_mut() else {
             return self;
         };
+        if params.contains_key("suppress_ambient_surface")
+            || params.contains_key("suppress_ambient_workspace")
+            || params.contains_key("suppress_ambient_window")
+        {
+            return self;
+        }
+        if surface_id.is_empty() && matches!(self.method.as_str(), "tab.action" | "surface.respawn")
+        {
+            params.insert("suppress_ambient_surface".into(), serde_json::json!(true));
+            return self;
+        }
         if !params.contains_key("window_id")
             && !params.contains_key("window_ref")
             && !params.contains_key("workspace_id")
@@ -2569,83 +2590,72 @@ fn surface_selector_params(args: &[String]) -> Result<serde_json::Value, CliErro
 }
 
 fn tab_action_params(args: &[String]) -> Result<serde_json::Value, CliError> {
-    let parsed = ParsedArgs::parse(args)?;
-    validate_legacy_flags(
-        "tab-action",
-        &parsed,
-        &[
-            "--action",
-            "--tab",
-            "--surface",
-            "--workspace",
-            "--window",
-            "--title",
-            "--url",
-            "--focus",
-        ],
-    )?;
-    let action_from_flag = parsed.value(&["--action"]);
-    let action = action_from_flag
-        .map(String::as_str)
-        .or_else(|| parsed.first_positional())
-        .map(normalize_action_name)
-        .ok_or_else(|| CliError::new("tab-action requires --action <name>"))?;
-
-    let title_positionals = if action_from_flag.is_some() {
-        parsed.positionals.as_slice()
+    let (workspace, rem0) = parse_frozen_option(args, "--workspace");
+    let (tab, rem1) = parse_frozen_option(&rem0, "--tab");
+    let (surface, rem2) = parse_frozen_option(&rem1, "--surface");
+    let (action_option, rem3) = parse_frozen_option(&rem2, "--action");
+    let (title_option, rem4) = parse_frozen_option(&rem3, "--title");
+    let (url, rem5) = parse_frozen_option(&rem4, "--url");
+    let (focus, rem6) = parse_frozen_option(&rem5, "--focus");
+    let (window, mut positional) = parse_frozen_option(&rem6, "--window");
+    let action_raw = if let Some(action) = action_option {
+        action
+    } else if positional.is_empty() {
+        return Err(CliError::new("tab-action requires --action <name>"));
     } else {
-        parsed.positionals.get(1..).unwrap_or_default()
+        positional.remove(0)
     };
-    let positional_title = join_then_trim(title_positionals);
-    let title = parsed
-        .value(&["--title"])
+    if let Some(unknown) = positional.iter().find(|value| value.starts_with("--")) {
+        return Err(CliError::new(format!(
+            "tab-action: unknown flag '{unknown}'"
+        )));
+    }
+    let action = normalize_action_name(&action_raw);
+    let title = title_option
         .map(|title| title.trim().to_string())
-        .filter(|title| !title.is_empty())
-        .or(positional_title);
-    if action == "rename" && title.is_none() {
+        .or_else(|| join_then_trim(&positional));
+    if action == "rename" && title.as_deref().is_none_or(str::is_empty) {
         return Err(CliError::new(
             "tab-action rename requires --title <text> (or a trailing title)",
         ));
     }
 
-    let mut params = lifecycle_scope_params(&parsed)?;
+    let mut params = lifecycle_scope_values(workspace.as_deref(), window.as_deref())?;
     params.insert("action".into(), serde_json::json!(action));
-    if let Some(tab) = parsed.value(&["--tab"]) {
+    if let Some(tab) = tab.as_deref() {
         apply_validated_surface_selector(tab, true, &mut params)?;
-    } else if let Some(surface) = parsed.value(&["--surface"]) {
+    } else if let Some(surface) = surface.as_deref() {
         apply_validated_surface_selector(surface, false, &mut params)?;
     }
-    if let Some(title) = title {
+    if let Some(title) = title.filter(|title| !title.is_empty()) {
         params.insert("title".into(), serde_json::json!(title));
     }
-    if let Some(url) = parsed
-        .value(&["--url"])
-        .map(|url| url.trim())
-        .filter(|url| !url.is_empty())
-    {
+    if let Some(url) = url.as_deref().map(str::trim).filter(|url| !url.is_empty()) {
         params.insert("url".into(), serde_json::json!(url));
     }
     params.insert(
         "focus".into(),
-        serde_json::json!(parse_optional_bool(&parsed, "--focus")?.unwrap_or(false)),
+        serde_json::json!(parse_optional_bool(focus.as_deref(), "--focus")?.unwrap_or(false)),
     );
     Ok(serde_json::Value::Object(params))
 }
 
 fn respawn_pane_params(args: &[String]) -> Result<serde_json::Value, CliError> {
-    let parsed = RespawnArgs::parse(args)?;
-    let mut params = lifecycle_scope_values(parsed.workspace.as_deref(), parsed.window.as_deref())?;
-    if let Some(surface) = parsed.surface.as_deref() {
+    let (workspace, rem0) = parse_frozen_option(args, "--workspace");
+    let (surface, rem1) = parse_frozen_option(&rem0, "--surface");
+    let (window, rem2) = parse_frozen_option(&rem1, "--window");
+    let (command, remaining) = parse_frozen_option(&rem2, "--command");
+    let mut params = lifecycle_scope_values(workspace.as_deref(), window.as_deref())?;
+    if let Some(surface) = surface.as_deref() {
         apply_validated_surface_selector(surface, false, &mut params)?;
     }
-    let requested = parsed
-        .command
+    let requested = command
         .map(|command| command.trim().to_string())
         .or_else(|| {
-            let remaining = if parsed.remaining.first().map(String::as_str) == Some("--") {
-                &parsed.remaining[1..]
+            let remaining = if remaining.first().map(String::as_str) == Some("--") {
+                &remaining[1..]
             } else {
-                &parsed.remaining
+                &remaining
             };
             join_then_trim(remaining)
         });
@@ -2664,56 +2674,28 @@ fn respawn_pane_params(args: &[String]) -> Result<serde_json::Value, CliError> {
     Ok(serde_json::Value::Object(params))
 }
 
-#[derive(Debug, Default)]
-struct RespawnArgs {
-    workspace: Option<String>,
-    surface: Option<String>,
-    window: Option<String>,
-    command: Option<String>,
-    remaining: Vec<String>,
-}
-
-impl RespawnArgs {
-    fn parse(args: &[String]) -> Result<Self, CliError> {
-        let mut parsed = Self::default();
-        let mut index = 0;
-        while index < args.len() {
-            let arg = &args[index];
-            let target = match arg.as_str() {
-                "--workspace" => Some(&mut parsed.workspace),
-                "--surface" => Some(&mut parsed.surface),
-                "--window" => Some(&mut parsed.window),
-                "--command" => Some(&mut parsed.command),
-                _ => None,
-            };
-            if let Some(target) = target {
-                *target = Some(
-                    args.get(index + 1)
-                        .cloned()
-                        .ok_or_else(|| CliError::new(format!("{arg} requires a value")))?,
-                );
-                index += 2;
-            } else if let Some((name, value)) = arg.split_once('=') {
-                let target = match name {
-                    "--workspace" => Some(&mut parsed.workspace),
-                    "--surface" => Some(&mut parsed.surface),
-                    "--window" => Some(&mut parsed.window),
-                    "--command" => Some(&mut parsed.command),
-                    _ => None,
-                };
-                if let Some(target) = target {
-                    *target = Some(value.to_string());
-                } else {
-                    parsed.remaining.push(arg.clone());
-                }
-                index += 1;
-            } else {
-                parsed.remaining.push(arg.clone());
-                index += 1;
-            }
+fn parse_frozen_option(args: &[String], name: &str) -> (Option<String>, Vec<String>) {
+    let mut remaining = Vec::new();
+    let mut value = None;
+    let mut skip_next = false;
+    let mut past_terminator = false;
+    let prefix = format!("{name}=");
+    for (index, argument) in args.iter().enumerate() {
+        if skip_next {
+            skip_next = false;
+        } else if argument == "--" {
+            past_terminator = true;
+            remaining.push(argument.clone());
+        } else if !past_terminator && argument.starts_with(&prefix) {
+            value = Some(argument[prefix.len()..].to_string());
+        } else if !past_terminator && argument == name && index + 1 < args.len() {
+            value = Some(args[index + 1].clone());
+            skip_next = true;
+        } else {
+            remaining.push(argument.clone());
         }
-        Ok(parsed)
     }
+    (value, remaining)
 }
 
 fn normalize_action_name(action: &str) -> String {
@@ -2731,6 +2713,11 @@ fn apply_lifecycle_workspace_value(
     params: &mut serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), CliError> {
     let value = raw.trim();
+    if value.is_empty() {
+        params.remove("resolve_current_workspace");
+        params.insert("suppress_ambient_workspace".into(), serde_json::json!(true));
+        return Ok(());
+    }
     if let Ok(index) = value.parse::<i64>() {
         params.insert("workspace_index".into(), serde_json::json!(index));
     } else if value.split_once(':').is_some_and(|(kind, index)| {
@@ -2747,15 +2734,6 @@ fn apply_lifecycle_workspace_value(
     Ok(())
 }
 
-fn lifecycle_scope_params(
-    parsed: &ParsedArgs,
-) -> Result<serde_json::Map<String, serde_json::Value>, CliError> {
-    lifecycle_scope_values(
-        parsed.value(&["--workspace"]).map(String::as_str),
-        parsed.value(&["--window"]).map(String::as_str),
-    )
-}
-
 fn lifecycle_scope_values(
     workspace: Option<&str>,
     window: Option<&str>,
@@ -2768,6 +2746,7 @@ fn lifecycle_scope_values(
     if !params.contains_key("workspace_id")
         && !params.contains_key("workspace_ref")
         && !params.contains_key("workspace_index")
+        && !params.contains_key("suppress_ambient_workspace")
     {
         params.insert("resolve_current_workspace".into(), serde_json::json!(true));
     }
@@ -2782,6 +2761,10 @@ fn apply_lifecycle_window_value(
         return Ok(());
     };
     let value = raw.trim();
+    if value.is_empty() {
+        params.insert("suppress_ambient_window".into(), serde_json::json!(true));
+        return Ok(());
+    }
     if let Ok(index) = value.parse::<i64>() {
         params.insert("window_index".into(), serde_json::json!(index));
     } else if value.split_once(':').is_some_and(|(kind, index)| {
@@ -2804,9 +2787,8 @@ fn join_then_trim(parts: &[String]) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
-fn parse_optional_bool(parsed: &ParsedArgs, name: &str) -> Result<Option<bool>, CliError> {
-    parsed
-        .value(&[name])
+fn parse_optional_bool(value: Option<&str>, name: &str) -> Result<Option<bool>, CliError> {
+    value
         .map(|value| match value.to_ascii_lowercase().as_str() {
             "1" | "true" | "yes" | "on" => Ok(true),
             "0" | "false" | "no" | "off" => Ok(false),
@@ -2821,6 +2803,10 @@ fn apply_validated_surface_selector(
     params: &mut serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), CliError> {
     let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        params.insert("suppress_ambient_surface".into(), serde_json::json!(true));
+        return Ok(());
+    }
     let value = if allow_tab_ref {
         trimmed
             .split_once(':')

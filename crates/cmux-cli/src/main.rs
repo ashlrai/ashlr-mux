@@ -127,7 +127,8 @@ fn dispatch(
             };
             let control = control.with_window_id(options.window_id.as_deref());
             let has_window_scope = control.params.get("window_id").is_some()
-                || control.params.get("window_ref").is_some();
+                || control.params.get("window_ref").is_some()
+                || control.params.get("suppress_ambient_window").is_some();
             let control = if options.window_id.is_some() || has_window_scope {
                 control
             } else {
@@ -756,6 +757,18 @@ fn run_lifecycle_command(
     params: &serde_json::Value,
 ) -> Result<(), CliError> {
     let mut request_params = params.clone();
+    if method == "surface.respawn" {
+        if let Some(object) = request_params.as_object_mut() {
+            let has_window =
+                object.get("window_id").is_some() || object.get("window_ref").is_some();
+            let has_workspace = object.get("workspace_id").is_some()
+                || object.get("workspace_ref").is_some()
+                || object.get("workspace_index").is_some();
+            if has_window && !has_workspace {
+                object.remove("resolve_current_workspace");
+            }
+        }
+    }
     normalize_workspace_params(options, method, &mut request_params)?;
     normalize_lifecycle_surface_params(options, method, &mut request_params)?;
     let result = call_control_command(options, method, &request_params)?;
@@ -902,6 +915,30 @@ fn normalize_workspace_params(
     let Some(object) = params.as_object_mut() else {
         return Ok(());
     };
+    object.remove("suppress_ambient_workspace");
+    object.remove("suppress_ambient_window");
+    if let Some(raw) = object
+        .get("window_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .map(str::to_owned)
+    {
+        if uuid::Uuid::parse_str(&raw).is_ok() {
+            object.insert("window_id".into(), serde_json::json!(raw));
+        } else if let Ok(index) = raw.parse::<i64>() {
+            object.remove("window_id");
+            object.insert("window_index".into(), serde_json::json!(index));
+        } else if raw.split_once(':').is_some_and(|(kind, index)| {
+            kind.eq_ignore_ascii_case("window") && index.parse::<i64>().is_ok()
+        }) {
+            object.remove("window_id");
+            object.insert("window_ref".into(), serde_json::json!(raw));
+        } else {
+            return Err(CliError::new(format!(
+                "Invalid window handle: {raw} (expected UUID, ref like window:1, or index)"
+            )));
+        }
+    }
     let window_index = object
         .remove("window_index")
         .and_then(|value| value.as_i64());
@@ -1048,9 +1085,7 @@ fn normalize_workspace_params(
                                 .get("workspace_ref")
                                 .or_else(|| workspace.get("ref"))
                                 .and_then(serde_json::Value::as_str)
-                                .is_some_and(|candidate| {
-                                    candidate.eq_ignore_ascii_case(&workspace_ref)
-                                })
+                                .is_some_and(|candidate| candidate == workspace_ref)
                         })
                         .and_then(|workspace| {
                             workspace
@@ -1097,15 +1132,21 @@ fn normalize_workspace_params(
                     .get("workspace_ref")
                     .or_else(|| workspace.get("ref"))
                     .and_then(serde_json::Value::as_str)
-                    .is_some_and(|candidate| candidate.eq_ignore_ascii_case(reference))
+                    == Some(reference)
             })
         })
         .ok_or_else(|| {
-            CliError::new(if workspace_index.is_some() {
-                "Workspace index not found"
+            let message = if workspace_index.is_some() {
+                "Workspace index not found".to_string()
+            } else if matches!(method, "tab.action" | "surface.respawn") {
+                format!(
+                    "Workspace ref not found: {}",
+                    workspace_ref.as_deref().unwrap_or_default()
+                )
             } else {
-                "Workspace not found"
-            })
+                "Workspace not found".to_string()
+            };
+            CliError::new(message)
         })?;
     let id = matched
         .get("workspace_id")
@@ -1126,6 +1167,10 @@ fn normalize_lifecycle_surface_params(
     let Some(object) = params.as_object_mut() else {
         return Ok(());
     };
+    let suppress_surface = object
+        .remove("suppress_ambient_surface")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
     if let Some(raw) = object
         .get("surface_id")
         .and_then(serde_json::Value::as_str)
@@ -1165,6 +1210,32 @@ fn normalize_lifecycle_surface_params(
         .map(str::to_owned);
     let target = surface_ref.as_deref().or(surface_id.as_deref());
     if surface_index.is_none() && target.is_none() {
+        if suppress_surface {
+            return Ok(());
+        }
+        if matches!(method, "tab.action" | "surface.respawn")
+            && object.get("workspace_id").is_none()
+        {
+            let mut identify_params = serde_json::Map::new();
+            if let Some(window_id) = object.get("window_id") {
+                identify_params.insert("window_id".into(), window_id.clone());
+            }
+            let identified = call_control_command(
+                options,
+                "system.identify",
+                &serde_json::Value::Object(identify_params),
+            )?;
+            let surface_id = identified
+                .get("focused")
+                .and_then(|focused| {
+                    focused
+                        .get("surface_id")
+                        .or_else(|| focused.get("surface_ref"))
+                })
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| CliError::new("Surface not found in window"))?;
+            object.insert("surface_id".into(), serde_json::json!(surface_id));
+        }
         return Ok(());
     }
 
@@ -1196,6 +1267,7 @@ fn normalize_lifecycle_surface_params(
         .and_then(serde_json::Value::as_array)
         .map(Vec::as_slice)
         .unwrap_or(&[]);
+    let exact_ref_match = method == "surface.respawn" && !window_scoped && surface_ref.is_some();
     let matched = surfaces.iter().find(|surface| {
         surface_index.is_some_and(|index| {
             surface.get("index").and_then(serde_json::Value::as_i64) == Some(index)
@@ -1203,15 +1275,27 @@ fn normalize_lifecycle_surface_params(
             ["surface_id", "id", "surface_ref", "ref"]
                 .iter()
                 .filter_map(|key| surface.get(*key).and_then(serde_json::Value::as_str))
-                .any(|candidate| candidate.eq_ignore_ascii_case(target))
+                .any(|candidate| {
+                    if exact_ref_match {
+                        candidate == target
+                    } else {
+                        candidate.eq_ignore_ascii_case(target)
+                    }
+                })
         })
     });
     let matched = matched.ok_or_else(|| {
-        CliError::new(if surface_index.is_some() {
-            "Surface index not found"
+        let message = if surface_index.is_some() {
+            "Surface index not found".to_string()
+        } else if exact_ref_match {
+            format!(
+                "Surface ref not found: {}",
+                surface_ref.as_deref().unwrap_or_default()
+            )
         } else {
-            "Surface not found in window"
-        })
+            "Surface not found in window".to_string()
+        };
+        CliError::new(message)
     })?;
     let handle = matched
         .get("surface_id")
@@ -1582,10 +1666,8 @@ fn format_lifecycle_text(
     }
     let mut fields = vec![format!(
         "action={}",
-        result
-            .get("action")
-            .and_then(serde_json::Value::as_str)
-            .or(requested_action)
+        requested_action
+            .or_else(|| result.get("action").and_then(serde_json::Value::as_str))
             .unwrap_or_default()
     )];
     push_lifecycle_id_alias_field(
