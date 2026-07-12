@@ -105,6 +105,10 @@ mod workspace_selection_reorder_red;
 #[path = "session/sidebar_metadata_red.rs"]
 mod sidebar_metadata_red;
 
+#[cfg(test)]
+#[path = "session/public_control_metadata_red.rs"]
+mod public_control_metadata_red;
+
 impl Default for SessionState {
     fn default() -> Self {
         let snapshot = initial_snapshot(FIRST_PANEL_ID);
