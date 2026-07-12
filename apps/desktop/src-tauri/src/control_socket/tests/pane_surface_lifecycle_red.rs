@@ -1,4 +1,10 @@
+use super::pane_surface_lifecycle::{
+    commit_lifecycle_transition, dispatch_lifecycle_request, reconcile_runtime_arrival,
+    LifecycleDispatchContext, LifecycleEffect, LifecycleEffectExecutor, LifecycleTransition,
+    RuntimeArrival,
+};
 use super::*;
+use cmux_core::surface_lifecycle::{AttachOutcome, RuntimeHandle, SurfaceLifecycleModel};
 
 const V2_LIFECYCLE_METHODS: [&str; 11] = [
     "pane.create",
@@ -16,15 +22,15 @@ const V2_LIFECYCLE_METHODS: [&str; 11] = [
 
 fn two_window_snapshot() -> AppSessionSnapshot {
     let mut snapshot = test_snapshot();
-    snapshot.windows[0].selected_workspace_id = Some("workspace-1".to_string());
-    snapshot.windows[0].tab_manager.workspaces[0].focused_panel_id = Some("surface-1".to_string());
+    snapshot.windows[0].selected_workspace_id = Some("workspace-1".into());
+    snapshot.windows[0].tab_manager.workspaces[0].focused_panel_id = Some("surface-1".into());
 
     let mut second = snapshot.windows[0].clone();
-    second.window_id = Some("window-2".to_string());
-    second.selected_workspace_id = Some("workspace-2".to_string());
+    second.window_id = Some("window-2".into());
+    second.selected_workspace_id = Some("workspace-2".into());
     second.tab_manager.selected_workspace_index = Some(0);
-    second.tab_manager.workspaces[0].workspace_id = Some("workspace-2".to_string());
-    second.tab_manager.workspaces[0].focused_panel_id = Some("surface-2".to_string());
+    second.tab_manager.workspaces[0].workspace_id = Some("workspace-2".into());
+    second.tab_manager.workspaces[0].focused_panel_id = Some("surface-2".into());
     let SessionWorkspaceLayoutSnapshot::Pane(pane) = second.tab_manager.workspaces[0]
         .layout
         .as_mut()
@@ -32,40 +38,11 @@ fn two_window_snapshot() -> AppSessionSnapshot {
     else {
         unreachable!();
     };
-    pane.pane_id = Some("pane-2".to_string());
-    pane.panel_ids = vec!["surface-2".to_string()];
-    pane.selected_panel_id = Some("surface-2".to_string());
+    pane.pane_id = Some("pane-2".into());
+    pane.panel_ids = vec!["surface-2".into()];
+    pane.selected_panel_id = Some("surface-2".into());
     snapshot.windows.push(second);
     snapshot
-}
-
-fn mixed_surface_snapshot() -> AppSessionSnapshot {
-    let mut snapshot = test_snapshot();
-    let workspace = &mut snapshot.windows[0].tab_manager.workspaces[0];
-    workspace.focused_panel_id = Some("surface-terminal".to_string());
-    let SessionWorkspaceLayoutSnapshot::Pane(pane) =
-        workspace.layout.as_mut().expect("mixed surface layout")
-    else {
-        unreachable!();
-    };
-    pane.pane_id = Some("pane-mixed".to_string());
-    pane.panel_ids = vec![
-        "surface-terminal".to_string(),
-        "surface-browser".to_string(),
-    ];
-    pane.selected_panel_id = Some("surface-browser".to_string());
-    pane.surface_kind = None;
-    pane.browser_url = None;
-    pane.browser_developer_tools_visible = None;
-
-    // Inject the intended authoritative workspace-level records through the
-    // public persistence codec. The legacy schema currently ignores this
-    // field, which is a deliberate RED witness. Once the schema owns it, no
-    // test may infer a surface kind from its id or from pane-wide metadata.
-    let mut encoded = serde_json::to_value(snapshot).expect("encode mixed fixture");
-    encoded["windows"][0]["tab_manager"]["workspaces"][0]["surfaces"] =
-        intended_mixed_surface_records();
-    serde_json::from_value(encoded).expect("decode mixed fixture")
 }
 
 fn intended_mixed_surface_records() -> Value {
@@ -104,25 +81,47 @@ fn intended_mixed_surface_records() -> Value {
     ])
 }
 
+fn mixed_surface_snapshot() -> AppSessionSnapshot {
+    let mut snapshot = test_snapshot();
+    let workspace = &mut snapshot.windows[0].tab_manager.workspaces[0];
+    workspace.focused_panel_id = Some("surface-terminal".into());
+    let SessionWorkspaceLayoutSnapshot::Pane(pane) =
+        workspace.layout.as_mut().expect("mixed surface layout")
+    else {
+        unreachable!();
+    };
+    pane.pane_id = Some("pane-mixed".into());
+    pane.panel_ids = vec!["surface-terminal".into(), "surface-browser".into()];
+    pane.selected_panel_id = Some("surface-browser".into());
+    pane.surface_kind = None;
+    pane.browser_url = None;
+    pane.browser_developer_tools_visible = None;
+
+    let mut encoded = serde_json::to_value(snapshot).expect("encode mixed fixture");
+    encoded["windows"][0]["tab_manager"]["workspaces"][0]["surfaces"] =
+        intended_mixed_surface_records();
+    serde_json::from_value(encoded).expect("decode mixed fixture")
+}
+
 fn resizable_snapshot() -> AppSessionSnapshot {
     let mut snapshot = test_snapshot();
     let workspace = &mut snapshot.windows[0].tab_manager.workspaces[0];
-    workspace.focused_panel_id = Some("surface-left".to_string());
+    workspace.focused_panel_id = Some("surface-left".into());
     let SessionWorkspaceLayoutSnapshot::Pane(base) = workspace.layout.take().expect("base pane")
     else {
         unreachable!();
     };
     let mut left = base.clone();
-    left.pane_id = Some("pane-left".to_string());
-    left.panel_ids = vec!["surface-left".to_string()];
-    left.selected_panel_id = Some("surface-left".to_string());
+    left.pane_id = Some("pane-left".into());
+    left.panel_ids = vec!["surface-left".into()];
+    left.selected_panel_id = Some("surface-left".into());
     let mut right = base;
-    right.pane_id = Some("pane-right".to_string());
-    right.panel_ids = vec!["surface-right".to_string()];
-    right.selected_panel_id = Some("surface-right".to_string());
+    right.pane_id = Some("pane-right".into());
+    right.panel_ids = vec!["surface-right".into()];
+    right.selected_panel_id = Some("surface-right".into());
     workspace.layout = Some(SessionWorkspaceLayoutSnapshot::Split(
         cmux_core::session::SessionSplitLayoutSnapshot {
-            split_id: Some("split-root".to_string()),
+            split_id: Some("split-root".into()),
             orientation: SessionSplitOrientation::Horizontal,
             divider_position: 0.5,
             first: Box::new(SessionWorkspaceLayoutSnapshot::Pane(left)),
@@ -132,626 +131,690 @@ fn resizable_snapshot() -> AppSessionSnapshot {
     snapshot
 }
 
-fn ok_value(result: ControlCallResult) -> Value {
-    let ControlCallResult::Ok(value) = result else {
-        panic!("expected successful decoded request result")
-    };
-    value.into()
+fn context() -> LifecycleDispatchContext {
+    LifecycleDispatchContext {
+        viewport_size: Some((1_000.0, 800.0)),
+        browser_enabled: true,
+        dock_available: true,
+    }
 }
 
-// This is the intended tests-only decoded request seam. It must execute the
-// same pure routing/validation/model mutation/event path as the desktop
-// handler without constructing a Tauri runtime. The third value records
-// observable non-snapshot effects (focus/activation, runtime replacement,
-// Dock/remote routing, and persistence writes).
-fn decoded_lifecycle_call(
-    snapshot: &mut AppSessionSnapshot,
-    method: &str,
-    params: Value,
-) -> (ControlCallResult, Vec<DerivedEventSpec>, Value) {
-    pane_surface_lifecycle_request_for_test(
+fn transition(snapshot: &AppSessionSnapshot, method: &str, params: Value) -> LifecycleTransition {
+    dispatch_lifecycle_request(
         snapshot,
         method,
         params.as_object().expect("decoded params object"),
+        &context(),
     )
 }
 
-fn decoded_lifecycle_ok(
-    snapshot: &mut AppSessionSnapshot,
-    method: &str,
-    params: Value,
-) -> (Value, Vec<DerivedEventSpec>, Value) {
-    let (result, events, effects) = decoded_lifecycle_call(snapshot, method, params);
-    (ok_value(result), events, effects)
-}
-
-fn assert_error(result: ControlCallResult, expected_code: &str, expected_message: &str) -> Value {
-    let ControlCallResult::Err {
-        code,
-        message,
-        data,
-    } = result
-    else {
-        panic!("expected decoded request error")
+fn ok_value(transition: &LifecycleTransition) -> Value {
+    let ControlCallResult::Ok(value) = &transition.result else {
+        panic!("expected successful lifecycle transition")
     };
-    assert_eq!(code, expected_code);
-    assert_eq!(message, expected_message);
-    data.map(Value::from).unwrap_or(Value::Null)
+    value.clone().into()
+}
+
+fn assert_error(transition: &LifecycleTransition, code: &str, message: &str) -> Value {
+    let ControlCallResult::Err {
+        code: actual_code,
+        message: actual_message,
+        data,
+    } = &transition.result
+    else {
+        panic!("expected lifecycle transition error")
+    };
+    assert_eq!(actual_code, code);
+    assert_eq!(actual_message, message);
+    data.clone().map(Value::from).unwrap_or(Value::Null)
+}
+
+#[derive(Default)]
+struct RecordingExecutor {
+    staged: Vec<LifecycleEffect>,
+    committed: Vec<LifecycleEffect>,
+    fail_stage_at: Option<usize>,
+    rollback_count: usize,
+}
+
+impl LifecycleEffectExecutor for RecordingExecutor {
+    type Error = &'static str;
+
+    fn stage(&mut self, effect: &LifecycleEffect) -> Result<(), Self::Error> {
+        if self.fail_stage_at == Some(self.staged.len()) {
+            return Err("injected effect failure");
+        }
+        self.staged.push(effect.clone());
+        Ok(())
+    }
+
+    fn commit_staged(&mut self) -> Result<(), Self::Error> {
+        self.committed.append(&mut self.staged);
+        Ok(())
+    }
+
+    fn rollback_staged(&mut self) {
+        self.rollback_count += 1;
+        self.staged.clear();
+    }
 }
 
 #[test]
-fn v2_lifecycle_methods_are_all_advertised_as_capabilities() {
-    let advertised: BTreeSet<_> = CONTROL_SOCKET_METHODS.iter().copied().collect();
-    let missing: Vec<_> = V2_LIFECYCLE_METHODS
-        .into_iter()
-        .filter(|method| !advertised.contains(method))
-        .collect();
-    assert!(missing.is_empty(), "missing lifecycle methods: {missing:?}");
+fn lifecycle_registry_binds_every_public_method_to_the_production_route() {
+    for method in V2_LIFECYCLE_METHODS {
+        assert!(CONTROL_SOCKET_METHODS.contains(&method));
+        assert_eq!(
+            control_request_route_for_method(method),
+            ControlRequestRoute::PaneSurfaceLifecycle,
+            "{method} bypasses the shared production lifecycle dispatcher"
+        );
+    }
+    for dependency in ["pane.focus", "surface.split"] {
+        assert_eq!(
+            control_request_route_for_method(dependency),
+            ControlRequestRoute::PaneSurfaceLifecycle,
+            "{dependency} must mutate the authoritative lifecycle model"
+        );
+    }
+    assert_eq!(
+        control_request_route_for_method("workspace.rename"),
+        ControlRequestRoute::Legacy
+    );
 }
 
 #[test]
-fn v2_pane_create_capability_is_distinct_from_surface_split() {
-    assert!(CONTROL_SOCKET_METHODS.contains(&"surface.split"));
-    assert!(CONTROL_SOCKET_METHODS.contains(&"pane.create"));
-
+fn staged_effect_executor_rolls_back_before_any_external_effect_becomes_visible() {
     let mut snapshot = test_snapshot();
-    let (invalid, invalid_events, invalid_effects) = decoded_lifecycle_call(
-        &mut snapshot,
+    let before = snapshot.clone();
+    let planned = transition(
+        &snapshot,
+        "pane.create",
+        json!({
+            "direction": "right",
+            "type": "browser",
+            "url": "https://rollback.test",
+            "focus": true
+        }),
+    );
+    assert!(planned
+        .effects
+        .iter()
+        .any(|effect| matches!(effect, LifecycleEffect::BrowserAttach { .. })));
+    assert!(planned
+        .effects
+        .iter()
+        .any(|effect| matches!(effect, LifecycleEffect::ActivateWindow { .. })));
+    assert!(planned.effects.len() >= 2);
+
+    let mut executor = RecordingExecutor {
+        fail_stage_at: Some(1),
+        ..RecordingExecutor::default()
+    };
+    assert!(commit_lifecycle_transition(&mut snapshot, planned, &mut executor).is_err());
+    assert_eq!(
+        snapshot, before,
+        "failed effects must not commit model state"
+    );
+    assert_eq!(
+        executor.rollback_count, 1,
+        "a later staging failure must compensate the already-staged effect"
+    );
+    assert!(executor.staged.is_empty());
+    assert!(
+        executor.committed.is_empty(),
+        "staged effects must not become externally visible after validation fails"
+    );
+}
+
+#[test]
+fn pane_create_preserves_exact_validation_and_committed_event_contract() {
+    let snapshot = test_snapshot();
+    let invalid = transition(
+        &snapshot,
         "pane.create",
         json!({"direction": "diagonal", "placement": "somewhere"}),
     );
     assert_error(
-        invalid,
+        &invalid,
         "invalid_params",
         "Missing or invalid direction (left|right|up|down)",
     );
-    assert!(invalid_events.is_empty());
-    assert_eq!(invalid_effects["persistence_write_count"], json!(0));
+    assert!(!invalid.changed);
+    assert!(invalid.events.is_empty());
+    assert!(invalid.effects.is_empty());
 
-    let before_focus = snapshot.windows[0].tab_manager.workspaces[0]
-        .focused_panel_id
-        .clone();
-    let (value, events, effects) = decoded_lifecycle_ok(
-        &mut snapshot,
+    let created = transition(
+        &snapshot,
         "pane.create",
         json!({
             "direction": "right",
             "type": "browser",
             "url": "https://example.test",
             "initial_divider_position": 0.75,
-            "focus": false,
+            "focus": false
         }),
     );
+    let value = ok_value(&created);
     assert_eq!(value["type"], json!("browser"));
     assert!(value["pane_id"].is_string());
     assert!(value["surface_id"].is_string());
-    assert_ne!(value["pane_id"], json!("pane-1"));
     assert_eq!(
-        events
+        created
+            .events
             .iter()
             .filter(|event| event.name == "pane.created")
             .count(),
         1
     );
     assert_eq!(
-        events
+        created
+            .events
             .iter()
             .filter(|event| event.name == "surface.created")
             .count(),
         1
     );
-    assert_eq!(effects["focus_changed"], json!(false));
-    assert_eq!(effects["window_activation_count"], json!(0));
-    assert_eq!(effects["persistence_write_count"], json!(1));
+    assert!(created.effects.iter().any(|effect| matches!(
+        effect,
+        LifecycleEffect::BrowserAttach { surface_id, .. }
+            if Some(surface_id.as_str()) == value["surface_id"].as_str()
+    )));
     assert_eq!(
-        snapshot.windows[0].tab_manager.workspaces[0].focused_panel_id,
-        before_focus
+        created.snapshot.windows[0].tab_manager.workspaces[0].focused_panel_id,
+        snapshot.windows[0].tab_manager.workspaces[0].focused_panel_id
     );
 }
 
 #[test]
-fn v2_pane_resize_absolute_intent_has_validation_precedence() {
-    let mut snapshot = test_snapshot();
-    let before = snapshot.clone();
-    let (result, events, effects) = decoded_lifecycle_call(
-        &mut snapshot,
+fn pane_resize_uses_injected_dimensions_and_absolute_validation_precedence() {
+    let snapshot = resizable_snapshot();
+    let invalid = transition(
+        &snapshot,
         "pane.resize",
         json!({
             "absolute_axis": "diagonal",
             "target_pixels": 640,
             "direction": "left",
-            "amount": 2,
+            "amount": 2
         }),
     );
     assert_error(
-        result,
+        &invalid,
         "invalid_params",
         "absolute_axis must be 'horizontal' or 'vertical'",
     );
-    assert!(events.is_empty());
-    assert_eq!(effects["persistence_write_count"], json!(0));
-    assert_eq!(
-        serde_json::to_value(snapshot).unwrap(),
-        serde_json::to_value(before).unwrap()
-    );
+    assert!(!invalid.changed);
 
-    let mut snapshot = resizable_snapshot();
-    let (value, events, effects) = decoded_lifecycle_ok(
-        &mut snapshot,
+    let resized = transition(
+        &snapshot,
         "pane.resize",
-        json!({"pane_id": "pane-left", "direction": "right", "amount": 2}),
+        json!({"pane_id": "pane-left", "absolute_axis": "horizontal", "target_pixels": 600}),
     );
-    assert_eq!(value["pane_id"], json!("pane-left"));
+    let value = ok_value(&resized);
     assert_eq!(value["split_id"], json!("split-root"));
     assert_eq!(value["old_divider_position"], json!(0.5));
-    assert!(value["new_divider_position"].as_f64().unwrap() > 0.5);
-    assert_eq!(value["direction"], json!("right"));
-    assert_eq!(value["amount"], json!(2));
+    assert_eq!(value["new_divider_position"], json!(0.6));
     assert_eq!(
-        events
+        resized
+            .events
             .iter()
             .filter(|event| event.name == "pane.resized")
             .count(),
         1
     );
-    assert_eq!(effects["focus_changed"], json!(false));
-    assert_eq!(effects["window_activation_count"], json!(0));
-    assert_eq!(effects["persistence_write_count"], json!(1));
-    let SessionWorkspaceLayoutSnapshot::Split(split) = snapshot.windows[0].tab_manager.workspaces
-        [0]
-    .layout
-    .as_ref()
-    .unwrap() else {
-        unreachable!();
-    };
-    assert_eq!(
-        split.divider_position,
-        value["new_divider_position"].as_f64().unwrap()
-    );
 }
 
 #[test]
-fn v2_surface_action_and_create_are_not_approximated_by_legacy_helpers() {
-    for method in ["surface.action", "surface.create"] {
-        assert!(
-            CONTROL_SOCKET_METHODS.contains(&method),
-            "{method} must be an exact v2 decoded request route"
-        );
-    }
-    assert!(CONTROL_SOCKET_METHODS.contains(&"surface.new_terminal_tab"));
-
-    let mut snapshot = test_snapshot();
-    let (invalid_action, invalid_action_events, invalid_action_effects) = decoded_lifecycle_call(
-        &mut snapshot,
-        "surface.action",
-        json!({"surface_id": "surface-1"}),
-    );
-    assert_error(invalid_action, "invalid_params", "Missing action");
-    assert!(invalid_action_events.is_empty());
-    assert_eq!(invalid_action_effects["persistence_write_count"], json!(0));
-
-    let (invalid_create, invalid_create_events, invalid_create_effects) = decoded_lifecycle_call(
-        &mut snapshot,
+fn surface_create_and_action_use_authoritative_records_and_typed_effects() {
+    let snapshot = test_snapshot();
+    let invalid = transition(
+        &snapshot,
         "surface.create",
         json!({"pane_id": "pane-1", "type": "agentSession", "provider": "bogus"}),
     );
-    let provider_data = assert_error(
-        invalid_create,
-        "invalid_params",
-        "Invalid provider (codex|claude|opencode)",
+    assert_eq!(
+        assert_error(
+            &invalid,
+            "invalid_params",
+            "Invalid provider (codex|claude|opencode)"
+        ),
+        json!({"provider": "bogus"})
     );
-    assert_eq!(provider_data, json!({"provider": "bogus"}));
-    assert!(invalid_create_events.is_empty());
-    assert_eq!(invalid_create_effects["persistence_write_count"], json!(0));
 
-    let (created, create_events, create_effects) = decoded_lifecycle_ok(
-        &mut snapshot,
+    let created = transition(
+        &snapshot,
         "surface.create",
         json!({
             "pane_id": "pane-1",
             "type": "terminal",
             "working_directory": "C:/created",
             "initial_command": "cargo test",
-            "focus": false,
+            "focus": false
         }),
     );
-    assert_eq!(created["pane_id"], json!("pane-1"));
-    assert_eq!(created["type"], json!("terminal"));
-    assert!(created["surface_id"].is_string());
-    assert_eq!(
-        create_events
-            .iter()
-            .filter(|event| event.name == "surface.created")
-            .count(),
-        1
-    );
-    assert_eq!(create_effects["persistence_write_count"], json!(1));
-    assert_eq!(create_effects["window_activation_count"], json!(0));
+    let value = ok_value(&created);
+    let created_id = value["surface_id"].as_str().unwrap();
+    assert!(created.effects.iter().any(|effect| matches!(
+        effect,
+        LifecycleEffect::TerminalCreate { surface_id, .. } if surface_id == created_id
+    )));
 
-    let created_id = created["surface_id"].as_str().unwrap();
-    assert!(
-        surfaces_for_workspace(&snapshot.windows[0].tab_manager.workspaces[0])
-            .iter()
-            .any(|surface| surface["id"] == json!(created_id))
-    );
-
-    let (renamed, action_events, action_effects) = decoded_lifecycle_ok(
-        &mut snapshot,
+    let renamed = transition(
+        &created.snapshot,
         "surface.action",
         json!({"surface_id": created_id, "action": "rename", "title": " Build logs "}),
     );
-    assert_eq!(renamed["action"], json!("rename"));
-    assert_eq!(renamed["surface_id"], json!(created_id));
-    assert_eq!(renamed["title"], json!("Build logs"));
+    let renamed_value = ok_value(&renamed);
+    assert_eq!(renamed_value["title"], json!("Build logs"));
     assert_eq!(
-        action_events
+        renamed
+            .events
             .iter()
             .filter(|event| event.name == "surface.action")
             .count(),
         1
     );
-    assert_eq!(action_effects["persistence_write_count"], json!(1));
-    assert_eq!(action_effects["window_activation_count"], json!(0));
 }
 
 #[test]
-fn v2_pane_and_surface_create_expose_dock_and_remote_routing_contracts() {
-    for method in ["pane.create", "surface.create"] {
-        assert!(CONTROL_SOCKET_METHODS.contains(&method));
-    }
-    let mut dock_snapshot = test_snapshot();
-    let (dock, dock_events, dock_effects) = decoded_lifecycle_ok(
-        &mut dock_snapshot,
+fn dock_and_remote_create_require_real_typed_effects_not_counter_payloads() {
+    let dock = transition(
+        &test_snapshot(),
         "surface.create",
-        json!({
-            "placement": "dock",
-            "type": "browser",
-            "url": "https://dock.test",
-            "focus": false,
-        }),
+        json!({"placement": "dock", "type": "browser", "url": "https://dock.test", "focus": false}),
     );
-    assert_eq!(dock["placement"], json!("dock"));
-    assert!(dock["pane_id"].is_null());
-    assert!(dock["surface_id"].is_null());
-    assert!(dock["dock_surface_id"].is_string());
-    assert_eq!(dock_effects["dock_surface_count"], json!(1));
-    assert_eq!(dock_effects["window_activation_count"], json!(0));
-    assert_eq!(dock_effects["persistence_write_count"], json!(1));
-    assert_eq!(
-        dock_events
-            .iter()
-            .filter(|event| event.name == "surface.created")
-            .count(),
-        1
-    );
+    let value = ok_value(&dock);
+    assert_eq!(value["placement"], json!("dock"));
+    assert!(value["surface_id"].is_null());
+    assert!(value["dock_surface_id"].is_string());
+    assert!(dock.effects.iter().any(|effect| matches!(
+        effect,
+        LifecycleEffect::DockCreate { dock_surface_id, .. }
+            if Some(dock_surface_id.as_str()) == value["dock_surface_id"].as_str()
+    )));
 
-    let mut remote_snapshot = test_snapshot();
-    let (remote, remote_events, remote_effects) = decoded_lifecycle_ok(
-        &mut remote_snapshot,
+    let remote = transition(
+        &test_snapshot(),
         "pane.create",
         json!({
             "direction": "right",
             "remote_pty_session_id": "remote-session-1",
-            "remote_context": {"transport": "tmux"},
+            "remote_context": {"transport": "tmux"}
         }),
     );
-    assert_eq!(remote["accepted"], json!(true));
-    assert_eq!(remote["routed"], json!("remote-tmux"));
-    assert!(remote["pane_id"].is_null());
-    assert!(remote["surface_id"].is_null());
-    assert!(remote_events.is_empty(), "arrival owns lifecycle events");
-    assert_eq!(remote_effects["remote_request_count"], json!(1));
-    assert_eq!(remote_effects["persistence_write_count"], json!(0));
+    let value = ok_value(&remote);
+    assert_eq!(value["accepted"], json!(true));
+    assert_eq!(value["routed"], json!("remote-tmux"));
+    assert!(value["pane_id"].is_null());
+    assert!(remote.events.is_empty(), "arrival owns lifecycle events");
+    assert!(remote.effects.iter().any(|effect| matches!(
+        effect,
+        LifecycleEffect::RemoteCreate { remote_session_id, .. }
+            if remote_session_id == "remote-session-1"
+    )));
 }
 
 #[test]
-fn v2_surface_current_is_a_read_capability_without_focus_side_effects() {
-    assert!(CONTROL_SOCKET_METHODS.contains(&"surface.current"));
-    let mut snapshot = mixed_surface_snapshot();
-    let before = serde_json::to_value(&snapshot).unwrap();
-    let (value, events, effects) = decoded_lifecycle_ok(
-        &mut snapshot,
+fn current_and_list_run_through_shared_dispatch_without_focus_side_effects() {
+    let snapshot = mixed_surface_snapshot();
+    let current = transition(
+        &snapshot,
         "surface.current",
         json!({"surface_id": "surface-browser"}),
     );
-    assert_eq!(value["window_id"], json!("window-1"));
-    assert_eq!(value["workspace_id"], json!("workspace-1"));
-    assert_eq!(value["pane_id"], json!("pane-mixed"));
-    assert_eq!(value["surface_id"], json!("surface-terminal"));
-    assert_eq!(value["surface_type"], json!("terminal"));
-    assert!(events.is_empty());
-    assert_eq!(effects["window_activation_count"], json!(0));
-    assert_eq!(effects["persistence_write_count"], json!(0));
-    assert_eq!(serde_json::to_value(snapshot).unwrap(), before);
+    let current_value = ok_value(&current);
+    assert_eq!(current_value["surface_id"], json!("surface-terminal"));
+    assert_eq!(current_value["surface_type"], json!("terminal"));
+    assert!(!current.changed);
+    assert!(current.events.is_empty());
+    assert!(current.effects.is_empty());
+    assert_eq!(current.snapshot, snapshot);
+
+    let listed = transition(&snapshot, "surface.list", json!({}));
+    let value = ok_value(&listed);
+    let rows = value["surfaces"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["index"], json!(0));
+    assert_eq!(rows[0]["index_in_pane"], json!(0));
+    assert_eq!(rows[0]["type"], json!("terminal"));
+    assert_eq!(rows[0]["focused"], json!(true));
+    assert_eq!(rows[0]["selected_in_pane"], json!(false));
+    assert!(rows[0].get("requested_working_directory").is_some());
+    assert!(rows[0].get("resume_binding").is_some());
+    assert!(rows[0].get("developer_tools_visible").is_none());
+    assert_eq!(rows[1]["type"], json!("browser"));
+    assert_eq!(rows[1]["focused"], json!(false));
+    assert_eq!(rows[1]["selected_in_pane"], json!(true));
+    assert_eq!(rows[1]["developer_tools_visible"], json!(true));
+    assert!(rows[1].get("requested_working_directory").is_none());
 }
 
 #[test]
-fn v2_surface_list_routes_to_the_explicit_second_window_without_fallback() {
-    let mut snapshot = two_window_snapshot();
-    let before = serde_json::to_value(&snapshot).unwrap();
-    let (value, events, effects) = decoded_lifecycle_ok(
-        &mut snapshot,
-        "surface.list",
-        json!({"window_id": "window-2"}),
-    );
+fn explicit_second_window_routes_by_identity_without_assuming_handle_ref_number() {
+    let snapshot = two_window_snapshot();
+    let listed = transition(&snapshot, "surface.list", json!({"window_id": "window-2"}));
+    let value = ok_value(&listed);
     assert_eq!(value["window_id"], json!("window-2"));
-    assert_eq!(value["window_ref"], json!("window:2"));
     assert_eq!(value["workspace_id"], json!("workspace-2"));
     assert_eq!(value["surfaces"][0]["id"], json!("surface-2"));
-    assert!(events.is_empty());
-    assert_eq!(effects["window_activation_count"], json!(0));
-    assert_eq!(effects["persistence_write_count"], json!(0));
-    assert_eq!(serde_json::to_value(snapshot).unwrap(), before);
-}
 
-#[test]
-fn v2_surface_list_rejects_an_invalid_explicit_window_before_workspace_fallback() {
-    let mut snapshot = two_window_snapshot();
-    let before = serde_json::to_value(&snapshot).unwrap();
-    let (result, events, effects) = decoded_lifecycle_call(
-        &mut snapshot,
+    let invalid = transition(
+        &snapshot,
         "surface.list",
-        json!({
-            "window_id": "missing-window",
-            "workspace_id": "workspace-2",
-        }),
+        json!({"window_id": "missing-window", "workspace_id": "workspace-2"}),
     );
-    assert_error(result, "unavailable", "TabManager not available");
-    assert!(events.is_empty());
-    assert_eq!(effects["persistence_write_count"], json!(0));
-    assert_eq!(serde_json::to_value(snapshot).unwrap(), before);
+    assert_error(&invalid, "unavailable", "TabManager not available");
+    assert!(!invalid.changed);
 }
 
 #[test]
-fn v2_surface_list_projects_mixed_kinds_and_distinct_selection_and_focus() {
-    let value = ok_value(surface_list(&mixed_surface_snapshot()));
-    let surfaces = value["surfaces"].as_array().expect("surfaces array");
-    assert_eq!(surfaces.len(), 2);
-    assert_eq!(surfaces[0]["id"], json!("surface-terminal"));
-    assert_eq!(surfaces[0]["index"], json!(0));
-    assert_eq!(surfaces[0]["index_in_pane"], json!(0));
-    assert_eq!(surfaces[0]["type"], json!("terminal"));
-    assert_eq!(surfaces[0]["focused"], json!(true));
-    assert_eq!(surfaces[0]["selected_in_pane"], json!(false));
-    assert_eq!(surfaces[1]["id"], json!("surface-browser"));
-    assert_eq!(surfaces[1]["index"], json!(1));
-    assert_eq!(surfaces[1]["index_in_pane"], json!(1));
-    assert_eq!(surfaces[1]["type"], json!("browser"));
-    assert_eq!(surfaces[1]["focused"], json!(false));
-    assert_eq!(surfaces[1]["selected_in_pane"], json!(true));
-}
-
-#[test]
-fn v2_surface_list_uses_exact_kind_conditional_payload_fields() {
-    let value = ok_value(surface_list(&mixed_surface_snapshot()));
-    let surfaces = value["surfaces"].as_array().unwrap();
-    assert!(surfaces[0].get("requested_working_directory").is_some());
-    assert!(surfaces[0].get("resume_binding").is_some());
-    assert!(surfaces[0].get("developer_tools_visible").is_none());
-    assert_eq!(surfaces[1]["developer_tools_visible"], json!(true));
-    assert!(surfaces[1].get("requested_working_directory").is_none());
-    assert!(surfaces[1].get("initial_command").is_none());
-}
-
-#[test]
-fn v2_surface_report_pwd_preserves_raw_path_and_detects_conflicting_aliases() {
-    assert!(CONTROL_SOCKET_METHODS.contains(&"surface.report_pwd"));
-    let mut snapshot = test_snapshot();
-    let (conflict, conflict_events, conflict_effects) = decoded_lifecycle_call(
-        &mut snapshot,
+fn report_pwd_preserves_raw_path_and_reconciles_pending_remote_once() {
+    let snapshot = test_snapshot();
+    let conflict = transition(
+        &snapshot,
         "surface.report_pwd",
-        json!({
-            "workspace_id": "workspace-1",
-            "path": "C:/one",
-            "directory": "C:/two",
-        }),
+        json!({"workspace_id": "workspace-1", "path": "C:/one", "directory": "C:/two"}),
     );
-    assert_error(conflict, "invalid_params", "Conflicting path parameters");
-    assert!(conflict_events.is_empty());
-    assert_eq!(conflict_effects["persistence_write_count"], json!(0));
+    assert_error(&conflict, "invalid_params", "Conflicting path parameters");
 
-    let (recorded, events, effects) = decoded_lifecycle_ok(
-        &mut snapshot,
+    let recorded = transition(
+        &snapshot,
         "surface.report_pwd",
         json!({
             "workspace_id": "workspace-1",
             "surface_id": "surface-1",
             "path": " C:/repo ",
-            "cwd": " C:/repo ",
+            "cwd": " C:/repo "
         }),
     );
-    assert_eq!(recorded["workspace_id"], json!("workspace-1"));
-    assert_eq!(recorded["surface_id"], json!("surface-1"));
-    assert_eq!(recorded["path"], json!(" C:/repo "));
-    assert!(events.is_empty());
-    assert_eq!(effects["reported_directory"], json!(" C:/repo "));
-    assert_eq!(effects["window_activation_count"], json!(0));
-    assert_eq!(effects["persistence_write_count"], json!(1));
+    assert_eq!(ok_value(&recorded)["path"], json!(" C:/repo "));
+    assert!(recorded.events.is_empty());
+
+    let mut remote = two_window_snapshot();
+    remote.windows[1].tab_manager.workspaces[0].layout = None;
+    remote.windows[1].tab_manager.workspaces[0].surfaces = Some(Vec::new());
+    remote.windows[1].tab_manager.workspaces[0].focused_panel_id = None;
+    let pending = transition(
+        &remote,
+        "surface.report_pwd",
+        json!({
+            "workspace_id": "workspace-2",
+            "surface_id": "arriving-surface",
+            "path": "C:/remote"
+        }),
+    );
+    assert_eq!(ok_value(&pending)["pending"], json!(true));
+    let first = reconcile_runtime_arrival(
+        &pending.snapshot,
+        RuntimeArrival::remote(
+            "window-2",
+            "workspace-2",
+            "pane-remote",
+            "arriving-surface",
+            "remote-42",
+            1,
+        ),
+    );
+    let second = reconcile_runtime_arrival(
+        &first.snapshot,
+        RuntimeArrival::remote(
+            "window-2",
+            "workspace-2",
+            "pane-remote",
+            "arriving-surface",
+            "remote-42",
+            1,
+        ),
+    );
+    assert_eq!(first.directory_apply_count("arriving-surface"), 1);
+    assert_eq!(second.directory_apply_count("arriving-surface"), 1);
 }
 
 #[test]
-fn v2_surface_respawn_is_an_exact_identity_preserving_capability() {
-    assert!(CONTROL_SOCKET_METHODS.contains(&"surface.respawn"));
-    let mut snapshot = test_snapshot();
-    let (invalid, invalid_events, invalid_effects) = decoded_lifecycle_call(
-        &mut snapshot,
+fn respawn_and_close_emit_typed_runtime_replace_and_teardown_effects() {
+    let snapshot = mixed_surface_snapshot();
+    let invalid = transition(
+        &snapshot,
         "surface.respawn",
-        json!({"surface_id": "surface-1", "focus": "maybe"}),
+        json!({"surface_id": "surface-terminal", "focus": "maybe"}),
     );
-    assert_error(invalid, "invalid_params", "Missing or invalid focus");
-    assert!(invalid_events.is_empty());
-    assert_eq!(invalid_effects["runtime_replacement_count"], json!(0));
+    assert_error(&invalid, "invalid_params", "Missing or invalid focus");
 
-    let (value, events, effects) = decoded_lifecycle_ok(
-        &mut snapshot,
+    let respawned = transition(
+        &snapshot,
         "surface.respawn",
         json!({
-            "surface_id": "surface-1",
+            "surface_id": "surface-terminal",
             "command": "  cargo test  ",
             "initial_command": "ignored",
             "working_directory": "C:/respawn",
-            "focus": false,
+            "focus": false
         }),
     );
-    assert_eq!(value["surface_id"], json!("surface-1"));
-    assert_eq!(value["type"], json!("terminal"));
-    assert_eq!(effects["runtime_replacement_count"], json!(1));
-    assert_eq!(effects["previous_runtime_generation"], json!(0));
-    assert_eq!(effects["runtime_generation"], json!(1));
-    assert_eq!(effects["initial_command"], json!("cargo test"));
-    assert_eq!(effects["working_directory"], json!("C:/respawn"));
-    assert_eq!(effects["focus_changed"], json!(false));
-    assert_eq!(effects["persistence_write_count"], json!(1));
-    assert!(!events
+    assert_eq!(
+        ok_value(&respawned)["surface_id"],
+        json!("surface-terminal")
+    );
+    assert!(respawned.effects.iter().any(|effect| matches!(
+        effect,
+        LifecycleEffect::TerminalReplace {
+            surface_id,
+            previous_generation: 7,
+            generation: 8,
+            ..
+        } if surface_id == "surface-terminal"
+    )));
+    assert!(!respawned
+        .events
         .iter()
-        .any(|event| matches!(event.name, "surface.created" | "surface.closed")));
-}
+        .any(|event| { matches!(event.name, "surface.created" | "surface.closed") }));
 
-#[test]
-fn v2_surface_close_focus_and_move_keep_exact_public_routes() {
-    for method in ["surface.close", "surface.focus", "surface.move"] {
-        assert!(CONTROL_SOCKET_METHODS.contains(&method));
-    }
-    let mut snapshot = mixed_surface_snapshot();
-    let (closed, events, effects) = decoded_lifecycle_ok(
-        &mut snapshot,
+    let closed = transition(
+        &respawned.snapshot,
         "surface.close",
         json!({"surface_id": "surface-browser"}),
     );
-    assert_eq!(closed["surface_id"], json!("surface-browser"));
-    let remaining = surfaces_for_workspace(&snapshot.windows[0].tab_manager.workspaces[0]);
-    assert_eq!(remaining.len(), 1);
-    assert_eq!(remaining[0]["id"], json!("surface-terminal"));
+    assert_eq!(ok_value(&closed)["surface_id"], json!("surface-browser"));
+    assert!(closed.effects.iter().any(|effect| matches!(
+        effect,
+        LifecycleEffect::RuntimeTeardown { surface_id, .. } if surface_id == "surface-browser"
+    )));
     assert_eq!(
-        events
+        closed
+            .events
             .iter()
             .filter(|event| event.name == "surface.closed")
             .count(),
         1
     );
-    assert_eq!(effects["runtime_teardown_count"], json!(1));
-    assert_eq!(effects["persistence_write_count"], json!(1));
-
-    let (last, last_events, last_effects) = decoded_lifecycle_call(
-        &mut snapshot,
-        "surface.close",
-        json!({"surface_id": "surface-terminal"}),
-    );
-    assert_error(last, "invalid_state", "Cannot close the last surface");
-    assert!(last_events.is_empty());
-    assert_eq!(last_effects["runtime_teardown_count"], json!(0));
-    assert_eq!(last_effects["persistence_write_count"], json!(0));
 }
 
 #[test]
-fn v2_surface_focus_uses_the_explicit_second_window_owner() {
-    let mut snapshot = two_window_snapshot();
-    snapshot.windows[1].tab_manager.workspaces[0].focused_panel_id = None;
-    let (missing, missing_events, missing_effects) = decoded_lifecycle_call(
-        &mut snapshot,
-        "surface.focus",
-        json!({"window_id": "window-2", "workspace_id": "workspace-2"}),
-    );
-    assert_error(missing, "invalid_params", "Missing or invalid surface_id");
-    assert!(missing_events.is_empty());
-    assert_eq!(missing_effects["persistence_write_count"], json!(0));
-
-    let (value, events, effects) = decoded_lifecycle_ok(
-        &mut snapshot,
-        "surface.focus",
-        json!({
-            "window_id": "window-2",
-            "workspace_id": "workspace-2",
-            "surface_id": "surface-2",
-        }),
-    );
-    assert_eq!(value["window_id"], json!("window-2"));
-    assert_eq!(value["workspace_id"], json!("workspace-2"));
-    assert_eq!(value["surface_id"], json!("surface-2"));
+fn global_model_fences_stale_runtime_attach_across_the_app_snapshot() {
+    let snapshot = two_window_snapshot();
+    let mut model = SurfaceLifecycleModel::from_app_session_snapshot(&snapshot).unwrap();
+    let generation = model.surface("surface-2").unwrap().generation;
     assert_eq!(
-        snapshot.windows[1].tab_manager.workspaces[0]
-            .focused_panel_id
-            .as_deref(),
-        Some("surface-2")
+        model.attach_runtime(
+            "surface-2",
+            generation.saturating_sub(1),
+            RuntimeHandle::new("stale-runtime")
+        ),
+        AttachOutcome::StaleCleaned
+    );
+    assert!(model.owner_of_runtime("stale-runtime").is_none());
+    assert_eq!(
+        model.attach_runtime("surface-2", generation, RuntimeHandle::new("live-runtime")),
+        AttachOutcome::Attached
     );
     assert_eq!(
-        events
-            .iter()
-            .filter(|event| event.name == "surface.focused")
-            .count(),
-        1
+        model.owner_of_runtime("live-runtime").unwrap().window_id,
+        "window-2"
     );
-    assert_eq!(effects["window_activation_count"], json!(1));
-    assert_eq!(effects["persistence_write_count"], json!(1));
 }
 
 #[test]
-fn v2_surface_move_resolves_source_and_destination_across_windows() {
+fn move_is_one_global_two_window_transaction_and_preserves_metadata() {
     let mut snapshot = two_window_snapshot();
-    let (conflict, conflict_events, conflict_effects) = decoded_lifecycle_call(
-        &mut snapshot,
-        "surface.move",
-        json!({
-            "surface_id": "surface-1",
-            "before_surface_id": "surface-2",
-            "after_surface_id": "surface-2",
-        }),
-    );
-    assert_error(
-        conflict,
-        "invalid_params",
-        "Specify at most one of before_surface_id or after_surface_id",
-    );
-    assert!(conflict_events.is_empty());
-    assert_eq!(conflict_effects["persistence_write_count"], json!(0));
+    let mut encoded = serde_json::to_value(&snapshot).unwrap();
+    encoded["windows"][0]["tab_manager"]["workspaces"][0]["surfaces"] = json!([{
+        "surface_id": "surface-1",
+        "pane_id": "pane-1",
+        "generation": 4,
+        "kind": {"type": "terminal"},
+        "metadata": {"custom_title": "Mover", "pinned": true}
+    }]);
+    snapshot = serde_json::from_value(encoded).unwrap();
 
-    let (value, events, effects) = decoded_lifecycle_ok(
-        &mut snapshot,
+    let moved = transition(
+        &snapshot,
         "surface.move",
-        json!({
-            "surface_id": "surface-1",
-            "window_id": "window-2",
-            "focus": true,
-        }),
+        json!({"surface_id": "surface-1", "window_id": "window-2", "focus": true}),
     );
-    assert_eq!(value["surface_id"], json!("surface-1"));
+    let value = ok_value(&moved);
     assert_eq!(value["window_id"], json!("window-2"));
     assert_eq!(value["workspace_id"], json!("workspace-2"));
     assert_eq!(value["pane_id"], json!("pane-2"));
-    assert!(
-        !surfaces_for_workspace(&snapshot.windows[0].tab_manager.workspaces[0])
-            .iter()
-            .any(|surface| surface["id"] == json!("surface-1"))
-    );
-    assert!(
-        surfaces_for_workspace(&snapshot.windows[1].tab_manager.workspaces[0])
-            .iter()
-            .any(|surface| surface["id"] == json!("surface-1"))
-    );
+    let model = SurfaceLifecycleModel::from_app_session_snapshot(&moved.snapshot).unwrap();
+    let owner = model.owner_of_surface("surface-1").unwrap();
+    assert_eq!(owner.window_id, "window-2");
+    assert_eq!(owner.workspace_id, "workspace-2");
     assert_eq!(
-        events
+        model
+            .surface("surface-1")
+            .unwrap()
+            .metadata
+            .custom_title
+            .as_deref(),
+        Some("Mover")
+    );
+    assert!(model.surface("surface-1").unwrap().metadata.pinned);
+    assert_eq!(
+        moved
+            .events
             .iter()
             .filter(|event| event.name == "surface.moved")
             .count(),
         1
     );
-    assert_eq!(effects["window_activation_count"], json!(1));
-    assert_eq!(effects["metadata_transfer_count"], json!(1));
-    assert_eq!(effects["persistence_write_count"], json!(2));
 }
 
 #[test]
-fn v2_lifecycle_snapshot_persists_per_surface_records_not_pane_wide_kind() {
-    let encoded = serde_json::to_value(mixed_surface_snapshot()).expect("encode snapshot");
+fn restore_dispatch_serialize_restore_preserves_authoritative_state() {
+    let snapshot = mixed_surface_snapshot();
+    let renamed = transition(
+        &snapshot,
+        "surface.action",
+        json!({"surface_id": "surface-browser", "action": "rename", "title": "Restored docs"}),
+    );
+    let bytes = cmux_core::session::encode_session(&renamed.snapshot).unwrap();
+    let restored = cmux_core::session::decode_session(&bytes).unwrap();
+    let listed = transition(&restored, "surface.list", json!({}));
+    let rows = ok_value(&listed)["surfaces"].as_array().unwrap().clone();
+    let browser = rows
+        .iter()
+        .find(|row| row["id"] == "surface-browser")
+        .unwrap();
+    assert_eq!(browser["title"], json!("Restored docs"));
+    assert_eq!(browser["developer_tools_visible"], json!(true));
+    assert!(
+        serde_json::to_value(restored).unwrap()["windows"][0]["tab_manager"]["workspaces"][0]
+            ["panel_titles"]
+            .is_null()
+    );
+}
+
+#[test]
+fn action_matrix_and_close_range_skip_pinned_and_preserve_last_surface() {
+    let snapshot = mixed_surface_snapshot();
+    let pinned = transition(
+        &snapshot,
+        "surface.action",
+        json!({"surface_id": "surface-browser", "action": "pin"}),
+    );
+    assert_eq!(ok_value(&pinned)["pinned"], json!(true));
+    let unread = transition(
+        &pinned.snapshot,
+        "surface.action",
+        json!({"surface_id": "surface-browser", "action": "mark-unread"}),
+    );
+    assert_eq!(ok_value(&unread)["action"], json!("mark_unread"));
+    let close_right = transition(
+        &unread.snapshot,
+        "surface.action",
+        json!({"surface_id": "surface-terminal", "action": "close-right"}),
+    );
+    let value = ok_value(&close_right);
+    assert_eq!(value["closed"], json!([]));
+    assert_eq!(value["skipped_pinned"], json!(["surface-browser"]));
+
+    let close_last = transition(
+        &snapshot,
+        "surface.close",
+        json!({"surface_id": "surface-browser"}),
+    );
+    let last = transition(
+        &close_last.snapshot,
+        "surface.close",
+        json!({"surface_id": "surface-terminal"}),
+    );
+    assert_error(&last, "invalid_state", "Cannot close the last surface");
+    assert!(!last.changed);
+}
+
+#[test]
+fn pane_focus_and_surface_split_regressions_mutate_authoritative_records() {
+    let snapshot = resizable_snapshot();
+    let focused = transition(
+        &snapshot,
+        "pane.focus",
+        json!({"workspace_id": "workspace-1", "pane_id": "pane-right"}),
+    );
+    assert_eq!(
+        focused.snapshot.windows[0].tab_manager.workspaces[0]
+            .focused_panel_id
+            .as_deref(),
+        Some("surface-right")
+    );
+    SurfaceLifecycleModel::from_app_session_snapshot(&focused.snapshot)
+        .unwrap()
+        .validate_indexes()
+        .unwrap();
+
+    let split = transition(
+        &focused.snapshot,
+        "surface.split",
+        json!({"surface_id": "surface-right", "direction": "l", "type": "Browser", "focus": true}),
+    );
+    let value = ok_value(&split);
+    let created_id = value["surface_id"].as_str().unwrap();
+    let model = SurfaceLifecycleModel::from_app_session_snapshot(&split.snapshot).unwrap();
+    assert!(matches!(
+        model.surface(created_id).unwrap().kind,
+        cmux_core::surface_lifecycle::SurfaceKind::Browser { .. }
+    ));
+    assert_eq!(model.focused_surface("workspace-1"), Some(created_id));
+    model.validate_indexes().unwrap();
+}
+
+#[test]
+fn persisted_schema_has_one_per_surface_authority() {
+    let encoded = serde_json::to_value(mixed_surface_snapshot()).unwrap();
     let workspace = &encoded["windows"][0]["tab_manager"]["workspaces"][0];
     assert_eq!(workspace["surfaces"], intended_mixed_surface_records());
-
+    for obsolete in [
+        "panel_titles",
+        "panel_pins",
+        "panel_unreads",
+        "panel_terminal_startups",
+        "restorable_agent_snapshots",
+    ] {
+        assert!(
+            workspace.get(obsolete).is_none(),
+            "workspace retained {obsolete}"
+        );
+    }
     let pane = &workspace["layout"]["pane"];
-    assert_eq!(
-        pane["panel_ids"],
-        json!(["surface-terminal", "surface-browser"])
-    );
-    assert_eq!(pane["selected_panel_id"], json!("surface-browser"));
     for obsolete in [
         "surface_kind",
         "browser_url",
@@ -766,87 +829,4 @@ fn v2_lifecycle_snapshot_persists_per_surface_records_not_pane_wide_kind() {
     ] {
         assert!(pane.get(obsolete).is_none(), "pane retained {obsolete}");
     }
-    for obsolete in [
-        "panel_titles",
-        "panel_pins",
-        "panel_unreads",
-        "panel_terminal_startups",
-        "restorable_agent_snapshots",
-    ] {
-        assert!(
-            workspace.get(obsolete).is_none(),
-            "workspace retained parallel metadata {obsolete}"
-        );
-    }
-}
-
-#[test]
-fn v2_lifecycle_transition_events_are_emitted_once_from_committed_state() {
-    let previous = event_summary(
-        vec![event_workspace(
-            "workspace-1",
-            "Workspace",
-            0,
-            &["surface-a"],
-            Some("surface-a"),
-        )],
-        0,
-    );
-    let current = event_summary(
-        vec![event_workspace(
-            "workspace-1",
-            "Workspace",
-            0,
-            &["surface-a", "surface-b"],
-            Some("surface-b"),
-        )],
-        0,
-    );
-    let events = derived_session_event_specs(Some(&previous), &current);
-    assert_eq!(
-        events
-            .iter()
-            .filter(|event| event.name == "surface.created")
-            .count(),
-        1
-    );
-    assert_eq!(
-        events
-            .iter()
-            .filter(|event| event.name == "surface.focused")
-            .count(),
-        1
-    );
-}
-
-#[test]
-fn regression_pane_focus_remains_scoped_to_resolved_workspace() {
-    let snapshot = surface_move_snapshot();
-    let target = json!({"workspace_id": "workspace-2", "pane_id": "pane-2"});
-    assert_eq!(
-        resolve_pane_focus_target(&snapshot, target.as_object().unwrap(), 0),
-        Ok((1, 0, "pane-2".to_string()))
-    );
-    let wrong = json!({"workspace_id": "workspace-1", "pane_id": "pane-2"});
-    assert_eq!(
-        resolve_pane_focus_target(&snapshot, wrong.as_object().unwrap(), 0),
-        Err(PaneFocusResolveError::PaneNotFound)
-    );
-}
-
-#[test]
-fn regression_surface_split_keeps_alias_kind_and_focus_decoding() {
-    for alias in ["left", "l", "right", "r", "up", "u", "down", "d"] {
-        let params = json!({"direction": alias});
-        assert!(split_orientation_from_params(params.as_object().unwrap()).is_some());
-    }
-    let params = json!({"type": "Browser", "focus": "true"});
-    assert_eq!(
-        surface_kind_from_params(params.as_object().unwrap()),
-        Some("browser".to_string())
-    );
-    assert_eq!(
-        bool_param(params.as_object().unwrap(), &["focus"]),
-        Some(true)
-    );
 }
