@@ -109,6 +109,10 @@ mod sidebar_metadata_red;
 #[path = "session/public_control_metadata_red.rs"]
 mod public_control_metadata_red;
 
+#[cfg(test)]
+#[path = "session/runtime_model_facts_red.rs"]
+mod runtime_model_facts_red;
+
 impl Default for SessionState {
     fn default() -> Self {
         let snapshot = initial_snapshot(FIRST_PANEL_ID);
