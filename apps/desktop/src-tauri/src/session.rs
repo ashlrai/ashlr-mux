@@ -97,6 +97,10 @@ mod focus_navigation_red;
 #[path = "session/pane_layout_red.rs"]
 mod pane_layout_red;
 
+#[cfg(test)]
+#[path = "session/workspace_selection_reorder_red.rs"]
+mod workspace_selection_reorder_red;
+
 impl Default for SessionState {
     fn default() -> Self {
         let snapshot = initial_snapshot(FIRST_PANEL_ID);
