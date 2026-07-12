@@ -167,6 +167,19 @@ impl SessionState {
         };
         transact_snapshot_if_changed(&self.snapshot, &mut operations, mutation)
     }
+
+    pub(crate) fn transact_snapshot_always(
+        &self,
+        app: &AppHandle,
+        mutation: impl FnOnce(&mut AppSessionSnapshot) -> bool,
+    ) -> Result<AppSessionSnapshot, String> {
+        let mut operations = ProductionSnapshotPublicationOperations {
+            app,
+            state: self,
+            derived_events: DerivedEventPolicy::Record,
+        };
+        transact_snapshot_always(&self.snapshot, &mut operations, mutation)
+    }
 }
 
 trait SnapshotPublicationOperations {
@@ -202,13 +215,30 @@ fn transact_snapshot_if_changed(
     operations: &mut impl SnapshotPublicationOperations,
     mutation: impl FnOnce(&mut AppSessionSnapshot) -> bool,
 ) -> Result<AppSessionSnapshot, String> {
+    transact_snapshot(authority, operations, false, mutation)
+}
+
+fn transact_snapshot_always(
+    authority: &GatedSnapshot,
+    operations: &mut impl SnapshotPublicationOperations,
+    mutation: impl FnOnce(&mut AppSessionSnapshot) -> bool,
+) -> Result<AppSessionSnapshot, String> {
+    transact_snapshot(authority, operations, true, mutation)
+}
+
+fn transact_snapshot(
+    authority: &GatedSnapshot,
+    operations: &mut impl SnapshotPublicationOperations,
+    publish_unchanged: bool,
+    mutation: impl FnOnce(&mut AppSessionSnapshot) -> bool,
+) -> Result<AppSessionSnapshot, String> {
     let _transaction_gate = authority.lock_gate();
     let current = authority
         .lock()
         .map_err(|_| "Session state is unavailable".to_string())?
         .clone();
     let mut candidate = current.clone();
-    if !mutation(&mut candidate) {
+    if !mutation(&mut candidate) && !publish_unchanged {
         return Ok(current);
     }
     publish_snapshot_transaction(authority, Some(&current), &candidate, operations)
@@ -6426,17 +6456,10 @@ pub fn session_set_divider(
     state: State<'_, SessionState>,
     path: Vec<SplitChild>,
     position: f64,
-) -> AppSessionSnapshot {
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        apply_set_divider(&mut guard, &path, position);
-        guard.clone()
-    };
-    notify_session_changed(&app, &snapshot);
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_always(&app, |snapshot| {
+        apply_set_divider(snapshot, &path, position)
+    })
 }
 
 /// Equalize every split divider in the active workspace layout so panes share
@@ -6446,17 +6469,8 @@ pub fn session_set_divider(
 pub fn session_equalize_dividers(
     app: AppHandle,
     state: State<'_, SessionState>,
-) -> AppSessionSnapshot {
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        apply_equalize_dividers(&mut guard);
-        guard.clone()
-    };
-    notify_session_changed(&app, &snapshot);
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_always(&app, apply_equalize_dividers)
 }
 
 /// Toggle split zoom for the active pane. When zoomed, the web workspace renders
@@ -6523,17 +6537,10 @@ pub fn session_set_surface_kind(
     state: State<'_, SessionState>,
     panel_id: String,
     kind: Option<String>,
-) -> AppSessionSnapshot {
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        apply_set_surface_kind(&mut guard, &panel_id, kind);
-        guard.clone()
-    };
-    notify_session_changed(&app, &snapshot);
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_always(&app, |snapshot| {
+        apply_set_surface_kind(snapshot, &panel_id, kind)
+    })
 }
 
 /// Select the next/previous tab inside the pane holding `panelId`.
