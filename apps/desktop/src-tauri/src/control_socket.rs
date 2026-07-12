@@ -14339,6 +14339,7 @@ mod tests {
                         process_title: "shell".to_string(),
                         custom_title: Some("Phoenix".to_string()),
                         current_directory: Some("C:/repo".to_string()),
+                        focused_panel_id: Some("surface-1".to_string()),
                         layout: Some(SessionWorkspaceLayoutSnapshot::Pane(
                             SessionPaneLayoutSnapshot {
                                 pane_id: Some("pane-1".to_string()),
@@ -17462,6 +17463,7 @@ mod tests {
                 browser_page_zoom: None,
             },
         ));
+        workspace.focused_panel_id = Some("surface-2".to_string());
 
         assert_eq!(
             surface_id_from_params_or_focused(
@@ -17516,6 +17518,7 @@ mod tests {
                 browser_page_zoom: None,
             },
         ));
+        second.focused_panel_id = Some("surface-3".to_string());
         snapshot.windows[0].tab_manager.workspaces.push(second);
         snapshot.windows[0].tab_manager.selected_workspace_index = Some(0);
 
