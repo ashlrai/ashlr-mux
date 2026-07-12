@@ -5,6 +5,7 @@
 //! arrays cannot satisfy these invariants, so this test-only commit must not
 //! compile until the model exists.
 
+use cmux_core::session::SessionTabManagerSnapshot;
 use cmux_core::surface_lifecycle::{
     AttachOutcome, ContainerKind, LegacyPaneSnapshot, LifecycleSnapshot, MoveFailure, PaneSeed,
     RuntimeHandle, SurfaceKind, SurfaceLifecycleModel, SurfaceMetadata, SurfaceSeed,
@@ -374,4 +375,175 @@ fn legacy_parallel_snapshot_migrates_without_kind_or_metadata_leakage() {
     assert!(!model.surface("terminal-1").unwrap().metadata.pinned);
     assert!(model.surface("browser-1").unwrap().metadata.pinned);
     assert!(model.validate_indexes().is_ok());
+}
+
+#[test]
+fn real_session_snapshot_migrates_to_and_restores_from_one_surface_record_source() {
+    // This is deliberately the real persisted cmux-core type, not a lifecycle
+    // DTO. It represents today's pane-wide kind and parallel metadata wire
+    // shape and therefore exercises the required compatibility boundary.
+    let legacy_json = serde_json::json!({
+        "selected_workspace_index": 0,
+        "workspaces": [{
+            "workspace_id": "workspace-1",
+            "process_title": "Terminal",
+            "focused_panel_id": "terminal-1",
+            "layout": {
+                "type": "pane",
+                "pane": {
+                    "pane_id": "pane-1",
+                    "panel_ids": ["terminal-1", "browser-1"],
+                    "selected_panel_id": "browser-1",
+                    "surface_kind": "terminal",
+                    "browser_url": "https://wrong-pane-wide.test"
+                }
+            },
+            "panel_titles": [{"panel_id": "terminal-1", "custom_title": "shell"}],
+            "panel_pins": [{"panel_id": "browser-1", "is_pinned": true}],
+            "panel_unreads": [{"panel_id": "browser-1", "is_unread": true}],
+            "panel_terminal_startups": [{
+                "panel_id": "terminal-1",
+                "initial_terminal_command": "pwsh -NoLogo"
+            }]
+        }]
+    });
+    let legacy: SessionTabManagerSnapshot = serde_json::from_value(legacy_json).unwrap();
+
+    let model = SurfaceLifecycleModel::from_session_snapshot("window-1", &legacy).unwrap();
+    assert!(matches!(
+        model.surface("terminal-1").unwrap().kind,
+        SurfaceKind::Terminal
+    ));
+    assert!(matches!(
+        model.surface("browser-1").unwrap().kind,
+        SurfaceKind::Browser { .. }
+    ));
+
+    let migrated: SessionTabManagerSnapshot = model.to_session_snapshot(&legacy).unwrap();
+    let persisted = serde_json::to_value(&migrated).unwrap();
+    let workspace = &persisted["workspaces"][0];
+    let records = workspace["surfaces"].as_array().unwrap();
+    assert_eq!(
+        records
+            .iter()
+            .map(|record| record["surface_id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["terminal-1", "browser-1"]
+    );
+    assert_eq!(records[0]["kind"]["type"], "terminal");
+    assert_eq!(records[0]["metadata"]["custom_title"], "shell");
+    assert_eq!(records[0]["terminal_startup"]["command"], "pwsh -NoLogo");
+    assert_eq!(records[1]["kind"]["type"], "browser");
+    assert_eq!(records[1]["metadata"]["pinned"], true);
+    assert_eq!(records[1]["metadata"]["unread"], true);
+
+    // Once migrated, no serialized pane-wide kind or parallel metadata may
+    // remain authoritative beside the surface records.
+    assert!(workspace.get("panel_titles").is_none());
+    assert!(workspace.get("panel_pins").is_none());
+    assert!(workspace.get("panel_unreads").is_none());
+    assert!(workspace.get("panel_terminal_startups").is_none());
+    let pane = &workspace["layout"]["pane"];
+    assert!(pane.get("surface_kind").is_none());
+    assert!(pane.get("browser_url").is_none());
+
+    // Exercise serde on the actual session schema before rebuilding the model;
+    // this prevents a separate in-memory lifecycle snapshot from passing.
+    let encoded = serde_json::to_string(&migrated).unwrap();
+    let restored_session: SessionTabManagerSnapshot = serde_json::from_str(&encoded).unwrap();
+    let restored =
+        SurfaceLifecycleModel::from_session_snapshot("window-1", &restored_session).unwrap();
+    assert_eq!(restored.snapshot(), model.snapshot());
+}
+
+#[test]
+fn close_move_and_respawn_project_back_into_the_real_session_schema() {
+    let base: SessionTabManagerSnapshot = serde_json::from_value(serde_json::json!({
+        "selected_workspace_index": 0,
+        "workspaces": [{
+            "workspace_id": "workspace-1",
+            "process_title": "Terminal",
+            "focused_panel_id": "terminal-a",
+            "layout": {
+                "type": "split",
+                "split": {
+                    "split_id": "split-1",
+                    "orientation": "horizontal",
+                    "divider_position": 0.5,
+                    "first": {"type": "pane", "pane": {
+                        "pane_id": "pane-a",
+                        "panel_ids": ["terminal-a", "browser-a"],
+                        "selected_panel_id": "terminal-a"
+                    }},
+                    "second": {"type": "pane", "pane": {
+                        "pane_id": "pane-b",
+                        "panel_ids": ["terminal-b"],
+                        "selected_panel_id": "terminal-b"
+                    }}
+                }
+            },
+            "surfaces": [{
+                "surface_id": "terminal-a",
+                "pane_id": "pane-a",
+                "generation": 2,
+                "kind": {"type": "terminal"},
+                "metadata": {"custom_title": "api"},
+                "terminal_startup": {"command": "pwsh"}
+            }, {
+                "surface_id": "browser-a",
+                "pane_id": "pane-a",
+                "generation": 1,
+                "kind": {"type": "browser", "url": "https://example.test"},
+                "metadata": {"pinned": false}
+            }, {
+                "surface_id": "terminal-b",
+                "pane_id": "pane-b",
+                "generation": 1,
+                "kind": {"type": "terminal"},
+                "metadata": {}
+            }]
+        }]
+    }))
+    .unwrap();
+    let mut model = SurfaceLifecycleModel::from_session_snapshot("window-1", &base).unwrap();
+
+    model.close_surface("browser-a").unwrap();
+    model.move_surface("terminal-a", "pane-b", 1).unwrap();
+    let respawn = model
+        .begin_respawn("terminal-a", "pwsh -NoProfile", Some("C:/repo"))
+        .unwrap();
+    assert_eq!(respawn.surface_id, "terminal-a");
+
+    let projected = model.to_session_snapshot(&base).unwrap();
+    let json = serde_json::to_value(projected).unwrap();
+    let workspace = &json["workspaces"][0];
+    let records = workspace["surfaces"].as_array().unwrap();
+    assert_eq!(records.len(), 2);
+    assert!(records
+        .iter()
+        .all(|record| record["surface_id"] != "browser-a"));
+    let terminal_a = records
+        .iter()
+        .find(|record| record["surface_id"] == "terminal-a")
+        .unwrap();
+    assert_eq!(terminal_a["pane_id"], "pane-b");
+    assert_eq!(terminal_a["generation"], respawn.generation);
+    assert_eq!(terminal_a["metadata"]["custom_title"], "api");
+    assert_eq!(terminal_a["terminal_startup"]["command"], "pwsh -NoProfile");
+    assert_eq!(
+        terminal_a["terminal_startup"]["working_directory"],
+        "C:/repo"
+    );
+    // Moving the last surface out collapses the empty source pane in the same
+    // projection transaction; the surviving pane keeps its stable identity.
+    assert_eq!(workspace["layout"]["type"], "pane");
+    assert_eq!(workspace["layout"]["pane"]["pane_id"], "pane-b");
+    assert_eq!(
+        workspace["layout"]["pane"]["panel_ids"],
+        serde_json::json!(["terminal-b", "terminal-a"])
+    );
+    assert!(workspace.get("panel_titles").is_none());
+    assert!(workspace.get("panel_pins").is_none());
+    assert!(workspace.get("panel_unreads").is_none());
+    assert!(workspace.get("panel_terminal_startups").is_none());
 }
