@@ -18365,4 +18365,7 @@ mod tests {
 
     #[path = "dock_production_rollback_red.rs"]
     mod dock_production_rollback_red;
+
+    #[path = "surface_action_adversarial_red.rs"]
+    mod surface_action_adversarial_red;
 }
