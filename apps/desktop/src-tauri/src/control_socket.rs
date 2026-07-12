@@ -13427,6 +13427,7 @@ fn collect_pane_surfaces(
             .as_deref()
             .map(|selected| selected == panel_id)
             .unwrap_or(index_in_pane == 0);
+        let focused = workspace.focused_panel_id.as_deref() == Some(panel_id.as_str());
         let record = workspace
             .surfaces
             .as_ref()
@@ -13538,7 +13539,7 @@ fn collect_pane_surfaces(
             "ref": surface_ref(index),
             "type": surface_type,
             "title": authoritative_title.clone().or_else(|| panel_title(&workspace.panel_titles, panel_id)).unwrap_or_else(|| surface_type.to_string()),
-            "focused": selected,
+            "focused": focused,
             "pane_id": pane.pane_id,
             "pane_ref": pane.pane_id.as_ref().map(|_| format!("pane:{}", index + 1)),
             "selected_in_pane": selected,

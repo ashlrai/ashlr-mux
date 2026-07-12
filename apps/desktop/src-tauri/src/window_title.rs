@@ -156,6 +156,7 @@ mod tests {
         SessionWorkspaceSnapshot {
             surfaces: None,
             pending_remote_pwds: None,
+            pending_surface_pwds: None,
             workspace_id: Some(id.to_owned()),
             process_title: process_title.to_owned(),
             custom_title: custom_title.map(str::to_owned),
