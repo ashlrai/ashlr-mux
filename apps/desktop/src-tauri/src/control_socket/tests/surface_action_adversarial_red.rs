@@ -2413,3 +2413,235 @@ fn remote_window_lookup_and_kill_run_without_holding_registry_mutex() {
     assert_eq!(pending.remote_window_id, "@42");
     assert_eq!(pending.destination, "mirror.example");
 }
+
+#[derive(Default)]
+struct FakeLifecycleRollbackOperations {
+    calls: Vec<String>,
+}
+
+impl LifecycleRollbackOperations for FakeLifecycleRollbackOperations {
+    fn rollback_dock(&mut self) -> Result<(), String> {
+        self.calls.push("dock".into());
+        Err("dock restore failed".into())
+    }
+
+    fn cleanup_terminal(&mut self, id: u32) -> Result<(), String> {
+        self.calls.push(format!("terminal:{id}"));
+        Err("terminal kill failed".into())
+    }
+
+    fn cleanup_remote(&mut self, target: &str) -> Result<(), String> {
+        self.calls.push(format!("remote:{target}"));
+        Err("remote kill failed".into())
+    }
+
+    fn cleanup_browser(&mut self, surface_id: &str) -> Result<(), String> {
+        self.calls.push(format!("browser:{surface_id}"));
+        Err("browser close failed".into())
+    }
+}
+
+#[test]
+fn lifecycle_rollback_attempts_every_cleanup_and_aggregates_all_failures() {
+    let plan = LifecycleRollbackPlan {
+        terminal_ids: vec![7],
+        remote_targets: vec!["@42".into()],
+        browser_surface_ids: vec![B.into()],
+    };
+    let mut operations = FakeLifecycleRollbackOperations::default();
+
+    let error = run_lifecycle_rollback_cleanup(&plan, &mut operations).unwrap_err();
+    for expected_call in ["dock", "terminal:7", "remote:@42", &format!("browser:{B}")] {
+        assert!(operations.calls.iter().any(|call| call == expected_call));
+    }
+    for expected_error in [
+        "dock restore failed",
+        "terminal kill failed",
+        "remote kill failed",
+        "browser close failed",
+    ] {
+        assert!(
+            error.contains(expected_error),
+            "rollback omitted cleanup failure: {expected_error}; actual={error}"
+        );
+    }
+}
+
+#[derive(Default)]
+struct FakeLifecycleRuntimeRegistry {
+    authority: std::collections::BTreeMap<(LifecycleRuntimeKind, String), Vec<u32>>,
+    live: std::collections::BTreeSet<u32>,
+    fail_shutdown: std::collections::BTreeSet<u32>,
+    fail_remove: std::collections::BTreeSet<u32>,
+    shutdown_calls: Vec<u32>,
+    restore_calls: Vec<u32>,
+}
+
+impl FakeLifecycleRuntimeRegistry {
+    fn insert(&mut self, kind: LifecycleRuntimeKind, surface_id: &str, id: u32) {
+        self.authority
+            .entry((kind, surface_id.into()))
+            .or_default()
+            .push(id);
+        self.live.insert(id);
+    }
+
+    fn ids(&self, kind: LifecycleRuntimeKind, surface_id: &str) -> Vec<u32> {
+        self.authority
+            .get(&(kind, surface_id.into()))
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
+impl LifecycleRuntimeRegistry for FakeLifecycleRuntimeRegistry {
+    fn runtime_ids(&self, kind: LifecycleRuntimeKind, surface_id: &str) -> Vec<u32> {
+        self.ids(kind, surface_id)
+    }
+
+    fn shutdown_runtime(&mut self, _kind: LifecycleRuntimeKind, id: u32) -> Result<(), String> {
+        self.shutdown_calls.push(id);
+        if self.fail_shutdown.contains(&id) {
+            return Err(format!("shutdown failed for {id}"));
+        }
+        self.live.remove(&id);
+        Ok(())
+    }
+
+    fn remove_runtime(
+        &mut self,
+        kind: LifecycleRuntimeKind,
+        surface_id: &str,
+        id: u32,
+    ) -> Result<(), String> {
+        if self.fail_remove.contains(&id) {
+            return Err(format!("registry remove failed for {id}"));
+        }
+        if let Some(ids) = self.authority.get_mut(&(kind, surface_id.into())) {
+            ids.retain(|candidate| *candidate != id);
+        }
+        Ok(())
+    }
+
+    fn restore_runtime(
+        &mut self,
+        kind: LifecycleRuntimeKind,
+        surface_id: &str,
+        id: u32,
+    ) -> Result<(), String> {
+        self.restore_calls.push(id);
+        self.live.insert(id);
+        let ids = self.authority.entry((kind, surface_id.into())).or_default();
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+        Ok(())
+    }
+}
+
+fn fake_terminal_replacement_registry() -> FakeLifecycleRuntimeRegistry {
+    let mut registry = FakeLifecycleRuntimeRegistry::default();
+    registry.insert(LifecycleRuntimeKind::Terminal, B, 1);
+    registry.insert(LifecycleRuntimeKind::Terminal, B, 2);
+    registry
+}
+
+#[test]
+fn strict_terminal_and_browser_teardown_preserve_authority_when_shutdown_fails() {
+    for kind in [
+        LifecycleRuntimeKind::Terminal,
+        LifecycleRuntimeKind::Browser,
+    ] {
+        let mut registry = FakeLifecycleRuntimeRegistry::default();
+        registry.insert(kind, B, 7);
+        registry.fail_shutdown.insert(7);
+
+        let error = strict_lifecycle_runtime_teardown(&mut registry, kind, B).unwrap_err();
+        assert!(error.contains("shutdown failed for 7"));
+        assert_eq!(registry.ids(kind, B), vec![7]);
+        assert!(registry.live.contains(&7));
+        assert!(registry.restore_calls.is_empty());
+    }
+}
+
+#[test]
+fn strict_teardown_restores_runtime_atomically_when_registry_removal_fails() {
+    for kind in [
+        LifecycleRuntimeKind::Terminal,
+        LifecycleRuntimeKind::Browser,
+    ] {
+        let mut registry = FakeLifecycleRuntimeRegistry::default();
+        registry.insert(kind, B, 7);
+        registry.fail_remove.insert(7);
+
+        let error = strict_lifecycle_runtime_teardown(&mut registry, kind, B).unwrap_err();
+        assert!(error.contains("registry remove failed for 7"));
+        assert_eq!(registry.ids(kind, B), vec![7]);
+        assert!(registry.live.contains(&7));
+        assert_eq!(registry.restore_calls, vec![7]);
+    }
+}
+
+#[test]
+fn strict_teardown_removes_authority_only_after_successful_shutdown() {
+    for kind in [
+        LifecycleRuntimeKind::Terminal,
+        LifecycleRuntimeKind::Browser,
+    ] {
+        let mut registry = FakeLifecycleRuntimeRegistry::default();
+        registry.insert(kind, B, 7);
+
+        strict_lifecycle_runtime_teardown(&mut registry, kind, B).unwrap();
+        assert!(registry.ids(kind, B).is_empty());
+        assert!(!registry.live.contains(&7));
+        assert_eq!(registry.shutdown_calls, vec![7]);
+    }
+}
+
+#[test]
+fn terminal_replace_retirement_failure_is_observable_and_compensates_new_runtime() {
+    let mut registry = fake_terminal_replacement_registry();
+    registry.fail_shutdown.insert(1);
+
+    let error = commit_terminal_runtime_replacement(&mut registry, B, 2).unwrap_err();
+    assert!(error.contains("shutdown failed for 1"));
+    assert_eq!(registry.ids(LifecycleRuntimeKind::Terminal, B), vec![1]);
+    assert!(registry.live.contains(&1));
+    assert!(!registry.live.contains(&2));
+    assert_eq!(registry.shutdown_calls, vec![1, 2]);
+}
+
+#[test]
+fn terminal_replace_compensation_failure_is_aggregated_without_duplicate_authority() {
+    let mut registry = fake_terminal_replacement_registry();
+    registry.fail_shutdown.extend([1, 2]);
+
+    let error = commit_terminal_runtime_replacement(&mut registry, B, 2).unwrap_err();
+    assert!(error.contains("shutdown failed for 1"));
+    assert!(error.contains("shutdown failed for 2"));
+    assert_eq!(registry.ids(LifecycleRuntimeKind::Terminal, B), vec![1]);
+    assert!(registry.live.contains(&1));
+}
+
+#[test]
+fn terminal_replace_retirement_registry_failure_restores_old_and_discards_replacement() {
+    let mut registry = fake_terminal_replacement_registry();
+    registry.fail_remove.insert(1);
+
+    let error = commit_terminal_runtime_replacement(&mut registry, B, 2).unwrap_err();
+    assert!(error.contains("registry remove failed for 1"));
+    assert_eq!(registry.ids(LifecycleRuntimeKind::Terminal, B), vec![1]);
+    assert!(registry.live.contains(&1));
+    assert!(!registry.live.contains(&2));
+    assert_eq!(registry.restore_calls, vec![1]);
+}
+
+#[test]
+fn terminal_replace_success_leaves_exactly_the_replacement_runtime() {
+    let mut registry = fake_terminal_replacement_registry();
+
+    commit_terminal_runtime_replacement(&mut registry, B, 2).unwrap();
+    assert_eq!(registry.ids(LifecycleRuntimeKind::Terminal, B), vec![2]);
+    assert!(!registry.live.contains(&1));
+    assert!(registry.live.contains(&2));
+}
