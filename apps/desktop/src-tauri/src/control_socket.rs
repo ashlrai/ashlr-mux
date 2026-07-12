@@ -17077,4 +17077,7 @@ mod tests {
             None
         );
     }
+
+    #[path = "pane_surface_lifecycle_red.rs"]
+    mod pane_surface_lifecycle_red;
 }
