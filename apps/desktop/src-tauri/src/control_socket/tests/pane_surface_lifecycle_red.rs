@@ -92,7 +92,8 @@ fn intended_mixed_surface_records() -> Value {
             "generation": 3,
             "kind": {
                 "type": "browser",
-                "url": "https://example.test"
+                "url": "https://example.test",
+                "developer_tools_visible": true
             },
             "metadata": {
                 "custom_title": "Docs",
@@ -527,7 +528,7 @@ fn v2_surface_list_uses_exact_kind_conditional_payload_fields() {
     assert!(surfaces[0].get("requested_working_directory").is_some());
     assert!(surfaces[0].get("resume_binding").is_some());
     assert!(surfaces[0].get("developer_tools_visible").is_none());
-    assert!(surfaces[1].get("developer_tools_visible").is_some());
+    assert_eq!(surfaces[1]["developer_tools_visible"], json!(true));
     assert!(surfaces[1].get("requested_working_directory").is_none());
     assert!(surfaces[1].get("initial_command").is_none());
 }
