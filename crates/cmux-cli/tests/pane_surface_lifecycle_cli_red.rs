@@ -158,6 +158,18 @@ fn tab_action_parser_maps_action_selectors_title_url_and_focus() {
 }
 
 #[test]
+fn tab_action_normalizes_only_case_and_hyphens_while_accepting_unknown_actions() {
+    let mapped = control_command_for(
+        "tab-action",
+        &["--action".into(), "  Custom Action-Name  ".into()],
+    )
+    .unwrap()
+    .expect("tab-action must be mapped");
+
+    assert_eq!(mapped.params["action"], "custom action_name");
+}
+
+#[test]
 fn respawn_pane_parser_preserves_trailing_command_text_and_builds_native_wrapper() {
     let mapped = control_command_for(
         "respawn-pane",
@@ -191,6 +203,111 @@ fn respawn_pane_parser_preserves_trailing_command_text_and_builds_native_wrapper
     assert_ne!(wrapper, "echo two words && echo done");
     assert_native_windows_command(wrapper);
     assert!(wrapper.contains("echo two words && echo done"), "{wrapper}");
+}
+
+#[test]
+fn respawn_wrapper_survives_powershell_terminal_launch_and_cmd_metacharacters() {
+    let command_text = r#"powershell.exe -NoLogo -NoProfile -NonInteractive -Command "[Console]::Write('space \"quote\" & value')""#;
+    let mapped = control_command_for("respawn-pane", &["--command".into(), command_text.into()])
+        .unwrap()
+        .expect("respawn-pane must be mapped");
+    assert_eq!(mapped.params["tmux_start_command"], command_text);
+
+    let wrapper = mapped.params["command"].as_str().unwrap();
+    let output = Command::new("powershell.exe")
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            wrapper,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={} wrapper={wrapper:?}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "space \"quote\" & value"
+    );
+}
+
+#[test]
+fn tab_action_normalizes_workspace_indexes_and_preserves_ref_uuid_precedence() {
+    let (pipe, request_rx) = spawn_method_server(
+        "tab-action-workspace-index",
+        HashMap::from([
+            (
+                "workspace.list".into(),
+                json!({"workspaces":[{"index":3,"id":WORKSPACE_ID,"ref":"workspace:4"}]}),
+            ),
+            ("tab.action".into(), json!({"action":"pin"})),
+        ]),
+    );
+    let output = executable(Some(&pipe), &["tab-action", "pin", "--workspace", "3"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        request_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+        ("workspace.list".into(), serde_json::Map::new())
+    );
+    let (method, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(method, "tab.action");
+    assert_eq!(
+        Value::Object(params),
+        json!({"action":"pin","workspace_id":WORKSPACE_ID,"focus":false})
+    );
+
+    for (tag, selector, expected) in [
+        ("ref", "workspace:4", "workspace:4"),
+        ("uuid", WORKSPACE_ID, WORKSPACE_ID),
+    ] {
+        let (pipe, request_rx) = spawn_server(tag, ok(json!({"action":"pin"})));
+        let output = executable(Some(&pipe), &["tab-action", "pin", "--workspace", selector]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let (method, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(method, "tab.action");
+        assert_eq!(params.get("workspace_id"), Some(&json!(expected)));
+        assert!(params.get("workspace_ref").is_none());
+        assert!(request_rx.try_recv().is_err());
+    }
+}
+
+#[test]
+fn help_command_and_flag_routes_remain_distinct() {
+    let top = executable(None, &["help"]);
+    assert!(top.status.success());
+    assert_eq!(
+        String::from_utf8(top.stdout).unwrap(),
+        "Usage: cmux <path>|<command> [options]\n"
+    );
+
+    for args in [vec!["help", "tab-action"], vec!["tab-action", "--help"]] {
+        let output = executable(None, &args);
+        assert!(output.status.success());
+        assert!(String::from_utf8(output.stdout)
+            .unwrap()
+            .starts_with("cmux tab-action\n\nUsage:"));
+        assert!(output.stderr.is_empty());
+    }
+
+    let unknown = executable(None, &["help", "definitely-unknown"]);
+    assert!(unknown.status.success());
+    assert_eq!(
+        String::from_utf8(unknown.stdout).unwrap(),
+        "Unknown command 'definitely-unknown'. Run 'cmux help' to see available commands.\n"
+    );
 }
 
 #[test]
