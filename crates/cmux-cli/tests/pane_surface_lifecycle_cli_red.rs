@@ -1009,6 +1009,7 @@ fn invalid_ambient_lifecycle_handles_fail_before_transport() {
 #[test]
 fn text_summary_uses_requested_action_and_tab_alias_payload_keys() {
     let payload = json!({
+        "action":"backend-disagrees",
         "tab_id":SURFACE_ID, "tab_ref":"surface:4",
         "created_tab_id":OTHER_SURFACE_ID, "created_tab_ref":"surface:5"
     });
@@ -1026,6 +1027,54 @@ fn text_summary_uses_requested_action_and_tab_alias_payload_keys() {
         String::from_utf8(output.stdout).unwrap(),
         "OK action=pin tab=tab:4 created=tab:5\n"
     );
+}
+
+#[test]
+fn frozen_option_terminator_and_missing_value_edges_are_exact() {
+    let trailing_action = control_command_for("tab-action", &["--action".into()])
+        .unwrap()
+        .unwrap();
+    assert_eq!(trailing_action.params["action"], "__action");
+
+    for (args, expected) in [
+        (vec!["pin", "--focus"], "tab-action: unknown flag '--focus'"),
+        (
+            vec!["pin", "--", "--focus", "true"],
+            "tab-action: unknown flag '--'",
+        ),
+    ] {
+        let error = control_command_for(
+            "tab-action",
+            &args.into_iter().map(str::to_string).collect::<Vec<_>>(),
+        )
+        .unwrap_err();
+        assert_eq!(error.message, expected);
+    }
+
+    for (args, expected) in [
+        (vec!["--", "--command", "foo"], "--command foo"),
+        (vec!["--command"], "--command"),
+        (
+            vec![
+                "--command",
+                "one",
+                "--command",
+                "two",
+                "--",
+                "--command",
+                "three",
+            ],
+            "two",
+        ),
+    ] {
+        let mapped = control_command_for(
+            "respawn-pane",
+            &args.into_iter().map(str::to_string).collect::<Vec<_>>(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(mapped.params["tmux_start_command"], expected);
+    }
 }
 
 #[test]
