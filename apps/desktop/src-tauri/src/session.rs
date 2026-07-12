@@ -3458,29 +3458,18 @@ fn mutate_browser_for_control<F>(
     state: &SessionState,
     panel_id: &str,
     mutator: F,
-) -> AppSessionSnapshot
+) -> Result<AppSessionSnapshot, String>
 where
     F: FnOnce(&mut AppSessionSnapshot, &str) -> bool,
 {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = mutator(&mut guard, panel_id);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+    state.transact_snapshot_if_changed(app, |snapshot| mutator(snapshot, panel_id))
 }
 
 pub(crate) fn browser_go_back_for_control(
     app: &AppHandle,
     state: &SessionState,
     panel_id: &str,
-) -> AppSessionSnapshot {
+) -> Result<AppSessionSnapshot, String> {
     mutate_browser_for_control(app, state, panel_id, apply_browser_go_back)
 }
 
@@ -3488,7 +3477,7 @@ pub(crate) fn browser_go_forward_for_control(
     app: &AppHandle,
     state: &SessionState,
     panel_id: &str,
-) -> AppSessionSnapshot {
+) -> Result<AppSessionSnapshot, String> {
     mutate_browser_for_control(app, state, panel_id, apply_browser_go_forward)
 }
 
@@ -3496,7 +3485,7 @@ pub(crate) fn clear_browser_history_for_control(
     app: &AppHandle,
     state: &SessionState,
     panel_id: &str,
-) -> AppSessionSnapshot {
+) -> Result<AppSessionSnapshot, String> {
     mutate_browser_for_control(app, state, panel_id, apply_clear_browser_history)
 }
 
@@ -3504,7 +3493,7 @@ pub(crate) fn toggle_browser_omnibar_for_control(
     app: &AppHandle,
     state: &SessionState,
     panel_id: &str,
-) -> AppSessionSnapshot {
+) -> Result<AppSessionSnapshot, String> {
     mutate_browser_for_control(app, state, panel_id, apply_toggle_browser_omnibar)
 }
 
@@ -3512,7 +3501,7 @@ pub(crate) fn toggle_browser_focus_mode_for_control(
     app: &AppHandle,
     state: &SessionState,
     panel_id: &str,
-) -> AppSessionSnapshot {
+) -> Result<AppSessionSnapshot, String> {
     mutate_browser_for_control(app, state, panel_id, apply_toggle_browser_focus_mode)
 }
 
@@ -3520,7 +3509,7 @@ pub(crate) fn toggle_browser_developer_tools_for_control(
     app: &AppHandle,
     state: &SessionState,
     panel_id: &str,
-) -> AppSessionSnapshot {
+) -> Result<AppSessionSnapshot, String> {
     mutate_browser_for_control(app, state, panel_id, apply_toggle_browser_developer_tools)
 }
 
@@ -3529,7 +3518,7 @@ pub(crate) fn show_browser_developer_tools_for_control(
     state: &SessionState,
     panel_id: &str,
     panel: &str,
-) -> AppSessionSnapshot {
+) -> Result<AppSessionSnapshot, String> {
     let normalized_panel = match panel {
         "console" | "react" => panel.to_string(),
         _ => "inspector".to_string(),
@@ -3544,7 +3533,7 @@ pub(crate) fn set_browser_zoom_for_control(
     state: &SessionState,
     panel_id: &str,
     zoom: f64,
-) -> AppSessionSnapshot {
+) -> Result<AppSessionSnapshot, String> {
     mutate_browser_for_control(app, state, panel_id, |snapshot, panel_id| {
         apply_set_browser_zoom(snapshot, panel_id, zoom)
     })
@@ -6719,19 +6708,9 @@ pub fn session_browser_go_back(
     app: AppHandle,
     state: State<'_, SessionState>,
     panel_id: String,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_browser_go_back(&mut guard, &panel_id);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = browser_go_back_for_control(&app, &state, &panel_id)?;
+    Ok(snapshot)
 }
 
 /// Navigate the pane-local browser forward if it has persisted history.
@@ -6740,19 +6719,9 @@ pub fn session_browser_go_forward(
     app: AppHandle,
     state: State<'_, SessionState>,
     panel_id: String,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_browser_go_forward(&mut guard, &panel_id);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = browser_go_forward_for_control(&app, &state, &panel_id)?;
+    Ok(snapshot)
 }
 
 /// Clear the pane-local browser history while preserving the current page.
@@ -6761,19 +6730,9 @@ pub fn session_clear_browser_history(
     app: AppHandle,
     state: State<'_, SessionState>,
     panel_id: String,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_clear_browser_history(&mut guard, &panel_id);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = clear_browser_history_for_control(&app, &state, &panel_id)?;
+    Ok(snapshot)
 }
 
 /// Toggle the pane-local browser omnibar/toolbar visibility.
@@ -6782,19 +6741,9 @@ pub fn session_toggle_browser_omnibar(
     app: AppHandle,
     state: State<'_, SessionState>,
     panel_id: String,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_toggle_browser_omnibar(&mut guard, &panel_id);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = toggle_browser_omnibar_for_control(&app, &state, &panel_id)?;
+    Ok(snapshot)
 }
 
 /// Toggle browser focus mode for the pane holding `panelId`.
@@ -6803,19 +6752,9 @@ pub fn session_toggle_browser_focus_mode(
     app: AppHandle,
     state: State<'_, SessionState>,
     panel_id: String,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_toggle_browser_focus_mode(&mut guard, &panel_id);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = toggle_browser_focus_mode_for_control(&app, &state, &panel_id)?;
+    Ok(snapshot)
 }
 
 /// Toggle the browser developer-tools drawer for the pane holding `panelId`.
@@ -6824,19 +6763,9 @@ pub fn session_toggle_browser_developer_tools(
     app: AppHandle,
     state: State<'_, SessionState>,
     panel_id: String,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_toggle_browser_developer_tools(&mut guard, &panel_id);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = toggle_browser_developer_tools_for_control(&app, &state, &panel_id)?;
+    Ok(snapshot)
 }
 
 /// Show the browser developer-tools drawer on a specific panel/lane.
@@ -6846,23 +6775,9 @@ pub fn session_show_browser_developer_tools(
     state: State<'_, SessionState>,
     panel_id: String,
     panel: String,
-) -> AppSessionSnapshot {
-    let normalized_panel = match panel.as_str() {
-        "console" | "react" => panel,
-        _ => "inspector".to_string(),
-    };
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_show_browser_developer_tools(&mut guard, &panel_id, &normalized_panel);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = show_browser_developer_tools_for_control(&app, &state, &panel_id, &panel)?;
+    Ok(snapshot)
 }
 
 /// Persist the browser zoom factor for the pane holding `panelId`.

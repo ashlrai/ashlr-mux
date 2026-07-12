@@ -10671,7 +10671,14 @@ fn browser_back(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Con
         return invalid_params("Missing or invalid surface selector");
     };
     let state = app.state::<SessionState>();
-    surface_list_from_params(&browser_go_back_for_control(app, &state, &panel_id), params)
+    match browser_go_back_for_control(app, &state, &panel_id) {
+        Ok(snapshot) => surface_list_from_params(&snapshot, params),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn browser_forward(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
@@ -10680,10 +10687,14 @@ fn browser_forward(app: &AppHandle, params: &serde_json::Map<String, Value>) -> 
         return invalid_params("Missing or invalid surface selector");
     };
     let state = app.state::<SessionState>();
-    surface_list_from_params(
-        &browser_go_forward_for_control(app, &state, &panel_id),
-        params,
-    )
+    match browser_go_forward_for_control(app, &state, &panel_id) {
+        Ok(snapshot) => surface_list_from_params(&snapshot, params),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn browser_reload(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
@@ -13347,10 +13358,14 @@ fn browser_clear_history(
         return invalid_params("Missing or invalid surface selector");
     };
     let state = app.state::<SessionState>();
-    surface_list_from_params(
-        &clear_browser_history_for_control(app, &state, &panel_id),
-        params,
-    )
+    match clear_browser_history_for_control(app, &state, &panel_id) {
+        Ok(snapshot) => surface_list_from_params(&snapshot, params),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn browser_toggle_omnibar(
@@ -13362,10 +13377,14 @@ fn browser_toggle_omnibar(
         return invalid_params("Missing or invalid surface selector");
     };
     let state = app.state::<SessionState>();
-    surface_list_from_params(
-        &toggle_browser_omnibar_for_control(app, &state, &panel_id),
-        params,
-    )
+    match toggle_browser_omnibar_for_control(app, &state, &panel_id) {
+        Ok(snapshot) => surface_list_from_params(&snapshot, params),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn browser_toggle_focus_mode(
@@ -13377,10 +13396,14 @@ fn browser_toggle_focus_mode(
         return invalid_params("Missing or invalid surface selector");
     };
     let state = app.state::<SessionState>();
-    surface_list_from_params(
-        &toggle_browser_focus_mode_for_control(app, &state, &panel_id),
-        params,
-    )
+    match toggle_browser_focus_mode_for_control(app, &state, &panel_id) {
+        Ok(snapshot) => surface_list_from_params(&snapshot, params),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn browser_toggle_developer_tools(
@@ -13392,10 +13415,14 @@ fn browser_toggle_developer_tools(
         return invalid_params("Missing or invalid surface selector");
     };
     let state = app.state::<SessionState>();
-    surface_list_from_params(
-        &toggle_browser_developer_tools_for_control(app, &state, &panel_id),
-        params,
-    )
+    match toggle_browser_developer_tools_for_control(app, &state, &panel_id) {
+        Ok(snapshot) => surface_list_from_params(&snapshot, params),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn browser_show_developer_tools(
@@ -13408,10 +13435,14 @@ fn browser_show_developer_tools(
     };
     let panel = string_param(params, &["panel"]).unwrap_or_else(|| "inspector".to_string());
     let state = app.state::<SessionState>();
-    surface_list_from_params(
-        &show_browser_developer_tools_for_control(app, &state, &panel_id, &panel),
-        params,
-    )
+    match show_browser_developer_tools_for_control(app, &state, &panel_id, &panel) {
+        Ok(snapshot) => surface_list_from_params(&snapshot, params),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn browser_set_zoom(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
@@ -13423,10 +13454,14 @@ fn browser_set_zoom(app: &AppHandle, params: &serde_json::Map<String, Value>) ->
         return invalid_params("Missing or invalid browser zoom");
     };
     let state = app.state::<SessionState>();
-    surface_list_from_params(
-        &set_browser_zoom_for_control(app, &state, &panel_id, zoom),
-        params,
-    )
+    match set_browser_zoom_for_control(app, &state, &panel_id, zoom) {
+        Ok(snapshot) => surface_list_from_params(&snapshot, params),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn browser_network_requests(
