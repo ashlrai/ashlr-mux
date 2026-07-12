@@ -341,6 +341,46 @@ fn pane_create_preserves_exact_validation_and_committed_event_contract() {
 }
 
 #[test]
+fn lifecycle_events_carry_complete_owner_envelopes() {
+    let created = transition(
+        &test_snapshot(),
+        "pane.create",
+        json!({"direction":"right","type":"browser","url":"https://events.test"}),
+    );
+    let value = ok_value(&created);
+    for event in &created.events {
+        assert_eq!(event.source, "control_socket.lifecycle");
+        assert!(matches!(event.category, "pane" | "surface"));
+        assert_eq!(event.window_id.as_deref(), Some("window-1"));
+        assert_eq!(event.workspace_id.as_deref(), Some("workspace-1"));
+        assert_eq!(event.pane_id.as_deref(), value["pane_id"].as_str());
+        assert_eq!(event.surface_id.as_deref(), value["surface_id"].as_str());
+        assert_eq!(event.payload["window_id"], value["window_id"]);
+        assert_eq!(event.payload["workspace_id"], value["workspace_id"]);
+        assert_eq!(event.payload["pane_id"], value["pane_id"]);
+        assert_eq!(event.payload["surface_id"], value["surface_id"]);
+    }
+
+    let action = transition(
+        &created.snapshot,
+        "surface.action",
+        json!({"surface_id":value["surface_id"],"action":"pin"}),
+    );
+    let completion = action
+        .events
+        .iter()
+        .find(|event| event.name == "surface.action")
+        .unwrap();
+    assert_eq!(completion.window_id.as_deref(), Some("window-1"));
+    assert_eq!(completion.workspace_id.as_deref(), Some("workspace-1"));
+    assert_eq!(completion.pane_id.as_deref(), value["pane_id"].as_str());
+    assert_eq!(
+        completion.surface_id.as_deref(),
+        value["surface_id"].as_str()
+    );
+}
+
+#[test]
 fn pane_resize_uses_injected_dimensions_and_absolute_validation_precedence() {
     let snapshot = resizable_snapshot();
     let invalid = transition(
