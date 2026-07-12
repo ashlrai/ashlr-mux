@@ -2083,3 +2083,75 @@ fn direct_surface_close_last_surface_guard_precedes_remote_routing() {
     assert!(transition.effects.is_empty());
     assert!(transition.events.is_empty());
 }
+
+#[test]
+fn direct_remote_close_allows_a_single_surface_pane_when_workspace_has_other_surfaces() {
+    let mut snapshot = remote_window_tabs_snapshot(true);
+    let workspace = &mut snapshot.windows[0].tab_manager.workspaces[0];
+    let mut layout = session_ops::single_pane(A);
+    assert!(session_ops::add_panel_to_pane(&mut layout, A, C));
+    assert!(session_ops::split_pane(
+        &mut layout,
+        A,
+        SessionSplitOrientation::Horizontal,
+        B,
+        false,
+    ));
+    let SessionWorkspaceLayoutSnapshot::Split(split) = &mut layout else {
+        unreachable!()
+    };
+    let SessionWorkspaceLayoutSnapshot::Pane(first) = split.first.as_mut() else {
+        unreachable!()
+    };
+    let SessionWorkspaceLayoutSnapshot::Pane(second) = split.second.as_mut() else {
+        unreachable!()
+    };
+    first.pane_id = Some(P1.into());
+    second.pane_id = Some(P2.into());
+    workspace.layout = Some(layout);
+    for (surface_id, pane_id) in [(A, P1), (B, P2), (C, P1)] {
+        workspace
+            .surfaces
+            .as_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|surface| surface.surface_id == surface_id)
+            .unwrap()
+            .pane_id = pane_id.into();
+    }
+
+    let transition = dispatch_with(
+        &snapshot,
+        "surface.close",
+        json!({"surface_id": B}),
+        &context(true),
+    );
+    assert_eq!(ok(&transition)["surface_id"], B);
+    assert!(transition.snapshot == snapshot);
+    assert!(transition.effects.iter().any(|effect| matches!(
+        effect,
+        LifecycleEffect::RemoteWindowClose { surface_id, .. } if surface_id == B
+    )));
+}
+
+#[test]
+fn production_remote_departure_is_typed_retried_and_observably_retained() {
+    let production = include_str!("../../control_socket.rs");
+    for contract in [
+        "enum RuntimeDepartureCommitOutcome",
+        "RuntimeDepartureCommitOutcome::Committed",
+        "RuntimeDepartureCommitOutcome::DuplicateOrStale",
+        "REMOTE_OBSERVATION_MAX_RETRIES",
+        "pending_reconciliation",
+        "surface.close_failed",
+    ] {
+        assert!(
+            production.contains(contract),
+            "missing hardened departure contract: {contract}"
+        );
+    }
+    assert!(
+        !production.contains("let _ = commit_runtime_departure_for_control(&app, departure)"),
+        "successful remote close must not silently abandon failed local departure"
+    );
+}

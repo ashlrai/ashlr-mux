@@ -1515,6 +1515,7 @@ struct ProductionLifecycleExecutor<'a> {
     staged_terminals: Vec<(String, u32, bool)>,
     staged_remote_creations: Vec<StagedRemoteCreation>,
     deferred_remote_reconciliations: Vec<StagedRemoteCreation>,
+    deferred_remote_departures: Vec<pane_surface_lifecycle::RuntimeDeparture>,
     staged_browsers: Vec<(String, String, Option<String>)>,
     dock_journal: DockCommitJournal<DockRuntimeClaim, DockTeardownCompensation>,
 }
@@ -1750,11 +1751,56 @@ fn remote_tmux_source_window_command(pane_token: &str) -> Result<Vec<String>, St
     )])
 }
 
+fn remote_tmux_rename_window_command(
+    window_token: &str,
+    title: &str,
+) -> Result<Vec<String>, String> {
+    if !valid_tmux_identity(window_token, '@') {
+        return Err("invalid tmux window identity".into());
+    }
+    Ok(vec![format!(
+        "tmux rename-window -t {} {}",
+        shell_quote_remote(window_token)?,
+        shell_quote_remote(title)?,
+    )])
+}
+
+fn run_remote_tmux_command(destination: &str, command: Vec<String>) -> Result<String, String> {
+    let output = Command::new("ssh")
+        .args(["-T", "-o", "BatchMode=yes", destination])
+        .args(command)
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(format!("remote tmux command exited with {}", output.status));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn remote_tmux_window_for_pane(destination: &str, pane_token: &str) -> Result<String, String> {
+    let output =
+        run_remote_tmux_command(destination, remote_tmux_source_window_command(pane_token)?)?;
+    let window_token = output.trim().to_string();
+    valid_tmux_identity(&window_token, '@')
+        .then_some(window_token)
+        .ok_or_else(|| "invalid remote tmux window observation".into())
+}
+
+fn execute_remote_tmux_window_mutation(
+    destination: &str,
+    pane_token: &str,
+    command: impl FnOnce(&str) -> Result<Vec<String>, String>,
+) -> Result<(), String> {
+    let window_token = remote_tmux_window_for_pane(destination, pane_token)?;
+    run_remote_tmux_command(destination, command(&window_token)?)?;
+    Ok(())
+}
+
 fn shell_quote_remote(value: &str) -> Result<String, String> {
     if value.chars().any(|character| character.is_control()) {
         return Err("remote shell value contains control characters".into());
     }
-    Ok(format!("'{}'", value.replace('\'', "'\"'\"'")))
+    Ok(format!("'{}'", value.replace('\'', r#"'"'"'"#)))
 }
 
 fn quote_tmux_format(value: &str) -> String {
@@ -1988,6 +2034,45 @@ fn schedule_remote_window_reconciliation(app: &AppHandle, remote: StagedRemoteCr
     });
 }
 
+fn schedule_remote_window_departure_reconciliation(
+    app: &AppHandle,
+    departure: pane_surface_lifecycle::RuntimeDeparture,
+) {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut attempts = 0;
+        loop {
+            match commit_runtime_departure_for_control(&app, departure.clone()) {
+                Ok(RuntimeDepartureCommitOutcome::Committed)
+                | Ok(RuntimeDepartureCommitOutcome::DuplicateOrStale) => return,
+                Err(_) if attempts < REMOTE_OBSERVATION_MAX_RETRIES => {
+                    attempts += 1;
+                    continue;
+                }
+                Err(error) => {
+                    record_event(
+                        &app,
+                        "surface.close_failed",
+                        "surface",
+                        "workspace.lifecycle",
+                        Some(departure.window_id.clone()),
+                        Some(departure.workspace_id.clone()),
+                        Some(departure.pane_id.clone()),
+                        Some(departure.surface_id.clone()),
+                        json!({
+                            "surface_id": departure.surface_id,
+                            "message": error,
+                            "attempts": attempts + 1,
+                            "pending_reconciliation": true,
+                        }),
+                    );
+                    return;
+                }
+            }
+        }
+    });
+}
+
 fn should_focus_window_after_remote_arrival(requested: bool, committed: bool) -> bool {
     requested && committed
 }
@@ -2038,6 +2123,12 @@ impl ProductionLifecycleExecutor<'_> {
     fn flush_deferred_remote_reconciliations(&mut self) {
         for remote in self.deferred_remote_reconciliations.drain(..) {
             schedule_remote_window_reconciliation(self.app, remote);
+        }
+    }
+
+    fn flush_deferred_remote_departures(&mut self) {
+        for departure in self.deferred_remote_departures.drain(..) {
+            schedule_remote_window_departure_reconciliation(self.app, departure);
         }
     }
 
@@ -2111,6 +2202,7 @@ impl ProductionLifecycleExecutor<'_> {
             }
         }
         self.deferred_remote_reconciliations.clear();
+        self.deferred_remote_departures.clear();
         if let Some(state) = app.try_state::<BrowserWebviewState>() {
             for (_, surface_id, _) in self.staged_browsers.drain(..) {
                 let _ = browser_close_webview_for_control(state.inner(), &surface_id);
@@ -2501,6 +2593,54 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
                 pane_surface_lifecycle::LifecycleEffect::ExternalBrowserOpen { url, .. } => {
                     open_external_url_checked(url)?;
                 }
+                pane_surface_lifecycle::LifecycleEffect::RemoteWindowRename {
+                    destination,
+                    source_remote_pane_id,
+                    title,
+                    must_succeed,
+                    ..
+                } => {
+                    let result = execute_remote_tmux_window_mutation(
+                        destination,
+                        source_remote_pane_id,
+                        |window_token| remote_tmux_rename_window_command(window_token, title),
+                    );
+                    if *must_succeed {
+                        result?;
+                    }
+                }
+                pane_surface_lifecycle::LifecycleEffect::RemoteWindowClose {
+                    destination,
+                    window_id,
+                    workspace_id,
+                    pane_id,
+                    surface_id,
+                    generation,
+                    source_remote_pane_id,
+                    must_succeed,
+                    ..
+                } => {
+                    let result = execute_remote_tmux_window_mutation(
+                        destination,
+                        source_remote_pane_id,
+                        |window_token| {
+                            remote_tmux_kill_command(RemoteTmuxTarget::Window, window_token)
+                        },
+                    );
+                    if result.is_ok() {
+                        self.deferred_remote_departures.push(
+                            pane_surface_lifecycle::RuntimeDeparture {
+                                window_id: window_id.clone(),
+                                workspace_id: workspace_id.clone(),
+                                pane_id: pane_id.clone(),
+                                surface_id: surface_id.clone(),
+                                generation: *generation,
+                            },
+                        );
+                    } else if *must_succeed {
+                        result?;
+                    }
+                }
                 pane_surface_lifecycle::LifecycleEffect::RemoteCreate { .. } => {}
                 pane_surface_lifecycle::LifecycleEffect::DockCreate { .. } => {}
                 pane_surface_lifecycle::LifecycleEffect::DockReveal { owner_id } => {
@@ -2631,6 +2771,11 @@ fn handle_pane_surface_lifecycle_request(
             failure_code,
             failure_message,
             ..
+        }
+        | pane_surface_lifecycle::LifecycleEffect::RemoteWindowClose {
+            failure_code,
+            failure_message,
+            ..
         } => Some(((*failure_code).to_string(), (*failure_message).to_string())),
         _ => None,
     });
@@ -2646,6 +2791,7 @@ fn handle_pane_surface_lifecycle_request(
         staged_terminals: Vec::new(),
         staged_remote_creations: Vec::new(),
         deferred_remote_reconciliations: Vec::new(),
+        deferred_remote_departures: Vec::new(),
         staged_browsers: Vec::new(),
         dock_journal: DockCommitJournal::default(),
     };
@@ -2699,6 +2845,7 @@ fn handle_pane_surface_lifecycle_request(
             );
         }
         executor.flush_deferred_remote_reconciliations();
+        executor.flush_deferred_remote_departures();
     }
     result
 }
@@ -2708,6 +2855,12 @@ enum RuntimeArrivalCommitOutcome {
     Committed,
     DuplicateOrStale,
     SourceMissing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeDepartureCommitOutcome {
+    Committed,
+    DuplicateOrStale,
 }
 
 fn commit_runtime_arrival_for_control(
@@ -2789,6 +2942,52 @@ fn commit_runtime_arrival_for_control(
         json!({"surface_id":arrival.surface_id,"pane_id":arrival.pane_id,"kind":"terminal","origin":origin,"focused":arrival.focused}),
     );
     Ok(RuntimeArrivalCommitOutcome::Committed)
+}
+
+fn commit_runtime_departure_for_control(
+    app: &AppHandle,
+    departure: pane_surface_lifecycle::RuntimeDeparture,
+) -> Result<RuntimeDepartureCommitOutcome, String> {
+    let state = app.state::<SessionState>();
+    let _control_guard = state.lock_control_mutation()?;
+    let current = current_session_snapshot(&state);
+    let model = cmux_core::surface_lifecycle::SurfaceLifecycleModel::from_app_session(&current)
+        .map_err(|error| error.to_string())?;
+    let Some(record) = model.surface(&departure.surface_id) else {
+        return Ok(RuntimeDepartureCommitOutcome::DuplicateOrStale);
+    };
+    let owner_matches = model
+        .owner_of_surface(&departure.surface_id)
+        .is_some_and(|owner| {
+            owner.window_id == departure.window_id
+                && owner.workspace_id == departure.workspace_id
+                && owner.pane_id == departure.pane_id
+        });
+    if record.generation != departure.generation || !owner_matches {
+        return Ok(RuntimeDepartureCommitOutcome::DuplicateOrStale);
+    }
+    let reconciled = pane_surface_lifecycle::reconcile_runtime_departure(&current, &departure);
+    if reconciled.snapshot == current {
+        return Err("remote departure reconciliation made no progress".into());
+    }
+    commit_lifecycle_snapshot_for_control(app, state.inner(), &reconciled.snapshot, false)?;
+    record_session_changed_event_suppressing(
+        app,
+        &reconciled.snapshot,
+        &HashSet::from(["surface.closed"]),
+    );
+    record_event(
+        app,
+        "surface.closed",
+        "surface",
+        "workspace.lifecycle",
+        Some(departure.window_id),
+        Some(departure.workspace_id),
+        Some(departure.pane_id),
+        Some(departure.surface_id.clone()),
+        json!({"surface_id":departure.surface_id,"origin":"remote_window_close"}),
+    );
+    Ok(RuntimeDepartureCommitOutcome::Committed)
 }
 
 fn runtime_arrival_event_semantics(

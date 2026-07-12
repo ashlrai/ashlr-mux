@@ -124,6 +124,27 @@ pub(super) enum LifecycleEffect {
         failure_code: &'static str,
         failure_message: &'static str,
     },
+    RemoteWindowRename {
+        destination: String,
+        source_remote_pane_id: String,
+        title: String,
+        phase: &'static str,
+        arrival_policy: &'static str,
+        must_succeed: bool,
+    },
+    RemoteWindowClose {
+        destination: String,
+        window_id: String,
+        workspace_id: String,
+        pane_id: String,
+        surface_id: String,
+        generation: u64,
+        source_remote_pane_id: String,
+        departure_policy: &'static str,
+        must_succeed: bool,
+        failure_code: &'static str,
+        failure_message: &'static str,
+    },
     ActivateWindow {
         window_id: String,
     },
@@ -217,6 +238,50 @@ pub(crate) struct RuntimeArrival {
     pub focused: bool,
     pub split_orientation: Option<SessionSplitOrientation>,
     pub source_pane_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RuntimeDeparture {
+    pub window_id: String,
+    pub workspace_id: String,
+    pub pane_id: String,
+    pub surface_id: String,
+    pub generation: u64,
+}
+
+pub(super) fn reconcile_runtime_departure(
+    snapshot: &AppSessionSnapshot,
+    departure: &RuntimeDeparture,
+) -> RuntimeReconciliation {
+    let Ok(mut model) = SurfaceLifecycleModel::from_app_session(snapshot) else {
+        return RuntimeReconciliation {
+            snapshot: snapshot.clone(),
+        };
+    };
+    let valid = model.surface(&departure.surface_id).is_some_and(|record| {
+        record.generation == departure.generation
+            && model
+                .owner_of_surface(&departure.surface_id)
+                .is_some_and(|owner| {
+                    owner.window_id == departure.window_id
+                        && owner.workspace_id == departure.workspace_id
+                        && owner.pane_id == departure.pane_id
+                })
+    });
+    if !valid
+        || model
+            .close_surface(&departure.surface_id, CloseIntent::Range)
+            .is_err()
+    {
+        return RuntimeReconciliation {
+            snapshot: snapshot.clone(),
+        };
+    }
+    RuntimeReconciliation {
+        snapshot: model
+            .to_app_session(snapshot)
+            .unwrap_or_else(|_| snapshot.clone()),
+    }
 }
 
 impl RuntimeArrival {
@@ -1697,8 +1762,24 @@ fn foundation_url_is_valid(raw: &str) -> bool {
                 .is_some())
 }
 
+fn enabled_remote_tmux(
+    workspace: &cmux_core::session::SessionWorkspaceSnapshot,
+) -> Option<&cmux_core::session::SessionWorkspaceRemoteSnapshot> {
+    workspace
+        .remote
+        .as_ref()
+        .filter(|remote| remote.enabled && remote.transport.as_deref() == Some("tmux"))
+}
+
+fn live_remote_tmux(
+    workspace: &cmux_core::session::SessionWorkspaceSnapshot,
+) -> Option<&cmux_core::session::SessionWorkspaceRemoteSnapshot> {
+    enabled_remote_tmux(workspace).filter(|remote| remote.connected)
+}
+
 fn close_action_range(
     model: &mut SurfaceLifecycleModel,
+    remote: Option<&cmux_core::session::SessionWorkspaceRemoteSnapshot>,
     action_kind: &str,
     surface_id: &str,
     owner: &cmux_core::surface_lifecycle::Owner,
@@ -1732,6 +1813,38 @@ fn close_action_range(
         if record.metadata.pinned {
             skipped += 1;
             continue;
+        }
+        if let Some(remote) = remote {
+            if let SessionSurfaceKindSnapshot::RemoteTerminal {
+                remote_session_id, ..
+            } = &record.kind
+            {
+                if remote.connected {
+                    if let Some(source_remote_pane_id) = remote_session_id
+                        .as_deref()
+                        .filter(|token| super::valid_tmux_identity(token, '%'))
+                    {
+                        closed += 1;
+                        effects.push(LifecycleEffect::RemoteWindowClose {
+                            destination: remote
+                                .destination
+                                .clone()
+                                .unwrap_or_else(|| "remote".into()),
+                            window_id: owner.window_id.clone(),
+                            workspace_id: owner.workspace_id.clone(),
+                            pane_id: owner.pane_id.clone(),
+                            surface_id: candidate.clone(),
+                            generation: record.generation,
+                            source_remote_pane_id: source_remote_pane_id.into(),
+                            departure_policy: "runtime-window-close",
+                            must_succeed: false,
+                            failure_code: "internal_error",
+                            failure_message: "Failed to close tab",
+                        });
+                    }
+                }
+                continue;
+            }
         }
         if model.close_surface(&candidate, CloseIntent::Range).is_ok() {
             closed += 1;
@@ -1871,10 +1984,7 @@ fn apply_create_right_action(
             source_record.terminal_startup.working_directory.as_deref(),
             workspace.current_directory.as_deref(),
         );
-        let remote_tmux = workspace
-            .remote
-            .as_ref()
-            .filter(|remote| remote.enabled && remote.transport.as_deref() == Some("tmux"));
+        let remote_tmux = enabled_remote_tmux(workspace);
         if let Some(remote_tmux) = remote_tmux {
             if !remote_tmux.connected {
                 return error(snapshot, "internal_error", "Failed to create tab", None);
@@ -2335,6 +2445,36 @@ fn surface_action(
             {
                 return error(snapshot, "internal_error", "Failed to rename tab", None);
             }
+            let workspace =
+                &snapshot.windows[scope.window_index].tab_manager.workspaces[scope.workspace_index];
+            let source_remote_pane_id = model.surface(&surface_id).and_then(|record| match &record
+                .kind
+            {
+                SessionSurfaceKindSnapshot::RemoteTerminal {
+                    remote_session_id: Some(remote_session_id),
+                    ..
+                } if super::valid_tmux_identity(remote_session_id, '%') => {
+                    Some(remote_session_id.clone())
+                }
+                _ => None,
+            });
+            if !title.chars().any(char::is_control) {
+                if let (Some(remote), Some(source_remote_pane_id)) =
+                    (live_remote_tmux(workspace), source_remote_pane_id)
+                {
+                    effects.push(LifecycleEffect::RemoteWindowRename {
+                        destination: remote
+                            .destination
+                            .clone()
+                            .unwrap_or_else(|| "remote".into()),
+                        source_remote_pane_id,
+                        title: title.clone(),
+                        phase: "commit",
+                        arrival_policy: "local-metadata-immediate",
+                        must_succeed: false,
+                    });
+                }
+            }
             extras.insert("title".into(), json!(title));
         }
         "clear_name" => {
@@ -2381,8 +2521,11 @@ fn surface_action(
             }
         }
         "close_right" | "close_left" | "close_others" => {
+            let workspace =
+                &snapshot.windows[scope.window_index].tab_manager.workspaces[scope.workspace_index];
             if close_action_range(
                 &mut model,
+                enabled_remote_tmux(workspace),
                 &action_kind,
                 &surface_id,
                 &owner,
@@ -2733,6 +2876,70 @@ fn surface_close(
         .pane(&owner.pane_id)
         .is_some_and(|pane| pane.container == ContainerKind::Dock);
     let (window_id, workspace_id) = public_owner_ids(&model, &owner);
+    let workspace = snapshot
+        .windows
+        .iter()
+        .find(|window| window.window_id.as_deref() == Some(&window_id))
+        .and_then(|window| {
+            window
+                .tab_manager
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.workspace_id.as_deref() == Some(&workspace_id))
+        });
+    if !is_dock
+        && workspace
+            .is_some_and(|workspace| workspace.surfaces.as_deref().unwrap_or_default().len() <= 1)
+    {
+        return error(
+            snapshot,
+            "invalid_state",
+            "Cannot close the last surface",
+            None,
+        );
+    }
+    let remote = workspace.and_then(enabled_remote_tmux);
+    if !is_dock {
+        if let SessionSurfaceKindSnapshot::RemoteTerminal {
+            remote_session_id, ..
+        } = &record.kind
+        {
+            if let Some(remote) = remote {
+                let source_remote_pane_id = remote_session_id
+                    .as_deref()
+                    .filter(|token| super::valid_tmux_identity(token, '%'));
+                if !remote.connected || source_remote_pane_id.is_none() {
+                    return error(
+                        snapshot,
+                        "internal_error",
+                        "Failed to close surface",
+                        Some(json!({"surface_id":surface_id})),
+                    );
+                }
+                return ok_transition(
+                    snapshot.clone(),
+                    json!({"window_id":window_id,"workspace_id":workspace_id,"surface_id":surface_id}),
+                    vec![],
+                    vec![LifecycleEffect::RemoteWindowClose {
+                        destination: remote
+                            .destination
+                            .clone()
+                            .unwrap_or_else(|| "remote".into()),
+                        window_id,
+                        workspace_id,
+                        pane_id: owner.pane_id,
+                        surface_id,
+                        generation,
+                        source_remote_pane_id: source_remote_pane_id.unwrap().into(),
+                        departure_policy: "runtime-window-close",
+                        must_succeed: true,
+                        failure_code: "internal_error",
+                        failure_message: "Failed to close surface",
+                    }],
+                );
+            }
+        }
+    }
     if let Err(problem) = model.close_surface(&surface_id, CloseIntent::Explicit) {
         return if problem.to_string().contains("last surface") {
             error(
