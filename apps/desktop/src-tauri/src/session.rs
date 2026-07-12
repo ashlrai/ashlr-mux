@@ -4383,17 +4383,13 @@ pub(crate) fn select_workspace_for_control(
     app: &AppHandle,
     state: &SessionState,
     index: i64,
-) -> AppSessionSnapshot {
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        apply_select_workspace(&mut guard, index);
-        guard.clone()
-    };
-    notify_session_changed(app, &snapshot);
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_always(app, |snapshot| apply_select_workspace(snapshot, index))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WorkspaceSelectControlError {
+    WindowNotFound,
 }
 
 pub(crate) fn select_workspace_in_window_for_control(
@@ -4401,24 +4397,20 @@ pub(crate) fn select_workspace_in_window_for_control(
     state: &SessionState,
     window_index: usize,
     workspace_index: usize,
-) -> Option<AppSessionSnapshot> {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let window = guard.windows.get_mut(window_index)?;
-        let changed =
-            session_ops::select_workspace(&mut window.tab_manager, workspace_index as i64);
-        if changed {
-            sync_window_selected_workspace_id(window);
+) -> Result<AppSessionSnapshot, PaneTopologyControlError<WorkspaceSelectControlError>> {
+    let ((), snapshot) = state.transact_value_if_changed(app, |snapshot| {
+        let window = snapshot
+            .windows
+            .get_mut(window_index)
+            .ok_or(WorkspaceSelectControlError::WindowNotFound)?;
+        if workspace_index >= window.tab_manager.workspaces.len() {
+            return Ok(((), false));
         }
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    Some(snapshot)
+        session_ops::select_workspace(&mut window.tab_manager, workspace_index as i64);
+        sync_window_selected_workspace_id(window);
+        Ok(((), true))
+    })?;
+    Ok(snapshot)
 }
 
 pub(crate) fn equalize_dividers_for_control(
@@ -5881,19 +5873,10 @@ pub(crate) fn reorder_workspaces_for_control(
     index: i64,
     to_index: i64,
     uses_top_level_rows: bool,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_reorder_workspaces(&mut guard, index, to_index, uses_top_level_rows);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_reorder_workspaces(snapshot, index, to_index, uses_top_level_rows)
+    })
 }
 
 pub(crate) fn reorder_surface_for_control(
@@ -5957,14 +5940,29 @@ pub(crate) fn reorder_workspaces_many_for_control(
     state: &SessionState,
     ordered_workspace_ids: &[Uuid],
     dry_run: bool,
-) -> Result<(Vec<WorkspaceReorderPlanItem>, AppSessionSnapshot), ReorderWorkspacesManyControlError>
-{
-    let (plan, snapshot) = if dry_run {
-        let guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let mut snapshot = guard.clone();
+) -> Result<
+    (Vec<WorkspaceReorderPlanItem>, AppSessionSnapshot),
+    PaneTopologyControlError<ReorderWorkspacesManyControlError>,
+> {
+    if dry_run {
+        let current = state.snapshot_for_lifecycle();
+        let mut snapshot = current.map_err(PaneTopologyControlError::Publication)?;
+        let window = snapshot
+            .windows
+            .first_mut()
+            .ok_or(PaneTopologyControlError::Operation(
+                ReorderWorkspacesManyControlError::Unavailable,
+            ))?;
+        let plan = session_ops::reorder_workspaces_many(
+            &mut window.tab_manager,
+            ordered_workspace_ids,
+            false,
+        )
+        .map_err(ReorderWorkspacesManyControlError::Batch)
+        .map_err(PaneTopologyControlError::Operation)?;
+        return Ok((plan, snapshot));
+    }
+    state.transact_value_if_changed(app, |snapshot| {
         let window = snapshot
             .windows
             .first_mut()
@@ -5973,39 +5971,16 @@ pub(crate) fn reorder_workspaces_many_for_control(
             &mut window.tab_manager,
             ordered_workspace_ids,
             false,
-        )?;
-        (plan, snapshot)
-    } else {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let window = guard
-            .windows
-            .first_mut()
-            .ok_or(ReorderWorkspacesManyControlError::Unavailable)?;
-        let plan = session_ops::reorder_workspaces_many(
-            &mut window.tab_manager,
-            ordered_workspace_ids,
-            false,
-        )?;
-        (plan, guard.clone())
-    };
-    if !dry_run && plan.iter().any(|item| item.from_index != item.to_index) {
-        notify_session_changed(app, &snapshot);
-    }
-    Ok((plan, snapshot))
+        )
+        .map_err(ReorderWorkspacesManyControlError::Batch)?;
+        let changed = plan.iter().any(|item| item.from_index != item.to_index);
+        Ok((plan, changed))
+    })
 }
 
 pub(crate) enum ReorderWorkspacesManyControlError {
     Unavailable,
     Batch(WorkspaceBatchReorderError),
-}
-
-impl From<WorkspaceBatchReorderError> for ReorderWorkspacesManyControlError {
-    fn from(error: WorkspaceBatchReorderError) -> Self {
-        Self::Batch(error)
-    }
 }
 
 pub(crate) fn set_group_collapsed_for_control(
@@ -6762,21 +6737,13 @@ fn workspace_is_selected(snapshot: &AppSessionSnapshot, workspace_id: &str) -> b
 
 fn select_workspace_by_id(
     app: &AppHandle,
-    state: &State<'_, SessionState>,
+    state: &SessionState,
     workspace_id: &str,
-) -> (bool, AppSessionSnapshot) {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_select_workspace_by_id(&mut guard, workspace_id);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    (changed, snapshot)
+) -> Result<(bool, AppSessionSnapshot), PaneTopologyControlError<std::convert::Infallible>> {
+    state.transact_value_if_changed(app, |snapshot| {
+        let changed = apply_select_workspace_by_id(snapshot, workspace_id);
+        Ok((changed, changed))
+    })
 }
 
 fn open_ssh_url_request(
@@ -7258,6 +7225,7 @@ pub fn session_handle_navigation_uri(
             .map_err(collapse_infallible_publication_error)?
     } else {
         select_workspace_by_id(&app, &state, &target.workspace_id)
+            .map_err(collapse_infallible_publication_error)?
     };
     let handled = match target.panel_id.as_deref() {
         Some(panel_id) => {
@@ -7305,17 +7273,9 @@ pub fn session_select_workspace(
     app: AppHandle,
     state: State<'_, SessionState>,
     index: i64,
-) -> AppSessionSnapshot {
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        apply_select_workspace(&mut guard, index);
-        guard.clone()
-    };
-    notify_session_changed(&app, &snapshot);
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = select_workspace_for_control(&app, &state, index)?;
+    Ok(snapshot)
 }
 
 /// Close the workspace at `index`. Closing the sole remaining workspace is a
@@ -7665,24 +7625,15 @@ pub fn session_reorder_workspaces(
     index: i64,
     to_index: i64,
     uses_top_level_rows: Option<bool>,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_reorder_workspaces(
-            &mut guard,
-            index,
-            to_index,
-            uses_top_level_rows.unwrap_or(false),
-        );
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = reorder_workspaces_for_control(
+        &app,
+        &state,
+        index,
+        to_index,
+        uses_top_level_rows.unwrap_or(false),
+    )?;
+    Ok(snapshot)
 }
 
 #[cfg(test)]

@@ -78,7 +78,7 @@ use crate::session::{
     PaneLastControlError, PaneResizeControlError, PaneResizeControlIntent,
     PaneTopologyControlError, ReorderWorkspacesManyControlError, SessionState,
     SurfacePositionControlError, TerminalPanelCreateError, WorkspaceLastControlError,
-    WorkspaceRemoteControlConfig, WorkspaceRenameResolution,
+    WorkspaceRemoteControlConfig, WorkspaceRenameResolution, WorkspaceSelectControlError,
 };
 use crate::terminal::{
     scan_listening_ports_for_root_pid, scan_panel_listening_ports, terminal_clear_history_panel,
@@ -6018,10 +6018,16 @@ fn notification_open_selected(
     } else {
         let current = snapshot(app);
         match workspace_index_for_id(&current, &notification.tab_id) {
-            Some(index) => {
-                select_workspace_for_control(app, &session_state, index as i64);
-                true
-            }
+            Some(index) => match select_workspace_for_control(app, &session_state, index as i64) {
+                Ok(_) => true,
+                Err(message) => {
+                    return ControlCallResult::Err {
+                        code: "internal".to_string(),
+                        message,
+                        data: None,
+                    };
+                }
+            },
             None => false,
         }
     };
@@ -6208,13 +6214,22 @@ fn workspace_select(app: &AppHandle, params: &serde_json::Map<String, Value>) ->
         .clone()
         .unwrap_or_default();
     let state = app.state::<SessionState>();
-    let Some(result) = select_workspace_in_window_for_control(app, &state, window_index, index)
-    else {
-        return ControlCallResult::Err {
-            code: "unavailable".to_string(),
-            message: "TabManager not available".to_string(),
-            data: None,
-        };
+    let result = match select_workspace_in_window_for_control(app, &state, window_index, index) {
+        Ok(result) => result,
+        Err(PaneTopologyControlError::Operation(WorkspaceSelectControlError::WindowNotFound)) => {
+            return ControlCallResult::Err {
+                code: "unavailable".to_string(),
+                message: "TabManager not available".to_string(),
+                data: None,
+            };
+        }
+        Err(PaneTopologyControlError::Publication(message)) => {
+            return ControlCallResult::Err {
+                code: "internal".to_string(),
+                message,
+                data: None,
+            };
+        }
     };
     if let Some(window_id) = workspace_select_focus_selector(&result, window_index) {
         let _ = crate::window::focus_control_window(app, window_id);
@@ -6442,13 +6457,22 @@ fn workspace_reorder(
         planned
     } else {
         let state = app.state::<SessionState>();
-        reorder_workspaces_for_control(
+        match reorder_workspaces_for_control(
             app,
             &state,
             index as i64,
             requested_index,
             uses_top_level_rows,
-        )
+        ) {
+            Ok(result) => result,
+            Err(message) => {
+                return ControlCallResult::Err {
+                    code: "internal".to_string(),
+                    message,
+                    data: None,
+                };
+            }
+        }
     };
     let window = result.windows.first();
     let window_id = window.and_then(|window| window.window_id.clone());
@@ -6515,16 +6539,18 @@ fn workspace_reorder_many(
     let (plan, result) =
         match reorder_workspaces_many_for_control(app, &state, &ordered_workspace_ids, dry_run) {
             Ok(result) => result,
-            Err(ReorderWorkspacesManyControlError::Unavailable) => {
+            Err(PaneTopologyControlError::Operation(
+                ReorderWorkspacesManyControlError::Unavailable,
+            )) => {
                 return ControlCallResult::Err {
                     code: "unavailable".to_string(),
                     message: "TabManager not available".to_string(),
                     data: None,
                 };
             }
-            Err(ReorderWorkspacesManyControlError::Batch(
+            Err(PaneTopologyControlError::Operation(ReorderWorkspacesManyControlError::Batch(
                 WorkspaceBatchReorderError::DuplicateWorkspace(workspace_id),
-            )) => {
+            ))) => {
                 return ControlCallResult::Err {
                 code: "invalid_params".to_string(),
                 message: "Duplicate workspace in order".to_string(),
@@ -6539,9 +6565,9 @@ fn workspace_reorder_many(
                 ),
             };
             }
-            Err(ReorderWorkspacesManyControlError::Batch(
+            Err(PaneTopologyControlError::Operation(ReorderWorkspacesManyControlError::Batch(
                 WorkspaceBatchReorderError::WorkspaceNotFound(workspace_id),
-            )) => {
+            ))) => {
                 return ControlCallResult::Err {
                     code: "not_found".to_string(),
                     message: "Workspace not found".to_string(),
@@ -6553,6 +6579,13 @@ fn workspace_reorder_many(
                         .try_into()
                         .unwrap_or(JsonValue::Null),
                     ),
+                };
+            }
+            Err(PaneTopologyControlError::Publication(message)) => {
+                return ControlCallResult::Err {
+                    code: "internal".to_string(),
+                    message,
+                    data: None,
                 };
             }
         };
@@ -6681,7 +6714,14 @@ fn workspace_select_relative(app: &AppHandle, delta: i64) -> ControlCallResult {
     let selected = selected_workspace_index(&current).min(count - 1);
     let next = (selected as i64 + delta).rem_euclid(count as i64);
     let state = app.state::<SessionState>();
-    workspace_current(&select_workspace_for_control(app, &state, next))
+    match select_workspace_for_control(app, &state, next) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_last(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
