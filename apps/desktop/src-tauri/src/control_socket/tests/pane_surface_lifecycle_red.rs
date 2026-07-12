@@ -70,7 +70,6 @@ fn intended_mixed_surface_records() -> Value {
             "metadata": {
                 "custom_title": "Build shell",
                 "pinned": true,
-                "unread": false,
                 "reported_directory": "C:/repo/terminal"
             },
             "terminal_startup": {
@@ -89,7 +88,6 @@ fn intended_mixed_surface_records() -> Value {
             },
             "metadata": {
                 "custom_title": "Docs",
-                "pinned": false,
                 "unread": true
             }
         }
