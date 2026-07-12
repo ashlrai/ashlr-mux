@@ -7,8 +7,9 @@
 
 use cmux_core::session::{AppSessionSnapshot, SessionTabManagerSnapshot};
 use cmux_core::surface_lifecycle::{
-    AttachOutcome, ContainerKind, LegacyPaneSnapshot, LifecycleSnapshot, MoveTransactionError,
-    PaneSeed, RuntimeHandle, SurfaceKind, SurfaceLifecycleModel, SurfaceMetadata, SurfaceSeed,
+    AttachOutcome, CloseIntent, ContainerKind, LegacyPaneSnapshot, LifecycleSnapshot,
+    MoveTransactionError, PaneSeed, RuntimeHandle, SurfaceKind, SurfaceLifecycleModel,
+    SurfaceMetadata, SurfaceSeed,
 };
 
 fn pane(id: &str, workspace_id: &str) -> PaneSeed {
@@ -18,6 +19,138 @@ fn pane(id: &str, workspace_id: &str) -> PaneSeed {
         workspace_id: workspace_id.into(),
         container: ContainerKind::Workspace,
     }
+}
+
+#[test]
+fn legacy_browser_url_survives_missing_selection_without_fabricating_multiple_urls() {
+    for panel_ids in [
+        serde_json::json!(["browser-1"]),
+        serde_json::json!(["browser-1", "other"]),
+    ] {
+        let tabs: SessionTabManagerSnapshot = serde_json::from_value(serde_json::json!({
+            "workspaces":[{"process_title":"browser","layout":{"type":"pane","pane":{"pane_id":"pane-1","panel_ids":panel_ids,"surface_kind":"browser","browser_url":"https://example.test"}}}]
+        })).unwrap();
+        let model = SurfaceLifecycleModel::from_session_snapshot("window-1", &tabs).unwrap();
+        let projected = serde_json::to_value(model.to_session_snapshot(&tabs).unwrap()).unwrap();
+        let urls = projected["workspaces"][0]["surfaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|surface| surface["kind"].get("url").and_then(|url| url.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(urls, ["https://example.test"]);
+    }
+}
+
+#[test]
+fn generated_surface_kind_options_are_optional_not_required_nullable() {
+    let generated = include_str!(
+        "../../../apps/desktop/packages/core-types/src/generated/SessionSurfaceKindSnapshot.ts"
+    );
+    for property in [
+        "url",
+        "proxy_url",
+        "provider",
+        "renderer",
+        "path",
+        "token",
+        "remote_session_id",
+    ] {
+        assert!(
+            generated.contains(&format!("{property}?:")),
+            "{property} must be optional: {generated}"
+        );
+        assert!(
+            !generated.contains(&format!("{property}: string | null")),
+            "{property} must not be required nullable"
+        );
+    }
+}
+
+#[test]
+fn guarded_close_rejects_last_surface_and_range_close_skips_pinned() {
+    let mut model = SurfaceLifecycleModel::new();
+    model.add_pane(pane("pane-1", "workspace-1")).unwrap();
+    model
+        .reserve_surface(surface("pinned", "pane-1", SurfaceKind::Terminal))
+        .unwrap();
+    model
+        .update_metadata("pinned", |metadata| metadata.pinned = true)
+        .unwrap();
+    assert!(model.close_surface("pinned", CloseIntent::Range).is_err());
+    assert!(model
+        .close_surface("pinned", CloseIntent::Explicit)
+        .is_err());
+    model
+        .reserve_surface(surface("other", "pane-1", SurfaceKind::Terminal))
+        .unwrap();
+    assert!(model.close_surface("pinned", CloseIntent::Range).is_err());
+    assert_eq!(
+        model
+            .close_surface("pinned", CloseIntent::Explicit)
+            .unwrap()
+            .surface_id,
+        "pinned"
+    );
+}
+
+#[test]
+fn pending_surface_pwd_restarts_applies_once_and_rejects_ghosts() {
+    let base: AppSessionSnapshot = serde_json::from_value(serde_json::json!({"version":1,"created_at":0,"windows":[{"window_id":"window-1","tab_manager":{"workspaces":[{"workspace_id":"workspace-1","process_title":"shell","layout":{"type":"pane","pane":{"pane_id":"pane-1","panel_ids":["surface-1"]}},"surfaces":[{"surface_id":"surface-1","pane_id":"pane-1","generation":1,"kind":{"type":"terminal"},"metadata":{}}]}]}}]})).unwrap();
+    let mut model = SurfaceLifecycleModel::from_app_session(&base).unwrap();
+    assert!(model.queue_pending_pwd("ghost", "C:/bad").is_err());
+    model.queue_pending_pwd("surface-1", "C:/repo").unwrap();
+    let persisted = model.to_app_session(&base).unwrap();
+    let mut restored = SurfaceLifecycleModel::from_app_session(&persisted).unwrap();
+    assert!(restored.has_pending_pwd("surface-1"));
+    assert_eq!(
+        restored.attach_runtime("surface-1", 1, RuntimeHandle::new("runtime")),
+        AttachOutcome::Attached
+    );
+    let applied = restored.surface("surface-1").unwrap().metadata.clone();
+    assert_eq!(
+        restored.attach_runtime("surface-1", 1, RuntimeHandle::new("runtime")),
+        AttachOutcome::Attached
+    );
+    assert_eq!(restored.surface("surface-1").unwrap().metadata, applied);
+}
+
+#[test]
+fn missing_workspace_ids_materialize_globally_unique_stable_ids() {
+    let legacy: AppSessionSnapshot = serde_json::from_value(serde_json::json!({"version":1,"created_at":0,"windows":[
+        {"window_id":"window-a","tab_manager":{"workspaces":[{"process_title":"a","layout":null}]}},
+        {"window_id":"window-b","tab_manager":{"workspaces":[{"process_title":"b","layout":null}]}}
+    ]})).unwrap();
+    let first = SurfaceLifecycleModel::from_app_session(&legacy)
+        .unwrap()
+        .to_app_session(&legacy)
+        .unwrap();
+    let ids = first
+        .windows
+        .iter()
+        .map(|window| {
+            window.tab_manager.workspaces[0]
+                .workspace_id
+                .clone()
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_ne!(ids[0], ids[1]);
+    let second = SurfaceLifecycleModel::from_app_session(&first)
+        .unwrap()
+        .to_app_session(&first)
+        .unwrap();
+    assert_eq!(
+        second
+            .windows
+            .iter()
+            .map(|window| window.tab_manager.workspaces[0]
+                .workspace_id
+                .clone()
+                .unwrap())
+            .collect::<Vec<_>>(),
+        ids
+    );
 }
 
 fn surface(id: &str, pane_id: &str, kind: SurfaceKind) -> SurfaceSeed {
