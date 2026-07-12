@@ -54,12 +54,51 @@ fn mixed_surface_snapshot() -> AppSessionSnapshot {
         "surface-browser".to_string(),
     ];
     pane.selected_panel_id = Some("surface-browser".to_string());
-    // This is deliberately the legacy pane-wide approximation. The RED
-    // assertions below require the decoded snapshot projection to stop
-    // leaking this kind across both public surfaces.
-    pane.surface_kind = Some("browser".to_string());
-    pane.browser_url = Some("https://example.test".to_string());
-    snapshot
+    pane.surface_kind = None;
+    pane.browser_url = None;
+    pane.browser_developer_tools_visible = None;
+
+    // Inject the intended authoritative workspace-level records through the
+    // public persistence codec. The legacy schema currently ignores this
+    // field, which is a deliberate RED witness. Once the schema owns it, no
+    // test may infer a surface kind from its id or from pane-wide metadata.
+    let mut encoded = serde_json::to_value(snapshot).expect("encode mixed fixture");
+    encoded["windows"][0]["tab_manager"]["workspaces"][0]["surfaces"] =
+        intended_mixed_surface_records();
+    serde_json::from_value(encoded).expect("decode mixed fixture")
+}
+
+fn intended_mixed_surface_records() -> Value {
+    json!([
+        {
+            "id": "surface-terminal",
+            "pane_id": "pane-mixed",
+            "index_in_pane": 0,
+            "kind": "terminal",
+            "selected_in_pane": false,
+            "title": "Build shell",
+            "pinned": true,
+            "unread": false,
+            "reported_directory": "C:/repo/terminal",
+            "requested_working_directory": "C:/repo/terminal",
+            "initial_command": "cargo test",
+            "tmux_start_command": null,
+            "runtime_generation": 0
+        },
+        {
+            "id": "surface-browser",
+            "pane_id": "pane-mixed",
+            "index_in_pane": 1,
+            "kind": "browser",
+            "selected_in_pane": true,
+            "title": "Docs",
+            "pinned": false,
+            "unread": true,
+            "url": "https://example.test",
+            "developer_tools_visible": true,
+            "runtime_generation": 0
+        }
+    ])
 }
 
 fn resizable_snapshot() -> AppSessionSnapshot {
@@ -701,17 +740,41 @@ fn v2_surface_move_resolves_source_and_destination_across_windows() {
 #[test]
 fn v2_lifecycle_snapshot_persists_per_surface_records_not_pane_wide_kind() {
     let encoded = serde_json::to_value(mixed_surface_snapshot()).expect("encode snapshot");
-    let pane = &encoded["windows"][0]["tab_manager"]["workspaces"][0]["layout"];
-    assert!(pane.to_string().contains("surface-terminal"));
-    assert!(pane.to_string().contains("surface-browser"));
-    assert!(
-        pane.get("surfaces").is_some()
-            || pane
-                .get("Pane")
-                .and_then(|pane| pane.get("surfaces"))
-                .is_some(),
-        "authoritative kind/runtime/metadata must persist per surface"
+    let workspace = &encoded["windows"][0]["tab_manager"]["workspaces"][0];
+    assert_eq!(workspace["surfaces"], intended_mixed_surface_records());
+
+    let pane = &workspace["layout"]["pane"];
+    assert_eq!(
+        pane["panel_ids"],
+        json!(["surface-terminal", "surface-browser"])
     );
+    assert_eq!(pane["selected_panel_id"], json!("surface-browser"));
+    for obsolete in [
+        "surface_kind",
+        "browser_url",
+        "browser_proxy_url",
+        "browser_back_history",
+        "browser_forward_history",
+        "browser_developer_tools_visible",
+        "markdown_file_path",
+        "file_path",
+        "diff_viewer_token",
+        "diff_viewer_request_path",
+    ] {
+        assert!(pane.get(obsolete).is_none(), "pane retained {obsolete}");
+    }
+    for obsolete in [
+        "panel_titles",
+        "panel_pins",
+        "panel_unreads",
+        "panel_terminal_startups",
+        "restorable_agent_snapshots",
+    ] {
+        assert!(
+            workspace.get(obsolete).is_none(),
+            "workspace retained parallel metadata {obsolete}"
+        );
+    }
 }
 
 #[test]
