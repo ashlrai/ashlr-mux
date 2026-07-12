@@ -529,6 +529,22 @@ fn close_aliases_return_integer_counts_skip_pins_and_preserve_one_surface() {
         assert_eq!(value["skipped_pinned"], expected_skipped);
         assert!(value["closed"].is_u64());
         assert!(value["skipped_pinned"].is_u64());
+        let teardowns = result
+            .effects
+            .iter()
+            .filter_map(|effect| match effect {
+                LifecycleEffect::RuntimeTeardown {
+                    must_succeed,
+                    phase,
+                    ..
+                } => Some((*must_succeed, *phase)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(teardowns.len(), expected_closed);
+        assert!(teardowns
+            .iter()
+            .all(|(must_succeed, phase)| !must_succeed && *phase == "commit"));
         let model = SurfaceLifecycleModel::from_app_session_snapshot(&result.snapshot).unwrap();
         assert!(model.surface(PINNED).is_some());
         assert!(model.surface(BROWSER).is_some());

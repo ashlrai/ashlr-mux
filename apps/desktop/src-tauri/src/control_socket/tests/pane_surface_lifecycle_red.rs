@@ -1216,6 +1216,43 @@ fn dock_api_validation_precedes_browser_fallback_and_rejects_non_dock_kinds() {
 }
 
 #[test]
+fn remote_window_arrival_inserts_a_tab_right_of_non_last_source_without_a_pane_event() {
+    let snapshot = mixed_surface_snapshot();
+    let arrival = RuntimeArrival::remote_tab(
+        "window-1",
+        "workspace-1",
+        "pane-mixed",
+        "surface-observed",
+        "%42",
+        1,
+        "surface-terminal",
+    );
+    assert_eq!(
+        runtime_arrival_event_semantics(&arrival),
+        (false, "terminal_tab")
+    );
+
+    let reconciled = reconcile_runtime_arrival(&snapshot, arrival);
+    let workspace = &reconciled.snapshot.windows[0].tab_manager.workspaces[0];
+    let SessionWorkspaceLayoutSnapshot::Pane(pane) = workspace.layout.as_ref().unwrap() else {
+        unreachable!()
+    };
+    assert_eq!(
+        pane.panel_ids,
+        ["surface-terminal", "surface-observed", "surface-browser"]
+    );
+    assert_eq!(
+        workspace.focused_panel_id.as_deref(),
+        Some("surface-terminal")
+    );
+    let model = SurfaceLifecycleModel::from_app_session_snapshot(&reconciled.snapshot).unwrap();
+    assert_eq!(
+        model.owner_of_surface("surface-observed").unwrap().pane_id,
+        "pane-mixed"
+    );
+}
+
+#[test]
 fn dock_api_combined_invalid_inputs_follow_frozen_validation_and_owner_precedence() {
     let invalid_provider = main_transition(
         &main_window_snapshot(),

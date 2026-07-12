@@ -35,6 +35,8 @@ pub(super) enum LifecycleEffect {
         generation: u64,
         command: Option<String>,
         working_directory: Option<String>,
+        failure_code: &'static str,
+        failure_message: &'static str,
     },
     TerminalReplace {
         surface_id: String,
@@ -47,12 +49,20 @@ pub(super) enum LifecycleEffect {
         surface_id: String,
         generation: u64,
         url: Option<String>,
+        failure_code: &'static str,
+        failure_message: &'static str,
     },
     BrowserReload {
         surface_id: String,
+        phase: &'static str,
+        failure_code: &'static str,
+        failure_message: &'static str,
     },
     ExternalBrowserOpen {
         url: String,
+        phase: &'static str,
+        failure_code: &'static str,
+        failure_message: &'static str,
     },
     UiSurfaceAttach {
         surface_id: String,
@@ -91,7 +101,13 @@ pub(super) enum LifecycleEffect {
         destination: String,
         window_id: String,
         workspace_id: String,
+        target_pane_id: Option<String>,
+        source_surface_id: Option<String>,
         kind: String,
+        tmux_operation: &'static str,
+        arrival_policy: &'static str,
+        failure_code: &'static str,
+        failure_message: &'static str,
     },
     ActivateWindow {
         window_id: String,
@@ -181,6 +197,8 @@ pub(crate) struct RuntimeArrival {
     pub surface_id: String,
     pub remote_session_id: String,
     pub generation: u64,
+    pub creates_pane: bool,
+    pub anchor_surface_id: Option<String>,
 }
 
 impl RuntimeArrival {
@@ -199,6 +217,29 @@ impl RuntimeArrival {
             surface_id: surface_id.into(),
             remote_session_id: remote_session_id.into(),
             generation,
+            creates_pane: true,
+            anchor_surface_id: None,
+        }
+    }
+
+    pub fn remote_tab(
+        window_id: impl Into<String>,
+        workspace_id: impl Into<String>,
+        pane_id: impl Into<String>,
+        surface_id: impl Into<String>,
+        remote_session_id: impl Into<String>,
+        generation: u64,
+        anchor_surface_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            window_id: window_id.into(),
+            workspace_id: workspace_id.into(),
+            pane_id: pane_id.into(),
+            surface_id: surface_id.into(),
+            remote_session_id: remote_session_id.into(),
+            generation,
+            creates_pane: false,
+            anchor_surface_id: Some(anchor_surface_id.into()),
         }
     }
 }
@@ -277,13 +318,18 @@ pub(super) fn reconcile_runtime_arrival(
             workspace.layout = Some(layout);
         }
         Some(layout) if find_pane(Some(layout), &arrival.pane_id).is_some() => {
-            let anchor = find_pane(Some(layout), &arrival.pane_id)
-                .and_then(|pane| pane.panel_ids.last())
-                .cloned();
+            let pane = find_pane(Some(layout), &arrival.pane_id);
+            let anchor = arrival
+                .anchor_surface_id
+                .as_ref()
+                .filter(|anchor| pane.is_some_and(|pane| pane.panel_ids.contains(anchor)))
+                .cloned()
+                .or_else(|| pane.and_then(|pane| pane.panel_ids.last()).cloned());
             if let Some(anchor) = anchor {
                 session_ops::add_panel_to_pane(layout, &anchor, &arrival.surface_id);
             }
         }
+        Some(_) if !arrival.creates_pane => return RuntimeReconciliation { snapshot: next },
         Some(layout) => {
             let Some(anchor) = layout_surface_ids(layout).into_iter().next() else {
                 return RuntimeReconciliation { snapshot: next };
@@ -323,6 +369,37 @@ pub(super) fn reconcile_runtime_arrival(
             snapshot: snapshot.clone(),
         };
     };
+    let mut model = model;
+    if !arrival.creates_pane {
+        let Some(pane) = model.pane(&arrival.pane_id).cloned() else {
+            return RuntimeReconciliation {
+                snapshot: snapshot.clone(),
+            };
+        };
+        let anchor_index = arrival
+            .anchor_surface_id
+            .as_ref()
+            .and_then(|anchor| pane.surface_ids.iter().position(|id| id == anchor))
+            .unwrap_or_else(|| pane.surface_ids.len().saturating_sub(1));
+        let pinned_prefix = pane
+            .surface_ids
+            .iter()
+            .take_while(|id| model.surface(id).is_some_and(|row| row.metadata.pinned))
+            .count();
+        if model
+            .move_surface_transactionally(
+                &arrival.surface_id,
+                &arrival.pane_id,
+                (anchor_index + 1).max(pinned_prefix),
+                |_, _| Ok::<_, String>(()),
+            )
+            .is_err()
+        {
+            return RuntimeReconciliation {
+                snapshot: snapshot.clone(),
+            };
+        }
+    }
     let Ok(projected) = model.to_app_session(&next) else {
         return RuntimeReconciliation {
             snapshot: snapshot.clone(),
@@ -1227,7 +1304,12 @@ fn dock_create(
             snapshot.clone(),
             result.clone(),
             vec![],
-            vec![LifecycleEffect::ExternalBrowserOpen { url: url.into() }],
+            vec![LifecycleEffect::ExternalBrowserOpen {
+                url: url.into(),
+                phase: "commit",
+                failure_code: "external_open_failed",
+                failure_message: "Failed to open URL externally",
+            }],
         );
     }
     let request = match dock_request(method, params, kind) {
@@ -1436,6 +1518,8 @@ fn surface_create(
             surface_id: surface_id.clone(),
             generation,
             url: params.get("url").and_then(Value::as_str).map(str::to_owned),
+            failure_code: "internal_error",
+            failure_message: "Failed to create surface",
         },
         SessionSurfaceKindSnapshot::Terminal
         | SessionSurfaceKindSnapshot::RemoteTerminal { .. } => LifecycleEffect::TerminalCreate {
@@ -1449,6 +1533,8 @@ fn surface_create(
                 .get("working_directory")
                 .and_then(Value::as_str)
                 .map(str::to_owned),
+            failure_code: "internal_error",
+            failure_message: "Failed to create surface",
         },
         _ => LifecycleEffect::UiSurfaceAttach {
             surface_id: surface_id.clone(),
@@ -1536,10 +1622,13 @@ fn action_target(
     (String, cmux_core::surface_lifecycle::Owner),
     (&'static str, &'static str, Option<Value>),
 > {
-    let explicit = params
-        .get("surface_id")
-        .or_else(|| params.get("tab_id"))
-        .and_then(Value::as_str);
+    let valid_selector = |key: &str| {
+        params
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|id| Uuid::parse_str(id).is_ok() || model.surface(id).is_some())
+    };
+    let explicit = valid_selector("surface_id").or_else(|| valid_selector("tab_id"));
     let surface_id = explicit
         .map(str::to_owned)
         .or_else(|| model.focused_surface(workspace_id).map(str::to_owned))
@@ -1549,7 +1638,23 @@ fn action_target(
         "Tab not found",
         Some(json!({"surface_id":surface_id,"tab_id":surface_id})),
     ))?;
+    if owner.workspace_id != workspace_id {
+        return Err((
+            "not_found",
+            "Tab not found",
+            Some(json!({"surface_id":surface_id,"tab_id":surface_id})),
+        ));
+    }
     Ok((surface_id, owner))
+}
+
+fn foundation_url_is_valid(raw: &str) -> bool {
+    !raw.trim().is_empty()
+        && (url::Url::parse(raw).is_ok()
+            || url::Url::parse("https://cmux.invalid/")
+                .ok()
+                .and_then(|base| base.join(raw).ok())
+                .is_some())
 }
 
 fn close_action_range(
@@ -1596,10 +1701,10 @@ fn close_action_range(
                 owner_id: owner.window_id.clone(),
                 dock_intent: (pane.container == ContainerKind::Dock)
                     .then(|| DockRuntimeIntent::from_record(&record)),
-                must_succeed: true,
+                must_succeed: false,
                 failure_code: "internal_error",
-                failure_message: "Failed to close surface",
-                phase: "pre_publish",
+                failure_message: "Failed to close tab",
+                phase: "commit",
             });
             lifecycle_events.push(owned_event(
                 "surface.closed",
@@ -1632,12 +1737,20 @@ fn browser_disabled_outcome(
         );
     };
     let result = json!({"window_id":owner.window_id,"workspace_id":null,"pane_id":null,"surface_id":null,"created_split":false,"opened_externally":true,"browser_disabled":true,"placement_strategy":"external_browser_disabled","url":url});
-    let completion = action_completion(method, params, &result, owner);
+    let mut completion = action_completion(method, params, &result, owner);
+    completion.workspace_id = None;
+    completion.pane_id = None;
+    completion.surface_id = None;
     ok_transition(
         snapshot.clone(),
         result,
         vec![completion],
-        vec![LifecycleEffect::ExternalBrowserOpen { url: url.into() }],
+        vec![LifecycleEffect::ExternalBrowserOpen {
+            url: url.into(),
+            phase: "commit",
+            failure_code: "external_open_failed",
+            failure_message: "Failed to open URL externally",
+        }],
     )
 }
 
@@ -1679,14 +1792,7 @@ fn apply_create_right_action(
         .get("url")
         .and_then(Value::as_str)
         .or_else(|| (action_kind == "duplicate").then_some(source_url).flatten());
-    if browser
-        && raw_url.is_some_and(|raw| {
-            url::Url::parse(raw)
-                .ok()
-                .filter(|url| matches!(url.scheme(), "http" | "https"))
-                .is_none()
-        })
-    {
+    if browser && raw_url.is_some_and(|raw| !foundation_url_is_valid(raw)) {
         return error(
             snapshot,
             "invalid_params",
@@ -1726,7 +1832,13 @@ fn apply_create_right_action(
                 destination,
                 window_id: owner.window_id.clone(),
                 workspace_id: owner.workspace_id.clone(),
+                target_pane_id: Some(owner.pane_id.clone()),
+                source_surface_id: Some(surface_id.to_string()),
                 kind: "terminal".into(),
+                tmux_operation: "new-window",
+                arrival_policy: "runtime-window-add",
+                failure_code: "internal_error",
+                failure_message: "Failed to create tab",
             });
             let extras = Map::from_iter([
                 ("accepted".into(), json!(true)),
@@ -1793,10 +1905,7 @@ fn apply_create_right_action(
     {
         return error(snapshot, "internal_error", "Failed to create tab", None);
     }
-    let focused = params
-        .get("focus")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
+    let focused = super::bool_param(params, &["focus"]).unwrap_or(false);
     if focused {
         if model.focus_surface(&created).is_err() {
             return error(snapshot, "internal_error", "Failed to create tab", None);
@@ -1814,6 +1923,12 @@ fn apply_create_right_action(
             surface_id: created.clone(),
             generation: reservation.generation,
             url,
+            failure_code: "internal_error",
+            failure_message: if action_kind == "duplicate" {
+                "Failed to duplicate tab"
+            } else {
+                "Failed to create tab"
+            },
         });
     } else {
         if model
@@ -1827,6 +1942,8 @@ fn apply_create_right_action(
             generation: reservation.generation,
             command: None,
             working_directory: None,
+            failure_code: "internal_error",
+            failure_message: "Failed to create tab",
         });
     }
     let Ok(next) = model.to_app_session(snapshot) else {
@@ -1992,11 +2109,10 @@ fn apply_move_to_workspace_action(
     let mut moved_record = moved_record;
     moved_record.pane_id = pane_id.clone();
     destination.surfaces = Some(vec![moved_record]);
-    if !params
-        .get("focus")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
+    if super::bool_param(params, &["focus"]).unwrap_or(false) {
+        window.tab_manager.selected_workspace_index = i64::try_from(destination_index).ok();
+        window.selected_workspace_id = Some(workspace_id.clone());
+    } else {
         window.tab_manager.selected_workspace_index = selected_id_before
             .as_deref()
             .and_then(|id| {
@@ -2043,24 +2159,36 @@ fn surface_action(
     context: &LifecycleDispatchContext,
 ) -> LifecycleTransition {
     let (action, action_kind) = normalize_surface_action(params);
-    if action.is_empty() {
-        return error(snapshot, "invalid_params", "Missing action", None);
-    }
     if snapshot.windows.is_empty() {
         return error(snapshot, "unavailable", "TabManager not available", None);
-    }
-    if !SUPPORTED_SURFACE_ACTIONS.contains(&action_kind.as_str()) {
-        return error(
-            snapshot,
-            "invalid_params",
-            "Unknown tab action",
-            Some(json!({"action":action,"supported_actions":SUPPORTED_SURFACE_ACTIONS})),
-        );
     }
     let scope = match scope(snapshot, params, context) {
         Ok(scope) => scope,
         Err((code, message)) => return error(snapshot, code, message, None),
     };
+    if action_kind == "toggle_full_width_tab" {
+        let workspace =
+            &snapshot.windows[scope.window_index].tab_manager.workspaces[scope.workspace_index];
+        let requested = params
+            .get("surface_id")
+            .or_else(|| params.get("tab_id"))
+            .and_then(Value::as_str)
+            .or(workspace.focused_panel_id.as_deref());
+        let persisted_pane = requested.and_then(|surface_id| {
+            workspace
+                .surfaces
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .find(|record| record.surface_id == surface_id)
+                .map(|record| record.pane_id.as_str())
+        });
+        if persisted_pane
+            .is_some_and(|pane_id| find_pane(workspace.layout.as_ref(), pane_id).is_none())
+        {
+            return error(snapshot, "not_found", "Tab pane not found", None);
+        }
+    }
     let mut model = match SurfaceLifecycleModel::from_app_session(snapshot) {
         Ok(model) => model,
         Err(_) => {
@@ -2076,6 +2204,17 @@ fn surface_action(
         Ok(target) => target,
         Err((code, message, data)) => return error(snapshot, code, message, data),
     };
+    if action.is_empty() {
+        return error(snapshot, "invalid_params", "Missing action", None);
+    }
+    if !SUPPORTED_SURFACE_ACTIONS.contains(&action_kind.as_str()) {
+        return error(
+            snapshot,
+            "invalid_params",
+            "Unknown tab action",
+            Some(json!({"action":action,"supported_actions":SUPPORTED_SURFACE_ACTIONS})),
+        );
+    }
     let mut extras = Map::new();
     let mut effects = Vec::new();
     let mut lifecycle_events = Vec::new();
@@ -2110,6 +2249,25 @@ fn surface_action(
                 .is_err()
             {
                 return error(snapshot, "internal_error", "Failed to update tab", None);
+            }
+            let Some(pane) = model.pane(&owner.pane_id).cloned() else {
+                return error(snapshot, "not_found", "Tab pane not found", None);
+            };
+            let mut normalized = pane.surface_ids.clone();
+            normalized.sort_by_key(|candidate| {
+                !model
+                    .surface(candidate)
+                    .is_some_and(|record| record.metadata.pinned)
+            });
+            for (index, candidate) in normalized.iter().enumerate() {
+                if model
+                    .move_surface_transactionally(candidate, &owner.pane_id, index, |_, _| {
+                        Ok::<_, String>(())
+                    })
+                    .is_err()
+                {
+                    return error(snapshot, "internal_error", "Failed to update tab", None);
+                }
             }
             extras.insert("pinned".into(), json!(pinned));
         }
@@ -2150,10 +2308,25 @@ fn surface_action(
             }
             effects.push(LifecycleEffect::BrowserReload {
                 surface_id: surface_id.clone(),
+                phase: "commit",
+                failure_code: "internal_error",
+                failure_message: "Failed to reload tab",
             });
         }
         "toggle_full_width_tab" => {
-            // Applied after projection below because split zoom is workspace presentation state.
+            let pane_exists = snapshot
+                .windows
+                .get(scope.window_index)
+                .and_then(|window| window.tab_manager.workspaces.get(scope.workspace_index))
+                .and_then(|workspace| find_pane(workspace.layout.as_ref(), &owner.pane_id))
+                .is_some();
+            if !pane_exists {
+                return error(snapshot, "not_found", "Tab pane not found", None);
+            }
+            if model.focus_surface(&surface_id).is_err() {
+                return error(snapshot, "not_found", "Tab not found", None);
+            }
+            // Split zoom is projected below after authoritative focus changes.
         }
         "duplicate" | "new_terminal_right" | "new_browser_right" => {
             return apply_create_right_action(
@@ -2924,7 +3097,13 @@ fn pane_create(
                     .to_owned(),
                 window_id: scope.window_id,
                 workspace_id: scope.workspace_id,
+                target_pane_id: None,
+                source_surface_id: None,
                 kind: "terminal".into(),
+                tmux_operation: "split-window",
+                arrival_policy: "runtime-pane-add",
+                failure_code: "internal_error",
+                failure_message: "Failed to create pane",
             }],
         );
     }
@@ -3009,6 +3188,8 @@ fn pane_create(
             surface_id: surface_id.clone(),
             generation,
             url: params.get("url").and_then(Value::as_str).map(str::to_owned),
+            failure_code: "internal_error",
+            failure_message: "Failed to create pane",
         },
         SessionSurfaceKindSnapshot::Terminal
         | SessionSurfaceKindSnapshot::RemoteTerminal { .. } => LifecycleEffect::TerminalCreate {
@@ -3022,6 +3203,8 @@ fn pane_create(
                 .get("working_directory")
                 .and_then(Value::as_str)
                 .map(str::to_owned),
+            failure_code: "internal_error",
+            failure_message: "Failed to create pane",
         },
         _ => LifecycleEffect::UiSurfaceAttach {
             surface_id: surface_id.clone(),

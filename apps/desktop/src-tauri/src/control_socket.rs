@@ -1513,7 +1513,7 @@ struct ProductionLifecycleExecutor<'a> {
     previous: Option<AppSessionSnapshot>,
     staged: Vec<pane_surface_lifecycle::LifecycleEffect>,
     staged_terminals: Vec<(String, u32, bool)>,
-    staged_remote_panes: Vec<StagedRemotePane>,
+    staged_remote_creations: Vec<StagedRemoteCreation>,
     staged_browsers: Vec<(String, String, Option<String>)>,
     dock_journal: DockCommitJournal<DockRuntimeClaim, DockTeardownCompensation>,
 }
@@ -1611,10 +1611,128 @@ impl<C, T> DockCommitJournal<C, T> {
     }
 }
 
-struct StagedRemotePane {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RemoteTmuxTarget {
+    Pane,
+    Window,
+}
+
+impl RemoteTmuxTarget {
+    fn for_create(operation: &str) -> Result<Self, String> {
+        match operation {
+            "split-window" => Ok(Self::Pane),
+            "new-window" => Ok(Self::Window),
+            _ => Err(format!("unsupported remote tmux operation: {operation}")),
+        }
+    }
+
+    fn output_format(self) -> &'static str {
+        match self {
+            Self::Pane => "#{pane_id}",
+            Self::Window => "#{window_id}",
+        }
+    }
+
+    fn rollback_operation(self) -> &'static str {
+        match self {
+            Self::Pane => "kill-pane",
+            Self::Window => "kill-window",
+        }
+    }
+
+    fn permits_immediate_arrival(self, arrival_policy: &str) -> bool {
+        self == Self::Pane && arrival_policy == "runtime-pane-add"
+    }
+}
+
+fn immediate_remote_arrival(
+    target: RemoteTmuxTarget,
+    arrival_policy: &str,
+    window_id: &str,
+    workspace_id: &str,
+    token: &str,
+) -> Option<pane_surface_lifecycle::RuntimeArrival> {
+    target.permits_immediate_arrival(arrival_policy).then(|| {
+        pane_surface_lifecycle::RuntimeArrival::remote(
+            window_id,
+            workspace_id,
+            Uuid::new_v4().to_string(),
+            Uuid::new_v4().to_string(),
+            token,
+            1,
+        )
+    })
+}
+
+struct StagedRemoteCreation {
     destination: String,
-    pane_token: String,
-    arrival: pane_surface_lifecycle::RuntimeArrival,
+    target: RemoteTmuxTarget,
+    token: String,
+    window_id: String,
+    workspace_id: String,
+    target_pane_id: Option<String>,
+    source_surface_id: Option<String>,
+    arrival: Option<pane_surface_lifecycle::RuntimeArrival>,
+}
+
+fn observed_remote_window_arrival(
+    remote: &StagedRemoteCreation,
+    pane_token: &str,
+) -> Option<pane_surface_lifecycle::RuntimeArrival> {
+    if remote.target != RemoteTmuxTarget::Window || remote.arrival.is_some() {
+        return None;
+    }
+    Some(pane_surface_lifecycle::RuntimeArrival::remote_tab(
+        &remote.window_id,
+        &remote.workspace_id,
+        remote.target_pane_id.as_ref()?,
+        Uuid::new_v4().to_string(),
+        pane_token,
+        1,
+        remote.source_surface_id.as_ref()?,
+    ))
+}
+
+fn schedule_remote_window_observation(app: &AppHandle, remote: &StagedRemoteCreation) {
+    if remote.target != RemoteTmuxTarget::Window || remote.arrival.is_some() {
+        return;
+    }
+    let app = app.clone();
+    let destination = remote.destination.clone();
+    let token = remote.token.clone();
+    let window_id = remote.window_id.clone();
+    let workspace_id = remote.workspace_id.clone();
+    let target_pane_id = remote.target_pane_id.clone();
+    let source_surface_id = remote.source_surface_id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let output = Command::new("ssh")
+            .args(["-T", "-o", "BatchMode=yes", &destination])
+            .args(["tmux", "list-panes", "-t", &token, "-F", "#{pane_id}"])
+            .output();
+        let Ok(output) = output else {
+            return;
+        };
+        if !output.status.success() {
+            return;
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let Some(pane_token) = stdout.lines().map(str::trim).find(|line| !line.is_empty()) else {
+            return;
+        };
+        let observed = StagedRemoteCreation {
+            destination,
+            target: RemoteTmuxTarget::Window,
+            token,
+            window_id,
+            workspace_id,
+            target_pane_id,
+            source_surface_id,
+            arrival: None,
+        };
+        if let Some(arrival) = observed_remote_window_arrival(&observed, pane_token) {
+            let _ = commit_runtime_arrival_for_control(&app, arrival);
+        }
+    });
 }
 
 #[cfg(windows)]
@@ -1721,10 +1839,15 @@ impl ProductionLifecycleExecutor<'_> {
                 let _ = terminal_close_id_for_control(state.inner(), id);
             }
         }
-        for remote in self.staged_remote_panes.drain(..) {
+        for remote in self.staged_remote_creations.drain(..) {
             let _ = Command::new("ssh")
                 .args(["-T", "-o", "BatchMode=yes", &remote.destination])
-                .args(["tmux", "kill-pane", "-t", &remote.pane_token])
+                .args([
+                    "tmux",
+                    remote.target.rollback_operation(),
+                    "-t",
+                    &remote.token,
+                ])
                 .status();
         }
         if let Some(state) = app.try_state::<BrowserWebviewState>() {
@@ -1815,31 +1938,48 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
                 destination,
                 window_id,
                 workspace_id,
+                tmux_operation,
+                arrival_policy,
+                target_pane_id,
+                source_surface_id,
                 ..
             } => {
+                let target = RemoteTmuxTarget::for_create(tmux_operation)?;
                 let output = Command::new("ssh")
                     .args(["-T", "-o", "BatchMode=yes", destination])
-                    .args(["tmux", "split-window", "-d", "-P", "-F", "#{pane_id}"])
+                    .args([
+                        "tmux",
+                        tmux_operation,
+                        "-d",
+                        "-P",
+                        "-F",
+                        target.output_format(),
+                    ])
                     .output()
-                    .map_err(|error| format!("failed to launch remote tmux split: {error}"))?;
+                    .map_err(|error| format!("failed to launch remote tmux create: {error}"))?;
                 if !output.status.success() {
-                    return Err(format!("remote tmux split exited with {}", output.status));
+                    return Err(format!("remote tmux create exited with {}", output.status));
                 }
-                let pane_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if pane_id.is_empty() {
-                    return Err("remote tmux split returned no pane identity".to_string());
+                let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if token.is_empty() {
+                    return Err("remote tmux create returned no target identity".to_string());
                 }
-                self.staged_remote_panes.push(StagedRemotePane {
+                let arrival = immediate_remote_arrival(
+                    target,
+                    arrival_policy,
+                    window_id,
+                    workspace_id,
+                    &token,
+                );
+                self.staged_remote_creations.push(StagedRemoteCreation {
                     destination: destination.clone(),
-                    pane_token: pane_id.clone(),
-                    arrival: pane_surface_lifecycle::RuntimeArrival::remote(
-                        window_id,
-                        workspace_id,
-                        Uuid::new_v4().to_string(),
-                        Uuid::new_v4().to_string(),
-                        pane_id,
-                        1,
-                    ),
+                    target,
+                    token,
+                    window_id: window_id.clone(),
+                    workspace_id: workspace_id.clone(),
+                    target_pane_id: target_pane_id.clone(),
+                    source_surface_id: source_surface_id.clone(),
+                    arrival,
                 });
             }
             pane_surface_lifecycle::LifecycleEffect::BrowserAttach {
@@ -1873,43 +2013,61 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
                 self.staged_browsers
                     .push((window_id, surface_id.clone(), url.clone()));
             }
-            pane_surface_lifecycle::LifecycleEffect::BrowserReload { surface_id } => {
-                let state = self.app.state::<BrowserWebviewState>();
-                browser_webview_command_for_control(state.inner(), surface_id, "reload")?;
-            }
-            pane_surface_lifecycle::LifecycleEffect::ExternalBrowserOpen { url } => {
-                open_external_url_checked(url)?;
-            }
             pane_surface_lifecycle::LifecycleEffect::RuntimeTeardown {
                 surface_id,
                 generation,
                 owner_id,
                 dock_intent,
+                must_succeed,
                 failure_message,
+                phase,
                 ..
             } => {
+                if *phase == "commit" {
+                    self.staged.push(effect.clone());
+                    return Ok(());
+                }
                 if let Some(intent) = dock_intent {
                     let operation = DockRuntimeOperation::Teardown {
                         surface_id: surface_id.clone(),
                         generation: *generation,
                         intent: intent.clone(),
                     };
-                    if runtime_exists_for_control(self.app, &operation)
-                        .map_err(|_| (*failure_message).to_string())?
-                    {
+                    let exists = runtime_exists_for_control(self.app, &operation);
+                    if *must_succeed && exists.is_err() {
+                        return Err((*failure_message).to_string());
+                    }
+                    if exists.unwrap_or(false) {
                         self.dock_journal.stage_teardown(DockTeardownCompensation {
                             owner_id: owner_id.clone(),
                             operation: operation.clone(),
                         });
                     }
-                    teardown_runtime_for_control(self.app, &operation)
-                        .map_err(|_| (*failure_message).to_string())?;
+                    let teardown = teardown_runtime_for_control(self.app, &operation);
+                    if *must_succeed && teardown.is_err() {
+                        return Err((*failure_message).to_string());
+                    }
                 } else {
-                    terminal_close_panel_for_control(terminal_state.inner(), surface_id)
-                        .map_err(|_| (*failure_message).to_string())?;
                     let browser_state = self.app.state::<BrowserWebviewState>();
-                    browser_close_webview_for_control(browser_state.inner(), surface_id)
-                        .map_err(|_| (*failure_message).to_string())?;
+                    let kind = self.previous.as_ref().and_then(|previous| {
+                        cmux_core::surface_lifecycle::SurfaceLifecycleModel::from_app_session(
+                            previous,
+                        )
+                        .ok()
+                        .and_then(|model| {
+                            model.surface(surface_id).map(|record| record.kind.clone())
+                        })
+                    });
+                    let teardown = match kind {
+                        Some(SessionSurfaceKindSnapshot::Browser { .. }) => {
+                            browser_close_webview_for_control(browser_state.inner(), surface_id)
+                        }
+                        _ => terminal_close_panel_for_control(terminal_state.inner(), surface_id)
+                            .map(|_| ()),
+                    };
+                    if *must_succeed && teardown.is_err() {
+                        return Err((*failure_message).to_string());
+                    }
                 }
                 self.app
                     .state::<crate::remote_proxy::RemoteProxyBrokerState>()
@@ -1972,13 +2130,64 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
                         let _ = window.set_focus();
                     }
                 }
+                pane_surface_lifecycle::LifecycleEffect::RuntimeTeardown {
+                    surface_id,
+                    generation,
+                    dock_intent,
+                    phase,
+                    ..
+                } if *phase == "commit" => {
+                    if let Some(intent) = dock_intent {
+                        let operation = DockRuntimeOperation::Teardown {
+                            surface_id: surface_id.clone(),
+                            generation: *generation,
+                            intent: intent.clone(),
+                        };
+                        let _ = teardown_runtime_for_control(self.app, &operation);
+                    } else {
+                        let kind = self.previous.as_ref().and_then(|previous| {
+                            cmux_core::surface_lifecycle::SurfaceLifecycleModel::from_app_session(
+                                previous,
+                            )
+                            .ok()
+                            .and_then(|model| {
+                                model.surface(surface_id).map(|record| record.kind.clone())
+                            })
+                        });
+                        match kind {
+                            Some(SessionSurfaceKindSnapshot::Browser { .. }) => {
+                                let _ = browser_close_webview_for_control(
+                                    browser_state.inner(),
+                                    surface_id,
+                                );
+                            }
+                            _ => {
+                                let _ = terminal_close_panel_for_control(
+                                    terminal_state.inner(),
+                                    surface_id,
+                                );
+                            }
+                        }
+                    }
+                    self.app
+                        .state::<crate::remote_proxy::RemoteProxyBrokerState>()
+                        .stop_panel_broker(surface_id);
+                }
                 pane_surface_lifecycle::LifecycleEffect::RuntimeTeardown { .. } => {}
                 pane_surface_lifecycle::LifecycleEffect::TerminalCreate { .. }
                 | pane_surface_lifecycle::LifecycleEffect::TerminalReplace { .. }
                 | pane_surface_lifecycle::LifecycleEffect::BrowserAttach { .. }
-                | pane_surface_lifecycle::LifecycleEffect::BrowserReload { .. }
-                | pane_surface_lifecycle::LifecycleEffect::ExternalBrowserOpen { .. }
                 | pane_surface_lifecycle::LifecycleEffect::UiSurfaceAttach { .. } => {}
+                pane_surface_lifecycle::LifecycleEffect::BrowserReload { surface_id, .. } => {
+                    browser_webview_command_for_control(
+                        browser_state.inner(),
+                        surface_id,
+                        "reload",
+                    )?;
+                }
+                pane_surface_lifecycle::LifecycleEffect::ExternalBrowserOpen { url, .. } => {
+                    open_external_url_checked(url)?;
+                }
                 pane_surface_lifecycle::LifecycleEffect::RemoteCreate { .. } => {}
                 pane_surface_lifecycle::LifecycleEffect::DockCreate { .. } => {}
                 pane_surface_lifecycle::LifecycleEffect::DockReveal { owner_id } => {
@@ -2005,12 +2214,17 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
                 pane_surface_lifecycle::LifecycleEffect::PersistSession => {}
             }
         }
-        for remote in &self.staged_remote_panes {
-            commit_runtime_arrival_for_control(self.app, remote.arrival.clone())?;
+        for remote in &self.staged_remote_creations {
+            if let Some(arrival) = &remote.arrival {
+                commit_runtime_arrival_for_control(self.app, arrival.clone())?;
+            }
+        }
+        for remote in &self.staged_remote_creations {
+            schedule_remote_window_observation(self.app, remote);
         }
         self.staged.clear();
         self.staged_terminals.clear();
-        self.staged_remote_panes.clear();
+        self.staged_remote_creations.clear();
         self.staged_browsers.clear();
         self.dock_journal.finish();
         self.previous = None;
@@ -2055,12 +2269,20 @@ fn handle_pane_surface_lifecycle_request(
             active_window_id,
         },
     );
-    decorate_lifecycle_result_refs(app, &mut transition.result);
-    if !transition.changed {
+    if let Some(decorated) = decorate_lifecycle_result_refs(app, &mut transition.result) {
+        for event in &mut transition.events {
+            if let Some(result) = event.payload.get_mut("result") {
+                *result = decorated.clone();
+            }
+        }
+    }
+    if !transition.changed && transition.effects.is_empty() {
         return transition.result;
     }
     let external_url = transition.effects.iter().find_map(|effect| match effect {
-        pane_surface_lifecycle::LifecycleEffect::ExternalBrowserOpen { url } => Some(url.clone()),
+        pane_surface_lifecycle::LifecycleEffect::ExternalBrowserOpen { url, .. } => {
+            Some(url.clone())
+        }
         _ => None,
     });
     let lifecycle_failure = transition.effects.iter().find_map(|effect| match effect {
@@ -2070,6 +2292,31 @@ fn handle_pane_surface_lifecycle_request(
             ..
         }
         | pane_surface_lifecycle::LifecycleEffect::RuntimeTeardown {
+            failure_code,
+            failure_message,
+            ..
+        }
+        | pane_surface_lifecycle::LifecycleEffect::TerminalCreate {
+            failure_code,
+            failure_message,
+            ..
+        }
+        | pane_surface_lifecycle::LifecycleEffect::BrowserAttach {
+            failure_code,
+            failure_message,
+            ..
+        }
+        | pane_surface_lifecycle::LifecycleEffect::BrowserReload {
+            failure_code,
+            failure_message,
+            ..
+        }
+        | pane_surface_lifecycle::LifecycleEffect::ExternalBrowserOpen {
+            failure_code,
+            failure_message,
+            ..
+        }
+        | pane_surface_lifecycle::LifecycleEffect::RemoteCreate {
             failure_code,
             failure_message,
             ..
@@ -2085,7 +2332,7 @@ fn handle_pane_surface_lifecycle_request(
         previous: Some(previous),
         staged: Vec::new(),
         staged_terminals: Vec::new(),
-        staged_remote_panes: Vec::new(),
+        staged_remote_creations: Vec::new(),
         staged_browsers: Vec::new(),
         dock_journal: DockCommitJournal::default(),
     };
@@ -2144,29 +2391,33 @@ fn commit_runtime_arrival_for_control(
     app: &AppHandle,
     arrival: pane_surface_lifecycle::RuntimeArrival,
 ) -> Result<(), String> {
-    let current = snapshot(app);
+    let state = app.state::<SessionState>();
+    let _control_guard = state.lock_control_mutation()?;
+    let current = current_session_snapshot(&state);
     let reconciled = pane_surface_lifecycle::reconcile_runtime_arrival(&current, arrival.clone());
     if reconciled.snapshot == current {
         return Ok(());
     }
-    let state = app.state::<SessionState>();
     commit_lifecycle_snapshot_for_control(app, state.inner(), &reconciled.snapshot, false)?;
     record_session_changed_event_suppressing(
         app,
         &reconciled.snapshot,
         &HashSet::from(["pane.created", "surface.created"]),
     );
-    record_event(
-        app,
-        "pane.created",
-        "pane",
-        "workspace.lifecycle",
-        Some(arrival.window_id.clone()),
-        Some(arrival.workspace_id.clone()),
-        Some(arrival.pane_id.clone()),
-        Some(arrival.surface_id.clone()),
-        json!({"pane_id":arrival.pane_id,"source_pane_id":null,"orientation":null,"surface_id":arrival.surface_id,"origin":"terminal_split"}),
-    );
+    let (emit_pane_created, origin) = runtime_arrival_event_semantics(&arrival);
+    if emit_pane_created {
+        record_event(
+            app,
+            "pane.created",
+            "pane",
+            "workspace.lifecycle",
+            Some(arrival.window_id.clone()),
+            Some(arrival.workspace_id.clone()),
+            Some(arrival.pane_id.clone()),
+            Some(arrival.surface_id.clone()),
+            json!({"pane_id":arrival.pane_id,"source_pane_id":null,"orientation":null,"surface_id":arrival.surface_id,"origin":"terminal_split"}),
+        );
+    }
     record_event(
         app,
         "surface.created",
@@ -2176,9 +2427,19 @@ fn commit_runtime_arrival_for_control(
         Some(arrival.workspace_id),
         Some(arrival.pane_id.clone()),
         Some(arrival.surface_id.clone()),
-        json!({"surface_id":arrival.surface_id,"pane_id":arrival.pane_id,"kind":"terminal","origin":"terminal_split","focused":false}),
+        json!({"surface_id":arrival.surface_id,"pane_id":arrival.pane_id,"kind":"terminal","origin":origin,"focused":false}),
     );
     Ok(())
+}
+
+fn runtime_arrival_event_semantics(
+    arrival: &pane_surface_lifecycle::RuntimeArrival,
+) -> (bool, &'static str) {
+    if arrival.creates_pane {
+        (true, "terminal_split")
+    } else {
+        (false, "terminal_tab")
+    }
 }
 
 const LIFECYCLE_ID_REF_FIELDS: [(&str, &str, &str); 10] = [
@@ -2194,9 +2455,17 @@ const LIFECYCLE_ID_REF_FIELDS: [(&str, &str, &str); 10] = [
     ("created_tab_id", "created_tab_ref", "surface"),
 ];
 
-fn decorate_lifecycle_result_refs(app: &AppHandle, result: &mut ControlCallResult) {
-    let ControlCallResult::Ok(payload) = result else {
-        return;
+fn decorate_lifecycle_result_refs(
+    app: &AppHandle,
+    result: &mut ControlCallResult,
+) -> Option<Value> {
+    let success = matches!(result, ControlCallResult::Ok(_));
+    let payload = match result {
+        ControlCallResult::Ok(payload) => payload,
+        ControlCallResult::Err {
+            data: Some(data), ..
+        } => data,
+        ControlCallResult::Err { data: None, .. } => return None,
     };
     let mut value = Value::from(payload.clone());
     decorate_lifecycle_value_refs(&mut value, &mut |kind, id| {
@@ -2205,6 +2474,7 @@ fn decorate_lifecycle_result_refs(app: &AppHandle, result: &mut ControlCallResul
     if let Ok(decorated) = JsonValue::try_from(value) {
         *payload = decorated;
     }
+    success.then(|| Value::from(payload.clone()))
 }
 
 fn decorate_lifecycle_value_refs(
@@ -13725,11 +13995,7 @@ fn bool_param(params: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<
         params.get(*key).and_then(|value| {
             value
                 .as_bool()
-                .or_else(|| match value.as_i64() {
-                    Some(1) => Some(true),
-                    Some(0) => Some(false),
-                    _ => None,
-                })
+                .or_else(|| value.as_f64().map(|number| number != 0.0))
                 .or_else(|| {
                     let normalized = value.as_str()?.trim().to_ascii_lowercase();
                     match normalized.as_str() {
@@ -18111,6 +18377,69 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn remote_tmux_creation_uses_observed_window_arrival_and_typed_rollback() {
+        let pane = RemoteTmuxTarget::for_create("split-window").unwrap();
+        assert_eq!(pane.output_format(), "#{pane_id}");
+        assert_eq!(pane.rollback_operation(), "kill-pane");
+        assert!(pane.permits_immediate_arrival("runtime-pane-add"));
+
+        let window = RemoteTmuxTarget::for_create("new-window").unwrap();
+        assert_eq!(window.output_format(), "#{window_id}");
+        assert_eq!(window.rollback_operation(), "kill-window");
+        assert!(!window.permits_immediate_arrival("runtime-window-add"));
+        assert!(!window.permits_immediate_arrival("runtime-pane-add"));
+        assert!(immediate_remote_arrival(
+            window,
+            "runtime-window-add",
+            "window",
+            "workspace",
+            "@12"
+        )
+        .is_none());
+        assert!(
+            immediate_remote_arrival(pane, "runtime-pane-add", "window", "workspace", "%34")
+                .is_some()
+        );
+
+        let observed_window = StagedRemoteCreation {
+            destination: "ssh://example.test".into(),
+            target: window,
+            token: "@12".into(),
+            window_id: "window".into(),
+            workspace_id: "workspace".into(),
+            target_pane_id: Some("pane-existing".into()),
+            source_surface_id: Some("surface-source".into()),
+            arrival: None,
+        };
+        let arrival = observed_remote_window_arrival(&observed_window, "%34")
+            .expect("observed window pane should reconcile");
+        assert_eq!(arrival.window_id, "window");
+        assert_eq!(arrival.workspace_id, "workspace");
+        assert_eq!(arrival.pane_id, "pane-existing");
+        assert_eq!(arrival.remote_session_id, "%34");
+        assert!(!arrival.creates_pane);
+        assert_eq!(arrival.anchor_surface_id.as_deref(), Some("surface-source"));
+
+        let immediate_pane = StagedRemoteCreation {
+            destination: "ssh://example.test".into(),
+            target: pane,
+            token: "%34".into(),
+            window_id: "window".into(),
+            workspace_id: "workspace".into(),
+            target_pane_id: None,
+            source_surface_id: None,
+            arrival: immediate_remote_arrival(
+                pane,
+                "runtime-pane-add",
+                "window",
+                "workspace",
+                "%34",
+            ),
+        };
+        assert!(observed_remote_window_arrival(&immediate_pane, "%34").is_none());
     }
 
     #[test]

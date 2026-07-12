@@ -286,7 +286,15 @@ fn foundation_equivalent_urls_include_non_http_and_relative_values() {
 
 #[test]
 fn action_focus_uses_the_shared_v2_bool_parser() {
-    for value in [json!(1), json!("yes"), json!("on"), json!("true")] {
+    for value in [
+        json!(1),
+        json!(2),
+        json!(-1),
+        json!(0.5),
+        json!("yes"),
+        json!("on"),
+        json!("true"),
+    ] {
         let transition = dispatch(
             &action_snapshot(),
             json!({"surface_id": A, "action": "new-terminal-right", "focus": value}),
@@ -305,10 +313,15 @@ fn action_focus_uses_the_shared_v2_bool_parser() {
         json!({"surface_id": A, "action": "new-terminal-right", "focus": "off"}),
     );
     assert_eq!(model(&not_focused.snapshot).focused_surface(WS1), Some(A));
+    let zero = dispatch(
+        &action_snapshot(),
+        json!({"surface_id": A, "action": "new-terminal-right", "focus": 0}),
+    );
+    assert_eq!(model(&zero.snapshot).focused_surface(WS1), Some(A));
 }
 
 #[test]
-fn full_width_toggle_focuses_target_is_transient_and_has_exact_missing_pane_error() {
+fn full_width_toggle_focuses_target_persists_and_has_exact_missing_pane_error() {
     let snapshot = action_snapshot();
     let toggled = dispatch(
         &snapshot,
@@ -321,8 +334,11 @@ fn full_width_toggle_focuses_target_is_transient_and_has_exact_missing_pane_erro
     )
     .unwrap();
     assert_eq!(
-        restored.windows[0].tab_manager.workspaces[0].zoomed_panel_id, None,
-        "full-width presentation state is not restored"
+        restored.windows[0].tab_manager.workspaces[0]
+            .zoomed_panel_id
+            .as_deref(),
+        Some(B),
+        "canonical full-width presentation state must survive restore"
     );
 
     let mut missing_pane = action_snapshot();
@@ -359,7 +375,7 @@ fn focused_move_updates_both_selected_workspace_representations() {
 }
 
 #[test]
-fn action_effects_carry_exact_failure_mapping_and_strict_teardown_policy() {
+fn action_create_effects_carry_exact_failure_mapping() {
     let terminal = dispatch(
         &action_snapshot(),
         json!({"surface_id": A, "action": "new-terminal-right"}),
@@ -375,13 +391,8 @@ fn action_effects_carry_exact_failure_mapping_and_strict_teardown_policy() {
     let browser_effect = serialized_effect(&duplicate, "BrowserAttach");
     assert_eq!(browser_effect["failure_message"], "Failed to duplicate tab");
 
-    let close = dispatch(
-        &action_snapshot(),
-        json!({"surface_id": A, "action": "close-right"}),
-    );
-    let teardown = serialized_effect(&close, "RuntimeTeardown");
-    assert_eq!(teardown["must_succeed"], true);
-    assert_eq!(teardown["failure_message"], "Failed to close tab");
+    // Frozen canonical treats unsuccessful close-range members as unclosed,
+    // continues the range, and reports the final counts.
 }
 
 #[test]
@@ -417,24 +428,32 @@ fn completion_and_error_payloads_match_final_reference_decoration() {
         &action_snapshot(),
         json!({"surface_id": A, "action": "new-terminal-right"}),
     );
-    let mut decorated_result = ok(&transition);
-    let mut registry = ControlHandleRegistry::default();
-    decorate_lifecycle_value_refs(&mut decorated_result, &mut |kind, id| {
-        registry.mint(kind, id)
-    });
+    let raw_result = ok(&transition);
     let completion = transition
         .events
         .iter()
         .find(|event| event.name == "surface.action")
         .unwrap();
-    assert_eq!(completion.payload["result"], decorated_result);
+    assert_eq!(completion.payload["result"], raw_result);
+
+    let mut registry = ControlHandleRegistry::default();
+    let mut decorated_result = raw_result;
+    decorate_lifecycle_value_refs(&mut decorated_result, &mut |kind, id| {
+        registry.mint(kind, id)
+    });
+    let mut decorated_completion = completion.payload["result"].clone();
+    decorate_lifecycle_value_refs(&mut decorated_completion, &mut |kind, id| {
+        registry.mint(kind, id)
+    });
+    assert_eq!(decorated_completion, decorated_result);
 
     let missing = "40000000-0000-0000-0000-000000000099";
     let failed = dispatch(
         &action_snapshot(),
         json!({"surface_id": missing, "action": "pin"}),
     );
-    let data = assert_error(&failed, "not_found", "Tab not found");
+    let mut data = assert_error(&failed, "not_found", "Tab not found");
+    decorate_lifecycle_value_refs(&mut data, &mut |kind, id| registry.mint(kind, id));
     assert!(data["surface_ref"].is_string());
     assert!(data["tab_ref"].is_string());
 }
