@@ -71,32 +71,34 @@ fn mixed_surface_snapshot() -> AppSessionSnapshot {
 fn intended_mixed_surface_records() -> Value {
     json!([
         {
-            "id": "surface-terminal",
+            "surface_id": "surface-terminal",
             "pane_id": "pane-mixed",
-            "index_in_pane": 0,
-            "kind": "terminal",
-            "selected_in_pane": false,
-            "title": "Build shell",
-            "pinned": true,
-            "unread": false,
-            "reported_directory": "C:/repo/terminal",
-            "requested_working_directory": "C:/repo/terminal",
-            "initial_command": "cargo test",
-            "tmux_start_command": null,
-            "runtime_generation": 0
+            "generation": 7,
+            "kind": {"type": "terminal"},
+            "metadata": {
+                "custom_title": "Build shell",
+                "pinned": true,
+                "unread": false,
+                "reported_directory": "C:/repo/terminal"
+            },
+            "terminal_startup": {
+                "command": "cargo test",
+                "working_directory": "C:/repo/terminal"
+            }
         },
         {
-            "id": "surface-browser",
+            "surface_id": "surface-browser",
             "pane_id": "pane-mixed",
-            "index_in_pane": 1,
-            "kind": "browser",
-            "selected_in_pane": true,
-            "title": "Docs",
-            "pinned": false,
-            "unread": true,
-            "url": "https://example.test",
-            "developer_tools_visible": true,
-            "runtime_generation": 0
+            "generation": 3,
+            "kind": {
+                "type": "browser",
+                "url": "https://example.test"
+            },
+            "metadata": {
+                "custom_title": "Docs",
+                "pinned": false,
+                "unread": true
+            }
         }
     ])
 }
