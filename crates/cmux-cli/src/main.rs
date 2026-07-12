@@ -126,11 +126,18 @@ fn dispatch(
                 std::env::var(CMUX_SURFACE_ID_ENV).ok()
             };
             let control = control.with_window_id(options.window_id.as_deref());
-            let has_window_scope = control.params.get("window_id").is_some()
-                || control.params.get("window_ref").is_some()
-                || control.params.get("suppress_ambient_window").is_some();
-            let control = if options.window_id.is_some() || has_window_scope {
+            let has_window_scope = ["window_id", "window_ref", "window_index"]
+                .iter()
+                .any(|key| control.params.get(*key).is_some());
+            let suppress_ambient_window = control.params.get("suppress_ambient_window").is_some();
+            let has_global_window = options
+                .window_id
+                .as_deref()
+                .is_some_and(|window| !window.trim().is_empty());
+            let control = if has_global_window || has_window_scope {
                 control
+            } else if suppress_ambient_window {
+                control.with_ambient_workspace_id(ambient_workspace_id.as_deref())
             } else {
                 control
                     .with_ambient_surface_id(ambient_surface_id.as_deref())
@@ -759,8 +766,9 @@ fn run_lifecycle_command(
     let mut request_params = params.clone();
     if method == "surface.respawn" {
         if let Some(object) = request_params.as_object_mut() {
-            let has_window =
-                object.get("window_id").is_some() || object.get("window_ref").is_some();
+            let has_window = ["window_id", "window_ref", "window_index"]
+                .iter()
+                .any(|key| object.get(*key).is_some());
             let has_workspace = object.get("workspace_id").is_some()
                 || object.get("workspace_ref").is_some()
                 || object.get("workspace_index").is_some();
@@ -907,6 +915,24 @@ fn filter_id_format(value: &mut serde_json::Value, id_format: &str) {
 }
 
 #[cfg(windows)]
+fn selected_id_or_ref<'a>(
+    value: &'a serde_json::Value,
+    id_key: &str,
+    ref_key: &str,
+    allow_ref: bool,
+) -> Option<&'a str> {
+    value
+        .get(id_key)
+        .or_else(|| value.get("id"))
+        .or_else(|| {
+            allow_ref
+                .then(|| value.get(ref_key).or_else(|| value.get("ref")))
+                .flatten()
+        })
+        .and_then(serde_json::Value::as_str)
+}
+
+#[cfg(windows)]
 fn normalize_workspace_params(
     options: &GlobalOptions,
     method: &str,
@@ -967,19 +993,16 @@ fn normalize_workspace_params(
                 })
             })
             .ok_or_else(|| {
-                CliError::new(if window_index.is_some() {
-                    "Window index not found"
+                CliError::new(if let Some(window_ref) = window_ref.as_deref() {
+                    format!("Window not found: {window_ref}")
                 } else {
-                    "Window not found"
+                    "Window index not found".to_string()
                 })
             })?;
-        let id = matched
-            .get("window_id")
-            .or_else(|| matched.get("id"))
-            .and_then(serde_json::Value::as_str)
+        let handle = selected_id_or_ref(matched, "window_id", "window_ref", method == "tab.action")
             .ok_or_else(|| CliError::new("Window not found"))?;
         object.remove("window_ref");
-        object.insert("window_id".into(), serde_json::json!(id));
+        object.insert("window_id".into(), serde_json::json!(handle));
     }
 
     if !matches!(
@@ -1039,12 +1062,14 @@ fn normalize_workspace_params(
             "workspace.current",
             &serde_json::Value::Object(current_params),
         )?;
-        let id = current
-            .get("workspace_id")
-            .or_else(|| current.get("id"))
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| CliError::new("No workspace selected"))?;
-        object.insert("workspace_id".into(), serde_json::json!(id));
+        let handle = selected_id_or_ref(
+            &current,
+            "workspace_id",
+            "workspace_ref",
+            method == "tab.action",
+        )
+        .ok_or_else(|| CliError::new("No workspace selected"))?;
+        object.insert("workspace_id".into(), serde_json::json!(handle));
         return Ok(());
     }
     if workspace_index.is_none() && workspace_ref.is_none() {
@@ -1148,13 +1173,15 @@ fn normalize_workspace_params(
             };
             CliError::new(message)
         })?;
-    let id = matched
-        .get("workspace_id")
-        .or_else(|| matched.get("id"))
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| CliError::new("Workspace not found"))?;
+    let handle = selected_id_or_ref(
+        matched,
+        "workspace_id",
+        "workspace_ref",
+        method == "tab.action",
+    )
+    .ok_or_else(|| CliError::new("Workspace not found"))?;
     object.remove("workspace_ref");
-    object.insert("workspace_id".into(), serde_json::json!(id));
+    object.insert("workspace_id".into(), serde_json::json!(handle));
     Ok(())
 }
 

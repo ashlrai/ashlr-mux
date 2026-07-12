@@ -46,7 +46,10 @@ impl ControlCommand {
             params.insert("suppress_ambient_workspace".into(), serde_json::json!(true));
             return self;
         }
-        if params.contains_key("workspace_id") || params.contains_key("workspace_ref") {
+        if ["workspace_id", "workspace_ref", "workspace_index"]
+            .iter()
+            .any(|key| params.contains_key(*key))
+        {
             return self;
         }
         params.insert("workspace_id".to_string(), serde_json::json!(workspace_id));
@@ -75,16 +78,25 @@ impl ControlCommand {
         ) {
             return self;
         }
-        let Some(window_id) = window_id.map(str::trim).filter(|value| !value.is_empty()) else {
+        let Some(window_id) = window_id.map(str::trim) else {
             return self;
         };
         let Some(params) = self.params.as_object_mut() else {
             return self;
         };
+        if window_id.is_empty() {
+            if matches!(self.method.as_str(), "tab.action" | "surface.respawn") {
+                params.insert("suppress_ambient_window".into(), serde_json::json!(true));
+            }
+            return self;
+        }
         if params.contains_key("suppress_ambient_window") {
             return self;
         }
-        if params.contains_key("window_id") || params.contains_key("window_ref") {
+        if ["window_id", "window_ref", "window_index"]
+            .iter()
+            .any(|key| params.contains_key(*key))
+        {
             return self;
         }
         apply_window_selector_value(window_id, params);
@@ -120,11 +132,20 @@ impl ControlCommand {
             params.insert("suppress_ambient_surface".into(), serde_json::json!(true));
             return self;
         }
-        if !params.contains_key("window_id")
-            && !params.contains_key("window_ref")
-            && !params.contains_key("workspace_id")
-            && !params.contains_key("workspace_ref")
-        {
+        let has_explicit_scope = [
+            "window_id",
+            "window_ref",
+            "window_index",
+            "workspace_id",
+            "workspace_ref",
+            "workspace_index",
+            "surface_id",
+            "surface_ref",
+            "surface_index",
+        ]
+        .iter()
+        .any(|key| params.contains_key(*key));
+        if !has_explicit_scope {
             params
                 .entry("surface_id")
                 .or_insert_with(|| serde_json::json!(surface_id));
@@ -2708,6 +2729,15 @@ fn normalize_action_name(action: &str) -> String {
         .collect()
 }
 
+fn is_frozen_handle_ref(value: &str) -> bool {
+    value.split_once(':').is_some_and(|(kind, index)| {
+        matches!(
+            kind.to_ascii_lowercase().as_str(),
+            "window" | "workspace" | "pane" | "surface"
+        ) && index.parse::<i64>().is_ok()
+    })
+}
+
 fn apply_lifecycle_workspace_value(
     raw: &str,
     params: &mut serde_json::Map<String, serde_json::Value>,
@@ -2720,9 +2750,7 @@ fn apply_lifecycle_workspace_value(
     }
     if let Ok(index) = value.parse::<i64>() {
         params.insert("workspace_index".into(), serde_json::json!(index));
-    } else if value.split_once(':').is_some_and(|(kind, index)| {
-        kind.eq_ignore_ascii_case("workspace") && index.parse::<i64>().is_ok()
-    }) {
+    } else if is_frozen_handle_ref(value) {
         params.insert("workspace_ref".into(), serde_json::json!(value));
     } else if uuid::Uuid::parse_str(value).is_ok() {
         params.insert("workspace_id".into(), serde_json::json!(value));
@@ -2767,9 +2795,7 @@ fn apply_lifecycle_window_value(
     }
     if let Ok(index) = value.parse::<i64>() {
         params.insert("window_index".into(), serde_json::json!(index));
-    } else if value.split_once(':').is_some_and(|(kind, index)| {
-        kind.eq_ignore_ascii_case("window") && index.parse::<i64>().is_ok()
-    }) {
+    } else if is_frozen_handle_ref(value) {
         params.insert("window_ref".into(), serde_json::json!(value));
     } else if uuid::Uuid::parse_str(value).is_ok() {
         params.insert("window_id".into(), serde_json::json!(value));
@@ -2818,9 +2844,7 @@ fn apply_validated_surface_selector(
     } else {
         trimmed.to_string()
     };
-    let valid_reference = value.split_once(':').is_some_and(|(kind, index)| {
-        kind.eq_ignore_ascii_case("surface") && index.parse::<i64>().is_ok()
-    });
+    let valid_reference = is_frozen_handle_ref(&value);
     if value.parse::<i64>().is_ok() || valid_reference {
         if let Ok(index) = value.parse::<i64>() {
             params.insert("surface_index".into(), serde_json::json!(index));
