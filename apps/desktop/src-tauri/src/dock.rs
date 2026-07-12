@@ -1039,15 +1039,10 @@ pub(crate) fn dock_create(
         app: &app,
         staged: None,
     };
-    session.transact_lifecycle(&app, |snapshot| {
+    let (_, committed) = session.transact_lifecycle(&app, |snapshot| {
         create_with_runtime(snapshot, state.inner(), &owner_id, request, &mut runtime).map(|_| ())
     })?;
-    emit_snapshot(
-        &app,
-        &session.snapshot_for_lifecycle()?,
-        state.inner(),
-        &owner_id,
-    )
+    emit_snapshot(&app, &committed, state.inner(), &owner_id)
 }
 
 #[tauri::command]
@@ -1062,19 +1057,14 @@ pub(crate) fn dock_select(
 ) -> Result<DockSnapshot, String> {
     let pane_id = Uuid::parse_str(&pane_id).map_err(|_| "Invalid Dock pane identity")?;
     let surface_id = Uuid::parse_str(&surface_id).map_err(|_| "Invalid Dock surface identity")?;
-    session.transact_lifecycle(&app, |snapshot| {
+    let (_, committed) = session.transact_lifecycle(&app, |snapshot| {
         state.select(snapshot, &owner_id, pane_id, surface_id)?;
         if focus {
             state.focus(snapshot, &owner_id, surface_id)?;
         }
         Ok(())
     })?;
-    emit_snapshot(
-        &app,
-        &session.snapshot_for_lifecycle()?,
-        state.inner(),
-        &owner_id,
-    )
+    emit_snapshot(&app, &committed, state.inner(), &owner_id)
 }
 
 #[tauri::command]
@@ -1086,15 +1076,10 @@ pub(crate) fn dock_focus(
     session: State<'_, crate::session::SessionState>,
 ) -> Result<DockSnapshot, String> {
     let surface_id = Uuid::parse_str(&surface_id).map_err(|_| "Invalid Dock surface identity")?;
-    session.transact_lifecycle(&app, |snapshot| {
+    let (_, committed) = session.transact_lifecycle(&app, |snapshot| {
         state.focus(snapshot, &owner_id, surface_id)
     })?;
-    emit_snapshot(
-        &app,
-        &session.snapshot_for_lifecycle()?,
-        state.inner(),
-        &owner_id,
-    )
+    emit_snapshot(&app, &committed, state.inner(), &owner_id)
 }
 
 #[tauri::command]
@@ -1110,15 +1095,10 @@ pub(crate) fn dock_close(
         app: &app,
         staged: None,
     };
-    session.transact_lifecycle(&app, |snapshot| {
+    let (_, committed) = session.transact_lifecycle(&app, |snapshot| {
         close_with_runtime(snapshot, state.inner(), &owner_id, surface_id, &mut runtime)
     })?;
-    emit_snapshot(
-        &app,
-        &session.snapshot_for_lifecycle()?,
-        state.inner(),
-        &owner_id,
-    )
+    emit_snapshot(&app, &committed, state.inner(), &owner_id)
 }
 
 #[cfg(test)]

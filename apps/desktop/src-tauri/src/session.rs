@@ -132,19 +132,48 @@ impl SessionState {
         &self,
         app: &AppHandle,
         mutation: impl FnOnce(&mut AppSessionSnapshot) -> Result<R, String>,
-    ) -> Result<R, String> {
+    ) -> Result<(R, AppSessionSnapshot), String> {
         let _control_guard = self.lock_control_mutation()?;
-        let mut snapshot = self
-            .snapshot
-            .lock()
-            .map_err(|_| "Session state is unavailable".to_string())?;
-        let mut next = snapshot.clone();
+        let expected = self.snapshot_for_lifecycle()?;
+        let mut next = expected.clone();
         let result = mutation(&mut next)?;
-        *snapshot = next.clone();
-        drop(snapshot);
-        notify_session_changed(app, &next);
-        Ok(result)
+        let mut operations = ProductionSnapshotPublicationOperations {
+            app,
+            state: self,
+            derived_events: DerivedEventPolicy::Record,
+        };
+        let committed =
+            publish_snapshot_transaction(&self.snapshot, Some(&expected), &next, &mut operations)?;
+        Ok((result, committed))
     }
+}
+
+trait SnapshotPublicationOperations {
+    fn persist(&mut self, candidate: &AppSessionSnapshot) -> Result<(), String>;
+    fn update_event_baseline(&mut self, candidate: &AppSessionSnapshot);
+    fn emit(&mut self, candidate: &AppSessionSnapshot) -> Result<(), String>;
+}
+
+fn publish_snapshot_transaction(
+    authority: &GatedSnapshot,
+    expected: Option<&AppSessionSnapshot>,
+    candidate: &AppSessionSnapshot,
+    operations: &mut impl SnapshotPublicationOperations,
+) -> Result<AppSessionSnapshot, String> {
+    let _publication_gate = authority.lock_gate();
+    let mut guard = authority
+        .lock()
+        .map_err(|_| "Session state is unavailable".to_string())?;
+    if let Some(expected) = expected {
+        ensure_lifecycle_snapshot_current(&guard, expected)?;
+    }
+    operations.persist(candidate)?;
+    *guard = candidate.clone();
+    let committed = guard.clone();
+    drop(guard);
+    operations.update_event_baseline(&committed);
+    operations.emit(&committed)?;
+    Ok(committed)
 }
 
 /// A snapshot mutex whose guards always participate in the control mutation
@@ -583,26 +612,60 @@ fn load_snapshot_file(path: &Path) -> Option<AppSessionSnapshot> {
         .and_then(|bytes| serde_json::from_slice::<AppSessionSnapshot>(&bytes).ok())
 }
 
-fn write_snapshot_file(path: &Path, snapshot: &AppSessionSnapshot) {
-    let Ok(bytes) = serde_json::to_vec_pretty(snapshot) else {
-        return;
-    };
-    let Some(parent) = path.parent() else {
-        return;
-    };
-    if std::fs::create_dir_all(parent).is_err() {
-        return;
+trait SnapshotFileOperations {
+    fn create_parent(&mut self, parent: &Path) -> Result<(), String>;
+    fn write_staged(&mut self, path: &Path, bytes: &[u8]) -> Result<(), String>;
+    fn atomic_replace(&mut self, staged: &Path, destination: &Path) -> Result<(), String>;
+}
+
+fn write_snapshot_file_strict(
+    path: &Path,
+    snapshot: &AppSessionSnapshot,
+    operations: &mut impl SnapshotFileOperations,
+) -> Result<(), String> {
+    let bytes = serde_json::to_vec_pretty(snapshot).map_err(|error| error.to_string())?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "session snapshot path has no parent".to_string())?;
+    let staged = path.with_extension(format!("json.{}.staged", Uuid::new_v4()));
+    operations.create_parent(parent)?;
+    operations.write_staged(&staged, &bytes)?;
+    operations.atomic_replace(&staged, path)
+}
+
+struct ProductionSnapshotFileOperations;
+
+impl SnapshotFileOperations for ProductionSnapshotFileOperations {
+    fn create_parent(&mut self, parent: &Path) -> Result<(), String> {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())
     }
-    let tmp = path.with_extension("json.tmp");
-    if std::fs::write(&tmp, bytes).is_ok() {
-        let _ = std::fs::rename(&tmp, path);
+
+    fn write_staged(&mut self, path: &Path, bytes: &[u8]) -> Result<(), String> {
+        if let Err(error) = std::fs::write(path, bytes) {
+            let _ = std::fs::remove_file(path);
+            return Err(error.to_string());
+        }
+        Ok(())
+    }
+
+    fn atomic_replace(&mut self, staged: &Path, destination: &Path) -> Result<(), String> {
+        if let Err(error) = replace_file_atomically(staged, destination) {
+            let _ = std::fs::remove_file(staged);
+            return Err(error);
+        }
+        Ok(())
     }
 }
 
-fn persist_current_snapshot(app: &AppHandle, snapshot: &AppSessionSnapshot) {
+fn write_snapshot_file(path: &Path, snapshot: &AppSessionSnapshot) -> Result<(), String> {
+    write_snapshot_file_strict(path, snapshot, &mut ProductionSnapshotFileOperations)
+}
+
+fn persist_current_snapshot(app: &AppHandle, snapshot: &AppSessionSnapshot) -> Result<(), String> {
     if let Some((current, _previous)) = session_snapshot_paths(app) {
-        write_snapshot_file(&current, snapshot);
+        write_snapshot_file(&current, snapshot)?;
     }
+    Ok(())
 }
 
 fn next_panel_counter(snapshot: &AppSessionSnapshot) -> u64 {
@@ -664,7 +727,7 @@ pub fn bootstrap_session_persistence(app: &AppHandle, state: State<'_, SessionSt
         .lock()
         .expect("workspace focus history mutex poisoned") =
         workspace_focus_history_for_snapshot(&snapshot);
-    persist_current_snapshot(app, &snapshot);
+    let _ = persist_current_snapshot(app, &snapshot);
 }
 
 /// The `Option<layout>` slot of the currently-selected workspace of the first
@@ -2978,11 +3041,46 @@ fn notify_session_changed(app: &AppHandle, snapshot: &AppSessionSnapshot) {
     if let Some(state) = app.try_state::<SessionState>() {
         record_workspace_focus_history(state.inner(), snapshot);
     }
-    persist_current_snapshot(app, snapshot);
+    let _ = persist_current_snapshot(app, snapshot);
     crate::control_socket::record_session_changed_event(app, snapshot);
     emit_session_changed(app, snapshot);
     crate::window_title::refresh_window_titles(app, snapshot);
     crate::window::emit_window_states(app);
+}
+
+#[derive(Clone, Copy)]
+enum DerivedEventPolicy {
+    Record,
+    Suppress,
+}
+
+struct ProductionSnapshotPublicationOperations<'a> {
+    app: &'a AppHandle,
+    state: &'a SessionState,
+    derived_events: DerivedEventPolicy,
+}
+
+impl SnapshotPublicationOperations for ProductionSnapshotPublicationOperations<'_> {
+    fn persist(&mut self, candidate: &AppSessionSnapshot) -> Result<(), String> {
+        persist_current_snapshot(self.app, candidate)
+    }
+
+    fn update_event_baseline(&mut self, candidate: &AppSessionSnapshot) {
+        self.state
+            .next_panel
+            .fetch_max(next_panel_counter(candidate), Ordering::Relaxed);
+        record_workspace_focus_history(self.state, candidate);
+        if matches!(self.derived_events, DerivedEventPolicy::Record) {
+            crate::control_socket::record_session_changed_event(self.app, candidate);
+        }
+    }
+
+    fn emit(&mut self, candidate: &AppSessionSnapshot) -> Result<(), String> {
+        emit_session_changed(self.app, candidate);
+        crate::window_title::refresh_window_titles(self.app, candidate);
+        crate::window::emit_window_states(self.app);
+        Ok(())
+    }
 }
 
 pub(crate) fn open_markdown_file_in_panel(
@@ -3203,7 +3301,6 @@ pub fn session_snapshot(
     state: State<'_, SessionState>,
 ) -> AppSessionSnapshot {
     let snapshot = current_session_snapshot(&state);
-    persist_current_snapshot(&app, &snapshot);
     crate::window_title::refresh_window_titles(&app, &snapshot);
     crate::window::emit_window_states(&app);
     snapshot_for_window(&snapshot, window.label())
@@ -3297,42 +3394,16 @@ fn commit_lifecycle_snapshot_for_control_inner(
         .and_then(|model| model.validate_indexes())
         .map_err(|error| error.to_string())?;
 
-    let mut guard = state
-        .snapshot
-        .lock()
-        .map_err(|_| "Session state is unavailable".to_string())?;
-    if let Some(expected) = expected {
-        ensure_lifecycle_snapshot_current(&guard, expected)?;
-    }
-
-    if let Some((current, _)) = session_snapshot_paths(app) {
-        let bytes = serde_json::to_vec_pretty(candidate).map_err(|error| error.to_string())?;
-        let parent = current
-            .parent()
-            .ok_or_else(|| "session snapshot path has no parent".to_string())?;
-        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-        let staged = current.with_extension("json.lifecycle-staged");
-        std::fs::write(&staged, bytes).map_err(|error| error.to_string())?;
-        if let Err(error) = replace_file_atomically(&staged, &current) {
-            let _ = std::fs::remove_file(&staged);
-            return Err(error);
-        }
-    }
-
-    *guard = candidate.clone();
-    state
-        .next_panel
-        .fetch_max(next_panel_counter(candidate), Ordering::Relaxed);
-    let committed = guard.clone();
-    drop(guard);
-    record_workspace_focus_history(state, &committed);
-    if record_derived_events {
-        crate::control_socket::record_session_changed_event(app, &committed);
-    }
-    emit_session_changed(app, &committed);
-    crate::window_title::refresh_window_titles(app, &committed);
-    crate::window::emit_window_states(app);
-    Ok(committed)
+    let mut operations = ProductionSnapshotPublicationOperations {
+        app,
+        state,
+        derived_events: if record_derived_events {
+            DerivedEventPolicy::Record
+        } else {
+            DerivedEventPolicy::Suppress
+        },
+    };
+    publish_snapshot_transaction(&state.snapshot, expected, candidate, &mut operations)
 }
 
 pub(crate) fn register_window_for_control(
@@ -3709,7 +3780,7 @@ fn mark_workspace_remote_proxy_ready_for_control(
         apply_workspace_browser_proxy_url(workspace, Some(&proxy_url));
         guard.clone()
     };
-    persist_current_snapshot(app, &snapshot);
+    let _ = persist_current_snapshot(app, &snapshot);
     Some(snapshot)
 }
 
@@ -3748,7 +3819,7 @@ fn mark_workspace_remote_proxy_unavailable_for_control(
         apply_workspace_browser_proxy_url(workspace, None);
         guard.clone()
     };
-    persist_current_snapshot(app, &snapshot);
+    let _ = persist_current_snapshot(app, &snapshot);
     Some(snapshot)
 }
 
@@ -7705,7 +7776,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("session.json");
         let snapshot = initial_snapshot(FIRST_PANEL_ID);
-        write_snapshot_file(&path, &snapshot);
+        write_snapshot_file(&path, &snapshot).unwrap();
         let loaded = load_snapshot_file(&path).expect("snapshot reloads");
         assert_eq!(loaded, snapshot);
     }
