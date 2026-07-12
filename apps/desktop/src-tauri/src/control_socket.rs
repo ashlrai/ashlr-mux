@@ -5993,12 +5993,22 @@ fn notification_open_selected(
         .clone()
         .or(notification.panel_id.clone());
     let opened = if let Some(surface_id) = target_surface.as_deref() {
-        let (changed, snapshot) = crate::session::select_workspace_surface(
+        let (changed, snapshot) = match crate::session::select_workspace_surface(
             app,
             &session_state,
             &notification.tab_id,
             surface_id,
-        );
+        ) {
+            Ok(result) => result,
+            Err(PaneTopologyControlError::Operation(error)) => match error {},
+            Err(PaneTopologyControlError::Publication(message)) => {
+                return ControlCallResult::Err {
+                    code: "internal".to_string(),
+                    message,
+                    data: None,
+                };
+            }
+        };
         changed
             || crate::session::workspace_surface_is_selected(
                 &snapshot,
@@ -7987,14 +7997,14 @@ fn pane_focus(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Contr
     let result = match focus_pane_for_control(app, &state, window_index, workspace_index, &pane_id)
     {
         Ok(snapshot) => snapshot,
-        Err(PaneFocusControlError::WorkspaceNotFound) => {
+        Err(PaneTopologyControlError::Operation(PaneFocusControlError::WorkspaceNotFound)) => {
             return ControlCallResult::Err {
                 code: "not_found".to_string(),
                 message: "Workspace not found".to_string(),
                 data: None,
             };
         }
-        Err(PaneFocusControlError::PaneNotFound) => {
+        Err(PaneTopologyControlError::Operation(PaneFocusControlError::PaneNotFound)) => {
             return ControlCallResult::Err {
                 code: "not_found".to_string(),
                 message: "Pane not found".to_string(),
@@ -8003,6 +8013,13 @@ fn pane_focus(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Contr
                         .try_into()
                         .unwrap_or(JsonValue::Null),
                 ),
+            };
+        }
+        Err(PaneTopologyControlError::Publication(message)) => {
+            return ControlCallResult::Err {
+                code: "internal".to_string(),
+                message,
+                data: None,
             };
         }
     };
@@ -8783,24 +8800,35 @@ fn pane_last(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Contro
     let (focused, result) =
         match focus_last_pane_for_control(app, &state, window_index, workspace_index) {
             Ok(result) => result,
-            Err(PaneLastControlError::WorkspaceNotFound) => {
+            Err(PaneTopologyControlError::Operation(PaneLastControlError::WorkspaceNotFound)) => {
                 return ControlCallResult::Err {
                     code: "not_found".to_string(),
                     message: "Workspace not found".to_string(),
                     data: None,
                 };
             }
-            Err(PaneLastControlError::Pane(session_ops::PaneLastError::NoFocusedPane)) => {
+            Err(PaneTopologyControlError::Operation(PaneLastControlError::Pane(
+                session_ops::PaneLastError::NoFocusedPane,
+            ))) => {
                 return ControlCallResult::Err {
                     code: "not_found".to_string(),
                     message: "No focused pane".to_string(),
                     data: None,
                 };
             }
-            Err(PaneLastControlError::Pane(session_ops::PaneLastError::NoAlternatePane)) => {
+            Err(PaneTopologyControlError::Operation(PaneLastControlError::Pane(
+                session_ops::PaneLastError::NoAlternatePane,
+            ))) => {
                 return ControlCallResult::Err {
                     code: "not_found".to_string(),
                     message: "No alternate pane available".to_string(),
+                    data: None,
+                };
+            }
+            Err(PaneTopologyControlError::Publication(message)) => {
+                return ControlCallResult::Err {
+                    code: "internal".to_string(),
+                    message,
                     data: None,
                 };
             }
@@ -9901,7 +9929,18 @@ fn surface_focus(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Co
         return invalid_params("Missing or invalid workspace selector");
     };
     let state = app.state::<SessionState>();
-    let (changed, _snapshot) = select_workspace_surface(app, &state, &workspace_id, &panel_id);
+    let (changed, _snapshot) = match select_workspace_surface(app, &state, &workspace_id, &panel_id)
+    {
+        Ok(result) => result,
+        Err(PaneTopologyControlError::Operation(error)) => match error {},
+        Err(PaneTopologyControlError::Publication(message)) => {
+            return ControlCallResult::Err {
+                code: "internal".to_string(),
+                message,
+                data: None,
+            };
+        }
+    };
     ok(json!({
         "accepted": true,
         "changed": changed,
@@ -10424,10 +10463,18 @@ fn surface_select_adjacent(
         return invalid_params("Missing or invalid surface selector");
     };
     let state = app.state::<SessionState>();
-    surface_list_from_params(
-        &select_adjacent_panel_for_control(app, &state, &panel_id, next),
-        params,
-    )
+    let snapshot = match select_adjacent_panel_for_control(app, &state, &panel_id, next) {
+        Ok(snapshot) => snapshot,
+        Err(PaneTopologyControlError::Operation(error)) => match error {},
+        Err(PaneTopologyControlError::Publication(message)) => {
+            return ControlCallResult::Err {
+                code: "internal".to_string(),
+                message,
+                data: None,
+            };
+        }
+    };
+    surface_list_from_params(&snapshot, params)
 }
 
 fn surface_toggle_split_zoom(
@@ -10548,7 +10595,17 @@ fn browser_focus_webview(
     };
     let session_state = app.state::<SessionState>();
     let (_changed, snapshot) =
-        select_workspace_surface(app, &session_state, &workspace_id, &panel_id);
+        match select_workspace_surface(app, &session_state, &workspace_id, &panel_id) {
+            Ok(result) => result,
+            Err(PaneTopologyControlError::Operation(error)) => match error {},
+            Err(PaneTopologyControlError::Publication(message)) => {
+                return ControlCallResult::Err {
+                    code: "internal".to_string(),
+                    message,
+                    data: None,
+                };
+            }
+        };
     let browser_state = app.state::<BrowserWebviewState>();
     let reply = match browser_webview_command_for_control(browser_state.inner(), &panel_id, "focus")
     {

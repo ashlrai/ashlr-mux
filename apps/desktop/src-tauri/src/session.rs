@@ -208,6 +208,19 @@ impl SessionState {
         transact_result_if_changed_snapshot(&self.snapshot, &mut operations, mutation)
     }
 
+    pub(crate) fn transact_value_if_changed<R, E>(
+        &self,
+        app: &AppHandle,
+        mutation: impl FnOnce(&mut AppSessionSnapshot) -> Result<(R, bool), E>,
+    ) -> Result<(R, AppSessionSnapshot), PaneTopologyControlError<E>> {
+        let mut operations = ProductionSnapshotPublicationOperations {
+            app,
+            state: self,
+            derived_events: DerivedEventPolicy::Record,
+        };
+        transact_value_if_changed_snapshot(&self.snapshot, &mut operations, mutation)
+    }
+
     pub(crate) fn transact_snapshot_always(
         &self,
         app: &AppHandle,
@@ -305,6 +318,17 @@ fn transact_result_if_changed_snapshot<E>(
     operations: &mut impl SnapshotPublicationOperations,
     mutation: impl FnOnce(&mut AppSessionSnapshot) -> Result<bool, E>,
 ) -> Result<AppSessionSnapshot, PaneTopologyControlError<E>> {
+    transact_value_if_changed_snapshot(authority, operations, |candidate| {
+        mutation(candidate).map(|changed| ((), changed))
+    })
+    .map(|((), snapshot)| snapshot)
+}
+
+fn transact_value_if_changed_snapshot<R, E>(
+    authority: &GatedSnapshot,
+    operations: &mut impl SnapshotPublicationOperations,
+    mutation: impl FnOnce(&mut AppSessionSnapshot) -> Result<(R, bool), E>,
+) -> Result<(R, AppSessionSnapshot), PaneTopologyControlError<E>> {
     let _transaction_gate = authority.lock_gate();
     let current = authority
         .lock()
@@ -313,11 +337,13 @@ fn transact_result_if_changed_snapshot<E>(
         })?
         .clone();
     let mut candidate = current.clone();
-    if !mutation(&mut candidate).map_err(PaneTopologyControlError::Operation)? {
-        return Ok(current);
+    let (value, changed) = mutation(&mut candidate).map_err(PaneTopologyControlError::Operation)?;
+    if !changed {
+        return Ok((value, current));
     }
-    publish_snapshot_transaction(authority, Some(&current), &candidate, operations)
-        .map_err(PaneTopologyControlError::Publication)
+    let committed = publish_snapshot_transaction(authority, Some(&current), &candidate, operations)
+        .map_err(PaneTopologyControlError::Publication)?;
+    Ok((value, committed))
 }
 
 fn transact_snapshot_always(
@@ -5206,16 +5232,12 @@ pub(crate) fn focus_pane_for_control(
     window_index: usize,
     workspace_index: usize,
     pane_id: &str,
-) -> Result<AppSessionSnapshot, PaneFocusControlError> {
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        apply_focus_pane(&mut guard, window_index, workspace_index, pane_id)?;
-        guard.clone()
-    };
-    notify_session_changed(app, &snapshot);
+) -> Result<AppSessionSnapshot, PaneTopologyControlError<PaneFocusControlError>> {
+    let ((), snapshot) = state.transact_value_if_changed(app, |snapshot| {
+        let before = snapshot.clone();
+        apply_focus_pane(snapshot, window_index, workspace_index, pane_id)?;
+        Ok(((), *snapshot != before))
+    })?;
     Ok(snapshot)
 }
 
@@ -5224,13 +5246,13 @@ pub(crate) fn focus_last_pane_for_control(
     state: &SessionState,
     window_index: usize,
     workspace_index: usize,
-) -> Result<(session_ops::PaneLastResult, AppSessionSnapshot), PaneLastControlError> {
-    let (focused, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let workspace = guard
+) -> Result<
+    (session_ops::PaneLastResult, AppSessionSnapshot),
+    PaneTopologyControlError<PaneLastControlError>,
+> {
+    state.transact_value_if_changed(app, |snapshot| {
+        let before = snapshot.clone();
+        let workspace = snapshot
             .windows
             .get_mut(window_index)
             .and_then(|window| window.tab_manager.workspaces.get_mut(workspace_index))
@@ -5241,14 +5263,12 @@ pub(crate) fn focus_last_pane_for_control(
         let focused = session_ops::focus_alternate_pane(workspace, focused_pane_id.as_deref())
             .map_err(PaneLastControlError::Pane)?;
         workspace.focused_panel_id = focused.surface_id.clone();
-        guard.windows[window_index]
+        snapshot.windows[window_index]
             .tab_manager
             .selected_workspace_index = Some(workspace_index as i64);
-        sync_window_selected_workspace_id(&mut guard.windows[window_index]);
-        (focused, guard.clone())
-    };
-    notify_session_changed(app, &snapshot);
-    Ok((focused, snapshot))
+        sync_window_selected_workspace_id(&mut snapshot.windows[window_index]);
+        Ok((focused, *snapshot != before))
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5504,19 +5524,12 @@ pub(crate) fn select_adjacent_panel_for_control(
     state: &SessionState,
     panel_id: &str,
     next: bool,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_select_adjacent_panel(&mut guard, panel_id, next);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, PaneTopologyControlError<std::convert::Infallible>> {
+    let ((), snapshot) = state.transact_value_if_changed(app, |snapshot| {
+        let changed = apply_select_adjacent_panel(snapshot, panel_id, next);
+        Ok(((), changed))
+    })?;
+    Ok(snapshot)
 }
 
 pub(crate) fn toggle_split_zoom_for_control(
@@ -6637,9 +6650,9 @@ pub fn session_select_adjacent_panel(
     panel_id: String,
     next: bool,
 ) -> Result<AppSessionSnapshot, String> {
-    state.transact_snapshot_if_changed(&app, |snapshot| {
-        apply_select_adjacent_panel(snapshot, &panel_id, next)
-    })
+    let snapshot = select_adjacent_panel_for_control(&app, &state, &panel_id, next)
+        .map_err(collapse_infallible_publication_error)?;
+    Ok(snapshot)
 }
 
 /// Select a workspace by id and focus a panel/tab inside it.
@@ -6649,9 +6662,10 @@ pub fn session_select_workspace_surface(
     state: State<'_, SessionState>,
     workspace_id: String,
     panel_id: String,
-) -> AppSessionSnapshot {
-    let (_, snapshot) = select_workspace_surface(&app, &state, &workspace_id, &panel_id);
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let (_, snapshot) = select_workspace_surface(&app, &state, &workspace_id, &panel_id)
+        .map_err(collapse_infallible_publication_error)?;
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -6665,22 +6679,23 @@ pub fn session_focus_panel(
 
 pub(crate) fn select_workspace_surface(
     app: &AppHandle,
-    state: &State<'_, SessionState>,
+    state: &SessionState,
     workspace_id: &str,
     panel_id: &str,
-) -> (bool, AppSessionSnapshot) {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_select_workspace_surface(&mut guard, workspace_id, panel_id);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
+) -> Result<(bool, AppSessionSnapshot), PaneTopologyControlError<std::convert::Infallible>> {
+    state.transact_value_if_changed(app, |snapshot| {
+        let changed = apply_select_workspace_surface(snapshot, workspace_id, panel_id);
+        Ok((changed, changed))
+    })
+}
+
+fn collapse_infallible_publication_error(
+    error: PaneTopologyControlError<std::convert::Infallible>,
+) -> String {
+    match error {
+        PaneTopologyControlError::Publication(error) => error,
+        PaneTopologyControlError::Operation(error) => match error {},
     }
-    (changed, snapshot)
 }
 
 pub(crate) fn workspace_surface_is_selected(
@@ -7255,6 +7270,7 @@ pub fn session_handle_navigation_uri(
     let target = parse_session_navigation_uri(&uri)?;
     let (changed, snapshot) = if let Some(panel_id) = target.panel_id.as_deref() {
         select_workspace_surface(&app, &state, &target.workspace_id, panel_id)
+            .map_err(collapse_infallible_publication_error)?
     } else {
         select_workspace_by_id(&app, &state, &target.workspace_id)
     };
