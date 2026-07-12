@@ -988,12 +988,11 @@ fn normalize_workspace_params(
         && object.get("window_id").is_none()
         && object.get("window_ref").is_none()
     {
-        object.remove("workspace_ref");
-        object.insert(
-            "workspace_id".into(),
-            serde_json::json!(workspace_ref.expect("workspace ref is present")),
-        );
-        return Ok(());
+        if let Some(workspace_ref) = workspace_ref {
+            object.remove("workspace_ref");
+            object.insert("workspace_id".into(), serde_json::json!(workspace_ref));
+            return Ok(());
+        }
     }
     let mut list_params = serde_json::Map::new();
     if let Some(window_id) = object.get("window_id") {

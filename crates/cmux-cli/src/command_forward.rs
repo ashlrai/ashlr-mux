@@ -2730,6 +2730,7 @@ fn lifecycle_scope_params(
     if (params.contains_key("window_id") || params.contains_key("window_ref"))
         && !params.contains_key("workspace_id")
         && !params.contains_key("workspace_ref")
+        && !params.contains_key("workspace_index")
     {
         params.insert("resolve_current_workspace".into(), serde_json::json!(true));
     }
@@ -2788,9 +2789,13 @@ fn native_windows_shell() -> String {
 fn native_shell_wrapper(shell: &str, command: &str) -> String {
     format!(
         "& '{}' /d /s /c '{}'",
-        shell.replace('\'', "''"),
-        command.replace('\'', "''")
+        powershell_single_quoted_content(shell),
+        powershell_single_quoted_content(command)
     )
+}
+
+fn powershell_single_quoted_content(value: &str) -> String {
+    value.replace('\'', "''")
 }
 
 fn surface_read_text_params(
