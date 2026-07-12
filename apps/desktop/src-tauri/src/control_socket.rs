@@ -6849,13 +6849,20 @@ fn workspace_set_progress(
     };
     let label = raw_string_param(params, &["label", "text"]);
     let state = app.state::<SessionState>();
-    workspace_current(&set_workspace_sidebar_progress_for_control(
+    match set_workspace_sidebar_progress_for_control(
         app,
         &state,
         index as i64,
         value,
         label.as_deref(),
-    ))
+    ) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_clear_progress(
@@ -6867,11 +6874,14 @@ fn workspace_clear_progress(
         return invalid_params("Missing or invalid workspace selector");
     };
     let state = app.state::<SessionState>();
-    workspace_current(&clear_workspace_sidebar_progress_for_control(
-        app,
-        &state,
-        index as i64,
-    ))
+    match clear_workspace_sidebar_progress_for_control(app, &state, index as i64) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_set_status(
@@ -6890,14 +6900,21 @@ fn workspace_set_status(
     };
     let priority = i64_param(params, &["priority"]);
     let state = app.state::<SessionState>();
-    workspace_current(&set_workspace_sidebar_status_for_control(
+    match set_workspace_sidebar_status_for_control(
         app,
         &state,
         index as i64,
         &key,
         &value,
         priority,
-    ))
+    ) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_clear_status(
@@ -6912,12 +6929,14 @@ fn workspace_clear_status(
         return invalid_params("Missing or invalid workspace selector");
     };
     let state = app.state::<SessionState>();
-    workspace_current(&clear_workspace_sidebar_status_for_control(
-        app,
-        &state,
-        index as i64,
-        &key,
-    ))
+    match clear_workspace_sidebar_status_for_control(app, &state, index as i64, &key) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_list_status(
@@ -7065,7 +7084,7 @@ fn workspace_report_meta(
     let url = string_param(params, &["url", "href"]);
     let format = string_param(params, &["format"]);
     let state = app.state::<SessionState>();
-    workspace_current(&set_workspace_sidebar_metadata_for_control(
+    match set_workspace_sidebar_metadata_for_control(
         app,
         &state,
         index as i64,
@@ -7076,7 +7095,14 @@ fn workspace_report_meta(
         url.as_deref(),
         priority,
         format.as_deref(),
-    ))
+    ) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_clear_meta(
@@ -7091,12 +7117,14 @@ fn workspace_clear_meta(
         return invalid_params("Missing or invalid workspace selector");
     };
     let state = app.state::<SessionState>();
-    workspace_current(&clear_workspace_sidebar_metadata_for_control(
-        app,
-        &state,
-        index as i64,
-        &key,
-    ))
+    match clear_workspace_sidebar_metadata_for_control(app, &state, index as i64, &key) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_list_meta(
@@ -7129,14 +7157,21 @@ fn workspace_report_meta_block(
     };
     let priority = i64_param(params, &["priority"]);
     let state = app.state::<SessionState>();
-    workspace_current(&set_workspace_sidebar_metadata_block_for_control(
+    match set_workspace_sidebar_metadata_block_for_control(
         app,
         &state,
         index as i64,
         &key,
         &markdown,
         priority,
-    ))
+    ) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_clear_meta_block(
@@ -7151,12 +7186,14 @@ fn workspace_clear_meta_block(
         return invalid_params("Missing or invalid workspace selector");
     };
     let state = app.state::<SessionState>();
-    workspace_current(&clear_workspace_sidebar_metadata_block_for_control(
-        app,
-        &state,
-        index as i64,
-        &key,
-    ))
+    match clear_workspace_sidebar_metadata_block_for_control(app, &state, index as i64, &key) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_list_meta_blocks(
@@ -7182,11 +7219,14 @@ fn workspace_reset_sidebar(
         return invalid_params("Missing or invalid workspace selector");
     };
     let state = app.state::<SessionState>();
-    workspace_current(&reset_workspace_sidebar_metadata_for_control(
-        app,
-        &state,
-        index as i64,
-    ))
+    match reset_workspace_sidebar_metadata_for_control(app, &state, index as i64) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_log(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
@@ -7199,13 +7239,14 @@ fn workspace_log(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Co
     };
     let level = string_param(params, &["level"]).unwrap_or_else(|| "info".to_string());
     let state = app.state::<SessionState>();
-    workspace_current(&append_workspace_sidebar_log_for_control(
-        app,
-        &state,
-        index as i64,
-        &message,
-        &level,
-    ))
+    match append_workspace_sidebar_log_for_control(app, &state, index as i64, &message, &level) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_clear_log(
@@ -7217,11 +7258,14 @@ fn workspace_clear_log(
         return invalid_params("Missing or invalid workspace selector");
     };
     let state = app.state::<SessionState>();
-    workspace_current(&clear_workspace_sidebar_log_for_control(
-        app,
-        &state,
-        index as i64,
-    ))
+    match clear_workspace_sidebar_log_for_control(app, &state, index as i64) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_list_log(

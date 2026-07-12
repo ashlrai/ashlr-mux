@@ -5587,38 +5587,20 @@ pub(crate) fn set_workspace_sidebar_progress_for_control(
     index: i64,
     value: f64,
     label: Option<&str>,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_workspace_sidebar_progress(&mut guard, index, value, label);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_set_workspace_sidebar_progress(snapshot, index, value, label)
+    })
 }
 
 pub(crate) fn clear_workspace_sidebar_progress_for_control(
     app: &AppHandle,
     state: &SessionState,
     index: i64,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_clear_workspace_sidebar_progress(&mut guard, index);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_clear_workspace_sidebar_progress(snapshot, index)
+    })
 }
 
 pub(crate) fn set_workspace_sidebar_status_for_control(
@@ -5628,25 +5610,16 @@ pub(crate) fn set_workspace_sidebar_status_for_control(
     key: &str,
     value: &str,
     priority: Option<i64>,
-) -> AppSessionSnapshot {
+) -> Result<AppSessionSnapshot, String> {
     let now = current_unix_timestamp_seconds();
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
+    state.transact_snapshot_if_changed(app, |snapshot| {
         let changed_status =
-            apply_set_workspace_sidebar_status(&mut guard, index, key, value, priority, now);
+            apply_set_workspace_sidebar_status(snapshot, index, key, value, priority, now);
         let changed_metadata = apply_set_workspace_sidebar_metadata(
-            &mut guard, index, key, value, None, None, None, priority, None, now,
+            snapshot, index, key, value, None, None, None, priority, None, now,
         );
-        let changed = changed_status || changed_metadata;
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+        changed_status || changed_metadata
+    })
 }
 
 pub(crate) fn clear_workspace_sidebar_status_for_control(
@@ -5654,21 +5627,12 @@ pub(crate) fn clear_workspace_sidebar_status_for_control(
     state: &SessionState,
     index: i64,
     key: &str,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed_status = apply_clear_workspace_sidebar_status(&mut guard, index, key);
-        let changed_metadata = apply_clear_workspace_sidebar_metadata(&mut guard, index, key);
-        let changed = changed_status || changed_metadata;
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        let changed_status = apply_clear_workspace_sidebar_status(snapshot, index, key);
+        let changed_metadata = apply_clear_workspace_sidebar_metadata(snapshot, index, key);
+        changed_status || changed_metadata
+    })
 }
 
 pub(crate) fn set_workspace_sidebar_metadata_for_control(
@@ -5682,25 +5646,16 @@ pub(crate) fn set_workspace_sidebar_metadata_for_control(
     url: Option<&str>,
     priority: Option<i64>,
     format: Option<&str>,
-) -> AppSessionSnapshot {
+) -> Result<AppSessionSnapshot, String> {
     let now = current_unix_timestamp_seconds();
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
+    state.transact_snapshot_if_changed(app, |snapshot| {
         let changed_status =
-            apply_set_workspace_sidebar_status(&mut guard, index, key, value, priority, now);
+            apply_set_workspace_sidebar_status(snapshot, index, key, value, priority, now);
         let changed_metadata = apply_set_workspace_sidebar_metadata(
-            &mut guard, index, key, value, icon, color, url, priority, format, now,
+            snapshot, index, key, value, icon, color, url, priority, format, now,
         );
-        let changed = changed_status || changed_metadata;
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+        changed_status || changed_metadata
+    })
 }
 
 pub(crate) fn clear_workspace_sidebar_metadata_for_control(
@@ -5708,21 +5663,12 @@ pub(crate) fn clear_workspace_sidebar_metadata_for_control(
     state: &SessionState,
     index: i64,
     key: &str,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed_status = apply_clear_workspace_sidebar_status(&mut guard, index, key);
-        let changed_metadata = apply_clear_workspace_sidebar_metadata(&mut guard, index, key);
-        let changed = changed_status || changed_metadata;
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        let changed_status = apply_clear_workspace_sidebar_status(snapshot, index, key);
+        let changed_metadata = apply_clear_workspace_sidebar_metadata(snapshot, index, key);
+        changed_status || changed_metadata
+    })
 }
 
 pub(crate) fn set_workspace_sidebar_metadata_block_for_control(
@@ -5732,22 +5678,11 @@ pub(crate) fn set_workspace_sidebar_metadata_block_for_control(
     key: &str,
     markdown: &str,
     priority: Option<i64>,
-) -> AppSessionSnapshot {
+) -> Result<AppSessionSnapshot, String> {
     let now = current_unix_timestamp_seconds();
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_workspace_sidebar_metadata_block(
-            &mut guard, index, key, markdown, priority, now,
-        );
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_set_workspace_sidebar_metadata_block(snapshot, index, key, markdown, priority, now)
+    })
 }
 
 pub(crate) fn clear_workspace_sidebar_metadata_block_for_control(
@@ -5755,38 +5690,20 @@ pub(crate) fn clear_workspace_sidebar_metadata_block_for_control(
     state: &SessionState,
     index: i64,
     key: &str,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_clear_workspace_sidebar_metadata_block(&mut guard, index, key);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_clear_workspace_sidebar_metadata_block(snapshot, index, key)
+    })
 }
 
 pub(crate) fn reset_workspace_sidebar_metadata_for_control(
     app: &AppHandle,
     state: &SessionState,
     index: i64,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_reset_workspace_sidebar_metadata(&mut guard, index);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_reset_workspace_sidebar_metadata(snapshot, index)
+    })
 }
 
 pub(crate) fn append_workspace_sidebar_log_for_control(
@@ -5795,39 +5712,21 @@ pub(crate) fn append_workspace_sidebar_log_for_control(
     index: i64,
     message: &str,
     level: &str,
-) -> AppSessionSnapshot {
+) -> Result<AppSessionSnapshot, String> {
     let now = current_unix_timestamp_seconds();
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_append_workspace_sidebar_log(&mut guard, index, message, level, now);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_append_workspace_sidebar_log(snapshot, index, message, level, now)
+    })
 }
 
 pub(crate) fn clear_workspace_sidebar_log_for_control(
     app: &AppHandle,
     state: &SessionState,
     index: i64,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_clear_workspace_sidebar_log(&mut guard, index);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_clear_workspace_sidebar_log(snapshot, index)
+    })
 }
 
 pub(crate) fn set_workspace_unread_for_control(
