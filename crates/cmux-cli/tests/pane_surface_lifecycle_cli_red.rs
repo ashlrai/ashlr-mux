@@ -476,21 +476,24 @@ fn help_command_and_flag_routes_remain_distinct() {
         "Usage: cmux <path>|<command> [options]\n"
     );
 
-    for args in [vec!["help", "tab-action"], vec!["tab-action", "--help"]] {
+    for args in [
+        vec!["help", "tab-action"],
+        vec!["help", "definitely-unknown"],
+    ] {
         let output = executable(None, &args);
         assert!(output.status.success());
-        assert!(String::from_utf8(output.stdout)
-            .unwrap()
-            .starts_with("cmux tab-action\n\nUsage:"));
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            "Usage: cmux <path>|<command> [options]\n"
+        );
         assert!(output.stderr.is_empty());
     }
 
-    let unknown = executable(None, &["help", "definitely-unknown"]);
-    assert!(unknown.status.success());
-    assert_eq!(
-        String::from_utf8(unknown.stdout).unwrap(),
-        "Unknown command 'definitely-unknown'. Run 'cmux help' to see available commands.\n"
-    );
+    let subcommand = executable(None, &["tab-action", "--help"]);
+    assert!(subcommand.status.success());
+    assert!(String::from_utf8(subcommand.stdout)
+        .unwrap()
+        .starts_with("cmux tab-action\n\nUsage:"));
 }
 
 #[test]
@@ -523,33 +526,41 @@ fn parser_errors_are_exact_and_do_not_touch_the_pipe() {
 
 #[test]
 fn help_is_concrete_for_both_lifecycle_commands() {
-    let tab = executable(None, &["help", "tab-action"]);
+    let tab = executable(None, &["tab-action", "--help"]);
     assert!(tab.status.success());
     assert!(tab.stderr.is_empty());
     let tab = String::from_utf8(tab.stdout).unwrap();
-    assert!(tab.starts_with("cmux tab-action\n\nUsage: cmux tab-action --action <name> [flags]\n"));
-    for required in [
-        "--tab <id|ref|index>",
-        "--surface <id|ref|index>",
-        "--workspace <id|ref|index>",
-        "--window <id|ref|index>",
-        "--title <text>",
-        "--url <url>",
-        "--focus <true|false>",
-        "default: $CMUX_TAB_ID, then $CMUX_SURFACE_ID, then focused tab",
-    ] {
-        assert!(tab.contains(required), "missing {required:?} in {tab}");
-    }
+    assert_eq!(tab, concat!(
+        "cmux tab-action\n\nUsage: cmux tab-action --action <name> [flags]\n\n",
+        "Perform horizontal tab context-menu actions from CLI/socket.\n\nActions:\n",
+        "  rename | clear-name\n  close-left | close-right | close-others\n",
+        "  new-terminal-right | new-browser-right\n  move-to-new-workspace\n",
+        "  reload | duplicate\n  pin | unpin | mark-unread | toggle-full-width-tab\n\nFlags:\n",
+        "  --action <name>              Action name (required if not positional)\n",
+        "  --tab <id|ref|index>         Target tab (accepts tab:<n> or surface:<n>; default: $CMUX_TAB_ID, then $CMUX_SURFACE_ID, then focused tab)\n",
+        "  --surface <id|ref|index>     Alias for --tab (backward compatibility)\n",
+        "  --workspace <id|ref|index>   Workspace context (default: current/$CMUX_WORKSPACE_ID)\n",
+        "  --window <id|ref|index>      Window context for workspace/tab refs and indexes\n",
+        "  --title <text>               Title for rename (or pass trailing title text)\n",
+        "  --url <url>                  Optional URL for new-browser-right\n",
+        "  --focus <true|false>         Focus the destination when supported (default: false for move-to-new-workspace)\n\nExample:\n",
+        "  cmux tab-action --tab tab:3 --action pin\n  cmux tab-action --action close-right\n",
+        "  cmux tab-action --tab tab:2 --action move-to-new-workspace\n",
+        "  cmux tab-action --tab tab:2 --action rename --title \"build logs\"\n"
+    ));
 
-    let respawn = executable(None, &["help", "respawn-pane"]);
+    let respawn = executable(None, &["respawn-pane", "--help"]);
     assert!(respawn.status.success());
     assert!(respawn.stderr.is_empty());
     let respawn = String::from_utf8(respawn.stdout).unwrap();
-    assert!(respawn.starts_with(
-        "cmux respawn-pane\n\nUsage: cmux respawn-pane [--workspace <id|ref|index>] [--surface <id|ref|index>] [--window <id|ref|index>] [--command <cmd> | <cmd>]\n"
+    assert_eq!(respawn, concat!(
+        "cmux respawn-pane\n\nUsage: cmux respawn-pane [--workspace <id|ref|index>] [--surface <id|ref|index>] [--window <id|ref|index>] [--command <cmd> | <cmd>]\n\n",
+        "Send a command (or default shell restart command) to a surface.\n\nFlags:\n",
+        "  --workspace <id|ref|index>   Workspace context (default: $CMUX_WORKSPACE_ID)\n",
+        "  --surface <id|ref|index>     Surface context (default: focused surface)\n",
+        "  --window <id|ref|index>      Window context for workspace/surface refs and indexes\n",
+        "  --command <cmd>        Command text (or pass trailing command text)\n"
     ));
-    assert!(respawn.contains("Surface context (default: focused surface)"));
-    assert!(respawn.contains("--command <cmd>"));
 }
 
 #[test]
@@ -868,4 +879,317 @@ fn respawn_pane_default_and_json_output_are_exact() {
         .as_str()
         .expect("native default shell wrapper");
     assert_native_windows_command(wrapper);
+}
+
+#[test]
+fn tab_action_focus_accepts_all_frozen_boolean_spellings() {
+    for (raw, expected) in [
+        ("TRUE", true),
+        ("1", true),
+        ("Yes", true),
+        ("ON", true),
+        ("false", false),
+        ("0", false),
+        ("No", false),
+        ("OFF", false),
+    ] {
+        let mapped = control_command_for(
+            "tab-action",
+            &[
+                "pin".into(),
+                "--workspace".into(),
+                WORKSPACE_ID.into(),
+                "--focus".into(),
+                raw.into(),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(mapped.params["focus"], expected, "{raw}");
+    }
+}
+
+#[test]
+fn lifecycle_command_specific_aliases_and_respawn_leftovers_match_frozen_parser() {
+    for alias in [
+        "--surface-id",
+        "--surface-ref",
+        "--workspace-id",
+        "--workspace-ref",
+        "--window-id",
+    ] {
+        assert_failure(
+            executable(None, &["tab-action", "pin", alias, "value"]),
+            &format!("Error: tab-action: unknown flag '{alias}'\n"),
+        );
+    }
+    let mapped = control_command_for(
+        "respawn-pane",
+        &[
+            "--workspace".into(),
+            WORKSPACE_ID.into(),
+            "--bogus".into(),
+            "two words".into(),
+        ],
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(mapped.params["tmux_start_command"], "--bogus two words");
+}
+
+#[test]
+fn explicit_empty_values_and_title_joining_are_frozen_exact() {
+    let action = control_command_for(
+        "tab-action",
+        &[
+            "--action".into(),
+            "".into(),
+            "--workspace".into(),
+            WORKSPACE_ID.into(),
+        ],
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(action.params["action"], "");
+
+    let rename = control_command_for(
+        "tab-action",
+        &[
+            "rename".into(),
+            "--workspace".into(),
+            WORKSPACE_ID.into(),
+            " alpha ".into(),
+            " beta ".into(),
+        ],
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(rename.params["title"], "alpha   beta");
+
+    let respawn = control_command_for(
+        "respawn-pane",
+        &[
+            "--workspace".into(),
+            WORKSPACE_ID.into(),
+            "--command".into(),
+            "".into(),
+            "ignored".into(),
+        ],
+    )
+    .unwrap()
+    .unwrap();
+    let default_shell =
+        std::env::var("ComSpec").unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".into());
+    assert_eq!(respawn.params["tmux_start_command"], default_shell);
+}
+
+#[test]
+fn invalid_ambient_lifecycle_handles_fail_before_transport() {
+    let workspace = Command::new(env!("CARGO_BIN_EXE_cmux"))
+        .args(["tab-action", "pin"])
+        .env("CMUX_SOCKET_PATH", r"\\.\pipe\cmux-must-not-connect")
+        .env("CMUX_WORKSPACE_ID", "bad-workspace")
+        .env_remove("CMUX_TAB_ID")
+        .env_remove("CMUX_SURFACE_ID")
+        .output()
+        .unwrap();
+    assert_failure(workspace, "Error: Invalid workspace handle: bad-workspace (expected UUID, ref like workspace:1, or index)\n");
+
+    let surface = Command::new(env!("CARGO_BIN_EXE_cmux"))
+        .args(["tab-action", "pin"])
+        .env("CMUX_SOCKET_PATH", r"\\.\pipe\cmux-must-not-connect")
+        .env("CMUX_WORKSPACE_ID", WORKSPACE_ID)
+        .env("CMUX_TAB_ID", "bad-surface")
+        .env_remove("CMUX_SURFACE_ID")
+        .output()
+        .unwrap();
+    assert_failure(surface, "Error: Invalid surface handle: bad-surface (expected UUID, ref like surface:1, or index)\n");
+}
+
+#[test]
+fn text_summary_uses_requested_action_and_tab_alias_payload_keys() {
+    let payload = json!({
+        "tab_id":SURFACE_ID, "tab_ref":"surface:4",
+        "created_tab_id":OTHER_SURFACE_ID, "created_tab_ref":"surface:5"
+    });
+    let (pipe, _request_rx) = spawn_server("tab-alias-summary", ok(payload));
+    let output = executable(
+        Some(&pipe),
+        &["tab-action", "pin", "--workspace", WORKSPACE_ID],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "OK action=pin tab=tab:4 created=tab:5\n"
+    );
+}
+
+#[test]
+fn signed_indexes_and_case_insensitive_handle_matching_are_canonical() {
+    let (pipe, request_rx) = spawn_method_server(
+        "signed-window-index",
+        HashMap::from([
+            (
+                "window.list".into(),
+                json!({"windows":[{"index":-2,"id":WINDOW_ID,"ref":"window:1"}]}),
+            ),
+            (
+                "workspace.current".into(),
+                json!({"workspace_id":WORKSPACE_ID}),
+            ),
+            ("tab.action".into(), json!({"action":"pin"})),
+        ]),
+    );
+    let output = executable(Some(&pipe), &["tab-action", "pin", "--window", "-2"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        request_rx.recv_timeout(Duration::from_secs(5)).unwrap().0,
+        "window.list"
+    );
+    assert_eq!(
+        request_rx.recv_timeout(Duration::from_secs(5)).unwrap().0,
+        "workspace.current"
+    );
+    assert_eq!(
+        request_rx.recv_timeout(Duration::from_secs(5)).unwrap().0,
+        "tab.action"
+    );
+
+    for (tag, args, expected) in [
+        (
+            "signed-workspace-miss",
+            vec!["tab-action", "pin", "--workspace", "-3"],
+            "Error: Workspace index not found\n",
+        ),
+        (
+            "signed-surface-miss",
+            vec![
+                "tab-action",
+                "pin",
+                "--workspace",
+                WORKSPACE_ID,
+                "--surface",
+                "-3",
+            ],
+            "Error: Surface index not found\n",
+        ),
+    ] {
+        let (pipe, _rx) = spawn_method_server(
+            tag,
+            HashMap::from([
+                ("workspace.list".into(), json!({"workspaces":[]})),
+                ("surface.list".into(), json!({"surfaces":[]})),
+            ]),
+        );
+        assert_failure(executable(Some(&pipe), &args), expected);
+    }
+
+    let upper_surface = SURFACE_ID.to_ascii_uppercase();
+    let (pipe, request_rx) = spawn_method_server(
+        "case-handles",
+        HashMap::from([
+            (
+                "window.list".into(),
+                json!({"windows":[{"id":WINDOW_ID,"ref":"window:1"}]}),
+            ),
+            (
+                "workspace.list".into(),
+                json!({"workspaces":[{"id":WORKSPACE_ID,"ref":"workspace:2"}]}),
+            ),
+            (
+                "surface.list".into(),
+                json!({"surfaces":[{"id":SURFACE_ID,"ref":"surface:3"}]}),
+            ),
+            ("tab.action".into(), json!({"action":"pin"})),
+        ]),
+    );
+    let output = executable(
+        Some(&pipe),
+        &[
+            "tab-action",
+            "pin",
+            "--window",
+            "WINDOW:1",
+            "--workspace",
+            "WORKSPACE:2",
+            "--surface",
+            &upper_surface,
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for method in [
+        "window.list",
+        "workspace.list",
+        "surface.list",
+        "tab.action",
+    ] {
+        assert_eq!(
+            request_rx.recv_timeout(Duration::from_secs(5)).unwrap().0,
+            method
+        );
+    }
+}
+
+#[test]
+fn respawn_refs_resolve_to_uuids_while_tab_action_keeps_raw_refs() {
+    let (pipe, request_rx) = spawn_method_server(
+        "respawn-ref-resolution",
+        HashMap::from([
+            (
+                "window.list".into(),
+                json!({"windows":[{"id":WINDOW_ID,"ref":"window:1"}]}),
+            ),
+            (
+                "workspace.list".into(),
+                json!({"workspaces":[{"id":WORKSPACE_ID,"ref":"workspace:2"}]}),
+            ),
+            (
+                "surface.list".into(),
+                json!({"surfaces":[{"id":SURFACE_ID,"ref":"surface:3"}]}),
+            ),
+            ("surface.respawn".into(), json!({"surface_id":SURFACE_ID})),
+        ]),
+    );
+    let output = executable(
+        Some(&pipe),
+        &[
+            "respawn-pane",
+            "--workspace",
+            "workspace:2",
+            "--surface",
+            "surface:3",
+            "--command",
+            "echo ok",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for method in [
+        "window.list",
+        "workspace.list",
+        "surface.list",
+        "surface.respawn",
+    ] {
+        let (actual, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(actual, method);
+        if method == "surface.respawn" {
+            assert_eq!(params.get("workspace_id"), Some(&json!(WORKSPACE_ID)));
+            assert_eq!(params.get("surface_id"), Some(&json!(SURFACE_ID)));
+        }
+    }
 }
