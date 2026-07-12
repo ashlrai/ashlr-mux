@@ -81,6 +81,10 @@ mod terminal_structural_writers_red;
 #[path = "session/move_panel_workspace_red.rs"]
 mod move_panel_workspace_red;
 
+#[cfg(test)]
+#[path = "session/pane_topology_red.rs"]
+mod pane_topology_red;
+
 impl Default for SessionState {
     fn default() -> Self {
         let snapshot = initial_snapshot(FIRST_PANEL_ID);
