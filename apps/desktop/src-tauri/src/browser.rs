@@ -110,6 +110,61 @@ impl Drop for BrowserPanelMutationReservation<'_> {
     }
 }
 
+fn cleanup_built_browser_child_after_failure(
+    state: &BrowserWebviewState,
+    panel_id: &str,
+    child: BrowserChild,
+    primary: String,
+    mutation_reservation: &mut BrowserPanelMutationReservation<'_>,
+    owns_mutation_reservation: bool,
+) -> String {
+    let mut errors = vec![primary];
+    if let Err(cleanup) = child.webview.close().map_err(|error| error.to_string()) {
+        let mut webviews = state
+            .webviews
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        webviews.insert(panel_id.to_string(), child);
+        errors.push(format!("failed to close built browser child: {cleanup}"));
+    }
+    if owns_mutation_reservation {
+        if let Err(release) = mutation_reservation.release() {
+            errors.push(format!(
+                "failed to release browser mutation reservation: {release}"
+            ));
+        }
+    }
+    errors.join("; ")
+}
+
+fn cleanup_tracked_browser_child_for_compensation(
+    state: &BrowserWebviewState,
+    panel_id: &str,
+) -> Result<(), String> {
+    let child = {
+        let mut webviews = state
+            .webviews
+            .lock()
+            .map_err(|_| "browser webview state lock poisoned".to_string())?;
+        webviews.remove(panel_id)
+    };
+    let Some(child) = child else {
+        return Ok(());
+    };
+
+    if let Err(cleanup) = child.webview.close().map_err(|error| error.to_string()) {
+        state
+            .webviews
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(panel_id.to_string(), child);
+        return Err(format!(
+            "failed to close tracked new-script browser child: {cleanup}"
+        ));
+    }
+    Ok(())
+}
+
 #[allow(dead_code)]
 pub(crate) fn detach_browser_panels_for_control(
     state: &BrowserWebviewState,
@@ -730,6 +785,15 @@ pub(crate) fn browser_add_init_script_for_control(
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 restore_browser_init_scripts(&mut init_scripts, panel_id, prior_scripts);
             }
+            if let Err(cleanup) = cleanup_tracked_browser_child_for_compensation(state, panel_id) {
+                let mut errors = vec![primary, cleanup];
+                if let Err(release) = mutation_reservation.release() {
+                    errors.push(format!(
+                        "failed to release browser mutation reservation: {release}"
+                    ));
+                }
+                return Err(errors.join("; "));
+            }
             let restored = app
                 .get_window("main")
                 .ok_or_else(|| {
@@ -993,51 +1057,80 @@ fn upsert_browser_webview<'a>(
             LogicalSize::new(bounds.width, bounds.height),
         )
         .map_err(|error| error.to_string())?;
-    if let Err(error) = apply_visibility(&webview, visible) {
-        let _ = webview.close();
-        return Err(error);
+    let child = BrowserChild {
+        webview,
+        label: label.clone(),
+        url: normalized_url.clone(),
+        proxy_url: normalized_proxy_url.clone(),
+        bounds: bounds.clone(),
+        visible,
+        zoom,
+    };
+    if let Err(error) = apply_visibility(&child.webview, visible) {
+        return Err(cleanup_built_browser_child_after_failure(
+            state,
+            &panel_id,
+            child,
+            error,
+            mutation_reservation,
+            owns_mutation_reservation,
+        ));
     }
     if let Some(zoom) = zoom {
-        if let Err(error) = webview
+        if let Err(error) = child
+            .webview
             .set_zoom(normalize_zoom(zoom))
             .map_err(|error| error.to_string())
         {
-            let _ = webview.close();
-            return Err(error);
+            return Err(cleanup_built_browser_child_after_failure(
+                state,
+                &panel_id,
+                child,
+                error,
+                mutation_reservation,
+                owns_mutation_reservation,
+            ));
         }
     }
     let mut reserved_panel_ids = match state.reserved_panel_ids.lock() {
         Ok(reserved_panel_ids) => reserved_panel_ids,
         Err(_) => {
-            let _ = webview.close();
-            return Err("browser reservation state lock poisoned".to_string());
+            return Err(cleanup_built_browser_child_after_failure(
+                state,
+                &panel_id,
+                child,
+                "browser reservation state lock poisoned".to_string(),
+                mutation_reservation,
+                owns_mutation_reservation,
+            ));
         }
     };
     if !reserved_panel_ids.contains(&panel_id) {
         drop(reserved_panel_ids);
-        webview.close().map_err(|error| error.to_string())?;
-        return Err(format!("browser panel {panel_id} reservation was lost"));
+        return Err(cleanup_built_browser_child_after_failure(
+            state,
+            &panel_id,
+            child,
+            format!("browser panel {panel_id} reservation was lost"),
+            mutation_reservation,
+            owns_mutation_reservation,
+        ));
     }
     let mut webviews = match state.webviews.lock() {
         Ok(webviews) => webviews,
         Err(_) => {
             drop(reserved_panel_ids);
-            let _ = webview.close();
-            return Err("browser webview state lock poisoned".to_string());
+            return Err(cleanup_built_browser_child_after_failure(
+                state,
+                &panel_id,
+                child,
+                "browser webview state lock poisoned".to_string(),
+                mutation_reservation,
+                owns_mutation_reservation,
+            ));
         }
     };
-    webviews.insert(
-        panel_id.clone(),
-        BrowserChild {
-            webview,
-            label: label.clone(),
-            url: normalized_url.clone(),
-            proxy_url: normalized_proxy_url.clone(),
-            bounds: bounds.clone(),
-            visible,
-            zoom,
-        },
-    );
+    webviews.insert(panel_id.clone(), child);
     if owns_mutation_reservation {
         reserved_panel_ids.remove(&panel_id);
         mutation_reservation.disarm();
