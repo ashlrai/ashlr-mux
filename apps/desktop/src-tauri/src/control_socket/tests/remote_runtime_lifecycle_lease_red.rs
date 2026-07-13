@@ -6,7 +6,7 @@
 
 use super::pane_surface_lifecycle::{
     dispatch_lifecycle_request, reconcile_runtime_arrival, LifecycleDispatchContext,
-    LifecycleTransition, RuntimeArrival, RuntimeDeparture,
+    LifecycleEffect, LifecycleTransition, RuntimeArrival, RuntimeDeparture,
 };
 use super::*;
 use crate::dock::{DockCreateRequest, DockStore, DockSurfaceKind};
@@ -22,6 +22,9 @@ const SOURCE: &str = "40000000-0000-0000-0000-000000000001";
 const SIBLING: &str = "40000000-0000-0000-0000-000000000002";
 const RESERVED: &str = "40000000-0000-0000-0000-000000000003";
 const RESERVED_PANE: &str = "30000000-0000-0000-0000-000000000003";
+const SECOND_WORKSPACE: &str = "20000000-0000-0000-0000-000000000004";
+const SECOND_PANE: &str = "30000000-0000-0000-0000-000000000004";
+const SECOND_SOURCE: &str = "40000000-0000-0000-0000-000000000007";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LeaseSurfaceKind {
@@ -324,6 +327,45 @@ fn remote_snapshot() -> AppSessionSnapshot {
     serde_json::from_value(encoded).unwrap()
 }
 
+fn remote_snapshot_with_second_slot() -> AppSessionSnapshot {
+    let mut snapshot = remote_snapshot();
+    snapshot.windows[0].tab_manager.workspaces[0]
+        .surfaces
+        .as_mut()
+        .unwrap()[0]
+        .kind = SessionSurfaceKindSnapshot::RemoteTerminal {
+        remote_session_id: Some("%34".into()),
+        remote_context: None,
+        arrival_generation: Some(1),
+    };
+    let mut workspace = snapshot.windows[0].tab_manager.workspaces[0].clone();
+    workspace.workspace_id = Some(SECOND_WORKSPACE.into());
+    workspace.focused_panel_id = Some(SECOND_SOURCE.into());
+    let SessionWorkspaceLayoutSnapshot::Pane(pane) = workspace.layout.as_mut().unwrap() else {
+        panic!("single-pane fixture")
+    };
+    pane.pane_id = Some(SECOND_PANE.into());
+    pane.panel_ids = vec![SECOND_SOURCE.into()];
+    pane.selected_panel_id = Some(SECOND_SOURCE.into());
+    workspace.surfaces = Some(vec![SessionSurfaceSnapshot {
+        surface_id: SECOND_SOURCE.into(),
+        pane_id: SECOND_PANE.into(),
+        generation: 1,
+        kind: SessionSurfaceKindSnapshot::RemoteTerminal {
+            remote_session_id: Some("%35".into()),
+            remote_context: None,
+            arrival_generation: Some(1),
+        },
+        metadata: SessionSurfaceMetadataSnapshot::default(),
+        terminal_startup: None,
+    }]);
+    let remote = workspace.remote.as_mut().unwrap();
+    remote.destination = Some("host-a".into());
+    remote.persistent_daemon_slot = Some("tmux-b".into());
+    snapshot.windows[0].tab_manager.workspaces.push(workspace);
+    snapshot
+}
+
 fn context() -> LifecycleDispatchContext {
     LifecycleDispatchContext {
         viewport_size: Some((1200.0, 800.0)),
@@ -391,6 +433,78 @@ fn pre_command_exact_lease_reserves_private_result_identities_before_remote_muta
         .events
         .iter()
         .all(|event| event.name != "surface.created"));
+}
+
+#[test]
+fn every_remote_create_entrypoint_uses_the_persistent_tmux_session_scope() {
+    let snapshot = remote_snapshot_with_second_slot();
+    let pane_a = dispatch(
+        &snapshot,
+        "pane.create",
+        json!({"workspace_id":WORKSPACE,"surface_id":SOURCE,"type":"terminal","direction":"right"}),
+    );
+    let action_a = dispatch(
+        &snapshot,
+        "surface.action",
+        json!({"workspace_id":WORKSPACE,"surface_id":SOURCE,"action":"new-terminal-right"}),
+    );
+    let pane_b = dispatch(
+        &snapshot,
+        "pane.create",
+        json!({"workspace_id":SECOND_WORKSPACE,"surface_id":SECOND_SOURCE,"type":"terminal","direction":"right"}),
+    );
+    let mut fallback = remote_snapshot();
+    fallback.windows[0].tab_manager.workspaces[0]
+        .surfaces
+        .as_mut()
+        .unwrap()[0]
+        .kind = SessionSurfaceKindSnapshot::RemoteTerminal {
+        remote_session_id: Some("%34".into()),
+        remote_context: None,
+        arrival_generation: Some(1),
+    };
+    fallback.windows[0].tab_manager.workspaces[0]
+        .remote
+        .as_mut()
+        .unwrap()
+        .persistent_daemon_slot = None;
+    let pane_fallback = dispatch(
+        &fallback,
+        "pane.create",
+        json!({"workspace_id":WORKSPACE,"surface_id":SOURCE,"type":"terminal","direction":"right"}),
+    );
+    let action_fallback = dispatch(
+        &fallback,
+        "surface.action",
+        json!({"workspace_id":WORKSPACE,"surface_id":SOURCE,"action":"new-terminal-right"}),
+    );
+
+    let scope = |transition: &LifecycleTransition| {
+        transition.effects.iter().find_map(|effect| match effect {
+            LifecycleEffect::RemoteCreate {
+                destination,
+                remote_session_id,
+                ..
+            } => Some((destination.clone(), remote_session_id.clone())),
+            _ => None,
+        })
+    };
+    assert_eq!(
+        scope(&pane_a),
+        Some(("host-a".into(), "tmux-a".into())),
+        "{:?}",
+        pane_a.result
+    );
+    assert_eq!(scope(&action_a), Some(("host-a".into(), "tmux-a".into())));
+    assert_eq!(scope(&pane_b), Some(("host-a".into(), "tmux-b".into())));
+    assert_eq!(
+        scope(&pane_fallback),
+        Some(("host-a".into(), "host-a".into()))
+    );
+    assert_eq!(
+        scope(&action_fallback),
+        Some(("host-a".into(), "host-a".into()))
+    );
 }
 
 #[test]
