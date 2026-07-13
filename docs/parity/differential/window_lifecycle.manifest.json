@@ -4,7 +4,7 @@
   "canonical_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
   "notes": [
     "Run with scripts/parity/capture_driver.py; REQUIRES --restart-cmd (persistence case).",
-    "Window bookkeeping: session_setup creates windows A (fixture workspace host) and B; every case that creates a window closes it in its own state probe EXCEPT the two cli new-window cases, which cannot parse the created uuid from stdout and deliberately leak exactly 2 windows. The final case drains to the last window by session ids + window.list index placeholders (expects exactly 5 windows at its start: boot + A + B + 2 cli leaks) and pins canonical last-window close behavior under CMUX_UI_TEST_MODE, whatever it is (veto-with-ok or app termination); it is last so any termination cannot damage other cases.",
+    "Window bookkeeping: session_setup creates windows A (fixture workspace host) and B; every case that creates a window closes it in its own state probe EXCEPT the two cli new-window cases, which cannot parse the created uuid from stdout and deliberately leak. FINALE DRAIN DERIVATION (empirical, canonical run 29252718573): the restart in surface_resume.persists_across_restart collapses the window population - canonical session restore yields exactly boot + A + B (CLI-leaked and case-created windows do not survive; pending async teardown zombies are also cleared). The finale therefore closes A and B by session ids, sleeps, lists (expects exactly 1 row), and closes windows.0 as the last window. IF cases that create windows are ever added AFTER the restart case, or the restart case is removed, this drain must be re-derived. CANONICAL QUIRK captured in run 29252718573: window.close replies ok:true but the UI teardown is asynchronous and can lag many cases on the CI fixture (closed windows keep appearing in window.list rows: the case-1 window was still listed at case 9's probe while repeat-close correctly returned not_found from the registry) - the mid-run multiwindow window.list probes therefore capture zombie rows on canonical and will likely delta against a synchronously-closing Windows backend; that timing behavior is genuine platform surface, kept strict.",
     "surface.resume set cases pass explicit cwd=/tmp/parity-cwd and source so binding payloads stay platform-neutral; resume_binding.updated_at is a wall-clock stamp (run-scoped timing nondeterminism, same class as the sanctioned events timing normalization) and is approved per case by JSON pointer.",
     "cli window displays stdout and display-not-found stderr embed physical display names (platform hardware) and are approved by pointer; exit codes stay strict.",
     "NOT ENCODED (with reason): surface.refresh dock branch (canonical fixture pins 'Dock placement is disabled' - no public op constructs a Dock); window.close notification-clear side effects (no public read exposes notification state); closed-window history recording/suppression (no public read); window geometry/cascade/styleMask defaults (not socket-observable); real key-window OS foregrounding and window.keyed/unkeyed on true key transfer (platform_equivalent per contract; captured only incidentally in events lanes); blocking resume-approval alert variants (canonical bypasses under test harnesses; only promptless paths encoded); remote-tmux window-close detach (no remote fixture); window.display happy move (needs a real display name; only error paths + listing encoded); snapshot-not-saved-during-termination adversarial (cannot deterministically order termination vs close; the persistence case forces a save via a scratch window close instead).",
@@ -1344,28 +1344,8 @@
           }
         },
         {
-          "op": "v2",
-          "method": "window.list",
-          "params": {}
-        },
-        {
-          "op": "v2",
-          "method": "window.close",
-          "params": {
-            "window_id": "${setup.2.result.windows.1.id}"
-          }
-        },
-        {
-          "op": "v2",
-          "method": "window.list",
-          "params": {}
-        },
-        {
-          "op": "v2",
-          "method": "window.close",
-          "params": {
-            "window_id": "${setup.4.result.windows.1.id}"
-          }
+          "op": "sleep",
+          "seconds": 1
         },
         {
           "op": "v2",
@@ -1377,7 +1357,7 @@
         "op": "v2",
         "method": "window.close",
         "params": {
-          "window_id": "${setup.6.result.windows.0.id}"
+          "window_id": "${setup.3.result.windows.0.id}"
         }
       },
       "probes": {
