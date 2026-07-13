@@ -3358,9 +3358,7 @@ fn handle_pane_surface_lifecycle_request(
             .ok()
             .map(|size| (f64::from(size.width), f64::from(size.height)))
     });
-    let active_window_id = app.webview_windows().iter().find_map(|(label, window)| {
-        (window.is_focused().ok() == Some(true)).then(|| label.clone())
-    });
+    let active_window_id = control_active_window_id(app);
     let mut transition = pane_surface_lifecycle::dispatch_lifecycle_request(
         &current,
         method,
@@ -3563,6 +3561,86 @@ fn present_quit_confirmation_dialog(app: &AppHandle) {
         });
 }
 
+/// Canonical activeTabManager pointer for socket routing: SetActiveWindow
+/// effects repoint it (socket create/close,
+/// TerminalControllerControlCommandContext.swift:71-76) and key-window
+/// transitions repoint it (CmuxLifecycleEventPublishing.swift:258-268) via
+/// the webview Focused listener. Selector-less routing prefers this pointer;
+/// the focused webview is only the pre-first-write fallback.
+#[derive(Default)]
+pub struct ControlActiveWindowState {
+    inner: Mutex<Option<String>>,
+}
+
+impl ControlActiveWindowState {
+    pub(crate) fn set(&self, window_id: &str) {
+        *self
+            .inner
+            .lock()
+            .expect("active window pointer mutex poisoned") = Some(window_id.to_owned());
+    }
+
+    pub(crate) fn get(&self) -> Option<String> {
+        self.inner
+            .lock()
+            .expect("active window pointer mutex poisoned")
+            .clone()
+    }
+}
+
+/// Pointer precedence: the stored pointer wins (canonical setActiveTabManager
+/// overrides the caller default until the next key transition rewrites it);
+/// the focused webview is only the fallback before the first write.
+fn control_active_window_from(
+    stored: Option<String>,
+    focused_webview: Option<String>,
+) -> Option<String> {
+    stored.or(focused_webview)
+}
+
+/// The active window id used by selector-less routing.
+fn control_active_window_id(app: &AppHandle) -> Option<String> {
+    let stored = app
+        .try_state::<ControlActiveWindowState>()
+        .and_then(|state| state.get());
+    let focused = app.webview_windows().iter().find_map(|(label, window)| {
+        (window.is_focused().ok() == Some(true)).then(|| label.clone())
+    });
+    control_active_window_from(stored, focused)
+}
+
+/// Webview focus listener hook: a key-window transition repoints the active
+/// pointer (canonical CmuxLifecycleEventPublishing.swift:258-268).
+pub(crate) fn note_window_focused(app: &AppHandle, label: &str) {
+    let Some(state) = app.try_state::<ControlActiveWindowState>() else {
+        return;
+    };
+    let window_id =
+        session_window_id_for_label(&snapshot(app), label).unwrap_or_else(|| label.to_owned());
+    state.set(&window_id);
+}
+
+/// The session window presented by a webview label: labels match session ids
+/// directly except "main", which hosts the first session window (the
+/// window.list mapping).
+fn session_window_id_for_label(snapshot: &AppSessionSnapshot, label: &str) -> Option<String> {
+    snapshot
+        .windows
+        .iter()
+        .find(|window| window.window_id.as_deref() == Some(label))
+        .and_then(|window| window.window_id.clone())
+        .or_else(|| {
+            (label == "main")
+                .then(|| {
+                    snapshot
+                        .windows
+                        .first()
+                        .and_then(|window| window.window_id.clone())
+                })
+                .flatten()
+        })
+}
+
 /// window.list rows expose identity ids ("window-1" is the main label's id,
 /// cmux_core::window_display::ordered_window_identities) while the session
 /// model keys windows by webview label (register_window_for_control). Map an
@@ -3589,25 +3667,7 @@ fn normalize_window_identity_selector(
     else {
         return;
     };
-    let label = identities[index].label.as_str();
-    let resolved = snapshot
-        .windows
-        .iter()
-        .find(|window| window.window_id.as_deref() == Some(label))
-        .and_then(|window| window.window_id.clone())
-        .or_else(|| {
-            // The "main" webview presents the first session window
-            // (window.list mapping above).
-            (label == "main")
-                .then(|| {
-                    snapshot
-                        .windows
-                        .first()
-                        .and_then(|window| window.window_id.clone())
-                })
-                .flatten()
-        });
-    if let Some(id) = resolved {
+    if let Some(id) = session_window_id_for_label(snapshot, identities[index].label.as_str()) {
         params.insert("window_id".into(), json!(id));
     }
 }
@@ -3640,9 +3700,7 @@ fn handle_window_lifecycle_request(
 ) -> ControlCallResult {
     let current = snapshot(app);
     normalize_window_identity_selector(app, &current, &mut params);
-    let active_window_id = app.webview_windows().iter().find_map(|(label, window)| {
-        (window.is_focused().ok() == Some(true)).then(|| label.clone())
-    });
+    let active_window_id = control_active_window_id(app);
     let new_window_id =
         (method == "window.create").then(|| crate::window::next_control_window_label(app));
     let context = window_lifecycle::WindowLifecycleContext {
@@ -3762,13 +3820,20 @@ fn apply_window_lifecycle_effect(
             );
             Ok(())
         }
-        // The session commit paths persist; the active pointer follows OS
-        // focus on this port; closed-window history, per-window geometry
-        // persistence, remote detach, and the resume approval store are
-        // platform-equivalence/deferred-subsystem candidates pinned by the
-        // transition tests until their subsystems land.
-        Effect::SetActiveWindow { .. }
-        | Effect::RecordClosedWindowHistory { .. }
+        // Canonical defensive setActiveTabManager parity: repoint the
+        // selector-less routing pointer
+        // (TerminalControllerControlCommandContext.swift:71-76).
+        Effect::SetActiveWindow { window_id } => {
+            if let Some(state) = app.try_state::<ControlActiveWindowState>() {
+                state.set(window_id);
+            }
+            Ok(())
+        }
+        // The session commit paths persist; closed-window history, per-window
+        // geometry persistence, remote detach, and the resume approval store
+        // are platform-equivalence/deferred-subsystem candidates pinned by
+        // the transition tests until their subsystems land.
+        Effect::RecordClosedWindowHistory { .. }
         | Effect::PersistWindowGeometry { .. }
         | Effect::RemoteWorkspaceDetach { .. }
         | Effect::ResumeApprovalPrompt { .. }

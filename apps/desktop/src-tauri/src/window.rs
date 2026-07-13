@@ -321,6 +321,14 @@ pub fn install_window_state_listener(window: &WebviewWindow) {
         ) {
             let _ = emit_window_state(&listener_window);
         }
+        // Key-window transitions repoint the control socket's active-window
+        // pointer (canonical CmuxLifecycleEventPublishing.swift:258-268).
+        if matches!(event, WindowEvent::Focused(true)) {
+            crate::control_socket::note_window_focused(
+                listener_window.app_handle(),
+                listener_window.label(),
+            );
+        }
     });
 }
 

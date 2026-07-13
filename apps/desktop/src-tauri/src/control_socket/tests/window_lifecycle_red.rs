@@ -547,6 +547,102 @@ fn last_window_close_terminates_when_confirmation_not_required() {
 }
 
 #[test]
+fn set_active_window_effect_repoints_selectorless_routing() {
+    // Canonical defensively repoints the active TabManager after socket
+    // window.create (TerminalControllerControlCommandContext.swift:71-76), so
+    // subsequent no-window_id commands route to the NEW window (contract
+    // adversarial note). The port's pointer is ControlActiveWindowState,
+    // written by the executor's SetActiveWindow arm and read by
+    // control_active_window_id for selector-less routing.
+    let snapshot = two_window_snapshot();
+    let create = dispatch(&snapshot, "window.create", json!({}));
+    let pointer = ControlActiveWindowState::default();
+    assert_eq!(pointer.get(), None, "pointer starts unset");
+    for effect in &create.effects {
+        if let WindowLifecycleEffect::SetActiveWindow { window_id } = effect {
+            pointer.set(window_id);
+        }
+    }
+    assert_eq!(
+        pointer.get().as_deref(),
+        Some("window-9"),
+        "SetActiveWindow must move the stored pointer"
+    );
+    // A selector-less request routed with the pointer hits the NEW window.
+    let current = dispatch_lifecycle_request(
+        &create.snapshot,
+        "surface.current",
+        &serde_json::Map::new(),
+        &LifecycleDispatchContext {
+            viewport_size: None,
+            browser_enabled: false,
+            dock_available: false,
+            active_window_id: pointer.get(),
+        },
+    );
+    let payload = expect_ok(&current.result);
+    assert_eq!(payload["window_id"], json!("window-9"));
+}
+
+#[test]
+fn stored_active_pointer_wins_over_focused_webview_fallback() {
+    // Canonical setActiveTabManager overrides the caller default even while
+    // another window stays key; the key transition rewrites the pointer via
+    // the Focused listener (CmuxLifecycleEventPublishing.swift:258-268), so
+    // at read time the stored pointer wins and the focused webview is only
+    // the pre-first-write fallback.
+    assert_eq!(
+        control_active_window_from(Some("window-9".into()), Some("window-1".into())).as_deref(),
+        Some("window-9")
+    );
+    assert_eq!(
+        control_active_window_from(None, Some("window-1".into())).as_deref(),
+        Some("window-1")
+    );
+    assert_eq!(control_active_window_from(None, None), None);
+}
+
+#[test]
+fn session_window_id_for_label_maps_main_to_first_window() {
+    let snapshot = two_window_snapshot();
+    assert_eq!(
+        session_window_id_for_label(&snapshot, "window-2").as_deref(),
+        Some("window-2"),
+        "aux labels are session ids"
+    );
+    assert_eq!(
+        session_window_id_for_label(&snapshot, "main").as_deref(),
+        Some("window-1"),
+        "the main webview presents the first session window"
+    );
+    assert_eq!(session_window_id_for_label(&snapshot, "window-404"), None);
+}
+
+#[test]
+fn window_lifecycle_executor_wires_the_active_pointer() {
+    // Source oracle (pattern: session/window_lifecycle_transactions_red.rs):
+    // the executor must give SetActiveWindow its own arm that writes the
+    // pointer (not the documented no-op group), and BOTH request handlers
+    // must route selector-less commands through control_active_window_id.
+    let source = include_str!("../../control_socket.rs");
+    assert!(
+        source.contains("Effect::SetActiveWindow { window_id } =>"),
+        "SetActiveWindow needs its own executor arm"
+    );
+    assert!(
+        source.matches("control_active_window_id(app)").count() >= 2,
+        "both the pane and window lifecycle handlers must read the pointer"
+    );
+    // The webview Focused listener must repoint (canonical key-transition
+    // parity); it lives in window.rs.
+    let window = include_str!("../../window.rs");
+    assert!(
+        window.contains("note_window_focused"),
+        "webview focus must rewrite the active pointer"
+    );
+}
+
+#[test]
 fn quit_confirmation_setting_defaults_always_and_never_disables() {
     // Canonical QuitConfirmationStore: `app.confirmQuit` mode, default
     // `always`; `never` terminates immediately (QuitConfirmationStore.swift
