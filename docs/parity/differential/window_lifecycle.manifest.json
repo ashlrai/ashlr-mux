@@ -1,0 +1,984 @@
+{
+  "family": "window_lifecycle",
+  "contract": "docs/parity/contracts/window_lifecycle.json",
+  "canonical_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+  "notes": [
+    "Run with scripts/parity/capture_driver.py; REQUIRES --restart-cmd (persistence case).",
+    "Window bookkeeping: session_setup creates windows A (fixture workspace host) and B; every case that creates a window closes it in its own state probe EXCEPT the two cli new-window cases, which cannot parse the created uuid from stdout and deliberately leak exactly 2 windows. The final case drains to the last window by session ids + window.list index placeholders (expects exactly 5 windows at its start: boot + A + B + 2 cli leaks) and pins canonical last-window close behavior under CMUX_UI_TEST_MODE, whatever it is (veto-with-ok or app termination); it is last so any termination cannot damage other cases.",
+    "surface.resume set cases pass explicit cwd=/tmp/parity-cwd and source so binding payloads stay platform-neutral; resume_binding.updated_at is a wall-clock stamp (run-scoped timing nondeterminism, same class as the sanctioned events timing normalization) and is approved per case by JSON pointer.",
+    "cli window displays stdout and display-not-found stderr embed physical display names (platform hardware) and are approved by pointer; exit codes stay strict.",
+    "NOT ENCODED (with reason): surface.refresh dock branch (canonical fixture pins 'Dock placement is disabled' - no public op constructs a Dock); window.close notification-clear side effects (no public read exposes notification state); closed-window history recording/suppression (no public read); window geometry/cascade/styleMask defaults (not socket-observable); real key-window OS foregrounding and window.keyed/unkeyed on true key transfer (platform_equivalent per contract; captured only incidentally in events lanes); blocking resume-approval alert variants (canonical bypasses under test harnesses; only promptless paths encoded); remote-tmux window-close detach (no remote fixture); window.display happy move (needs a real display name; only error paths + listing encoded); snapshot-not-saved-during-termination adversarial (cannot deterministically order termination vs close; the persistence case forces a save via a scratch window close instead)."
+  ],
+  "session_setup": [
+    { "op": "v2", "method": "window.create", "params": {} },
+    { "op": "v2", "method": "window.create", "params": {} },
+    {
+      "op": "v2",
+      "method": "workspace.create",
+      "params": {
+        "window_id": "${session.0.result.window_id}",
+        "title": "parity-window-fixture"
+      }
+    },
+    {
+      "op": "v2",
+      "method": "surface.create",
+      "params": {
+        "workspace_id": "${session.2.result.workspace_id}",
+        "type": "terminal"
+      }
+    }
+  ],
+  "cases": [
+    {
+      "id": "window_create.params_ignored_junk",
+      "events": true,
+      "action": {
+        "op": "v2",
+        "method": "window.create",
+        "params": { "focus": true, "junk": "x", "window_id": "nonsense", "title": "ignored" }
+      },
+      "probes": {
+        "multiwindow": [
+          { "op": "v2", "method": "window.list", "params": {} },
+          { "op": "v2", "method": "window.current", "params": {} }
+        ],
+        "selectors": [
+          { "op": "v2", "method": "workspace.current", "params": {} }
+        ],
+        "state": [
+          {
+            "op": "v2",
+            "method": "window.close",
+            "params": { "window_id": "${action.result.window_id}" }
+          }
+        ]
+      }
+    },
+    {
+      "id": "window_create.created_window_usable_via_explicit_routing",
+      "action": { "op": "v2", "method": "window.create", "params": {} },
+      "probes": {
+        "selectors": [
+          {
+            "op": "v2",
+            "method": "workspace.list",
+            "params": { "window_id": "${action.result.window_id}" }
+          }
+        ],
+        "state": [
+          {
+            "op": "v2",
+            "method": "window.close",
+            "params": { "window_id": "${action.result.window_id}" }
+          }
+        ]
+      }
+    },
+    {
+      "id": "window_close.happy_non_active_multiwindow",
+      "events": true,
+      "setup": [ { "op": "v2", "method": "window.create", "params": {} } ],
+      "action": {
+        "op": "v2",
+        "method": "window.close",
+        "params": { "window_id": "${setup.0.result.window_id}" }
+      },
+      "probes": {
+        "multiwindow": [ { "op": "v2", "method": "window.list", "params": {} } ],
+        "state": [ { "op": "v2", "method": "workspace.list", "params": {} } ]
+      }
+    },
+    {
+      "id": "window_close.repeat_close_not_found_minted_ref",
+      "setup": [
+        { "op": "v2", "method": "window.create", "params": {} },
+        {
+          "op": "v2",
+          "method": "window.close",
+          "params": { "window_id": "${setup.0.result.window_id}" }
+        }
+      ],
+      "action": {
+        "op": "v2",
+        "method": "window.close",
+        "params": { "window_id": "${setup.0.result.window_id}" }
+      }
+    },
+    {
+      "id": "window_close.missing_window_id",
+      "action": { "op": "v2", "method": "window.close", "params": {} }
+    },
+    {
+      "id": "window_close.blank_window_id",
+      "action": { "op": "v2", "method": "window.close", "params": { "window_id": "   " } }
+    },
+    {
+      "id": "window_close.unresolvable_ref_invalid_params",
+      "action": { "op": "v2", "method": "window.close", "params": { "window_id": "window:99" } }
+    },
+    {
+      "id": "window_close.nonexistent_uuid_not_found_minted_ref",
+      "action": {
+        "op": "v2",
+        "method": "window.close",
+        "params": { "window_id": "00000000-0000-4000-8000-000000000101" }
+      }
+    },
+    {
+      "id": "window_focus.happy_routes_selectorless_afterwards",
+      "events": true,
+      "setup": [ { "op": "v2", "method": "window.create", "params": {} } ],
+      "action": {
+        "op": "v2",
+        "method": "window.focus",
+        "params": { "window_id": "${setup.0.result.window_id}" }
+      },
+      "probes": {
+        "multiwindow": [ { "op": "v2", "method": "window.list", "params": {} } ],
+        "selectors": [ { "op": "v2", "method": "workspace.current", "params": {} } ],
+        "state": [
+          {
+            "op": "v2",
+            "method": "window.close",
+            "params": { "window_id": "${setup.0.result.window_id}" }
+          }
+        ]
+      }
+    },
+    {
+      "id": "window_focus.already_key_still_emits",
+      "events": true,
+      "setup": [
+        { "op": "v2", "method": "window.create", "params": {} },
+        {
+          "op": "v2",
+          "method": "window.focus",
+          "params": { "window_id": "${setup.0.result.window_id}" }
+        },
+        { "op": "sleep", "seconds": 0.3 }
+      ],
+      "action": {
+        "op": "v2",
+        "method": "window.focus",
+        "params": { "window_id": "${setup.0.result.window_id}" }
+      },
+      "probes": {
+        "state": [
+          {
+            "op": "v2",
+            "method": "window.close",
+            "params": { "window_id": "${setup.0.result.window_id}" }
+          }
+        ]
+      }
+    },
+    {
+      "id": "window_focus.missing_window_id",
+      "action": { "op": "v2", "method": "window.focus", "params": {} }
+    },
+    {
+      "id": "window_focus.nonexistent_uuid_not_found_minted_ref",
+      "action": {
+        "op": "v2",
+        "method": "window.focus",
+        "params": { "window_id": "00000000-0000-4000-8000-000000000102" }
+      }
+    },
+    {
+      "id": "surface_refresh.workspace_terminal_count",
+      "action": {
+        "op": "v2",
+        "method": "surface.refresh",
+        "params": { "workspace_id": "${session.2.result.workspace_id}" }
+      }
+    },
+    {
+      "id": "surface_refresh.browser_only_workspace_count_zero",
+      "setup": [
+        {
+          "op": "v2",
+          "method": "workspace.create",
+          "params": {
+            "window_id": "${session.0.result.window_id}",
+            "title": "parity-browser-only"
+          }
+        },
+        {
+          "op": "v2",
+          "method": "surface.create",
+          "params": { "workspace_id": "${setup.0.result.workspace_id}", "type": "browser" }
+        },
+        {
+          "op": "v2",
+          "method": "surface.close",
+          "params": { "surface_id": "${setup.0.result.surface_id}" }
+        }
+      ],
+      "action": {
+        "op": "v2",
+        "method": "surface.refresh",
+        "params": { "workspace_id": "${setup.0.result.workspace_id}" }
+      }
+    },
+    {
+      "id": "surface_refresh.unresolved_window_unavailable",
+      "action": {
+        "op": "v2",
+        "method": "surface.refresh",
+        "params": { "window_id": "00000000-0000-4000-8000-000000000103" }
+      }
+    },
+    {
+      "id": "surface_refresh.workspace_not_found",
+      "action": {
+        "op": "v2",
+        "method": "surface.refresh",
+        "params": { "workspace_id": "00000000-0000-4000-8000-000000000104" }
+      }
+    },
+    {
+      "id": "surface_resume.roundtrip_set_get_clear_get",
+      "setup": [
+        {
+          "op": "v2",
+          "method": "surface.resume.set",
+          "params": {
+            "surface_id": "${session.3.result.surface_id}",
+            "command": "echo resume-roundtrip",
+            "name": "parity",
+            "kind": "agent",
+            "checkpoint_id": "cp-1",
+            "source": "cli",
+            "cwd": "/tmp/parity-cwd",
+            "environment": { "PARITY_ENV": "1" }
+          }
+        }
+      ],
+      "action": {
+        "op": "v2",
+        "method": "surface.resume.get",
+        "params": { "surface_id": "${session.3.result.surface_id}" }
+      },
+      "probes": {
+        "state": [
+          {
+            "op": "v2",
+            "method": "surface.resume.clear",
+            "params": { "surface_id": "${session.3.result.surface_id}" }
+          },
+          {
+            "op": "v2",
+            "method": "surface.resume.get",
+            "params": { "surface_id": "${session.3.result.surface_id}" }
+          }
+        ]
+      },
+      "approved_differences": [
+        {
+          "path": "/response/result/resume_binding/updated_at",
+          "rationale": "wall-clock binding timestamp; run-scoped timing nondeterminism (same class as the sanctioned events timing normalization)"
+        }
+      ]
+    },
+    {
+      "id": "surface_resume.set_missing_command",
+      "action": {
+        "op": "v2",
+        "method": "surface.resume.set",
+        "params": { "surface_id": "${session.3.result.surface_id}" }
+      }
+    },
+    {
+      "id": "surface_resume.malformed_surface_id_rejected_before_routing",
+      "action": {
+        "op": "v2",
+        "method": "surface.resume.set",
+        "params": { "surface_id": "not-a-uuid", "command": "echo x" }
+      }
+    },
+    {
+      "id": "surface_resume.selector_validation_key_order_window_first",
+      "action": {
+        "op": "v2",
+        "method": "surface.resume.set",
+        "params": { "window_id": "bogus-text", "surface_id": "also-bogus", "command": "echo x" }
+      }
+    },
+    {
+      "id": "surface_resume.unresolved_window_distinct_unavailable_message",
+      "action": {
+        "op": "v2",
+        "method": "surface.resume.set",
+        "params": {
+          "window_id": "00000000-0000-4000-8000-000000000105",
+          "surface_id": "${session.3.result.surface_id}",
+          "command": "echo x"
+        }
+      }
+    },
+    {
+      "id": "surface_resume.global_target_not_found",
+      "action": {
+        "op": "v2",
+        "method": "surface.resume.set",
+        "params": {
+          "surface_id": "00000000-0000-4000-8000-000000000106",
+          "command": "echo x"
+        }
+      }
+    },
+    {
+      "id": "surface_resume.window_scope_restriction",
+      "action": {
+        "op": "v2",
+        "method": "surface.resume.set",
+        "params": {
+          "surface_id": "${session.2.result.surface_id}",
+          "window_id": "${session.1.result.window_id}",
+          "command": "echo x"
+        }
+      }
+    },
+    {
+      "id": "surface_resume.cross_window_global_locate",
+      "setup": [
+        {
+          "op": "v2",
+          "method": "window.focus",
+          "params": { "window_id": "${session.1.result.window_id}" }
+        }
+      ],
+      "action": {
+        "op": "v2",
+        "method": "surface.resume.set",
+        "params": {
+          "surface_id": "${session.2.result.surface_id}",
+          "command": "echo global-locate",
+          "source": "cli",
+          "cwd": "/tmp/parity-cwd"
+        }
+      },
+      "approved_differences": [
+        {
+          "path": "/response/result/resume_binding/updated_at",
+          "rationale": "wall-clock binding timestamp; run-scoped timing nondeterminism (same class as the sanctioned events timing normalization)"
+        }
+      ]
+    },
+    {
+      "id": "surface_resume.process_detected_rewritten_manual",
+      "action": {
+        "op": "v2",
+        "method": "surface.resume.set",
+        "params": {
+          "surface_id": "${session.3.result.surface_id}",
+          "command": "echo detected",
+          "source": "process-detected",
+          "cwd": "/tmp/parity-cwd"
+        }
+      },
+      "probes": {
+        "state": [
+          {
+            "op": "v2",
+            "method": "surface.resume.get",
+            "params": { "surface_id": "${session.3.result.surface_id}" }
+          }
+        ]
+      },
+      "approved_differences": [
+        {
+          "path": "/response/result/resume_binding/updated_at",
+          "rationale": "wall-clock binding timestamp; run-scoped timing nondeterminism (same class as the sanctioned events timing normalization)"
+        },
+        {
+          "path": "/state/0/result/response/result/resume_binding/updated_at",
+          "rationale": "wall-clock binding timestamp; run-scoped timing nondeterminism (same class as the sanctioned events timing normalization)"
+        }
+      ]
+    },
+    {
+      "id": "surface_resume.checkpoint_guard_miss_cleared_false",
+      "setup": [
+        {
+          "op": "v2",
+          "method": "surface.resume.set",
+          "params": {
+            "surface_id": "${session.3.result.surface_id}",
+            "command": "echo guarded",
+            "checkpoint_id": "cp-A",
+            "source": "cli",
+            "cwd": "/tmp/parity-cwd"
+          }
+        }
+      ],
+      "action": {
+        "op": "v2",
+        "method": "surface.resume.clear",
+        "params": {
+          "surface_id": "${session.3.result.surface_id}",
+          "checkpoint_id": "cp-B"
+        }
+      },
+      "probes": {
+        "state": [
+          {
+            "op": "v2",
+            "method": "surface.resume.get",
+            "params": { "surface_id": "${session.3.result.surface_id}" }
+          }
+        ]
+      },
+      "approved_differences": [
+        {
+          "path": "/response/result/resume_binding/updated_at",
+          "rationale": "wall-clock binding timestamp; run-scoped timing nondeterminism (same class as the sanctioned events timing normalization)"
+        },
+        {
+          "path": "/state/0/result/response/result/resume_binding/updated_at",
+          "rationale": "wall-clock binding timestamp; run-scoped timing nondeterminism (same class as the sanctioned events timing normalization)"
+        }
+      ]
+    },
+    {
+      "id": "surface_resume.clear_nothing_cleared_true",
+      "setup": [
+        {
+          "op": "v2",
+          "method": "surface.create",
+          "params": { "workspace_id": "${session.2.result.workspace_id}", "type": "terminal" }
+        }
+      ],
+      "action": {
+        "op": "v2",
+        "method": "surface.resume.clear",
+        "params": { "surface_id": "${setup.0.result.surface_id}" }
+      }
+    },
+    {
+      "id": "surface_resume.auto_resume_cli_source_forced_false",
+      "action": {
+        "op": "v2",
+        "method": "surface.resume.set",
+        "params": {
+          "surface_id": "${session.3.result.surface_id}",
+          "command": "echo no-auto",
+          "source": "cli",
+          "auto_resume": true,
+          "cwd": "/tmp/parity-cwd"
+        }
+      },
+      "approved_differences": [
+        {
+          "path": "/response/result/resume_binding/updated_at",
+          "rationale": "wall-clock binding timestamp; run-scoped timing nondeterminism (same class as the sanctioned events timing normalization)"
+        }
+      ]
+    },
+    {
+      "id": "surface_resume.auto_resume_agent_hook_honored",
+      "action": {
+        "op": "v2",
+        "method": "surface.resume.set",
+        "params": {
+          "surface_id": "${session.3.result.surface_id}",
+          "command": "echo auto",
+          "source": "agent-hook",
+          "auto_resume": true,
+          "cwd": "/tmp/parity-cwd"
+        }
+      },
+      "approved_differences": [
+        {
+          "path": "/response/result/resume_binding/updated_at",
+          "rationale": "wall-clock binding timestamp; run-scoped timing nondeterminism (same class as the sanctioned events timing normalization)"
+        }
+      ]
+    },
+    {
+      "id": "surface_resume.terminal_id_alias_targets_surface",
+      "action": {
+        "op": "v2",
+        "method": "surface.resume.set",
+        "params": {
+          "terminal_id": "${session.2.result.surface_id}",
+          "command": "echo terminal-alias",
+          "source": "cli",
+          "cwd": "/tmp/parity-cwd"
+        }
+      },
+      "approved_differences": [
+        {
+          "path": "/response/result/resume_binding/updated_at",
+          "rationale": "wall-clock binding timestamp; run-scoped timing nondeterminism (same class as the sanctioned events timing normalization)"
+        }
+      ]
+    },
+    {
+      "id": "surface_resume.surface_id_beats_terminal_id",
+      "action": {
+        "op": "v2",
+        "method": "surface.resume.set",
+        "params": {
+          "surface_id": "${session.3.result.surface_id}",
+          "terminal_id": "${session.2.result.surface_id}",
+          "command": "echo precedence",
+          "source": "cli",
+          "cwd": "/tmp/parity-cwd"
+        }
+      },
+      "approved_differences": [
+        {
+          "path": "/response/result/resume_binding/updated_at",
+          "rationale": "wall-clock binding timestamp; run-scoped timing nondeterminism (same class as the sanctioned events timing normalization)"
+        }
+      ]
+    },
+    {
+      "id": "surface_resume.checkpoint_camel_fallback",
+      "action": {
+        "op": "v2",
+        "method": "surface.resume.set",
+        "params": {
+          "surface_id": "${session.3.result.surface_id}",
+          "command": "echo camel",
+          "checkpointId": "camel-cp",
+          "source": "cli",
+          "cwd": "/tmp/parity-cwd"
+        }
+      },
+      "approved_differences": [
+        {
+          "path": "/response/result/resume_binding/updated_at",
+          "rationale": "wall-clock binding timestamp; run-scoped timing nondeterminism (same class as the sanctioned events timing normalization)"
+        }
+      ]
+    },
+    {
+      "id": "surface_resume.checkpoint_snake_beats_camel",
+      "action": {
+        "op": "v2",
+        "method": "surface.resume.set",
+        "params": {
+          "surface_id": "${session.3.result.surface_id}",
+          "command": "echo snake",
+          "checkpoint_id": "snake-cp",
+          "checkpointId": "camel-cp",
+          "source": "cli",
+          "cwd": "/tmp/parity-cwd"
+        }
+      },
+      "approved_differences": [
+        {
+          "path": "/response/result/resume_binding/updated_at",
+          "rationale": "wall-clock binding timestamp; run-scoped timing nondeterminism (same class as the sanctioned events timing normalization)"
+        }
+      ]
+    },
+    {
+      "id": "cli.new_window_raw_ok",
+      "action": { "op": "cli", "argv": ["new-window"] }
+    },
+    {
+      "id": "cli.new_window_json_flag_ignored",
+      "action": { "op": "cli", "argv": ["--json", "new-window"] }
+    },
+    {
+      "id": "cli.focus_window_by_uuid",
+      "setup": [ { "op": "v2", "method": "window.create", "params": {} } ],
+      "action": {
+        "op": "cli",
+        "argv": ["focus-window", "--window", "${setup.0.result.window_id}"]
+      },
+      "probes": {
+        "state": [
+          {
+            "op": "v2",
+            "method": "window.close",
+            "params": { "window_id": "${setup.0.result.window_id}" }
+          }
+        ]
+      }
+    },
+    {
+      "id": "cli.focus_window_by_ref",
+      "setup": [ { "op": "v2", "method": "window.create", "params": {} } ],
+      "action": {
+        "op": "cli",
+        "argv": ["focus-window", "--window", "${setup.0.result.window_ref}"]
+      },
+      "probes": {
+        "state": [
+          {
+            "op": "v2",
+            "method": "window.close",
+            "params": { "window_id": "${setup.0.result.window_id}" }
+          }
+        ]
+      }
+    },
+    {
+      "id": "cli.focus_window_by_index_zero",
+      "action": { "op": "cli", "argv": ["focus-window", "--window", "0"] }
+    },
+    {
+      "id": "cli.focus_window_requires_window_flag",
+      "action": { "op": "cli", "argv": ["focus-window"] }
+    },
+    {
+      "id": "cli.focus_window_global_window_override_ignored",
+      "action": { "op": "cli", "argv": ["--window", "0", "focus-window"] }
+    },
+    {
+      "id": "cli.close_window_by_uuid",
+      "setup": [ { "op": "v2", "method": "window.create", "params": {} } ],
+      "action": {
+        "op": "cli",
+        "argv": ["close-window", "--window", "${setup.0.result.window_id}"]
+      }
+    },
+    {
+      "id": "cli.close_window_requires_window_flag",
+      "action": { "op": "cli", "argv": ["close-window"] }
+    },
+    {
+      "id": "cli.close_window_invalid_handle",
+      "action": { "op": "cli", "argv": ["close-window", "--window", "garbage!"] }
+    },
+    {
+      "id": "cli.window_no_subcommand_hint_includes_default_display",
+      "action": { "op": "cli", "argv": ["window"] }
+    },
+    {
+      "id": "cli.window_unknown_subcommand_hint_omits_default_display",
+      "action": { "op": "cli", "argv": ["window", "teleport"] }
+    },
+    {
+      "id": "cli.window_displays_text",
+      "action": { "op": "cli", "argv": ["window", "displays"] },
+      "approved_differences": [
+        {
+          "path": "/stdout",
+          "rationale": "physical display enumeration embeds platform display hardware names; exit code and stderr stay strict"
+        }
+      ]
+    },
+    {
+      "id": "cli.window_display_requires_name",
+      "action": { "op": "cli", "argv": ["window", "display"] }
+    },
+    {
+      "id": "cli.window_display_not_found",
+      "action": { "op": "cli", "argv": ["window", "display", "No Such Display Name"] },
+      "approved_differences": [
+        {
+          "path": "/stderr",
+          "rationale": "display-not-found error data lists available platform display hardware names; exit code and stdout stay strict"
+        }
+      ]
+    },
+    {
+      "id": "cli.window_default_display_requires_arg",
+      "action": { "op": "cli", "argv": ["window", "default-display"] }
+    },
+    {
+      "id": "cli.window_default_display_set_then_clear",
+      "action": { "op": "cli", "argv": ["window", "default-display", "Parity Display"] },
+      "probes": {
+        "state": [
+          { "op": "cli", "argv": ["window", "default-display", "--clear"] }
+        ]
+      }
+    },
+    {
+      "id": "cli.window_help_exit2_unknown_command",
+      "action": { "op": "cli", "argv": ["window", "--help"] }
+    },
+    {
+      "id": "cli.new_window_help_frozen",
+      "action": { "op": "cli", "argv": ["new-window", "--help"] }
+    },
+    {
+      "id": "cli.focus_window_help_frozen",
+      "action": { "op": "cli", "argv": ["focus-window", "--help"] }
+    },
+    {
+      "id": "cli.close_window_help_frozen",
+      "action": { "op": "cli", "argv": ["close-window", "--help"] }
+    },
+    {
+      "id": "cli.surface_resume_help_frozen",
+      "action": { "op": "cli", "argv": ["surface-resume", "--help"] }
+    },
+    {
+      "id": "cli.ai_accounts_help_frozen",
+      "action": { "op": "cli", "argv": ["ai-accounts", "--help"] }
+    },
+    {
+      "id": "cli.layout_help_frozen",
+      "action": { "op": "cli", "argv": ["layout", "--help"] }
+    },
+    {
+      "id": "cli.surface_resume_show_no_binding",
+      "setup": [
+        {
+          "op": "v2",
+          "method": "surface.create",
+          "params": { "workspace_id": "${session.2.result.workspace_id}", "type": "terminal" }
+        }
+      ],
+      "action": {
+        "op": "cli",
+        "argv": ["surface-resume", "show", "--surface", "${setup.0.result.surface_id}"]
+      }
+    },
+    {
+      "id": "cli.surface_resume_set_argv_quoting",
+      "setup": [
+        {
+          "op": "v2",
+          "method": "surface.create",
+          "params": { "workspace_id": "${session.2.result.workspace_id}", "type": "terminal" }
+        }
+      ],
+      "action": {
+        "op": "cli",
+        "argv": [
+          "surface-resume", "set", "--surface", "${setup.0.result.surface_id}",
+          "--", "opencode", "--session", "x y"
+        ]
+      },
+      "probes": {
+        "state": [
+          {
+            "op": "cli",
+            "argv": ["surface-resume", "show", "--surface", "${setup.0.result.surface_id}"]
+          }
+        ]
+      }
+    },
+    {
+      "id": "cli.surface_resume_set_shell",
+      "setup": [
+        {
+          "op": "v2",
+          "method": "surface.create",
+          "params": { "workspace_id": "${session.2.result.workspace_id}", "type": "terminal" }
+        }
+      ],
+      "action": {
+        "op": "cli",
+        "argv": [
+          "surface-resume", "set", "--surface", "${setup.0.result.surface_id}",
+          "--shell", "echo hello world"
+        ]
+      },
+      "probes": {
+        "state": [
+          {
+            "op": "cli",
+            "argv": ["surface-resume", "show", "--surface", "${setup.0.result.surface_id}"]
+          }
+        ]
+      }
+    },
+    {
+      "id": "cli.surface_resume_shell_extra_arg_error",
+      "action": {
+        "op": "cli",
+        "argv": [
+          "surface-resume", "set", "--surface", "${session.3.result.surface_id}",
+          "--shell", "echo hi", "stray"
+        ]
+      }
+    },
+    {
+      "id": "cli.surface_resume_set_requires_command",
+      "action": {
+        "op": "cli",
+        "argv": ["surface-resume", "set", "--surface", "${session.3.result.surface_id}"]
+      }
+    },
+    {
+      "id": "cli.surface_resume_value_option_missing_value",
+      "action": { "op": "cli", "argv": ["surface-resume", "show", "--surface"] }
+    },
+    {
+      "id": "cli.surface_resume_unsupported_subcommand",
+      "action": { "op": "cli", "argv": ["surface-resume", "frobnicate"] }
+    },
+    {
+      "id": "cli.surface_resume_clear_ok",
+      "setup": [
+        {
+          "op": "v2",
+          "method": "surface.create",
+          "params": { "workspace_id": "${session.2.result.workspace_id}", "type": "terminal" }
+        },
+        {
+          "op": "v2",
+          "method": "surface.resume.set",
+          "params": {
+            "surface_id": "${setup.0.result.surface_id}",
+            "command": "echo to-clear",
+            "source": "cli",
+            "cwd": "/tmp/parity-cwd"
+          }
+        }
+      ],
+      "action": {
+        "op": "cli",
+        "argv": ["surface-resume", "clear", "--surface", "${setup.0.result.surface_id}"]
+      }
+    },
+    {
+      "id": "cli.surface_namespace_resume_alias",
+      "setup": [
+        {
+          "op": "v2",
+          "method": "surface.create",
+          "params": { "workspace_id": "${session.2.result.workspace_id}", "type": "terminal" }
+        }
+      ],
+      "action": {
+        "op": "cli",
+        "argv": ["surface", "resume", "show", "--surface", "${setup.0.result.surface_id}"]
+      }
+    },
+    {
+      "id": "cli.surface_resume_ambient_surface_env_used",
+      "setup": [
+        {
+          "op": "v2",
+          "method": "surface.create",
+          "params": { "workspace_id": "${session.2.result.workspace_id}", "type": "terminal" }
+        },
+        {
+          "op": "v2",
+          "method": "surface.resume.set",
+          "params": {
+            "surface_id": "${setup.0.result.surface_id}",
+            "command": "echo ambient-binding",
+            "source": "cli",
+            "cwd": "/tmp/parity-cwd"
+          }
+        }
+      ],
+      "action": {
+        "op": "cli",
+        "argv": ["surface-resume", "show"],
+        "env": { "CMUX_SURFACE_ID": "${setup.0.result.surface_id}" }
+      }
+    },
+    {
+      "id": "cli.surface_resume_explicit_window_suppresses_ambient",
+      "setup": [
+        {
+          "op": "v2",
+          "method": "surface.create",
+          "params": { "workspace_id": "${session.2.result.workspace_id}", "type": "terminal" }
+        },
+        {
+          "op": "v2",
+          "method": "surface.resume.set",
+          "params": {
+            "surface_id": "${setup.0.result.surface_id}",
+            "command": "echo ambient-should-be-suppressed",
+            "source": "cli",
+            "cwd": "/tmp/parity-cwd"
+          }
+        }
+      ],
+      "action": {
+        "op": "cli",
+        "argv": ["surface-resume", "show", "--window", "0"],
+        "env": { "CMUX_SURFACE_ID": "${setup.0.result.surface_id}" }
+      }
+    },
+    {
+      "id": "surface_resume.persists_across_restart",
+      "setup": [
+        {
+          "op": "v2",
+          "method": "surface.resume.set",
+          "params": {
+            "surface_id": "${session.3.result.surface_id}",
+            "command": "echo persisted-binding",
+            "checkpoint_id": "cp-persist",
+            "source": "cli",
+            "cwd": "/tmp/parity-cwd"
+          }
+        },
+        { "op": "v2", "method": "window.create", "params": {} },
+        {
+          "op": "v2",
+          "method": "window.close",
+          "params": { "window_id": "${setup.1.result.window_id}" }
+        }
+      ],
+      "action": {
+        "op": "v2",
+        "method": "surface.resume.get",
+        "params": { "surface_id": "${session.3.result.surface_id}" }
+      },
+      "probes": {
+        "persistence": [
+          { "op": "restart" },
+          {
+            "op": "v2",
+            "method": "surface.resume.get",
+            "params": { "surface_id": "${session.3.result.surface_id}" }
+          }
+        ]
+      },
+      "approved_differences": [
+        {
+          "path": "/response/result/resume_binding/updated_at",
+          "rationale": "wall-clock binding timestamp; run-scoped timing nondeterminism (same class as the sanctioned events timing normalization)"
+        },
+        {
+          "path": "/persistence/1/result/response/result/resume_binding/updated_at",
+          "rationale": "wall-clock binding timestamp; run-scoped timing nondeterminism (same class as the sanctioned events timing normalization)"
+        }
+      ]
+    },
+    {
+      "id": "window_close.last_window_pin_ui_test_mode",
+      "events": true,
+      "setup": [
+        {
+          "op": "v2",
+          "method": "window.close",
+          "params": { "window_id": "${session.0.result.window_id}" }
+        },
+        {
+          "op": "v2",
+          "method": "window.close",
+          "params": { "window_id": "${session.1.result.window_id}" }
+        },
+        { "op": "v2", "method": "window.list", "params": {} },
+        {
+          "op": "v2",
+          "method": "window.close",
+          "params": { "window_id": "${setup.2.result.windows.1.id}" }
+        },
+        { "op": "v2", "method": "window.list", "params": {} },
+        {
+          "op": "v2",
+          "method": "window.close",
+          "params": { "window_id": "${setup.4.result.windows.1.id}" }
+        },
+        { "op": "v2", "method": "window.list", "params": {} }
+      ],
+      "action": {
+        "op": "v2",
+        "method": "window.close",
+        "params": { "window_id": "${setup.6.result.windows.0.id}" }
+      },
+      "probes": {
+        "state": [ { "op": "v2", "method": "window.list", "params": {} } ]
+      }
+    }
+  ]
+}
