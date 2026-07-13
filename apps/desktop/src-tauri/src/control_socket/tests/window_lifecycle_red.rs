@@ -194,9 +194,11 @@ fn dock_snapshot() -> AppSessionSnapshot {
         "workspace_id": "window-1",
         "layout": {
             "type": "pane",
-            "pane_id": "dock-pane-1",
-            "panel_ids": ["dock-terminal", "dock-browser"],
-            "selected_panel_id": "dock-terminal"
+            "pane": {
+                "pane_id": "dock-pane-1",
+                "panel_ids": ["dock-terminal", "dock-browser"],
+                "selected_panel_id": "dock-terminal"
+            }
         },
         "surfaces": [
             {"surface_id": "dock-terminal", "pane_id": "dock-pane-1", "generation": 1,
@@ -376,12 +378,7 @@ fn repeated_window_create_mints_distinct_ids() {
         ..test_context()
     };
     let first = dispatch_with_context(&snapshot, "window.create", json!({}), &context);
-    let second = dispatch_with_context(
-        &first.snapshot,
-        "window.create",
-        json!({}),
-        &context,
-    );
+    let second = dispatch_with_context(&first.snapshot, "window.create", json!({}), &context);
     let first_id = expect_ok(&first.result)["window_id"].clone();
     let second_id = expect_ok(&second.result)["window_id"].clone();
     assert_ne!(first_id, second_id);
@@ -416,7 +413,11 @@ fn window_close_rejects_missing_or_invalid_window_id() {
 #[test]
 fn window_close_not_found_mints_a_ref_for_the_nonexistent_id() {
     let snapshot = two_window_snapshot();
-    let mut transition = dispatch(&snapshot, "window.close", json!({"window_id": "window-404"}));
+    let mut transition = dispatch(
+        &snapshot,
+        "window.close",
+        json!({"window_id": "window-404"}),
+    );
     decorate("window.close", &mut transition.result);
     let (code, message, data) = expect_error(&transition.result);
     assert_eq!(code, "not_found");
@@ -530,8 +531,12 @@ fn last_window_close_terminates_when_confirmation_not_required() {
         quit_confirmation_required: false,
         ..test_context()
     };
-    let transition =
-        dispatch_with_context(&snapshot, "window.close", json!({"window_id": "window-1"}), &context);
+    let transition = dispatch_with_context(
+        &snapshot,
+        "window.close",
+        json!({"window_id": "window-1"}),
+        &context,
+    );
     expect_ok(&transition.result);
     assert_eq!(
         transition.effects,
@@ -595,7 +600,11 @@ fn window_focus_rejects_missing_or_invalid_window_id() {
 #[test]
 fn window_focus_not_found_mints_a_ref_for_the_nonexistent_id() {
     let snapshot = two_window_snapshot();
-    let mut transition = dispatch(&snapshot, "window.focus", json!({"window_id": "window-404"}));
+    let mut transition = dispatch(
+        &snapshot,
+        "window.focus",
+        json!({"window_id": "window-404"}),
+    );
     decorate("window.focus", &mut transition.result);
     let (code, message, data) = expect_error(&transition.result);
     assert_eq!(code, "not_found");
@@ -703,7 +712,10 @@ fn surface_refresh_counts_terminals_only() {
             reason: "terminalController.v2SurfaceRefresh",
         }]
     );
-    assert!(transition.events.is_empty(), "pure runtime redraw: no event");
+    assert!(
+        transition.events.is_empty(),
+        "pure runtime redraw: no event"
+    );
     assert!(!transition.changed, "no model mutation");
 }
 
@@ -770,7 +782,11 @@ fn resume_selector_validation_runs_before_routing_in_fixed_key_order() {
     // THAT ORDER: present-non-null but unresolvable -> invalid_params
     // (surfaceResumeTargetValidationError, ControlCommandCoordinator+Surface3.swift:14-25).
     let snapshot = two_window_snapshot();
-    for method in ["surface.resume.set", "surface.resume.get", "surface.resume.clear"] {
+    for method in [
+        "surface.resume.set",
+        "surface.resume.get",
+        "surface.resume.clear",
+    ] {
         // window_id checked before workspace_id even when both are malformed.
         let transition = dispatch(
             &snapshot,
@@ -791,8 +807,14 @@ fn resume_selector_validation_runs_before_routing_in_fixed_key_order() {
         assert_eq!(message, "Missing or invalid workspace_id", "{method}");
     }
     for (key, params) in [
-        ("surface_id", json!({"surface_id": "surface:9", "command": "run"})),
-        ("terminal_id", json!({"terminal_id": "  ", "command": "run"})),
+        (
+            "surface_id",
+            json!({"surface_id": "surface:9", "command": "run"}),
+        ),
+        (
+            "terminal_id",
+            json!({"terminal_id": "  ", "command": "run"}),
+        ),
         ("tab_id", json!({"tab_id": 7, "command": "run"})),
     ] {
         let transition = dispatch(&snapshot, "surface.resume.set", params);
@@ -820,7 +842,11 @@ fn resume_malformed_surface_selector_never_falls_back_to_focused() {
 #[test]
 fn resume_unavailable_uses_the_window_unavailable_message() {
     let snapshot = two_window_snapshot();
-    for method in ["surface.resume.set", "surface.resume.get", "surface.resume.clear"] {
+    for method in [
+        "surface.resume.set",
+        "surface.resume.get",
+        "surface.resume.clear",
+    ] {
         let transition = dispatch(
             &snapshot,
             method,
@@ -835,7 +861,11 @@ fn resume_unavailable_uses_the_window_unavailable_message() {
 #[test]
 fn resume_set_missing_command_after_routing() {
     let snapshot = two_window_snapshot();
-    for params in [json!({}), json!({"command": ""}), json!({"command": " \n "})] {
+    for params in [
+        json!({}),
+        json!({"command": ""}),
+        json!({"command": " \n "}),
+    ] {
         let transition = dispatch(&snapshot, "surface.resume.set", params.clone());
         let (code, message, _) = expect_error(&transition.result);
         assert_eq!(code, "invalid_params", "{params}");
@@ -1241,7 +1271,10 @@ fn resume_clear_checkpoint_guard_miss_is_success_with_binding_untouched() {
     let payload = expect_ok(&transition.result);
     assert_eq!(payload["cleared"], json!(false));
     assert_eq!(payload["resume_binding"]["checkpoint_id"], json!("cp-1"));
-    assert!(!transition.changed, "guard miss leaves the binding untouched");
+    assert!(
+        !transition.changed,
+        "guard miss leaves the binding untouched"
+    );
 }
 
 #[test]
@@ -1321,6 +1354,34 @@ fn surface_list_terminal_rows_render_the_stored_resume_binding() {
 }
 
 #[test]
+fn surface_list_rows_carry_the_plain_id_ref_index_keys() {
+    // The canonical CLI resolves --window/--surface refs and indexes by
+    // reading plain `id`, `ref`, and `index` keys from list rows
+    // (CLI/cmux.swift:6096-6111); the `ref` twin is minted by the wrapper's
+    // decoration pass (row_is_surface path of decorate_lifecycle_value_refs).
+    let snapshot = two_window_snapshot();
+    let mut transition = dispatch_lifecycle_request(
+        &snapshot,
+        "surface.list",
+        &serde_json::Map::new(),
+        &LifecycleDispatchContext {
+            viewport_size: None,
+            browser_enabled: false,
+            dock_available: false,
+            active_window_id: Some("window-1".into()),
+        },
+    );
+    decorate_lifecycle_result_refs_with("surface.list", &mut transition.result, &mut |kind, id| {
+        format!("{kind}:ref:{id}")
+    });
+    let payload = expect_ok(&transition.result);
+    let row = &payload["surfaces"].as_array().expect("rows")[0];
+    assert_eq!(row["id"], json!("surface-1"));
+    assert_eq!(row["index"], json!(0));
+    assert_eq!(row["ref"], json!("surface:ref:surface-1"));
+}
+
+#[test]
 fn resume_binding_payload_renders_explicit_nulls() {
     assert_eq!(resume_binding_payload(None), json!(null));
     let binding = cmux_core::session::SessionSurfaceResumeBindingSnapshot {
@@ -1382,7 +1443,10 @@ fn v1_parse_recognizes_exactly_the_three_window_commands() {
         parse_v1_window_command("close_window window-2"),
         Some(V1WindowCommand::CloseWindow(Some("window-2".into())))
     );
-    assert_eq!(parse_v1_window_command("close_window"), Some(V1WindowCommand::CloseWindow(None)));
+    assert_eq!(
+        parse_v1_window_command("close_window"),
+        Some(V1WindowCommand::CloseWindow(None))
+    );
     // Anything else falls through to the JSON/v2 pipeline.
     assert_eq!(parse_v1_window_command("list_windows"), None);
     assert_eq!(parse_v1_window_command(""), None);
@@ -1443,18 +1507,27 @@ fn v1_replies_are_byte_frozen() {
     let two = two_window_snapshot();
     let focus = dispatch(&two, "window.focus", json!({"window_id": "window-2"}));
     assert_eq!(
-        v1_window_reply(&V1WindowCommand::FocusWindow(Some("window-2".into())), &focus.result),
+        v1_window_reply(
+            &V1WindowCommand::FocusWindow(Some("window-2".into())),
+            &focus.result
+        ),
         "OK"
     );
     let close = dispatch(&two, "window.close", json!({"window_id": "window-2"}));
     assert_eq!(
-        v1_window_reply(&V1WindowCommand::CloseWindow(Some("window-2".into())), &close.result),
+        v1_window_reply(
+            &V1WindowCommand::CloseWindow(Some("window-2".into())),
+            &close.result
+        ),
         "OK"
     );
     // Error mapping: invalid_params -> Invalid window id; not_found -> Window not found.
     let invalid = dispatch(&two, "window.focus", json!({"window_id": "  "}));
     assert_eq!(
-        v1_window_reply(&V1WindowCommand::FocusWindow(Some("  ".into())), &invalid.result),
+        v1_window_reply(
+            &V1WindowCommand::FocusWindow(Some("  ".into())),
+            &invalid.result
+        ),
         "ERROR: Invalid window id"
     );
     let missing = dispatch(&two, "window.focus", json!({"window_id": "window-404"}));

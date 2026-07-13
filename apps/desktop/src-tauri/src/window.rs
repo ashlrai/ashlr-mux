@@ -363,20 +363,58 @@ pub fn window_toggle_fullscreen(window: WebviewWindow) -> Result<WindowStateSnap
 #[tauri::command]
 pub async fn window_new(app: AppHandle, window: WebviewWindow) -> Result<String, String> {
     let label = next_window_label(&app);
-    let mut config = cloned_main_window_config(&app, label.clone())?;
+    create_window_for_label(&app, &label, window.title().ok().as_deref(), true)?;
+    Ok(label)
+}
+
+/// The next auxiliary window label ("window-N"), exposed so the control
+/// socket can pre-allocate the id its transition layer replies with before
+/// the webview exists.
+pub(crate) fn next_control_window_label(app: &AppHandle) -> String {
+    next_window_label(app)
+}
+
+/// Create an auxiliary window on behalf of the control socket with a
+/// pre-allocated label, WITHOUT focusing it — the Windows mapping of
+/// canonical orderFront-only socket window creation (window.create is not
+/// focus-intent: AppDelegate.swift:8862-8868 at pinned e1825d40d).
+pub(crate) fn create_socket_window(app: &AppHandle, label: &str) -> Result<(), String> {
+    create_window_for_label(app, label, None, false)
+}
+
+/// Close a window on behalf of the control socket, keyed by webview label.
+/// A model-only window (no webview) is still removed from the session model
+/// so v2 window.close stays authoritative over the snapshot.
+pub(crate) fn close_socket_window(app: &AppHandle, label: &str) -> Result<(), String> {
+    let Some(window) = app.get_webview_window(label) else {
+        let state = app.state::<crate::session::SessionState>();
+        return crate::session::unregister_window_for_control(app, state.inner(), label)
+            .map(|_| ());
+    };
+    window_close(window)
+}
+
+fn create_window_for_label(
+    app: &AppHandle,
+    label: &str,
+    title: Option<&str>,
+    focused: bool,
+) -> Result<(), String> {
+    let mut config = cloned_main_window_config(app, label.to_owned())?;
     config.visible = false;
-    let new_window = tauri::WebviewWindowBuilder::from_config(&app, &config)
+    let new_window = tauri::WebviewWindowBuilder::from_config(app, &config)
         .map_err(|error| error.to_string())?
+        .focused(focused)
         .build()
         .map_err(|error| error.to_string())?;
     if let Err(error) = apply_default_display(&new_window) {
         eprintln!("[window] failed to apply default display: {error}");
     }
-    if let Ok(title) = window.title() {
-        let _ = new_window.set_title(&title);
+    if let Some(title) = title {
+        let _ = new_window.set_title(title);
     }
     let state = app.state::<crate::session::SessionState>();
-    if let Err(message) = crate::session::register_window_for_control(&app, state.inner(), &label) {
+    if let Err(message) = crate::session::register_window_for_control(app, state.inner(), label) {
         let failures = new_window
             .close()
             .err()
@@ -387,7 +425,7 @@ pub async fn window_new(app: AppHandle, window: WebviewWindow) -> Result<String,
     install_window_state_listener(&new_window);
     if let Err(error) = new_window.show() {
         let mut failures = Vec::new();
-        match crate::session::unregister_window_for_control(&app, state.inner(), &label) {
+        match crate::session::unregister_window_for_control(app, state.inner(), label) {
             Ok(crate::session::UnregisterWindowOutcome::Removed { .. }) => {}
             Ok(crate::session::UnregisterWindowOutcome::Unchanged(_)) => {
                 failures.push(format!("registered window model {label} was not removed"))
@@ -400,7 +438,7 @@ pub async fn window_new(app: AppHandle, window: WebviewWindow) -> Result<String,
         return Err(append_compensation_failures(error.to_string(), failures));
     }
     let _ = emit_window_state(&new_window);
-    Ok(label)
+    Ok(())
 }
 
 #[tauri::command]

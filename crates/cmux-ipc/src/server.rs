@@ -54,6 +54,16 @@ pub trait ControlRequestHandler {
     fn handle_stream(&mut self, _request: ControlRequest) -> Option<ControlStream> {
         None
     }
+
+    /// Handle a v1 line-protocol command: a non-JSON request line (does not
+    /// start with `{`). Return the raw single-line reply (without the
+    /// trailing newline, e.g. `OK <uuid>` / `ERROR: ...`) or `None` to fall
+    /// through to the JSON parse-error path. The canonical macOS server
+    /// accepts v1 and v2 on the same socket; `auth <password>` lines are
+    /// intercepted by the auth gate before this hook.
+    fn handle_v1_line(&mut self, _line: &str) -> Option<String> {
+        None
+    }
 }
 
 impl<F> ControlRequestHandler for F
@@ -128,17 +138,25 @@ where
             Err(_) => encoder.response_for_parse_error(ControlRequestParseError::InvalidUtf8),
             Ok(line) => match auth.intercept(line, &mut auth_state) {
                 Some(auth_response) => auth_response,
-                None => match parser.request(line) {
-                    Ok(request) => {
-                        if let Some(stream) = handler.handle_stream(request.clone()) {
-                            write_stream(&mut writer, stream).await?;
-                            return Ok(());
-                        }
-                        let id = request.id.clone();
-                        encoder.response(id, handler.handle(request))
+                None => {
+                    let v1_reply = (!line.trim_start().starts_with('{'))
+                        .then(|| handler.handle_v1_line(line))
+                        .flatten();
+                    match v1_reply {
+                        Some(reply) => reply,
+                        None => match parser.request(line) {
+                            Ok(request) => {
+                                if let Some(stream) = handler.handle_stream(request.clone()) {
+                                    write_stream(&mut writer, stream).await?;
+                                    return Ok(());
+                                }
+                                let id = request.id.clone();
+                                encoder.response(id, handler.handle(request))
+                            }
+                            Err(error) => encoder.response_for_parse_error(error),
+                        },
                     }
-                    Err(error) => encoder.response_for_parse_error(error),
-                },
+                }
             },
         };
         writer.write_all(append_line(&response).as_bytes()).await?;
@@ -360,6 +378,47 @@ mod tests {
                 receiver,
             })
         }
+    }
+
+    /// Handles the v1 `new_window` line command alongside v2 JSON.
+    struct V1Handler;
+
+    impl ControlRequestHandler for V1Handler {
+        fn handle(&mut self, request: ControlRequest) -> ControlCallResult {
+            ControlCallResult::Ok(JsonValue::String(request.method))
+        }
+
+        fn handle_v1_line(&mut self, line: &str) -> Option<String> {
+            (line.split_whitespace().next() == Some("new_window"))
+                .then(|| "OK window-2".to_string())
+        }
+    }
+
+    #[tokio::test]
+    async fn v1_line_hook_answers_raw_replies_and_v2_still_dispatches() {
+        let responses = round_trip(
+            V1Handler,
+            &[
+                "new_window",
+                r#"{"id":1,"method":"ping"}"#,
+                "unknown_v1_command", // hook declines → JSON parse error path
+            ],
+        )
+        .await;
+        assert_eq!(responses.len(), 3);
+        assert_eq!(responses[0], "OK window-2");
+        let second: serde_json::Value = serde_json::from_str(&responses[1]).expect("json");
+        assert_eq!(second["ok"], serde_json::json!(true));
+        let third: serde_json::Value = serde_json::from_str(&responses[2]).expect("json");
+        assert_eq!(third["ok"], serde_json::json!(false));
+    }
+
+    #[tokio::test]
+    async fn default_handler_keeps_parse_error_behavior_for_non_json_lines() {
+        let responses = round_trip(echo_handler, &["new_window"]).await;
+        assert_eq!(responses.len(), 1);
+        let value: serde_json::Value = serde_json::from_str(&responses[0]).expect("json");
+        assert_eq!(value["ok"], serde_json::json!(false));
     }
 
     #[tokio::test]
