@@ -2031,6 +2031,163 @@ fn canvas_restore_preserves_compact_map_order_duplicates_and_legacy_selection_fa
     );
 }
 
+fn focus_matches_pane(snapshot: &AppSessionSnapshot, pane_index: usize) -> bool {
+    let workspace = workspace(snapshot, 0);
+    let pane = pane_at(snapshot, 0, pane_index);
+    workspace.focused_panel_id.as_ref() == pane.selected_panel_id.as_ref()
+        && workspace.focused_pane_id.as_ref() == pane.pane_id.as_ref()
+}
+
+#[test]
+fn stale_later_selection_does_not_replace_the_prior_restored_live_focus() {
+    let canonical = include_str!("../../../../../Sources/Workspace.swift");
+    assert!(canonical.contains("if let selectedOldId = snapshot.selectedPanelId"));
+    assert!(canonical.contains("return oldToNewPanelIds[selectedOldId]"));
+    assert!(canonical.contains("return createdPanelIds.first"));
+
+    let mut wrong = Vec::new();
+    for (name, stale_panel, stale_pane) in [
+        ("stale UUID", id(0xffe0), id(0xffe1)),
+        (
+            "stale legacy",
+            "legacy-stale-selection".into(),
+            "legacy-stale-pane".into(),
+        ),
+    ] {
+        let mut restored = graph_fixture();
+        pane_mut(&mut restored, 0, 1).selected_panel_id = Some(stale_panel.clone());
+        let workspace = workspace_mut(&mut restored, 0);
+        workspace.focused_panel_id = Some(stale_panel);
+        workspace.focused_pane_id = Some(stale_pane);
+
+        let committed =
+            restore_commits_atomically(restored).expect("restore must publish atomically");
+        if !focus_matches_pane(&committed, 0) {
+            wrong.push(name);
+        }
+    }
+
+    assert!(
+        wrong.is_empty(),
+        "a stale later selection incorrectly replaced prior live focus for {wrong:?}"
+    );
+}
+
+#[test]
+fn trailing_scaffold_only_leaf_never_steals_prior_restored_focus() {
+    let canonical = include_str!("../../../../../Sources/Workspace.swift");
+    assert!(canonical.contains("guard !createdPanelIds.isEmpty else { return }"));
+    assert!(canonical.contains("preserveFocusAfterNonFocusSplit("));
+
+    let mut wrong = Vec::new();
+    let cases: &[(&str, Mutation)] = &[
+        ("missing UUID", |snapshot: &mut AppSessionSnapshot| {
+            workspace_mut(snapshot, 0)
+                .surfaces
+                .as_mut()
+                .unwrap()
+                .retain(|surface| surface.surface_id != id(SURFACE_A2));
+        }),
+        ("colliding legacy", |snapshot: &mut AppSessionSnapshot| {
+            workspace_mut(snapshot, 0)
+                .surfaces
+                .as_mut()
+                .unwrap()
+                .retain(|surface| surface.surface_id != id(SURFACE_A2));
+            let pane = pane_mut(snapshot, 0, 1);
+            pane.panel_ids = vec!["legacy-hole".into(), "legacy-hole".into()];
+            pane.selected_panel_id = Some("legacy-hole".into());
+        }),
+    ];
+    for (name, mutate) in cases {
+        let mut restored = graph_fixture();
+        mutate(&mut restored);
+        let workspace_before = workspace_mut(&mut restored, 0);
+        workspace_before.focused_panel_id = Some(id(0xffe2));
+        workspace_before.focused_pane_id = Some(id(0xffe3));
+
+        let committed =
+            restore_commits_atomically(restored).expect("restore must publish atomically");
+        let leaves = layout_leaves(workspace(&committed, 0).layout.as_ref().unwrap());
+        let topology_is_scaffolded = leaves.len() == 2
+            && leaves.iter().all(|pane| pane.panel_ids.len() == 1)
+            && Uuid::parse_str(&leaves[1].panel_ids[0]).is_ok()
+            && leaves[0].panel_ids[0] != leaves[1].panel_ids[0];
+        if !topology_is_scaffolded || !focus_matches_pane(&committed, 0) {
+            wrong.push(name);
+        }
+    }
+
+    assert!(
+        wrong.is_empty(),
+        "a trailing scaffold changed topology or stole live focus for {wrong:?}"
+    );
+}
+
+#[test]
+fn absent_later_selection_still_focuses_its_first_created_panel() {
+    let mut wrong = Vec::new();
+    for (name, collide) in [("UUID", false), ("surface collision", true)] {
+        let mut restored = graph_fixture();
+        if collide {
+            pane_mut(&mut restored, 0, 1).panel_ids = vec![id(SURFACE_A1)];
+        }
+        pane_mut(&mut restored, 0, 1).selected_panel_id = None;
+        let workspace = workspace_mut(&mut restored, 0);
+        workspace.focused_panel_id = Some(id(0xffe4));
+        workspace.focused_pane_id = Some(id(0xffe5));
+
+        let committed =
+            restore_commits_atomically(restored).expect("restore must publish atomically");
+        let second = pane_at(&committed, 0, 1);
+        if !focus_matches_pane(&committed, 1)
+            || second.selected_panel_id.as_ref() != second.panel_ids.first()
+            || (collide && second.panel_ids[0] == id(SURFACE_A1))
+        {
+            wrong.push(name);
+        }
+    }
+
+    assert!(
+        wrong.is_empty(),
+        "an absent selection did not choose the first created panel for {wrong:?}"
+    );
+}
+
+#[test]
+fn legacy_empty_leaf_without_surface_rows_keeps_unique_scaffold_and_prior_focus() {
+    let mut restored = graph_fixture();
+    let workspace_before = workspace_mut(&mut restored, 0);
+    workspace_before.surfaces = None;
+    workspace_before.focused_panel_id = Some("legacy-stale-focus".into());
+    workspace_before.focused_pane_id = Some("legacy-stale-pane".into());
+    let SessionWorkspaceLayoutSnapshot::Split(split) = workspace_before.layout.as_mut().unwrap()
+    else {
+        panic!("split fixture")
+    };
+    split.orientation = SessionSplitOrientation::Vertical;
+    split.divider_position = 0.7;
+    let SessionWorkspaceLayoutSnapshot::Pane(second) = split.second.as_mut() else {
+        panic!("pane fixture")
+    };
+    second.panel_ids.clear();
+    second.selected_panel_id = None;
+
+    let committed = restore_commits_atomically(restored).expect("restore must publish atomically");
+    let workspace = workspace(&committed, 0);
+    let SessionWorkspaceLayoutSnapshot::Split(split) = workspace.layout.as_ref().unwrap() else {
+        panic!("legacy empty leaf must not collapse its saved split")
+    };
+    assert_eq!(split.orientation, SessionSplitOrientation::Vertical);
+    assert_eq!(split.divider_position, 0.7);
+    let leaves = layout_leaves(workspace.layout.as_ref().unwrap());
+    assert_eq!(leaves.len(), 2);
+    assert!(leaves.iter().all(|pane| pane.panel_ids.len() == 1));
+    assert!(Uuid::parse_str(&leaves[1].panel_ids[0]).is_ok());
+    assert_ne!(leaves[0].panel_ids[0], leaves[1].panel_ids[0]);
+    assert!(focus_matches_pane(&committed, 0));
+}
+
 #[test]
 fn local_contract_qualifies_reused_uuid_ids_and_member_scoped_groups() {
     let contract = include_str!("../../../../../docs/parity/contracts/pane_surface_lifecycle.json");
