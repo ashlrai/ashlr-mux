@@ -192,25 +192,26 @@ fn remote_terminal_action_requests_new_window_and_defers_identity_to_runtime_arr
 }
 
 #[test]
-fn explicit_surface_resolves_in_its_owner_workspace() {
-    // Differential remediation R6a: canonical resolves an explicit tab target
-    // in its OWNER workspace (global locateSurface) even when the routing
-    // selectors point elsewhere — capture cli.tab_action_pin succeeds with
-    // the owner workspace in the reply.
+fn explicit_workspace_takes_precedence_and_owner_resolves_without_it() {
+    // Round 5 item 2 (pinned Swift governs where capture is silent): an
+    // EXPLICIT workspace_id takes precedence and the target must live in it
+    // (controlTabActionResolveWorkspace, TerminalController+
+    // ControlSystemContext2.swift:288-296; panels guard :55-57) — mismatch is
+    // Tab not found. Owner resolution applies only when workspace_id is
+    // absent (the capture-pinned cli.tab_action_pin path).
     let snapshot = two_window_snapshot();
-    for (params, expected) in [
-        (
-            json!({"window_id": W1, "workspace_id": WS1, "surface_id": OTHER, "action": "pin"}),
-            OTHER,
-        ),
-        (
-            json!({"window_id": W2, "workspace_id": WS2, "surface_id": A, "action": "pin"}),
-            A,
-        ),
+    for params in [
+        json!({"window_id": W1, "workspace_id": WS1, "surface_id": OTHER, "action": "pin"}),
+        json!({"window_id": W2, "workspace_id": WS2, "surface_id": A, "action": "pin"}),
     ] {
         let transition = dispatch(&snapshot, params);
-        assert_eq!(ok(&transition)["surface_id"], expected);
+        let data = assert_error(&transition, "not_found", "Tab not found");
+        assert!(data["surface_id"].is_string());
+        assert_eq!(transition.snapshot, snapshot);
     }
+    // No explicit workspace: the target resolves in its OWNER workspace.
+    let owner_resolved = dispatch(&snapshot, json!({"surface_id": OTHER, "action": "pin"}));
+    assert_eq!(ok(&owner_resolved)["surface_id"], OTHER);
 }
 
 #[test]
