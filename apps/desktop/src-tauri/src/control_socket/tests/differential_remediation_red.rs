@@ -210,13 +210,14 @@ fn surface_move_rejects_both_anchor_params() {
         };
         pane.panel_ids = vec!["surface-1".into(), "surface-9".into()];
     }
+    const ANCHOR: &str = "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d";
     let moved = transition(
         &snapshot,
         "surface.move",
         json!({
             "surface_id": "surface-1",
-            "before_surface_id": "surface-9",
-            "after_surface_id": "surface-9",
+            "before_surface_id": ANCHOR,
+            "after_surface_id": ANCHOR,
         }),
     );
     let (code, message) = expect_error(&moved);
@@ -232,8 +233,8 @@ fn surface_move_rejects_both_anchor_params() {
         "surface.move",
         json!({
             "surface_id": "surface-404",
-            "before_surface_id": "surface-9",
-            "after_surface_id": "surface-9",
+            "before_surface_id": ANCHOR,
+            "after_surface_id": ANCHOR,
         }),
     );
     let (code, message) = expect_error(&missing);
@@ -242,6 +243,24 @@ fn surface_move_rejects_both_anchor_params() {
         message,
         "Specify at most one of before_surface_id or after_surface_id"
     );
+    // V3: canonical counts anchors through v2UUID — garbage text does not
+    // participate, so garbage + valid is a single-anchor move.
+    let single = transition(
+        &snapshot,
+        "surface.move",
+        json!({
+            "surface_id": "surface-1",
+            "before_surface_id": "garbage",
+            "after_surface_id": ANCHOR,
+        }),
+    );
+    match &single.result {
+        ControlCallResult::Err { message, .. } => assert_ne!(
+            message, "Specify at most one of before_surface_id or after_surface_id",
+            "garbage anchor must not count toward the dual-anchor rejection"
+        ),
+        ControlCallResult::Ok(_) => {}
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -632,4 +651,179 @@ fn bootstrap_registry_seeds_walk_window_workspace_pane_surface() {
         "surface:1",
         "re-minting a seeded id is stable"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Round 2 pins: V2, R2, R3, R4, R6b
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pane_resize_failures_use_the_canonical_distinct_messages() {
+    // V2: ControlCommandCoordinator+Pane.swift:452-476 at pinned e1825d40d.
+    let snapshot = resizable_snapshot();
+    // Horizontal-only tree: an up/down resize has no vertical ancestor.
+    let vertical = transition(
+        &snapshot,
+        "pane.resize",
+        json!({"pane_id": "pane-left", "direction": "up", "amount": 1}),
+    );
+    let (code, message) = expect_error(&vertical);
+    assert_eq!(code, "invalid_state");
+    assert_eq!(message, "No vertical split ancestor for pane");
+    // The rightmost pane has no border to its right.
+    let border = transition(
+        &snapshot,
+        "pane.resize",
+        json!({"pane_id": "pane-right", "direction": "right", "amount": 1}),
+    );
+    let (code, message) = expect_error(&border);
+    assert_eq!(code, "invalid_state");
+    assert_eq!(message, "Pane has no adjacent border in direction right");
+    // Absolute path keeps its single ancestor error.
+    let absolute = transition(
+        &snapshot,
+        "pane.resize",
+        json!({"pane_id": "pane-left", "absolute_axis": "vertical", "target_pixels": 100}),
+    );
+    let (code, message) = expect_error(&absolute);
+    assert_eq!(code, "invalid_state");
+    assert_eq!(message, "No split ancestor for absolute pane resize");
+}
+
+#[test]
+fn surface_create_inserts_next_to_the_selected_tab() {
+    // R2: canonical inserts the created tab adjacent to its creator (the
+    // pane's selected tab), not at the end (capture rows_shape ordering).
+    let snapshot = mixed_pane_snapshot(); // [surface-a, surface-b], b selected
+    let created = transition(&snapshot, "surface.create", json!({"type": "terminal"}));
+    let created_id = ok_value(&created)["surface_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let SessionWorkspaceLayoutSnapshot::Pane(pane) =
+        created.snapshot.windows[0].tab_manager.workspaces[0]
+            .layout
+            .as_ref()
+            .unwrap()
+    else {
+        unreachable!();
+    };
+    assert_eq!(
+        pane.panel_ids,
+        vec!["surface-a".to_string(), "surface-b".to_string(), created_id],
+        "inserted after the selected tab (surface-b), before nothing else"
+    );
+}
+
+#[test]
+fn surface_close_of_focused_surface_emits_the_fallback_pair() {
+    // R3: capture surface_close.happy — closing the surface holding focus
+    // emits surface.closed + the bonsplit selection pair.
+    let mut snapshot = mixed_pane_snapshot();
+    // Focus surface-a but keep surface-b as the pane selection so the plain
+    // selection-diff would NOT fire without the focus-fallback rule.
+    snapshot.windows[0].tab_manager.workspaces[0].focused_panel_id = Some("surface-a".into());
+    let closed = transition(
+        &snapshot,
+        "surface.close",
+        json!({"surface_id": "surface-a"}),
+    );
+    let _ = ok_value(&closed);
+    let names: Vec<_> = closed.events.iter().map(|event| event.name).collect();
+    assert_eq!(
+        names,
+        ["surface.closed", "surface.selected", "surface.focused"],
+        "focus fallback emits the reselection pair"
+    );
+}
+
+#[test]
+fn pane_created_orientation_is_the_split_axis() {
+    // R4: capture pane_create.direction_right_happy — payload orientation is
+    // "horizontal" for direction right, not the raw direction token.
+    let snapshot = test_snapshot();
+    for (direction, axis) in [("right", "horizontal"), ("down", "vertical")] {
+        let created = transition(&snapshot, "pane.create", json!({"direction": direction}));
+        let event = created
+            .events
+            .iter()
+            .find(|event| event.name == "pane.created")
+            .expect("pane.created event");
+        assert_eq!(event.payload["orientation"], json!(axis), "{direction}");
+    }
+}
+
+#[test]
+fn surface_focus_selects_the_owner_workspace_globally() {
+    // R6b: capture surface_focus.happy selectors probe — focusing a surface
+    // moves the window's selected workspace to the owner workspace.
+    let mut snapshot = test_snapshot();
+    let mut second = snapshot.windows[0].tab_manager.workspaces[0].clone();
+    second.workspace_id = Some("workspace-2".into());
+    second.focused_panel_id = Some("surface-2".into());
+    let SessionWorkspaceLayoutSnapshot::Pane(pane) = second.layout.as_mut().unwrap() else {
+        unreachable!();
+    };
+    pane.pane_id = Some("pane-2".into());
+    pane.panel_ids = vec!["surface-2".into()];
+    pane.selected_panel_id = Some("surface-2".into());
+    snapshot.windows[0].tab_manager.workspaces.push(second);
+    snapshot.windows[0].tab_manager.selected_workspace_index = Some(0);
+
+    let focused = transition(
+        &snapshot,
+        "surface.focus",
+        json!({"surface_id": "surface-2"}),
+    );
+    let payload = ok_value(&focused);
+    assert_eq!(payload["workspace_id"], json!("workspace-2"));
+    assert_eq!(
+        focused.snapshot.windows[0]
+            .tab_manager
+            .selected_workspace_index,
+        Some(1),
+        "the owner workspace becomes globally selected"
+    );
+    assert_eq!(
+        focused.snapshot.windows[0].selected_workspace_id.as_deref(),
+        Some("workspace-2")
+    );
+}
+
+#[test]
+fn registry_forget_mints_a_fresh_ref_on_rerender() {
+    // R5: capture — the close echo renders surface:17 for a surface the
+    // registry previously knew as :16; forgetting never rewinds the counter.
+    let mut registry = ControlHandleRegistry::default();
+    assert_eq!(registry.mint("surface", "s-1"), "surface:1");
+    assert_eq!(registry.mint("surface", "s-2"), "surface:2");
+    registry.forget("surface", "s-1");
+    assert_eq!(
+        registry.mint("surface", "s-1"),
+        "surface:3",
+        "re-render after forget mints fresh"
+    );
+    assert_eq!(
+        registry.mint("surface", "s-2"),
+        "surface:2",
+        "others stable"
+    );
+}
+
+#[test]
+fn lifecycle_wrapper_forgets_closed_and_respawned_handles_before_decoration() {
+    // Source oracle: the forget hook runs on the wrapper BEFORE the ref
+    // decoration pass for surface.close/surface.respawn.
+    let source = include_str!("../../control_socket.rs");
+    let start = source
+        .find("fn handle_pane_surface_lifecycle_request(")
+        .expect("handler present");
+    let body = &source[start..start + 4_000];
+    let forget = body
+        .find("forget_recreated_lifecycle_handles(")
+        .expect("forget hook wired");
+    let decorate = body
+        .find("decorate_lifecycle_result_refs(")
+        .expect("decoration present");
+    assert!(forget < decorate, "forget must precede ref decoration");
 }

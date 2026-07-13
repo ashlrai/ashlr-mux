@@ -231,8 +231,12 @@ fn restored_authority_and_counter_are_atomic_to_concurrent_allocators() {
         resume_tx.send(()).unwrap();
         let committed = restore.join().unwrap();
         allocator.join().unwrap();
-        assert_eq!(allocated_rx.recv().unwrap(), 10);
-        assert_eq!(next_panel.load(Ordering::Relaxed), 11);
+        // V1 (differential remediation): restore re-mints legacy surface-N
+        // ids to UUIDs, so the reseeded counter is the UUID-world floor (1);
+        // the pinned property is the ATOMICITY of reseed-vs-allocator, which
+        // is unchanged.
+        assert_eq!(allocated_rx.recv().unwrap(), 1);
+        assert_eq!(next_panel.load(Ordering::Relaxed), 2);
         assert_eq!(*authority.lock().unwrap(), committed);
     });
 }

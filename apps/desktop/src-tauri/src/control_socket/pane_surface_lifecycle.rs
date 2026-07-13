@@ -1714,9 +1714,14 @@ fn surface_create(
     let Some(pane_id) = pane_id else {
         return error(snapshot, "not_found", "Pane not found", None);
     };
-    let anchor = find_pane(workspace.layout.as_ref(), &pane_id)
-        .and_then(|pane| pane.panel_ids.last())
-        .cloned();
+    // R2: canonical inserts the new tab next to its creator (the pane's
+    // selected tab), not at the end (capture surface_create.terminal_happy
+    // state rows: new surface at the index adjacent to the selected tab).
+    let anchor = find_pane(workspace.layout.as_ref(), &pane_id).and_then(|pane| {
+        pane.selected_panel_id
+            .clone()
+            .or_else(|| pane.panel_ids.last().cloned())
+    });
     let Some(anchor) = anchor else {
         return error(snapshot, "not_found", "Pane not found", None);
     };
@@ -1972,13 +1977,10 @@ fn action_target(
         "Tab not found",
         Some(json!({"surface_id":surface_id,"tab_id":surface_id})),
     ))?;
-    if owner.workspace_id != workspace_id {
-        return Err((
-            "not_found",
-            "Tab not found",
-            Some(json!({"surface_id":surface_id,"tab_id":surface_id})),
-        ));
-    }
+    // R6a: canonical resolves an explicit tab target in its OWNER workspace
+    // (global locateSurface) even when routing resolved another workspace —
+    // capture cli.tab_action_pin succeeds with OK tab=tab:N workspace:2.
+    let _ = workspace_id;
     Ok((surface_id, owner))
 }
 
@@ -3288,6 +3290,8 @@ fn surface_close(
     let previous_selection = model
         .pane(&owner.pane_id)
         .map(|pane| pane.selected_surface_id.clone());
+    let workspace_focus_was_on_closed =
+        model.focused_surface(&owner.workspace_id) == Some(surface_id.as_str());
     if let Err(problem) = model.close_surface(&surface_id, CloseIntent::Explicit) {
         return if problem.to_string().contains("last surface") {
             error(
@@ -3305,7 +3309,6 @@ fn surface_close(
             )
         };
     }
-    let next = model.to_app_session(snapshot).unwrap();
     let mut effects = vec![LifecycleEffect::RuntimeTeardown {
         surface_id: surface_id.clone(),
         generation,
@@ -3326,6 +3329,7 @@ fn surface_close(
     // Capture surface_close.happy: surface.closed carries
     // {kind, origin: tab_close, pane_id, surface_id}; when the pane's
     // selection moved, the bonsplit selection pair follows.
+    let next = model.to_app_session(snapshot).unwrap();
     let mut events = vec![owned_event(
         "surface.closed",
         &window_id,
@@ -3339,11 +3343,24 @@ fn surface_close(
             "surface_id": surface_id,
         }),
     )];
+    // R3: canonical also reselects when the CLOSED surface held focus (the
+    // focus-fallback pair, capture surface_close.happy). Align the pane
+    // selection with the fallback focus target before comparing.
+    if workspace_focus_was_on_closed {
+        if let Some(fallback) = model
+            .focused_surface(&owner.workspace_id)
+            .map(str::to_owned)
+        {
+            let _ = model.focus_surface(&fallback);
+        }
+    }
     let new_selection = model
         .pane(&owner.pane_id)
         .map(|pane| pane.selected_surface_id.clone());
     if let (Some(previous), Some(selected)) = (previous_selection, new_selection) {
-        if previous != selected {
+        // Canonical emits the reselection pair whenever the closed surface
+        // held focus (fallback), or when the pane selection moved.
+        if previous != selected || workspace_focus_was_on_closed {
             let selected_kind = model
                 .surface(&selected)
                 .map(|surface| kind_name(&surface.kind))
@@ -3403,7 +3420,22 @@ fn surface_focus(
         .pane(&owner.pane_id)
         .is_some_and(|pane| pane.container == ContainerKind::Dock);
     let _ = model.focus_surface(surface_id);
-    let next = model.to_app_session(snapshot).unwrap();
+    let mut next = model.to_app_session(snapshot).unwrap();
+    // R6b: canonical surface.focus also selects the owner workspace globally
+    // (capture surface_focus.happy selectors probe).
+    if !is_dock {
+        for window in &mut next.windows {
+            if window.window_id.as_deref() != Some(window_id.as_str()) {
+                continue;
+            }
+            if let Some(index) = window.tab_manager.workspaces.iter().position(|workspace| {
+                workspace.workspace_id.as_deref() == Some(workspace_id.as_str())
+            }) {
+                window.tab_manager.selected_workspace_index = index.try_into().ok();
+                window.selected_workspace_id = Some(workspace_id.clone());
+            }
+        }
+    }
     let mut effects = vec![LifecycleEffect::ActivateWindow {
         window_id: window_id.clone(),
     }];
@@ -3450,9 +3482,17 @@ fn surface_move(
     // Canonical rejects both anchors right after surface_id validation and
     // BEFORE the surface lookup (v2SurfaceMove, TerminalController.swift:
     // 4726-4736 at pinned e1825d40d; capture surface_move.both_anchors_rejected).
+    // V3: canonical counts anchors through v2UUID — only uuid-resolvable
+    // values participate; garbage text is treated as absent
+    // (TerminalController.swift:4727-4733).
     let anchor_count = ["before_surface_id", "after_surface_id"]
         .iter()
-        .filter(|key| params.get(**key).and_then(Value::as_str).is_some())
+        .filter(|key| {
+            params
+                .get(**key)
+                .and_then(Value::as_str)
+                .is_some_and(|value| Uuid::parse_str(value.trim()).is_ok())
+        })
         .count();
     if anchor_count > 1 {
         return error(
@@ -3710,13 +3750,57 @@ fn pane_resize(
         echo.insert("amount".into(), json!(amount));
         session_ops::resize_pane_relative(workspace, &pane_id, direction, amount, width, height)
     };
+    // V2: canonical resize failures are distinct (ControlCommandCoordinator+
+    // Pane.swift:452-476 at pinned e1825d40d); the absolute path has ONE
+    // ancestor error, the relative path three.
     let result = match result {
         Ok(result) => result,
-        Err(_) => {
+        Err(session_ops::PaneResizeError::PaneNotFoundInTree) => {
+            return error(
+                snapshot,
+                "not_found",
+                "Pane not found in split tree",
+                Some(json!({"pane_id": pane_id})),
+            )
+        }
+        Err(failure) if absolute => {
+            let _ = failure;
             return error(
                 snapshot,
                 "invalid_state",
                 "No split ancestor for absolute pane resize",
+                None,
+            );
+        }
+        Err(session_ops::PaneResizeError::NoOrientationSplitAncestor) => {
+            let orientation = match params.get("direction").and_then(Value::as_str) {
+                Some("up") | Some("down") => "vertical",
+                _ => "horizontal",
+            };
+            return error(
+                snapshot,
+                "invalid_state",
+                &format!("No {orientation} split ancestor for pane"),
+                None,
+            );
+        }
+        Err(session_ops::PaneResizeError::NoAdjacentBorder) => {
+            let direction = params
+                .get("direction")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            return error(
+                snapshot,
+                "invalid_state",
+                &format!("Pane has no adjacent border in direction {direction}"),
+                None,
+            );
+        }
+        Err(session_ops::PaneResizeError::MissingSplitIdentity) => {
+            return error(
+                snapshot,
+                "internal_error",
+                "Failed to set split divider position",
                 None,
             )
         }
@@ -4177,7 +4261,21 @@ fn pane_create(
                 &scope.workspace_id,
                 Some(&pane_id),
                 Some(&surface_id),
-                json!({"pane_id":pane_id,"source_pane_id":source_pane_id,"orientation":params.get("direction"),"surface_id":surface_id,"origin":creation_origin(&kind, true)}),
+                {
+                    // R4: canonical publishes the split AXIS, not the raw
+                    // direction (capture: direction right -> "horizontal").
+                    let orientation = match params
+                        .get("direction")
+                        .and_then(Value::as_str)
+                        .map(str::to_ascii_lowercase)
+                        .as_deref()
+                    {
+                        Some("up") | Some("u") | Some("down") | Some("d") => "vertical",
+                        Some(_) => "horizontal",
+                        None => "horizontal",
+                    };
+                    json!({"pane_id":pane_id,"source_pane_id":source_pane_id,"orientation":orientation,"surface_id":surface_id,"origin":creation_origin(&kind, true)})
+                },
             ),
             owned_event(
                 "surface.created",
