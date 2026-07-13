@@ -993,9 +993,9 @@ fn owned_event(
 /// Round 7 — the publisher's per-pane selection pointer (canonical
 /// CmuxSelectionEventState.selectedSurfaceByWorkspacePane,
 /// CmuxLifecycleEventPublishing.swift:7): advanced only by published
-/// selection TRANSITIONS, purged of dead surfaces on close (clearSurface,
-/// :30-35). Born-selected tabs never publish, so the pointer can lag the
-/// pane's live selection.
+/// selection TRANSITIONS, and cleared on close only when it equals the closed
+/// surface (clearSurface, :30-35). Born-selected tabs never publish, so the
+/// pointer can lag the pane's live selection.
 fn published_selection(
     workspace: &cmux_core::session::SessionWorkspaceSnapshot,
     pane_id: &str,
@@ -1032,7 +1032,7 @@ fn reconcile_closed_published_selection(
     owner_ids: (&str, &str),
     pane_id: &str,
     is_dock: bool,
-    surviving_surface_ids: &[String],
+    closed_surface_id: &str,
     selected_surface_id: Option<&str>,
     publish_selection: bool,
 ) -> Option<String> {
@@ -1046,7 +1046,18 @@ fn reconcile_closed_published_selection(
             .tab_manager
             .workspaces
             .iter()
-            .position(|workspace| published_selection(workspace, pane_id).is_some())
+            // The exact closed pointer disambiguates a Dock pane id repeated
+            // in more than one backing workspace.
+            .position(|workspace| {
+                published_selection(workspace, pane_id).as_deref() == Some(closed_surface_id)
+            })
+            .or_else(|| {
+                window
+                    .tab_manager
+                    .workspaces
+                    .iter()
+                    .position(|workspace| published_selection(workspace, pane_id).is_some())
+            })
             .or_else(|| {
                 window
                     .selected_workspace_id
@@ -1090,7 +1101,7 @@ fn reconcile_closed_published_selection(
                 .and_then(|rows| rows.get(index))
         })
         .map(|row| row.panel_id.clone())
-        .filter(|pointer| surviving_surface_ids.contains(pointer));
+        .filter(|pointer| pointer != closed_surface_id);
 
     if publish_selection && pointer.as_deref() != selected_surface_id {
         if let Some(selected) = selected_surface_id {
@@ -3511,16 +3522,10 @@ fn surface_close(
             "surface_id": surface_id,
         }),
     )];
-    let (surviving_surface_ids, new_selection) = model
+    let new_selection = model
         .pane(&owner.pane_id)
         .filter(|pane| !pane.surface_ids.is_empty())
-        .map(|pane| {
-            (
-                pane.surface_ids.clone(),
-                Some(pane.selected_surface_id.clone()),
-            )
-        })
-        .unwrap_or_default();
+        .map(|pane| pane.selected_surface_id.clone());
     let publish_selection = new_selection.as_ref().is_some_and(|selected| {
         selection_before_close != *selected || (closed_preceded_selection && !closed_was_focused)
     });
@@ -3528,16 +3533,15 @@ fn surface_close(
     // close mutation (publishCmuxFocusedSelection,
     // CmuxLifecycleEventPublishing.swift:168) — and surface.closed's
     // clearSurface (:30-35, invoked from publishCmuxSurfaceClosed :153) has
-    // already purged entries pointing at the dead surface. previous_surface_id
-    // is therefore the nearest SURVIVING published selection (capture
-    // surface_close.happy frame 2), and the round-5 no-op guard applies to
-    // the pointer, not the raw pre-close selection.
+    // already purged an entry only when it points at the closed surface.
+    // Other publisher values stay opaque and supply previous_surface_id; the
+    // round-5 no-op guard applies to that pointer, not pane membership.
     let pointer = reconcile_closed_published_selection(
         &mut next,
         (&window_id, &workspace_id),
         &owner.pane_id,
         is_dock,
-        &surviving_surface_ids,
+        &surface_id,
         new_selection.as_deref(),
         publish_selection,
     );
