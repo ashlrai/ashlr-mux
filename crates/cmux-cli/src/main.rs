@@ -818,19 +818,12 @@ fn run_window_lifecycle_command(
 ) -> Result<(), CliError> {
     use cmux_cli::WindowLifecycleCommand as Lifecycle;
     let line = match lifecycle {
-        Lifecycle::NewWindow => "new_window".to_owned(),
-        Lifecycle::FocusWindow(handle) => {
-            format!(
-                "focus_window {}",
-                resolve_window_handle_value(options, handle)?
-            )
-        }
-        Lifecycle::CloseWindow(handle) => {
-            format!(
-                "close_window {}",
-                resolve_window_handle_value(options, handle)?
-            )
-        }
+        Lifecycle::NewWindow => lifecycle.v1_command().to_owned(),
+        Lifecycle::FocusWindow(handle) | Lifecycle::CloseWindow(handle) => format!(
+            "{} {}",
+            lifecycle.v1_command(),
+            resolve_window_handle_value(options, handle)?
+        ),
     };
     let response = call_v1_command(options, &line)?;
     println!("{response}");
@@ -862,15 +855,7 @@ fn resolve_window_handle_value(
         Handle::Uuid(value) => Ok(value.clone()),
         Handle::Ref(reference) => {
             for window in listed_windows(options)? {
-                let matches = ["id", "ref"].iter().any(|key| {
-                    window
-                        .get(*key)
-                        .and_then(serde_json::Value::as_str)
-                        .map(str::trim)
-                        .filter(|candidate| !candidate.is_empty())
-                        .is_some_and(|candidate| cmux_cli::handles_match(reference, candidate))
-                });
-                if matches {
+                if item_matches_handle(&window, reference) {
                     return Ok(canonical_id_or_ref(&window).unwrap_or_else(|| reference.clone()));
                 }
             }
@@ -886,6 +871,34 @@ fn resolve_window_handle_value(
             }
             Err(CliError::new("Window index not found"))
         }
+    }
+}
+
+/// Swift `windowHandleMatches` / `surfaceHandleMatches` shape: a list row
+/// matches when its `id` or `ref` handles-matches the target (UUID-aware,
+/// else case-insensitive; blank candidates never match).
+#[cfg(windows)]
+fn item_matches_handle(item: &serde_json::Value, handle: &str) -> bool {
+    ["id", "ref"].iter().any(|key| {
+        item.get(*key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|candidate| !candidate.is_empty())
+            .is_some_and(|candidate| cmux_cli::handles_match(handle, candidate))
+    })
+}
+
+/// Resolve the raw GLOBAL/explicit `--window` value like the canonical helpers
+/// do before scoping a request: classify (blank → `None`), then resolve
+/// refs/indexes through `window.list`.
+#[cfg(windows)]
+fn normalize_window_selector(
+    options: &GlobalOptions,
+    raw: &str,
+) -> Result<Option<String>, CliError> {
+    match cmux_cli::classify_window_handle(raw)? {
+        Some(handle) => resolve_window_handle_value(options, &handle).map(Some),
+        None => Ok(None),
     }
 }
 
@@ -941,10 +954,8 @@ fn run_window_namespace_command(
     if let Some(window_override) = options.window_id.as_deref() {
         // Canonical: normalizeWindowHandle(windowOverride) ?? windowOverride —
         // a blank override falls back to the raw string (CLI/cmux.swift:8088).
-        let normalized = match cmux_cli::classify_window_handle(window_override)? {
-            Some(handle) => resolve_window_handle_value(options, &handle)?,
-            None => window_override.to_owned(),
-        };
+        let normalized = normalize_window_selector(options, window_override)?
+            .unwrap_or_else(|| window_override.to_owned());
         if let Some(object) = request.as_object_mut() {
             object.insert("window_id".into(), serde_json::json!(normalized));
         }
@@ -992,10 +1003,7 @@ fn run_surface_resume_command(options: &GlobalOptions, args: &[String]) -> Resul
     )?;
 
     let window_handle = match plan.window.as_deref() {
-        Some(raw) => match cmux_cli::classify_window_handle(raw)? {
-            Some(handle) => Some(resolve_window_handle_value(options, &handle)?),
-            None => None,
-        },
+        Some(raw) => normalize_window_selector(options, raw)?,
         None => None,
     };
     let workspace_id = resolve_resume_workspace_handle(
@@ -1253,15 +1261,7 @@ fn matching_surface_in_workspace(
         .into_iter()
         .flatten()
     {
-        let matches = ["id", "ref"].iter().any(|key| {
-            surface
-                .get(*key)
-                .and_then(serde_json::Value::as_str)
-                .map(str::trim)
-                .filter(|candidate| !candidate.is_empty())
-                .is_some_and(|candidate| cmux_cli::handles_match(surface_handle, candidate))
-        });
-        if matches {
+        if item_matches_handle(surface, surface_handle) {
             return Ok(Some(
                 canonical_id_or_ref(surface).unwrap_or_else(|| surface_handle.to_owned()),
             ));
