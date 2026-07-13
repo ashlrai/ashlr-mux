@@ -3290,8 +3290,6 @@ fn surface_close(
     let previous_selection = model
         .pane(&owner.pane_id)
         .map(|pane| pane.selected_surface_id.clone());
-    let workspace_focus_was_on_closed =
-        model.focused_surface(&owner.workspace_id) == Some(surface_id.as_str());
     if let Err(problem) = model.close_surface(&surface_id, CloseIntent::Explicit) {
         return if problem.to_string().contains("last surface") {
             error(
@@ -3343,40 +3341,31 @@ fn surface_close(
             "surface_id": surface_id,
         }),
     )];
-    // R3: canonical also reselects when the CLOSED surface held focus (the
-    // focus-fallback pair, capture surface_close.happy). Align the pane
-    // selection with the fallback focus target before comparing.
-    if workspace_focus_was_on_closed {
-        if let Some(fallback) = model
-            .focused_surface(&owner.workspace_id)
-            .map(str::to_owned)
-        {
-            let _ = model.focus_surface(&fallback);
-        }
-    }
     let new_selection = model
         .pane(&owner.pane_id)
         .filter(|pane| !pane.surface_ids.is_empty())
         .map(|pane| pane.selected_surface_id.clone());
-    // Round 3 (capture-adjudicated): canonical bonsplit emits the reselection
-    // pair on EVERY close that leaves the pane populated — even when the
-    // closed tab was neither selected nor focused (live surface_close.happy:
-    // closed + selected + focused; the equal-target case is sanctioned until
-    // canonical data says otherwise).
+    // Round 5 item 4: canonical publishCmuxFocusedSelection guards
+    // previousSelectedSurfaceId != surfaceId
+    // (CmuxLifecycleEventPublishing.swift:171) — the pair fires only when
+    // the pane selection actually moved (to the closed tab's successor per
+    // the core reselection rule).
     if let (Some(previous), Some(selected)) = (previous_selection, new_selection) {
-        let selected_kind = model
-            .surface(&selected)
-            .map(|surface| kind_name(&surface.kind))
-            .unwrap_or("terminal");
-        events.extend(selection_events(
-            &window_id,
-            &workspace_id,
-            &owner.pane_id,
-            &selected,
-            &previous,
-            selected_kind,
-            true,
-        ));
+        if previous != selected {
+            let selected_kind = model
+                .surface(&selected)
+                .map(|surface| kind_name(&surface.kind))
+                .unwrap_or("terminal");
+            events.extend(selection_events(
+                &window_id,
+                &workspace_id,
+                &owner.pane_id,
+                &selected,
+                &previous,
+                selected_kind,
+                true,
+            ));
+        }
     }
     ok_transition(
         next,
