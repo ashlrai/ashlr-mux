@@ -4227,6 +4227,10 @@ fn resolve_request_handle_refs(app: &AppHandle, params: &mut serde_json::Map<Str
         ("surface_id", "surface"),
         ("terminal_id", "surface"),
         ("tab_id", "surface"),
+        // Round 5 item 6: anchor refs resolve like every other surface
+        // selector before the uuid-counting anchor validation.
+        ("before_surface_id", "surface"),
+        ("after_surface_id", "surface"),
         ("pane_id", "pane"),
     ] {
         let Some(reference) = params.get(key).and_then(Value::as_str) else {

@@ -957,3 +957,56 @@ fn surface_focus_with_mismatched_explicit_workspace_fails_closed() {
     );
     assert_eq!(ok_value(&matched)["workspace_id"], json!("workspace-2"));
 }
+
+#[test]
+fn pane_resize_failures_carry_the_canonical_data_blocks() {
+    // Round 5 item 5: ControlCommandCoordinator+Pane.swift:450-477 — the
+    // orientation/border failures carry {pane_id, direction}; the divider
+    // failure carries {split_id}.
+    let snapshot = resizable_snapshot();
+    let data_of = |transition: &LifecycleTransition| match &transition.result {
+        ControlCallResult::Err { data, .. } => data.clone().map(Value::from),
+        ControlCallResult::Ok(_) => panic!("expected error"),
+    };
+    let vertical = transition(
+        &snapshot,
+        "pane.resize",
+        json!({"pane_id": "pane-left", "direction": "up", "amount": 1}),
+    );
+    assert_eq!(
+        data_of(&vertical),
+        Some(json!({"pane_id": "pane-left", "direction": "up"}))
+    );
+    let border = transition(
+        &snapshot,
+        "pane.resize",
+        json!({"pane_id": "pane-right", "direction": "right", "amount": 1}),
+    );
+    assert_eq!(
+        data_of(&border),
+        Some(json!({"pane_id": "pane-right", "direction": "right"}))
+    );
+    let absolute = transition(
+        &snapshot,
+        "pane.resize",
+        json!({"pane_id": "pane-left", "absolute_axis": "vertical", "target_pixels": 100}),
+    );
+    assert_eq!(
+        data_of(&absolute),
+        Some(json!({"pane_id": "pane-left", "absolute_axis": "vertical"}))
+    );
+}
+
+#[test]
+fn anchor_params_participate_in_handle_ref_resolution() {
+    // Round 5 item 6: surface:N refs in before_surface_id/after_surface_id
+    // resolve through the registry before uuid-counting, like every other
+    // selector key (resolve_request_handle_refs).
+    let source = include_str!("../../control_socket.rs");
+    let start = source
+        .find("fn resolve_request_handle_refs(")
+        .expect("resolver present");
+    let body = &source[start..start + 1_800];
+    assert!(body.contains("(\"before_surface_id\", \"surface\")"));
+    assert!(body.contains("(\"after_surface_id\", \"surface\")"));
+}
