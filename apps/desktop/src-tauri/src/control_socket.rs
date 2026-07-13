@@ -3504,13 +3504,64 @@ fn handle_pane_surface_lifecycle_request(
     result
 }
 
-/// Canonical last-window close requires quit confirmation unless the user
-/// disabled it (handleQuitShortcutWarning, AppDelegate.swift:12831-12856).
-/// The Windows port has no such setting yet, so the veto/confirmation path is
-/// always taken — the safer default (an effect the frontend confirms) versus
-/// silently terminating the app.
-const WINDOW_QUIT_CONFIRMATION_REQUIRED: bool = true;
+/// Canonical quit-confirmation mode key: `app.confirmQuit`, default `always`
+/// (QuitConfirmationStore, Packages/macOS/CmuxSettings/Sources/CmuxSettings/
+/// Stores/QuitConfirmationStore.swift at pinned e1825d40d).
+pub(crate) const CONFIRM_QUIT_SETTING_KEY: &str = "app.confirmQuit";
 const WINDOW_QUIT_CONFIRMATION_EVENT: &str = "cmux://window-quit-confirmation";
+
+/// Whether the last-window close routes into the confirmation dialog.
+///
+/// Canonical `QuitConfirmationStore.shouldShowConfirmation`
+/// (handleQuitShortcutWarning, AppDelegate.swift:12831-12856): mode `always`
+/// (the default when the key is absent/unrecognized) confirms, `never`
+/// terminates immediately. `dirtyOnly` degrades to `always` on this port
+/// until dirty-workspace tracking exists (canonical consults
+/// `hasDirtyWorkspaces`); the dev-build and in-session-confirmed skips are
+/// terminate-flow concerns outside this socket path.
+fn window_quit_confirmation_required(
+    settings: Option<&crate::app_settings::SettingsStore>,
+) -> bool {
+    settings
+        .and_then(|store| store.get_string(CONFIRM_QUIT_SETTING_KEY))
+        .is_none_or(|mode| mode != "never")
+}
+
+/// The shared flat settings file (same rooting as right_sidebar.rs /
+/// agent_session.rs: `app_data_dir()/cmux/settings.json`).
+fn control_settings_store(app: &AppHandle) -> Option<crate::app_settings::SettingsStore> {
+    app.path()
+        .app_data_dir()
+        .ok()
+        .map(|dir| crate::app_settings::SettingsStore::new(dir.join("cmux").join("settings.json")))
+}
+
+/// The platform-equivalent of canonical QuitConfirmationAlertPresenter
+/// (Sources/QuitConfirmationAlertPresenter.swift:23-34 at pinned e1825d40d):
+/// a warning alert "Quit cmux?" / "This will close all windows and
+/// workspaces." with Quit/Cancel. Confirm terminates (NSApp.terminate
+/// parity); cancel is the veto. Non-blocking, mirroring canonical's async
+/// sheet — the reply already went out ("performClose invoked"). The
+/// suppression checkbox ("Don't warn again for Cmd+Q") has no Tauri dialog
+/// equivalent; users set `app.confirmQuit` to `never` instead. Live-verify
+/// only: canonical bypasses the alert under XCTest.
+fn present_quit_confirmation_dialog(app: &AppHandle) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    let exit_app = app.clone();
+    app.dialog()
+        .message("This will close all windows and workspaces.")
+        .title("Quit cmux?")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Quit".into(),
+            "Cancel".into(),
+        ))
+        .show(move |confirmed| {
+            if confirmed {
+                exit_app.exit(0);
+            }
+        });
+}
 
 /// window.list rows expose identity ids ("window-1" is the main label's id,
 /// cmux_core::window_display::ordered_window_identities) while the session
@@ -3596,7 +3647,9 @@ fn handle_window_lifecycle_request(
         (method == "window.create").then(|| crate::window::next_control_window_label(app));
     let context = window_lifecycle::WindowLifecycleContext {
         active_window_id,
-        quit_confirmation_required: WINDOW_QUIT_CONFIRMATION_REQUIRED,
+        quit_confirmation_required: window_quit_confirmation_required(
+            control_settings_store(app).as_ref(),
+        ),
         now_epoch_seconds: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|elapsed| elapsed.as_secs_f64())
@@ -3689,10 +3742,13 @@ fn apply_window_lifecycle_effect(
             Ok(())
         }
         Effect::QuitConfirmation { window_id } => {
+            // Event kept for the web layer/tests; the real consumer is the
+            // native dialog below.
             let _ = app.emit(
                 WINDOW_QUIT_CONFIRMATION_EVENT,
                 json!({ "window_id": window_id }),
             );
+            present_quit_confirmation_dialog(app);
             Ok(())
         }
         Effect::AppTerminate { .. } => {

@@ -547,6 +547,43 @@ fn last_window_close_terminates_when_confirmation_not_required() {
 }
 
 #[test]
+fn quit_confirmation_setting_defaults_always_and_never_disables() {
+    // Canonical QuitConfirmationStore: `app.confirmQuit` mode, default
+    // `always`; `never` terminates immediately (QuitConfirmationStore.swift
+    // at pinned e1825d40d; handleQuitShortcutWarning AppDelegate.swift:
+    // 12831-12856). `dirtyOnly` degrades to always on this port until
+    // dirty-workspace tracking exists (documented adaptation). The actual
+    // native dialog is live-verify only (canonical bypasses it under XCTest).
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = crate::app_settings::SettingsStore::new(dir.path().join("settings.json"));
+    assert!(
+        window_quit_confirmation_required(None),
+        "no settings surface -> canonical default (always)"
+    );
+    assert!(
+        window_quit_confirmation_required(Some(&store)),
+        "absent key -> canonical default (always)"
+    );
+    store.set_string(CONFIRM_QUIT_SETTING_KEY, "never");
+    assert!(
+        !window_quit_confirmation_required(Some(&store)),
+        "never -> terminate immediately (AppTerminate effect path)"
+    );
+    store.set_string(CONFIRM_QUIT_SETTING_KEY, "always");
+    assert!(window_quit_confirmation_required(Some(&store)));
+    store.set_string(CONFIRM_QUIT_SETTING_KEY, "dirtyOnly");
+    assert!(
+        window_quit_confirmation_required(Some(&store)),
+        "dirtyOnly degrades to always on the port"
+    );
+    store.set_string(CONFIRM_QUIT_SETTING_KEY, "garbage");
+    assert!(
+        window_quit_confirmation_required(Some(&store)),
+        "unrecognized mode -> canonical default"
+    );
+}
+
+#[test]
 fn repeated_window_close_reports_not_found() {
     let snapshot = two_window_snapshot();
     let first = dispatch(&snapshot, "window.close", json!({"window_id": "window-2"}));
