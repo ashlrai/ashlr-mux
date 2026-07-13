@@ -716,12 +716,12 @@ fn surface_create_inserts_next_to_the_selected_tab() {
 }
 
 #[test]
-fn surface_close_of_focused_surface_emits_the_fallback_pair() {
-    // R3: capture surface_close.happy — closing the surface holding focus
-    // emits surface.closed + the bonsplit selection pair.
+fn surface_close_of_focused_unselected_surface_suppresses_the_pair() {
+    // Round 5 item 4: the Swift guard suppresses the pair when the pane
+    // selection did not move (publishCmuxFocusedSelection,
+    // CmuxLifecycleEventPublishing.swift:171), even though focus fell back
+    // off the closed surface.
     let mut snapshot = mixed_pane_snapshot();
-    // Focus surface-a but keep surface-b as the pane selection so the plain
-    // selection-diff would NOT fire without the focus-fallback rule.
     snapshot.windows[0].tab_manager.workspaces[0].focused_panel_id = Some("surface-a".into());
     let closed = transition(
         &snapshot,
@@ -730,11 +730,7 @@ fn surface_close_of_focused_surface_emits_the_fallback_pair() {
     );
     let _ = ok_value(&closed);
     let names: Vec<_> = closed.events.iter().map(|event| event.name).collect();
-    assert_eq!(
-        names,
-        ["surface.closed", "surface.selected", "surface.focused"],
-        "focus fallback emits the reselection pair"
-    );
+    assert_eq!(names, ["surface.closed"], "no selection change, no pair");
 }
 
 #[test]
@@ -851,13 +847,12 @@ fn forget_scope_is_close_only_and_pane_only_when_gone() {
 }
 
 #[test]
-fn closing_a_freshly_created_tab_still_emits_the_reselection_pair() {
-    // Round 3 item 1: the differential fixture creates a tab (whose selection
-    // is restored to the previous tab per D7) and then closes it via the
-    // production dispatch path. Canonical still emits surface.closed +
-    // surface.selected + surface.focused (live capture: 4 frames incl ack);
-    // the round-2 guard suppressed the pair because the closed tab was
-    // neither selected nor focused.
+fn closing_an_unselected_tab_suppresses_the_noop_pair() {
+    // Round 5 item 4 (overrides round 3's emit-when-equal): canonical
+    // publishCmuxFocusedSelection guards previousSelectedSurfaceId !=
+    // surfaceId (CmuxLifecycleEventPublishing.swift:171) — closing a tab that
+    // was not selected leaves the selection in place and the no-op pair is
+    // suppressed.
     let snapshot = mixed_pane_snapshot(); // surface-a, surface-b (selected+focused)
     let created = transition(&snapshot, "surface.create", json!({"type": "terminal"}));
     let created_id = ok_value(&created)["surface_id"]
@@ -871,9 +866,59 @@ fn closing_a_freshly_created_tab_still_emits_the_reselection_pair() {
     );
     let _ = ok_value(&closed);
     let names: Vec<_> = closed.events.iter().map(|event| event.name).collect();
+    assert_eq!(names, ["surface.closed"], "no-op reselection is suppressed");
+}
+
+#[test]
+fn closing_the_selected_tab_reselects_its_successor() {
+    // Round 5 item 3: canonical bonsplit selects the closed tab's SUCCESSOR
+    // (the tab that slides into its index), not the first tab in the pane —
+    // capture surface_close.happy post-close rows put the new selection
+    // (<uuid-25>) at the closed tab's former index_in_pane.
+    let mut snapshot = mixed_pane_snapshot();
+    {
+        let workspace = &mut snapshot.windows[0].tab_manager.workspaces[0];
+        let SessionWorkspaceLayoutSnapshot::Pane(pane) =
+            workspace.layout.as_mut().expect("pane layout")
+        else {
+            unreachable!();
+        };
+        pane.panel_ids = vec!["surface-a".into(), "surface-b".into(), "surface-c".into()];
+    }
+    let mut encoded = serde_json::to_value(snapshot).expect("encode");
+    encoded["windows"][0]["tab_manager"]["workspaces"][0]["surfaces"] = json!([
+        {"surface_id": "surface-a", "pane_id": "pane-1", "generation": 1, "kind": {"type": "terminal"}},
+        {"surface_id": "surface-b", "pane_id": "pane-1", "generation": 1, "kind": {"type": "terminal"}},
+        {"surface_id": "surface-c", "pane_id": "pane-1", "generation": 1, "kind": {"type": "terminal"}}
+    ]);
+    let snapshot: AppSessionSnapshot = serde_json::from_value(encoded).expect("decode");
+
+    let closed = transition(
+        &snapshot,
+        "surface.close",
+        json!({"surface_id": "surface-b"}),
+    );
+    let _ = ok_value(&closed);
+    let names: Vec<_> = closed.events.iter().map(|event| event.name).collect();
     assert_eq!(
         names,
-        ["surface.closed", "surface.selected", "surface.focused"],
-        "canonical reselects on every surviving-pane close"
+        ["surface.closed", "surface.selected", "surface.focused"]
     );
+    assert_eq!(
+        closed.events[1].payload["surface_id"],
+        json!("surface-c"),
+        "the successor (tab sliding into the closed index) wins"
+    );
+    assert_eq!(
+        closed.events[1].payload["previous_surface_id"],
+        json!("surface-b")
+    );
+    // Closing an unselected trailing tab is a no-op for selection.
+    let last = transition(
+        &snapshot,
+        "surface.close",
+        json!({"surface_id": "surface-c"}),
+    );
+    let _ = ok_value(&last);
+    assert_eq!(last.events.len(), 1);
 }
