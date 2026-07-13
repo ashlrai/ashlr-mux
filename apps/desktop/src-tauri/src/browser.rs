@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::Mutex;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -18,6 +18,7 @@ const NETWORK_BODY_CAPTURE_LIMIT_BYTES: usize = 4 * 1024;
 #[allow(dead_code)]
 const NETWORK_HTTP_HEAD_CAPTURE_LIMIT_BYTES: usize = 64 * 1024;
 const BROWSER_EVAL_TIMEOUT: Duration = Duration::from_secs(5);
+const BROWSER_PROGRAMMATIC_NAVIGATION_LEASE: Duration = Duration::from_secs(5);
 const BROWSER_NAVIGATION_HANDOFF_LOCK_ORDER: [&str; 4] = [
     "programmatic_navigation_handoffs",
     "reserved_panel_ids",
@@ -45,6 +46,7 @@ pub struct BrowserWebviewState {
     network_records: Mutex<HashMap<String, Vec<BrowserNetworkRecord>>>,
     next_pending_cleanup_id: AtomicU64,
     next_network_record_id: AtomicU64,
+    next_programmatic_navigation_lease_id: AtomicU64,
 }
 
 impl Default for BrowserWebviewState {
@@ -58,6 +60,7 @@ impl Default for BrowserWebviewState {
             network_records: Mutex::new(HashMap::new()),
             next_pending_cleanup_id: AtomicU64::new(1),
             next_network_record_id: AtomicU64::new(1),
+            next_programmatic_navigation_lease_id: AtomicU64::new(1),
         }
     }
 }
@@ -65,7 +68,7 @@ impl Default for BrowserWebviewState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BrowserProgrammaticNavigationPhase {
     NavigateInFlight { callback_observed: bool },
-    CallbackResponsible,
+    CallbackResponsible { lease_id: u64, expires_at: Instant },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,13 +85,17 @@ enum BrowserProgrammaticNavigationCallback<'a> {
     Unmatched,
 }
 
-struct BrowserProgrammaticNavigationCleanup<'state, 'handoff> {
+struct BrowserProgrammaticNavigationCleanup<'state> {
     state: &'state BrowserWebviewState,
-    handoff: &'handoff BrowserProgrammaticNavigationHandoff,
+    handoff: BrowserProgrammaticNavigationHandoff,
     active: bool,
 }
 
-impl BrowserProgrammaticNavigationCleanup<'_, '_> {
+impl BrowserProgrammaticNavigationCleanup<'_> {
+    fn disarm(&mut self) {
+        self.active = false;
+    }
+
     fn remove(&mut self) -> Result<(), String> {
         let mut handoffs = self
             .state
@@ -110,7 +117,7 @@ impl BrowserProgrammaticNavigationCleanup<'_, '_> {
     }
 }
 
-impl Drop for BrowserProgrammaticNavigationCleanup<'_, '_> {
+impl Drop for BrowserProgrammaticNavigationCleanup<'_> {
     fn drop(&mut self) {
         if !self.active {
             return;
@@ -367,12 +374,94 @@ fn clear_browser_programmatic_navigation_handoff(
     Ok(())
 }
 
+fn next_browser_programmatic_navigation_lease_id(state: &BrowserWebviewState) -> u64 {
+    state
+        .next_programmatic_navigation_lease_id
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+            next.checked_add(1)
+        })
+        .expect("browser programmatic navigation lease id space exhausted")
+}
+
+fn expire_browser_programmatic_navigation_handoff(
+    state: &BrowserWebviewState,
+    panel_id: &str,
+    runtime_id: BrowserPendingCleanupId,
+    url: &str,
+    lease_id: u64,
+    expires_at: Instant,
+    now: Instant,
+) -> bool {
+    let mut programmatic_navigation_handoffs = state
+        .programmatic_navigation_handoffs
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let exact_expired_lease =
+        programmatic_navigation_handoffs
+            .get(panel_id)
+            .is_some_and(|handoff| {
+                handoff.runtime_id == runtime_id
+                    && handoff.url == url
+                    && matches!(
+                        handoff.phase,
+                        BrowserProgrammaticNavigationPhase::CallbackResponsible {
+                            lease_id: current_lease_id,
+                            expires_at: current_expires_at,
+                        } if current_lease_id == lease_id
+                            && current_expires_at == expires_at
+                            && current_expires_at <= now
+                    )
+            });
+    if !exact_expired_lease {
+        return false;
+    }
+
+    let mut reserved_panel_ids = state
+        .reserved_panel_ids
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !reserved_panel_ids.contains(panel_id) {
+        programmatic_navigation_handoffs.remove(panel_id);
+        return false;
+    }
+    programmatic_navigation_handoffs.remove(panel_id);
+    reserved_panel_ids.remove(panel_id)
+}
+
+fn schedule_browser_programmatic_navigation_handoff_expiry(
+    app: &AppHandle,
+    handoff: &BrowserProgrammaticNavigationHandoff,
+    lease_id: u64,
+    expires_at: Instant,
+) {
+    let app = app.clone();
+    let panel_id = handoff.panel_id.clone();
+    let runtime_id = handoff.runtime_id;
+    let url = handoff.url.clone();
+    tauri::async_runtime::spawn(async move {
+        cmux_ipc::stream_sleep(expires_at.saturating_duration_since(Instant::now())).await;
+        let state = app.state::<BrowserWebviewState>();
+        expire_browser_programmatic_navigation_handoff(
+            state.inner(),
+            &panel_id,
+            runtime_id,
+            &url,
+            lease_id,
+            expires_at,
+            Instant::now(),
+        );
+    });
+}
+
 fn publish_browser_programmatic_navigation(
-    programmatic_navigation_handoffs: &mut BTreeMap<String, BrowserProgrammaticNavigationHandoff>,
     state: &BrowserWebviewState,
     mutation_reservation: &BrowserPanelMutationReservation<'_>,
     handoff: &BrowserProgrammaticNavigationHandoff,
 ) -> Result<BrowserNavigatedPayload, String> {
+    let programmatic_navigation_handoffs = state
+        .programmatic_navigation_handoffs
+        .lock()
+        .map_err(|_| "browser programmatic navigation handoff lock poisoned".to_string())?;
     if programmatic_navigation_handoffs
         .get(&handoff.panel_id)
         .is_none_or(|current| {
@@ -440,6 +529,7 @@ fn complete_browser_programmatic_navigation(
     state: &BrowserWebviewState,
     mutation_reservation: &mut BrowserPanelMutationReservation<'_>,
     handoff: &BrowserProgrammaticNavigationHandoff,
+    navigation_cleanup: &mut BrowserProgrammaticNavigationCleanup<'_>,
 ) -> Result<(), String> {
     let mut programmatic_navigation_handoffs = state
         .programmatic_navigation_handoffs
@@ -460,18 +550,14 @@ fn complete_browser_programmatic_navigation(
         BrowserProgrammaticNavigationPhase::NavigateInFlight {
             callback_observed: true,
         } => {
-            let payload = publish_browser_programmatic_navigation(
-                &mut programmatic_navigation_handoffs,
-                state,
-                mutation_reservation,
-                handoff,
-            )?;
-            let mut cleanup = BrowserProgrammaticNavigationCleanup {
-                state,
-                handoff,
-                active: true,
-            };
+            let cleanup: &mut BrowserProgrammaticNavigationCleanup<'_> = navigation_cleanup;
             drop(programmatic_navigation_handoffs);
+            let payload =
+                match publish_browser_programmatic_navigation(state, mutation_reservation, handoff)
+                {
+                    Ok(payload) => payload,
+                    Err(error) => return Err(error),
+                };
             let event = BROWSER_NAVIGATED_EVENT;
             let emit = app.emit(event, payload).map_err(|error| error.to_string());
             let remove = cleanup.remove();
@@ -496,14 +582,25 @@ fn complete_browser_programmatic_navigation(
                     handoff.panel_id
                 ));
             }
+            let lease_id = next_browser_programmatic_navigation_lease_id(state);
+            let expires_at = Instant::now()
+                .checked_add(BROWSER_PROGRAMMATIC_NAVIGATION_LEASE)
+                .expect("browser programmatic navigation lease deadline overflow");
             programmatic_navigation_handoffs
                 .get_mut(&handoff.panel_id)
                 .expect("matching browser navigation handoff")
-                .phase = BrowserProgrammaticNavigationPhase::CallbackResponsible;
+                .phase = BrowserProgrammaticNavigationPhase::CallbackResponsible {
+                lease_id,
+                expires_at,
+            };
+            schedule_browser_programmatic_navigation_handoff_expiry(
+                app, handoff, lease_id, expires_at,
+            );
             mutation_reservation.disarm();
+            navigation_cleanup.disarm();
             Ok(())
         }
-        BrowserProgrammaticNavigationPhase::CallbackResponsible => Err(format!(
+        BrowserProgrammaticNavigationPhase::CallbackResponsible { .. } => Err(format!(
             "browser programmatic navigation was already delegated for {}/{}",
             handoff.panel_id, handoff.runtime_id
         )),
@@ -533,7 +630,7 @@ fn observe_browser_programmatic_navigation_callback<'a>(
             *callback_observed = true;
             Ok(BrowserProgrammaticNavigationCallback::DeferredToCommand)
         }
-        BrowserProgrammaticNavigationPhase::CallbackResponsible => {
+        BrowserProgrammaticNavigationPhase::CallbackResponsible { .. } => {
             let Some(callback_reservation) = adopt_browser_navigation_callback_reservation(
                 state,
                 panel_id.to_string(),
@@ -1512,16 +1609,23 @@ fn upsert_browser_webview<'a>(
                     .map_err(|error| error.to_string())?;
             }
             let mut programmatic_navigation = None;
+            let mut programmatic_navigation_cleanup = None;
             let should_navigate = child_url != normalized_url;
             if should_navigate {
                 if owns_mutation_reservation {
-                    programmatic_navigation = Some(begin_browser_programmatic_navigation(
+                    let handoff = begin_browser_programmatic_navigation(
                         state,
                         mutation_reservation,
                         &panel_id,
                         runtime_id,
                         webview_url.as_str(),
-                    )?);
+                    )?;
+                    programmatic_navigation_cleanup = Some(BrowserProgrammaticNavigationCleanup {
+                        state,
+                        handoff: handoff.clone(),
+                        active: true,
+                    });
+                    programmatic_navigation = Some(handoff);
                 }
                 if let Err(error) = webview.navigate(webview_url.clone()) {
                     if let Some(handoff) = programmatic_navigation.as_ref() {
@@ -1562,6 +1666,9 @@ fn upsert_browser_webview<'a>(
                     state,
                     mutation_reservation,
                     handoff,
+                    programmatic_navigation_cleanup
+                        .as_mut()
+                        .expect("programmatic navigation cleanup ownership"),
                 ) {
                     cancel_browser_programmatic_navigation(state, handoff);
                     return Err(error);
