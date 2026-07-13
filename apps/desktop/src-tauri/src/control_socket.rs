@@ -225,6 +225,57 @@ impl ControlHandleRegistry {
     }
 }
 
+/// D3: canonical registers the bootstrap window/workspace/pane/surface in
+/// the handle registry before the first socket mint, so fixture refs start at
+/// :2 per kind (live capture: workspace:2/pane:2 for the fixture workspace,
+/// pane:3/surface:4 for the first split). Walk order: window, then per
+/// workspace: workspace id, panes in layout order, surfaces in layout order.
+fn bootstrap_registry_seeds(snapshot: &AppSessionSnapshot) -> Vec<(&'static str, String)> {
+    fn walk_layout(
+        layout: &cmux_core::session::SessionWorkspaceLayoutSnapshot,
+        seeds: &mut Vec<(&'static str, String)>,
+    ) {
+        match layout {
+            cmux_core::session::SessionWorkspaceLayoutSnapshot::Pane(pane) => {
+                if let Some(id) = &pane.pane_id {
+                    seeds.push(("pane", id.clone()));
+                }
+                for panel in &pane.panel_ids {
+                    seeds.push(("surface", panel.clone()));
+                }
+            }
+            cmux_core::session::SessionWorkspaceLayoutSnapshot::Split(split) => {
+                walk_layout(&split.first, seeds);
+                walk_layout(&split.second, seeds);
+            }
+        }
+    }
+    let mut seeds = Vec::new();
+    for window in &snapshot.windows {
+        if let Some(id) = &window.window_id {
+            seeds.push(("window", id.clone()));
+        }
+        for workspace in &window.tab_manager.workspaces {
+            if let Some(id) = &workspace.workspace_id {
+                seeds.push(("workspace", id.clone()));
+            }
+            if let Some(layout) = &workspace.layout {
+                walk_layout(layout, &mut seeds);
+            }
+        }
+    }
+    seeds
+}
+
+/// Seed the handle registry with the bootstrap session entities (D3). Runs in
+/// app setup after the session bootstrap and before the control listener
+/// starts.
+pub(crate) fn seed_control_handle_registry(app: &AppHandle) {
+    for (kind, id) in bootstrap_registry_seeds(&snapshot(app)) {
+        control_handle_ref(app, kind, &id);
+    }
+}
+
 fn control_handle_ref(app: &AppHandle, kind: &'static str, id: &str) -> String {
     let state = app.state::<ControlHandleRegistryState>();
     let reference = state
@@ -3431,7 +3482,6 @@ fn handle_pane_surface_lifecycle_request(
         } => Some(((*failure_code).to_string(), (*failure_message).to_string())),
         _ => None,
     });
-    let publish_snapshot = lifecycle_snapshot_changed(&transition.snapshot, &current);
     let completion_events = transition.events.clone();
     let previous = current.clone();
     let mut target = current;
@@ -3475,14 +3525,10 @@ fn handle_pane_surface_lifecycle_request(
                 }
             });
     if matches!(result, ControlCallResult::Ok(_)) {
-        if publish_snapshot {
-            let suppressed = completion_events
-                .iter()
-                .filter(|event| event.source == "workspace.lifecycle")
-                .map(|event| event.name)
-                .collect::<HashSet<_>>();
-            record_session_changed_event_suppressing(app, &target, &suppressed);
-        }
+        // D8b: canonical emits ONLY the workspace.lifecycle / socket.v2
+        // completion frames for socket commands — no derived session.model
+        // extras (session.changed, pane.focused) on this path (capture frame
+        // lists for all four events cases).
         for completion in completion_events {
             record_event(
                 app,
@@ -5319,9 +5365,8 @@ fn events_live_stream_parts(
 ) {
     let names = string_vec_param(params, &["names", "name"]).unwrap_or_default();
     let categories = string_vec_param(params, &["categories", "category"]).unwrap_or_default();
-    let requested_after_seq = i64_param(params, &["after_seq", "after"])
-        .unwrap_or(0)
-        .max(0) as u64;
+    let requested_after_seq =
+        i64_param(params, &["after_seq", "after"]).map(|value| value.max(0) as u64);
     let limit = usize_param(params, &["limit"]).unwrap_or(EVENT_REPLAY_LIMIT);
     let include_heartbeats = bool_param(params, &["include_heartbeats", "heartbeat"])
         .unwrap_or_else(|| !bool_param(params, &["no_heartbeat", "no-heartbeat"]).unwrap_or(false));
@@ -5401,9 +5446,8 @@ fn events_payload_parts(
 ) -> (Value, Vec<Value>, Value) {
     let names = string_vec_param(params, &["names", "name"]).unwrap_or_default();
     let categories = string_vec_param(params, &["categories", "category"]).unwrap_or_default();
-    let requested_after_seq = i64_param(params, &["after_seq", "after"])
-        .unwrap_or(0)
-        .max(0) as u64;
+    let requested_after_seq =
+        i64_param(params, &["after_seq", "after"]).map(|value| value.max(0) as u64);
     let limit = usize_param(params, &["limit"]).unwrap_or(EVENT_REPLAY_LIMIT);
     let include_heartbeats = bool_param(params, &["include_heartbeats", "heartbeat"])
         .unwrap_or_else(|| !bool_param(params, &["no_heartbeat", "no-heartbeat"]).unwrap_or(false));
@@ -5436,13 +5480,19 @@ fn events_parts_from_retained(
     boot_id: String,
     next_seq: u64,
     retained_events: Vec<Value>,
-    requested_after_seq: u64,
+    after_seq_param: Option<u64>,
     limit: usize,
     include_heartbeats: bool,
     names: Vec<String>,
     categories: Vec<String>,
 ) -> (Value, Vec<Value>, Value) {
     let latest_seq = next_seq.saturating_sub(1);
+    // D8a: canonical subscribes at the latest sequence when the caller omits
+    // after_seq — no default replay (capture ack: after_seq null,
+    // requested_after_seq == latest_seq, replay_count 0). The ack echoes the
+    // RAW param as resume.after_seq and the resolved value as
+    // requested_after_seq.
+    let requested_after_seq = after_seq_param.unwrap_or(latest_seq);
     let oldest_seq = retained_events
         .first()
         .and_then(|event| event.get("seq"))
@@ -5467,7 +5517,7 @@ fn events_parts_from_retained(
         "heartbeat_interval_seconds": 15,
         "replay_count": events.len(),
         "resume": {
-            "after_seq": requested_after_seq,
+            "after_seq": after_seq_param,
             "requested_after_seq": requested_after_seq,
             "oldest_seq": oldest_seq,
             "latest_seq": latest_seq,
@@ -21008,6 +21058,9 @@ mod tests {
 
     #[path = "window_lifecycle_red.rs"]
     mod window_lifecycle_red;
+
+    #[path = "differential_remediation_red.rs"]
+    mod differential_remediation_red;
 
     #[path = "surface_action_exhaustive_red.rs"]
     mod surface_action_exhaustive_red;

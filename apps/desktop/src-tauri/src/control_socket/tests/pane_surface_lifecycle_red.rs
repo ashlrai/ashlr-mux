@@ -412,7 +412,9 @@ fn lifecycle_events_carry_complete_owner_envelopes() {
     for event in &created.events {
         assert_eq!(event.source, "workspace.lifecycle");
         assert!(matches!(event.category, "pane" | "surface"));
-        assert_eq!(event.window_id.as_deref(), Some("window-1"));
+        // Differential remediation D8b: canonical workspace.lifecycle
+        // envelopes carry window_id null (live capture frames).
+        assert_eq!(event.window_id, None);
         assert_eq!(event.workspace_id.as_deref(), Some("workspace-1"));
         assert_eq!(event.pane_id.as_deref(), value["pane_id"].as_str());
         assert_eq!(event.surface_id.as_deref(), value["surface_id"].as_str());
@@ -474,7 +476,11 @@ fn pane_resize_uses_injected_dimensions_and_absolute_validation_precedence() {
     let value = ok_value(&resized);
     assert_eq!(value["split_id"], json!("split-root"));
     assert_eq!(value["old_divider_position"], json!(0.5));
-    assert_eq!(value["new_divider_position"], json!(0.6));
+    // Differential remediation D4: canonical divides by rendered-frame axis
+    // pixels, which this port does not track (axisPixels falls back to 1 like
+    // the live canonical capture), so absolute targets clamp — the viewport
+    // is no longer substituted for frame pixels.
+    assert_eq!(value["new_divider_position"], json!(0.9));
     assert_eq!(
         resized
             .events
@@ -1139,7 +1145,8 @@ fn dock_api_create_returns_owner_and_dock_scoped_identities_and_commits_runtime_
             .iter()
             .find(|event| event.name == "surface.created")
             .expect("one Dock surface.created event");
-        assert_eq!(event.window_id.as_deref(), Some("main"));
+        // D8b: workspace.lifecycle envelopes carry window_id null (capture).
+        assert_eq!(event.window_id, None);
         assert_eq!(event.workspace_id.as_deref(), Some("main"));
         assert_eq!(event.pane_id.as_deref(), Some(dock_pane_id));
         assert_eq!(event.surface_id.as_deref(), Some(dock_surface_id));
@@ -1567,7 +1574,8 @@ fn dock_api_read_focus_and_close_route_through_the_main_owner() {
         .iter()
         .find(|event| event.name == "surface.closed")
         .unwrap();
-    assert_eq!(closed_event.window_id.as_deref(), Some("main"));
+    // D8b: workspace.lifecycle envelopes carry window_id null (capture).
+    assert_eq!(closed_event.window_id, None);
     assert_eq!(closed_event.workspace_id.as_deref(), Some("main"));
     assert_eq!(closed_event.pane_id.as_deref(), Some(pane_id.as_str()));
     assert_eq!(

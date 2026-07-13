@@ -317,6 +317,9 @@ pub fn run() {
             window::apply_default_display_to_existing_windows(&handle);
             window::install_window_state_listeners(&handle);
             session::bootstrap_session_persistence(&handle, app.state::<session::SessionState>());
+            // D3: register the bootstrap entities before the first socket
+            // mint so ref numbering matches canonical.
+            control_socket::seed_control_handle_registry(&handle);
             let startup_args: Vec<String> = std::env::args().collect();
             let startup_cwd = std::env::current_dir().unwrap_or_default();
             route_launch_arguments(&handle, &startup_args, &startup_cwd);

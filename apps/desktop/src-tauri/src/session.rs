@@ -750,7 +750,10 @@ fn initial_snapshot(first_panel_id: &str) -> AppSessionSnapshot {
         version: SESSION_SNAPSHOT_SCHEMA_VERSION,
         created_at: 0,
         windows: vec![SessionWindowSnapshot {
-            window_id: Some("main".to_string()),
+            // D1: canonical windows carry UUID ids (live capture window:1 =
+            // <uuid>); the "main" webview LABEL maps to the first session
+            // window via session_window_id_for_label, not by identity.
+            window_id: Some(Uuid::new_v4().to_string()),
             selected_workspace_id: None,
             dock: None,
             tab_manager: SessionTabManagerSnapshot {
@@ -760,9 +763,53 @@ fn initial_snapshot(first_panel_id: &str) -> AppSessionSnapshot {
             },
         }],
     };
+    // Canonical Workspace init: currentDirectory = requested ?? home
+    // (Workspace.swift:2885-2891 at pinned e1825d40d).
+    snapshot.windows[0].tab_manager.workspaces[0].current_directory = default_workspace_directory();
     ensure_workspace_ids(&mut snapshot);
     ensure_pane_ids(&mut snapshot);
+    seed_initial_surface_record(&mut snapshot.windows[0].tab_manager.workspaces[0]);
     snapshot
+}
+
+/// Canonical Workspace init falls back to the user's home directory
+/// (FileManager.default.homeDirectoryForCurrentUser, Workspace.swift:2885-2891).
+fn default_workspace_directory() -> Option<String> {
+    ["USERPROFILE", "HOME"]
+        .iter()
+        .find_map(|key| std::env::var(*key).ok())
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+/// Materialize the authoritative surface record for a fresh single-pane
+/// workspace so its first terminal carries `requested_working_directory`
+/// from birth, like canonical's first-panel spawn with `initialDirectory`
+/// (REMEDIATION.md divergence 6).
+fn seed_initial_surface_record(workspace: &mut SessionWorkspaceSnapshot) {
+    if workspace.surfaces.is_some() {
+        return;
+    }
+    let Some(SessionWorkspaceLayoutSnapshot::Pane(pane)) = workspace.layout.as_ref() else {
+        return;
+    };
+    let (Some(pane_id), Some(panel_id)) = (pane.pane_id.clone(), pane.panel_ids.first().cloned())
+    else {
+        return;
+    };
+    workspace.surfaces = Some(vec![cmux_core::session::SessionSurfaceSnapshot {
+        surface_id: panel_id,
+        pane_id,
+        generation: 1,
+        kind: cmux_core::session::SessionSurfaceKindSnapshot::Terminal,
+        metadata: Default::default(),
+        terminal_startup: workspace.current_directory.clone().map(|directory| {
+            cmux_core::session::SessionSurfaceTerminalStartupSnapshot {
+                working_directory: Some(directory),
+                ..Default::default()
+            }
+        }),
+    }]);
 }
 
 /// Mint a `workspace_id` for every workspace that lacks one. Canonical parity:
@@ -2277,6 +2324,12 @@ fn apply_new_workspace(
     // minted here, in the stateful layer (see `ensure_workspace_ids`).
     ensure_workspace_ids(snapshot);
     ensure_pane_ids(snapshot);
+    if let Some(workspace) = snapshot.windows.first_mut().and_then(|window| {
+        let index = usize::try_from(window.tab_manager.selected_workspace_index?).ok()?;
+        window.tab_manager.workspaces.get_mut(index)
+    }) {
+        seed_initial_surface_record(workspace);
+    }
 }
 
 /// Move an existing panel/surface into a newly-created workspace and select it.
@@ -3605,7 +3658,7 @@ fn transact_split_browser(
     let _transaction_guard = authority.lock_gate();
     let current =
         transaction_current_snapshot(authority).map_err(BrowserPanelCreateError::Publication)?;
-    let new_panel_id = format!("surface-{}", next_panel.load(Ordering::Relaxed));
+    let new_panel_id = Uuid::new_v4().to_string();
     let mut candidate = current.clone();
     if !apply_split(
         &mut candidate,
@@ -3641,7 +3694,7 @@ fn transact_new_browser_workspace(
 ) -> Result<AppSessionSnapshot, String> {
     let _transaction_guard = authority.lock_gate();
     let current = transaction_current_snapshot(authority)?;
-    let new_panel_id = format!("surface-{}", next_panel.load(Ordering::Relaxed));
+    let new_panel_id = Uuid::new_v4().to_string();
     let mut candidate = current.clone();
     apply_new_workspace(&mut candidate, &new_panel_id, None, None, None, None);
     apply_open_browser_url(&mut candidate, &new_panel_id, url);
@@ -3672,7 +3725,7 @@ fn transact_reopen_closed_browser_tab(
     let Some(tab) = history.last().cloned() else {
         return Ok(current);
     };
-    let new_panel_id = format!("surface-{}", next_panel.load(Ordering::Relaxed));
+    let new_panel_id = Uuid::new_v4().to_string();
     let mut candidate = current.clone();
     apply_reopen_closed_browser_tab(&mut candidate, &tab, &new_panel_id);
     let committed = publish_browser_candidate(
@@ -3964,7 +4017,7 @@ fn transact_register_window(
             publish_snapshot_transaction(authority, Some(&before), &candidate, publication)?;
         return Ok(RegisterWindowOutcome::Registered(committed));
     }
-    let panel_id = format!("surface-{}", next_panel.load(Ordering::Relaxed));
+    let panel_id = Uuid::new_v4().to_string();
     let mut candidate = before.clone();
     candidate
         .windows
@@ -4053,13 +4106,13 @@ fn transact_move_workspace_and_register_window(
         .iter()
         .any(|window| window.window_id.as_deref() == Some(target_window_id))
     {
-        let panel_id = format!("surface-{}", next_panel.load(Ordering::Relaxed) + used);
+        let panel_id = Uuid::new_v4().to_string();
         used += 1;
         candidate
             .windows
             .push(auxiliary_window_snapshot(target_window_id, &panel_id));
     }
-    let bootstrap_panel_id = format!("surface-{}", next_panel.load(Ordering::Relaxed) + used);
+    let bootstrap_panel_id = Uuid::new_v4().to_string();
     used += 1;
     session_ops::move_workspace_to_window(
         &mut candidate,
@@ -4852,22 +4905,19 @@ pub(crate) fn equalize_dividers_for_control(
 
 #[derive(Debug)]
 struct DeferredPanelIds {
-    base: u64,
     used: u64,
 }
 
 impl DeferredPanelIds {
-    fn new(counter: &AtomicU64) -> Self {
-        Self {
-            base: counter.load(Ordering::Relaxed),
-            used: 0,
-        }
+    fn new(_counter: &AtomicU64) -> Self {
+        Self { used: 0 }
     }
 
     fn next(&mut self) -> String {
-        let panel_id = format!("surface-{}", self.base + self.used);
+        // D2: canonical surface/panel ids are UUIDs (live capture); the
+        // legacy counter remains only as a transaction fence.
         self.used += 1;
-        panel_id
+        Uuid::new_v4().to_string()
     }
 
     fn commit(self, counter: &AtomicU64) {
@@ -5587,10 +5637,10 @@ pub(crate) fn split_panel_for_control(
             "no pane holds panel id {panel_id}"
         )));
     }
-    let new_panel_id = format!(
-        "surface-{}",
-        state.next_panel.fetch_add(1, Ordering::Relaxed)
-    );
+    // D2: canonical surface ids are UUIDs (live capture); the counter stays
+    // only as a legacy fence.
+    state.next_panel.fetch_add(1, Ordering::Relaxed);
+    let new_panel_id = Uuid::new_v4().to_string();
     let transaction = state.transact_lifecycle(app, |snapshot| {
         if !apply_split_with_terminal_startup(
             snapshot,
@@ -5911,10 +5961,10 @@ pub(crate) fn new_terminal_tab_for_control(
             "no pane holds panel id {panel_id}"
         )));
     }
-    let new_panel_id = format!(
-        "surface-{}",
-        state.next_panel.fetch_add(1, Ordering::Relaxed)
-    );
+    // D2: canonical surface ids are UUIDs (live capture); the counter stays
+    // only as a legacy fence.
+    state.next_panel.fetch_add(1, Ordering::Relaxed);
+    let new_panel_id = Uuid::new_v4().to_string();
     let transaction = state.transact_lifecycle(app, |snapshot| {
         if !apply_new_terminal_tab(
             snapshot,
@@ -7757,7 +7807,9 @@ mod tests {
             first_panel_id(&projected.windows[0].tab_manager.workspaces[0]),
             Some("surface-2")
         );
-        assert_eq!(snapshot.windows[0].window_id.as_deref(), Some("main"));
+        // D1: bootstrap windows carry UUID ids ("main" is only the label).
+        let id = snapshot.windows[0].window_id.clone().expect("bootstrap id");
+        assert!(Uuid::parse_str(&id).is_ok(), "{id}");
     }
 
     #[test]
@@ -9183,6 +9235,60 @@ mod tests {
     // window of a real `AppSessionSnapshot`.
 
     #[test]
+    fn bootstrap_workspace_carries_default_directory_and_surface_startup() {
+        // Canonical Workspace init: currentDirectory = requested ?? home
+        // (Workspace.swift:2885-2891 at pinned e1825d40d); the first terminal
+        // spawns with it, so its requestedWorkingDirectory is present from
+        // birth (REMEDIATION.md divergence 6: null-vs-present is capture-pinned).
+        let snapshot = initial_snapshot("surface-1");
+        let workspace = &snapshot.windows[0].tab_manager.workspaces[0];
+        let directory = workspace
+            .current_directory
+            .clone()
+            .expect("bootstrap workspace directory");
+        assert!(!directory.trim().is_empty());
+        let records = workspace
+            .surfaces
+            .as_deref()
+            .expect("bootstrap surface records");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].surface_id, "surface-1");
+        assert_eq!(
+            records[0]
+                .terminal_startup
+                .as_ref()
+                .and_then(|startup| startup.working_directory.as_deref()),
+            Some(directory.as_str())
+        );
+    }
+
+    #[test]
+    fn new_workspace_seeds_its_initial_surface_directory() {
+        let mut snapshot = initial_snapshot("surface-1");
+        apply_new_workspace(
+            &mut snapshot,
+            "surface-2",
+            Some("C:/inherited"),
+            None,
+            None,
+            None,
+        );
+        let tabs = tab_manager(&snapshot);
+        let index = usize::try_from(tabs.selected_workspace_index.unwrap()).unwrap();
+        let workspace = &tabs.workspaces[index];
+        assert_eq!(workspace.current_directory.as_deref(), Some("C:/inherited"));
+        let records = workspace.surfaces.as_deref().expect("surface records");
+        assert_eq!(records[0].surface_id, "surface-2");
+        assert_eq!(
+            records[0]
+                .terminal_startup
+                .as_ref()
+                .and_then(|startup| startup.working_directory.as_deref()),
+            Some("C:/inherited")
+        );
+    }
+
+    #[test]
     fn apply_new_workspace_appends_and_selects_it() {
         let mut snapshot = initial_snapshot("surface-1");
         apply_new_workspace(&mut snapshot, "surface-2", None, None, None, None);
@@ -9257,7 +9363,9 @@ mod tests {
             session_layout_from_cmux(layout, &mut ids).expect("valid canonical layout");
 
         assert!(matches!(layout, SessionWorkspaceLayoutSnapshot::Split(_)));
-        assert_eq!(focused.as_deref(), Some("surface-11"));
+        // D2: generated ids are UUIDs.
+        let focused_id = focused.clone().expect("focused id");
+        assert!(Uuid::parse_str(&focused_id).is_ok(), "{focused_id}");
         assert_eq!(next.load(Ordering::Relaxed), 10);
         assert_eq!(ids.used, 2);
         assert_eq!(startups.len(), 1);
@@ -9316,7 +9424,9 @@ mod tests {
 
         let closed = closed_workspace_snapshot(&snapshot, 0, 0).unwrap();
 
-        assert_eq!(closed.window_id.as_deref(), Some("main"));
+        // D1: bootstrap windows carry UUID ids.
+        let closed_window = closed.window_id.clone().expect("closed window id");
+        assert!(Uuid::parse_str(&closed_window).is_ok(), "{closed_window}");
         assert_eq!(closed.original_index, 0);
         assert_eq!(closed.workspace.custom_title.as_deref(), Some("Restorable"));
         assert!(closed.workspace.layout.is_some());
