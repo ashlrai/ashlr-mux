@@ -9350,7 +9350,39 @@ mod tests {
         // untouched.
         let mut legacy = initial_snapshot("surface-1");
         legacy.windows[0].window_id = Some("main".to_string());
-        legacy.windows[0].tab_manager.workspaces[0].custom_title = Some("surface-1".to_string());
+        {
+            let workspace = &mut legacy.windows[0].tab_manager.workspaces[0];
+            workspace.custom_title = Some("surface-1".to_string());
+            workspace.initial_terminal_command = Some("surface-1".to_string());
+            workspace.initial_terminal_input = Some("surface-1".to_string());
+            workspace.initial_terminal_environment = Some(BTreeMap::from([(
+                "CMUX_LITERAL".to_string(),
+                "surface-1".to_string(),
+            )]));
+            workspace.workspace_environment = Some(BTreeMap::from([(
+                "CMUX_WORKSPACE_LITERAL".to_string(),
+                "surface-1".to_string(),
+            )]));
+            let SessionWorkspaceLayoutSnapshot::Pane(pane) =
+                workspace.layout.as_mut().expect("layout")
+            else {
+                unreachable!();
+            };
+            pane.browser_url = Some("surface-1".to_string());
+            pane.browser_back_history = Some(vec!["surface-1".to_string()]);
+
+            let record = &mut workspace.surfaces.as_mut().expect("surface records")[0];
+            let startup = record.terminal_startup.get_or_insert_with(Default::default);
+            startup.command = Some("surface-1".to_string());
+            startup.working_directory = Some("surface-1".to_string());
+            startup.initial_input = Some("surface-1".to_string());
+            startup.environment = Some(BTreeMap::from([(
+                "CMUX_SURFACE_LITERAL".to_string(),
+                "surface-1".to_string(),
+            )]));
+            startup.tmux_start_command = Some("surface-1".to_string());
+            startup.remote_pty_session_id = Some("surface-1".to_string());
+        }
         remint_noncanonical_identities(&mut legacy);
         let restored = legacy;
         // The restore transaction wires this in right after ensure_* minting.
@@ -9377,6 +9409,52 @@ mod tests {
         assert_eq!(records[0].surface_id, panel);
         // Free text equal to an old id is untouched.
         assert_eq!(workspace.custom_title.as_deref(), Some("surface-1"));
+        assert_eq!(
+            workspace.initial_terminal_command.as_deref(),
+            Some("surface-1")
+        );
+        assert_eq!(
+            workspace.initial_terminal_input.as_deref(),
+            Some("surface-1")
+        );
+        assert_eq!(
+            workspace
+                .initial_terminal_environment
+                .as_ref()
+                .and_then(|environment| environment.get("CMUX_LITERAL"))
+                .map(String::as_str),
+            Some("surface-1")
+        );
+        assert_eq!(
+            workspace
+                .workspace_environment
+                .as_ref()
+                .and_then(|environment| environment.get("CMUX_WORKSPACE_LITERAL"))
+                .map(String::as_str),
+            Some("surface-1")
+        );
+        assert_eq!(pane.browser_url.as_deref(), Some("surface-1"));
+        assert_eq!(
+            pane.browser_back_history.as_deref(),
+            Some(["surface-1".to_string()].as_slice())
+        );
+        let startup = records[0]
+            .terminal_startup
+            .as_ref()
+            .expect("terminal startup");
+        assert_eq!(startup.command.as_deref(), Some("surface-1"));
+        assert_eq!(startup.working_directory.as_deref(), Some("surface-1"));
+        assert_eq!(startup.initial_input.as_deref(), Some("surface-1"));
+        assert_eq!(
+            startup
+                .environment
+                .as_ref()
+                .and_then(|environment| environment.get("CMUX_SURFACE_LITERAL"))
+                .map(String::as_str),
+            Some("surface-1")
+        );
+        assert_eq!(startup.tmux_start_command.as_deref(), Some("surface-1"));
+        assert_eq!(startup.remote_pty_session_id.as_deref(), Some("surface-1"));
     }
 
     #[test]

@@ -583,6 +583,31 @@ fn surface_close_emits_canonical_payload_and_reselection() {
     assert_eq!(events[2].1["surface_id"], json!("surface-a"));
 }
 
+#[test]
+fn closing_an_unselected_surface_republishes_a_stale_pointer_selection() {
+    // Canonical's close-time guard compares the publisher pointer with the
+    // surviving selection, not the pre-close live selection. A born-selected
+    // surface can already be the live selection while the publisher pointer
+    // still trails it; closing a different tab must publish the surviving
+    // selection pair and advance that pointer.
+    let snapshot = mixed_pane_snapshot();
+    let closed = transition(
+        &snapshot,
+        "surface.close",
+        json!({"surface_id": "surface-a"}),
+    );
+    let _ = ok_value(&closed);
+    let events: Vec<_> = closed.events.iter().map(event_summary).collect();
+    assert_eq!(events.len(), 3);
+    assert_eq!(events[0].0, "surface.closed");
+    assert_eq!(events[0].1["surface_id"], json!("surface-a"));
+    assert_eq!(events[1].0, "surface.selected");
+    assert_eq!(events[1].1["surface_id"], json!("surface-b"));
+    assert_eq!(events[1].1["previous_surface_id"], json!(null));
+    assert_eq!(events[2].0, "surface.focused");
+    assert_eq!(events[2].1["surface_id"], json!("surface-b"));
+}
+
 /// One pane, two terminals, surface-b selected+focused.
 fn mixed_pane_snapshot() -> AppSessionSnapshot {
     let mut snapshot = test_snapshot();
