@@ -558,6 +558,13 @@ fn restore_commits_atomically(restored: AppSessionSnapshot) -> Result<AppSession
     if attempt.authority != committed {
         return Err("published snapshot did not become authoritative".into());
     }
+    let expected_next_panel = next_panel_counter(&committed);
+    if attempt.next_panel != expected_next_panel {
+        return Err(format!(
+            "next-panel reseed was {}, expected {expected_next_panel}",
+            attempt.next_panel
+        ));
+    }
     Ok(committed)
 }
 
@@ -1808,6 +1815,231 @@ fn layout_surface_aliases_follow_canonical_filter_prune_and_collision_rules() {
         wrong.is_empty(),
         "restore diverged from canonical layout/surface behavior:\n{}",
         wrong.join("\n")
+    );
+}
+
+fn layout_leaves(
+    layout: &SessionWorkspaceLayoutSnapshot,
+) -> Vec<&cmux_core::session::SessionPaneLayoutSnapshot> {
+    fn collect<'a>(
+        layout: &'a SessionWorkspaceLayoutSnapshot,
+        leaves: &mut Vec<&'a cmux_core::session::SessionPaneLayoutSnapshot>,
+    ) {
+        match layout {
+            SessionWorkspaceLayoutSnapshot::Pane(pane) => leaves.push(pane),
+            SessionWorkspaceLayoutSnapshot::Split(split) => {
+                collect(&split.first, leaves);
+                collect(&split.second, leaves);
+            }
+        }
+    }
+
+    let mut leaves = Vec::new();
+    collect(layout, &mut leaves);
+    leaves
+}
+
+#[test]
+fn authoritative_hole_keeps_its_scaffold_leaf_and_saved_divider() {
+    let mut restored = graph_fixture();
+    let workspace_before = workspace_mut(&mut restored, 0);
+    workspace_before
+        .surfaces
+        .as_mut()
+        .unwrap()
+        .retain(|surface| surface.surface_id != id(SURFACE_A1));
+    let SessionWorkspaceLayoutSnapshot::Split(split) = workspace_before.layout.as_mut().unwrap()
+    else {
+        panic!("split fixture")
+    };
+    split.orientation = SessionSplitOrientation::Vertical;
+    split.divider_position = 0.375;
+
+    let committed = restore_commits_atomically(restored).expect("restore must publish atomically");
+    let workspace = workspace(&committed, 0);
+    let SessionWorkspaceLayoutSnapshot::Split(split) = workspace.layout.as_ref().unwrap() else {
+        panic!("a missing authoritative row must not collapse the saved split")
+    };
+    assert_eq!(split.orientation, SessionSplitOrientation::Vertical);
+    assert_eq!(split.divider_position, 0.375);
+
+    let leaves = layout_leaves(workspace.layout.as_ref().unwrap());
+    assert_eq!(leaves.len(), 2, "every saved leaf keeps a live pane");
+    assert!(leaves.iter().all(|pane| pane.panel_ids.len() == 1));
+    let scaffold_id = &leaves[0].panel_ids[0];
+    assert!(Uuid::parse_str(scaffold_id).is_ok());
+    assert_ne!(scaffold_id, &id(SURFACE_A1));
+    assert_eq!(leaves[1].panel_ids, [id(SURFACE_A2)]);
+
+    let surfaces = workspace.surfaces.as_deref().unwrap();
+    assert_eq!(
+        surfaces.len(),
+        2,
+        "the scaffold is authoritative live state"
+    );
+    for (pane, panel_id) in leaves.iter().zip([
+        leaves[0].panel_ids[0].as_str(),
+        leaves[1].panel_ids[0].as_str(),
+    ]) {
+        assert!(surfaces.iter().any(|surface| {
+            surface.surface_id == panel_id
+                && Some(surface.pane_id.as_str()) == pane.pane_id.as_deref()
+        }));
+    }
+}
+
+#[test]
+fn colliding_legacy_empty_leaves_get_distinct_scaffolds_without_collapse() {
+    let mut restored = graph_fixture();
+    let workspace_before = workspace_mut(&mut restored, 0);
+    workspace_before.surfaces = Some(Vec::new());
+    let SessionWorkspaceLayoutSnapshot::Split(split) = workspace_before.layout.as_mut().unwrap()
+    else {
+        panic!("split fixture")
+    };
+    split.divider_position = 0.625;
+    for node in [&mut split.first, &mut split.second] {
+        let SessionWorkspaceLayoutSnapshot::Pane(pane) = node.as_mut() else {
+            panic!("pane fixture")
+        };
+        pane.panel_ids = vec!["legacy-collision".into()];
+        pane.selected_panel_id = Some("legacy-collision".into());
+    }
+
+    let committed = restore_commits_atomically(restored).expect("restore must publish atomically");
+    let workspace = workspace(&committed, 0);
+    let Some(layout) = workspace.layout.as_ref() else {
+        panic!("empty legacy leaves must retain a live saved layout")
+    };
+    let SessionWorkspaceLayoutSnapshot::Split(split) = layout else {
+        panic!("empty legacy leaves must retain the saved split")
+    };
+    assert_eq!(split.divider_position, 0.625);
+    let leaves = layout_leaves(layout);
+    assert_eq!(leaves.len(), 2);
+    let scaffold_ids = leaves
+        .iter()
+        .map(|pane| pane.panel_ids.as_slice())
+        .collect::<Vec<_>>();
+    assert!(scaffold_ids.iter().all(|ids| ids.len() == 1));
+    assert!(scaffold_ids
+        .iter()
+        .all(|ids| Uuid::parse_str(&ids[0]).is_ok() && ids[0] != "legacy-collision"));
+    assert_ne!(scaffold_ids[0][0], scaffold_ids[1][0]);
+}
+
+#[test]
+fn groups_without_restored_local_members_are_dropped_after_dedupe() {
+    let mut restored = graph_fixture();
+    let groups = restored.windows[0]
+        .tab_manager
+        .workspace_groups
+        .as_mut()
+        .unwrap();
+    groups.push(group(GROUP_B, WORKSPACE_B));
+    let mut legacy_orphan = group(GROUP_B + 1, WORKSPACE_B);
+    legacy_orphan.id = "legacy-orphan-group".into();
+    legacy_orphan.anchor_workspace_id = Some("legacy-orphan-workspace".into());
+    groups.push(legacy_orphan);
+
+    let committed = restore_commits_atomically(restored).expect("restore must publish atomically");
+    let groups = committed.windows[0]
+        .tab_manager
+        .workspace_groups
+        .as_deref()
+        .unwrap();
+    assert_eq!(groups.len(), 1, "only groups with local members survive");
+    assert_eq!(groups[0].id, id(GROUP_A));
+    assert!(groups[0].anchor_workspace_id.is_some());
+}
+
+#[test]
+fn focus_fallback_tracks_the_last_restored_selected_leaf_including_collisions() {
+    let mut wrong = Vec::new();
+    for (name, focused_panel, focused_pane) in [
+        ("absent", None, None),
+        ("stale UUID", Some(id(0xfff0)), Some(id(0xfff1))),
+        (
+            "stale legacy",
+            Some("legacy-focused-panel".into()),
+            Some("legacy-focused-pane".into()),
+        ),
+    ] {
+        let mut restored = graph_fixture();
+        let workspace_before = workspace_mut(&mut restored, 0);
+        workspace_before.focused_panel_id = focused_panel;
+        workspace_before.focused_pane_id = focused_pane;
+        let committed =
+            restore_commits_atomically(restored).expect("restore must publish atomically");
+        let workspace = workspace(&committed, 0);
+        let expected = pane_at(&committed, 0, 1);
+        if workspace.focused_panel_id.as_ref() != expected.selected_panel_id.as_ref()
+            || workspace.focused_pane_id.as_ref() != expected.pane_id.as_ref()
+        {
+            wrong.push(name);
+        }
+    }
+
+    let mut collision = graph_fixture();
+    pane_mut(&mut collision, 0, 1).panel_ids = vec![id(SURFACE_A1)];
+    pane_mut(&mut collision, 0, 1).selected_panel_id = Some(id(SURFACE_A1));
+    let workspace_before = workspace_mut(&mut collision, 0);
+    workspace_before.focused_panel_id = Some(id(0xfff2));
+    workspace_before.focused_pane_id = Some(id(0xfff3));
+    let committed = restore_commits_atomically(collision).expect("restore must publish atomically");
+    let workspace = workspace(&committed, 0);
+    let expected = pane_at(&committed, 0, 1);
+    if workspace.focused_panel_id.as_ref() != expected.selected_panel_id.as_ref()
+        || workspace.focused_pane_id.as_ref() != expected.pane_id.as_ref()
+        || workspace.focused_panel_id.as_deref() == Some(id(SURFACE_A1).as_str())
+    {
+        wrong.push("surface collision");
+    }
+
+    assert!(
+        wrong.is_empty(),
+        "focus did not follow canonical live-focus fallback for {wrong:?}"
+    );
+}
+
+#[test]
+fn canvas_restore_preserves_compact_map_order_duplicates_and_legacy_selection_fallback() {
+    let mut restored = graph_fixture();
+    workspace_mut(&mut restored, 0).canvas_panes =
+        Some(vec![cmux_core::session::SessionCanvasPaneSnapshot {
+            panel_id: id(SURFACE_A2),
+            x: 1,
+            y: 2,
+            width: 3,
+            height: 4,
+            panel_ids: Some(vec![id(SURFACE_A1), id(SURFACE_A1), id(SURFACE_A2)]),
+            selected_panel_id: None,
+        }]);
+
+    let committed = restore_commits_atomically(restored).expect("restore must publish atomically");
+    let canvas = &workspace(&committed, 0).canvas_panes.as_ref().unwrap()[0];
+    assert_eq!(
+        canvas.panel_ids.as_ref().unwrap(),
+        &[id(SURFACE_A1), id(SURFACE_A1), id(SURFACE_A2)],
+        "canonical compactMap does not deduplicate mapped panel ids"
+    );
+    assert_eq!(canvas.panel_id, id(SURFACE_A1));
+    assert_eq!(
+        canvas.selected_panel_id.as_deref(),
+        Some(id(SURFACE_A2).as_str()),
+        "selectedPanelId ?? panelId precedes first-panel fallback"
+    );
+}
+
+#[test]
+fn local_contract_qualifies_reused_uuid_ids_and_member_scoped_groups() {
+    let contract = include_str!("../../../../../docs/parity/contracts/pane_surface_lifecycle.json");
+    assert!(contract.contains(
+        "Reuse collision-free persisted UUID window and surface ids; rebuild workspace, pane, and split ids; preserve valid group ids only when they have restored local members, with remapped anchors; derive Dock ids from their owning windows and rebuild Dock pane ids."
+    ));
+    assert!(
+        !contract.contains("Reuse collision-free persisted window and surface ids;"),
+        "legacy string identities are reminted, not reused"
     );
 }
 
