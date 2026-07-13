@@ -2171,3 +2171,99 @@ fn respawn_threads_tmux_start_command_defaulting_to_command() {
     let effect = serde_json::to_value(effect).unwrap();
     assert_eq!(effect["TerminalReplace"]["tmux_start_command"], json!("run"));
 }
+
+#[test]
+fn report_pwd_local_workspace_follows_canonical_resolution_and_identity_blocks() {
+    // Canonical: ControlCommandCoordinator+Surface3.swift:215-248 +
+    // TerminalController+ControlSurfaceContext4.swift:444-480 — on a LOCAL
+    // workspace an unknown surface_id is "Surface not found" (never pending),
+    // an absent surface_id records against the focused panel, a
+    // present-but-non-string surface_id fails syntax validation BEFORE the
+    // path checks, errors carry the requested-identity block, and the recorded
+    // payload has no window_id.
+    let snapshot = mixed_surface_snapshot();
+
+    let unknown = transition(
+        &snapshot,
+        "surface.report_pwd",
+        json!({"workspace_id": "workspace-1", "surface_id": "missing-surface", "path": "C:/x"}),
+    );
+    assert_eq!(
+        assert_error(&unknown, "not_found", "Surface not found"),
+        json!({"workspace_id": "workspace-1", "surface_id": "missing-surface"})
+    );
+    assert!(!unknown.changed);
+
+    let focused = transition(
+        &snapshot,
+        "surface.report_pwd",
+        json!({"workspace_id": "workspace-1", "path": " C:/focused "}),
+    );
+    let value = ok_value(&focused);
+    assert_eq!(
+        value,
+        json!({
+            "workspace_id": "workspace-1",
+            "surface_id": "surface-terminal",
+            "path": " C:/focused "
+        }),
+        "recorded payload must drop the noncanonical window_id key"
+    );
+    // Canonical cwd projection (Sources/Workspace.swift:4484-4487): the
+    // focused panel's report updates the workspace current directory
+    // (trimmed).
+    assert_eq!(
+        focused.snapshot.windows[0].tab_manager.workspaces[0]
+            .current_directory
+            .as_deref(),
+        Some("C:/focused")
+    );
+
+    // A non-focused surface report records metadata without touching the
+    // workspace cwd projection.
+    let unfocused = transition(
+        &snapshot,
+        "surface.report_pwd",
+        json!({"workspace_id": "workspace-1", "surface_id": "surface-browser", "path": "C:/other"}),
+    );
+    assert_eq!(ok_value(&unfocused)["surface_id"], json!("surface-browser"));
+    assert_eq!(
+        unfocused.snapshot.windows[0].tab_manager.workspaces[0]
+            .current_directory
+            .as_deref(),
+        Some("C:/repo")
+    );
+
+    let mut no_focus = mixed_surface_snapshot();
+    no_focus.windows[0].tab_manager.workspaces[0].focused_panel_id = None;
+    let unresolved = transition(
+        &no_focus,
+        "surface.report_pwd",
+        json!({"workspace_id": "workspace-1", "path": "C:/x"}),
+    );
+    assert_eq!(
+        assert_error(&unresolved, "not_found", "Surface not found"),
+        json!({"workspace_id": "workspace-1", "surface_id": Value::Null})
+    );
+
+    // Syntax validation precedes the path checks
+    // (ControlCommandCoordinator+Surface3.swift:220-223).
+    let non_string = transition(
+        &snapshot,
+        "surface.report_pwd",
+        json!({"workspace_id": "workspace-1", "surface_id": 7}),
+    );
+    assert_error(&non_string, "invalid_params", "Missing or invalid surface_id");
+
+    // Workspace lookup happens before any surface resolution and its error
+    // carries the identity block too.
+    let no_workspace = transition(
+        &snapshot,
+        "surface.report_pwd",
+        json!({"workspace_id": "missing-workspace", "surface_id": "surface-terminal", "path": "C:/x"}),
+    );
+    assert_eq!(
+        assert_error(&no_workspace, "not_found", "Workspace not found"),
+        json!({"workspace_id": "missing-workspace", "surface_id": "surface-terminal"})
+    );
+}

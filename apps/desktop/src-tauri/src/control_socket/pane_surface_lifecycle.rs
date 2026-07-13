@@ -2734,6 +2734,10 @@ fn surface_report_pwd(
     snapshot: &AppSessionSnapshot,
     params: &Map<String, Value>,
 ) -> LifecycleTransition {
+    // Canonical: ControlCommandCoordinator+Surface3.swift:215-248 — validate
+    // workspace_id, then surface_id syntax, then the path aliases; resolve the
+    // workspace before any surface resolution; error data carries the
+    // requested-identity block (Surface3.swift:365-375).
     let Some(workspace_id) = params.get("workspace_id").and_then(Value::as_str) else {
         return error(
             snapshot,
@@ -2742,6 +2746,21 @@ fn surface_report_pwd(
             None,
         );
     };
+    let surface_id = match params.get("surface_id") {
+        None | Some(Value::Null) => None,
+        Some(value) => match value.as_str() {
+            Some(id) => Some(id.to_owned()),
+            None => {
+                return error(
+                    snapshot,
+                    "invalid_params",
+                    "Missing or invalid surface_id",
+                    None,
+                )
+            }
+        },
+    };
+    let requested_identity = json!({"workspace_id":workspace_id,"surface_id":surface_id});
     let paths: Vec<&str> = ["path", "directory", "cwd"]
         .iter()
         .filter_map(|key| params.get(*key).and_then(Value::as_str))
@@ -2758,7 +2777,25 @@ fn surface_report_pwd(
             None,
         );
     }
-    let surface_id = params.get("surface_id").and_then(Value::as_str);
+    let Some((window_index, workspace_index)) =
+        snapshot.windows.iter().enumerate().find_map(|(index, window)| {
+            window
+                .tab_manager
+                .workspaces
+                .iter()
+                .position(|workspace| workspace.workspace_id.as_deref() == Some(workspace_id))
+                .map(|workspace_index| (index, workspace_index))
+        })
+    else {
+        return error(
+            snapshot,
+            "not_found",
+            "Workspace not found",
+            Some(requested_identity),
+        );
+    };
+    let workspace = &snapshot.windows[window_index].tab_manager.workspaces[workspace_index];
+    let is_remote_workspace = workspace.remote.as_ref().is_some_and(|remote| remote.enabled);
     let mut next = snapshot.clone();
     let mut model = match SurfaceLifecycleModel::from_app_session(&next) {
         Ok(model) => model,
@@ -2771,45 +2808,57 @@ fn surface_report_pwd(
             )
         }
     };
-    if let Some(id) = surface_id.filter(|id| model.surface(id).is_some()) {
-        let owner = model.owner_of_surface(id).cloned().unwrap();
-        if owner.workspace_id != workspace_id {
-            return error(snapshot, "not_found", "Surface not found", None);
-        }
-        let _ = model.update_metadata(id, |metadata| {
+    let in_workspace = |model: &SurfaceLifecycleModel, id: &str| {
+        model
+            .owner_of_surface(id)
+            .is_some_and(|owner| owner.workspace_id == workspace_id)
+    };
+    // Canonical resolveReportedSurfaceId
+    // (ControlSurfaceContext4.swift:453-480): requested id if valid, else the
+    // focused panel; unresolved on a LOCAL workspace is "Surface not found",
+    // while REMOTE workspaces keep the Windows pending-until-arrival queue.
+    let target = match &surface_id {
+        Some(id) if in_workspace(&model, id) => Some(id.clone()),
+        Some(_) => None,
+        None => workspace
+            .focused_panel_id
+            .clone()
+            .filter(|id| in_workspace(&model, id)),
+    };
+    if let Some(target) = target {
+        let _ = model.update_metadata(&target, |metadata| {
             metadata.reported_directory = Some(path.into());
             metadata.directory_provenance = Some("reported".into());
         });
         next = model.to_app_session(&next).unwrap();
+        // Canonical cwd projection (Sources/Workspace.swift:4484-4487): a
+        // focused-panel report updates the workspace current directory.
+        let workspace = &mut next.windows[window_index].tab_manager.workspaces[workspace_index];
+        if workspace.focused_panel_id.as_deref() == Some(target.as_str()) {
+            workspace.current_directory = Some(path.trim().to_owned());
+        }
         return ok_transition(
             next,
-            json!({"window_id":owner.window_id,"workspace_id":workspace_id,"surface_id":id,"path":path}),
+            json!({"workspace_id":workspace_id,"surface_id":target,"path":path}),
             vec![],
             vec![LifecycleEffect::PersistSession],
         );
     }
-    let mut found = false;
-    for window in &mut next.windows {
-        if let Some(workspace) = window
-            .tab_manager
-            .workspaces
-            .iter_mut()
-            .find(|workspace| workspace.workspace_id.as_deref() == Some(workspace_id))
-        {
-            found = true;
-            workspace
-                .pending_remote_pwds
-                .get_or_insert_with(Vec::new)
-                .push(cmux_core::session::SessionPendingRemotePwdSnapshot {
-                    remote_session_id: surface_id.unwrap_or("").into(),
-                    path: path.into(),
-                });
-            break;
-        }
+    if !is_remote_workspace {
+        return error(
+            snapshot,
+            "not_found",
+            "Surface not found",
+            Some(requested_identity),
+        );
     }
-    if !found {
-        return error(snapshot, "not_found", "Workspace not found", None);
-    }
+    next.windows[window_index].tab_manager.workspaces[workspace_index]
+        .pending_remote_pwds
+        .get_or_insert_with(Vec::new)
+        .push(cmux_core::session::SessionPendingRemotePwdSnapshot {
+            remote_session_id: surface_id.clone().unwrap_or_default(),
+            path: path.into(),
+        });
     ok_transition(
         next,
         json!({"workspace_id":workspace_id,"surface_id":surface_id,"path":path,"pending":true}),
