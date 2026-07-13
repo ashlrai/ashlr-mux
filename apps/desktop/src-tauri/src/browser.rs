@@ -127,6 +127,60 @@ impl Drop for BrowserPanelMutationReservation<'_> {
     }
 }
 
+struct BrowserNavigationCallbackReservation<'a> {
+    state: &'a BrowserWebviewState,
+    panel_id: String,
+    runtime_id: BrowserPendingCleanupId,
+    active: bool,
+}
+
+impl Drop for BrowserNavigationCallbackReservation<'_> {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        self.state
+            .reserved_panel_ids
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&self.panel_id);
+        self.active = false;
+    }
+}
+
+fn reserve_browser_navigation_callback(
+    state: &BrowserWebviewState,
+    panel_id: String,
+    runtime_id: BrowserPendingCleanupId,
+) -> Result<Option<BrowserNavigationCallbackReservation<'_>>, String> {
+    let mut reserved_panel_ids = state
+        .reserved_panel_ids
+        .lock()
+        .map_err(|_| "browser reservation state lock poisoned".to_string())?;
+    if reserved_panel_ids.contains(&panel_id) {
+        return Ok(None);
+    }
+    let webviews = state
+        .webviews
+        .lock()
+        .map_err(|_| "browser webview state lock poisoned".to_string())?;
+    let authoritative = webviews
+        .get(&panel_id)
+        .is_some_and(|child| child.runtime_id == runtime_id);
+    if !authoritative {
+        return Ok(None);
+    }
+    reserved_panel_ids.insert(panel_id.clone());
+    drop(webviews);
+    drop(reserved_panel_ids);
+    Ok(Some(BrowserNavigationCallbackReservation {
+        state,
+        panel_id,
+        runtime_id,
+        active: true,
+    }))
+}
+
 fn cleanup_built_browser_child_after_failure(
     state: &BrowserWebviewState,
     panel_id: &str,
@@ -212,29 +266,6 @@ fn next_browser_pending_cleanup_id(state: &BrowserWebviewState) -> BrowserPendin
             next.checked_add(1)
         })
         .expect("browser pending cleanup id space exhausted")
-}
-
-fn browser_child_is_authoritative(
-    state: &BrowserWebviewState,
-    panel_id: &str,
-    runtime_id: BrowserPendingCleanupId,
-) -> Result<bool, String> {
-    let reserved_panel_ids = state
-        .reserved_panel_ids
-        .lock()
-        .map_err(|_| "browser reservation state lock poisoned".to_string())?;
-    if reserved_panel_ids.contains(panel_id) {
-        return Ok(false);
-    }
-    state
-        .webviews
-        .lock()
-        .map(|webviews| {
-            webviews
-                .get(panel_id)
-                .is_some_and(|child| child.runtime_id == runtime_id)
-        })
-        .map_err(|_| "browser webview state lock poisoned".to_string())
 }
 
 #[allow(dead_code)]
@@ -1150,24 +1181,30 @@ fn upsert_browser_webview<'a>(
     let mut builder = WebviewBuilder::new(label.clone(), WebviewUrl::External(webview_url))
         .on_navigation(move |url| {
             let browser_state = event_app.state::<BrowserWebviewState>();
-            if !browser_child_is_authoritative(
+            let Ok(Some(callback_reservation)) = reserve_browser_navigation_callback(
                 browser_state.inner(),
-                &event_panel_id,
+                event_panel_id.clone(),
                 event_runtime_id,
-            )
-            .unwrap_or(false)
+            ) else {
+                return true;
+            };
+            if record_observed_navigation_for_runtime(&callback_reservation, url.as_str()).is_err()
             {
                 return true;
             }
-            let _ =
-                record_observed_navigation(browser_state.inner(), &event_panel_id, url.as_str());
-            let _ = event_app.emit(
-                BROWSER_NAVIGATED_EVENT,
-                BrowserNavigatedPayload {
-                    panel_id: event_panel_id.clone(),
-                    url: url.to_string(),
-                },
-            );
+            if event_app
+                .emit(
+                    BROWSER_NAVIGATED_EVENT,
+                    BrowserNavigatedPayload {
+                        panel_id: event_panel_id.clone(),
+                        url: url.to_string(),
+                    },
+                )
+                .is_err()
+            {
+                return true;
+            }
+            drop(callback_reservation);
             true
         });
     for script in &init_scripts {
@@ -1457,35 +1494,72 @@ fn record_observed_navigation(
     panel_id: &str,
     url: &str,
 ) -> Result<(), String> {
+    push_network_record(state, observed_navigation_record(state, panel_id, url))
+}
+
+fn record_observed_navigation_for_runtime(
+    reservation: &BrowserNavigationCallbackReservation<'_>,
+    url: &str,
+) -> Result<(), String> {
+    let runtime_id = reservation.runtime_id;
+    if !reservation.active || runtime_id == 0 {
+        return Err("browser navigation callback reservation is inactive".to_string());
+    }
+    let state = reservation.state;
+    let panel_id = reservation.panel_id.as_str();
+    let reserved_panel_ids = state
+        .reserved_panel_ids
+        .lock()
+        .map_err(|_| "browser reservation state lock poisoned".to_string())?;
+    if !reserved_panel_ids.contains(panel_id) {
+        return Err(format!(
+            "browser navigation callback reservation was lost for {panel_id}/{runtime_id}"
+        ));
+    }
+    let mut network_records = state
+        .network_records
+        .lock()
+        .map_err(|_| "browser network record state lock poisoned".to_string())?;
+    let records = network_records.entry(panel_id.to_string()).or_default();
+    records.push(observed_navigation_record(state, panel_id, url));
+    if records.len() > NETWORK_RECORD_LIMIT_PER_PANEL {
+        let overflow = records.len() - NETWORK_RECORD_LIMIT_PER_PANEL;
+        records.drain(0..overflow);
+    }
+    Ok(())
+}
+
+fn observed_navigation_record(
+    state: &BrowserWebviewState,
+    panel_id: &str,
+    url: &str,
+) -> BrowserNetworkRecord {
     let timestamp = now_ms();
     let id = state.next_network_record_id.fetch_add(1, Ordering::Relaxed);
-    push_network_record(
-        state,
-        BrowserNetworkRecord {
-            id: format!("browser-network-{id}"),
-            panel_id: panel_id.to_string(),
-            url: url.to_string(),
-            method: "GET".to_string(),
-            request_headers: BTreeMap::new(),
-            request_body: None,
-            request_body_preview_kind: "unavailable".to_string(),
-            request_body_size: 0,
-            request_body_truncated: false,
-            response_status: None,
-            response_headers: BTreeMap::new(),
-            response_body: None,
-            response_body_preview_kind: "unavailable".to_string(),
-            response_body_size: 0,
-            response_body_truncated: false,
-            started_at_ms: timestamp,
-            completed_at_ms: Some(timestamp),
-            duration_ms: Some(0),
-            source: "wkwebview-navigation".to_string(),
-            transport: transport_for_url(url),
-            proxy_attribution: None,
-            note: Some("Navigation observed by WKWebView/Tauri; headers, body, and status require proxy-level capture.".to_string()),
-        },
-    )
+    BrowserNetworkRecord {
+        id: format!("browser-network-{id}"),
+        panel_id: panel_id.to_string(),
+        url: url.to_string(),
+        method: "GET".to_string(),
+        request_headers: BTreeMap::new(),
+        request_body: None,
+        request_body_preview_kind: "unavailable".to_string(),
+        request_body_size: 0,
+        request_body_truncated: false,
+        response_status: None,
+        response_headers: BTreeMap::new(),
+        response_body: None,
+        response_body_preview_kind: "unavailable".to_string(),
+        response_body_size: 0,
+        response_body_truncated: false,
+        started_at_ms: timestamp,
+        completed_at_ms: Some(timestamp),
+        duration_ms: Some(0),
+        source: "wkwebview-navigation".to_string(),
+        transport: transport_for_url(url),
+        proxy_attribution: None,
+        note: Some("Navigation observed by WKWebView/Tauri; headers, body, and status require proxy-level capture.".to_string()),
+    }
 }
 
 pub(crate) fn record_custom_scheme_network_request(
