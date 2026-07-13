@@ -948,7 +948,9 @@ fn pending_remote_pwd_is_persisted_moved_applied_once_and_cleaned_on_close_or_re
             .as_deref(),
         Some("/srv/a")
     );
-    restored.begin_respawn("surface-1", "pwsh", None, None).unwrap();
+    restored
+        .begin_respawn("surface-1", "pwsh", None, None)
+        .unwrap();
     assert!(!restored.has_pending_remote_pwd("workspace-b", "remote-1"));
     restored
         .queue_remote_pwd("workspace-b", Some("remote-1"), "/srv/b")

@@ -620,6 +620,13 @@ fn workspace_contains_surface(
         })
 }
 
+fn workspace_contains_pane(
+    workspace: &cmux_core::session::SessionWorkspaceSnapshot,
+    id: &str,
+) -> bool {
+    find_pane(workspace.layout.as_ref(), id).is_some()
+}
+
 fn snapshot_contains_surface(snapshot: &AppSessionSnapshot, id: &str) -> bool {
     snapshot
         .windows
@@ -645,10 +652,6 @@ fn resolve_window_index(
     let pane_selector = params.get("pane_id").and_then(Value::as_str);
     let workspace_selector = params.get("workspace_id").and_then(Value::as_str);
     let group_selector = params.get("group_id").and_then(Value::as_str);
-    let contains_surface = workspace_contains_surface;
-    let contains_pane = |workspace: &cmux_core::session::SessionWorkspaceSnapshot, id: &str| {
-        find_pane(workspace.layout.as_ref(), id).is_some()
-    };
 
     let window_index =
         if let Some(explicit) = params.get("window_id").filter(|value| !value.is_null()) {
@@ -689,7 +692,7 @@ fn resolve_window_index(
                                 .tab_manager
                                 .workspaces
                                 .iter()
-                                .any(|workspace| contains_surface(workspace, surface))
+                                .any(|workspace| workspace_contains_surface(workspace, surface))
                         })
                     })
                 })
@@ -700,7 +703,7 @@ fn resolve_window_index(
                                 .tab_manager
                                 .workspaces
                                 .iter()
-                                .any(|workspace| contains_pane(workspace, pane))
+                                .any(|workspace| workspace_contains_pane(workspace, pane))
                         })
                     })
                 })
@@ -734,10 +737,6 @@ fn scope(
         .and_then(Value::as_str);
     let pane_selector = params.get("pane_id").and_then(Value::as_str);
     let workspace_selector = params.get("workspace_id").and_then(Value::as_str);
-    let contains_surface = workspace_contains_surface;
-    let contains_pane = |workspace: &cmux_core::session::SessionWorkspaceSnapshot, id: &str| {
-        find_pane(workspace.layout.as_ref(), id).is_some()
-    };
     let workspace_index = if let Some(requested) = workspace_selector {
         window
             .tab_manager
@@ -751,14 +750,14 @@ fn scope(
                 .tab_manager
                 .workspaces
                 .iter()
-                .position(|workspace| contains_surface(workspace, surface))
+                .position(|workspace| workspace_contains_surface(workspace, surface))
         });
         let pane_index = pane_selector.and_then(|pane| {
             window
                 .tab_manager
                 .workspaces
                 .iter()
-                .position(|workspace| contains_pane(workspace, pane))
+                .position(|workspace| workspace_contains_pane(workspace, pane))
         });
         surface_index.or(pane_index).unwrap_or(
             usize::try_from(window.tab_manager.selected_workspace_index.unwrap_or(0))
@@ -1457,17 +1456,11 @@ fn dock_create(
                 None,
             );
         };
-        let result = json!({"window_id":owner_id,"workspace_id":null,"pane_id":null,"surface_id":null,"created_split":false,"opened_externally":true,"browser_disabled":true,"placement_strategy":"external_browser_disabled","url":url});
         return ok_transition(
             snapshot.clone(),
-            result.clone(),
+            external_browser_disabled_payload(&owner_id, url),
             vec![],
-            vec![LifecycleEffect::ExternalBrowserOpen {
-                url: url.into(),
-                phase: "commit",
-                failure_code: "external_open_failed",
-                failure_message: "Failed to open URL externally",
-            }],
+            vec![external_browser_open_effect(url)],
         );
     }
     // Canonical: TerminalController+ControlPaneContext.swift:313-319 —
@@ -1819,6 +1812,22 @@ fn action_target(
     Ok((surface_id, owner))
 }
 
+/// The shared external-open payload and effect for the canonical
+/// browser-disabled success outcome (workspace/pane/surface identities null,
+/// placement_strategy external_browser_disabled).
+fn external_browser_disabled_payload(window_id: &str, url: &str) -> Value {
+    json!({"window_id":window_id,"workspace_id":null,"pane_id":null,"surface_id":null,"created_split":false,"opened_externally":true,"browser_disabled":true,"placement_strategy":"external_browser_disabled","url":url})
+}
+
+fn external_browser_open_effect(url: &str) -> LifecycleEffect {
+    LifecycleEffect::ExternalBrowserOpen {
+        url: url.into(),
+        phase: "commit",
+        failure_code: "external_open_failed",
+        failure_message: "Failed to open URL externally",
+    }
+}
+
 fn foundation_url_is_valid(raw: &str) -> bool {
     !raw.trim().is_empty()
         && (url::Url::parse(raw).is_ok()
@@ -1955,7 +1964,7 @@ fn browser_disabled_outcome(
             None,
         );
     };
-    let result = json!({"window_id":owner.window_id,"workspace_id":null,"pane_id":null,"surface_id":null,"created_split":false,"opened_externally":true,"browser_disabled":true,"placement_strategy":"external_browser_disabled","url":url});
+    let result = external_browser_disabled_payload(&owner.window_id, url);
     let mut completion = action_completion(method, params, &result, owner);
     completion.workspace_id = None;
     completion.pane_id = None;
@@ -1964,12 +1973,7 @@ fn browser_disabled_outcome(
         snapshot.clone(),
         result,
         vec![completion],
-        vec![LifecycleEffect::ExternalBrowserOpen {
-            url: url.into(),
-            phase: "commit",
-            failure_code: "external_open_failed",
-            failure_message: "Failed to open URL externally",
-        }],
+        vec![external_browser_open_effect(url)],
     )
 }
 
@@ -2779,14 +2783,18 @@ fn surface_report_pwd(
         );
     }
     let Some((window_index, workspace_index)) =
-        snapshot.windows.iter().enumerate().find_map(|(index, window)| {
-            window
-                .tab_manager
-                .workspaces
-                .iter()
-                .position(|workspace| workspace.workspace_id.as_deref() == Some(workspace_id))
-                .map(|workspace_index| (index, workspace_index))
-        })
+        snapshot
+            .windows
+            .iter()
+            .enumerate()
+            .find_map(|(index, window)| {
+                window
+                    .tab_manager
+                    .workspaces
+                    .iter()
+                    .position(|workspace| workspace.workspace_id.as_deref() == Some(workspace_id))
+                    .map(|workspace_index| (index, workspace_index))
+            })
     else {
         return error(
             snapshot,
@@ -2796,7 +2804,10 @@ fn surface_report_pwd(
         );
     };
     let workspace = &snapshot.windows[window_index].tab_manager.workspaces[workspace_index];
-    let is_remote_workspace = workspace.remote.as_ref().is_some_and(|remote| remote.enabled);
+    let is_remote_workspace = workspace
+        .remote
+        .as_ref()
+        .is_some_and(|remote| remote.enabled);
     let mut next = snapshot.clone();
     let mut model = match SurfaceLifecycleModel::from_app_session(&next) {
         Ok(model) => model,
@@ -2954,8 +2965,8 @@ fn surface_respawn(
     // tmux_start_command defaulting to the command, trimmed working_directory.
     let command = super::string_param(params, &["command", "initial_command"])
         .unwrap_or_else(|| "cmd.exe".to_owned());
-    let tmux_start_command = super::string_param(params, &["tmux_start_command"])
-        .unwrap_or_else(|| command.clone());
+    let tmux_start_command =
+        super::string_param(params, &["tmux_start_command"]).unwrap_or_else(|| command.clone());
     let working_directory = super::string_param(params, &["working_directory"]);
     let reservation = model
         .begin_respawn(
@@ -3546,14 +3557,9 @@ fn pane_create_browser_disabled(
     }
     ok_transition(
         snapshot.clone(),
-        json!({"window_id":window_id,"workspace_id":null,"pane_id":null,"surface_id":null,"created_split":false,"opened_externally":true,"browser_disabled":true,"placement_strategy":"external_browser_disabled","url":url}),
+        external_browser_disabled_payload(window_id, url),
         vec![],
-        vec![LifecycleEffect::ExternalBrowserOpen {
-            url: url.into(),
-            phase: "commit",
-            failure_code: "external_open_failed",
-            failure_message: "Failed to open URL externally",
-        }],
+        vec![external_browser_open_effect(url)],
     )
 }
 
@@ -3829,9 +3835,11 @@ fn pane_create(
     let initial_command = super::string_param(params, &["initial_command"]);
     let working_directory = super::string_param(params, &["working_directory"]);
     let tmux_start_command = super::string_param(params, &["tmux_start_command"]);
-    let startup_environment =
-        super::first_present_trimmed_string_map_param(params, &["startup_environment", "initial_env"])
-            .filter(|environment| !environment.is_empty());
+    let startup_environment = super::first_present_trimmed_string_map_param(
+        params,
+        &["startup_environment", "initial_env"],
+    )
+    .filter(|environment| !environment.is_empty());
     if matches!(kind, SessionSurfaceKindSnapshot::Terminal) {
         let _ = model.set_terminal_startup(
             &surface_id,

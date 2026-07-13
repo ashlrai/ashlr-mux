@@ -24,6 +24,8 @@ use uuid::Uuid;
 
 mod pane_surface_lifecycle;
 
+#[cfg(test)]
+use crate::browser::strict_browser_runtime_teardown_transaction;
 use crate::browser::{
     browser_add_init_script_for_control, browser_attach_webview_for_control,
     browser_clear_network_requests_for_control, browser_close_webview_strict_for_control,
@@ -31,8 +33,6 @@ use crate::browser::{
     browser_network_requests_for_control, browser_webview_command_for_control,
     BrowserNetworkRequestsQuery, BrowserWebviewState,
 };
-#[cfg(test)]
-use crate::browser::strict_browser_runtime_teardown_transaction;
 use crate::diff::DiffState;
 use crate::dock::{
     publish_runtime_claim, rollback_runtime_claim, runtime_exists_for_control,

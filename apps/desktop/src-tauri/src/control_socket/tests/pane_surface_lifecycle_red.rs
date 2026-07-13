@@ -1877,7 +1877,11 @@ fn pane_create_browser_disabled_follows_canonical_outcomes_and_order() {
         true,
         false,
     );
-    assert_error(&before_divider, "browser_disabled", "cmux browser is disabled");
+    assert_error(
+        &before_divider,
+        "browser_disabled",
+        "cmux browser is disabled",
+    );
 
     let external = main_transition(
         &test_snapshot(),
@@ -1924,7 +1928,12 @@ fn placement_parsing_trims_lowercases_and_maps_canonical_aliases() {
         assert!(value["pane_id"].is_string(), "{placement:?}");
         assert!(value.get("placement").is_none(), "{placement:?}");
     }
-    for placement in ["Sidebar", "right-sidebar-dock", "RIGHTSIDEBARDOCK", " dock \n"] {
+    for placement in [
+        "Sidebar",
+        "right-sidebar-dock",
+        "RIGHTSIDEBARDOCK",
+        " dock \n",
+    ] {
         let created = main_transition(
             &main_window_snapshot(),
             "pane.create",
@@ -2023,7 +2032,10 @@ fn pane_create_applies_and_persists_full_terminal_startup_metadata() {
     let effect = serde_json::to_value(effect).unwrap();
     assert_eq!(effect["TerminalCreate"]["command"], json!("cargo run"));
     assert_eq!(effect["TerminalCreate"]["working_directory"], json!("C:/w"));
-    assert_eq!(effect["TerminalCreate"]["tmux_start_command"], json!("htop"));
+    assert_eq!(
+        effect["TerminalCreate"]["tmux_start_command"],
+        json!("htop")
+    );
     assert_eq!(
         effect["TerminalCreate"]["startup_environment"],
         json!({"FOO": "bar"})
@@ -2144,7 +2156,10 @@ fn respawn_threads_tmux_start_command_defaulting_to_command() {
         .expect("terminal replace effect");
     let effect = serde_json::to_value(effect).unwrap();
     assert_eq!(effect["TerminalReplace"]["command"], json!("run"));
-    assert_eq!(effect["TerminalReplace"]["tmux_start_command"], json!("htop"));
+    assert_eq!(
+        effect["TerminalReplace"]["tmux_start_command"],
+        json!("htop")
+    );
     let startup = explicit.snapshot.windows[0].tab_manager.workspaces[0]
         .surfaces
         .as_deref()
@@ -2169,7 +2184,10 @@ fn respawn_threads_tmux_start_command_defaulting_to_command() {
         .find(|effect| matches!(effect, LifecycleEffect::TerminalReplace { .. }))
         .expect("terminal replace effect");
     let effect = serde_json::to_value(effect).unwrap();
-    assert_eq!(effect["TerminalReplace"]["tmux_start_command"], json!("run"));
+    assert_eq!(
+        effect["TerminalReplace"]["tmux_start_command"],
+        json!("run")
+    );
 }
 
 #[test]
@@ -2253,7 +2271,11 @@ fn report_pwd_local_workspace_follows_canonical_resolution_and_identity_blocks()
         "surface.report_pwd",
         json!({"workspace_id": "workspace-1", "surface_id": 7}),
     );
-    assert_error(&non_string, "invalid_params", "Missing or invalid surface_id");
+    assert_error(
+        &non_string,
+        "invalid_params",
+        "Missing or invalid surface_id",
+    );
 
     // Workspace lookup happens before any surface resolution and its error
     // carries the identity block too.
