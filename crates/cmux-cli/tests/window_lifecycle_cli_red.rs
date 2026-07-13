@@ -940,6 +940,44 @@ fn window_lifecycle_help_texts_are_byte_exact() {
 }
 
 #[test]
+fn window_help_is_the_canonical_unknown_command_error() {
+    // Canonical (pinned e1825d40d): the run() help gate fires BEFORE socket
+    // resolution (cmux.swift:3208-3217). `subcommandUsage("window")` has no
+    // case (15026-17050), so `dispatchSubcommandHelp` returns false and the
+    // gate throws `unknownCommandError("window")` — it does NOT fall through
+    // to the socket dispatch. unknownCommandError
+    // (CMUXCLI+CommandSuggestions.swift:4-11) is
+    // "Unknown command '<cmd>'.[ Did you mean '<s>'?] Run 'cmux --help' for
+    // the full command list." with EXIT CODE 2, rendered by the top-level
+    // catch as "Error: <message>" on stderr. No pipe contact.
+    let output = executable(None, &["window", "--help"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        output.stdout.is_empty(),
+        "stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "Error: Unknown command 'window'. Run 'cmux --help' for the full command list.\n"
+    );
+}
+
+#[test]
+fn unknown_command_help_suggests_a_close_command_name() {
+    // suggestedCommandName: best edit-distance ≤ 2 candidate from
+    // topLevelCommandNames, skipping "__"-prefixed entries
+    // (CMUXCLI+CommandSuggestions.swift:13-27). "pingg" → "ping".
+    let output = executable(None, &["pingg", "--help"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "Error: Unknown command 'pingg'. Did you mean 'ping'? Run 'cmux --help' for the full command list.\n"
+    );
+}
+
+#[test]
 fn surface_resume_help_text_is_byte_exact() {
     let output = executable(None, &["surface-resume", "--help"]);
     assert!(output.status.success());
