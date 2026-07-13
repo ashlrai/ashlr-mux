@@ -361,19 +361,19 @@ fn ok_value(transition: &LifecycleTransition) -> Value {
 }
 
 #[test]
-fn pre_command_exact_lease_reserves_result_identities_before_remote_mutation() {
+fn pre_command_exact_lease_reserves_private_result_identities_before_remote_mutation() {
     let mut coordinator = LeaseCoordinator::default();
     let id = coordinator.reserve(
         scope("ssh://host-a", "tmux-a"),
         witness(),
         RESERVED,
-        RESERVED_PANE,
+        PANE,
         30,
     );
     let lease = &coordinator.leases[&id];
     assert_eq!(
         (&lease.reserved_surface_id, &lease.reserved_pane_id),
-        (&RESERVED.to_string(), &RESERVED_PANE.to_string())
+        (&RESERVED.to_string(), &PANE.to_string())
     );
 
     let transition = dispatch(
@@ -382,10 +382,15 @@ fn pre_command_exact_lease_reserves_result_identities_before_remote_mutation() {
         json!({"surface_id":SOURCE,"action":"new-terminal-right"}),
     );
     let result = ok_value(&transition);
-    assert!(
-        result["created_surface_id"].is_string() && result["created_tab_id"].is_string(),
-        "accepted remote creation must publish its pre-command reserved result identities"
-    );
+    assert_eq!(result["accepted"], true);
+    assert_eq!(result["routed"], "remote-tmux");
+    assert!(result["created_surface_id"].is_null());
+    assert!(result["created_tab_id"].is_null());
+    assert_eq!(transition.snapshot, remote_snapshot());
+    assert!(transition
+        .events
+        .iter()
+        .all(|event| event.name != "surface.created"));
 }
 
 #[test]
