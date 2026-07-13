@@ -1,0 +1,337 @@
+name: Canonical Capture
+
+# Builds the FROZEN canonical macOS cmux (pinned commit) on a GitHub-hosted
+# macOS image, launches it headless against an isolated control socket, runs
+# the manifest-driven capture driver, and uploads canonical.ndjson for the
+# frozen-canonical live differential gate
+# (docs/parity/contracts/*.json -> differential_live_runner_plan /
+# differential_live_gate; harness: scripts/parity/differential_harness.py).
+#
+# Build strategy mirrors .github/workflows/ci-macos-compat.yml, which is the
+# repo's proven GitHub-hosted-image lane: latest installed Xcode (needs 16+),
+# prebuilt GhosttyKit.xcframework downloaded from manaflow-ai/ghostty releases
+# and verified against the checksum pinned at the canonical commit
+# (scripts/ghosttykit-checksums.txt), zig + rust installed via the pinned
+# commit's own CI scripts, plain `xcodebuild -scheme cmux` Debug build, and a
+# virtual display (scripts/create-virtual-display.m) so the GUI app can run on
+# the display-less runner. Launch strategy mirrors scripts/smoke-test-ci.sh
+# with an isolated socket via CMUX_SOCKET_PATH (debug builds honor the
+# override: Packages/macOS/CmuxSettings .../SocketControlSettings.swift).
+
+on:
+  workflow_dispatch:
+    inputs:
+      family:
+        description: Contract family to capture
+        type: choice
+        options:
+          - pane_surface_lifecycle
+          - workspace_lifecycle
+        default: pane_surface_lifecycle
+      manifest:
+        description: >-
+          Manifest path relative to the dispatched ref (default:
+          docs/parity/differential/<family>.manifest.json)
+        type: string
+        default: ""
+      canonical_commit:
+        description: Frozen canonical commit to build
+        type: string
+        default: e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452
+      runner_image:
+        description: >-
+          GitHub-hosted macOS image. macos-15 is the proven lane
+          (virtual display + zig both work there per ci-macos-compat.yml);
+          use macos-26 only if the pinned commit needs SDK 26 (then set
+          skip_zig=true; the zig 0.15.2 MachO linker cannot resolve libSystem
+          on macOS 26).
+        type: choice
+        options:
+          - macos-15
+          - macos-26
+          - macos-latest
+        default: macos-15
+      skip_zig:
+        description: Skip the in-build zig step (CMUX_SKIP_ZIG_BUILD=1); required on macos-26
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  capture:
+    runs-on: ${{ inputs.runner_image }}
+    timeout-minutes: 90
+    env:
+      CANONICAL_COMMIT: ${{ inputs.canonical_commit }}
+      UPSTREAM_URL: https://github.com/manaflow-ai/cmux.git
+      DERIVED_DATA: ${{ github.workspace }}/canonical-derived-data
+      CAPTURE_SOCKET: /tmp/cmux-capture.sock
+      APP_LOG: /tmp/cmux-capture-app.log
+    steps:
+      - name: Checkout harness (dispatched ref)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          path: harness
+
+      - name: Resolve manifest path
+        run: |
+          set -euo pipefail
+          MANIFEST="${{ inputs.manifest }}"
+          if [ -z "$MANIFEST" ]; then
+            MANIFEST="docs/parity/differential/${{ inputs.family }}.manifest.json"
+          fi
+          if [ ! -f "harness/$MANIFEST" ]; then
+            echo "Manifest not found on dispatched ref: $MANIFEST" >&2
+            exit 1
+          fi
+          echo "MANIFEST=$MANIFEST" >> "$GITHUB_ENV"
+          python3 -c "
+          import json, sys
+          sys.path.insert(0, 'harness/scripts/parity')
+          from capture_driver import parse_manifest
+          manifest = parse_manifest(json.load(open('harness/$MANIFEST', encoding='utf-8')))
+          print(f'manifest OK: {len(manifest[\"cases\"])} cases, family {manifest[\"family\"]}')"
+
+      - name: Checkout canonical repo (default ref)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          path: canonical
+          fetch-depth: 1
+          submodules: false
+
+      - name: Check out pinned canonical commit
+        working-directory: canonical
+        run: |
+          set -euo pipefail
+          # The fork's object network usually contains upstream commits, but
+          # fetch from manaflow-ai/cmux explicitly as a fallback so the pinned
+          # SHA resolves even on a detached fork.
+          if ! git cat-file -e "$CANONICAL_COMMIT^{commit}" 2>/dev/null; then
+            git fetch --no-tags origin "$CANONICAL_COMMIT" \
+              || git fetch --no-tags "$UPSTREAM_URL" "$CANONICAL_COMMIT"
+          fi
+          git checkout --detach "$CANONICAL_COMMIT"
+          git submodule update --init --recursive
+          echo "GHOSTTY_SHA=$(git -C ghostty rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Select Xcode
+        run: |
+          set -euo pipefail
+          # Same policy as ci-macos-compat.yml: latest installed Xcode; the
+          # project needs Xcode 16+ (Swift tools 6.0 required by sentry-cocoa).
+          XCODE_APP="$(find /Applications -maxdepth 1 -name 'Xcode*.app' -print 2>/dev/null | sort | tail -n 1 || true)"
+          if [ -z "$XCODE_APP" ]; then
+            XCODE_APP="/Applications/Xcode.app"
+          fi
+          XCODE_DIR="$XCODE_APP/Contents/Developer"
+          if [ ! -d "$XCODE_DIR" ]; then
+            echo "No Xcode found under /Applications" >&2
+            exit 1
+          fi
+          echo "Selected: $XCODE_APP"
+          echo "DEVELOPER_DIR=$XCODE_DIR" >> "$GITHUB_ENV"
+          export DEVELOPER_DIR="$XCODE_DIR"
+          XCODE_VERSION_OUTPUT="$(xcodebuild -version)"
+          echo "XCODE_VER=${XCODE_VERSION_OUTPUT%%$'\n'*}" >> "$GITHUB_ENV"
+          echo "$XCODE_VERSION_OUTPUT"
+          xcrun --sdk macosx --show-sdk-path
+          sw_vers
+
+      - name: Cache GhosttyKit.xcframework
+        id: cache-ghosttykit
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: canonical/GhosttyKit.xcframework
+          key: ghosttykit-${{ env.GHOSTTY_SHA }}
+
+      - name: Download pre-built GhosttyKit.xcframework
+        if: steps.cache-ghosttykit.outputs.cache-hit != 'true'
+        working-directory: canonical
+        run: ./scripts/download-prebuilt-ghosttykit.sh
+
+      - name: Install zig
+        if: ${{ !inputs.skip_zig }}
+        working-directory: canonical
+        run: ./scripts/install-zig-ci.sh
+
+      - name: Install Rust
+        working-directory: canonical
+        run: ./scripts/install-rust-ci.sh
+
+      - name: Cache Swift packages
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: canonical/.ci-source-packages
+          key: capture-spm-${{ inputs.runner_image }}-${{ hashFiles('canonical/cmux.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: capture-spm-${{ inputs.runner_image }}-
+
+      - name: Sanitize Swift package cache
+        working-directory: canonical
+        run: python3 scripts/ci/sanitize-xcode-source-packages-cache.py .ci-source-packages
+
+      - name: Cache DerivedData
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ env.DERIVED_DATA }}
+          key: capture-dd-${{ inputs.runner_image }}-${{ env.XCODE_VER }}-${{ env.CANONICAL_COMMIT }}-${{ env.GHOSTTY_SHA }}
+
+      - name: Resolve Swift packages
+        working-directory: canonical
+        run: |
+          set -euo pipefail
+          SOURCE_PACKAGES_DIR="$PWD/.ci-source-packages"
+          mkdir -p "$SOURCE_PACKAGES_DIR"
+          for attempt in 1 2 3; do
+            if xcodebuild -project cmux.xcodeproj -scheme cmux -configuration Debug \
+              -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_DIR" \
+              -resolvePackageDependencies; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "Failed to resolve Swift packages after 3 attempts" >&2
+              exit 1
+            fi
+            echo "Package resolution failed on attempt $attempt, retrying..."
+            sleep $((attempt * 5))
+          done
+
+      - name: Build canonical app (Debug)
+        working-directory: canonical
+        env:
+          CMUX_SKIP_ZIG_BUILD: ${{ inputs.skip_zig && '1' || '0' }}
+        run: |
+          set -euo pipefail
+          xcodebuild -project cmux.xcodeproj -scheme cmux -configuration Debug \
+            -clonedSourcePackagesDirPath "$PWD/.ci-source-packages" \
+            -derivedDataPath "$DERIVED_DATA" \
+            -disableAutomaticPackageResolution \
+            -destination "platform=macOS" build
+
+      - name: Create virtual display
+        run: |
+          set -euo pipefail
+          # GitHub-hosted macOS runners are display-less; the compat lane's
+          # virtual display lets the GUI app create real windows (required for
+          # focus/multiwindow observation lanes).
+          clang -framework Foundation -framework CoreGraphics \
+            -o /tmp/create-virtual-display canonical/scripts/create-virtual-display.m
+          /tmp/create-virtual-display &
+          echo "VDISPLAY_PID=$!" >> "$GITHUB_ENV"
+          sleep 3
+          system_profiler SPDisplaysDataType 2>/dev/null || echo "(no display info)"
+
+      - name: Prepare launch script
+        run: |
+          set -euo pipefail
+          APP="$DERIVED_DATA/Build/Products/Debug/cmux DEV.app"
+          BINARY="$APP/Contents/MacOS/cmux DEV"
+          CLI="$APP/Contents/Resources/bin/cmux"
+          if [ ! -x "$BINARY" ]; then
+            echo "App binary missing: $BINARY" >&2
+            exit 1
+          fi
+          if [ ! -x "$CLI" ]; then
+            echo "Bundled CLI missing: $CLI" >&2
+            exit 1
+          fi
+          echo "APP_BINARY=$BINARY" >> "$GITHUB_ENV"
+          echo "CLI_PATH=$CLI" >> "$GITHUB_ENV"
+
+          # Shared launch/relaunch script: also passed to the capture driver as
+          # --restart-cmd so manifest `restart` ops (quit + relaunch restore
+          # phases) reuse the exact same environment. Modeled on
+          # scripts/smoke-test-ci.sh; the isolated socket comes from the
+          # CMUX_SOCKET_PATH override, which debug builds honor.
+          cat > /tmp/launch-canonical.sh <<'LAUNCH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          pkill -x "cmux DEV" 2>/dev/null || true
+          for _ in $(seq 1 20); do
+            pgrep -x "cmux DEV" >/dev/null 2>&1 || break
+            sleep 0.5
+          done
+          rm -f "$CAPTURE_SOCKET"
+          CMUX_SOCKET_MODE=allowAll \
+          CMUX_UI_TEST_MODE=1 \
+          CMUX_ALLOW_SOCKET_OVERRIDE=1 \
+          CMUX_SOCKET_PATH="$CAPTURE_SOCKET" \
+            "$APP_BINARY" >> "$APP_LOG" 2>&1 &
+          APP_PID=$!
+          echo "$APP_PID" > /tmp/cmux-capture-app.pid
+          for i in $(seq 1 120); do
+            if [ -S "$CAPTURE_SOCKET" ]; then
+              break
+            fi
+            if ! kill -0 "$APP_PID" 2>/dev/null; then
+              echo "App exited while waiting for socket" >&2
+              tail -50 "$APP_LOG" >&2 || true
+              exit 1
+            fi
+            sleep 0.5
+          done
+          if [ ! -S "$CAPTURE_SOCKET" ]; then
+            echo "Socket not ready after 60s" >&2
+            tail -50 "$APP_LOG" >&2 || true
+            exit 1
+          fi
+          PING=$(python3 - <<'PY'
+          import os, socket
+          s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+          s.settimeout(10.0)
+          s.connect(os.environ["CAPTURE_SOCKET"])
+          s.sendall(b"ping\n")
+          print(s.recv(1024).decode().strip())
+          s.close()
+          PY
+          )
+          if [ "$PING" != "PONG" ]; then
+            echo "Expected PONG, got: $PING" >&2
+            exit 1
+          fi
+          echo "canonical app ready on $CAPTURE_SOCKET (pid $APP_PID)"
+          LAUNCH
+          chmod +x /tmp/launch-canonical.sh
+
+      - name: Launch canonical app
+        run: /tmp/launch-canonical.sh
+
+      - name: Run capture driver
+        run: |
+          set -euo pipefail
+          python3 harness/scripts/parity/capture_driver.py \
+            --manifest "harness/$MANIFEST" \
+            --socket "$CAPTURE_SOCKET" \
+            --cli "$CLI_PATH" \
+            --platform canonical \
+            --restart-cmd /tmp/launch-canonical.sh \
+            --op-timeout 45 \
+            --output canonical.ndjson
+
+      - name: Stop app
+        if: always()
+        run: |
+          pkill -x "cmux DEV" 2>/dev/null || true
+          if [ -n "${VDISPLAY_PID:-}" ]; then
+            kill "$VDISPLAY_PID" 2>/dev/null || true
+          fi
+
+      - name: Collect logs
+        if: always()
+        run: |
+          mkdir -p capture-logs
+          cp -f "$APP_LOG" capture-logs/ 2>/dev/null || true
+          cp -f /tmp/cmux-debug*.log capture-logs/ 2>/dev/null || true
+          ls -la /tmp/cmux-* 2>/dev/null > capture-logs/tmp-listing.txt || true
+
+      - name: Upload canonical capture
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: canonical-capture-${{ inputs.family }}
+          if-no-files-found: error
+          path: |
+            canonical.ndjson
+            capture-logs/

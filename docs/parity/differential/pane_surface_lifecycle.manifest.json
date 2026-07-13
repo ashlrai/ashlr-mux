@@ -1,0 +1,753 @@
+{
+  "family": "pane_surface_lifecycle",
+  "contract": "docs/parity/contracts/pane_surface_lifecycle.json",
+  "canonical_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+  "notes": [
+    "Run with scripts/parity/capture_driver.py against the frozen canonical macOS app (unix socket) and the Windows Tauri backend (named pipe).",
+    "UUIDs are symbolized by creation order by the driver; refs (workspace:N/surface:N) are compared verbatim.",
+    "approved_differences carry JSON pointers into the case observation and are consumed by scripts/parity/differential_harness.py; only genuinely platform-scoped values (live terminal titles embedding the shell name, native default-shell text per the contract's platform_equivalence clause) are approved.",
+    "session_setup builds the shared fixture workspace; each case owns any extra fixture it needs so cases stay order-insensitive beyond the shared fixture."
+  ],
+  "session_setup": [
+    {
+      "op": "v2",
+      "method": "workspace.create",
+      "params": { "title": "parity-fixture" }
+    },
+    {
+      "op": "v2",
+      "method": "surface.create",
+      "params": {
+        "workspace_id": "${session.0.result.workspace_id}",
+        "type": "terminal"
+      }
+    }
+  ],
+  "cases": [
+    {
+      "id": "pane_create.direction_right_happy",
+      "events": true,
+      "action": {
+        "op": "v2",
+        "method": "pane.create",
+        "params": {
+          "workspace_id": "${session.0.result.workspace_id}",
+          "direction": "right"
+        }
+      },
+      "probes": {
+        "state": [
+          {
+            "op": "v2",
+            "method": "surface.list",
+            "params": { "workspace_id": "${session.0.result.workspace_id}" }
+          }
+        ],
+        "selectors": [
+          {
+            "op": "v2",
+            "method": "surface.current",
+            "params": { "workspace_id": "${session.0.result.workspace_id}" }
+          }
+        ]
+      },
+      "approved_differences": [
+        {
+          "path": "/state/0/result/response/result/surfaces/0/title",
+          "rationale": "live terminal title embeds the platform shell/process name (contract platform_equivalence)"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/1/title",
+          "rationale": "live terminal title embeds the platform shell/process name (contract platform_equivalence)"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/2/title",
+          "rationale": "live terminal title embeds the platform shell/process name (contract platform_equivalence)"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/3/title",
+          "rationale": "live terminal title embeds the platform shell/process name (contract platform_equivalence)"
+        }
+      ]
+    },
+    {
+      "id": "pane_create.direction_shorthand_l",
+      "action": {
+        "op": "v2",
+        "method": "pane.create",
+        "params": {
+          "workspace_id": "${session.0.result.workspace_id}",
+          "direction": "l"
+        }
+      }
+    },
+    {
+      "id": "pane_create.direction_invalid",
+      "action": {
+        "op": "v2",
+        "method": "pane.create",
+        "params": {
+          "workspace_id": "${session.0.result.workspace_id}",
+          "direction": "diagonal"
+        }
+      }
+    },
+    {
+      "id": "pane_create.direction_missing",
+      "action": {
+        "op": "v2",
+        "method": "pane.create",
+        "params": { "workspace_id": "${session.0.result.workspace_id}" }
+      }
+    },
+    {
+      "id": "pane_create.divider_non_numeric",
+      "action": {
+        "op": "v2",
+        "method": "pane.create",
+        "params": {
+          "workspace_id": "${session.0.result.workspace_id}",
+          "direction": "right",
+          "initial_divider_position": "half"
+        }
+      }
+    },
+    {
+      "id": "pane_create.divider_clamped_high",
+      "action": {
+        "op": "v2",
+        "method": "pane.create",
+        "params": {
+          "workspace_id": "${session.0.result.workspace_id}",
+          "direction": "down",
+          "initial_divider_position": 0.99
+        }
+      },
+      "probes": {
+        "state": [
+          {
+            "op": "v2",
+            "method": "pane.resize",
+            "params": {
+              "pane_id": "${action.result.pane_id}",
+              "direction": "up",
+              "amount": 1
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "pane_create.placement_invalid",
+      "action": {
+        "op": "v2",
+        "method": "pane.create",
+        "params": {
+          "workspace_id": "${session.0.result.workspace_id}",
+          "direction": "right",
+          "placement": "sideways"
+        }
+      }
+    },
+    {
+      "id": "pane_create.placement_dock",
+      "action": {
+        "op": "v2",
+        "method": "pane.create",
+        "params": {
+          "workspace_id": "${session.0.result.workspace_id}",
+          "direction": "right",
+          "placement": "dock"
+        }
+      }
+    },
+    {
+      "id": "pane_create.agent_session_rejected",
+      "action": {
+        "op": "v2",
+        "method": "pane.create",
+        "params": {
+          "workspace_id": "${session.0.result.workspace_id}",
+          "direction": "right",
+          "type": "agent-session"
+        }
+      }
+    },
+    {
+      "id": "pane_create.source_raw_uuid_honored",
+      "setup": [
+        {
+          "op": "v2",
+          "method": "surface.create",
+          "params": {
+            "workspace_id": "${session.0.result.workspace_id}",
+            "type": "terminal"
+          }
+        }
+      ],
+      "action": {
+        "op": "v2",
+        "method": "pane.create",
+        "params": {
+          "direction": "right",
+          "surface_id": "${setup.0.result.surface_id}"
+        }
+      }
+    },
+    {
+      "id": "pane_create.source_ref_not_honored_quirk",
+      "action": {
+        "op": "v2",
+        "method": "pane.create",
+        "params": {
+          "workspace_id": "${session.0.result.workspace_id}",
+          "direction": "right",
+          "surface_id": "surface:1"
+        }
+      }
+    },
+    {
+      "id": "pane_resize.relative_happy",
+      "setup": [
+        {
+          "op": "v2",
+          "method": "pane.create",
+          "params": {
+            "workspace_id": "${session.0.result.workspace_id}",
+            "direction": "right"
+          }
+        }
+      ],
+      "action": {
+        "op": "v2",
+        "method": "pane.resize",
+        "params": {
+          "pane_id": "${setup.0.result.pane_id}",
+          "direction": "left",
+          "amount": 2
+        }
+      }
+    },
+    {
+      "id": "pane_resize.direction_invalid",
+      "action": {
+        "op": "v2",
+        "method": "pane.resize",
+        "params": {
+          "workspace_id": "${session.0.result.workspace_id}",
+          "direction": "diagonal",
+          "amount": 1
+        }
+      }
+    },
+    {
+      "id": "pane_resize.absolute_axis_invalid",
+      "action": {
+        "op": "v2",
+        "method": "pane.resize",
+        "params": {
+          "workspace_id": "${session.0.result.workspace_id}",
+          "absolute_axis": "depth",
+          "target_pixels": 100
+        }
+      }
+    },
+    {
+      "id": "pane_resize.target_pixels_zero",
+      "action": {
+        "op": "v2",
+        "method": "pane.resize",
+        "params": {
+          "workspace_id": "${session.0.result.workspace_id}",
+          "absolute_axis": "horizontal",
+          "target_pixels": 0
+        }
+      }
+    },
+    {
+      "id": "surface_create.terminal_happy",
+      "events": true,
+      "action": {
+        "op": "v2",
+        "method": "surface.create",
+        "params": {
+          "workspace_id": "${session.0.result.workspace_id}",
+          "type": "terminal"
+        }
+      },
+      "probes": {
+        "state": [
+          {
+            "op": "v2",
+            "method": "surface.list",
+            "params": { "workspace_id": "${session.0.result.workspace_id}" }
+          }
+        ],
+        "selectors": [
+          {
+            "op": "v2",
+            "method": "surface.current",
+            "params": { "workspace_id": "${session.0.result.workspace_id}" }
+          }
+        ]
+      },
+      "approved_differences": [
+        {
+          "path": "/state/0/result/response/result/surfaces/0/title",
+          "rationale": "live terminal title embeds the platform shell/process name (contract platform_equivalence)"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/1/title",
+          "rationale": "live terminal title embeds the platform shell/process name (contract platform_equivalence)"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/2/title",
+          "rationale": "live terminal title embeds the platform shell/process name (contract platform_equivalence)"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/3/title",
+          "rationale": "live terminal title embeds the platform shell/process name (contract platform_equivalence)"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/4/title",
+          "rationale": "live terminal title embeds the platform shell/process name (contract platform_equivalence)"
+        }
+      ]
+    },
+    {
+      "id": "surface_create.unknown_type_falls_back_terminal",
+      "action": {
+        "op": "v2",
+        "method": "surface.create",
+        "params": {
+          "workspace_id": "${session.0.result.workspace_id}",
+          "type": "hologram"
+        }
+      }
+    },
+    {
+      "id": "surface_create.agent_session_provider_invalid",
+      "action": {
+        "op": "v2",
+        "method": "surface.create",
+        "params": {
+          "workspace_id": "${session.0.result.workspace_id}",
+          "type": "agentSession",
+          "provider": "netscape"
+        }
+      }
+    },
+    {
+      "id": "surface_list.rows_shape",
+      "setup": [
+        {
+          "op": "v2",
+          "method": "workspace.create",
+          "params": { "title": "parity-list-shape" }
+        },
+        {
+          "op": "v2",
+          "method": "surface.create",
+          "params": {
+            "workspace_id": "${setup.0.result.workspace_id}",
+            "type": "terminal"
+          }
+        }
+      ],
+      "action": {
+        "op": "v2",
+        "method": "surface.list",
+        "params": { "workspace_id": "${setup.0.result.workspace_id}" }
+      },
+      "probes": {
+        "multiwindow": [
+          { "op": "v2", "method": "surface.list", "params": {} }
+        ]
+      },
+      "approved_differences": [
+        {
+          "path": "/response/result/surfaces/0/title",
+          "rationale": "live terminal title embeds the platform shell/process name (contract platform_equivalence)"
+        },
+        {
+          "path": "/response/result/surfaces/1/title",
+          "rationale": "live terminal title embeds the platform shell/process name (contract platform_equivalence)"
+        },
+        {
+          "path": "/multiwindow/0/result/response/result",
+          "rationale": "default-routed list reflects the whole accumulated session surface set; row-level identity is covered by the explicit-workspace action while this probe pins only routing success shape"
+        }
+      ]
+    },
+    {
+      "id": "surface_current.workspace_selector_routing",
+      "action": {
+        "op": "v2",
+        "method": "surface.current",
+        "params": { "workspace_id": "${session.0.result.workspace_id}" }
+      }
+    },
+    {
+      "id": "surface_focus.missing_surface_id",
+      "action": {
+        "op": "v2",
+        "method": "surface.focus",
+        "params": { "workspace_id": "${session.0.result.workspace_id}" }
+      }
+    },
+    {
+      "id": "surface_focus.happy",
+      "setup": [
+        {
+          "op": "v2",
+          "method": "surface.create",
+          "params": {
+            "workspace_id": "${session.0.result.workspace_id}",
+            "type": "terminal"
+          }
+        }
+      ],
+      "action": {
+        "op": "v2",
+        "method": "surface.focus",
+        "params": { "surface_id": "${setup.0.result.surface_id}" }
+      },
+      "probes": {
+        "selectors": [
+          {
+            "op": "v2",
+            "method": "surface.current",
+            "params": { "workspace_id": "${session.0.result.workspace_id}" }
+          }
+        ]
+      }
+    },
+    {
+      "id": "surface_close.happy",
+      "events": true,
+      "setup": [
+        {
+          "op": "v2",
+          "method": "surface.create",
+          "params": {
+            "workspace_id": "${session.0.result.workspace_id}",
+            "type": "terminal"
+          }
+        }
+      ],
+      "action": {
+        "op": "v2",
+        "method": "surface.close",
+        "params": { "surface_id": "${setup.0.result.surface_id}" }
+      },
+      "probes": {
+        "state": [
+          {
+            "op": "v2",
+            "method": "surface.list",
+            "params": { "workspace_id": "${session.0.result.workspace_id}" }
+          }
+        ]
+      },
+      "approved_differences": [
+        {
+          "path": "/state/0/result/response/result/surfaces",
+          "rationale": "the fixture workspace's accumulated surface rows carry live terminal titles; close identity is pinned by the action response and close events, while this probe pins only post-close list success shape"
+        }
+      ]
+    },
+    {
+      "id": "surface_close.last_surface_protected",
+      "setup": [
+        {
+          "op": "v2",
+          "method": "workspace.create",
+          "params": { "title": "parity-last-surface" }
+        }
+      ],
+      "action": {
+        "op": "v2",
+        "method": "surface.close",
+        "params": { "workspace_id": "${setup.0.result.workspace_id}" }
+      }
+    },
+    {
+      "id": "surface_move.both_anchors_rejected",
+      "setup": [
+        {
+          "op": "v2",
+          "method": "surface.create",
+          "params": {
+            "workspace_id": "${session.0.result.workspace_id}",
+            "type": "terminal"
+          }
+        },
+        {
+          "op": "v2",
+          "method": "surface.create",
+          "params": {
+            "workspace_id": "${session.0.result.workspace_id}",
+            "type": "terminal"
+          }
+        }
+      ],
+      "action": {
+        "op": "v2",
+        "method": "surface.move",
+        "params": {
+          "surface_id": "${setup.0.result.surface_id}",
+          "before_surface_id": "${setup.1.result.surface_id}",
+          "after_surface_id": "${setup.1.result.surface_id}"
+        }
+      }
+    },
+    {
+      "id": "surface_move.missing_surface_id",
+      "action": { "op": "v2", "method": "surface.move", "params": {} }
+    },
+    {
+      "id": "surface_respawn.bogus_surface_id_not_found",
+      "action": {
+        "op": "v2",
+        "method": "surface.respawn",
+        "params": { "surface_id": "00000000-0000-4000-8000-000000000000" }
+      }
+    },
+    {
+      "id": "surface_respawn.focused_fallback_explicit_command",
+      "setup": [
+        {
+          "op": "v2",
+          "method": "workspace.create",
+          "params": { "title": "parity-respawn" }
+        }
+      ],
+      "action": {
+        "op": "v2",
+        "method": "surface.respawn",
+        "params": {
+          "workspace_id": "${setup.0.result.workspace_id}",
+          "command": "echo cmux-parity-respawn"
+        }
+      },
+      "probes": {
+        "state": [
+          {
+            "op": "v2",
+            "method": "surface.list",
+            "params": { "workspace_id": "${setup.0.result.workspace_id}" }
+          }
+        ]
+      },
+      "approved_differences": [
+        {
+          "path": "/state/0/result/response/result/surfaces/0/title",
+          "rationale": "live terminal title embeds the platform shell/process name (contract platform_equivalence)"
+        }
+      ]
+    },
+    {
+      "id": "surface_respawn.focus_invalid",
+      "action": {
+        "op": "v2",
+        "method": "surface.respawn",
+        "params": {
+          "workspace_id": "${session.0.result.workspace_id}",
+          "focus": "maybe"
+        }
+      }
+    },
+    {
+      "id": "surface_report_pwd.local_happy",
+      "setup": [
+        {
+          "op": "v2",
+          "method": "surface.create",
+          "params": {
+            "workspace_id": "${session.0.result.workspace_id}",
+            "type": "terminal"
+          }
+        }
+      ],
+      "action": {
+        "op": "v2",
+        "method": "surface.report_pwd",
+        "params": {
+          "workspace_id": "${session.0.result.workspace_id}",
+          "surface_id": "${setup.0.result.surface_id}",
+          "path": "/tmp/cmux-parity-pwd"
+        }
+      }
+    },
+    {
+      "id": "surface_report_pwd.conflicting_aliases",
+      "action": {
+        "op": "v2",
+        "method": "surface.report_pwd",
+        "params": {
+          "workspace_id": "${session.0.result.workspace_id}",
+          "path": "/tmp/cmux-parity-a",
+          "cwd": "/tmp/cmux-parity-b"
+        }
+      }
+    },
+    {
+      "id": "surface_report_pwd.missing_path",
+      "action": {
+        "op": "v2",
+        "method": "surface.report_pwd",
+        "params": { "workspace_id": "${session.0.result.workspace_id}" }
+      }
+    },
+    {
+      "id": "surface_report_pwd.missing_workspace",
+      "action": {
+        "op": "v2",
+        "method": "surface.report_pwd",
+        "params": { "path": "/tmp/cmux-parity-x" }
+      }
+    },
+    {
+      "id": "surface_action.rename_trims_title",
+      "events": true,
+      "setup": [
+        {
+          "op": "v2",
+          "method": "surface.create",
+          "params": {
+            "workspace_id": "${session.0.result.workspace_id}",
+            "type": "terminal"
+          }
+        }
+      ],
+      "action": {
+        "op": "v2",
+        "method": "surface.action",
+        "params": {
+          "surface_id": "${setup.0.result.surface_id}",
+          "action": "rename",
+          "title": "  Parity Title  "
+        }
+      }
+    },
+    {
+      "id": "surface_action.hyphen_uppercase_alias_mark_read",
+      "setup": [
+        {
+          "op": "v2",
+          "method": "surface.create",
+          "params": {
+            "workspace_id": "${session.0.result.workspace_id}",
+            "type": "terminal"
+          }
+        }
+      ],
+      "action": {
+        "op": "v2",
+        "method": "surface.action",
+        "params": {
+          "surface_id": "${setup.0.result.surface_id}",
+          "action": "MARK-READ"
+        }
+      }
+    },
+    {
+      "id": "surface_action.tab_action_method_alias_pin",
+      "setup": [
+        {
+          "op": "v2",
+          "method": "surface.create",
+          "params": {
+            "workspace_id": "${session.0.result.workspace_id}",
+            "type": "terminal"
+          }
+        }
+      ],
+      "action": {
+        "op": "v2",
+        "method": "tab.action",
+        "params": {
+          "surface_id": "${setup.0.result.surface_id}",
+          "action": "pin"
+        }
+      }
+    },
+    {
+      "id": "surface_action.unknown_action_lists_supported",
+      "action": {
+        "op": "v2",
+        "method": "surface.action",
+        "params": {
+          "workspace_id": "${session.0.result.workspace_id}",
+          "action": "definitely-not-real"
+        }
+      }
+    },
+    {
+      "id": "surface_action.missing_action",
+      "action": {
+        "op": "v2",
+        "method": "surface.action",
+        "params": { "workspace_id": "${session.0.result.workspace_id}" }
+      }
+    },
+    {
+      "id": "cli.tab_action_help_frozen",
+      "action": { "op": "cli", "argv": ["tab-action", "--help"] }
+    },
+    {
+      "id": "cli.tab_action_pin",
+      "setup": [
+        {
+          "op": "v2",
+          "method": "surface.create",
+          "params": {
+            "workspace_id": "${session.0.result.workspace_id}",
+            "type": "terminal"
+          }
+        }
+      ],
+      "action": {
+        "op": "cli",
+        "argv": [
+          "tab-action",
+          "--action",
+          "pin",
+          "--surface",
+          "${setup.0.result.surface_id}"
+        ]
+      }
+    },
+    {
+      "id": "cli.tab_action_unknown_action",
+      "action": {
+        "op": "cli",
+        "argv": ["tab-action", "--action", "zzz-not-real"]
+      }
+    },
+    {
+      "id": "cli.respawn_pane_help_frozen",
+      "action": { "op": "cli", "argv": ["respawn-pane", "--help"] }
+    },
+    {
+      "id": "cli.respawn_pane_explicit_command",
+      "setup": [
+        {
+          "op": "v2",
+          "method": "workspace.create",
+          "params": { "title": "parity-cli-respawn" }
+        }
+      ],
+      "action": {
+        "op": "cli",
+        "argv": [
+          "respawn-pane",
+          "--workspace",
+          "${setup.0.result.workspace_id}",
+          "--command",
+          "echo cmux-parity-cli-respawn"
+        ]
+      }
+    }
+  ]
+}

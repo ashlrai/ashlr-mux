@@ -1,0 +1,813 @@
+#!/usr/bin/env python3
+"""Manifest-driven live capture driver for the frozen-canonical differential gate.
+
+Executes one manifest of parity cases against a live cmux backend (the frozen
+canonical macOS app over a unix control socket, or the Windows Tauri backend
+over a named pipe) and emits one NDJSON observation per case covering all ten
+observation lanes required by scripts/parity/differential_harness.py:
+
+    exit_status stdout stderr error response state events persistence
+    selectors multiwindow
+
+Lanes that a case does not probe are recorded as explicit ``null`` — never
+omitted — so the harness's lane-presence validation holds.
+
+Wire formats (mirrors crates/cmux-ipc/src/client.rs):
+  v1: ``<command line>\n`` with shell-quoted tokens; the reply is opaque text,
+      one trailing newline stripped, ``ERROR:`` prefix means failure.
+  v2: ``{"id":1,"method":...,"params":...}\n``; the reply is one JSON object
+      line: ``{"ok":true,"result":...}`` or ``{"ok":false,"error":{...}}``.
+  auth: an optional ``auth <password>`` line per connection; the server replies
+      ``OK: Authenticated`` (any non-``ERROR:`` reply is accepted).
+  events: a dedicated connection sends ``{"method":"events.stream","params":..}``
+      and then reads NDJSON event frames until closed
+      (Sources/CmuxEventStream.swift at the pinned canonical commit).
+
+Transport is selected from the ``--socket`` value: a ``\\\\.\\pipe\\`` prefix is a
+Windows named pipe, anything else is a unix domain socket path.
+
+UUIDs are symbolized by first-observation (creation) order into ``<uuid-N>``
+tokens before the observation is written, so canonical and Windows captures
+compare structurally. Refs (``workspace:N`` etc.) are already stable. The exact
+``--socket`` value is rewritten to ``<socket>`` wherever it appears.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import queue
+import re
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+from typing import Any, Callable
+
+OBSERVATION_KEYS = (
+    "exit_status",
+    "stdout",
+    "stderr",
+    "error",
+    "response",
+    "state",
+    "events",
+    "persistence",
+    "selectors",
+    "multiwindow",
+)
+
+PROBE_LANES = ("state", "events", "persistence", "selectors", "multiwindow")
+
+OP_KINDS = ("v2", "v1", "cli", "restart", "sleep")
+
+UUID_RE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
+
+PLACEHOLDER_RE = re.compile(r"\$\{([A-Za-z0-9_.]+)\}")
+
+WINDOWS_PIPE_PREFIX = "\\\\.\\pipe\\"
+
+
+# ---------------------------------------------------------------------------
+# Pure: manifest parsing / validation
+# ---------------------------------------------------------------------------
+
+
+class ManifestError(ValueError):
+    """The manifest is structurally invalid."""
+
+
+def _validate_op(op: Any, where: str) -> dict[str, Any]:
+    if not isinstance(op, dict):
+        raise ManifestError(f"{where}: op must be an object, got {type(op).__name__}")
+    kind = op.get("op")
+    if kind not in OP_KINDS:
+        raise ManifestError(f"{where}: unknown op kind {kind!r} (expected one of {OP_KINDS})")
+    if kind == "v2":
+        if not isinstance(op.get("method"), str) or not op["method"]:
+            raise ManifestError(f"{where}: v2 op requires a non-empty string 'method'")
+        params = op.get("params", {})
+        if not isinstance(params, dict):
+            raise ManifestError(f"{where}: v2 op 'params' must be an object")
+    elif kind == "v1":
+        if not isinstance(op.get("command"), str) or not op["command"]:
+            raise ManifestError(f"{where}: v1 op requires a non-empty string 'command'")
+        args = op.get("args", [])
+        if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+            raise ManifestError(f"{where}: v1 op 'args' must be a list of strings")
+    elif kind == "cli":
+        argv = op.get("argv")
+        if not isinstance(argv, list) or not argv or not all(isinstance(a, str) for a in argv):
+            raise ManifestError(f"{where}: cli op requires a non-empty string list 'argv'")
+        env = op.get("env", {})
+        if not isinstance(env, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in env.items()
+        ):
+            raise ManifestError(f"{where}: cli op 'env' must be a string-to-string object")
+    elif kind == "sleep":
+        seconds = op.get("seconds")
+        if not isinstance(seconds, (int, float)) or seconds <= 0:
+            raise ManifestError(f"{where}: sleep op requires positive numeric 'seconds'")
+    return op
+
+
+def parse_manifest(payload: Any) -> dict[str, Any]:
+    """Validate a decoded manifest document and return it.
+
+    Shape:
+      {
+        "family": str,
+        "session_setup": [op, ...],           # optional, run once, results
+                                              # addressable as ${session.N...}
+        "cases": [
+          {
+            "id": str (unique),
+            "events": bool,                   # optional: collect event frames
+            "events_params": {...},           # optional events.stream params
+            "setup": [op, ...],               # optional
+            "action": op,                     # required
+            "probes": {lane: [op, ...]},      # optional, lanes from PROBE_LANES
+            "approved_differences": [{"path": str, "rationale": str}, ...],
+          }, ...
+        ]
+      }
+    """
+    if not isinstance(payload, dict):
+        raise ManifestError("manifest must be a JSON object")
+    if not isinstance(payload.get("family"), str) or not payload["family"]:
+        raise ManifestError("manifest requires a non-empty string 'family'")
+    for index, op in enumerate(payload.get("session_setup", [])):
+        _validate_op(op, f"session_setup[{index}]")
+    cases = payload.get("cases")
+    if not isinstance(cases, list) or not cases:
+        raise ManifestError("manifest requires a non-empty 'cases' array")
+    seen_ids: set[str] = set()
+    for position, case in enumerate(cases):
+        where = f"cases[{position}]"
+        if not isinstance(case, dict):
+            raise ManifestError(f"{where}: case must be an object")
+        case_id = case.get("id")
+        if not isinstance(case_id, str) or not case_id:
+            raise ManifestError(f"{where}: case requires a non-empty string 'id'")
+        if case_id in seen_ids:
+            raise ManifestError(f"{where}: duplicate case id {case_id!r}")
+        seen_ids.add(case_id)
+        for index, op in enumerate(case.get("setup", [])):
+            _validate_op(op, f"{where}.setup[{index}]")
+        if "action" not in case:
+            raise ManifestError(f"{where}: case requires an 'action' op")
+        _validate_op(case["action"], f"{where}.action")
+        probes = case.get("probes", {})
+        if not isinstance(probes, dict):
+            raise ManifestError(f"{where}: 'probes' must be an object")
+        for lane, ops in probes.items():
+            if lane not in PROBE_LANES:
+                raise ManifestError(
+                    f"{where}: probe lane {lane!r} is not one of {PROBE_LANES}"
+                )
+            if lane == "events":
+                raise ManifestError(
+                    f"{where}: the events lane is filled by 'events': true, not probe ops"
+                )
+            if not isinstance(ops, list):
+                raise ManifestError(f"{where}: probes[{lane!r}] must be an array of ops")
+            for index, op in enumerate(ops):
+                _validate_op(op, f"{where}.probes[{lane!r}][{index}]")
+        for index, difference in enumerate(case.get("approved_differences", [])):
+            if (
+                not isinstance(difference, dict)
+                or not isinstance(difference.get("path"), str)
+                or not difference["path"].startswith("/")
+                or not isinstance(difference.get("rationale"), str)
+                or not difference["rationale"].strip()
+            ):
+                raise ManifestError(
+                    f"{where}.approved_differences[{index}]: requires JSON-pointer 'path' and"
+                    " non-empty 'rationale'"
+                )
+    return payload
+
+
+def manifest_needs_restart(manifest: dict[str, Any]) -> bool:
+    """Whether any op anywhere in the manifest is a restart op."""
+
+    def ops(case: dict[str, Any]):
+        yield from case.get("setup", [])
+        yield case["action"]
+        for lane_ops in case.get("probes", {}).values():
+            yield from lane_ops
+
+    if any(op.get("op") == "restart" for op in manifest.get("session_setup", [])):
+        return True
+    return any(
+        op.get("op") == "restart" for case in manifest["cases"] for op in ops(case)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Pure: wire encoding (mirrors crates/cmux-ipc/src/client.rs)
+# ---------------------------------------------------------------------------
+
+_V1_SAFE_RE = re.compile(r"^[A-Za-z0-9_@%+=:,./-]+$")
+
+
+def shell_quote(value: str) -> str:
+    """Quote one v1 token the way the macOS CLI's shellQuote does."""
+    if value and _V1_SAFE_RE.match(value):
+        return value
+    return "'" + value.replace("'", "'\\''") + "'"
+
+
+def build_v1_command_line(command: str, args: list[str]) -> str:
+    """Shell-quote and join a v1 command line (without the trailing newline)."""
+    return " ".join(shell_quote(token) for token in [command, *args])
+
+
+def build_v2_request(method: str, params: dict[str, Any]) -> str:
+    """Build the one-line v2 request envelope with the fixed client id 1."""
+    return json.dumps(
+        {"id": 1, "method": method, "params": params}, separators=(",", ":")
+    )
+
+
+def interpret_v2_response(raw: str) -> dict[str, Any]:
+    """Decode a v2 reply into {"ok": bool, "response": Any, "error": Any}.
+
+    ``response`` is the full parsed reply object (id/ok/result/... verbatim) so
+    the differential compares the entire canonical envelope, not a projection.
+    """
+    if raw.startswith("ERROR:"):
+        return {"ok": False, "response": None, "error": {"plain_text": raw}}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"ok": False, "response": None, "error": {"invalid_v2_response": raw}}
+    if not isinstance(parsed, dict):
+        return {"ok": False, "response": None, "error": {"invalid_v2_response": raw}}
+    if parsed.get("ok") is True:
+        return {"ok": True, "response": parsed, "error": None}
+    return {"ok": False, "response": parsed, "error": parsed.get("error")}
+
+
+def interpret_v1_response(raw: str) -> dict[str, Any]:
+    """Decode a v1 reply: ERROR:-prefixed is a failure surfaced verbatim."""
+    if raw.startswith("ERROR:"):
+        return {"ok": False, "response": raw, "error": raw}
+    return {"ok": True, "response": raw, "error": None}
+
+
+# ---------------------------------------------------------------------------
+# Pure: placeholder resolution
+# ---------------------------------------------------------------------------
+
+
+class PlaceholderError(ValueError):
+    """A ${...} reference could not be resolved."""
+
+
+def _lookup_path(context: dict[str, Any], dotted: str) -> Any:
+    current: Any = context
+    for token in dotted.split("."):
+        if isinstance(current, list):
+            try:
+                current = current[int(token)]
+            except (ValueError, IndexError) as error:
+                raise PlaceholderError(f"cannot resolve '{dotted}' at token '{token}'") from error
+        elif isinstance(current, dict):
+            if token not in current:
+                raise PlaceholderError(f"cannot resolve '{dotted}' at token '{token}'")
+            current = current[token]
+        else:
+            raise PlaceholderError(f"cannot resolve '{dotted}' at token '{token}'")
+    return current
+
+
+def resolve_placeholders(value: Any, context: dict[str, Any]) -> Any:
+    """Substitute ``${section.path}`` references against recorded op results.
+
+    ``context`` maps section names (``session``, ``setup``, ``action``) to
+    recorded results. A string that is exactly one placeholder resolves to the
+    referenced value with its type preserved; embedded placeholders stringify.
+    """
+    if isinstance(value, dict):
+        return {key: resolve_placeholders(item, context) for key, item in value.items()}
+    if isinstance(value, list):
+        return [resolve_placeholders(item, context) for item in value]
+    if isinstance(value, str):
+        exact = PLACEHOLDER_RE.fullmatch(value)
+        if exact:
+            return _lookup_path(context, exact.group(1))
+        return PLACEHOLDER_RE.sub(
+            lambda match: str(_lookup_path(context, match.group(1))), value
+        )
+    return value
+
+
+# ---------------------------------------------------------------------------
+# Pure: symbolization + observation shaping
+# ---------------------------------------------------------------------------
+
+
+class Symbolizer:
+    """Rewrites UUIDs to ``<uuid-N>`` by first-seen (creation) order.
+
+    ``register`` walks any recorded value in execution order so ids created
+    during setup are allocated before probe output mentions them, keeping the
+    numbering aligned with creation order on both platforms. The exact socket
+    address is rewritten to ``<socket>``.
+    """
+
+    def __init__(self, socket_address: str | None = None) -> None:
+        self._table: dict[str, str] = {}
+        self._socket_address = socket_address
+
+    def register(self, value: Any) -> None:
+        for uuid in self._find_uuids(value):
+            self._table.setdefault(uuid, f"<uuid-{len(self._table) + 1}>")
+
+    def apply(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {self._apply_str(k): self.apply(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self.apply(item) for item in value]
+        if isinstance(value, str):
+            return self._apply_str(value)
+        return value
+
+    def _apply_str(self, value: str) -> str:
+        if self._socket_address:
+            value = value.replace(self._socket_address, "<socket>")
+
+        def replace(match: re.Match[str]) -> str:
+            uuid = match.group(0).lower()
+            if uuid not in self._table:
+                self._table[uuid] = f"<uuid-{len(self._table) + 1}>"
+            return self._table[uuid]
+
+        return UUID_RE.sub(replace, value)
+
+    def _find_uuids(self, value: Any):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                yield from self._find_uuids(key)
+                yield from self._find_uuids(item)
+        elif isinstance(value, list):
+            for item in value:
+                yield from self._find_uuids(item)
+        elif isinstance(value, str):
+            for match in UUID_RE.finditer(value):
+                yield match.group(0).lower()
+
+
+def shape_observation(
+    action_result: dict[str, Any],
+    probe_results: dict[str, list[dict[str, Any]]],
+    events: list[Any] | None,
+) -> dict[str, Any]:
+    """Assemble the ten-lane observation; unprobed lanes are explicit None."""
+    observation: dict[str, Any] = {key: None for key in OBSERVATION_KEYS}
+    kind = action_result.get("kind")
+    if kind == "cli":
+        observation["exit_status"] = action_result.get("exit_status")
+        observation["stdout"] = action_result.get("stdout")
+        observation["stderr"] = action_result.get("stderr")
+    else:
+        observation["response"] = action_result.get("response")
+        observation["error"] = action_result.get("error")
+    for lane in ("state", "persistence", "selectors", "multiwindow"):
+        if lane in probe_results:
+            observation[lane] = probe_results[lane]
+    observation["events"] = events
+    missing = [key for key in OBSERVATION_KEYS if key not in observation]
+    if missing:  # pragma: no cover - defensive, construction covers all keys
+        raise AssertionError(f"observation missing lanes: {missing}")
+    return observation
+
+
+def describe_op(op: dict[str, Any]) -> str:
+    kind = op["op"]
+    if kind == "v2":
+        return f"v2:{op['method']}"
+    if kind == "v1":
+        return f"v1:{op['command']}"
+    if kind == "cli":
+        return "cli:" + " ".join(op["argv"])
+    return kind
+
+
+# ---------------------------------------------------------------------------
+# Transports (side-effecting)
+# ---------------------------------------------------------------------------
+
+
+def is_windows_pipe_address(address: str) -> bool:
+    return address.startswith(WINDOWS_PIPE_PREFIX)
+
+
+class TransportError(RuntimeError):
+    pass
+
+
+def _read_with_timeout(read_chunk: Callable[[], bytes], deadline: float, until_eof: bool) -> bytes:
+    """Read chunks on a worker thread until newline (or EOF) or the deadline."""
+    frames: queue.Queue[bytes | None] = queue.Queue()
+
+    def pump() -> None:
+        try:
+            while True:
+                chunk = read_chunk()
+                frames.put(chunk)
+                if not chunk:
+                    return
+        except OSError:
+            frames.put(b"")
+
+    worker = threading.Thread(target=pump, daemon=True)
+    worker.start()
+    buffer = b""
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return buffer
+        try:
+            chunk = frames.get(timeout=remaining)
+        except queue.Empty:
+            return buffer
+        if not chunk:
+            return buffer
+        buffer += chunk
+        if not until_eof and b"\n" in buffer:
+            return buffer
+
+
+class Connection:
+    """One control-socket connection (unix socket or Windows named pipe)."""
+
+    def __init__(self, address: str, timeout: float) -> None:
+        self.address = address
+        self.timeout = timeout
+        if is_windows_pipe_address(address):
+            deadline = time.monotonic() + timeout
+            while True:
+                try:
+                    self._file = open(address, "r+b", buffering=0)
+                    self._sock = None
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise TransportError(f"cannot open pipe {address}")
+                    time.sleep(0.2)
+        else:
+            import socket as socket_module
+
+            sock = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
+            sock.settimeout(timeout)
+            sock.connect(address)
+            self._sock = sock
+            self._file = None
+
+    def send_line(self, line: str) -> None:
+        payload = line.encode("utf-8") + b"\n"
+        if self._sock is not None:
+            self._sock.sendall(payload)
+        else:
+            self._file.write(payload)
+
+    def _read_chunk(self) -> bytes:
+        if self._sock is not None:
+            return self._sock.recv(65536)
+        return self._file.read(65536)
+
+    def read_reply(self, until_eof: bool) -> str:
+        raw = _read_with_timeout(
+            self._read_chunk, time.monotonic() + self.timeout, until_eof
+        )
+        text = raw.decode("utf-8", errors="replace")
+        if text.endswith("\n"):
+            text = text[:-1]
+        return text
+
+    def close(self) -> None:
+        try:
+            if self._sock is not None:
+                self._sock.close()
+            else:
+                self._file.close()
+        except OSError:
+            pass
+
+
+class EventCollector:
+    """Dedicated events.stream connection collecting NDJSON frames."""
+
+    def __init__(self, address: str, params: dict[str, Any], password: str | None, timeout: float) -> None:
+        self._connection = Connection(address, timeout)
+        if password:
+            _authenticate(self._connection, password)
+        request = json.dumps(
+            {"method": "events.stream", "params": params}, separators=(",", ":")
+        )
+        self._connection.send_line(request)
+        self.frames: list[Any] = []
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(target=self._pump, daemon=True)
+        self._thread.start()
+
+    def _pump(self) -> None:
+        buffer = b""
+        while True:
+            try:
+                chunk = self._connection._read_chunk()
+            except OSError:
+                return
+            if not chunk:
+                return
+            buffer += chunk
+            while b"\n" in buffer:
+                line, buffer = buffer.split(b"\n", 1)
+                text = line.decode("utf-8", errors="replace")
+                try:
+                    frame: Any = json.loads(text)
+                except json.JSONDecodeError:
+                    frame = {"unparseable_event_line": text}
+                with self._lock:
+                    self.frames.append(frame)
+
+    def stop(self) -> list[Any]:
+        self._connection.close()
+        self._thread.join(timeout=2)
+        with self._lock:
+            return list(self.frames)
+
+
+def _authenticate(connection: Connection, password: str) -> None:
+    connection.send_line(f"auth {password}")
+    reply = connection.read_reply(until_eof=False)
+    if reply.startswith("ERROR:"):
+        raise TransportError(f"auth rejected: {reply}")
+
+
+# ---------------------------------------------------------------------------
+# Op execution
+# ---------------------------------------------------------------------------
+
+
+class Driver:
+    def __init__(
+        self,
+        socket_address: str,
+        cli_path: str | None,
+        password: str | None,
+        restart_cmd: str | None,
+        op_timeout: float,
+    ) -> None:
+        self.socket_address = socket_address
+        self.cli_path = cli_path
+        self.password = password
+        self.restart_cmd = restart_cmd
+        self.op_timeout = op_timeout
+
+    def run_op(self, op: dict[str, Any]) -> dict[str, Any]:
+        kind = op["op"]
+        if kind == "sleep":
+            time.sleep(op["seconds"])
+            return {"kind": "sleep", "seconds": op["seconds"]}
+        if kind == "restart":
+            return self._run_restart()
+        if kind == "v2":
+            return self._run_v2(op)
+        if kind == "v1":
+            return self._run_v1(op)
+        if kind == "cli":
+            return self._run_cli(op)
+        raise AssertionError(f"unreachable op kind {kind}")  # pragma: no cover
+
+    def _request(self, line: str, until_eof: bool) -> str:
+        connection = Connection(self.socket_address, self.op_timeout)
+        try:
+            if self.password:
+                _authenticate(connection, self.password)
+            connection.send_line(line)
+            return connection.read_reply(until_eof=until_eof)
+        finally:
+            connection.close()
+
+    def _run_v2(self, op: dict[str, Any]) -> dict[str, Any]:
+        raw = self._request(build_v2_request(op["method"], op.get("params", {})), until_eof=False)
+        decoded = interpret_v2_response(raw)
+        result = decoded["response"].get("result") if isinstance(decoded["response"], dict) else None
+        return {
+            "kind": "v2",
+            "method": op["method"],
+            "ok": decoded["ok"],
+            "response": decoded["response"],
+            "result": result,
+            "error": decoded["error"],
+        }
+
+    def _run_v1(self, op: dict[str, Any]) -> dict[str, Any]:
+        raw = self._request(
+            build_v1_command_line(op["command"], op.get("args", [])), until_eof=True
+        )
+        decoded = interpret_v1_response(raw)
+        return {
+            "kind": "v1",
+            "command": op["command"],
+            "ok": decoded["ok"],
+            "response": decoded["response"],
+            "error": decoded["error"],
+        }
+
+    def _run_cli(self, op: dict[str, Any]) -> dict[str, Any]:
+        if not self.cli_path:
+            raise TransportError("manifest contains a cli op but --cli was not provided")
+        import os
+
+        env = dict(os.environ)
+        # Cross-platform socket injection: the macOS CLI and the Rust cmux-cli
+        # both honor CMUX_SOCKET_PATH (crates/cmux-cli/src/socket.rs precedence
+        # --socket > CMUX_SOCKET_PATH > CMUX_SOCKET > default).
+        env.pop("CMUX_SOCKET", None)
+        env.pop("CMUX_WORKSPACE_ID", None)
+        env.pop("CMUX_SURFACE_ID", None)
+        env.pop("CMUX_TAB_ID", None)
+        env["CMUX_SOCKET_PATH"] = self.socket_address
+        if self.password:
+            env["CMUX_SOCKET_PASSWORD"] = self.password
+        env.update(op.get("env", {}))
+        completed = subprocess.run(
+            [self.cli_path, *op["argv"]],
+            capture_output=True,
+            text=True,
+            timeout=self.op_timeout,
+            env=env,
+        )
+        return {
+            "kind": "cli",
+            "argv": op["argv"],
+            "exit_status": completed.returncode,
+            "stdout": completed.stdout,
+            "stderr": completed.stderr,
+        }
+
+    def _run_restart(self) -> dict[str, Any]:
+        if not self.restart_cmd:
+            raise TransportError(
+                "manifest contains a restart op but --restart-cmd was not provided"
+            )
+        completed = subprocess.run(
+            self.restart_cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=max(self.op_timeout, 300),
+        )
+        if completed.returncode != 0:
+            raise TransportError(
+                f"restart command failed ({completed.returncode}): {completed.stderr.strip()}"
+            )
+        return {"kind": "restart", "exit_status": completed.returncode}
+
+
+# ---------------------------------------------------------------------------
+# Session orchestration
+# ---------------------------------------------------------------------------
+
+
+def run_capture(
+    manifest: dict[str, Any],
+    driver: Driver,
+    platform_label: str,
+    output_lines: list[str],
+) -> int:
+    symbolizer = Symbolizer(socket_address=driver.socket_address)
+    output_lines.append(
+        json.dumps(
+            {
+                "type": "session",
+                "family": manifest["family"],
+                "platform": platform_label,
+                "driver_version": 1,
+            },
+            sort_keys=True,
+        )
+    )
+    failures = 0
+
+    session_results: list[dict[str, Any]] = []
+    for op in manifest.get("session_setup", []):
+        resolved = resolve_placeholders(op, {"session": session_results})
+        result = driver.run_op(resolved)
+        symbolizer.register(result)
+        session_results.append(result)
+
+    for case in manifest["cases"]:
+        context: dict[str, Any] = {"session": session_results, "setup": [], "action": None}
+        collector: EventCollector | None = None
+        case_error: str | None = None
+        action_result: dict[str, Any] = {}
+        probe_results: dict[str, list[dict[str, Any]]] = {}
+        events: list[Any] | None = None
+        try:
+            for op in case.get("setup", []):
+                result = driver.run_op(resolve_placeholders(op, context))
+                symbolizer.register(result)
+                context["setup"].append(result)
+            if case.get("events"):
+                collector = EventCollector(
+                    driver.socket_address,
+                    case.get("events_params", {"include_heartbeats": False}),
+                    driver.password,
+                    driver.op_timeout,
+                )
+                time.sleep(0.2)
+            action_result = driver.run_op(resolve_placeholders(case["action"], context))
+            symbolizer.register(action_result)
+            context["action"] = action_result
+            for lane, ops in case.get("probes", {}).items():
+                lane_results: list[dict[str, Any]] = []
+                for op in ops:
+                    result = driver.run_op(resolve_placeholders(op, context))
+                    symbolizer.register(result)
+                    # Drop the "result" convenience projection (placeholder
+                    # ergonomics only); the full reply envelope is already in
+                    # "response", and duplicating it doubles diff surface.
+                    recorded = {k: v for k, v in result.items() if k != "result"}
+                    lane_results.append({"op": describe_op(op), "result": recorded})
+                probe_results[lane] = lane_results
+            if collector is not None:
+                time.sleep(0.3)
+                events = collector.stop()
+                collector = None
+                symbolizer.register(events)
+        except Exception as error:  # noqa: BLE001 - capture failure is per-case data
+            case_error = f"{type(error).__name__}: {error}"
+            failures += 1
+        finally:
+            if collector is not None:
+                collector.stop()
+
+        observation = shape_observation(action_result or {"kind": "none"}, probe_results, events)
+        record = {
+            "type": "case",
+            "id": case["id"],
+            "platform": platform_label,
+            "observation": symbolizer.apply(observation),
+            "approved_differences": case.get("approved_differences", []),
+            "capture_error": case_error,
+        }
+        output_lines.append(json.dumps(record, sort_keys=True))
+    return failures
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Manifest-driven live parity capture (canonical macOS socket "
+        "or Windows named pipe); emits NDJSON observations for the differential harness."
+    )
+    parser.add_argument("--manifest", required=True, type=Path, help="case manifest JSON")
+    parser.add_argument(
+        "--socket",
+        required=True,
+        help=r"unix socket path, or \\.\pipe\<name> for the Windows backend",
+    )
+    parser.add_argument("--cli", help="path to the cmux CLI binary for cli ops")
+    parser.add_argument("--platform", required=True, help="capture label, e.g. canonical|windows")
+    parser.add_argument("--output", type=Path, help="NDJSON output path (default stdout)")
+    parser.add_argument("--password", help="control-socket password (auth handshake)")
+    parser.add_argument(
+        "--restart-cmd",
+        help="shell command that quits + relaunches the app and waits for the socket; "
+        "required when the manifest contains restart ops",
+    )
+    parser.add_argument("--op-timeout", type=float, default=30.0, help="seconds per operation")
+    args = parser.parse_args(argv)
+
+    manifest = parse_manifest(json.loads(args.manifest.read_text(encoding="utf-8")))
+    if manifest_needs_restart(manifest) and not args.restart_cmd:
+        parser.error("manifest contains restart ops; --restart-cmd is required")
+
+    driver = Driver(
+        socket_address=args.socket,
+        cli_path=args.cli,
+        password=args.password,
+        restart_cmd=args.restart_cmd,
+        op_timeout=args.op_timeout,
+    )
+    output_lines: list[str] = []
+    failures = run_capture(manifest, driver, args.platform, output_lines)
+    rendered = "\n".join(output_lines) + "\n"
+    if args.output:
+        args.output.write_text(rendered, encoding="utf-8")
+    else:
+        sys.stdout.write(rendered)
+    if failures:
+        print(f"capture completed with {failures} case error(s)", file=sys.stderr)
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
