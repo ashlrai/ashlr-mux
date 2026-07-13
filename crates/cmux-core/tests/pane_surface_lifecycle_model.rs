@@ -159,6 +159,7 @@ fn surface(id: &str, pane_id: &str, kind: SurfaceKind) -> SurfaceSeed {
 fn browser(url: &str) -> SurfaceKind {
     SurfaceKind::Browser {
         url: Some(url.into()),
+        profile: None,
         proxy_url: None,
         back_history: None,
         forward_history: None,
@@ -744,7 +745,7 @@ fn browser_and_nonterminal_kind_state_round_trips_losslessly() {
             "workspace_id": "workspace-1", "process_title": "mixed",
             "layout": {"type":"pane","pane":{"pane_id":"pane-1","panel_ids":["browser","markdown","file","diff","remote","agent"],"selected_panel_id":"browser"}},
             "surfaces": [
-                {"surface_id":"browser","pane_id":"pane-1","generation":1,"kind":{"type":"browser","url":"https://now.test","proxy_url":"socks5://127.0.0.1:9","back_history":["https://back.test"],"forward_history":["https://forward.test"],"omnibar_visible":false,"focus_mode_active":true,"developer_tools_visible":true,"developer_tools_panel":"console","page_zoom":1.23456789},"metadata":{}},
+                {"surface_id":"browser","pane_id":"pane-1","generation":1,"kind":{"type":"browser","url":"https://now.test","profile":"isolated","proxy_url":"socks5://127.0.0.1:9","back_history":["https://back.test"],"forward_history":["https://forward.test"],"omnibar_visible":false,"focus_mode_active":true,"developer_tools_visible":true,"developer_tools_panel":"console","page_zoom":1.23456789},"metadata":{}},
                 {"surface_id":"markdown","pane_id":"pane-1","generation":1,"kind":{"type":"markdown","path":"README.md"},"metadata":{}},
                 {"surface_id":"file","pane_id":"pane-1","generation":1,"kind":{"type":"file","path":"src/main.rs"},"metadata":{}},
                 {"surface_id":"diff","pane_id":"pane-1","generation":1,"kind":{"type":"diff","token":"diff-7","request_path":"/changes"},"metadata":{}},

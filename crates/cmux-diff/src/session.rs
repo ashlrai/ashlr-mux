@@ -194,6 +194,21 @@ impl DiffSessionRegistry {
         Ok(())
     }
 
+    /// Remove exactly one live session from the in-memory registry.
+    ///
+    /// Returns whether the token was registered. Repeated calls are harmless,
+    /// and invalid tokens cannot affect any registered session.
+    pub fn unregister(&self, token: &str) -> bool {
+        if !Self::is_valid_token(token) {
+            return false;
+        }
+        self.sessions
+            .lock()
+            .expect("diff session lock poisoned")
+            .remove(token)
+            .is_some()
+    }
+
     /// Whether `token` currently has a live (or manifest-restorable) session.
     /// Used to trust-gate native bridge calls (e.g. `diff_comments_rpc`) from
     /// diff-viewer pages. Faithful port of Swift `hasActiveSession`

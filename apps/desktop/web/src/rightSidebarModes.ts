@@ -1,4 +1,4 @@
-export type RightSidebarMode = "files" | "find" | "sessions" | "feed";
+export type RightSidebarMode = "files" | "find" | "sessions" | "feed" | "dock";
 
 export interface RightSidebarState {
   visible: boolean;
@@ -30,9 +30,10 @@ export interface RightSidebarModeAvailability {
 export function rightSidebarModeItems(
   availability: RightSidebarModeAvailability,
 ): readonly RightSidebarModeItem[] {
-  return availability.feedEnabled
-    ? [...CORE_RIGHT_SIDEBAR_MODE_ITEMS, { mode: "feed", label: "Feed" }]
-    : CORE_RIGHT_SIDEBAR_MODE_ITEMS;
+  const items = [...CORE_RIGHT_SIDEBAR_MODE_ITEMS];
+  if (availability.feedEnabled) items.push({ mode: "feed", label: "Feed" });
+  if (availability.dockEnabled) items.push({ mode: "dock", label: "Dock" });
+  return items;
 }
 
 export function isRightSidebarMode(value: unknown): value is RightSidebarMode {
@@ -40,7 +41,8 @@ export function isRightSidebarMode(value: unknown): value is RightSidebarMode {
     value === "files" ||
     value === "find" ||
     value === "sessions" ||
-    value === "feed"
+    value === "feed" ||
+    value === "dock"
   );
 }
 

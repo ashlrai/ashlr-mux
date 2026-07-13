@@ -19,6 +19,8 @@ import {
 import { useFocusedPanelId } from "../session/focusedPane";
 import { SessionsIndexPanel } from "./SessionsIndexPanel";
 import { FeedPanel } from "./FeedPanel";
+import { DockPanel } from "./DockPanel";
+import { DockRuntimeSurface } from "./DockRuntimeSurface";
 
 export { isMarkdownFilePath } from "../host/fileExplorer";
 export type { RightSidebarMode } from "../rightSidebarModes";
@@ -30,6 +32,7 @@ export interface FileExplorerPanelProps {
   preferredEditor?: string;
   rightMaxWidth?: number;
   feedEnabled?: boolean;
+  dockEnabled?: boolean;
   onModeChange?: (mode: RightSidebarMode) => void;
   onOpenFind?: () => void;
   onClose: () => void;
@@ -90,12 +93,14 @@ export function FileExplorerPanel({
   preferredEditor = "",
   rightMaxWidth,
   feedEnabled = false,
+  dockEnabled = false,
   onModeChange,
   onOpenFind,
   onClose,
 }: FileExplorerPanelProps): React.JSX.Element | null {
   const {
     activeLayout,
+    snapshot,
     workspaces,
     selectedWorkspaceIndex,
     openMarkdownFile,
@@ -115,8 +120,9 @@ export function FileExplorerPanel({
   const widthStyle = rightSidebarWidthStyle(rightMaxWidth);
   const modeItems = rightSidebarModeItems({
     feedEnabled,
-    dockEnabled: false,
+    dockEnabled,
   });
+  const dockOwnerId = snapshot?.windows[0]?.window_id ?? undefined;
 
   useEffect(() => {
     if (open) {
@@ -264,6 +270,8 @@ export function FileExplorerPanel({
           <p>
             {mode === "sessions"
               ? "Vault"
+              : mode === "dock"
+                ? "Dock"
               : mode === "feed"
                 ? "Feed"
               : mode === "find"
@@ -300,7 +308,18 @@ export function FileExplorerPanel({
           </button>
         ))}
       </div>
-      {mode === "feed" ? (
+      {mode === "dock" ? (
+        dockOwnerId == null ? (
+          <div className="cmux-file-explorer-empty">Dock owner is unavailable.</div>
+        ) : (
+          <DockPanel
+            ownerId={dockOwnerId}
+            renderSurface={(surface, active) => (
+              <DockRuntimeSurface surface={surface} active={active} />
+            )}
+          />
+        )
+      ) : mode === "feed" ? (
         <FeedPanel />
       ) : mode === "sessions" ? (
         <SessionsIndexPanel

@@ -1,0 +1,1719 @@
+use std::collections::BTreeMap;
+
+use cmux_core::{
+    session::{
+        AppSessionSnapshot, SessionDockSnapshot, SessionPaneLayoutSnapshot,
+        SessionSplitLayoutSnapshot, SessionSplitOrientation, SessionSurfaceKindSnapshot,
+        SessionSurfaceMetadataSnapshot, SessionWorkspaceLayoutSnapshot,
+    },
+    surface_lifecycle::{
+        CloseIntent, ContainerKind, SurfaceLifecycleModel, SurfaceRecord, SurfaceSeed,
+        TerminalStartup,
+    },
+};
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter, Manager, State};
+use uuid::Uuid;
+
+use crate::browser::{
+    browser_attach_webview_for_control, browser_close_webview_strict_for_control,
+    browser_has_webview_for_control, BrowserWebviewState,
+};
+use crate::terminal::{
+    terminal_has_panel_for_control, terminal_ids_for_panel_for_control, terminal_open_for_control,
+    terminal_remove_id_for_control, terminal_shutdown_id_preserving_authority_for_control,
+    TerminalState,
+};
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DockSurfaceKind {
+    #[default]
+    Terminal,
+    Browser,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DockPlacement {
+    #[default]
+    Tab,
+    SplitLeft,
+    SplitRight,
+    SplitUp,
+    SplitDown,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct DockCreateRequest {
+    pub kind: DockSurfaceKind,
+    pub title: Option<String>,
+    pub pane_id: Option<Uuid>,
+    pub source_surface_id: Option<Uuid>,
+    pub placement: DockPlacement,
+    pub initial_divider_position: Option<f64>,
+    pub working_directory: Option<String>,
+    pub command: Option<String>,
+    pub environment: BTreeMap<String, String>,
+    pub tmux_start_command: Option<String>,
+    pub url: Option<String>,
+    pub browser_profile: Option<String>,
+    pub focus: bool,
+    pub surface_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(crate) enum DockRuntimeIntent {
+    Terminal {
+        working_directory: Option<String>,
+        command: Option<String>,
+        environment: BTreeMap<String, String>,
+        tmux_start_command: Option<String>,
+    },
+    Browser {
+        url: String,
+        profile: Option<String>,
+    },
+}
+
+impl DockRuntimeIntent {
+    pub(crate) fn from_record(record: &SurfaceRecord) -> Self {
+        match &record.kind {
+            SessionSurfaceKindSnapshot::Browser { url, profile, .. } => Self::Browser {
+                url: url.clone().unwrap_or_else(|| "about:blank".into()),
+                profile: profile.clone(),
+            },
+            _ => Self::Terminal {
+                working_directory: record.terminal_startup.working_directory.clone(),
+                command: record.terminal_startup.command.clone(),
+                environment: record
+                    .terminal_startup
+                    .environment
+                    .clone()
+                    .unwrap_or_default(),
+                tmux_start_command: record.terminal_startup.tmux_start_command.clone(),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct DockSurfaceSnapshot {
+    #[serde(rename = "id")]
+    pub surface_id: Uuid,
+    pub pane_id: Uuid,
+    pub generation: u64,
+    pub kind: DockSurfaceKind,
+    pub title: String,
+    pub runtime: DockRuntimeIntent,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct DockPaneSnapshot {
+    pub id: Uuid,
+    pub surface_ids: Vec<Uuid>,
+    pub selected_surface_id: Option<Uuid>,
+    pub placement: String,
+    pub divider_position: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct DockSnapshot {
+    pub owner_id: String,
+    pub focused_pane_id: Option<Uuid>,
+    pub panes: Vec<DockPaneSnapshot>,
+    pub surfaces: Vec<DockSurfaceSnapshot>,
+}
+
+impl DockSnapshot {
+    #[cfg(test)]
+    fn pane(&self, id: Uuid) -> Option<&DockPaneSnapshot> {
+        self.panes.iter().find(|pane| pane.id == id)
+    }
+
+    fn surface(&self, id: Uuid) -> Option<&DockSurfaceSnapshot> {
+        self.surfaces
+            .iter()
+            .find(|surface| surface.surface_id == id)
+    }
+
+    #[cfg(test)]
+    fn focused_surface_id(&self) -> Option<Uuid> {
+        self.pane(self.focused_pane_id?)?.selected_surface_id
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DockCreateResult {
+    pub pane_id: Uuid,
+    pub surface_id: Uuid,
+    pub generation: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DockRuntimeOperation {
+    Create {
+        surface_id: String,
+        generation: u64,
+        intent: DockRuntimeIntent,
+    },
+    Teardown {
+        surface_id: String,
+        generation: u64,
+        intent: DockRuntimeIntent,
+    },
+}
+
+/// Stateless adapter over the single `AppSessionSnapshot` lifecycle authority.
+#[derive(Default)]
+pub(crate) struct DockStore;
+
+impl DockStore {
+    /// Socket/runtime integration seam: stage the real terminal/browser effect
+    /// against a cloned global snapshot and publish identities only on success.
+    pub(crate) fn create_transactionally<E>(
+        &self,
+        session: &mut AppSessionSnapshot,
+        owner_id: &str,
+        request: DockCreateRequest,
+        stage_runtime: impl FnOnce(&DockRuntimeOperation) -> Result<(), E>,
+    ) -> Result<DockCreateResult, String>
+    where
+        E: ToString,
+    {
+        let mut next = session.clone();
+        let created = self.create(&mut next, owner_id, request)?;
+        let surface = self
+            .snapshot(&next, owner_id)
+            .surface(created.surface_id)
+            .cloned()
+            .ok_or_else(|| "Created Dock surface is unavailable".to_string())?;
+        stage_runtime(&DockRuntimeOperation::Create {
+            surface_id: created.surface_id.to_string(),
+            generation: created.generation,
+            intent: surface.runtime,
+        })
+        .map_err(|error| error.to_string())?;
+        *session = next;
+        Ok(created)
+    }
+
+    pub(crate) fn close_transactionally<E>(
+        &self,
+        session: &mut AppSessionSnapshot,
+        owner_id: &str,
+        surface_id: Uuid,
+        stage_runtime: impl FnOnce(&DockRuntimeOperation) -> Result<(), E>,
+    ) -> Result<(), String>
+    where
+        E: ToString,
+    {
+        let surface = self
+            .snapshot(session, owner_id)
+            .surface(surface_id)
+            .cloned()
+            .ok_or_else(|| "Dock surface not found".to_string())?;
+        let mut next = session.clone();
+        self.close(&mut next, owner_id, surface_id)?;
+        stage_runtime(&DockRuntimeOperation::Teardown {
+            surface_id: surface_id.to_string(),
+            generation: surface.generation,
+            intent: surface.runtime,
+        })
+        .map_err(|error| error.to_string())?;
+        *session = next;
+        Ok(())
+    }
+
+    pub(crate) fn create(
+        &self,
+        session: &mut AppSessionSnapshot,
+        owner_id: &str,
+        request: DockCreateRequest,
+    ) -> Result<DockCreateResult, String> {
+        ensure_dock(session, owner_id)?;
+        let before = model(session)?;
+        let pane_id = match request.placement {
+            DockPlacement::Tab => request
+                .pane_id
+                .or_else(|| focused_pane_id(&before, owner_id))
+                .or_else(|| first_pane_id(session, owner_id))
+                .unwrap_or_else(Uuid::new_v4),
+            DockPlacement::SplitLeft
+            | DockPlacement::SplitRight
+            | DockPlacement::SplitUp
+            | DockPlacement::SplitDown => Uuid::new_v4(),
+        };
+        if before.pane(&pane_id.to_string()).is_none() {
+            add_dock_pane(
+                session,
+                owner_id,
+                pane_id,
+                request.placement,
+                request.source_surface_id,
+                request.initial_divider_position,
+            )?;
+        } else {
+            ensure_dock_pane(&before, owner_id, pane_id)?;
+        }
+        let mut lifecycle = model(session)?;
+        let surface_id = request.surface_id.unwrap_or_else(Uuid::new_v4);
+        let kind = match request.kind {
+            DockSurfaceKind::Terminal => SessionSurfaceKindSnapshot::Terminal,
+            DockSurfaceKind::Browser => SessionSurfaceKindSnapshot::Browser {
+                url: Some(request.url.clone().unwrap_or_else(|| "about:blank".into())),
+                profile: request.browser_profile,
+                proxy_url: None,
+                back_history: None,
+                forward_history: None,
+                omnibar_visible: None,
+                focus_mode_active: None,
+                developer_tools_visible: None,
+                developer_tools_panel: None,
+                page_zoom: None,
+            },
+        };
+        let reservation = lifecycle
+            .reserve_surface(SurfaceSeed {
+                surface_id: surface_id.to_string(),
+                pane_id: pane_id.to_string(),
+                kind,
+                metadata: SessionSurfaceMetadataSnapshot {
+                    custom_title: request.title,
+                    ..SessionSurfaceMetadataSnapshot::default()
+                },
+            })
+            .map_err(|error| error.to_string())?;
+        if request.kind == DockSurfaceKind::Terminal {
+            lifecycle
+                .set_terminal_startup(
+                    &surface_id.to_string(),
+                    TerminalStartup {
+                        command: request.command,
+                        working_directory: request.working_directory,
+                        environment: (!request.environment.is_empty())
+                            .then_some(request.environment),
+                        tmux_start_command: request.tmux_start_command,
+                        ..TerminalStartup::default()
+                    },
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        if request.focus {
+            lifecycle
+                .focus_surface(&surface_id.to_string())
+                .map_err(|error| error.to_string())?;
+        }
+        *session = lifecycle
+            .to_app_session(session)
+            .map_err(|error| error.to_string())?;
+        Ok(DockCreateResult {
+            pane_id,
+            surface_id,
+            generation: reservation.generation,
+        })
+    }
+
+    pub(crate) fn select(
+        &self,
+        session: &mut AppSessionSnapshot,
+        owner_id: &str,
+        pane_id: Uuid,
+        surface_id: Uuid,
+    ) -> Result<(), String> {
+        self.mutate(session, |lifecycle| {
+            ensure_dock_pane(lifecycle, owner_id, pane_id)?;
+            let owner = lifecycle
+                .owner_of_surface(&surface_id.to_string())
+                .ok_or_else(|| "Dock surface not found".to_string())?;
+            if owner.pane_id != pane_id.to_string() {
+                return Err("Dock surface does not belong to pane".into());
+            }
+            lifecycle
+                .select_in_pane(&surface_id.to_string())
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    pub(crate) fn focus(
+        &self,
+        session: &mut AppSessionSnapshot,
+        owner_id: &str,
+        surface_id: Uuid,
+    ) -> Result<(), String> {
+        self.mutate(session, |lifecycle| {
+            ensure_dock_surface(lifecycle, owner_id, surface_id)?;
+            lifecycle
+                .focus_surface(&surface_id.to_string())
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    pub(crate) fn close(
+        &self,
+        session: &mut AppSessionSnapshot,
+        owner_id: &str,
+        surface_id: Uuid,
+    ) -> Result<(), String> {
+        self.mutate(session, |lifecycle| {
+            ensure_dock_surface(lifecycle, owner_id, surface_id)?;
+            lifecycle
+                .close_surface(&surface_id.to_string(), CloseIntent::Explicit)
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    #[allow(dead_code, reason = "production lifecycle executor integration seam")]
+    pub(crate) fn move_surface(
+        &self,
+        session: &mut AppSessionSnapshot,
+        owner_id: &str,
+        surface_id: &str,
+        pane_id: Uuid,
+        index: usize,
+    ) -> Result<(), String> {
+        self.mutate(session, |lifecycle| {
+            ensure_dock_pane(lifecycle, owner_id, pane_id)?;
+            lifecycle
+                .move_surface_transactionally(surface_id, &pane_id.to_string(), index, |_, _| {
+                    Ok::<_, String>(())
+                })
+                .map_err(|error| match error {
+                    cmux_core::surface_lifecycle::MoveTransactionError::Model(error) => {
+                        error.to_string()
+                    }
+                    cmux_core::surface_lifecycle::MoveTransactionError::Effect(error) => error,
+                })
+        })
+    }
+
+    #[allow(dead_code, reason = "production lifecycle executor integration seam")]
+    pub(crate) fn current(
+        &self,
+        session: &AppSessionSnapshot,
+        owner_id: &str,
+    ) -> Option<DockSurfaceSnapshot> {
+        let lifecycle = model(session).ok()?;
+        let id = lifecycle.focused_surface(&dock_workspace_id(owner_id))?;
+        surface_snapshot(&lifecycle, id)
+    }
+
+    #[allow(dead_code, reason = "production lifecycle executor integration seam")]
+    pub(crate) fn list(
+        &self,
+        session: &AppSessionSnapshot,
+        owner_id: &str,
+    ) -> Vec<DockSurfaceSnapshot> {
+        self.snapshot(session, owner_id).surfaces
+    }
+
+    pub(crate) fn snapshot(&self, session: &AppSessionSnapshot, owner_id: &str) -> DockSnapshot {
+        model(session)
+            .ok()
+            .map(|lifecycle| snapshot_for_owner(session, &lifecycle, owner_id))
+            .unwrap_or_else(|| empty_snapshot(owner_id))
+    }
+
+    fn mutate(
+        &self,
+        session: &mut AppSessionSnapshot,
+        mutation: impl FnOnce(&mut SurfaceLifecycleModel) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let mut lifecycle = model(session)?;
+        mutation(&mut lifecycle)?;
+        *session = lifecycle
+            .to_app_session(session)
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+}
+
+fn model(session: &AppSessionSnapshot) -> Result<SurfaceLifecycleModel, String> {
+    SurfaceLifecycleModel::from_app_session(session).map_err(|error| error.to_string())
+}
+
+fn dock_workspace_id(owner_id: &str) -> String {
+    format!("dock:{owner_id}")
+}
+
+fn ensure_dock(session: &mut AppSessionSnapshot, owner_id: &str) -> Result<(), String> {
+    let window = session
+        .windows
+        .iter_mut()
+        .find(|window| window.window_id.as_deref() == Some(owner_id))
+        .ok_or_else(|| "Dock owner window not found".to_string())?;
+    window.dock.get_or_insert_with(|| SessionDockSnapshot {
+        workspace_id: dock_workspace_id(owner_id),
+        layout: None,
+        surfaces: Vec::new(),
+        focused_surface_id: None,
+    });
+    Ok(())
+}
+
+fn dock_mut<'a>(
+    session: &'a mut AppSessionSnapshot,
+    owner_id: &str,
+) -> Result<&'a mut SessionDockSnapshot, String> {
+    session
+        .windows
+        .iter_mut()
+        .find(|window| window.window_id.as_deref() == Some(owner_id))
+        .and_then(|window| window.dock.as_mut())
+        .ok_or_else(|| "Dock owner window not found".to_string())
+}
+
+fn empty_pane(id: Uuid) -> SessionWorkspaceLayoutSnapshot {
+    SessionWorkspaceLayoutSnapshot::Pane(SessionPaneLayoutSnapshot {
+        pane_id: Some(id.to_string()),
+        panel_ids: Vec::new(),
+        selected_panel_id: None,
+        surface_kind: None,
+        markdown_file_path: None,
+        file_path: None,
+        diff_viewer_token: None,
+        diff_viewer_request_path: None,
+        browser_url: None,
+        browser_proxy_url: None,
+        browser_back_history: None,
+        browser_forward_history: None,
+        browser_omnibar_visible: None,
+        browser_focus_mode_active: None,
+        browser_developer_tools_visible: None,
+        browser_developer_tools_panel: None,
+        browser_page_zoom: None,
+    })
+}
+
+fn add_dock_pane(
+    session: &mut AppSessionSnapshot,
+    owner_id: &str,
+    pane_id: Uuid,
+    placement: DockPlacement,
+    source_surface_id: Option<Uuid>,
+    divider: Option<f64>,
+) -> Result<(), String> {
+    let source_pane = {
+        let lifecycle = model(session)?;
+        source_surface_id
+            .and_then(|id| lifecycle.owner_of_surface(&id.to_string()))
+            .and_then(|owner| Uuid::parse_str(&owner.pane_id).ok())
+            .or_else(|| focused_pane_id(&lifecycle, owner_id))
+            .or_else(|| first_pane_id(session, owner_id))
+    };
+    let dock = dock_mut(session, owner_id)?;
+    let new_pane = empty_pane(pane_id);
+    let Some(layout) = dock.layout.take() else {
+        dock.layout = Some(new_pane);
+        return Ok(());
+    };
+    if placement == DockPlacement::Tab {
+        return Err("Dock pane not found".into());
+    }
+    let source = source_pane.ok_or_else(|| "Dock source pane not found".to_string())?;
+    let orientation = if matches!(
+        placement,
+        DockPlacement::SplitLeft | DockPlacement::SplitRight
+    ) {
+        SessionSplitOrientation::Horizontal
+    } else {
+        SessionSplitOrientation::Vertical
+    };
+    let insert_first = matches!(placement, DockPlacement::SplitLeft | DockPlacement::SplitUp);
+    dock.layout = Some(split_at(
+        layout,
+        source,
+        new_pane,
+        orientation,
+        divider.unwrap_or(0.5).clamp(0.1, 0.9),
+        insert_first,
+    )?);
+    Ok(())
+}
+
+fn split_at(
+    layout: SessionWorkspaceLayoutSnapshot,
+    source: Uuid,
+    new_pane: SessionWorkspaceLayoutSnapshot,
+    orientation: SessionSplitOrientation,
+    divider: f64,
+    insert_first: bool,
+) -> Result<SessionWorkspaceLayoutSnapshot, String> {
+    match layout {
+        SessionWorkspaceLayoutSnapshot::Pane(pane)
+            if pane.pane_id.as_deref() == Some(&source.to_string()) =>
+        {
+            let (first, second) = if insert_first {
+                (new_pane, SessionWorkspaceLayoutSnapshot::Pane(pane))
+            } else {
+                (SessionWorkspaceLayoutSnapshot::Pane(pane), new_pane)
+            };
+            Ok(SessionWorkspaceLayoutSnapshot::Split(
+                SessionSplitLayoutSnapshot {
+                    split_id: Some(Uuid::new_v4().to_string()),
+                    orientation,
+                    divider_position: divider,
+                    first: Box::new(first),
+                    second: Box::new(second),
+                },
+            ))
+        }
+        SessionWorkspaceLayoutSnapshot::Pane(_) => Err("Dock source pane not found".into()),
+        SessionWorkspaceLayoutSnapshot::Split(mut split) => {
+            if layout_contains(&split.first, source) {
+                split.first = Box::new(split_at(
+                    *split.first,
+                    source,
+                    new_pane,
+                    orientation,
+                    divider,
+                    insert_first,
+                )?);
+            } else {
+                split.second = Box::new(split_at(
+                    *split.second,
+                    source,
+                    new_pane,
+                    orientation,
+                    divider,
+                    insert_first,
+                )?);
+            }
+            Ok(SessionWorkspaceLayoutSnapshot::Split(split))
+        }
+    }
+}
+
+fn layout_contains(layout: &SessionWorkspaceLayoutSnapshot, pane_id: Uuid) -> bool {
+    match layout {
+        SessionWorkspaceLayoutSnapshot::Pane(pane) => {
+            pane.pane_id.as_deref() == Some(&pane_id.to_string())
+        }
+        SessionWorkspaceLayoutSnapshot::Split(split) => {
+            layout_contains(&split.first, pane_id) || layout_contains(&split.second, pane_id)
+        }
+    }
+}
+
+fn first_layout_pane(layout: &SessionWorkspaceLayoutSnapshot) -> Option<Uuid> {
+    match layout {
+        SessionWorkspaceLayoutSnapshot::Pane(pane) => {
+            Uuid::parse_str(pane.pane_id.as_deref()?).ok()
+        }
+        SessionWorkspaceLayoutSnapshot::Split(split) => first_layout_pane(&split.first),
+    }
+}
+
+fn first_pane_id(session: &AppSessionSnapshot, owner_id: &str) -> Option<Uuid> {
+    let layout = session
+        .windows
+        .iter()
+        .find(|window| window.window_id.as_deref() == Some(owner_id))?
+        .dock
+        .as_ref()?
+        .layout
+        .as_ref()?;
+    first_layout_pane(layout)
+}
+
+fn focused_pane_id(lifecycle: &SurfaceLifecycleModel, owner_id: &str) -> Option<Uuid> {
+    let surface = lifecycle.focused_surface(&dock_workspace_id(owner_id))?;
+    Uuid::parse_str(&lifecycle.owner_of_surface(surface)?.pane_id).ok()
+}
+
+fn ensure_dock_pane(
+    lifecycle: &SurfaceLifecycleModel,
+    owner_id: &str,
+    pane_id: Uuid,
+) -> Result<(), String> {
+    let pane = lifecycle
+        .pane(&pane_id.to_string())
+        .ok_or_else(|| "Dock pane not found".to_string())?;
+    if pane.window_id != owner_id || pane.container != ContainerKind::Dock {
+        return Err("Dock pane not found".into());
+    }
+    Ok(())
+}
+
+fn ensure_dock_surface(
+    lifecycle: &SurfaceLifecycleModel,
+    owner_id: &str,
+    surface_id: Uuid,
+) -> Result<(), String> {
+    let owner = lifecycle
+        .owner_of_surface(&surface_id.to_string())
+        .ok_or_else(|| "Dock surface not found".to_string())?;
+    ensure_dock_pane(
+        lifecycle,
+        owner_id,
+        Uuid::parse_str(&owner.pane_id).map_err(|_| "Invalid Dock pane identity")?,
+    )
+}
+
+fn snapshot_for_owner(
+    session: &AppSessionSnapshot,
+    lifecycle: &SurfaceLifecycleModel,
+    owner_id: &str,
+) -> DockSnapshot {
+    let Some(dock) = session
+        .windows
+        .iter()
+        .find(|window| window.window_id.as_deref() == Some(owner_id))
+        .and_then(|window| window.dock.as_ref())
+    else {
+        return empty_snapshot(owner_id);
+    };
+    let focused_pane_id = lifecycle
+        .focused_surface(&dock.workspace_id)
+        .and_then(|id| lifecycle.owner_of_surface(id))
+        .and_then(|owner| Uuid::parse_str(&owner.pane_id).ok());
+    let mut panes = Vec::new();
+    let mut surfaces = Vec::new();
+    if let Some(layout) = &dock.layout {
+        collect_layout(layout, "root", None, lifecycle, &mut panes, &mut surfaces);
+    }
+    DockSnapshot {
+        owner_id: owner_id.to_string(),
+        focused_pane_id,
+        panes,
+        surfaces,
+    }
+}
+
+fn collect_layout(
+    layout: &SessionWorkspaceLayoutSnapshot,
+    placement: &str,
+    divider: Option<f64>,
+    lifecycle: &SurfaceLifecycleModel,
+    panes: &mut Vec<DockPaneSnapshot>,
+    surfaces: &mut Vec<DockSurfaceSnapshot>,
+) {
+    match layout {
+        SessionWorkspaceLayoutSnapshot::Pane(raw) => {
+            let Some(id) = raw
+                .pane_id
+                .as_deref()
+                .and_then(|id| Uuid::parse_str(id).ok())
+            else {
+                return;
+            };
+            let Some(pane) = lifecycle.pane(&id.to_string()) else {
+                return;
+            };
+            let surface_ids = pane
+                .surface_ids
+                .iter()
+                .filter_map(|surface_id| {
+                    let parsed = Uuid::parse_str(surface_id).ok()?;
+                    surfaces.push(surface_snapshot(lifecycle, surface_id)?);
+                    Some(parsed)
+                })
+                .collect();
+            panes.push(DockPaneSnapshot {
+                id,
+                surface_ids,
+                selected_surface_id: Uuid::parse_str(&pane.selected_surface_id).ok(),
+                placement: placement.into(),
+                divider_position: divider,
+            });
+        }
+        SessionWorkspaceLayoutSnapshot::Split(split) => {
+            let first_placement = if split.orientation == SessionSplitOrientation::Horizontal {
+                "split_left"
+            } else {
+                "split_up"
+            };
+            collect_layout(
+                &split.first,
+                first_placement,
+                Some(split.divider_position),
+                lifecycle,
+                panes,
+                surfaces,
+            );
+            let second_placement = if split.orientation == SessionSplitOrientation::Horizontal {
+                "split_right"
+            } else {
+                "split_down"
+            };
+            collect_layout(
+                &split.second,
+                second_placement,
+                Some(split.divider_position),
+                lifecycle,
+                panes,
+                surfaces,
+            );
+        }
+    }
+}
+
+fn surface_snapshot(lifecycle: &SurfaceLifecycleModel, id: &str) -> Option<DockSurfaceSnapshot> {
+    let record = lifecycle.surface(id)?;
+    let title = record
+        .metadata
+        .custom_title
+        .clone()
+        .unwrap_or_else(|| match record.kind {
+            SessionSurfaceKindSnapshot::Browser { .. } => "Browser".into(),
+            _ => "Terminal".into(),
+        });
+    let kind = if matches!(record.kind, SessionSurfaceKindSnapshot::Browser { .. }) {
+        DockSurfaceKind::Browser
+    } else {
+        DockSurfaceKind::Terminal
+    };
+    let runtime = DockRuntimeIntent::from_record(record);
+    Some(DockSurfaceSnapshot {
+        surface_id: Uuid::parse_str(id).ok()?,
+        pane_id: Uuid::parse_str(&record.pane_id).ok()?,
+        generation: record.generation,
+        kind,
+        title,
+        runtime,
+    })
+}
+
+fn empty_snapshot(owner_id: &str) -> DockSnapshot {
+    DockSnapshot {
+        owner_id: owner_id.to_string(),
+        focused_pane_id: None,
+        panes: Vec::new(),
+        surfaces: Vec::new(),
+    }
+}
+
+pub(crate) const DOCK_CHANGED_EVENT: &str = "cmux://dock-changed";
+
+struct DirectDockCommitJournal<C, T> {
+    claims: Vec<C>,
+    teardowns: Vec<T>,
+}
+
+enum DirectDockRollbackStep<C, T> {
+    RollbackClaim(C),
+    RecreateTeardown(T),
+}
+
+impl<C, T> Default for DirectDockCommitJournal<C, T> {
+    fn default() -> Self {
+        Self {
+            claims: Vec::new(),
+            teardowns: Vec::new(),
+        }
+    }
+}
+
+impl<C, T> DirectDockCommitJournal<C, T> {
+    fn stage_claim(&mut self, claim: C) {
+        self.claims.push(claim);
+    }
+
+    fn stage_teardown(&mut self, teardown: T) {
+        self.teardowns.push(teardown);
+    }
+
+    fn finish(&mut self) {
+        self.claims.clear();
+        self.teardowns.clear();
+    }
+
+    fn rollback<E>(
+        &mut self,
+        mut compensate: impl FnMut(DirectDockRollbackStep<C, T>) -> Result<(), E>,
+    ) -> Result<(), String>
+    where
+        E: ToString,
+    {
+        let mut failures = Vec::new();
+        for claim in self.claims.drain(..).rev() {
+            if let Err(error) = compensate(DirectDockRollbackStep::RollbackClaim(claim)) {
+                failures.push(error.to_string());
+            }
+        }
+        for teardown in self.teardowns.drain(..).rev() {
+            if let Err(error) = compensate(DirectDockRollbackStep::RecreateTeardown(teardown)) {
+                failures.push(error.to_string());
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(failures.join("; "))
+        }
+    }
+}
+
+fn transact_direct_dock_lifecycle<R, C, T>(
+    before: &AppSessionSnapshot,
+    journal: &mut DirectDockCommitJournal<C, T>,
+    mutate: impl FnOnce(
+        &mut AppSessionSnapshot,
+        &mut DirectDockCommitJournal<C, T>,
+    ) -> Result<R, String>,
+    persist: impl FnOnce(&AppSessionSnapshot) -> Result<AppSessionSnapshot, String>,
+    compensate: impl FnMut(DirectDockRollbackStep<C, T>) -> Result<(), String>,
+) -> Result<(R, AppSessionSnapshot), String> {
+    let mut candidate = before.clone();
+    let result = mutate(&mut candidate, journal)
+        .and_then(|value| persist(&candidate).map(|committed| (value, committed)));
+    match result {
+        Ok(committed) => {
+            journal.finish();
+            Ok(committed)
+        }
+        Err(primary) => match journal.rollback(compensate) {
+            Ok(()) => Err(primary),
+            Err(rollback) => Err(format!(
+                "{primary}; rollback compensation failed: {rollback}"
+            )),
+        },
+    }
+}
+
+trait DockRuntimeEffects {
+    fn stage_create(
+        &mut self,
+        owner_id: &str,
+        operation: &DockRuntimeOperation,
+    ) -> Result<(), String>;
+    fn publish_staged(&mut self) -> Result<(), String>;
+    fn rollback_staged(&mut self) -> Result<(), String>;
+    fn teardown(&mut self, operation: &DockRuntimeOperation) -> Result<(), String>;
+}
+
+fn create_with_runtime(
+    snapshot: &mut AppSessionSnapshot,
+    store: &DockStore,
+    owner_id: &str,
+    request: DockCreateRequest,
+    runtime: &mut impl DockRuntimeEffects,
+) -> Result<DockCreateResult, String> {
+    store.create_transactionally(snapshot, owner_id, request, |operation| {
+        runtime.stage_create(owner_id, operation)?;
+        if let Err(primary) = runtime.publish_staged() {
+            return match runtime.rollback_staged() {
+                Ok(()) => Err(primary),
+                Err(rollback) => Err(format!(
+                    "{primary}; rollback compensation failed: {rollback}"
+                )),
+            };
+        }
+        Ok(())
+    })
+}
+
+fn close_with_runtime(
+    snapshot: &mut AppSessionSnapshot,
+    store: &DockStore,
+    owner_id: &str,
+    surface_id: Uuid,
+    runtime: &mut impl DockRuntimeEffects,
+) -> Result<(), String> {
+    store.close_transactionally(snapshot, owner_id, surface_id, |operation| {
+        runtime.teardown(operation)
+    })
+}
+
+pub(crate) enum DockRuntimeClaim {
+    Terminal {
+        id: u32,
+    },
+    Browser {
+        owner_id: String,
+        surface_id: String,
+        url: String,
+    },
+}
+
+pub(crate) fn stage_runtime_for_control(
+    app: &AppHandle,
+    owner_id: &str,
+    operation: &DockRuntimeOperation,
+) -> Result<DockRuntimeClaim, String> {
+    let DockRuntimeOperation::Create {
+        surface_id, intent, ..
+    } = operation
+    else {
+        return Err("Expected Dock create runtime operation".into());
+    };
+    match intent {
+        DockRuntimeIntent::Terminal {
+            working_directory,
+            command,
+            environment,
+            tmux_start_command,
+        } => terminal_open_for_control(
+            app,
+            app.state::<TerminalState>().inner(),
+            Some(surface_id),
+            working_directory.as_deref(),
+            command.as_deref().or(tmux_start_command.as_deref()),
+            None,
+            (!environment.is_empty()).then_some(environment.clone()),
+            None,
+            None,
+        )
+        .map(|id| DockRuntimeClaim::Terminal { id }),
+        DockRuntimeIntent::Browser { url, .. } => {
+            browser_attach_webview_for_control(
+                app,
+                app.state::<BrowserWebviewState>().inner(),
+                owner_id,
+                surface_id,
+                Some(url),
+                None,
+                false,
+            )?;
+            Ok(DockRuntimeClaim::Browser {
+                owner_id: owner_id.into(),
+                surface_id: surface_id.clone(),
+                url: url.clone(),
+            })
+        }
+    }
+}
+
+pub(crate) fn publish_runtime_claim(
+    app: &AppHandle,
+    claim: &DockRuntimeClaim,
+) -> Result<(), String> {
+    if let DockRuntimeClaim::Browser {
+        owner_id,
+        surface_id,
+        url,
+    } = claim
+    {
+        browser_attach_webview_for_control(
+            app,
+            app.state::<BrowserWebviewState>().inner(),
+            owner_id,
+            surface_id,
+            Some(url),
+            None,
+            true,
+        )?;
+    }
+    Ok(())
+}
+
+pub(crate) fn rollback_runtime_claim(
+    app: &AppHandle,
+    claim: DockRuntimeClaim,
+) -> Result<(), String> {
+    match claim {
+        DockRuntimeClaim::Terminal { id } => {
+            let state = app.state::<TerminalState>();
+            terminal_shutdown_id_preserving_authority_for_control(state.inner(), id)?;
+            terminal_remove_id_for_control(state.inner(), id)
+        }
+        DockRuntimeClaim::Browser { surface_id, .. } => {
+            let state = app.state::<BrowserWebviewState>();
+            if browser_has_webview_for_control(state.inner(), &surface_id)? {
+                browser_close_webview_strict_for_control(state.inner(), &surface_id)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+pub(crate) fn teardown_runtime_for_control(
+    app: &AppHandle,
+    operation: &DockRuntimeOperation,
+) -> Result<(), String> {
+    let DockRuntimeOperation::Teardown {
+        surface_id, intent, ..
+    } = operation
+    else {
+        return Err("Expected Dock teardown runtime operation".into());
+    };
+    match intent {
+        DockRuntimeIntent::Terminal { .. } => {
+            let state = app.state::<TerminalState>();
+            for id in terminal_ids_for_panel_for_control(state.inner(), surface_id) {
+                terminal_shutdown_id_preserving_authority_for_control(state.inner(), id)?;
+                terminal_remove_id_for_control(state.inner(), id)?;
+            }
+        }
+        DockRuntimeIntent::Browser { .. } => {
+            let state = app.state::<BrowserWebviewState>();
+            if browser_has_webview_for_control(state.inner(), surface_id)? {
+                browser_close_webview_strict_for_control(state.inner(), surface_id)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn runtime_exists_for_control(
+    app: &AppHandle,
+    operation: &DockRuntimeOperation,
+) -> Result<bool, String> {
+    let DockRuntimeOperation::Teardown {
+        surface_id, intent, ..
+    } = operation
+    else {
+        return Err("Expected Dock teardown runtime operation".into());
+    };
+    match intent {
+        DockRuntimeIntent::Terminal { .. } => Ok(terminal_has_panel_for_control(
+            app.state::<TerminalState>().inner(),
+            surface_id,
+        )),
+        DockRuntimeIntent::Browser { .. } => {
+            browser_has_webview_for_control(app.state::<BrowserWebviewState>().inner(), surface_id)
+        }
+    }
+}
+
+struct DirectDockTeardownCompensation {
+    owner_id: String,
+    operation: DockRuntimeOperation,
+}
+
+struct ProductionDockRuntime<'a> {
+    app: &'a AppHandle,
+    owner_id: String,
+    staged: Option<DockRuntimeClaim>,
+    torn_down: Option<DirectDockTeardownCompensation>,
+}
+
+impl ProductionDockRuntime<'_> {
+    fn take_published_claim(&mut self) -> Result<DockRuntimeClaim, String> {
+        self.staged
+            .take()
+            .ok_or_else(|| "Dock runtime claim was not retained".to_string())
+    }
+
+    fn take_teardown(&mut self) -> Option<DirectDockTeardownCompensation> {
+        self.torn_down.take()
+    }
+}
+
+impl DockRuntimeEffects for ProductionDockRuntime<'_> {
+    fn stage_create(
+        &mut self,
+        owner_id: &str,
+        operation: &DockRuntimeOperation,
+    ) -> Result<(), String> {
+        self.staged = Some(stage_runtime_for_control(self.app, owner_id, operation)?);
+        Ok(())
+    }
+
+    fn publish_staged(&mut self) -> Result<(), String> {
+        if let Some(claim) = self.staged.as_ref() {
+            publish_runtime_claim(self.app, claim)?;
+        }
+        Ok(())
+    }
+
+    fn rollback_staged(&mut self) -> Result<(), String> {
+        if let Some(claim) = self.staged.take() {
+            rollback_runtime_claim(self.app, claim)?;
+        }
+        Ok(())
+    }
+
+    fn teardown(&mut self, operation: &DockRuntimeOperation) -> Result<(), String> {
+        let existed = runtime_exists_for_control(self.app, operation)?;
+        teardown_runtime_for_control(self.app, operation)?;
+        if existed {
+            self.torn_down = Some(DirectDockTeardownCompensation {
+                owner_id: self.owner_id.clone(),
+                operation: operation.clone(),
+            });
+        }
+        Ok(())
+    }
+}
+
+fn recreate_direct_dock_teardown(
+    app: &AppHandle,
+    compensation: DirectDockTeardownCompensation,
+) -> Result<(), String> {
+    if runtime_exists_for_control(app, &compensation.operation)? {
+        return Ok(());
+    }
+    let DockRuntimeOperation::Teardown {
+        surface_id,
+        generation,
+        intent,
+    } = compensation.operation
+    else {
+        return Err("Expected Dock teardown compensation".into());
+    };
+    let operation = DockRuntimeOperation::Create {
+        surface_id,
+        generation,
+        intent,
+    };
+    let claim = stage_runtime_for_control(app, &compensation.owner_id, &operation)?;
+    if let Err(primary) = publish_runtime_claim(app, &claim) {
+        return match rollback_runtime_claim(app, claim) {
+            Ok(()) => Err(primary),
+            Err(rollback) => Err(format!(
+                "{primary}; replacement rollback failed: {rollback}"
+            )),
+        };
+    }
+    Ok(())
+}
+
+fn compensate_direct_dock_step(
+    app: &AppHandle,
+    step: DirectDockRollbackStep<DockRuntimeClaim, DirectDockTeardownCompensation>,
+) -> Result<(), String> {
+    match step {
+        DirectDockRollbackStep::RollbackClaim(claim) => rollback_runtime_claim(app, claim),
+        DirectDockRollbackStep::RecreateTeardown(teardown) => {
+            recreate_direct_dock_teardown(app, teardown)
+        }
+    }
+}
+
+fn emit_snapshot(
+    app: &AppHandle,
+    session: &AppSessionSnapshot,
+    store: &DockStore,
+    owner_id: &str,
+) -> Result<DockSnapshot, String> {
+    let snapshot = store.snapshot(session, owner_id);
+    let _ = app.emit(DOCK_CHANGED_EVENT, &snapshot);
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub(crate) fn dock_snapshot(
+    owner_id: String,
+    state: State<'_, DockStore>,
+    session: State<'_, crate::session::SessionState>,
+) -> Result<DockSnapshot, String> {
+    Ok(state.snapshot(&session.snapshot_for_lifecycle()?, &owner_id))
+}
+
+#[tauri::command]
+pub(crate) fn dock_create(
+    app: AppHandle,
+    owner_id: String,
+    request: DockCreateRequest,
+    state: State<'_, DockStore>,
+    session: State<'_, crate::session::SessionState>,
+) -> Result<DockSnapshot, String> {
+    let _control_guard = session.lock_control_mutation()?;
+    let before = session.snapshot_for_lifecycle()?;
+    let mut runtime = ProductionDockRuntime {
+        app: &app,
+        owner_id: owner_id.clone(),
+        staged: None,
+        torn_down: None,
+    };
+    let mut journal = DirectDockCommitJournal::default();
+    let (_, committed) = transact_direct_dock_lifecycle(
+        &before,
+        &mut journal,
+        |candidate, journal| {
+            create_with_runtime(candidate, state.inner(), &owner_id, request, &mut runtime)?;
+            journal.stage_claim(runtime.take_published_claim()?);
+            Ok(())
+        },
+        |candidate| {
+            crate::session::commit_lifecycle_snapshot_for_control_if_current(
+                &app,
+                session.inner(),
+                &before,
+                candidate,
+                true,
+            )
+        },
+        |step| compensate_direct_dock_step(&app, step),
+    )?;
+    emit_snapshot(&app, &committed, state.inner(), &owner_id)
+}
+
+#[tauri::command]
+pub(crate) fn dock_select(
+    app: AppHandle,
+    owner_id: String,
+    pane_id: String,
+    surface_id: String,
+    focus: bool,
+    state: State<'_, DockStore>,
+    session: State<'_, crate::session::SessionState>,
+) -> Result<DockSnapshot, String> {
+    let pane_id = Uuid::parse_str(&pane_id).map_err(|_| "Invalid Dock pane identity")?;
+    let surface_id = Uuid::parse_str(&surface_id).map_err(|_| "Invalid Dock surface identity")?;
+    let _control_guard = session.lock_control_mutation()?;
+    let (_, committed) = session.transact_lifecycle(&app, |snapshot| {
+        state.select(snapshot, &owner_id, pane_id, surface_id)?;
+        if focus {
+            state.focus(snapshot, &owner_id, surface_id)?;
+        }
+        Ok(())
+    })?;
+    emit_snapshot(&app, &committed, state.inner(), &owner_id)
+}
+
+#[tauri::command]
+pub(crate) fn dock_focus(
+    app: AppHandle,
+    owner_id: String,
+    surface_id: String,
+    state: State<'_, DockStore>,
+    session: State<'_, crate::session::SessionState>,
+) -> Result<DockSnapshot, String> {
+    let surface_id = Uuid::parse_str(&surface_id).map_err(|_| "Invalid Dock surface identity")?;
+    let _control_guard = session.lock_control_mutation()?;
+    let (_, committed) = session.transact_lifecycle(&app, |snapshot| {
+        state.focus(snapshot, &owner_id, surface_id)
+    })?;
+    emit_snapshot(&app, &committed, state.inner(), &owner_id)
+}
+
+#[tauri::command]
+pub(crate) fn dock_close(
+    app: AppHandle,
+    owner_id: String,
+    surface_id: String,
+    state: State<'_, DockStore>,
+    session: State<'_, crate::session::SessionState>,
+) -> Result<DockSnapshot, String> {
+    let surface_id = Uuid::parse_str(&surface_id).map_err(|_| "Invalid Dock surface identity")?;
+    let _control_guard = session.lock_control_mutation()?;
+    let before = session.snapshot_for_lifecycle()?;
+    let mut runtime = ProductionDockRuntime {
+        app: &app,
+        owner_id: owner_id.clone(),
+        staged: None,
+        torn_down: None,
+    };
+    let mut journal = DirectDockCommitJournal::default();
+    let (_, committed) = transact_direct_dock_lifecycle(
+        &before,
+        &mut journal,
+        |candidate, journal| {
+            close_with_runtime(
+                candidate,
+                state.inner(),
+                &owner_id,
+                surface_id,
+                &mut runtime,
+            )?;
+            if let Some(teardown) = runtime.take_teardown() {
+                journal.stage_teardown(teardown);
+            }
+            Ok(())
+        },
+        |candidate| {
+            crate::session::commit_lifecycle_snapshot_for_control_if_current(
+                &app,
+                session.inner(),
+                &before,
+                candidate,
+                true,
+            )
+        },
+        |step| compensate_direct_dock_step(&app, step),
+    )?;
+    emit_snapshot(&app, &committed, state.inner(), &owner_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cmux_core::session::{decode_session, encode_session};
+
+    #[derive(Default)]
+    struct RecordingRuntime {
+        events: Vec<String>,
+        fail_create: bool,
+        fail_publish: bool,
+        fail_teardown: bool,
+        fail_rollback: bool,
+        staged_runtime_live: bool,
+    }
+
+    impl DockRuntimeEffects for RecordingRuntime {
+        fn stage_create(
+            &mut self,
+            owner_id: &str,
+            operation: &DockRuntimeOperation,
+        ) -> Result<(), String> {
+            let DockRuntimeOperation::Create { surface_id, .. } = operation else {
+                panic!("expected create")
+            };
+            self.events.push(format!("stage:{owner_id}:{surface_id}"));
+            if self.fail_create {
+                Err("create failed".into())
+            } else {
+                self.staged_runtime_live = true;
+                Ok(())
+            }
+        }
+
+        fn teardown(&mut self, operation: &DockRuntimeOperation) -> Result<(), String> {
+            let DockRuntimeOperation::Teardown { surface_id, .. } = operation else {
+                panic!("expected teardown")
+            };
+            self.events.push(format!("teardown:{surface_id}"));
+            (!self.fail_teardown)
+                .then_some(())
+                .ok_or_else(|| "teardown failed".into())
+        }
+
+        fn publish_staged(&mut self) -> Result<(), String> {
+            self.events.push("publish".into());
+            if self.fail_publish {
+                Err("publish failed".into())
+            } else {
+                self.staged_runtime_live = false;
+                Ok(())
+            }
+        }
+
+        fn rollback_staged(&mut self) -> Result<(), String> {
+            self.events.push("rollback".into());
+            if self.fail_rollback {
+                return Err("rollback failed".into());
+            }
+            self.staged_runtime_live = false;
+            Ok(())
+        }
+    }
+
+    fn app() -> (AppSessionSnapshot, String) {
+        let state = crate::session::SessionState::default();
+        let mut snapshot = state.snapshot_for_lifecycle().unwrap();
+        let owner = Uuid::new_v4().to_string();
+        snapshot.windows[0].window_id = Some(owner.clone());
+        (snapshot, owner)
+    }
+
+    fn terminal(title: &str) -> DockCreateRequest {
+        DockCreateRequest {
+            kind: DockSurfaceKind::Terminal,
+            title: Some(title.into()),
+            working_directory: Some("C:\\repo".into()),
+            command: Some("cargo test".into()),
+            environment: [("CI".into(), "0".into())].into(),
+            focus: true,
+            ..DockCreateRequest::default()
+        }
+    }
+
+    #[test]
+    fn creates_orders_focuses_and_closes_heterogeneous_surfaces() {
+        let (mut session, owner) = app();
+        let store = DockStore;
+        let first = store
+            .create(&mut session, &owner, terminal("Tests"))
+            .unwrap();
+        let browser = store
+            .create(
+                &mut session,
+                &owner,
+                DockCreateRequest {
+                    kind: DockSurfaceKind::Browser,
+                    title: Some("Docs".into()),
+                    url: Some("https://example.com".into()),
+                    pane_id: Some(first.pane_id),
+                    focus: false,
+                    ..DockCreateRequest::default()
+                },
+            )
+            .unwrap();
+        let second = store
+            .create(
+                &mut session,
+                &owner,
+                DockCreateRequest {
+                    placement: DockPlacement::SplitDown,
+                    source_surface_id: Some(first.surface_id),
+                    initial_divider_position: Some(0.4),
+                    ..terminal("Logs")
+                },
+            )
+            .unwrap();
+        let snapshot = store.snapshot(&session, &owner);
+        assert_eq!(snapshot.panes.len(), 2);
+        assert_eq!(
+            snapshot.panes[0].surface_ids,
+            vec![first.surface_id, browser.surface_id]
+        );
+        assert_eq!(snapshot.focused_surface_id(), Some(second.surface_id));
+        assert_eq!(snapshot.panes[1].divider_position, Some(0.4));
+        assert!(matches!(
+            snapshot.surface(browser.surface_id).unwrap().runtime,
+            DockRuntimeIntent::Browser { .. }
+        ));
+        store.focus(&mut session, &owner, first.surface_id).unwrap();
+        store
+            .close(&mut session, &owner, browser.surface_id)
+            .unwrap();
+        assert_eq!(
+            store.current(&session, &owner).unwrap().surface_id,
+            first.surface_id
+        );
+        assert_eq!(store.list(&session, &owner).len(), 2);
+    }
+
+    #[test]
+    fn all_split_directions_preserve_insertion_side_and_orientation() {
+        for (placement, expected) in [
+            (DockPlacement::SplitLeft, "split_left"),
+            (DockPlacement::SplitRight, "split_right"),
+            (DockPlacement::SplitUp, "split_up"),
+            (DockPlacement::SplitDown, "split_down"),
+        ] {
+            let (mut session, owner) = app();
+            let source = DockStore
+                .create(&mut session, &owner, terminal("source"))
+                .unwrap();
+            let created = DockStore
+                .create(
+                    &mut session,
+                    &owner,
+                    DockCreateRequest {
+                        placement,
+                        source_surface_id: Some(source.surface_id),
+                        focus: false,
+                        ..terminal("split")
+                    },
+                )
+                .unwrap();
+            let snapshot = DockStore.snapshot(&session, &owner);
+            assert_eq!(snapshot.pane(created.pane_id).unwrap().placement, expected);
+        }
+    }
+
+    #[test]
+    fn unfocused_create_stays_unfocused_and_browser_profile_round_trips() {
+        let (mut session, owner) = app();
+        let terminal = DockStore
+            .create(
+                &mut session,
+                &owner,
+                DockCreateRequest {
+                    focus: false,
+                    ..terminal("quiet")
+                },
+            )
+            .unwrap();
+        assert!(DockStore.current(&session, &owner).is_none());
+        let browser = DockStore
+            .create(
+                &mut session,
+                &owner,
+                DockCreateRequest {
+                    kind: DockSurfaceKind::Browser,
+                    pane_id: Some(terminal.pane_id),
+                    url: Some("https://profile.test".into()),
+                    browser_profile: Some("isolated".into()),
+                    focus: false,
+                    ..DockCreateRequest::default()
+                },
+            )
+            .unwrap();
+        let restored = decode_session(&encode_session(&session).unwrap()).unwrap();
+        assert_eq!(
+            DockStore
+                .snapshot(&restored, &owner)
+                .surface(browser.surface_id)
+                .unwrap()
+                .runtime,
+            DockRuntimeIntent::Browser {
+                url: "https://profile.test".into(),
+                profile: Some("isolated".into()),
+            }
+        );
+        assert!(DockStore.current(&restored, &owner).is_none());
+    }
+
+    #[test]
+    fn cross_container_move_and_app_session_round_trip_keep_one_owner_and_generation() {
+        let (mut session, owner) = app();
+        let store = DockStore;
+        let dock = store
+            .create(&mut session, &owner, terminal("Dock"))
+            .unwrap();
+        let before = model(&session).unwrap();
+        let workspace_surface = before
+            .snapshot()
+            .panes
+            .iter()
+            .find(|pane| pane.container == ContainerKind::Workspace)
+            .and_then(|pane| pane.surface_ids.first())
+            .cloned()
+            .unwrap();
+        let generation = before.surface(&workspace_surface).unwrap().generation;
+        store
+            .move_surface(&mut session, &owner, &workspace_surface, dock.pane_id, 0)
+            .unwrap();
+
+        let bytes = encode_session(&session).unwrap();
+        let decoded = decode_session(&bytes).unwrap();
+        let restored = model(&decoded).unwrap();
+        restored.validate_indexes().unwrap();
+        let moved_owner = restored.owner_of_surface(&workspace_surface).unwrap();
+        assert_eq!(moved_owner.pane_id, dock.pane_id.to_string());
+        assert_eq!(
+            restored.pane(&moved_owner.pane_id).unwrap().container,
+            ContainerKind::Dock
+        );
+        assert_eq!(
+            restored.surface(&workspace_surface).unwrap().generation,
+            generation
+        );
+        assert_eq!(decoded.windows[0].dock.as_ref().unwrap().surfaces.len(), 2);
+    }
+
+    #[test]
+    fn runtime_staging_failure_does_not_publish_dock_identity() {
+        let (mut session, owner) = app();
+        let before = session.clone();
+        let error = DockStore
+            .create_transactionally(&mut session, &owner, terminal("Fail"), |operation| {
+                assert!(matches!(operation, DockRuntimeOperation::Create { .. }));
+                Err::<(), _>("runtime unavailable")
+            })
+            .unwrap_err();
+        assert_eq!(error, "runtime unavailable");
+        assert_eq!(session, before);
+    }
+
+    #[test]
+    fn direct_runtime_seam_stages_before_create_and_tears_down_before_close_publication() {
+        let (mut session, owner) = app();
+        let before = session.clone();
+        let mut failing_create = RecordingRuntime {
+            fail_create: true,
+            ..RecordingRuntime::default()
+        };
+        assert_eq!(
+            create_with_runtime(
+                &mut session,
+                &DockStore,
+                &owner,
+                terminal("fail"),
+                &mut failing_create,
+            )
+            .unwrap_err(),
+            "create failed"
+        );
+        assert_eq!(session, before);
+        assert_eq!(failing_create.events.len(), 1);
+
+        let mut failing_publish = RecordingRuntime {
+            fail_publish: true,
+            ..RecordingRuntime::default()
+        };
+        assert_eq!(
+            create_with_runtime(
+                &mut session,
+                &DockStore,
+                &owner,
+                terminal("fail publish"),
+                &mut failing_publish,
+            )
+            .unwrap_err(),
+            "publish failed"
+        );
+        assert_eq!(session, before);
+        assert!(failing_publish.events[0].starts_with(&format!("stage:{owner}:")));
+        assert_eq!(
+            &failing_publish.events[1..],
+            &["publish".to_string(), "rollback".to_string()]
+        );
+
+        let mut runtime = RecordingRuntime::default();
+        let created = create_with_runtime(
+            &mut session,
+            &DockStore,
+            &owner,
+            terminal("live"),
+            &mut runtime,
+        )
+        .unwrap();
+        assert!(runtime.events[0].starts_with(&format!("stage:{owner}:")));
+        assert_eq!(runtime.events.last().map(String::as_str), Some("publish"));
+
+        let before_close = session.clone();
+        let mut failing_close = RecordingRuntime {
+            fail_teardown: true,
+            ..RecordingRuntime::default()
+        };
+        assert_eq!(
+            close_with_runtime(
+                &mut session,
+                &DockStore,
+                &owner,
+                created.surface_id,
+                &mut failing_close,
+            )
+            .unwrap_err(),
+            "teardown failed"
+        );
+        assert_eq!(session, before_close);
+        assert!(failing_close.events[0].starts_with("teardown:"));
+    }
+
+    #[test]
+    fn direct_publish_and_runtime_rollback_failures_are_aggregated_without_silent_leak() {
+        let (mut session, owner) = app();
+        let before = session.clone();
+        let mut runtime = RecordingRuntime {
+            fail_publish: true,
+            fail_rollback: true,
+            ..RecordingRuntime::default()
+        };
+
+        let error = create_with_runtime(
+            &mut session,
+            &DockStore,
+            &owner,
+            terminal("publish and rollback fail"),
+            &mut runtime,
+        )
+        .unwrap_err();
+        let mut violations = Vec::new();
+        if !error.contains("publish failed") || !error.contains("rollback failed") {
+            violations.push(format!(
+                "primary and rollback failures were not aggregated: {error}"
+            ));
+        }
+        if runtime.staged_runtime_live && !error.contains("rollback failed") {
+            violations.push(
+                "failed rollback left the staged runtime live without reporting the leak".into(),
+            );
+        }
+        if session != before {
+            violations.push("failed direct Dock create changed the authoritative snapshot".into());
+        }
+        assert!(violations.is_empty(), "{}", violations.join("; "));
+    }
+
+    #[test]
+    fn production_main_window_label_is_preserved_as_dock_owner() {
+        let state = crate::session::SessionState::default();
+        let mut session = state.snapshot_for_lifecycle().unwrap();
+        assert_eq!(session.windows[0].window_id.as_deref(), Some("main"));
+        let created = DockStore
+            .create(&mut session, "main", terminal("Main Dock"))
+            .unwrap();
+        assert_eq!(session.windows[0].window_id.as_deref(), Some("main"));
+        assert_eq!(
+            DockStore.current(&session, "main").unwrap().surface_id,
+            created.surface_id
+        );
+        DockStore
+            .close(&mut session, "main", created.surface_id)
+            .unwrap();
+        assert!(DockStore.snapshot(&session, "main").surfaces.is_empty());
+        assert_eq!(session.windows[0].window_id.as_deref(), Some("main"));
+    }
+}
+
+#[cfg(test)]
+#[path = "dock/direct_transaction_red.rs"]
+mod direct_transaction_red;

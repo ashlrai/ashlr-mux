@@ -229,6 +229,7 @@ mod tests {
             windows: vec![SessionWindowSnapshot {
                 window_id: Some("window-1".to_owned()),
                 selected_workspace_id: None,
+                dock: None,
                 tab_manager: SessionTabManagerSnapshot {
                     selected_workspace_index,
                     workspaces,

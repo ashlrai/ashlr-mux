@@ -657,6 +657,7 @@ dependencies = [
  "embed-resource",
  "mime_guess",
  "native-tls",
+ "parking_lot",
  "serde",
  "serde_json",
  "tauri",
