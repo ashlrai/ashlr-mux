@@ -192,16 +192,24 @@ fn remote_terminal_action_requests_new_window_and_defers_identity_to_runtime_arr
 }
 
 #[test]
-fn explicit_surface_must_belong_to_the_resolved_workspace_and_window() {
+fn explicit_surface_resolves_in_its_owner_workspace() {
+    // Differential remediation R6a: canonical resolves an explicit tab target
+    // in its OWNER workspace (global locateSurface) even when the routing
+    // selectors point elsewhere — capture cli.tab_action_pin succeeds with
+    // the owner workspace in the reply.
     let snapshot = two_window_snapshot();
-    for params in [
-        json!({"window_id": W1, "workspace_id": WS1, "surface_id": OTHER, "action": "pin"}),
-        json!({"window_id": W2, "workspace_id": WS2, "surface_id": A, "action": "pin"}),
+    for (params, expected) in [
+        (
+            json!({"window_id": W1, "workspace_id": WS1, "surface_id": OTHER, "action": "pin"}),
+            OTHER,
+        ),
+        (
+            json!({"window_id": W2, "workspace_id": WS2, "surface_id": A, "action": "pin"}),
+            A,
+        ),
     ] {
         let transition = dispatch(&snapshot, params);
-        let data = assert_error(&transition, "not_found", "Tab not found");
-        assert!(data["surface_id"].is_string());
-        assert_eq!(transition.snapshot, snapshot);
+        assert_eq!(ok(&transition)["surface_id"], expected);
     }
 }
 
