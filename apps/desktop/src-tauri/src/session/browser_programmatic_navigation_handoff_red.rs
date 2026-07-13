@@ -31,6 +31,7 @@ enum FakeHandoffState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FakeReservationOwner {
     Mutation(u64),
+    Handoff(u64),
     Callback(u64),
 }
 
@@ -57,6 +58,7 @@ struct FakeProgrammaticNavigationCoordinator {
     events: Mutex<Vec<FakeNavigationKey>>,
     lock_order: Mutex<Vec<&'static str>>,
     registry_locks_held: AtomicUsize,
+    reentrant_mutation_rejections: AtomicUsize,
 }
 
 impl FakeProgrammaticNavigationCoordinator {
@@ -76,11 +78,9 @@ impl FakeProgrammaticNavigationCoordinator {
     fn callback(self: &Arc<Self>, key: &FakeNavigationKey) -> FakeCallbackOutcome {
         self.note_lock("navigation_handoffs");
         let mut handoffs = self.handoffs.lock().unwrap();
-        let Some(state) = handoffs.get_mut(key) else {
-            self.leave_lock();
-            return FakeCallbackOutcome::Ignored;
-        };
-        if let FakeHandoffState::NavigateInFlight { callback_observed } = state {
+        if let Some(FakeHandoffState::NavigateInFlight { callback_observed }) =
+            handoffs.get_mut(key)
+        {
             self.note_lock("reservations");
             let reservations = self.reservations.lock().unwrap();
             if reservations.get(&key.panel_id)
@@ -102,8 +102,11 @@ impl FakeProgrammaticNavigationCoordinator {
         let mut reservations = self.reservations.lock().unwrap();
         self.note_lock("webviews");
         let webviews = self.webviews.lock().unwrap();
-        if reservations.contains_key(&key.panel_id)
-            || webviews.get(&key.panel_id).copied() != Some(key.runtime_id)
+        let expected_owner = handoffs
+            .contains_key(key)
+            .then_some(FakeReservationOwner::Handoff(key.runtime_id));
+        if webviews.get(&key.panel_id).copied() != Some(key.runtime_id)
+            || reservations.get(&key.panel_id).copied() != expected_owner
         {
             self.leave_lock();
             drop(webviews);
@@ -112,14 +115,14 @@ impl FakeProgrammaticNavigationCoordinator {
             self.leave_lock();
             return FakeCallbackOutcome::Ignored;
         }
-        reservations.insert(
+        let previous_owner = reservations.insert(
             key.panel_id.clone(),
             FakeReservationOwner::Callback(key.runtime_id),
         );
+        assert_eq!(previous_owner, expected_owner);
         self.note_lock("network_records");
         self.records.lock().unwrap().push(key.clone());
         self.leave_lock();
-        handoffs.remove(key);
         self.leave_lock();
         drop(webviews);
         self.leave_lock();
@@ -127,8 +130,13 @@ impl FakeProgrammaticNavigationCoordinator {
         self.leave_lock();
         drop(handoffs);
 
-        self.emit(key);
-        self.reservations.lock().unwrap().remove(&key.panel_id);
+        let delegated = expected_owner.is_some();
+        self.emit(key, delegated);
+        self.finish_publication(
+            key,
+            delegated,
+            FakeReservationOwner::Callback(key.runtime_id),
+        );
         FakeCallbackOutcome::Published
     }
 
@@ -172,22 +180,21 @@ impl FakeProgrammaticNavigationCoordinator {
                 self.note_lock("network_records");
                 self.records.lock().unwrap().push(key.clone());
                 self.leave_lock();
-                handoffs.remove(key);
                 self.leave_lock();
                 drop(webviews);
                 self.leave_lock();
                 drop(reservations);
                 self.leave_lock();
                 drop(handoffs);
-                self.emit(key);
-                self.reservations.lock().unwrap().remove(&key.panel_id);
+                self.emit(key, true);
+                self.finish_publication(key, true, FakeReservationOwner::Mutation(key.runtime_id));
             }
             FakeHandoffState::NavigateInFlight {
                 callback_observed: false,
             } => {
                 handoffs.insert(key.clone(), FakeHandoffState::CallbackResponsible);
                 while_handoff_locked();
-                self.release_mutation_while_handoff_locked(key);
+                self.transfer_mutation_to_handoff_while_locked(key);
                 self.leave_lock();
             }
             FakeHandoffState::CallbackResponsible => {
@@ -208,13 +215,72 @@ impl FakeProgrammaticNavigationCoordinator {
         self.leave_lock();
     }
 
-    fn emit(&self, key: &FakeNavigationKey) {
+    fn transfer_mutation_to_handoff_while_locked(&self, key: &FakeNavigationKey) {
+        self.note_lock("reservations");
+        let replaced = self.reservations.lock().unwrap().insert(
+            key.panel_id.clone(),
+            FakeReservationOwner::Handoff(key.runtime_id),
+        );
+        assert_eq!(
+            replaced,
+            Some(FakeReservationOwner::Mutation(key.runtime_id))
+        );
+        self.leave_lock();
+    }
+
+    fn try_detach_or_replace(&self, key: &FakeNavigationKey) -> Result<(), String> {
+        let reservations = self.reservations.lock().unwrap();
+        if reservations.contains_key(&key.panel_id) {
+            return Err(format!("browser panel {} is reserved", key.panel_id));
+        }
+        drop(reservations);
+        self.webviews.lock().unwrap().remove(&key.panel_id);
+        Ok(())
+    }
+
+    fn emit(&self, key: &FakeNavigationKey, handoff_expected: bool) {
         assert_eq!(
             self.registry_locks_held.load(Ordering::SeqCst),
             0,
             "event emit must hold no coordinator or registry mutex"
         );
+        assert!(
+            matches!(
+                self.reservations
+                    .lock()
+                    .unwrap()
+                    .get(&key.panel_id)
+                    .copied(),
+                Some(FakeReservationOwner::Mutation(runtime_id))
+                    | Some(FakeReservationOwner::Callback(runtime_id))
+                    if runtime_id == key.runtime_id
+            ),
+            "emit must retain the exact runtime's publishing reservation"
+        );
+        assert_eq!(
+            self.handoffs.lock().unwrap().contains_key(key),
+            handoff_expected,
+            "the exact delegated handoff must remain owned through emit"
+        );
+        assert!(
+            self.try_detach_or_replace(key).is_err(),
+            "exact logical reservation must reject reentrant detach/replacement through emit"
+        );
+        self.reentrant_mutation_rejections
+            .fetch_add(1, Ordering::SeqCst);
         self.events.lock().unwrap().push(key.clone());
+    }
+
+    fn finish_publication(
+        &self,
+        key: &FakeNavigationKey,
+        handoff_expected: bool,
+        expected_owner: FakeReservationOwner,
+    ) {
+        let mut handoffs = self.handoffs.lock().unwrap();
+        assert_eq!(handoffs.remove(key).is_some(), handoff_expected);
+        let mut reservations = self.reservations.lock().unwrap();
+        assert_eq!(reservations.remove(&key.panel_id), Some(expected_owner));
     }
 
     fn note_lock(&self, name: &'static str) {
@@ -227,6 +293,10 @@ impl FakeProgrammaticNavigationCoordinator {
     }
 
     fn assert_exactly_once(&self, key: &FakeNavigationKey) {
+        self.assert_publication_count(key, 1);
+    }
+
+    fn assert_publication_count(&self, key: &FakeNavigationKey, expected: usize) {
         assert_eq!(
             self.records
                 .lock()
@@ -234,7 +304,7 @@ impl FakeProgrammaticNavigationCoordinator {
                 .iter()
                 .filter(|candidate| *candidate == key)
                 .count(),
-            1
+            expected
         );
         assert_eq!(
             self.events
@@ -243,7 +313,7 @@ impl FakeProgrammaticNavigationCoordinator {
                 .iter()
                 .filter(|candidate| *candidate == key)
                 .count(),
-            1
+            expected
         );
     }
 }
@@ -269,6 +339,35 @@ fn early_callback_defers_and_command_publishes_exactly_once() {
     );
     coordinator.assert_exactly_once(&key);
     assert!(coordinator.reservations.lock().unwrap().is_empty());
+    assert!(coordinator.handoffs.lock().unwrap().is_empty());
+    assert_eq!(
+        coordinator
+            .reentrant_mutation_rejections
+            .load(Ordering::SeqCst),
+        1
+    );
+}
+
+#[test]
+fn early_success_does_not_suppress_a_later_legitimate_same_url_navigation() {
+    let coordinator = Arc::new(FakeProgrammaticNavigationCoordinator::default());
+    let key = FakeNavigationKey::new("panel-a", 71, "https://same.example/path");
+    coordinator
+        .webviews
+        .lock()
+        .unwrap()
+        .insert("panel-a".into(), 71);
+    coordinator.begin(&key);
+    assert_eq!(
+        coordinator.callback(&key),
+        FakeCallbackOutcome::DeferredToCommand
+    );
+    coordinator
+        .complete(&key, FakeNavigateOutcome::Success, || {})
+        .unwrap();
+
+    assert_eq!(coordinator.callback(&key), FakeCallbackOutcome::Published);
+    coordinator.assert_publication_count(&key, 2);
 }
 
 #[test]
@@ -311,13 +410,45 @@ fn late_callback_is_delegated_without_a_release_gap() {
         coordinator.complete(&key, FakeNavigateOutcome::Success, || {}),
         Ok(())
     );
+    assert_eq!(
+        coordinator
+            .reservations
+            .lock()
+            .unwrap()
+            .get("panel-a")
+            .copied(),
+        Some(FakeReservationOwner::Handoff(9))
+    );
+    assert!(coordinator.try_detach_or_replace(&key).is_err());
     assert_eq!(coordinator.callback(&key), FakeCallbackOutcome::Published);
     coordinator.assert_exactly_once(&key);
     assert!(coordinator.reservations.lock().unwrap().is_empty());
 }
 
 #[test]
-fn callback_waiting_at_completion_observes_callback_responsibility_after_release() {
+fn late_success_consumes_handoff_then_allows_same_url_user_navigation() {
+    let coordinator = Arc::new(FakeProgrammaticNavigationCoordinator::default());
+    let key = FakeNavigationKey::new("panel-a", 91, "https://same-late.example/path");
+    coordinator
+        .webviews
+        .lock()
+        .unwrap()
+        .insert("panel-a".into(), 91);
+    coordinator.begin(&key);
+    coordinator
+        .complete(&key, FakeNavigateOutcome::Success, || {})
+        .unwrap();
+
+    assert!(coordinator.try_detach_or_replace(&key).is_err());
+    assert_eq!(coordinator.callback(&key), FakeCallbackOutcome::Published);
+    assert!(coordinator.handoffs.lock().unwrap().is_empty());
+    assert!(coordinator.reservations.lock().unwrap().is_empty());
+    assert_eq!(coordinator.callback(&key), FakeCallbackOutcome::Published);
+    coordinator.assert_publication_count(&key, 2);
+}
+
+#[test]
+fn callback_waiting_at_completion_adopts_transferred_handoff_reservation() {
     let coordinator = Arc::new(FakeProgrammaticNavigationCoordinator::default());
     let key = FakeNavigationKey::new("panel-a", 10, "https://immediate.example");
     coordinator
@@ -348,7 +479,7 @@ fn callback_waiting_at_completion_observes_callback_responsibility_after_release
 }
 
 #[test]
-fn stale_runtime_and_url_mismatch_cannot_claim_the_handoff_or_duplicate() {
+fn stale_runtime_and_url_mismatch_cannot_claim_the_handoff() {
     let coordinator = Arc::new(FakeProgrammaticNavigationCoordinator::default());
     let key = FakeNavigationKey::new("panel-a", 11, "https://right.example");
     coordinator
@@ -378,7 +509,6 @@ fn stale_runtime_and_url_mismatch_cannot_claim_the_handoff_or_duplicate() {
         .complete(&key, FakeNavigateOutcome::Success, || {})
         .unwrap();
     assert_eq!(coordinator.callback(&key), FakeCallbackOutcome::Published);
-    assert_eq!(coordinator.callback(&key), FakeCallbackOutcome::Ignored);
     coordinator.assert_exactly_once(&key);
 }
 
@@ -402,12 +532,38 @@ fn navigate_error_or_cancel_clears_handoff_without_record_event_or_reservation()
         );
 
         assert!(coordinator.complete(&key, outcome, || {}).is_err());
-        assert_eq!(coordinator.callback(&key), FakeCallbackOutcome::Ignored);
         assert!(coordinator.records.lock().unwrap().is_empty());
         assert!(coordinator.events.lock().unwrap().is_empty());
         assert!(coordinator.reservations.lock().unwrap().is_empty());
         assert!(coordinator.handoffs.lock().unwrap().is_empty());
+
+        assert_eq!(
+            coordinator.callback(&key),
+            FakeCallbackOutcome::Published,
+            "without a suppression tombstone, a later native callback is a real navigation"
+        );
+        coordinator.assert_exactly_once(&key);
     }
+}
+
+#[test]
+fn error_without_native_callback_cannot_suppress_later_same_url_user_navigation() {
+    let coordinator = Arc::new(FakeProgrammaticNavigationCoordinator::default());
+    let key = FakeNavigationKey::new("panel-a", 131, "https://retry.example/path");
+    coordinator
+        .webviews
+        .lock()
+        .unwrap()
+        .insert("panel-a".into(), 131);
+    coordinator.begin(&key);
+    assert!(coordinator
+        .complete(&key, FakeNavigateOutcome::Error, || {})
+        .is_err());
+    assert!(coordinator.handoffs.lock().unwrap().is_empty());
+    assert!(coordinator.reservations.lock().unwrap().is_empty());
+
+    assert_eq!(coordinator.callback(&key), FakeCallbackOutcome::Published);
+    coordinator.assert_exactly_once(&key);
 }
 
 #[test]
@@ -511,6 +667,95 @@ fn production_has_an_exact_programmatic_navigation_handoff() {
         cursor = position + lock.len();
     }
     assert!(!publish.contains(".emit("));
+}
+
+#[test]
+fn production_removes_completed_and_cancelled_handoffs_without_a_tombstone() {
+    let browser = include_str!("../browser.rs");
+    let phase = source_item(browser, "enum BrowserProgrammaticNavigationPhase");
+    assert!(
+        !phase.contains("SuppressCallback"),
+        "a persistent suppression phase can swallow a later legitimate same-URL navigation"
+    );
+
+    let cancel = source_item(browser, "fn cancel_browser_programmatic_navigation(");
+    assert!(
+        cancel.contains(".remove("),
+        "navigate error/cancel must remove its handoff immediately"
+    );
+
+    let callback = source_item(
+        browser,
+        "fn observe_browser_programmatic_navigation_callback",
+    );
+    assert!(
+        !callback.contains("SuppressCallback"),
+        "late callback consumption must not leave a suppression tombstone"
+    );
+    assert!(
+        callback.contains(".remove(")
+            || callback.contains("consume_browser_programmatic_navigation")
+            || callback.contains("complete_browser_programmatic_navigation_callback"),
+        "late callback adoption must consume the matching handoff"
+    );
+}
+
+#[test]
+fn production_early_command_emit_retains_exact_logical_reservation() {
+    let browser = include_str!("../browser.rs");
+    let complete = source_item(browser, "fn complete_browser_programmatic_navigation(");
+    let early_start = complete
+        .find("callback_observed: true")
+        .expect("early-observed completion branch");
+    let late_start = complete[early_start..]
+        .find("callback_observed: false")
+        .map(|offset| early_start + offset)
+        .expect("late completion branch");
+    let early = &complete[early_start..late_start];
+    let emit = early.find("app.emit(").expect("early command event emit");
+    let release = early.find("mutation_reservation.release()");
+    assert!(
+        release.is_none_or(|release| emit < release),
+        "early command publication must emit while its exact logical reservation remains active"
+    );
+}
+
+#[test]
+fn production_late_delegation_keeps_detach_and_replacement_excluded() {
+    let browser = include_str!("../browser.rs");
+    let complete = source_item(browser, "fn complete_browser_programmatic_navigation(");
+    let late_start = complete
+        .find("callback_observed: false")
+        .expect("late completion branch");
+    let delegated_start = complete[late_start..]
+        .find("BrowserProgrammaticNavigationPhase::CallbackResponsible")
+        .map(|offset| late_start + offset)
+        .expect("already-delegated completion branch");
+    let late = &complete[late_start..delegated_start];
+    let detach = source_item(browser, "pub(crate) fn detach_browser_panels_for_control(");
+    let retains_registry_reservation = !late.contains("reserved_panel_ids.remove(");
+    let detach_honors_handoff_reservation = detach.contains("CallbackResponsible")
+        || detach.contains("programmatic_navigation_is_reserved")
+        || detach.contains("navigation_handoff_reservation");
+    assert!(
+        retains_registry_reservation || detach_honors_handoff_reservation,
+        "late delegation must transfer, not drop, logical reservation ownership"
+    );
+
+    let callback = source_item(
+        browser,
+        "fn observe_browser_programmatic_navigation_callback",
+    );
+    let callback_responsible = callback
+        .find("CallbackResponsible")
+        .map(|start| &callback[start..])
+        .expect("callback-responsible adoption branch");
+    assert!(
+        callback_responsible.contains("adopt")
+            || callback_responsible.contains("transfer")
+            || !callback_responsible.contains("reserve_browser_navigation_callback("),
+        "late callback must atomically adopt the existing handoff reservation"
+    );
 }
 
 fn callback_body(source: &str) -> &str {
