@@ -60,6 +60,7 @@ export type { SessionCanvasPaneSnapshot } from "./SessionCanvasPaneSnapshot";
 export type { SessionDockSnapshot } from "./SessionDockSnapshot";
 export type { SessionGitBranchSnapshot } from "./SessionGitBranchSnapshot";
 export type { SessionPaneLayoutSnapshot } from "./SessionPaneLayoutSnapshot";
+export type { SessionPanePublishedSelectionSnapshot } from "./SessionPanePublishedSelectionSnapshot";
 export type { SessionPanelGitBranchSnapshot } from "./SessionPanelGitBranchSnapshot";
 export type { SessionPanelListeningPortsSnapshot } from "./SessionPanelListeningPortsSnapshot";
 export type { SessionPanelPinSnapshot } from "./SessionPanelPinSnapshot";
