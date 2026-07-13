@@ -27,6 +27,7 @@ on:
         options:
           - pane_surface_lifecycle
           - workspace_lifecycle
+          - window_lifecycle
         default: pane_surface_lifecycle
       manifest:
         description: >-
