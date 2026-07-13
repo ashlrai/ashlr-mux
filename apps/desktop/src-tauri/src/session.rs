@@ -913,8 +913,8 @@ fn remint_noncanonical_identities(snapshot: &mut AppSessionSnapshot) -> bool {
                         created_surfaces.push(surface);
                     }
                 }
+                let restored_saved_surface = !panel_ids.is_empty();
                 if panel_ids.is_empty() {
-                    authoritative?;
                     let scaffold_surface_id = mint(used_surfaces);
                     aliases
                         .surface_owners
@@ -930,11 +930,15 @@ fn remint_noncanonical_identities(snapshot: &mut AppSessionSnapshot) -> bool {
                     });
                 }
                 pane.pane_id = Some(new_pane_id);
-                pane.selected_panel_id = selected
+                let restored_selection = selected
                     .as_ref()
-                    .and_then(|selected| local_aliases.get(selected).cloned())
-                    .or_else(|| panel_ids.first().cloned());
-                aliases.last_selected_surface = pane.selected_panel_id.clone();
+                    .and_then(|selected| local_aliases.get(selected).cloned());
+                let advances_focus =
+                    restored_selection.is_some() || (selected.is_none() && restored_saved_surface);
+                pane.selected_panel_id = restored_selection.or_else(|| panel_ids.first().cloned());
+                if advances_focus {
+                    aliases.last_selected_surface = pane.selected_panel_id.clone();
+                }
                 pane.panel_ids = panel_ids;
                 Some(SessionWorkspaceLayoutSnapshot::Pane(pane))
             }
