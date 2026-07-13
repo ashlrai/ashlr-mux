@@ -474,7 +474,11 @@ fn pane_resize_uses_injected_dimensions_and_absolute_validation_precedence() {
     let value = ok_value(&resized);
     assert_eq!(value["split_id"], json!("split-root"));
     assert_eq!(value["old_divider_position"], json!(0.5));
-    assert_eq!(value["new_divider_position"], json!(0.6));
+    // Differential remediation D4: canonical divides by rendered-frame axis
+    // pixels, which this port does not track (axisPixels falls back to 1 like
+    // the live canonical capture), so absolute targets clamp — the viewport
+    // is no longer substituted for frame pixels.
+    assert_eq!(value["new_divider_position"], json!(0.9));
     assert_eq!(
         resized
             .events

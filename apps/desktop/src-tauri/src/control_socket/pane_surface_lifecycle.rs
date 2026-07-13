@@ -3268,6 +3268,21 @@ fn surface_move(
             None,
         );
     };
+    // Canonical rejects both anchors right after surface_id validation and
+    // BEFORE the surface lookup (v2SurfaceMove, TerminalController.swift:
+    // 4726-4736 at pinned e1825d40d; capture surface_move.both_anchors_rejected).
+    let anchor_count = ["before_surface_id", "after_surface_id"]
+        .iter()
+        .filter(|key| params.get(**key).and_then(Value::as_str).is_some())
+        .count();
+    if anchor_count > 1 {
+        return error(
+            snapshot,
+            "invalid_params",
+            "Specify at most one of before_surface_id or after_surface_id",
+            None,
+        );
+    }
     let mut model = match SurfaceLifecycleModel::from_app_session(snapshot) {
         Ok(model) => model,
         Err(_) => {
@@ -3436,7 +3451,16 @@ fn pane_resize(
     let Some(pane_id) = pane_id else {
         return error(snapshot, "not_found", "No focused pane", None);
     };
-    let (width, height) = context.viewport_size.unwrap_or((1_000.0, 800.0));
+    // Canonical divides by the split's RENDERED axis pixels
+    // (TerminalControllerPaneResizeSupport.swift:84-92 axisPixels =
+    // max(frameUnion, 1); ControlPaneContext.swift:530-532). This port tracks
+    // no rendered frames — the same state the live canonical capture ran in
+    // (zero frames => axisPixels 1), so pass zero extents and let the core's
+    // max(1.0) fallback reproduce the capture-pinned step math
+    // (REMEDIATION.md divergence 4; capture: 0.5->0.1 amount 2, 0.9->0.1
+    // amount 1). The webview viewport is NOT a substitute for frame pixels.
+    let (width, height) = (0.0, 0.0);
+    let mut echo = serde_json::Map::new();
     let result = if absolute {
         let axis = match params.get("absolute_axis").and_then(Value::as_str) {
             Some("horizontal") => SessionSplitOrientation::Horizontal,
@@ -3462,6 +3486,16 @@ fn pane_resize(
                 None,
             );
         };
+        echo.insert(
+            "absolute_axis".into(),
+            params.get("absolute_axis").cloned().unwrap_or(Value::Null),
+        );
+        // Echo the request value verbatim so integer targets do not get
+        // rewritten as floats on the wire.
+        echo.insert(
+            "target_pixels".into(),
+            params.get("target_pixels").cloned().unwrap_or(Value::Null),
+        );
         session_ops::resize_pane_absolute(workspace, &pane_id, axis, target, width, height)
     } else {
         let direction = match params.get("direction").and_then(Value::as_str) {
@@ -3490,6 +3524,11 @@ fn pane_resize(
                 None,
             );
         };
+        echo.insert(
+            "direction".into(),
+            params.get("direction").cloned().unwrap_or(Value::Null),
+        );
+        echo.insert("amount".into(), json!(amount));
         session_ops::resize_pane_relative(workspace, &pane_id, direction, amount, width, height)
     };
     let result = match result {
@@ -3503,7 +3542,13 @@ fn pane_resize(
             )
         }
     };
-    let result_payload = json!({"window_id":scope.window_id,"workspace_id":scope.workspace_id,"pane_id":pane_id,"split_id":result.split_id,"old_divider_position":result.old_divider_position,"new_divider_position":result.new_divider_position});
+    // Canonical relative responses echo direction+amount and absolute
+    // responses echo absolute_axis+target_pixels
+    // (ControlPaneContext.swift:497-546; capture pane_resize.relative_happy).
+    let mut result_payload = json!({"window_id":scope.window_id,"workspace_id":scope.workspace_id,"pane_id":pane_id,"split_id":result.split_id,"old_divider_position":result.old_divider_position,"new_divider_position":result.new_divider_position});
+    if let Value::Object(object) = &mut result_payload {
+        object.extend(echo);
+    }
     let completion = LifecycleEvent {
         name: "pane.resized",
         category: "pane",
