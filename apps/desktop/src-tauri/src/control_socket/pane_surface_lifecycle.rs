@@ -1683,6 +1683,17 @@ fn surface_create(
     {
         return error(snapshot, "internal_error", "Failed to create surface", None);
     }
+    // D7: canonical bonsplit transiently selects the created tab and then
+    // restores the previous selection when focus was not requested
+    // (preserveFocusWhenUnfocused; capture surface_create.terminal_happy /
+    // surface_list.rows_shape pin selected_in_pane=true on the prior tab).
+    if !super::bool_param(params, &["focus"]).unwrap_or(false) {
+        if let (Some(previous), Some(layout)) =
+            (inherit_source.as_deref(), workspace.layout.as_mut())
+        {
+            let _ = session_ops::select_panel(layout, previous);
+        }
+    }
     if let Some(records) = workspace.surfaces.as_mut() {
         records.push(cmux_core::session::SessionSurfaceSnapshot {
             surface_id: surface_id.clone(),
