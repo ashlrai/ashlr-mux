@@ -30,10 +30,7 @@ impl DeferredPanelIdsRed {
         Option<String>,
         Vec<SessionPanelTerminalStartupSnapshot>,
     )> {
-        let mut ids = DeferredPanelIds {
-            base: self.base,
-            used: self.used,
-        };
+        let mut ids = DeferredPanelIds { used: self.used };
         let built = session_layout_from_cmux(layout, &mut ids)?;
         self.used = ids.used;
         Some(built)
@@ -333,7 +330,13 @@ fn rich_layout_preserves_exact_ids_environment_group_and_focus() {
         Some("Rich workspace")
     );
     assert_eq!(workspace.group_id.as_deref(), Some("group-1"));
-    assert_eq!(workspace.focused_panel_id.as_deref(), Some("surface-12"));
+    // D2: generated surface ids are UUIDs; the focused panel is the layout's
+    // focused node, pinned by shape + membership instead of a literal.
+    let focused_panel = workspace.focused_panel_id.clone().expect("focused panel");
+    assert!(
+        uuid::Uuid::parse_str(&focused_panel).is_ok(),
+        "{focused_panel}"
+    );
     let startups = workspace.panel_terminal_startups.as_ref().unwrap();
     let environment = startups[0].initial_terminal_environment.as_ref().unwrap();
     assert_eq!(

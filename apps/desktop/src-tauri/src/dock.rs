@@ -1697,20 +1697,29 @@ mod tests {
     fn production_main_window_label_is_preserved_as_dock_owner() {
         let state = crate::session::SessionState::default();
         let mut session = state.snapshot_for_lifecycle().unwrap();
-        assert_eq!(session.windows[0].window_id.as_deref(), Some("main"));
+        // D1: bootstrap windows carry UUID ids; &owner is only the webview
+        // label. The dock owner is the session window id.
+        let owner = session.windows[0].window_id.clone().expect("bootstrap id");
+        assert!(uuid::Uuid::parse_str(&owner).is_ok(), "{owner}");
         let created = DockStore
-            .create(&mut session, "main", terminal("Main Dock"))
+            .create(&mut session, &owner, terminal("Main Dock"))
             .unwrap();
-        assert_eq!(session.windows[0].window_id.as_deref(), Some("main"));
         assert_eq!(
-            DockStore.current(&session, "main").unwrap().surface_id,
+            session.windows[0].window_id.as_deref(),
+            Some(owner.as_str())
+        );
+        assert_eq!(
+            DockStore.current(&session, &owner).unwrap().surface_id,
             created.surface_id
         );
         DockStore
-            .close(&mut session, "main", created.surface_id)
+            .close(&mut session, &owner, created.surface_id)
             .unwrap();
-        assert!(DockStore.snapshot(&session, "main").surfaces.is_empty());
-        assert_eq!(session.windows[0].window_id.as_deref(), Some("main"));
+        assert!(DockStore.snapshot(&session, &owner).surfaces.is_empty());
+        assert_eq!(
+            session.windows[0].window_id.as_deref(),
+            Some(owner.as_str())
+        );
     }
 }
 
