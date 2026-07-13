@@ -473,21 +473,21 @@ fn window_focus(
             None,
         );
     };
-    if window_position(snapshot, &window_id).is_none() {
+    let Some(index) = window_position(snapshot, &window_id) else {
         return error(
             snapshot,
             "not_found",
             "Window not found",
             Some(json!({ "window_id": window_id })),
         );
-    }
+    };
     // window.focus IS in focusIntentV2Methods: the one window.* method allowed
     // to steal OS focus (TerminalController.swift:253-275). window.focused is
     // published whenever the id resolves, even when already key
     // (AppDelegate.swift:5693-5700). v2 does NOT move the active TabManager
     // pointer itself — it relies on becoming key (contract adversarial note).
     let is_key = context.active_window_id.as_deref() == Some(window_id.as_str());
-    let window = &snapshot.windows[window_position(snapshot, &window_id).expect("checked above")];
+    let window = &snapshot.windows[index];
     let events = vec![window_lifecycle_event(
         "window.focused",
         "focus_request",
@@ -932,33 +932,26 @@ fn surface_resume(
             // Guards: expected checkpoint first, then expected source; a miss
             // is SUCCESS with cleared=false and the UNTOUCHED binding
             // (TerminalController+ControlSurfaceContext4.swift:242-268).
-            if let Some(expected) = checkpoint_param(params) {
-                if current
-                    .as_ref()
-                    .and_then(|binding| binding.checkpoint_id.as_deref())
-                    != Some(expected.as_str())
-                {
-                    return ok_transition(
-                        snapshot.clone(),
-                        resume_result_payload(&target, false, current.as_ref()),
-                        vec![],
-                        vec![],
-                    );
-                }
-            }
-            if let Some(expected) = trimmed_string(params, "source") {
-                if current
-                    .as_ref()
-                    .and_then(|binding| binding.source.as_deref())
-                    != Some(expected.as_str())
-                {
-                    return ok_transition(
-                        snapshot.clone(),
-                        resume_result_payload(&target, false, current.as_ref()),
-                        vec![],
-                        vec![],
-                    );
-                }
+            // Both guards produce the same miss response, so evaluation order
+            // is observationally checkpoint-then-source.
+            let guard_miss =
+                |expected: Option<String>,
+                 stored: fn(&SessionSurfaceResumeBindingSnapshot) -> Option<&str>| {
+                    expected.is_some_and(|expected| {
+                        current.as_ref().and_then(stored) != Some(expected.as_str())
+                    })
+                };
+            if guard_miss(checkpoint_param(params), |binding| {
+                binding.checkpoint_id.as_deref()
+            }) || guard_miss(trimmed_string(params, "source"), |binding| {
+                binding.source.as_deref()
+            }) {
+                return ok_transition(
+                    snapshot.clone(),
+                    resume_result_payload(&target, false, current.as_ref()),
+                    vec![],
+                    vec![],
+                );
             }
             // Guard pass (or no guards): remove and report cleared=true even
             // when nothing existed (:269-288 `_ =`).
