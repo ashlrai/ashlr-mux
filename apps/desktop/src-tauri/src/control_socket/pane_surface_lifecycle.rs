@@ -35,6 +35,8 @@ pub(super) enum LifecycleEffect {
         generation: u64,
         command: Option<String>,
         working_directory: Option<String>,
+        tmux_start_command: Option<String>,
+        startup_environment: Option<std::collections::BTreeMap<String, String>>,
         failure_code: &'static str,
         failure_message: &'static str,
     },
@@ -600,11 +602,40 @@ struct Scope {
     workspace_id: String,
 }
 
-fn scope(
+fn workspace_contains_surface(
+    workspace: &cmux_core::session::SessionWorkspaceSnapshot,
+    id: &str,
+) -> bool {
+    workspace
+        .surfaces
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .any(|record| record.surface_id == id)
+        || workspace.layout.as_ref().is_some_and(|layout| {
+            layout_surface_ids(layout)
+                .iter()
+                .any(|candidate| candidate == id)
+        })
+}
+
+fn snapshot_contains_surface(snapshot: &AppSessionSnapshot, id: &str) -> bool {
+    snapshot
+        .windows
+        .iter()
+        .flat_map(|window| &window.tab_manager.workspaces)
+        .any(|workspace| workspace_contains_surface(workspace, id))
+}
+
+/// The window/TabManager half of the shared routing walk — the twin of the
+/// coordinator's `controlPaneRoutingResolvesTabManager` guard, which canonical
+/// pane.create runs BEFORE any input validation
+/// (ControlCommandCoordinator+Pane.swift:287-291).
+fn resolve_window_index(
     snapshot: &AppSessionSnapshot,
     params: &Map<String, Value>,
     context: &LifecycleDispatchContext,
-) -> Result<Scope, (&'static str, &'static str)> {
+) -> Result<usize, (&'static str, &'static str)> {
     let surface_selector = params
         .get("surface_id")
         .or_else(|| params.get("terminal_id"))
@@ -613,19 +644,7 @@ fn scope(
     let pane_selector = params.get("pane_id").and_then(Value::as_str);
     let workspace_selector = params.get("workspace_id").and_then(Value::as_str);
     let group_selector = params.get("group_id").and_then(Value::as_str);
-    let contains_surface = |workspace: &cmux_core::session::SessionWorkspaceSnapshot, id: &str| {
-        workspace
-            .surfaces
-            .as_deref()
-            .unwrap_or_default()
-            .iter()
-            .any(|record| record.surface_id == id)
-            || workspace.layout.as_ref().is_some_and(|layout| {
-                layout_surface_ids(layout)
-                    .iter()
-                    .any(|candidate| candidate == id)
-            })
-    };
+    let contains_surface = workspace_contains_surface;
     let contains_pane = |workspace: &cmux_core::session::SessionWorkspaceSnapshot, id: &str| {
         find_pane(workspace.layout.as_ref(), id).is_some()
     };
@@ -694,10 +713,30 @@ fn scope(
                 })
                 .unwrap_or(0)
         };
-    let window = snapshot
-        .windows
-        .get(window_index)
-        .ok_or(("unavailable", "TabManager not available"))?;
+    if snapshot.windows.get(window_index).is_none() {
+        return Err(("unavailable", "TabManager not available"));
+    }
+    Ok(window_index)
+}
+
+fn scope(
+    snapshot: &AppSessionSnapshot,
+    params: &Map<String, Value>,
+    context: &LifecycleDispatchContext,
+) -> Result<Scope, (&'static str, &'static str)> {
+    let window_index = resolve_window_index(snapshot, params, context)?;
+    let window = &snapshot.windows[window_index];
+    let surface_selector = params
+        .get("surface_id")
+        .or_else(|| params.get("terminal_id"))
+        .or_else(|| params.get("tab_id"))
+        .and_then(Value::as_str);
+    let pane_selector = params.get("pane_id").and_then(Value::as_str);
+    let workspace_selector = params.get("workspace_id").and_then(Value::as_str);
+    let contains_surface = workspace_contains_surface;
+    let contains_pane = |workspace: &cmux_core::session::SessionWorkspaceSnapshot, id: &str| {
+        find_pane(workspace.layout.as_ref(), id).is_some()
+    };
     let workspace_index = if let Some(requested) = workspace_selector {
         window
             .tab_manager
@@ -782,6 +821,13 @@ fn creation_origin(kind: &SessionSurfaceKindSnapshot, split: bool) -> &'static s
         (_, true) => "terminal_split",
         (_, false) => "terminal_tab",
     }
+}
+
+/// The byte-faithful twin of canonical `v2NormalizedToken`
+/// (Sources/TerminalControllerV2ParamParsingSupport.swift:204-209): strip '-',
+/// '_', and spaces, then lowercase.
+fn normalized_token(raw: &str) -> String {
+    raw.replace(['-', '_', ' '], "").to_ascii_lowercase()
 }
 
 fn parse_kind(
@@ -1178,21 +1224,26 @@ fn surface_list(
     )
 }
 
+/// The byte-faithful twin of canonical `resolveControlPlacement`
+/// (TerminalController+ControlPaneContext.swift:788-802): trim + lowercase;
+/// absent/empty and the main/content/split aliases resolve workspace;
+/// rightsidebardock/right-sidebar-dock/sidebar resolve dock; any other value is
+/// invalid and echoes the ORIGINAL raw string.
 fn requested_placement(
     params: &Map<String, Value>,
-) -> Result<&str, (&'static str, &'static str, Option<Value>)> {
-    let placement = params
-        .get("placement")
-        .and_then(Value::as_str)
-        .unwrap_or("workspace");
-    if matches!(placement, "workspace" | "dock") {
-        Ok(placement)
-    } else {
-        Err((
+) -> Result<&'static str, (&'static str, &'static str, Option<Value>)> {
+    let Some(raw) = params.get("placement").and_then(Value::as_str) else {
+        return Ok("workspace");
+    };
+    let trimmed = raw.trim().to_ascii_lowercase();
+    match trimmed.as_str() {
+        "" | "workspace" | "main" | "content" | "split" => Ok("workspace"),
+        "dock" | "rightsidebardock" | "right-sidebar-dock" | "sidebar" => Ok("dock"),
+        _ => Err((
             "invalid_params",
             "placement must be one of: workspace, dock",
-            Some(json!({"placement":placement})),
-        ))
+            Some(json!({"placement":raw})),
+        )),
     }
 }
 
@@ -1417,6 +1468,17 @@ fn dock_create(
             }],
         );
     }
+    // Canonical: TerminalController+ControlPaneContext.swift:313-319 —
+    // pane.create validates the divider after the dock/browser-disabled checks
+    // and before the dock create runs.
+    if method == "pane.create" && super::initial_divider_position_param(params).is_err() {
+        return error(
+            snapshot,
+            "invalid_params",
+            "initial_divider_position must be numeric",
+            None,
+        );
+    }
     let request = match dock_request(method, params, kind) {
         Ok(request) => request,
         Err((code, message)) => return error(snapshot, code, message, None),
@@ -1638,6 +1700,8 @@ fn surface_create(
                 .get("working_directory")
                 .and_then(Value::as_str)
                 .map(str::to_owned),
+            tmux_start_command: None,
+            startup_environment: None,
             failure_code: "internal_error",
             failure_message: "Failed to create surface",
         },
@@ -2152,6 +2216,8 @@ fn apply_create_right_action(
             generation: reservation.generation,
             command: None,
             working_directory: local_terminal_working_directory,
+            tmux_start_command: None,
+            startup_environment: None,
             failure_code: "internal_error",
             failure_message: "Failed to create tab",
         });
@@ -3356,12 +3422,58 @@ fn remote_tmux_unsupported_options(
     unsupported
 }
 
+/// The twin of canonical `browserDisabledCreateResolution`
+/// (TerminalController+ControlPaneContext.swift:437-452): a present-but-invalid
+/// URL is invalid_params, no URL is browser_disabled, and a valid URL opens
+/// externally with the null-identity payload.
+fn pane_create_browser_disabled(
+    snapshot: &AppSessionSnapshot,
+    params: &Map<String, Value>,
+    window_id: &str,
+) -> LifecycleTransition {
+    let Some(url) = params.get("url").and_then(Value::as_str) else {
+        return error(
+            snapshot,
+            "browser_disabled",
+            "cmux browser is disabled",
+            None,
+        );
+    };
+    if !foundation_url_is_valid(url) {
+        return error(
+            snapshot,
+            "invalid_params",
+            "Invalid URL",
+            Some(json!({"url":url})),
+        );
+    }
+    ok_transition(
+        snapshot.clone(),
+        json!({"window_id":window_id,"workspace_id":null,"pane_id":null,"surface_id":null,"created_split":false,"opened_externally":true,"browser_disabled":true,"placement_strategy":"external_browser_disabled","url":url}),
+        vec![],
+        vec![LifecycleEffect::ExternalBrowserOpen {
+            url: url.into(),
+            phase: "commit",
+            failure_code: "external_open_failed",
+            failure_message: "Failed to open URL externally",
+        }],
+    )
+}
+
 fn pane_create(
     snapshot: &AppSessionSnapshot,
     method: &str,
     params: &Map<String, Value>,
     context: &LifecycleDispatchContext,
 ) -> LifecycleTransition {
+    // Canonical validation order — ControlCommandCoordinator+Pane.swift:287-291
+    // (TabManager) then TerminalController+ControlPaneContext.swift:288-345:
+    // TabManager → direction → type (agent-session reject) → placement → dock
+    // checks → browser-disabled → divider → workspace → source.
+    let window_index = match resolve_window_index(snapshot, params, context) {
+        Ok(window_index) => window_index,
+        Err((code, message)) => return error(snapshot, code, message, None),
+    };
     let (orientation, insert_first) = match params
         .get("direction")
         .and_then(Value::as_str)
@@ -3388,6 +3500,43 @@ fn pane_create(
             )
         }
     };
+    // Canonical: ControlCommandCoordinator+Pane.swift:330-331 (pane.create) and
+    // ControlCommandCoordinator+Surface.swift:330-334 (surface.split) — reject
+    // agent-session right after direction, echoing PanelType.agentSession's
+    // rawValue, before provider/placement/workspace processing.
+    if params
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|raw| normalized_token(raw) == "agentsession")
+    {
+        return error(
+            snapshot,
+            "invalid_params",
+            "agent-session is only supported by surface.create",
+            Some(json!({"type":"agentSession"})),
+        );
+    }
+    let kind = match parse_kind(params) {
+        Ok(kind) => kind,
+        Err((code, message, data)) => return error(snapshot, code, message, data),
+    };
+    let placement = match requested_placement(params) {
+        Ok(placement) => placement,
+        Err((code, message, data)) => return error(snapshot, code, message, data),
+    };
+    if placement == "dock" {
+        return dock_create(snapshot, "pane.create", params, context);
+    }
+    // Canonical: TerminalController+ControlPaneContext.swift:308-310 — the
+    // browser-disabled outcome resolves before divider validation and before
+    // workspace resolution.
+    if matches!(kind, SessionSurfaceKindSnapshot::Browser { .. }) && !context.browser_enabled {
+        let window_id = snapshot.windows[window_index]
+            .window_id
+            .clone()
+            .unwrap_or_else(|| format!("window:{window_index}"));
+        return pane_create_browser_disabled(snapshot, params, &window_id);
+    }
     let initial_divider_position = match super::initial_divider_position_param(params) {
         Ok(value) => value,
         Err(()) => {
@@ -3399,34 +3548,45 @@ fn pane_create(
             )
         }
     };
-    let placement = match requested_placement(params) {
-        Ok(placement) => placement,
-        Err((code, message, data)) => return error(snapshot, code, message, data),
-    };
-    if placement == "dock" {
-        return dock_create(snapshot, "pane.create", params, context);
-    }
     let scope = match scope(snapshot, params, context) {
         Ok(scope) => scope,
         Err((code, message)) => return error(snapshot, code, message, None),
     };
-    let kind = match parse_kind(params) {
-        Ok(kind) => kind,
-        Err((code, message, data)) => return error(snapshot, code, message, data),
-    };
     let workspace =
         &snapshot.windows[scope.window_index].tab_manager.workspaces[scope.workspace_index];
-    let source = params
-        .get("surface_id")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .or_else(|| workspace.focused_panel_id.clone())
-        .or_else(|| {
-            workspace
-                .layout
-                .as_ref()
-                .and_then(|layout| layout_surface_ids(layout).into_iter().next())
-        });
+    let source = if method == "pane.create" {
+        // Canonical raw-UUID quirk — ControlCommandCoordinator+Pane.swift:300 +
+        // TerminalController+ControlPaneContext.swift:342-345: the source comes
+        // ONLY from surface_id parsed as a UUID; any other string (including
+        // surface:N refs) falls back to the workspace focused surface, and
+        // there is no further fallback. Windows fixtures use non-UUID surface
+        // ids, so "parses as a UUID" adapts to "is a UUID or an existing
+        // surface id" (minted kind:N refs never collide with either). The
+        // app layer preserves the pre-ref-resolution value under
+        // "__pane_create_raw_surface_id" so refs keep routing without becoming
+        // the source.
+        params
+            .get("__pane_create_raw_surface_id")
+            .or_else(|| params.get("surface_id"))
+            .and_then(Value::as_str)
+            .filter(|id| Uuid::parse_str(id).is_ok() || snapshot_contains_surface(snapshot, id))
+            .map(str::to_owned)
+            .or_else(|| workspace.focused_panel_id.clone())
+    } else {
+        // surface.split keeps its legacy selector semantics (refs resolve
+        // upstream and the first layout surface remains a fallback).
+        params
+            .get("surface_id")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .or_else(|| workspace.focused_panel_id.clone())
+            .or_else(|| {
+                workspace
+                    .layout
+                    .as_ref()
+                    .and_then(|layout| layout_surface_ids(layout).into_iter().next())
+            })
+    };
     let Some(source) = source.filter(|source| {
         workspace
             .layout
@@ -3564,6 +3724,29 @@ fn pane_create(
             }
         }
     };
+    // Canonical: TerminalController+ControlPaneContext.swift:374-384 —
+    // pane.create forwards trimmed initial_command / working_directory /
+    // tmux_start_command and the startup_environment (startup_environment then
+    // initial_env) to newTerminalSplitOutcome, and the created terminal
+    // persists that startup metadata.
+    let initial_command = super::string_param(params, &["initial_command"]);
+    let working_directory = super::string_param(params, &["working_directory"]);
+    let tmux_start_command = super::string_param(params, &["tmux_start_command"]);
+    let startup_environment =
+        super::first_present_trimmed_string_map_param(params, &["startup_environment", "initial_env"])
+            .filter(|environment| !environment.is_empty());
+    if matches!(kind, SessionSurfaceKindSnapshot::Terminal) {
+        let _ = model.set_terminal_startup(
+            &surface_id,
+            TerminalStartup {
+                command: initial_command.clone(),
+                working_directory: working_directory.clone(),
+                tmux_start_command: tmux_start_command.clone(),
+                environment: startup_environment.clone(),
+                ..Default::default()
+            },
+        );
+    }
     if params
         .get("focus")
         .and_then(Value::as_bool)
@@ -3584,14 +3767,10 @@ fn pane_create(
         | SessionSurfaceKindSnapshot::RemoteTerminal { .. } => LifecycleEffect::TerminalCreate {
             surface_id: surface_id.clone(),
             generation,
-            command: params
-                .get("initial_command")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-            working_directory: params
-                .get("working_directory")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
+            command: initial_command.clone(),
+            working_directory: working_directory.clone(),
+            tmux_start_command: tmux_start_command.clone(),
+            startup_environment: startup_environment.clone(),
             failure_code: "internal_error",
             failure_message: "Failed to create pane",
         },

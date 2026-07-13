@@ -1325,17 +1325,23 @@ fn dock_api_combined_invalid_inputs_follow_frozen_validation_and_owner_precedenc
         "invalid_params",
         "Missing or invalid direction (left|right|up|down)",
     );
-    let divider_before_placement = main_transition(
+    // Canonical: TerminalController+ControlPaneContext.swift:297-300 resolves
+    // placement BEFORE the divider guard at :313-319 (the previous assertion
+    // pinned the reversed, non-canonical order).
+    let placement_before_divider = main_transition(
         &main_window_snapshot(),
         "pane.create",
         json!({"placement":"invalid","direction":"right","initial_divider_position":"wide"}),
         true,
         true,
     );
-    assert_error(
-        &divider_before_placement,
-        "invalid_params",
-        "initial_divider_position must be numeric",
+    assert_eq!(
+        assert_error(
+            &placement_before_divider,
+            "invalid_params",
+            "placement must be one of: workspace, dock",
+        ),
+        json!({"placement":"invalid"})
     );
 
     let invalid_url = main_transition(
@@ -1747,5 +1753,300 @@ fn dock_api_runtime_stage_receives_reserved_identity_generation_and_intent() {
             .unwrap()
             .container,
         ContainerKind::Dock
+    );
+}
+
+fn pane_created_source_pane(transition: &LifecycleTransition) -> String {
+    transition
+        .events
+        .iter()
+        .find(|event| event.name == "pane.created")
+        .expect("pane.created event")
+        .payload["source_pane_id"]
+        .as_str()
+        .expect("source_pane_id")
+        .to_owned()
+}
+
+#[test]
+fn pane_create_rejects_agent_session_before_provider_placement_and_workspace() {
+    // Canonical: ControlCommandCoordinator+Pane.swift:330-331 +
+    // TerminalController+ControlPaneContext.swift:293-296 — pane.create rejects
+    // type=agent-session right after the direction parse, before provider
+    // validation, placement parsing, and workspace resolution; the error data
+    // echoes PanelType.agentSession.rawValue ("agentSession").
+    for method in ["pane.create", "surface.split"] {
+        // surface.split shares the reject verbatim:
+        // ControlCommandCoordinator+Surface.swift:330-334.
+        let rejected = transition(
+            &test_snapshot(),
+            method,
+            json!({
+                "direction": "right",
+                "type": "agent-session",
+                "provider": "bogus",
+                "placement": "bogus",
+                "workspace_id": "missing-workspace"
+            }),
+        );
+        assert_eq!(
+            assert_error(
+                &rejected,
+                "invalid_params",
+                "agent-session is only supported by surface.create"
+            ),
+            json!({"type": "agentSession"}),
+            "{method}"
+        );
+        assert!(!rejected.changed);
+    }
+}
+
+#[test]
+fn pane_create_checks_tab_manager_availability_before_direction() {
+    // Canonical: ControlCommandCoordinator+Pane.swift:287-291 — the routing
+    // TabManager guard runs before any input validation, so an unresolvable
+    // explicit window_id errors unavailable even when direction is missing.
+    let unavailable = transition(
+        &test_snapshot(),
+        "pane.create",
+        json!({"window_id": "missing-window"}),
+    );
+    assert_error(&unavailable, "unavailable", "TabManager not available");
+}
+
+#[test]
+fn pane_create_validates_placement_before_divider_position() {
+    // Canonical: TerminalController+ControlPaneContext.swift:297-300 resolves
+    // placement before the divider guard at :313-319, so an invalid placement
+    // wins over a non-numeric initial_divider_position.
+    let invalid = transition(
+        &test_snapshot(),
+        "pane.create",
+        json!({
+            "direction": "right",
+            "placement": "bogus",
+            "initial_divider_position": {"nested": true}
+        }),
+    );
+    assert_eq!(
+        assert_error(
+            &invalid,
+            "invalid_params",
+            "placement must be one of: workspace, dock"
+        ),
+        json!({"placement": "bogus"})
+    );
+}
+
+#[test]
+fn pane_create_browser_disabled_follows_canonical_outcomes_and_order() {
+    // Canonical: TerminalController+ControlPaneContext.swift:308-310 + :437-452
+    // — with the browser disabled, pane.create resolves the browser-disabled
+    // outcome before divider validation and before workspace resolution.
+    let no_url = main_transition(
+        &test_snapshot(),
+        "pane.create",
+        json!({"direction": "right", "type": "browser"}),
+        true,
+        false,
+    );
+    assert_error(&no_url, "browser_disabled", "cmux browser is disabled");
+
+    let invalid_url = main_transition(
+        &test_snapshot(),
+        "pane.create",
+        json!({"direction": "right", "type": "browser", "url": "http://["}),
+        true,
+        false,
+    );
+    assert_eq!(
+        assert_error(&invalid_url, "invalid_params", "Invalid URL"),
+        json!({"url": "http://["})
+    );
+
+    let before_divider = main_transition(
+        &test_snapshot(),
+        "pane.create",
+        json!({
+            "direction": "right",
+            "type": "browser",
+            "initial_divider_position": [1],
+            "workspace_id": "missing-workspace"
+        }),
+        true,
+        false,
+    );
+    assert_error(&before_divider, "browser_disabled", "cmux browser is disabled");
+
+    let external = main_transition(
+        &test_snapshot(),
+        "pane.create",
+        json!({"direction": "right", "type": "browser", "url": "https://ext.test/x"}),
+        true,
+        false,
+    );
+    let value = ok_value(&external);
+    assert_eq!(
+        value,
+        json!({
+            "window_id": "window-1",
+            "workspace_id": Value::Null,
+            "pane_id": Value::Null,
+            "surface_id": Value::Null,
+            "created_split": false,
+            "opened_externally": true,
+            "browser_disabled": true,
+            "placement_strategy": "external_browser_disabled",
+            "url": "https://ext.test/x"
+        })
+    );
+    assert!(external.events.is_empty());
+    assert!(external.effects.iter().any(|effect| matches!(
+        effect,
+        LifecycleEffect::ExternalBrowserOpen { url, .. } if url == "https://ext.test/x"
+    )));
+}
+
+#[test]
+fn placement_parsing_trims_lowercases_and_maps_canonical_aliases() {
+    // Canonical: TerminalController+ControlPaneContext.swift:788-802
+    // (resolveControlPlacement) — trim + lowercase; empty/main/content/split →
+    // workspace; rightsidebardock/right-sidebar-dock/sidebar → dock; anything
+    // else invalid with the ORIGINAL raw value echoed.
+    for placement in ["main", " Content ", "SPLIT", "", "workspace", " Main\n"] {
+        let created = transition(
+            &test_snapshot(),
+            "pane.create",
+            json!({"direction": "right", "type": "terminal", "placement": placement}),
+        );
+        let value = ok_value(&created);
+        assert!(value["pane_id"].is_string(), "{placement:?}");
+        assert!(value.get("placement").is_none(), "{placement:?}");
+    }
+    for placement in ["Sidebar", "right-sidebar-dock", "RIGHTSIDEBARDOCK", " dock \n"] {
+        let created = main_transition(
+            &main_window_snapshot(),
+            "pane.create",
+            json!({"direction": "right", "type": "terminal", "placement": placement}),
+            true,
+            true,
+        );
+        let value = ok_value(&created);
+        assert_eq!(value["placement"], json!("dock"), "{placement:?}");
+    }
+    let invalid = transition(
+        &test_snapshot(),
+        "surface.create",
+        json!({"type": "terminal", "placement": " Bogus "}),
+    );
+    assert_eq!(
+        assert_error(
+            &invalid,
+            "invalid_params",
+            "placement must be one of: workspace, dock"
+        ),
+        json!({"placement": " Bogus "})
+    );
+}
+
+#[test]
+fn pane_create_source_is_raw_uuid_only_with_focused_fallback() {
+    // Canonical: ControlCommandCoordinator+Pane.swift:300 — the split source
+    // comes ONLY from surface_id parsed as a UUID; any other string (including
+    // surface:N refs) falls back to the workspace focused surface
+    // (TerminalController+ControlPaneContext.swift:342-345). Windows fixtures
+    // use non-UUID surface ids, so "parses as a UUID" adapts to "is a UUID or
+    // an existing surface id"; minted kind:N refs never collide with either.
+    let snapshot = resizable_snapshot();
+    let ref_shaped = transition(
+        &snapshot,
+        "pane.create",
+        json!({"direction": "right", "surface_id": "surface:9"}),
+    );
+    assert!(ok_value(&ref_shaped)["surface_id"].is_string());
+    assert_eq!(pane_created_source_pane(&ref_shaped), "pane-left");
+
+    let existing_id = transition(
+        &snapshot,
+        "pane.create",
+        json!({"direction": "right", "surface_id": "surface-right"}),
+    );
+    assert_eq!(pane_created_source_pane(&existing_id), "pane-right");
+
+    // A syntactically valid UUID that is not in the workspace is terminal:
+    // canonical guards ws.panels[sourcePanelId] without falling back.
+    let unknown_uuid = transition(
+        &snapshot,
+        "pane.create",
+        json!({
+            "direction": "right",
+            "surface_id": "123e4567-e89b-42d3-a456-426614174000"
+        }),
+    );
+    assert_error(&unknown_uuid, "not_found", "No source surface to split");
+
+    // No focused surface and no source: canonical returns noSourceSurface —
+    // there is no first-layout-surface fallback.
+    let mut unfocused = resizable_snapshot();
+    unfocused.windows[0].tab_manager.workspaces[0].focused_panel_id = None;
+    let no_source = transition(&unfocused, "pane.create", json!({"direction": "right"}));
+    assert_error(&no_source, "not_found", "No source surface to split");
+}
+
+#[test]
+fn pane_create_applies_and_persists_full_terminal_startup_metadata() {
+    // Canonical: TerminalController+ControlPaneContext.swift:374-384 —
+    // pane.create forwards trimmed initial_command / working_directory /
+    // tmux_start_command and the startup_environment (startup_environment then
+    // initial_env, trimmed non-empty keys) to newTerminalSplitOutcome, and the
+    // created surface persists that startup metadata.
+    let created = transition(
+        &test_snapshot(),
+        "pane.create",
+        json!({
+            "direction": "right",
+            "type": "terminal",
+            "initial_command": "  cargo run  ",
+            "working_directory": " C:/w ",
+            "tmux_start_command": " htop ",
+            "startup_environment": {"FOO": "bar", "  ": "dropped"}
+        }),
+    );
+    let value = ok_value(&created);
+    let created_id = value["surface_id"].as_str().unwrap();
+    let effect = created
+        .effects
+        .iter()
+        .find(|effect| matches!(effect, LifecycleEffect::TerminalCreate { .. }))
+        .expect("terminal create effect");
+    let effect = serde_json::to_value(effect).unwrap();
+    assert_eq!(effect["TerminalCreate"]["command"], json!("cargo run"));
+    assert_eq!(effect["TerminalCreate"]["working_directory"], json!("C:/w"));
+    assert_eq!(effect["TerminalCreate"]["tmux_start_command"], json!("htop"));
+    assert_eq!(
+        effect["TerminalCreate"]["startup_environment"],
+        json!({"FOO": "bar"})
+    );
+    let record = created.snapshot.windows[0].tab_manager.workspaces[0]
+        .surfaces
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .find(|record| record.surface_id == created_id)
+        .expect("created surface record")
+        .clone();
+    assert_eq!(
+        record.terminal_startup,
+        Some(cmux_core::session::SessionSurfaceTerminalStartupSnapshot {
+            command: Some("cargo run".into()),
+            working_directory: Some("C:/w".into()),
+            tmux_start_command: Some("htop".into()),
+            environment: Some(std::collections::BTreeMap::from([(
+                "FOO".to_string(),
+                "bar".to_string()
+            )])),
+            ..Default::default()
+        })
     );
 }

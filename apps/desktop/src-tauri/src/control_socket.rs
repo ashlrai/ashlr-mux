@@ -1164,7 +1164,20 @@ fn handle_control_request(app: &AppHandle, mut request: ControlRequest) -> Contr
             .ok(),
         };
     }
+    // pane.create's split source honors ONLY a raw-UUID surface_id (canonical
+    // ControlCommandCoordinator+Pane.swift:300); routing still resolves refs.
+    // Preserve the pre-resolution value on a reserved key (stripped first so a
+    // caller cannot spoof it) for the lifecycle dispatcher's source selection.
+    request.params.remove("__pane_create_raw_surface_id");
+    let pane_create_raw_surface_id = (request.method == "pane.create")
+        .then(|| request.params.get("surface_id").cloned())
+        .flatten();
     resolve_request_handle_refs(app, &mut request.params);
+    if let Some(raw) = pane_create_raw_surface_id {
+        request
+            .params
+            .insert("__pane_create_raw_surface_id".into(), raw);
+    }
     if control_request_route_for_method(&request.method)
         == ControlRequestRoute::PaneSurfaceLifecycle
     {
@@ -2803,6 +2816,7 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
                 surface_id,
                 command,
                 working_directory,
+                startup_environment,
                 ..
             } => {
                 let id = terminal_open_for_control(
@@ -2812,7 +2826,7 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
                     working_directory.as_deref(),
                     command.as_deref(),
                     None,
-                    None,
+                    startup_environment.clone(),
                     None,
                     None,
                 )?;
