@@ -443,6 +443,21 @@ def _read_with_timeout(read_chunk: Callable[[], bytes], deadline: float, until_e
             return buffer
 
 
+def _cancel_pending_io(fd: int) -> None:
+    """Cancel outstanding I/O on a Windows fd so close() cannot block behind a
+    reader thread parked in ReadFile. No-op off Windows / on failure."""
+    if sys.platform != "win32":  # pragma: no cover - Windows-only concern
+        return
+    try:
+        import ctypes
+        import msvcrt
+
+        handle = msvcrt.get_osfhandle(fd)
+        ctypes.windll.kernel32.CancelIoEx(ctypes.c_void_p(handle), None)
+    except OSError:  # pragma: no cover - best effort
+        pass
+
+
 class Connection:
     """One control-socket connection (unix socket or Windows named pipe)."""
 
@@ -450,10 +465,17 @@ class Connection:
         self.address = address
         self.timeout = timeout
         if is_windows_pipe_address(address):
+            import os
+
+            # Raw fd I/O rather than a Python file object: a buffered file
+            # object's close() waits on the io-module lock held by a reader
+            # thread still parked in read(), deadlocking every timeout path.
+            # os.close on a raw fd invalidates the handle out from under the
+            # blocked ReadFile instead.
             deadline = time.monotonic() + timeout
             while True:
                 try:
-                    self._file = open(address, "r+b", buffering=0)
+                    self._fd = os.open(address, os.O_RDWR | getattr(os, "O_BINARY", 0))
                     self._sock = None
                     break
                 except OSError:
@@ -467,19 +489,25 @@ class Connection:
             sock.settimeout(timeout)
             sock.connect(address)
             self._sock = sock
-            self._file = None
+            self._fd = None
 
     def send_line(self, line: str) -> None:
         payload = line.encode("utf-8") + b"\n"
         if self._sock is not None:
             self._sock.sendall(payload)
         else:
-            self._file.write(payload)
+            import os
+
+            written = 0
+            while written < len(payload):
+                written += os.write(self._fd, payload[written:])
 
     def _read_chunk(self) -> bytes:
         if self._sock is not None:
             return self._sock.recv(65536)
-        return self._file.read(65536)
+        import os
+
+        return os.read(self._fd, 65536)
 
     def read_reply(self, until_eof: bool) -> str:
         raw = _read_with_timeout(
@@ -494,8 +522,16 @@ class Connection:
         try:
             if self._sock is not None:
                 self._sock.close()
-            else:
-                self._file.close()
+            elif self._fd is not None:
+                import os
+
+                # A reader thread may be parked in a synchronous ReadFile on
+                # this handle (event stream, timed-out reply). On Windows,
+                # CloseHandle does not cancel pending synchronous I/O and can
+                # block behind it, so cancel all outstanding I/O first.
+                _cancel_pending_io(self._fd)
+                os.close(self._fd)
+                self._fd = None
         except OSError:
             pass
 

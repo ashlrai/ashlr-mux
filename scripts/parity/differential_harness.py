@@ -42,7 +42,15 @@ def remove_pointer(document: Any, pointer: str) -> None:
     parent = document
     for token in tokens[:-1]:
         if isinstance(parent, list):
-            parent = parent[int(token)]
+            # A pointer into a shorter/absent list branch is a no-op, matching
+            # the missing-dict-key behavior below.
+            try:
+                index = int(token)
+            except ValueError:
+                return
+            if not 0 <= index < len(parent):
+                return
+            parent = parent[index]
         elif isinstance(parent, dict) and token in parent:
             parent = parent[token]
         else:

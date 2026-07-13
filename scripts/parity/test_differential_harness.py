@@ -46,6 +46,13 @@ class DifferentialHarnessTests(unittest.TestCase):
         remove_pointer(value, "/a~1b/~0key")
         self.assertEqual(value, {"a/b": {"keep": 2}})
 
+    def test_pointer_into_short_or_absent_list_branch_is_a_noop(self):
+        value = {"rows": [{"title": "a"}]}
+        remove_pointer(value, "/rows/5/title")
+        remove_pointer(value, "/rows/not-an-index/title")
+        remove_pointer(value, "/rows/-1/title")
+        self.assertEqual(value, {"rows": [{"title": "a"}]})
+
     def test_missing_observation_lane_is_rejected(self):
         right = observation()
         del right["persistence"]
