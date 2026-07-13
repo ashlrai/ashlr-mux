@@ -3356,25 +3356,27 @@ fn surface_close(
     }
     let new_selection = model
         .pane(&owner.pane_id)
+        .filter(|pane| !pane.surface_ids.is_empty())
         .map(|pane| pane.selected_surface_id.clone());
+    // Round 3 (capture-adjudicated): canonical bonsplit emits the reselection
+    // pair on EVERY close that leaves the pane populated — even when the
+    // closed tab was neither selected nor focused (live surface_close.happy:
+    // closed + selected + focused; the equal-target case is sanctioned until
+    // canonical data says otherwise).
     if let (Some(previous), Some(selected)) = (previous_selection, new_selection) {
-        // Canonical emits the reselection pair whenever the closed surface
-        // held focus (fallback), or when the pane selection moved.
-        if previous != selected || workspace_focus_was_on_closed {
-            let selected_kind = model
-                .surface(&selected)
-                .map(|surface| kind_name(&surface.kind))
-                .unwrap_or("terminal");
-            events.extend(selection_events(
-                &window_id,
-                &workspace_id,
-                &owner.pane_id,
-                &selected,
-                &previous,
-                selected_kind,
-                true,
-            ));
-        }
+        let selected_kind = model
+            .surface(&selected)
+            .map(|surface| kind_name(&surface.kind))
+            .unwrap_or("terminal");
+        events.extend(selection_events(
+            &window_id,
+            &workspace_id,
+            &owner.pane_id,
+            &selected,
+            &previous,
+            selected_kind,
+            true,
+        ));
     }
     ok_transition(
         next,
