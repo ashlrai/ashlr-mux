@@ -1977,10 +1977,24 @@ fn action_target(
         "Tab not found",
         Some(json!({"surface_id":surface_id,"tab_id":surface_id})),
     ))?;
-    // R6a: canonical resolves an explicit tab target in its OWNER workspace
-    // (global locateSurface) even when routing resolved another workspace —
-    // capture cli.tab_action_pin succeeds with OK tab=tab:N workspace:2.
+    // Round 5 item 2 (pinned Swift governs): an EXPLICIT workspace_id takes
+    // precedence and the target must live in that workspace
+    // (controlTabActionResolveWorkspace, TerminalController+
+    // ControlSystemContext2.swift:288-296; panels guard :55-57). Owner
+    // resolution applies only when workspace_id is absent — the
+    // capture-pinned cli.tab_action_pin path.
     let _ = workspace_id;
+    if params
+        .get("workspace_id")
+        .and_then(Value::as_str)
+        .is_some_and(|explicit| owner.workspace_id != explicit)
+    {
+        return Err((
+            "not_found",
+            "Tab not found",
+            Some(json!({"surface_id":surface_id,"tab_id":surface_id})),
+        ));
+    }
     Ok((surface_id, owner))
 }
 
@@ -3406,6 +3420,22 @@ fn surface_focus(
             Some(json!({"surface_id":surface_id})),
         );
     };
+    // Round 5 item 2: an explicit workspace_id takes precedence and fails
+    // closed on mismatch (resolveSurfaceWorkspace, TerminalController+
+    // ControlSurfaceContext.swift:298-315; dock mismatch :286-292); owner
+    // resolution applies only when workspace_id is absent.
+    if params
+        .get("workspace_id")
+        .and_then(Value::as_str)
+        .is_some_and(|explicit| owner.workspace_id != explicit)
+    {
+        return error(
+            snapshot,
+            "not_found",
+            "Surface not found",
+            Some(json!({"surface_id":surface_id})),
+        );
+    }
     let (window_id, workspace_id) = public_owner_ids(&model, &owner);
     let is_dock = model
         .pane(&owner.pane_id)

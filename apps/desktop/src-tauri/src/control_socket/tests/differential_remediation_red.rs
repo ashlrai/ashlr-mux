@@ -922,3 +922,38 @@ fn closing_the_selected_tab_reselects_its_successor() {
     let _ = ok_value(&last);
     assert_eq!(last.events.len(), 1);
 }
+
+#[test]
+fn surface_focus_with_mismatched_explicit_workspace_fails_closed() {
+    // Round 5 item 2: canonical resolveSurfaceWorkspace gives an explicit
+    // workspace_id precedence and fails closed on mismatch
+    // (TerminalController+ControlSurfaceContext.swift:298-315, dock mismatch
+    // :286-292); owner resolution applies only when workspace_id is absent.
+    let mut snapshot = test_snapshot();
+    let mut second = snapshot.windows[0].tab_manager.workspaces[0].clone();
+    second.workspace_id = Some("workspace-2".into());
+    second.focused_panel_id = Some("surface-2".into());
+    let SessionWorkspaceLayoutSnapshot::Pane(pane) = second.layout.as_mut().unwrap() else {
+        unreachable!();
+    };
+    pane.pane_id = Some("pane-2".into());
+    pane.panel_ids = vec!["surface-2".into()];
+    pane.selected_panel_id = Some("surface-2".into());
+    snapshot.windows[0].tab_manager.workspaces.push(second);
+
+    let mismatched = transition(
+        &snapshot,
+        "surface.focus",
+        json!({"surface_id": "surface-2", "workspace_id": "workspace-1"}),
+    );
+    let (code, message) = expect_error(&mismatched);
+    assert_eq!(code, "not_found");
+    assert_eq!(message, "Surface not found");
+    // Matching explicit workspace still succeeds.
+    let matched = transition(
+        &snapshot,
+        "surface.focus",
+        json!({"surface_id": "surface-2", "workspace_id": "workspace-2"}),
+    );
+    assert_eq!(ok_value(&matched)["workspace_id"], json!("workspace-2"));
+}
