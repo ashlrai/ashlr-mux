@@ -410,6 +410,20 @@ pub struct SessionSurfaceResumeBindingSnapshot {
     pub updated_at: f64,
 }
 
+/// The publisher's per-pane selection pointer (canonical
+/// `CmuxSelectionEventState.selectedSurfaceByWorkspacePane`,
+/// CmuxLifecycleEventPublishing.swift:7 at pinned e1825d40d): the last
+/// selection a `surface.selected` publish recorded for the pane. Born-selected
+/// tabs never publish a transition, so this can lag the pane's live
+/// selection; `surface.closed` purges entries pointing at the dead surface
+/// (clearSurface, :30-35).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionPanePublishedSelectionSnapshot {
+    pub pane_id: String,
+    pub panel_id: String,
+}
+
 /// One `surface_id -> binding` row of the canonical per-workspace
 /// `surfaceResumeBindingsByPanelId` map, following the keyed-list persistence
 /// pattern of `SessionPanelRestorableAgentSnapshot`.
@@ -747,6 +761,11 @@ pub struct SessionWorkspaceSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub surface_resume_bindings: Option<Vec<SessionSurfaceResumeBindingRecordSnapshot>>,
+    /// Publisher selection pointers keyed by `pane_id` (see
+    /// `SessionPanePublishedSelectionSnapshot`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub published_pane_selections: Option<Vec<SessionPanePublishedSelectionSnapshot>>,
     /// Workspace-level git branch fallback used only when no panel reports a
     /// branch. Mirrors canonical `Workspace.gitBranch` as consumed by the
     /// sidebar badge projection.
