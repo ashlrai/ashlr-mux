@@ -294,6 +294,7 @@ pub fn run() {
         .manage(control_socket::ControlHandleRegistryState::default())
         .manage(control_socket::ControlActiveWindowState::default())
         .manage(control_socket::RemoteWindowDepartureRegistryState::default())
+        .manage(control_socket::RemoteRuntimeLeaseRegistryState::default())
         .manage(agent_session::AgentSessionState::default())
         .manage(notifications::NotificationCommandState::default())
         .manage(feed::FeedState::default())

@@ -40,6 +40,7 @@ use crate::dock::{
     stage_runtime_for_control, teardown_runtime_for_control, DockRuntimeClaim,
     DockRuntimeOperation,
 };
+use crate::remote_proxy as proxy_runtime;
 use crate::session::{
     append_workspace_sidebar_log_for_control, break_pane_for_control, browser_go_back_for_control,
     browser_go_forward_for_control, clear_browser_history_for_control,
@@ -89,6 +90,7 @@ use crate::terminal::{
     terminal_read_panel, terminal_remove_id_for_control, terminal_runtime_snapshots,
     terminal_shutdown_id_preserving_authority_for_control, terminal_write_panel, TerminalState,
 };
+use proxy_runtime::{ProxyTarget, RemoteProxyBrokerState};
 
 const CONTROL_PIPE_BASE_NAME: &str = "cmux";
 const CONTROL_EVENTS_CHANGED_EVENT: &str = "cmux://events-changed";
@@ -1802,8 +1804,8 @@ struct ProductionLifecycleExecutor<'a> {
     previous: Option<AppSessionSnapshot>,
     staged: Vec<pane_surface_lifecycle::LifecycleEffect>,
     staged_terminals: Vec<(String, u32, bool)>,
-    staged_remote_creations: Vec<StagedRemoteCreation>,
-    deferred_remote_reconciliations: Vec<StagedRemoteCreation>,
+    staged_remote_creations: Vec<(StagedRemoteCreation, u64)>,
+    deferred_remote_reconciliations: Vec<(StagedRemoteCreation, u64)>,
     deferred_remote_departures: Vec<String>,
     staged_browsers: Vec<(String, String, Option<String>)>,
     dock_journal: DockCommitJournal<DockRuntimeClaim, DockTeardownCompensation>,
@@ -1969,6 +1971,350 @@ enum RemoteTmuxTarget {
     Window,
 }
 
+const REMOTE_RUNTIME_LEASE_TTL: Duration = Duration::from_secs(30);
+const REMOTE_RUNTIME_CLEANUP_MAX_RETRIES: usize = 3;
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct RemoteRuntimeLeaseScope {
+    endpoint: String,
+    session: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RemoteRuntimeSourceWitness {
+    window_id: String,
+    workspace_id: String,
+    pane_id: String,
+    surface_id: String,
+    surface_generation: u64,
+    remote_token: String,
+    move_generation: u64,
+    restore_epoch: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoteRuntimeLeaseDisposition {
+    AwaitCommand,
+    AwaitCallback,
+    ReconcileObservation,
+    Publishing,
+    Compensate,
+    CleanupRetry,
+}
+
+#[derive(Debug, Clone)]
+struct RemoteRuntimeLease {
+    id: u64,
+    scope: RemoteRuntimeLeaseScope,
+    source: RemoteRuntimeSourceWitness,
+    reserved_surface_id: String,
+    reserved_pane_id: String,
+    target: RemoteTmuxTarget,
+    topology_before: Option<Vec<RemoteTmuxTopologyEntry>>,
+    remote_target_token: Option<String>,
+    expires_at: Instant,
+    disposition: RemoteRuntimeLeaseDisposition,
+    cleanup_attempts: usize,
+}
+
+#[derive(Default)]
+struct RemoteRuntimeLeaseRegistry {
+    next_id: u64,
+    restore_epoch: u64,
+    leases: BTreeMap<u64, RemoteRuntimeLease>,
+}
+
+#[derive(Default)]
+pub struct RemoteRuntimeLeaseRegistryState {
+    registry: Mutex<RemoteRuntimeLeaseRegistry>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoteRuntimeCommandOutcome {
+    Succeeded,
+    Failed,
+    Unknown,
+}
+
+fn remote_runtime_process_error_outcome(child_started: bool) -> RemoteRuntimeCommandOutcome {
+    if child_started {
+        RemoteRuntimeCommandOutcome::Unknown
+    } else {
+        RemoteRuntimeCommandOutcome::Failed
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoteRuntimeCallbackClaim {
+    Publish,
+    Duplicate,
+    Stale,
+}
+
+impl RemoteRuntimeLeaseRegistry {
+    fn reserve(
+        &mut self,
+        scope: RemoteRuntimeLeaseScope,
+        mut source: RemoteRuntimeSourceWitness,
+        reserved_surface_id: String,
+        reserved_pane_id: String,
+        target: RemoteTmuxTarget,
+    ) -> u64 {
+        self.next_id = self
+            .next_id
+            .checked_add(1)
+            .expect("remote runtime lease id space exhausted");
+        source.restore_epoch = self.restore_epoch;
+        let id = self.next_id;
+        self.leases.insert(
+            id,
+            RemoteRuntimeLease {
+                id,
+                scope,
+                source,
+                reserved_surface_id,
+                reserved_pane_id,
+                target,
+                topology_before: None,
+                remote_target_token: None,
+                expires_at: Instant::now() + REMOTE_RUNTIME_LEASE_TTL,
+                disposition: RemoteRuntimeLeaseDisposition::AwaitCommand,
+                cleanup_attempts: 0,
+            },
+        );
+        id
+    }
+
+    fn record_command_outcome(
+        &mut self,
+        id: u64,
+        outcome: RemoteRuntimeCommandOutcome,
+        token: Option<String>,
+    ) -> bool {
+        let Some(lease) = self.leases.get_mut(&id) else {
+            return false;
+        };
+        if lease.disposition != RemoteRuntimeLeaseDisposition::AwaitCommand {
+            if outcome == RemoteRuntimeCommandOutcome::Succeeded
+                && matches!(
+                    lease.disposition,
+                    RemoteRuntimeLeaseDisposition::Compensate
+                        | RemoteRuntimeLeaseDisposition::CleanupRetry
+                )
+                && token.is_some()
+            {
+                lease.remote_target_token = token;
+            }
+            return false;
+        }
+        if outcome == RemoteRuntimeCommandOutcome::Failed {
+            self.leases.remove(&id);
+            return true;
+        }
+        if token.is_some() {
+            lease.remote_target_token = token;
+        }
+        lease.disposition = match outcome {
+            RemoteRuntimeCommandOutcome::Succeeded => RemoteRuntimeLeaseDisposition::AwaitCallback,
+            RemoteRuntimeCommandOutcome::Failed => unreachable!("handled before lease lookup"),
+            RemoteRuntimeCommandOutcome::Unknown => {
+                RemoteRuntimeLeaseDisposition::ReconcileObservation
+            }
+        };
+        true
+    }
+
+    fn claim_callback(
+        &mut self,
+        id: u64,
+        scope: &RemoteRuntimeLeaseScope,
+        source: &RemoteRuntimeSourceWitness,
+        reserved_surface_id: &str,
+        reserved_pane_id: &str,
+    ) -> RemoteRuntimeCallbackClaim {
+        let Some(lease) = self.leases.get_mut(&id) else {
+            return RemoteRuntimeCallbackClaim::Stale;
+        };
+        if lease.disposition == RemoteRuntimeLeaseDisposition::Publishing {
+            return RemoteRuntimeCallbackClaim::Duplicate;
+        }
+        let exact = lease.id == id
+            && &lease.scope == scope
+            && &lease.source == source
+            && lease.source.restore_epoch == self.restore_epoch
+            && lease.reserved_surface_id == reserved_surface_id
+            && lease.reserved_pane_id == reserved_pane_id
+            && Instant::now() < lease.expires_at
+            && matches!(
+                lease.disposition,
+                RemoteRuntimeLeaseDisposition::AwaitCallback
+                    | RemoteRuntimeLeaseDisposition::ReconcileObservation
+            );
+        if !exact {
+            return RemoteRuntimeCallbackClaim::Stale;
+        }
+        lease.disposition = RemoteRuntimeLeaseDisposition::Publishing;
+        lease.expires_at = Instant::now() + REMOTE_RUNTIME_LEASE_TTL;
+        RemoteRuntimeCallbackClaim::Publish
+    }
+
+    fn record_callback_result(&mut self, id: u64, succeeded: bool) {
+        let Some(lease) = self.leases.get(&id) else {
+            return;
+        };
+        if lease.disposition != RemoteRuntimeLeaseDisposition::Publishing {
+            return;
+        }
+        if succeeded {
+            self.leases.remove(&id);
+        } else if let Some(lease) = self.leases.get_mut(&id) {
+            lease.disposition = RemoteRuntimeLeaseDisposition::AwaitCallback;
+        }
+    }
+
+    fn expire(&mut self, id: u64, now: Instant) -> Option<RemoteRuntimeLease> {
+        let lease = self.leases.get(&id)?;
+        if now < lease.expires_at {
+            return None;
+        }
+        if lease.disposition == RemoteRuntimeLeaseDisposition::Publishing {
+            return None;
+        }
+        let lease = self.leases.get_mut(&id)?;
+        lease.disposition = RemoteRuntimeLeaseDisposition::Compensate;
+        Some(lease.clone())
+    }
+
+    fn compensate(&mut self, id: u64) -> Option<RemoteRuntimeLease> {
+        let lease = self.leases.get_mut(&id)?;
+        lease.disposition = RemoteRuntimeLeaseDisposition::Compensate;
+        Some(lease.clone())
+    }
+
+    fn record_cleanup_result(&mut self, id: u64, succeeded: bool) -> Option<usize> {
+        if succeeded {
+            self.leases.remove(&id);
+            return None;
+        }
+        let lease = self.leases.get_mut(&id)?;
+        lease.cleanup_attempts = lease.cleanup_attempts.saturating_add(1);
+        let attempts = lease.cleanup_attempts;
+        if attempts > REMOTE_RUNTIME_CLEANUP_MAX_RETRIES {
+            self.leases.remove(&id);
+            return None;
+        }
+        lease.disposition = RemoteRuntimeLeaseDisposition::CleanupRetry;
+        Some(attempts)
+    }
+
+    fn cancel_for_restore(&mut self) {
+        self.restore_epoch = self.restore_epoch.saturating_add(1);
+        self.leases.clear();
+    }
+}
+
+fn reserve_remote_runtime_lease(
+    state: &RemoteRuntimeLeaseRegistryState,
+    scope: RemoteRuntimeLeaseScope,
+    source: RemoteRuntimeSourceWitness,
+    reserved_surface_id: String,
+    reserved_pane_id: String,
+    target: RemoteTmuxTarget,
+    topology_before: Vec<RemoteTmuxTopologyEntry>,
+) -> Result<u64, String> {
+    state
+        .registry
+        .lock()
+        .map_err(|_| "remote runtime lease registry lock poisoned".to_string())
+        .and_then(|mut registry| {
+            if registry
+                .leases
+                .values()
+                .any(|lease| lease.scope == scope && lease.remote_target_token.is_none())
+            {
+                return Err(
+                    "remote runtime topology reconciliation is already pending for this session"
+                        .into(),
+                );
+            }
+            let id = registry.reserve(scope, source, reserved_surface_id, reserved_pane_id, target);
+            if !topology_before.is_empty() {
+                if let Some(lease) = registry.leases.get_mut(&id) {
+                    lease.topology_before = Some(topology_before);
+                }
+            }
+            Ok(id)
+        })
+}
+
+fn cancel_remote_runtime_leases_for_restore(state: &RemoteRuntimeLeaseRegistryState) {
+    if let Ok(mut registry) = state.registry.lock() {
+        registry.cancel_for_restore();
+    }
+}
+
+fn expire_remote_runtime_lease(app: &AppHandle, id: u64) {
+    let state = app.state::<RemoteRuntimeLeaseRegistryState>();
+    let expired = state
+        .registry
+        .lock()
+        .ok()
+        .and_then(|mut registry| registry.expire(id, Instant::now()));
+    let Some(lease) = expired else {
+        return;
+    };
+    settle_remote_runtime_cleanup(app, lease);
+}
+
+fn compensate_remote_runtime_lease(app: &AppHandle, id: u64) -> bool {
+    let state = app.state::<RemoteRuntimeLeaseRegistryState>();
+    let lease = state
+        .registry
+        .lock()
+        .ok()
+        .and_then(|mut registry| registry.compensate(id));
+    let Some(lease) = lease else {
+        return false;
+    };
+    settle_remote_runtime_cleanup(app, lease)
+}
+
+fn settle_remote_runtime_cleanup(app: &AppHandle, remote: RemoteRuntimeLease) -> bool {
+    let observed_token = remote_runtime_compensation_token(&remote, &[]);
+    let cleaned = observed_token.as_deref().is_some_and(|token| {
+        remote_tmux_kill_command(remote.target, token)
+            .and_then(|command| run_remote_tmux_command(&remote.scope.endpoint, command))
+            .is_ok()
+    });
+    let retry = app
+        .state::<RemoteRuntimeLeaseRegistryState>()
+        .registry
+        .lock()
+        .ok()
+        .and_then(|mut registry| registry.record_cleanup_result(remote.id, cleaned));
+    if let Some(attempt) = retry.filter(|attempt| *attempt <= REMOTE_RUNTIME_CLEANUP_MAX_RETRIES) {
+        schedule_remote_runtime_cleanup_retry(app, remote.id, attempt);
+    }
+    cleaned
+}
+
+fn schedule_remote_runtime_cleanup_retry(app: &AppHandle, id: u64, attempt: usize) {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let exponent = attempt.saturating_sub(1).min(3) as u32;
+        thread::sleep(Duration::from_millis(250 * 2_u64.pow(exponent)));
+        let _ = compensate_remote_runtime_lease(&app, id);
+    });
+}
+
+fn schedule_remote_runtime_lease_watchdog(app: &AppHandle, id: u64) {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        thread::sleep(REMOTE_RUNTIME_LEASE_TTL);
+        expire_remote_runtime_lease(&app, id);
+    });
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 enum RemoteTmuxSplitDirection {
     #[serde(rename = "-h")]
@@ -2006,6 +2352,7 @@ impl RemoteTmuxTarget {
         }
     }
 
+    #[cfg(test)]
     fn permits_immediate_arrival(self, arrival_policy: &str) -> bool {
         self == Self::Pane && arrival_policy == "runtime-pane-add"
     }
@@ -2202,7 +2549,15 @@ enum RemoteWindowDepartureAction {
 struct RemoteWindowDepartureRegistry {
     next_key: u64,
     pending: BTreeMap<String, PendingRemoteWindowDeparture>,
+    identities: BTreeMap<String, RemoteWindowDepartureIdentity>,
     retry: BTreeMap<String, RemoteWindowDepartureRetryState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct RemoteWindowDepartureIdentity {
+    scope: RemoteRuntimeLeaseScope,
+    surface_id: String,
+    generation: u64,
 }
 
 #[derive(Default)]
@@ -2212,10 +2567,36 @@ struct RemoteWindowDepartureRetryState {
 }
 
 impl RemoteWindowDepartureRegistry {
+    #[cfg(test)]
     fn register(&mut self, pending: PendingRemoteWindowDeparture) -> String {
+        let session = pending.remote_window_id.clone();
+        self.register_scoped(pending, session)
+    }
+
+    fn register_scoped(
+        &mut self,
+        pending: PendingRemoteWindowDeparture,
+        session: String,
+    ) -> String {
+        let identity = RemoteWindowDepartureIdentity {
+            scope: RemoteRuntimeLeaseScope {
+                endpoint: pending.destination.clone(),
+                session,
+            },
+            surface_id: pending.departure.surface_id.clone(),
+            generation: pending.departure.generation,
+        };
+        if let Some((key, _)) = self
+            .identities
+            .iter()
+            .find(|(_, current)| *current == &identity)
+        {
+            return key.clone();
+        }
         self.next_key = self.next_key.saturating_add(1);
         let key = format!("remote-window-departure-{}", self.next_key);
         self.pending.insert(key.clone(), pending);
+        self.identities.insert(key.clone(), identity);
         self.retry.insert(key.clone(), Default::default());
         key
     }
@@ -2265,6 +2646,7 @@ impl RemoteWindowDepartureRegistry {
         result: Result<RuntimeDepartureCommitOutcome, String>,
     ) -> bool {
         if result.is_ok() {
+            self.identities.remove(key);
             self.retry.remove(key);
             self.pending.remove(key).is_some()
         } else {
@@ -2307,25 +2689,67 @@ impl RemoteWindowDepartureRegistry {
     }
 }
 
+#[cfg(test)]
 fn retain_remote_window_departure_after_kill(
     registry: &mut RemoteWindowDepartureRegistry,
     destination: &str,
     remote_window_id: &str,
     departure: pane_surface_lifecycle::RuntimeDeparture,
 ) -> Result<String, String> {
+    retain_scoped_remote_window_departure_after_kill(
+        registry,
+        destination,
+        remote_window_id,
+        remote_window_id,
+        departure,
+    )
+}
+
+fn retain_scoped_remote_window_departure_after_kill(
+    registry: &mut RemoteWindowDepartureRegistry,
+    destination: &str,
+    remote_session_id: &str,
+    remote_window_id: &str,
+    departure: pane_surface_lifecycle::RuntimeDeparture,
+) -> Result<String, String> {
     if !valid_tmux_identity(remote_window_id, '@') {
         return Err("invalid killed tmux window identity".into());
     }
-    Ok(registry.register(PendingRemoteWindowDeparture {
-        destination: destination.into(),
-        remote_window_id: remote_window_id.into(),
-        departure,
-    }))
+    Ok(registry.register_scoped(
+        PendingRemoteWindowDeparture {
+            destination: destination.into(),
+            remote_window_id: remote_window_id.into(),
+            departure,
+        },
+        remote_session_id.into(),
+    ))
 }
 
+#[cfg(test)]
 fn execute_remote_window_kill_and_register<F>(
     registry: &Mutex<RemoteWindowDepartureRegistry>,
     destination: &str,
+    source_pane: &str,
+    departure: pane_surface_lifecycle::RuntimeDeparture,
+    kill: F,
+) -> Result<String, String>
+where
+    F: FnOnce(&str, &str) -> Result<String, String>,
+{
+    execute_scoped_remote_window_kill_and_register(
+        registry,
+        destination,
+        destination,
+        source_pane,
+        departure,
+        kill,
+    )
+}
+
+fn execute_scoped_remote_window_kill_and_register<F>(
+    registry: &Mutex<RemoteWindowDepartureRegistry>,
+    destination: &str,
+    remote_session_id: &str,
     source_pane: &str,
     departure: pane_surface_lifecycle::RuntimeDeparture,
     kill: F,
@@ -2340,9 +2764,10 @@ where
     let mut registry = registry
         .lock()
         .map_err(|_| "remote departure registry lock poisoned".to_string())?;
-    retain_remote_window_departure_after_kill(
+    retain_scoped_remote_window_departure_after_kill(
         &mut registry,
         destination,
+        remote_session_id,
         &remote_window_id,
         departure,
     )
@@ -2464,6 +2889,108 @@ fn parse_remote_tmux_observation(output: &str) -> Result<RemoteTmuxObservation, 
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RemoteTmuxTopologyEntry {
+    window_id: String,
+    pane_id: String,
+}
+
+fn remote_tmux_topology_command() -> Vec<String> {
+    vec!["tmux list-panes -a -F '#{window_id}\t#{pane_id}'".into()]
+}
+
+fn parse_remote_tmux_topology(output: &str) -> Result<Vec<RemoteTmuxTopologyEntry>, String> {
+    if output.is_empty() {
+        return Ok(Vec::new());
+    }
+    let normalized = output.replace("\r\n", "\n");
+    if normalized.contains('\r') || !normalized.ends_with('\n') {
+        return Err("invalid remote tmux topology observation".into());
+    }
+    normalized
+        .lines()
+        .map(|line| {
+            let (window_id, pane_id) = line
+                .split_once('\t')
+                .ok_or_else(|| "invalid remote tmux topology observation".to_string())?;
+            if !valid_tmux_identity(window_id, '@') || !valid_tmux_identity(pane_id, '%') {
+                return Err("invalid remote tmux topology observation".into());
+            }
+            Ok(RemoteTmuxTopologyEntry {
+                window_id: window_id.into(),
+                pane_id: pane_id.into(),
+            })
+        })
+        .collect()
+}
+
+fn observe_remote_tmux_topology(destination: &str) -> Result<Vec<RemoteTmuxTopologyEntry>, String> {
+    let output = run_remote_tmux_command(destination, remote_tmux_topology_command())?;
+    parse_remote_tmux_topology(&output)
+}
+
+fn created_remote_tmux_topology_entry(
+    target: RemoteTmuxTarget,
+    before: &[RemoteTmuxTopologyEntry],
+    after: &[RemoteTmuxTopologyEntry],
+) -> Result<RemoteTmuxTopologyEntry, String> {
+    let created = after
+        .iter()
+        .filter(|candidate| {
+            !before.iter().any(|existing| match target {
+                RemoteTmuxTarget::Pane => existing.pane_id == candidate.pane_id,
+                RemoteTmuxTarget::Window => existing.window_id == candidate.window_id,
+            })
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    match created.as_slice() {
+        [entry] => Ok(entry.clone()),
+        _ => Err("remote command outcome unknown after topology reconciliation".into()),
+    }
+}
+
+fn remote_runtime_compensation_token(
+    remote: &RemoteRuntimeLease,
+    _topology_after: &[RemoteTmuxTopologyEntry],
+) -> Option<String> {
+    remote.remote_target_token.clone()
+}
+
+fn resolve_remote_tmux_create_observation<F>(
+    target: RemoteTmuxTarget,
+    output: &str,
+    topology_before: &[RemoteTmuxTopologyEntry],
+    observe: F,
+) -> Result<(Option<RemoteTmuxObservation>, Option<String>), String>
+where
+    F: FnOnce() -> Result<Vec<RemoteTmuxTopologyEntry>, String>,
+{
+    let raw_output = output.to_string();
+    let parsed = match target {
+        RemoteTmuxTarget::Window => {
+            parse_remote_tmux_observation(&raw_output).map(|observation| (Some(observation), None))
+        }
+        RemoteTmuxTarget::Pane => {
+            parse_remote_tmux_pane_observation(&raw_output).map(|pane| (None, Some(pane)))
+        }
+    };
+    if let Ok(parsed) = parsed {
+        return Ok(parsed);
+    }
+    let created = created_remote_tmux_topology_entry(target, topology_before, &observe()?)?;
+    Ok(match target {
+        RemoteTmuxTarget::Window => (
+            Some(RemoteTmuxObservation {
+                window_token: created.window_id,
+                pane_token: created.pane_id,
+            }),
+            None,
+        ),
+        RemoteTmuxTarget::Pane => (None, Some(created.pane_id)),
+    })
+}
+
 const REMOTE_OBSERVATION_MAX_RETRIES: usize = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2478,8 +3005,13 @@ fn remote_observation_action(
     commit_error: Option<&str>,
     attempts: usize,
 ) -> RemoteObservationAction {
-    if !source_exists || (commit_error.is_some() && attempts >= REMOTE_OBSERVATION_MAX_RETRIES) {
+    if !source_exists
+        || attempts > REMOTE_OBSERVATION_MAX_RETRIES
+        || (commit_error.is_some() && attempts >= REMOTE_OBSERVATION_MAX_RETRIES)
+    {
         RemoteObservationAction::CompensateKillWindow
+    } else if commit_error.is_some_and(|error| error.contains("command outcome unknown")) {
+        RemoteObservationAction::Reconcile
     } else if commit_error.is_some() {
         RemoteObservationAction::RetainAndRetry
     } else {
@@ -2494,6 +3026,7 @@ fn lifecycle_snapshot_changed(
     candidate != previous
 }
 
+#[cfg(test)]
 fn immediate_remote_arrival(
     target: RemoteTmuxTarget,
     arrival_policy: &str,
@@ -2515,7 +3048,6 @@ fn immediate_remote_arrival(
 
 #[derive(Clone)]
 struct StagedRemoteCreation {
-    destination: String,
     target: RemoteTmuxTarget,
     token: String,
     window_id: String,
@@ -2528,6 +3060,79 @@ struct StagedRemoteCreation {
     observation: Option<RemoteTmuxObservation>,
     pane_observation: Option<String>,
     arrival: Option<pane_surface_lifecycle::RuntimeArrival>,
+}
+
+fn remote_runtime_source_witness(
+    snapshot: &AppSessionSnapshot,
+    window_id: &str,
+    workspace_id: &str,
+    source_surface_id: &str,
+    restore_epoch: u64,
+) -> Option<RemoteRuntimeSourceWitness> {
+    let window = snapshot
+        .windows
+        .iter()
+        .find(|window| window.window_id.as_deref() == Some(window_id))?;
+    let workspace = window
+        .tab_manager
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.workspace_id.as_deref() == Some(workspace_id))?;
+    let surface = workspace
+        .surfaces
+        .as_ref()?
+        .iter()
+        .find(|surface| surface.surface_id == source_surface_id)?;
+    let SessionSurfaceKindSnapshot::RemoteTerminal {
+        remote_session_id: Some(remote_token),
+        ..
+    } = &surface.kind
+    else {
+        return None;
+    };
+    Some(RemoteRuntimeSourceWitness {
+        window_id: window_id.into(),
+        workspace_id: workspace_id.into(),
+        pane_id: surface.pane_id.clone(),
+        surface_id: source_surface_id.into(),
+        surface_generation: surface.generation,
+        remote_token: remote_token.clone(),
+        move_generation: surface.generation,
+        restore_epoch,
+    })
+}
+
+fn remote_runtime_source_is_current(
+    snapshot: &AppSessionSnapshot,
+    witness: &RemoteRuntimeSourceWitness,
+) -> bool {
+    remote_runtime_source_witness(
+        snapshot,
+        &witness.window_id,
+        &witness.workspace_id,
+        &witness.surface_id,
+        witness.restore_epoch,
+    )
+    .as_ref()
+        == Some(witness)
+}
+
+fn validate_remote_runtime_mutation_fence(
+    registry: &mut RemoteRuntimeLeaseRegistry,
+    id: u64,
+    snapshot: &AppSessionSnapshot,
+) -> Result<(), String> {
+    let Some(lease) = registry.leases.get(&id) else {
+        return Err("remote runtime lease expired before mutation".into());
+    };
+    if lease.disposition == RemoteRuntimeLeaseDisposition::AwaitCommand
+        && lease.source.restore_epoch == registry.restore_epoch
+        && remote_runtime_source_is_current(snapshot, &lease.source)
+    {
+        return Ok(());
+    }
+    registry.leases.remove(&id);
+    Err("remote runtime source changed before mutation".into())
 }
 
 fn observed_remote_window_arrival(
@@ -2552,6 +3157,9 @@ fn observed_remote_window_arrival(
 fn staged_remote_arrival(
     remote: &StagedRemoteCreation,
 ) -> Option<pane_surface_lifecycle::RuntimeArrival> {
+    if let Some(arrival) = &remote.arrival {
+        return Some(arrival.clone());
+    }
     if let Some(observation) = &remote.observation {
         return observed_remote_window_arrival(remote, &observation.pane_token);
     }
@@ -2571,16 +3179,68 @@ fn staged_remote_arrival(
     Some(arrival)
 }
 
-fn schedule_remote_window_reconciliation(app: &AppHandle, remote: StagedRemoteCreation) {
+fn schedule_remote_window_reconciliation(
+    app: &AppHandle,
+    remote: StagedRemoteCreation,
+    lease_id: u64,
+) {
     let compensation_token = remote.token.clone();
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let Some(arrival) = staged_remote_arrival(&remote) else {
             return;
         };
+        let lease = app
+            .state::<RemoteRuntimeLeaseRegistryState>()
+            .registry
+            .lock()
+            .ok()
+            .and_then(|registry| registry.leases.get(&lease_id).cloned());
+        let Some(lease) = lease else {
+            return;
+        };
         let mut attempt = 0;
         let failure = loop {
-            match commit_runtime_arrival_for_control(&app, arrival.clone()) {
+            let current = snapshot(&app);
+            if !remote_runtime_source_is_current(&current, &lease.source) {
+                break "Remote source tab disappeared before runtime arrival".to_string();
+            }
+            let claim = app
+                .state::<RemoteRuntimeLeaseRegistryState>()
+                .registry
+                .lock()
+                .map(|mut registry| {
+                    registry.claim_callback(
+                        lease.id,
+                        &lease.scope,
+                        &lease.source,
+                        &lease.reserved_surface_id,
+                        &lease.reserved_pane_id,
+                    )
+                })
+                .unwrap_or(RemoteRuntimeCallbackClaim::Stale);
+            match claim {
+                RemoteRuntimeCallbackClaim::Duplicate => return,
+                RemoteRuntimeCallbackClaim::Stale => {
+                    break "Remote runtime arrival lease is stale".to_string()
+                }
+                RemoteRuntimeCallbackClaim::Publish => {}
+            }
+            schedule_remote_runtime_lease_watchdog(&app, lease.id);
+            let commit = commit_runtime_arrival_for_control(&app, arrival.clone());
+            let committed = matches!(
+                commit,
+                Ok(RuntimeArrivalCommitOutcome::Committed)
+                    | Ok(RuntimeArrivalCommitOutcome::DuplicateOrStale)
+            );
+            if let Ok(mut registry) = app
+                .state::<RemoteRuntimeLeaseRegistryState>()
+                .registry
+                .lock()
+            {
+                registry.record_callback_result(lease.id, committed);
+            }
+            match commit {
                 Ok(outcome) => match outcome {
                     RuntimeArrivalCommitOutcome::Committed => {
                         if remote.target == RemoteTmuxTarget::Window
@@ -2609,16 +3269,7 @@ fn schedule_remote_window_reconciliation(app: &AppHandle, remote: StagedRemoteCr
                 }
             }
         };
-        let compensation = remote_tmux_kill_command(remote.target, &compensation_token)
-            .and_then(|command| {
-                Command::new("ssh")
-                    .args(["-T", "-o", "BatchMode=yes", &remote.destination])
-                    .args(command)
-                    .status()
-                    .map_err(|error| error.to_string())
-            })
-            .map(|status| status.success())
-            .unwrap_or(false);
+        let compensation = compensate_remote_runtime_lease(&app, lease.id);
         record_event(
             &app,
             "surface.create_failed",
@@ -2761,7 +3412,7 @@ struct ProductionLifecycleRollbackOperations<'a> {
     previous: Option<AppSessionSnapshot>,
     candidate: Option<AppSessionSnapshot>,
     dock_journal: DockCommitJournal<DockRuntimeClaim, DockTeardownCompensation>,
-    remote_creations: Vec<StagedRemoteCreation>,
+    remote_creations: Vec<(StagedRemoteCreation, u64)>,
 }
 
 impl LifecycleRollbackOperations for ProductionLifecycleRollbackOperations<'_> {
@@ -2807,19 +3458,12 @@ impl LifecycleRollbackOperations for ProductionLifecycleRollbackOperations<'_> {
         let index = self
             .remote_creations
             .iter()
-            .position(|remote| remote.token == target)
+            .position(|(remote, _)| remote.token == target)
             .ok_or_else(|| format!("remote rollback target {target} is unavailable"))?;
-        let remote = self.remote_creations.remove(index);
-        let command = remote_tmux_kill_command(remote.target, target)?;
-        let status = Command::new("ssh")
-            .args(["-T", "-o", "BatchMode=yes", &remote.destination])
-            .args(command)
-            .status()
-            .map_err(|error| format!("failed to launch remote rollback: {error}"))?;
-        status
-            .success()
+        let (_, lease_id) = self.remote_creations.remove(index);
+        compensate_remote_runtime_lease(self.app, lease_id)
             .then_some(())
-            .ok_or_else(|| format!("remote rollback exited with {status}"))
+            .ok_or_else(|| format!("remote rollback for {target} remains retryable"))
     }
 
     fn cleanup_browser(&mut self, surface_id: &str) -> Result<(), String> {
@@ -2833,8 +3477,8 @@ impl LifecycleRollbackOperations for ProductionLifecycleRollbackOperations<'_> {
 
 impl ProductionLifecycleExecutor<'_> {
     fn flush_deferred_remote_reconciliations(&mut self) {
-        for remote in self.deferred_remote_reconciliations.drain(..) {
-            schedule_remote_window_reconciliation(self.app, remote);
+        for (remote, lease_id) in self.deferred_remote_reconciliations.drain(..) {
+            schedule_remote_window_reconciliation(self.app, remote, lease_id);
         }
     }
 
@@ -2883,7 +3527,7 @@ impl ProductionLifecycleExecutor<'_> {
             remote_targets: self
                 .staged_remote_creations
                 .iter()
-                .map(|remote| remote.token.clone())
+                .map(|(remote, _)| remote.token.clone())
                 .collect(),
             browser_surface_ids: self
                 .staged_browsers
@@ -2983,11 +3627,14 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
                 self.staged_terminals.push((surface_id.clone(), id, true));
             }
             pane_surface_lifecycle::LifecycleEffect::RemoteCreate {
+                reserved_surface_id,
+                reserved_pane_id,
+                remote_session_id,
                 destination,
                 window_id,
                 workspace_id,
                 tmux_operation,
-                arrival_policy,
+                arrival_policy: _,
                 target_pane_id,
                 source_surface_id,
                 source_remote_pane_id,
@@ -3030,55 +3677,203 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
                     },
                     *split_direction,
                 )?;
-                let output = Command::new("ssh")
+                let lease_state = self.app.state::<RemoteRuntimeLeaseRegistryState>();
+                let restore_epoch = lease_state
+                    .registry
+                    .lock()
+                    .map_err(|_| "remote runtime lease registry lock poisoned".to_string())?
+                    .restore_epoch;
+                let source_id = source_surface_id
+                    .as_deref()
+                    .ok_or_else(|| "remote runtime source identity is unavailable".to_string())?;
+                let source = remote_runtime_source_witness(
+                    self.previous.as_ref().ok_or_else(|| {
+                        "previous lifecycle snapshot was not prepared".to_string()
+                    })?,
+                    window_id,
+                    workspace_id,
+                    source_id,
+                    restore_epoch,
+                )
+                .ok_or_else(|| "remote runtime source witness is unavailable".to_string())?;
+                let scope = RemoteRuntimeLeaseScope {
+                    endpoint: destination.clone(),
+                    session: remote_session_id.clone(),
+                };
+                let lease_id = reserve_remote_runtime_lease(
+                    lease_state.inner(),
+                    scope.clone(),
+                    source.clone(),
+                    reserved_surface_id.clone(),
+                    reserved_pane_id.clone(),
+                    target,
+                    Vec::new(),
+                )?;
+                schedule_remote_runtime_lease_watchdog(self.app, lease_id);
+                let topology_before = match observe_remote_tmux_topology(destination) {
+                    Ok(topology) => topology,
+                    Err(error) => {
+                        if let Ok(mut registry) = lease_state.registry.lock() {
+                            registry.record_command_outcome(
+                                lease_id,
+                                RemoteRuntimeCommandOutcome::Failed,
+                                None,
+                            );
+                        }
+                        return Err(error);
+                    }
+                };
+                lease_state
+                    .registry
+                    .lock()
+                    .map_err(|_| "remote runtime lease registry lock poisoned".to_string())?
+                    .leases
+                    .get_mut(&lease_id)
+                    .ok_or_else(|| "remote runtime lease expired before mutation".to_string())?
+                    .topology_before = Some(topology_before.clone());
+                let current = snapshot(self.app);
+                let mut lease_registry = lease_state
+                    .registry
+                    .lock()
+                    .map_err(|_| "remote runtime lease registry lock poisoned".to_string())?;
+                validate_remote_runtime_mutation_fence(&mut lease_registry, lease_id, &current)?;
+                drop(lease_registry);
+                let child = match Command::new("ssh")
                     .args(["-T", "-o", "BatchMode=yes", destination])
                     .args(&argv)
-                    .output()
-                    .map_err(|error| format!("failed to launch remote tmux create: {error}"))?;
+                    .spawn()
+                {
+                    Ok(child) => child,
+                    Err(error) => {
+                        if let Ok(mut registry) = lease_state.registry.lock() {
+                            registry.record_command_outcome(
+                                lease_id,
+                                remote_runtime_process_error_outcome(false),
+                                None,
+                            );
+                        }
+                        return Err(format!("failed to launch remote tmux create: {error}"));
+                    }
+                };
+                let output = match child.wait_with_output() {
+                    Ok(output) => output,
+                    Err(error) => {
+                        if let Ok(mut registry) = lease_state.registry.lock() {
+                            registry.record_command_outcome(
+                                lease_id,
+                                remote_runtime_process_error_outcome(true),
+                                None,
+                            );
+                        }
+                        return Err(format!("remote tmux create completion is unknown: {error}"));
+                    }
+                };
                 if !output.status.success() {
+                    if let Ok(mut registry) = lease_state.registry.lock() {
+                        registry.record_command_outcome(
+                            lease_id,
+                            RemoteRuntimeCommandOutcome::Failed,
+                            None,
+                        );
+                    }
                     return Err(format!("remote tmux create exited with {}", output.status));
                 }
                 let raw_output = String::from_utf8_lossy(&output.stdout);
-                let observation = (target == RemoteTmuxTarget::Window)
-                    .then(|| parse_remote_tmux_observation(&raw_output))
-                    .transpose()?;
-                let pane_observation = (target == RemoteTmuxTarget::Pane)
-                    .then(|| parse_remote_tmux_pane_observation(&raw_output))
-                    .transpose()?;
+                let (observation, pane_observation) = match resolve_remote_tmux_create_observation(
+                    target,
+                    &raw_output,
+                    &topology_before,
+                    || observe_remote_tmux_topology(destination),
+                ) {
+                    Ok(observation) => observation,
+                    Err(error) => {
+                        if let Ok(mut registry) = lease_state.registry.lock() {
+                            registry.record_command_outcome(
+                                lease_id,
+                                RemoteRuntimeCommandOutcome::Unknown,
+                                None,
+                            );
+                        }
+                        return Err(error);
+                    }
+                };
                 let token = observation
                     .as_ref()
                     .map(|observation| observation.window_token.clone())
                     .or_else(|| pane_observation.clone())
                     .unwrap_or_default();
                 if token.is_empty() {
+                    if let Ok(mut registry) = lease_state.registry.lock() {
+                        registry.record_command_outcome(
+                            lease_id,
+                            RemoteRuntimeCommandOutcome::Unknown,
+                            None,
+                        );
+                    }
                     return Err("remote tmux create returned no target identity".to_string());
                 }
-                let arrival = if target == RemoteTmuxTarget::Pane {
-                    None
+                let retained = lease_state
+                    .registry
+                    .lock()
+                    .map_err(|_| "remote runtime lease registry lock poisoned".to_string())?
+                    .record_command_outcome(
+                        lease_id,
+                        RemoteRuntimeCommandOutcome::Succeeded,
+                        Some(token.clone()),
+                    );
+                if !retained {
+                    return Err("remote runtime lease expired before command completion".into());
+                }
+                let mut arrival = if target == RemoteTmuxTarget::Window {
+                    observation.as_ref().and_then(|observation| {
+                        Some(pane_surface_lifecycle::RuntimeArrival::remote_tab(
+                            window_id,
+                            workspace_id,
+                            target_pane_id.as_ref()?,
+                            reserved_surface_id,
+                            &observation.pane_token,
+                            1,
+                            source_id,
+                            *focus,
+                        ))
+                    })
                 } else {
-                    immediate_remote_arrival(
-                        target,
-                        arrival_policy,
-                        window_id,
-                        workspace_id,
-                        &token,
-                    )
+                    pane_observation.as_ref().map(|pane_token| {
+                        let mut arrival = pane_surface_lifecycle::RuntimeArrival::remote(
+                            window_id,
+                            workspace_id,
+                            reserved_pane_id,
+                            reserved_surface_id,
+                            pane_token,
+                            1,
+                        );
+                        arrival.anchor_surface_id = Some(source_id.into());
+                        arrival.source_pane_id = source_pane_id.clone();
+                        arrival.split_orientation = split_orientation.clone();
+                        arrival.focused = *focus;
+                        arrival
+                    })
                 };
-                self.staged_remote_creations.push(StagedRemoteCreation {
-                    destination: destination.clone(),
-                    target,
-                    token,
-                    window_id: window_id.clone(),
-                    workspace_id: workspace_id.clone(),
-                    target_pane_id: target_pane_id.clone(),
-                    source_surface_id: source_surface_id.clone(),
-                    source_pane_id: source_pane_id.clone(),
-                    split_orientation: split_orientation.clone(),
-                    focus: *focus,
-                    observation,
-                    pane_observation,
-                    arrival,
-                });
+                if let Some(arrival) = &mut arrival {
+                    arrival.expected_source_generation = Some(source.surface_generation);
+                }
+                self.staged_remote_creations.push((
+                    StagedRemoteCreation {
+                        target,
+                        token,
+                        window_id: window_id.clone(),
+                        workspace_id: workspace_id.clone(),
+                        target_pane_id: target_pane_id.clone(),
+                        source_surface_id: source_surface_id.clone(),
+                        source_pane_id: source_pane_id.clone(),
+                        split_orientation: split_orientation.clone(),
+                        focus: *focus,
+                        observation,
+                        pane_observation,
+                        arrival,
+                    },
+                    lease_id,
+                ));
             }
             pane_surface_lifecycle::LifecycleEffect::BrowserAttach {
                 surface_id, url, ..
@@ -3180,7 +3975,7 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
                     }
                 }
                 self.app
-                    .state::<crate::remote_proxy::RemoteProxyBrokerState>()
+                    .state::<RemoteProxyBrokerState>()
                     .stop_panel_broker(surface_id);
             }
             _ => {}
@@ -3305,7 +4100,7 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
                         }
                     }
                     self.app
-                        .state::<crate::remote_proxy::RemoteProxyBrokerState>()
+                        .state::<RemoteProxyBrokerState>()
                         .stop_panel_broker(surface_id);
                 }
                 pane_surface_lifecycle::LifecycleEffect::RuntimeTeardown { .. } => {}
@@ -3341,6 +4136,7 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
                 }
                 pane_surface_lifecycle::LifecycleEffect::RemoteWindowClose {
                     destination,
+                    remote_session_id,
                     window_id,
                     workspace_id,
                     pane_id,
@@ -3351,9 +4147,10 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
                     ..
                 } => {
                     let registry_state = self.app.state::<RemoteWindowDepartureRegistryState>();
-                    let result = execute_remote_window_kill_and_register(
+                    let result = execute_scoped_remote_window_kill_and_register(
                         &registry_state.registry,
                         destination,
+                        remote_session_id,
                         source_remote_pane_id,
                         pane_surface_lifecycle::RuntimeDeparture {
                             window_id: window_id.clone(),
@@ -3407,7 +4204,9 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
         self.deferred_remote_reconciliations.extend(
             self.staged_remote_creations
                 .iter()
-                .filter(|remote| remote.observation.is_some() || remote.pane_observation.is_some())
+                .filter(|(remote, _)| {
+                    remote.observation.is_some() || remote.pane_observation.is_some()
+                })
                 .cloned(),
         );
         self.staged.clear();
@@ -6661,6 +7460,9 @@ fn notification_open_selected(
 }
 
 fn session_restore_previous_launch(app: &AppHandle) -> ControlCallResult {
+    cancel_remote_runtime_leases_for_restore(
+        app.state::<RemoteRuntimeLeaseRegistryState>().inner(),
+    );
     let state = app.state::<SessionState>();
     match restore_previous_launch_for_control(app, &state) {
         Ok(snapshot) => workspace_current(&snapshot),
@@ -13926,7 +14728,7 @@ fn debug_browser_start_direct_proxy(
         .flatten()
         .or_else(|| optional_u16_param(params, "targetPort").flatten());
     let target_override = match (target_host, target_port) {
-        (Some(host), Some(port)) => Some(crate::remote_proxy::ProxyTarget { host, port }),
+        (Some(host), Some(port)) => Some(ProxyTarget { host, port }),
         (None, None) => None,
         _ => return invalid_params(
             "debug.browser.start_direct_proxy target override requires targetHost and targetPort",
@@ -20600,7 +21402,6 @@ mod tests {
         );
 
         let observed_window = StagedRemoteCreation {
-            destination: "ssh://example.test".into(),
             target: window,
             token: "@12".into(),
             window_id: "window".into(),
@@ -20627,7 +21428,6 @@ mod tests {
         assert_eq!(arrival.anchor_surface_id.as_deref(), Some("surface-source"));
 
         let immediate_pane = StagedRemoteCreation {
-            destination: "ssh://example.test".into(),
             target: pane,
             token: "%34".into(),
             window_id: "window".into(),

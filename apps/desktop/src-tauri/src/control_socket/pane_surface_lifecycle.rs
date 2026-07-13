@@ -101,6 +101,8 @@ pub(super) enum LifecycleEffect {
         phase: &'static str,
     },
     RemoteCreate {
+        reserved_surface_id: String,
+        reserved_pane_id: String,
         remote_session_id: String,
         destination: String,
         window_id: String,
@@ -138,6 +140,7 @@ pub(super) enum LifecycleEffect {
     },
     RemoteWindowClose {
         destination: String,
+        remote_session_id: String,
         window_id: String,
         workspace_id: String,
         pane_id: String,
@@ -242,6 +245,7 @@ pub(crate) struct RuntimeArrival {
     pub focused: bool,
     pub split_orientation: Option<SessionSplitOrientation>,
     pub source_pane_id: Option<String>,
+    pub expected_source_generation: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -309,6 +313,7 @@ impl RuntimeArrival {
             focused: false,
             split_orientation: None,
             source_pane_id: None,
+            expected_source_generation: None,
         }
     }
 
@@ -334,6 +339,7 @@ impl RuntimeArrival {
             focused,
             split_orientation: None,
             source_pane_id: None,
+            expected_source_generation: Some(generation),
         }
     }
 }
@@ -372,6 +378,46 @@ pub(super) fn reconcile_runtime_arrival(
         // generation is a stale callback; neither may rewrite topology.
         let _same_generation = existing.generation == arrival.generation;
         return RuntimeReconciliation { snapshot: next };
+    }
+    let duplicate_runtime =
+        snapshot
+            .windows
+            .iter()
+            .find(|window| window.window_id.as_deref() == Some(&arrival.window_id))
+            .and_then(|window| {
+                window.tab_manager.workspaces.iter().find(|workspace| {
+                    workspace.workspace_id.as_deref() == Some(&arrival.workspace_id)
+                })
+            })
+            .into_iter()
+            .flat_map(|workspace| workspace.surfaces.as_deref().unwrap_or_default())
+            .any(|surface| {
+                matches!(
+                    &surface.kind,
+                    SessionSurfaceKindSnapshot::RemoteTerminal {
+                        remote_session_id: Some(remote_session_id),
+                        arrival_generation: Some(generation),
+                        ..
+                    } if remote_session_id == &arrival.remote_session_id
+                        && generation == &arrival.generation
+                )
+            });
+    if duplicate_runtime {
+        return RuntimeReconciliation { snapshot: next };
+    }
+    if let (Some(anchor), Some(expected_generation)) = (
+        arrival.anchor_surface_id.as_deref(),
+        arrival.expected_source_generation,
+    ) {
+        let stale_remote_anchor = existing_model.surface(anchor).is_some_and(|record| {
+            matches!(
+                record.kind,
+                SessionSurfaceKindSnapshot::RemoteTerminal { .. }
+            ) && record.generation != expected_generation
+        });
+        if stale_remote_anchor {
+            return RuntimeReconciliation { snapshot: next };
+        }
     }
     if arrival.generation == 0 {
         return RuntimeReconciliation { snapshot: next };
@@ -2240,11 +2286,16 @@ fn close_action_range(
                         .filter(|token| super::valid_tmux_identity(token, '%'))
                     {
                         closed += 1;
+                        let destination = remote
+                            .destination
+                            .clone()
+                            .unwrap_or_else(|| "remote".into());
                         effects.push(LifecycleEffect::RemoteWindowClose {
-                            destination: remote
-                                .destination
+                            remote_session_id: remote
+                                .persistent_daemon_slot
                                 .clone()
-                                .unwrap_or_else(|| "remote".into()),
+                                .unwrap_or_else(|| destination.clone()),
+                            destination,
                             window_id: owner.window_id.clone(),
                             workspace_id: owner.workspace_id.clone(),
                             pane_id: owner.pane_id.clone(),
@@ -2419,7 +2470,11 @@ fn apply_create_right_action(
                 .destination
                 .clone()
                 .unwrap_or_else(|| "remote".into());
+            let reserved_surface_id = Uuid::new_v4().to_string();
+            let reserved_pane_id = owner.pane_id.clone();
             effects.push(LifecycleEffect::RemoteCreate {
+                reserved_surface_id: reserved_surface_id.clone(),
+                reserved_pane_id,
                 remote_session_id: remote_tmux
                     .persistent_daemon_slot
                     .clone()
@@ -2612,6 +2667,19 @@ fn apply_move_to_workspace_action(
     action: &str,
     model: SurfaceLifecycleModel,
 ) -> LifecycleTransition {
+    if model.surface(surface_id).is_some_and(|surface| {
+        matches!(
+            surface.kind,
+            SessionSurfaceKindSnapshot::RemoteTerminal { .. }
+        )
+    }) {
+        return error(
+            snapshot,
+            "invalid_params",
+            "Remote mirrors cannot be moved as locally owned runtimes",
+            Some(json!({"surface_id":surface_id})),
+        );
+    }
     let workspace_count = model
         .snapshot()
         .panes
@@ -3289,10 +3357,7 @@ fn surface_respawn(
             Some(json!({"surface_id":surface_id})),
         );
     };
-    if !matches!(
-        record.kind,
-        SessionSurfaceKindSnapshot::Terminal | SessionSurfaceKindSnapshot::RemoteTerminal { .. }
-    ) {
+    if !matches!(record.kind, SessionSurfaceKindSnapshot::Terminal) {
         return error(
             snapshot,
             "invalid_params",
@@ -3439,6 +3504,11 @@ fn surface_close(
                         destination: remote
                             .destination
                             .clone()
+                            .unwrap_or_else(|| "remote".into()),
+                        remote_session_id: remote
+                            .persistent_daemon_slot
+                            .clone()
+                            .or_else(|| remote.destination.clone())
                             .unwrap_or_else(|| "remote".into()),
                         window_id,
                         workspace_id,
@@ -3731,6 +3801,19 @@ fn surface_move(
             snapshot,
             "not_found",
             "Surface not found",
+            Some(json!({"surface_id":surface_id})),
+        );
+    }
+    if model.surface(surface_id).is_some_and(|surface| {
+        matches!(
+            surface.kind,
+            SessionSurfaceKindSnapshot::RemoteTerminal { .. }
+        )
+    }) {
+        return error(
+            snapshot,
+            "invalid_params",
+            "Remote mirrors cannot be moved as locally owned runtimes",
             Some(json!({"surface_id":surface_id})),
         );
     }
@@ -4302,11 +4385,15 @@ fn pane_create(
         let destination = remote
             .and_then(|remote| remote.destination.clone())
             .unwrap_or_else(|| "remote".into());
+        let reserved_surface_id = Uuid::new_v4().to_string();
+        let reserved_pane_id = Uuid::new_v4().to_string();
         return ok_transition(
             snapshot.clone(),
             json!({"accepted":true,"routed":"remote-tmux","type":"terminal","window_id":scope.window_id,"workspace_id":scope.workspace_id,"pane_id":null,"surface_id":null}),
             vec![],
             vec![LifecycleEffect::RemoteCreate {
+                reserved_surface_id,
+                reserved_pane_id,
                 remote_session_id: destination.clone(),
                 destination,
                 window_id: scope.window_id,

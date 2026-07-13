@@ -25,13 +25,14 @@ use cmux_core::session::{
     SessionPanelPullRequestSnapshot, SessionPanelRestorableAgentSnapshot,
     SessionPanelShellActivitySnapshot, SessionPanelShellActivityStateSnapshot,
     SessionPanelTerminalStartupSnapshot, SessionPanelTtySnapshot, SessionPullRequestStatusSnapshot,
-    SessionRestorableAgentSnapshot, SessionSplitOrientation, SessionTabManagerSnapshot,
-    SessionWindowSnapshot, SessionWorkspaceAgentPidSnapshot, SessionWorkspaceLayoutSnapshot,
-    SessionWorkspaceRemoteDaemonSnapshot, SessionWorkspaceRemoteProxySnapshot,
-    SessionWorkspaceRemoteSnapshot, SessionWorkspaceSidebarLogEntrySnapshot,
-    SessionWorkspaceSidebarMetadataBlockSnapshot, SessionWorkspaceSidebarMetadataSnapshot,
-    SessionWorkspaceSidebarProgressSnapshot, SessionWorkspaceSidebarStatusSnapshot,
-    SessionWorkspaceSnapshot, SESSION_SNAPSHOT_SCHEMA_VERSION,
+    SessionRestorableAgentSnapshot, SessionSplitOrientation, SessionSurfaceKindSnapshot,
+    SessionTabManagerSnapshot, SessionWindowSnapshot, SessionWorkspaceAgentPidSnapshot,
+    SessionWorkspaceLayoutSnapshot, SessionWorkspaceRemoteDaemonSnapshot,
+    SessionWorkspaceRemoteProxySnapshot, SessionWorkspaceRemoteSnapshot,
+    SessionWorkspaceSidebarLogEntrySnapshot, SessionWorkspaceSidebarMetadataBlockSnapshot,
+    SessionWorkspaceSidebarMetadataSnapshot, SessionWorkspaceSidebarProgressSnapshot,
+    SessionWorkspaceSidebarStatusSnapshot, SessionWorkspaceSnapshot,
+    SESSION_SNAPSHOT_SCHEMA_VERSION,
 };
 use cmux_core::session_ops::{self, CloseOutcome, SplitChild};
 use cmux_workspaces::{WorkspaceBatchReorderError, WorkspaceReorderPlanItem};
@@ -7159,6 +7160,48 @@ pub(crate) fn clear_workspace_panel_pull_request_for_control(
     })
 }
 
+fn drop_nonrestorable_remote_mirrors(snapshot: &mut AppSessionSnapshot) {
+    for workspace in snapshot
+        .windows
+        .iter_mut()
+        .flat_map(|window| &mut window.tab_manager.workspaces)
+    {
+        let remote_surface_ids = workspace
+            .surfaces
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|surface| {
+                matches!(
+                    surface.kind,
+                    SessionSurfaceKindSnapshot::RemoteTerminal { .. }
+                )
+                .then(|| surface.surface_id.clone())
+            })
+            .collect::<HashSet<_>>();
+        if remote_surface_ids.is_empty() {
+            continue;
+        }
+        for surface_id in &remote_surface_ids {
+            session_ops::close_panel(&mut workspace.layout, surface_id);
+        }
+        if let Some(surfaces) = &mut workspace.surfaces {
+            surfaces.retain(|surface| !remote_surface_ids.contains(&surface.surface_id));
+        }
+        if workspace
+            .focused_panel_id
+            .as_ref()
+            .is_some_and(|focused| remote_surface_ids.contains(focused))
+        {
+            workspace.focused_panel_id = workspace
+                .surfaces
+                .as_ref()
+                .and_then(|surfaces| surfaces.first())
+                .map(|surface| surface.surface_id.clone());
+        }
+    }
+}
+
 fn restore_previous_launch_transaction(
     authority: &GatedSnapshot,
     next_panel: &AtomicU64,
@@ -7171,6 +7214,7 @@ fn restore_previous_launch_transaction(
             let Some(mut restored) = load_previous() else {
                 return Ok::<_, String>((None, false));
             };
+            drop_nonrestorable_remote_mirrors(&mut restored);
             ensure_workspace_ids(&mut restored);
             ensure_pane_ids(&mut restored);
             if !remint_noncanonical_identities(&mut restored) {
