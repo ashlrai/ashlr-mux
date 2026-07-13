@@ -3833,6 +3833,24 @@ fn apply_window_lifecycle_effect(
         // geometry persistence, remote detach, and the resume approval store
         // are platform-equivalence/deferred-subsystem candidates pinned by
         // the transition tests until their subsystems land.
+        // Canonical unregisterMainWindow notification clearing
+        // (AppDelegate.swift:16274-16280). Best-effort like the rest of the
+        // teardown: a poisoned store must not fail an already-closed window.
+        Effect::ClearWindowNotifications {
+            window_id,
+            workspace_ids,
+        } => {
+            if let Some(state) = app.try_state::<crate::notifications::NotificationCommandState>() {
+                if let Err(error) = crate::notifications::notification_clear_window_for_control(
+                    state.inner(),
+                    window_id,
+                    workspace_ids,
+                ) {
+                    eprintln!("[control] window.close notification clear: {error}");
+                }
+            }
+            Ok(())
+        }
         Effect::RecordClosedWindowHistory { .. }
         | Effect::PersistWindowGeometry { .. }
         | Effect::RemoteWorkspaceDetach { .. }

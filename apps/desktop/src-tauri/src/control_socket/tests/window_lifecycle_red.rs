@@ -452,8 +452,9 @@ fn window_close_success_means_perform_close_invoked() {
 #[test]
 fn window_close_runs_the_unregister_sequence_without_focus_mutation() {
     // unregisterMainWindow: history, geometry persist, window.closed publish,
-    // repoint, session save (AppDelegate.swift:16241-16305). close_window is
-    // not focus-intent: no WindowFocus effect ever.
+    // notification clearing, repoint, session save
+    // (AppDelegate.swift:16241-16305). close_window is not focus-intent: no
+    // WindowFocus effect ever.
     let snapshot = two_window_snapshot();
     let transition = dispatch(&snapshot, "window.close", json!({"window_id": "window-2"}));
     assert_eq!(
@@ -468,9 +469,100 @@ fn window_close_runs_the_unregister_sequence_without_focus_mutation() {
             WindowLifecycleEffect::WindowCloseCommit {
                 window_id: "window-2".into(),
             },
+            WindowLifecycleEffect::ClearWindowNotifications {
+                window_id: "window-2".into(),
+                workspace_ids: vec!["workspace-2".into()],
+            },
             WindowLifecycleEffect::PersistSession,
         ],
         "closing a non-active window does not repoint the active pointer"
+    );
+}
+
+#[test]
+fn window_close_clears_notifications_for_window_and_each_workspace() {
+    // Canonical clears forTabId(removed.windowId), then one clear per tab of
+    // the removed TabManager, before the active repoint
+    // (AppDelegate.swift:16274-16280).
+    let mut snapshot = two_window_snapshot();
+    let mut extra = snapshot.windows[1].tab_manager.workspaces[0].clone();
+    extra.workspace_id = Some("workspace-2b".into());
+    extra.focused_panel_id = Some("surface-2b".into());
+    let SessionWorkspaceLayoutSnapshot::Pane(pane) =
+        extra.layout.as_mut().expect("extra workspace layout")
+    else {
+        unreachable!();
+    };
+    pane.pane_id = Some("pane-2b".into());
+    pane.panel_ids = vec!["surface-2b".into()];
+    pane.selected_panel_id = Some("surface-2b".into());
+    snapshot.windows[1].tab_manager.workspaces.push(extra);
+
+    let transition = dispatch(&snapshot, "window.close", json!({"window_id": "window-2"}));
+    expect_ok(&transition.result);
+    let clear = transition
+        .effects
+        .iter()
+        .find(|effect| {
+            matches!(
+                effect,
+                WindowLifecycleEffect::ClearWindowNotifications { .. }
+            )
+        })
+        .expect("close must clear notifications");
+    assert_eq!(
+        clear,
+        &WindowLifecycleEffect::ClearWindowNotifications {
+            window_id: "window-2".into(),
+            workspace_ids: vec!["workspace-2".into(), "workspace-2b".into()],
+        },
+        "window id plus every workspace of the closed window, in tab order"
+    );
+    // The clear runs after the close commit and before the session save
+    // (canonical: after publish, before repoint/save).
+    let position = |predicate: fn(&WindowLifecycleEffect) -> bool| {
+        transition.effects.iter().position(predicate).unwrap()
+    };
+    assert!(
+        position(|effect| matches!(effect, WindowLifecycleEffect::WindowCloseCommit { .. }))
+            < position(|effect| matches!(
+                effect,
+                WindowLifecycleEffect::ClearWindowNotifications { .. }
+            ))
+    );
+    assert!(
+        position(|effect| matches!(
+            effect,
+            WindowLifecycleEffect::ClearWindowNotifications { .. }
+        )) < position(|effect| matches!(effect, WindowLifecycleEffect::PersistSession))
+    );
+}
+
+#[test]
+fn last_window_close_does_not_clear_notifications() {
+    // The vetoed last-window close leaves the window (and its notifications)
+    // alone pending quit confirmation.
+    let snapshot = test_snapshot();
+    let transition = dispatch(&snapshot, "window.close", json!({"window_id": "window-1"}));
+    expect_ok(&transition.result);
+    assert!(!transition.effects.iter().any(|effect| matches!(
+        effect,
+        WindowLifecycleEffect::ClearWindowNotifications { .. }
+    )));
+}
+
+#[test]
+fn window_lifecycle_executor_wires_notification_clearing() {
+    // Source oracle: the executor must give ClearWindowNotifications its own
+    // arm that calls the notifications seam, not the documented no-op group.
+    let source = include_str!("../../control_socket.rs");
+    assert!(
+        source.contains("Effect::ClearWindowNotifications {"),
+        "effect must exist in the executor"
+    );
+    assert!(
+        source.contains("notification_clear_window_for_control("),
+        "executor must call the notifications seam"
     );
 }
 

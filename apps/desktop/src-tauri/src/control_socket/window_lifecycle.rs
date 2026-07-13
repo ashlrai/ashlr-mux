@@ -88,6 +88,13 @@ pub(super) enum WindowLifecycleEffect {
         workspace_id: String,
         destination: String,
     },
+    /// Drop stale notifications for the closing window and each of its
+    /// workspaces (unregisterMainWindow, AppDelegate.swift:16274-16280:
+    /// clearNotifications(forTabId: removed.windowId) then per tab).
+    ClearWindowNotifications {
+        window_id: String,
+        workspace_ids: Vec<String>,
+    },
     QuitConfirmation {
         window_id: String,
     },
@@ -442,6 +449,17 @@ fn window_close(
     }
     effects.push(WindowLifecycleEffect::WindowCloseCommit {
         window_id: window_id.clone(),
+    });
+    // Drop stale notifications for the closing window and each of its
+    // workspaces, before the repoint/save (AppDelegate.swift:16274-16280).
+    effects.push(WindowLifecycleEffect::ClearWindowNotifications {
+        window_id: window_id.clone(),
+        workspace_ids: closed
+            .tab_manager
+            .workspaces
+            .iter()
+            .filter_map(|workspace| workspace.workspace_id.clone())
+            .collect(),
     });
     if was_key {
         if let Some(repoint) = next
