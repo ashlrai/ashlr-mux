@@ -2387,3 +2387,71 @@ fn agent_session_provider_and_renderer_use_v2_normalized_tokens() {
         json!({"provider": "claude code x"})
     );
 }
+
+#[test]
+fn surface_create_applies_and_persists_full_terminal_startup_metadata() {
+    // Canonical: ControlCommandCoordinator+Surface.swift:495-506 parses trimmed
+    // working_directory / initial_command / tmux_start_command /
+    // remote_pty_session_id plus the startup_environment|initial_env map
+    // (trimmed non-empty keys), and controlSurfaceCreate forwards all of them
+    // to newTerminalSurfaceOutcome
+    // (TerminalController+ControlSurfaceContext2.swift:393-404); the created
+    // terminal persists that startup metadata.
+    let created = transition(
+        &test_snapshot(),
+        "surface.create",
+        json!({
+            "pane_id": "pane-1",
+            "type": "terminal",
+            "initial_command": "  cargo run  ",
+            "working_directory": " C:/w ",
+            "tmux_start_command": " htop ",
+            "remote_pty_session_id": " %41 ",
+            "startup_environment": {"FOO": "bar", "  ": "dropped"}
+        }),
+    );
+    let value = ok_value(&created);
+    let created_id = value["surface_id"].as_str().unwrap();
+    let effect = created
+        .effects
+        .iter()
+        .find(|effect| matches!(effect, LifecycleEffect::TerminalCreate { .. }))
+        .expect("terminal create effect");
+    let effect = serde_json::to_value(effect).unwrap();
+    assert_eq!(effect["TerminalCreate"]["command"], json!("cargo run"));
+    assert_eq!(effect["TerminalCreate"]["working_directory"], json!("C:/w"));
+    assert_eq!(
+        effect["TerminalCreate"]["tmux_start_command"],
+        json!("htop")
+    );
+    assert_eq!(
+        effect["TerminalCreate"]["remote_pty_session_id"],
+        json!("%41")
+    );
+    assert_eq!(
+        effect["TerminalCreate"]["startup_environment"],
+        json!({"FOO": "bar"})
+    );
+    let record = created.snapshot.windows[0].tab_manager.workspaces[0]
+        .surfaces
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .find(|record| record.surface_id == created_id)
+        .expect("created surface record")
+        .clone();
+    assert_eq!(
+        record.terminal_startup,
+        Some(cmux_core::session::SessionSurfaceTerminalStartupSnapshot {
+            command: Some("cargo run".into()),
+            working_directory: Some("C:/w".into()),
+            tmux_start_command: Some("htop".into()),
+            remote_pty_session_id: Some("%41".into()),
+            environment: Some(std::collections::BTreeMap::from([(
+                "FOO".to_string(),
+                "bar".to_string()
+            )])),
+            ..Default::default()
+        })
+    );
+}

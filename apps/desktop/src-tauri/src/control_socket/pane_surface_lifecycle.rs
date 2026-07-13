@@ -36,6 +36,7 @@ pub(super) enum LifecycleEffect {
         command: Option<String>,
         working_directory: Option<String>,
         tmux_start_command: Option<String>,
+        remote_pty_session_id: Option<String>,
         startup_environment: Option<std::collections::BTreeMap<String, String>>,
         failure_code: &'static str,
         failure_message: &'static str,
@@ -1652,18 +1653,30 @@ fn surface_create(
             Err(_) => return error(snapshot, "internal_error", "Failed to create surface", None),
         }
     };
+    // Canonical: ControlCommandCoordinator+Surface.swift:495-506 parses trimmed
+    // working_directory / initial_command / tmux_start_command /
+    // remote_pty_session_id plus startup_environment|initial_env, and
+    // controlSurfaceCreate forwards all of them to newTerminalSurfaceOutcome
+    // (TerminalController+ControlSurfaceContext2.swift:393-404); persist the
+    // full startup metadata on the created terminal.
+    let initial_command = super::string_param(params, &["initial_command"]);
+    let working_directory = super::string_param(params, &["working_directory"]);
+    let tmux_start_command = super::string_param(params, &["tmux_start_command"]);
+    let remote_pty_session_id = super::string_param(params, &["remote_pty_session_id"]);
+    let startup_environment = super::first_present_trimmed_string_map_param(
+        params,
+        &["startup_environment", "initial_env"],
+    )
+    .filter(|environment| !environment.is_empty());
     if matches!(kind, SessionSurfaceKindSnapshot::Terminal) {
         let _ = model.set_terminal_startup(
             &surface_id,
             SessionSurfaceTerminalStartupSnapshot {
-                command: params
-                    .get("initial_command")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                working_directory: params
-                    .get("working_directory")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
+                command: initial_command.clone(),
+                working_directory: working_directory.clone(),
+                tmux_start_command: tmux_start_command.clone(),
+                remote_pty_session_id: remote_pty_session_id.clone(),
+                environment: startup_environment.clone(),
                 ..Default::default()
             },
         );
@@ -1687,16 +1700,11 @@ fn surface_create(
         | SessionSurfaceKindSnapshot::RemoteTerminal { .. } => LifecycleEffect::TerminalCreate {
             surface_id: surface_id.clone(),
             generation,
-            command: params
-                .get("initial_command")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-            working_directory: params
-                .get("working_directory")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-            tmux_start_command: None,
-            startup_environment: None,
+            command: initial_command.clone(),
+            working_directory: working_directory.clone(),
+            tmux_start_command: tmux_start_command.clone(),
+            remote_pty_session_id: remote_pty_session_id.clone(),
+            startup_environment: startup_environment.clone(),
             failure_code: "internal_error",
             failure_message: "Failed to create surface",
         },
@@ -2223,6 +2231,7 @@ fn apply_create_right_action(
             command: None,
             working_directory: local_terminal_working_directory,
             tmux_start_command: None,
+            remote_pty_session_id: None,
             startup_environment: None,
             failure_code: "internal_error",
             failure_message: "Failed to create tab",
@@ -3875,6 +3884,7 @@ fn pane_create(
             command: initial_command.clone(),
             working_directory: working_directory.clone(),
             tmux_start_command: tmux_start_command.clone(),
+            remote_pty_session_id: None,
             startup_environment: startup_environment.clone(),
             failure_code: "internal_error",
             failure_message: "Failed to create pane",

@@ -1724,6 +1724,7 @@ fn startup_from_legacy(value: &SessionPanelTerminalStartupSnapshot) -> TerminalS
         initial_input: value.initial_terminal_input.clone(),
         environment: value.initial_terminal_environment.clone(),
         tmux_start_command: None,
+        remote_pty_session_id: None,
         resume_binding: None,
     }
 }

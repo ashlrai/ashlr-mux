@@ -953,6 +953,9 @@ pub struct SessionSurfaceTerminalStartupSnapshot {
     pub tmux_start_command: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
+    pub remote_pty_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
     pub resume_binding: Option<Box<SessionRestorableAgentSnapshot>>,
 }
 
