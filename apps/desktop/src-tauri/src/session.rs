@@ -9343,40 +9343,163 @@ mod tests {
     // window of a real `AppSessionSnapshot`.
 
     #[test]
-    fn restore_remints_legacy_main_and_surface_n_identities_consistently() {
-        // V1: a pre-remediation persisted snapshot must not resurrect the
-        // literal "main"/"surface-N" ids; every non-UUID structural id is
-        // re-minted with intra-snapshot references remapped, and free text is
-        // untouched.
-        let mut legacy = initial_snapshot("surface-1");
-        legacy.windows[0].window_id = Some("main".to_string());
-        legacy.windows[0].tab_manager.workspaces[0].custom_title = Some("surface-1".to_string());
-        remint_noncanonical_identities(&mut legacy);
-        let restored = legacy;
-        // The restore transaction wires this in right after ensure_* minting.
-        let source = include_str!("session.rs");
-        let start = source
-            .find("fn restore_previous_launch_transaction(")
-            .expect("restore fn present");
-        assert!(
-            source[start..start + 1200].contains("remint_noncanonical_identities"),
-            "restore must re-mint legacy identities"
-        );
-        let window_id = restored.windows[0].window_id.clone().expect("window id");
-        assert!(Uuid::parse_str(&window_id).is_ok(), "{window_id}");
-        let workspace = &restored.windows[0].tab_manager.workspaces[0];
-        let SessionWorkspaceLayoutSnapshot::Pane(pane) = workspace.layout.as_ref().unwrap() else {
-            unreachable!();
+    fn restore_remints_only_typed_identities_and_preserves_equal_free_text() {
+        const LEGACY_WINDOW_ID: &str = "main";
+        const LEGACY_WORKSPACE_ID: &str = "workspace-1";
+        const LEGACY_PANE_ID: &str = "pane-1";
+        const LEGACY_SURFACE_ID: &str = "surface-1";
+
+        let text = || LEGACY_SURFACE_ID.to_string();
+        let same_text_environment = BTreeMap::from([(text(), text())]);
+        let mut legacy = initial_snapshot(LEGACY_SURFACE_ID);
+        let window = &mut legacy.windows[0];
+        window.window_id = Some(LEGACY_WINDOW_ID.to_string());
+        window.selected_workspace_id = Some(LEGACY_WORKSPACE_ID.to_string());
+        let workspace = &mut window.tab_manager.workspaces[0];
+        workspace.workspace_id = Some(LEGACY_WORKSPACE_ID.to_string());
+        workspace.custom_title = Some(text());
+        workspace.custom_description = Some(text());
+        workspace.focused_panel_id = Some(LEGACY_SURFACE_ID.to_string());
+        workspace.focused_pane_id = Some(LEGACY_PANE_ID.to_string());
+        workspace.surface_resume_bindings = Some(vec![
+            cmux_core::session::SessionSurfaceResumeBindingRecordSnapshot {
+                surface_id: LEGACY_SURFACE_ID.to_string(),
+                binding: cmux_core::session::SessionSurfaceResumeBindingSnapshot {
+                    name: None,
+                    kind: None,
+                    command: text(),
+                    cwd: Some(text()),
+                    checkpoint_id: None,
+                    source: None,
+                    environment: None,
+                    auto_resume: false,
+                    approval_policy: None,
+                    approval_record_id: None,
+                    updated_at: 1.0,
+                },
+            },
+        ]);
+
+        let SessionWorkspaceLayoutSnapshot::Pane(pane) =
+            workspace.layout.as_mut().expect("legacy pane")
+        else {
+            unreachable!()
         };
-        let panel = pane.panel_ids[0].clone();
-        assert!(Uuid::parse_str(&panel).is_ok(), "{panel}");
-        // References remapped consistently.
-        assert_eq!(pane.selected_panel_id.as_deref(), Some(panel.as_str()));
-        assert_eq!(workspace.focused_panel_id.as_deref(), Some(panel.as_str()));
-        let records = workspace.surfaces.as_deref().expect("records");
-        assert_eq!(records[0].surface_id, panel);
-        // Free text equal to an old id is untouched.
-        assert_eq!(workspace.custom_title.as_deref(), Some("surface-1"));
+        pane.pane_id = Some(LEGACY_PANE_ID.to_string());
+        pane.browser_url = Some(text());
+
+        let surface = &mut workspace.surfaces.as_mut().expect("surface records")[0];
+        surface.pane_id = LEGACY_PANE_ID.to_string();
+        surface.kind = cmux_core::session::SessionSurfaceKindSnapshot::RemoteTerminal {
+            remote_session_id: None,
+            remote_context: Some(serde_json::json!({
+                "notification": {"body": LEGACY_SURFACE_ID},
+                "opaque": {
+                    LEGACY_SURFACE_ID: LEGACY_SURFACE_ID,
+                    "value": LEGACY_SURFACE_ID
+                }
+            })),
+            arrival_generation: Some(1),
+        };
+        surface.terminal_startup =
+            Some(cmux_core::session::SessionSurfaceTerminalStartupSnapshot {
+                command: Some(text()),
+                working_directory: Some(text()),
+                initial_input: Some(text()),
+                environment: Some(same_text_environment),
+                tmux_start_command: Some(text()),
+                remote_pty_session_id: None,
+                resume_binding: None,
+            });
+
+        remint_noncanonical_identities(&mut legacy);
+
+        fn assert_reminted(actual: &str, legacy: &str) {
+            assert_ne!(actual, legacy);
+            assert!(Uuid::parse_str(actual).is_ok(), "{actual}");
+        }
+        let window = &legacy.windows[0];
+        let window_id = window.window_id.as_deref().expect("reminted window id");
+        assert_reminted(window_id, LEGACY_WINDOW_ID);
+        let workspace = &window.tab_manager.workspaces[0];
+        let workspace_id = workspace
+            .workspace_id
+            .as_deref()
+            .expect("reminted workspace id");
+        assert_reminted(workspace_id, LEGACY_WORKSPACE_ID);
+        assert_eq!(window.selected_workspace_id.as_deref(), Some(workspace_id));
+        let SessionWorkspaceLayoutSnapshot::Pane(pane) =
+            workspace.layout.as_ref().expect("reminted pane")
+        else {
+            unreachable!()
+        };
+        let pane_id = pane.pane_id.as_deref().expect("reminted pane id");
+        assert_reminted(pane_id, LEGACY_PANE_ID);
+        assert_eq!(workspace.focused_pane_id.as_deref(), Some(pane_id));
+        let surface_id = pane.panel_ids[0].as_str();
+        assert_reminted(surface_id, LEGACY_SURFACE_ID);
+        assert_eq!(pane.selected_panel_id.as_deref(), Some(surface_id));
+        assert_eq!(workspace.focused_panel_id.as_deref(), Some(surface_id));
+        let surface = &workspace.surfaces.as_deref().expect("surface records")[0];
+        assert_eq!(surface.surface_id, surface_id);
+        assert_eq!(surface.pane_id, pane_id);
+        assert_eq!(
+            workspace.surface_resume_bindings.as_deref().unwrap()[0].surface_id,
+            surface_id
+        );
+        let startup = surface.terminal_startup.as_ref().expect("terminal startup");
+        let binding = &workspace.surface_resume_bindings.as_deref().unwrap()[0].binding;
+        let cmux_core::session::SessionSurfaceKindSnapshot::RemoteTerminal {
+            remote_context, ..
+        } = &surface.kind
+        else {
+            unreachable!()
+        };
+        let context = remote_context.as_ref().expect("remote context");
+        let environment = startup.environment.as_ref().expect("environment");
+        let free_text = [
+            ("working_directory", startup.working_directory.as_deref()),
+            ("initial_input", startup.initial_input.as_deref()),
+            ("tmux_start_command", startup.tmux_start_command.as_deref()),
+            (
+                "environment_key",
+                environment.keys().next().map(String::as_str),
+            ),
+            (
+                "environment_value",
+                environment.get(LEGACY_SURFACE_ID).map(String::as_str),
+            ),
+            ("url", pane.browser_url.as_deref()),
+            ("title", workspace.custom_title.as_deref()),
+            ("description", workspace.custom_description.as_deref()),
+            (
+                "notification_body",
+                context["notification"]["body"].as_str(),
+            ),
+            ("command", startup.command.as_deref()),
+            ("cwd", binding.cwd.as_deref()),
+            (
+                "arbitrary_metadata_key",
+                context["opaque"]
+                    .as_object()
+                    .and_then(|object| object.get(LEGACY_SURFACE_ID))
+                    .and_then(serde_json::Value::as_str),
+            ),
+            (
+                "arbitrary_metadata_value",
+                context["opaque"]["value"].as_str(),
+            ),
+        ];
+        let rewritten: Vec<_> = free_text
+            .into_iter()
+            .filter_map(|(field, actual)| (actual != Some(LEGACY_SURFACE_ID)).then_some(field))
+            .collect();
+
+        assert!(
+            rewritten.is_empty(),
+            "legacy identity remint rewrote free text fields: {}",
+            rewritten.join(", ")
+        );
     }
 
     #[test]
