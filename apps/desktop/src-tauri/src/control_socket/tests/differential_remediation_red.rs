@@ -827,3 +827,31 @@ fn lifecycle_wrapper_forgets_closed_and_respawned_handles_before_decoration() {
         .expect("decoration present");
     assert!(forget < decorate, "forget must precede ref decoration");
 }
+
+#[test]
+fn closing_a_freshly_created_tab_still_emits_the_reselection_pair() {
+    // Round 3 item 1: the differential fixture creates a tab (whose selection
+    // is restored to the previous tab per D7) and then closes it via the
+    // production dispatch path. Canonical still emits surface.closed +
+    // surface.selected + surface.focused (live capture: 4 frames incl ack);
+    // the round-2 guard suppressed the pair because the closed tab was
+    // neither selected nor focused.
+    let snapshot = mixed_pane_snapshot(); // surface-a, surface-b (selected+focused)
+    let created = transition(&snapshot, "surface.create", json!({"type": "terminal"}));
+    let created_id = ok_value(&created)["surface_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let closed = transition(
+        &created.snapshot,
+        "surface.close",
+        json!({"surface_id": created_id}),
+    );
+    let _ = ok_value(&closed);
+    let names: Vec<_> = closed.events.iter().map(|event| event.name).collect();
+    assert_eq!(
+        names,
+        ["surface.closed", "surface.selected", "surface.focused"],
+        "canonical reselects on every surviving-pane close"
+    );
+}
