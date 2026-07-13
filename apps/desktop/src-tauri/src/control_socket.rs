@@ -5319,9 +5319,8 @@ fn events_live_stream_parts(
 ) {
     let names = string_vec_param(params, &["names", "name"]).unwrap_or_default();
     let categories = string_vec_param(params, &["categories", "category"]).unwrap_or_default();
-    let requested_after_seq = i64_param(params, &["after_seq", "after"])
-        .unwrap_or(0)
-        .max(0) as u64;
+    let requested_after_seq =
+        i64_param(params, &["after_seq", "after"]).map(|value| value.max(0) as u64);
     let limit = usize_param(params, &["limit"]).unwrap_or(EVENT_REPLAY_LIMIT);
     let include_heartbeats = bool_param(params, &["include_heartbeats", "heartbeat"])
         .unwrap_or_else(|| !bool_param(params, &["no_heartbeat", "no-heartbeat"]).unwrap_or(false));
@@ -5401,9 +5400,8 @@ fn events_payload_parts(
 ) -> (Value, Vec<Value>, Value) {
     let names = string_vec_param(params, &["names", "name"]).unwrap_or_default();
     let categories = string_vec_param(params, &["categories", "category"]).unwrap_or_default();
-    let requested_after_seq = i64_param(params, &["after_seq", "after"])
-        .unwrap_or(0)
-        .max(0) as u64;
+    let requested_after_seq =
+        i64_param(params, &["after_seq", "after"]).map(|value| value.max(0) as u64);
     let limit = usize_param(params, &["limit"]).unwrap_or(EVENT_REPLAY_LIMIT);
     let include_heartbeats = bool_param(params, &["include_heartbeats", "heartbeat"])
         .unwrap_or_else(|| !bool_param(params, &["no_heartbeat", "no-heartbeat"]).unwrap_or(false));
@@ -5436,13 +5434,19 @@ fn events_parts_from_retained(
     boot_id: String,
     next_seq: u64,
     retained_events: Vec<Value>,
-    requested_after_seq: u64,
+    after_seq_param: Option<u64>,
     limit: usize,
     include_heartbeats: bool,
     names: Vec<String>,
     categories: Vec<String>,
 ) -> (Value, Vec<Value>, Value) {
     let latest_seq = next_seq.saturating_sub(1);
+    // D8a: canonical subscribes at the latest sequence when the caller omits
+    // after_seq — no default replay (capture ack: after_seq null,
+    // requested_after_seq == latest_seq, replay_count 0). The ack echoes the
+    // RAW param as resume.after_seq and the resolved value as
+    // requested_after_seq.
+    let requested_after_seq = after_seq_param.unwrap_or(latest_seq);
     let oldest_seq = retained_events
         .first()
         .and_then(|event| event.get("seq"))
@@ -5467,7 +5471,7 @@ fn events_parts_from_retained(
         "heartbeat_interval_seconds": 15,
         "replay_count": events.len(),
         "resume": {
-            "after_seq": requested_after_seq,
+            "after_seq": after_seq_param,
             "requested_after_seq": requested_after_seq,
             "oldest_seq": oldest_seq,
             "latest_seq": latest_seq,
