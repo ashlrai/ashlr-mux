@@ -160,6 +160,37 @@ class CompareCapturesTests(unittest.TestCase):
         self.assertEqual(report["deltas"], 1)
         self.assertEqual(report["results"][0]["mismatches"], ["events"])
 
+    def test_manifest_overrides_recorded_approved_differences(self):
+        left = {"a": case_record("a", observation(response={"title": "zsh"}), approved=[])}
+        right = {"a": case_record("a", observation(response={"title": "pwsh"}), approved=[])}
+        overrides = {"a": [{"path": "/response/title", "rationale": "platform shell"}]}
+        report = compare_captures(left, right, overrides)
+        self.assertEqual(report["deltas"], 0)
+        # Overrides also skip the recorded-set equality check.
+        mismatched = {
+            "a": case_record(
+                "a",
+                observation(response={"title": "pwsh"}),
+                approved=[{"path": "/x", "rationale": "stale"}],
+            )
+        }
+        report = compare_captures(left, mismatched, overrides)
+        self.assertEqual(report["deltas"], 0)
+
+    def test_manifest_approved_differences_extraction(self):
+        from compare_captures import manifest_approved_differences
+
+        manifest = {
+            "cases": [
+                {"id": "a", "approved_differences": [{"path": "/p", "rationale": "r"}]},
+                {"id": "b"},
+            ]
+        }
+        self.assertEqual(
+            manifest_approved_differences(manifest),
+            {"a": [{"path": "/p", "rationale": "r"}], "b": []},
+        )
+
     def test_result_order_follows_canonical_then_windows_strays(self):
         left = {"a": case_record("a"), "b": case_record("b")}
         right = {"b": case_record("b"), "z": case_record("z")}

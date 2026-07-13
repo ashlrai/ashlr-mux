@@ -4,6 +4,7 @@ import unittest
 from capture_driver import (
     OBSERVATION_KEYS,
     TimingSymbolizer,
+    UuidRenumberer,
     ManifestError,
     PlaceholderError,
     Symbolizer,
@@ -295,6 +296,48 @@ class TimingSymbolizerTests(unittest.TestCase):
 
     def test_none_lane_passes_through(self):
         self.assertIsNone(TimingSymbolizer().apply(None))
+
+
+class UuidRenumbererTests(unittest.TestCase):
+    """Compare-time renumbering: symbol numbers become independent of wire
+    key order; token renames only, values preserved."""
+
+    def test_sorted_key_traversal_aligns_key_order_variants(self):
+        # Same entities, opposite wire key order: renumbering aligns them.
+        left, right = UuidRenumberer(), UuidRenumberer()
+        left.register({"pane_id": "<uuid-2>", "surface_id": "<uuid-1>"})
+        right.register({"surface_id": "<uuid-2>", "pane_id": "<uuid-1>"})
+        self.assertEqual(
+            left.apply({"pane_id": "<uuid-2>", "surface_id": "<uuid-1>"}),
+            right.apply({"surface_id": "<uuid-2>", "pane_id": "<uuid-1>"})
+            | {"pane_id": right.apply("<uuid-1>")},
+        )
+        # pane_id sorts before surface_id, so pane gets <uuid-1> on both sides.
+        self.assertEqual(left.apply("<uuid-2>"), "<uuid-1>")
+        self.assertEqual(right.apply("<uuid-1>"), "<uuid-1>")
+
+    def test_idempotent(self):
+        value = {"a": "<uuid-1>", "b": "<uuid-2>", "c": "x <uuid-1> y"}
+        renumber = UuidRenumberer()
+        renumber.register(value)
+        once = renumber.apply(value)
+        again = UuidRenumberer()
+        again.register(once)
+        self.assertEqual(again.apply(once), once)
+
+    def test_list_order_preserved_and_unknown_tokens_pass_through(self):
+        renumber = UuidRenumberer()
+        renumber.register(["<uuid-9>", "<uuid-3>"])
+        self.assertEqual(renumber.apply(["<uuid-9>", "<uuid-3>"]), ["<uuid-1>", "<uuid-2>"])
+        self.assertEqual(renumber.apply("<uuid-7>"), "<uuid-7>")
+
+    def test_non_symbol_strings_untouched(self):
+        renumber = UuidRenumberer()
+        renumber.register({"ref": "surface:4", "id": "surface-2"})
+        self.assertEqual(
+            renumber.apply({"ref": "surface:4", "id": "surface-2"}),
+            {"ref": "surface:4", "id": "surface-2"},
+        )
 
 
 class ObservationShapingTests(unittest.TestCase):

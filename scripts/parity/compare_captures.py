@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from capture_driver import TimingSymbolizer
+from capture_driver import TimingSymbolizer, UuidRenumberer
 from differential_harness import compare_observations, remove_pointer
 
 
@@ -64,6 +64,14 @@ def load_capture(text: str, label: str) -> dict[str, dict[str, Any]]:
             raise CaptureFormatError(f"{label}:{number}: case {case_id!r} missing observation")
         record["observation"]["events"] = timing.apply(record["observation"].get("events"))
         cases[case_id] = record
+    # Renumber <uuid-N> symbols per capture by deterministic traversal order
+    # (record order, sorted dict keys) so symbol numbers are independent of
+    # non-contractual wire key order. Token renames only; values preserved.
+    renumber = UuidRenumberer()
+    for record in cases.values():
+        renumber.register(record["observation"])
+    for case_id, record in cases.items():
+        record["observation"] = renumber.apply(record["observation"])
     return cases
 
 
@@ -77,8 +85,21 @@ def _normalized_lane_values(
     return normalized.get(lane)
 
 
+def manifest_approved_differences(manifest: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    """Per-case approved_differences from the manifest (compare-time source of
+    truth). Captures record the pointer set in force at capture time, but the
+    reviewed manifest may evolve between captures; passing it overrides the
+    recorded sets and skips the both-sides-equal check."""
+    return {
+        case["id"]: case.get("approved_differences", [])
+        for case in manifest.get("cases", [])
+    }
+
+
 def compare_captures(
-    canonical: dict[str, dict[str, Any]], windows: dict[str, dict[str, Any]]
+    canonical: dict[str, dict[str, Any]],
+    windows: dict[str, dict[str, Any]],
+    approved_overrides: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """Join by case id and diff every case. Returns the normalized report."""
     results: list[dict[str, Any]] = []
@@ -102,8 +123,11 @@ def compare_captures(
             )
             continue
 
-        approved_left = left.get("approved_differences", [])
-        approved_right = right.get("approved_differences", [])
+        if approved_overrides is not None:
+            approved_left = approved_right = approved_overrides.get(case_id, [])
+        else:
+            approved_left = left.get("approved_differences", [])
+            approved_right = right.get("approved_differences", [])
         if approved_left != approved_right:
             results.append(
                 {
@@ -183,11 +207,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--canonical", required=True, type=Path)
     parser.add_argument("--windows", required=True, type=Path)
     parser.add_argument("--output", type=Path, help="normalized-diff.json path")
+    parser.add_argument(
+        "--manifest",
+        type=Path,
+        help="manifest whose approved_differences override the recorded sets "
+        "(compare-time source of truth when the manifest evolved between captures)",
+    )
     args = parser.parse_args(argv)
 
     canonical = load_capture(args.canonical.read_text(encoding="utf-8"), "canonical")
     windows = load_capture(args.windows.read_text(encoding="utf-8"), "windows")
-    report = compare_captures(canonical, windows)
+    overrides = None
+    if args.manifest:
+        overrides = manifest_approved_differences(
+            json.loads(args.manifest.read_text(encoding="utf-8"))
+        )
+    report = compare_captures(canonical, windows, overrides)
     rendered = json.dumps(report, indent=2, sort_keys=True) + "\n"
     if args.output:
         args.output.write_text(rendered, encoding="utf-8")

@@ -12,7 +12,9 @@
     {
       "op": "v2",
       "method": "workspace.create",
-      "params": { "title": "parity-fixture" }
+      "params": {
+        "title": "parity-fixture"
+      }
     },
     {
       "op": "v2",
@@ -40,14 +42,18 @@
           {
             "op": "v2",
             "method": "surface.list",
-            "params": { "workspace_id": "${session.0.result.workspace_id}" }
+            "params": {
+              "workspace_id": "${session.0.result.workspace_id}"
+            }
           }
         ],
         "selectors": [
           {
             "op": "v2",
             "method": "surface.current",
-            "params": { "workspace_id": "${session.0.result.workspace_id}" }
+            "params": {
+              "workspace_id": "${session.0.result.workspace_id}"
+            }
           }
         ]
       },
@@ -66,6 +72,30 @@
         },
         {
           "path": "/state/0/result/response/result/surfaces/3/title",
+          "rationale": "live terminal title embeds the platform shell/process name (contract platform_equivalence)"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/4/title",
+          "rationale": "live terminal title embeds the platform shell/process name (contract platform_equivalence)"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/5/title",
+          "rationale": "live terminal title embeds the platform shell/process name (contract platform_equivalence)"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/6/title",
+          "rationale": "live terminal title embeds the platform shell/process name (contract platform_equivalence)"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/7/title",
+          "rationale": "live terminal title embeds the platform shell/process name (contract platform_equivalence)"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/8/title",
+          "rationale": "live terminal title embeds the platform shell/process name (contract platform_equivalence)"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/9/title",
           "rationale": "live terminal title embeds the platform shell/process name (contract platform_equivalence)"
         }
       ]
@@ -97,7 +127,9 @@
       "action": {
         "op": "v2",
         "method": "pane.create",
-        "params": { "workspace_id": "${session.0.result.workspace_id}" }
+        "params": {
+          "workspace_id": "${session.0.result.workspace_id}"
+        }
       }
     },
     {
@@ -280,14 +312,18 @@
           {
             "op": "v2",
             "method": "surface.list",
-            "params": { "workspace_id": "${session.0.result.workspace_id}" }
+            "params": {
+              "workspace_id": "${session.0.result.workspace_id}"
+            }
           }
         ],
         "selectors": [
           {
             "op": "v2",
             "method": "surface.current",
-            "params": { "workspace_id": "${session.0.result.workspace_id}" }
+            "params": {
+              "workspace_id": "${session.0.result.workspace_id}"
+            }
           }
         ]
       },
@@ -310,6 +346,26 @@
         },
         {
           "path": "/state/0/result/response/result/surfaces/4/title",
+          "rationale": "live terminal title embeds the platform shell/process name (contract platform_equivalence)"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/5/title",
+          "rationale": "live terminal title embeds the platform shell/process name (contract platform_equivalence)"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/6/title",
+          "rationale": "live terminal title embeds the platform shell/process name (contract platform_equivalence)"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/7/title",
+          "rationale": "live terminal title embeds the platform shell/process name (contract platform_equivalence)"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/8/title",
+          "rationale": "live terminal title embeds the platform shell/process name (contract platform_equivalence)"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/9/title",
           "rationale": "live terminal title embeds the platform shell/process name (contract platform_equivalence)"
         }
       ]
@@ -343,7 +399,9 @@
         {
           "op": "v2",
           "method": "workspace.create",
-          "params": { "title": "parity-list-shape" }
+          "params": {
+            "title": "parity-list-shape"
+          }
         },
         {
           "op": "v2",
@@ -357,11 +415,17 @@
       "action": {
         "op": "v2",
         "method": "surface.list",
-        "params": { "workspace_id": "${setup.0.result.workspace_id}" }
+        "params": {
+          "workspace_id": "${setup.0.result.workspace_id}"
+        }
       },
       "probes": {
         "multiwindow": [
-          { "op": "v2", "method": "surface.list", "params": {} }
+          {
+            "op": "v2",
+            "method": "surface.list",
+            "params": {}
+          }
         ]
       },
       "approved_differences": [
@@ -384,7 +448,9 @@
       "action": {
         "op": "v2",
         "method": "surface.current",
-        "params": { "workspace_id": "${session.0.result.workspace_id}" }
+        "params": {
+          "workspace_id": "${session.0.result.workspace_id}"
+        }
       }
     },
     {
@@ -392,7 +458,9 @@
       "action": {
         "op": "v2",
         "method": "surface.focus",
-        "params": { "workspace_id": "${session.0.result.workspace_id}" }
+        "params": {
+          "workspace_id": "${session.0.result.workspace_id}"
+        }
       }
     },
     {
@@ -410,14 +478,18 @@
       "action": {
         "op": "v2",
         "method": "surface.focus",
-        "params": { "surface_id": "${setup.0.result.surface_id}" }
+        "params": {
+          "surface_id": "${setup.0.result.surface_id}"
+        }
       },
       "probes": {
         "selectors": [
           {
             "op": "v2",
             "method": "surface.current",
-            "params": { "workspace_id": "${session.0.result.workspace_id}" }
+            "params": {
+              "workspace_id": "${session.0.result.workspace_id}"
+            }
           }
         ]
       }
@@ -438,14 +510,18 @@
       "action": {
         "op": "v2",
         "method": "surface.close",
-        "params": { "surface_id": "${setup.0.result.surface_id}" }
+        "params": {
+          "surface_id": "${setup.0.result.surface_id}"
+        }
       },
       "probes": {
         "state": [
           {
             "op": "v2",
             "method": "surface.list",
-            "params": { "workspace_id": "${session.0.result.workspace_id}" }
+            "params": {
+              "workspace_id": "${session.0.result.workspace_id}"
+            }
           }
         ]
       },
@@ -462,13 +538,17 @@
         {
           "op": "v2",
           "method": "workspace.create",
-          "params": { "title": "parity-last-surface" }
+          "params": {
+            "title": "parity-last-surface"
+          }
         }
       ],
       "action": {
         "op": "v2",
         "method": "surface.close",
-        "params": { "workspace_id": "${setup.0.result.workspace_id}" }
+        "params": {
+          "workspace_id": "${setup.0.result.workspace_id}"
+        }
       }
     },
     {
@@ -503,14 +583,20 @@
     },
     {
       "id": "surface_move.missing_surface_id",
-      "action": { "op": "v2", "method": "surface.move", "params": {} }
+      "action": {
+        "op": "v2",
+        "method": "surface.move",
+        "params": {}
+      }
     },
     {
       "id": "surface_respawn.bogus_surface_id_not_found",
       "action": {
         "op": "v2",
         "method": "surface.respawn",
-        "params": { "surface_id": "00000000-0000-4000-8000-000000000000" }
+        "params": {
+          "surface_id": "00000000-0000-4000-8000-000000000000"
+        }
       }
     },
     {
@@ -519,7 +605,9 @@
         {
           "op": "v2",
           "method": "workspace.create",
-          "params": { "title": "parity-respawn" }
+          "params": {
+            "title": "parity-respawn"
+          }
         }
       ],
       "action": {
@@ -535,7 +623,9 @@
           {
             "op": "v2",
             "method": "surface.list",
-            "params": { "workspace_id": "${setup.0.result.workspace_id}" }
+            "params": {
+              "workspace_id": "${setup.0.result.workspace_id}"
+            }
           }
         ]
       },
@@ -596,7 +686,9 @@
       "action": {
         "op": "v2",
         "method": "surface.report_pwd",
-        "params": { "workspace_id": "${session.0.result.workspace_id}" }
+        "params": {
+          "workspace_id": "${session.0.result.workspace_id}"
+        }
       }
     },
     {
@@ -604,7 +696,9 @@
       "action": {
         "op": "v2",
         "method": "surface.report_pwd",
-        "params": { "path": "/tmp/cmux-parity-x" }
+        "params": {
+          "path": "/tmp/cmux-parity-x"
+        }
       }
     },
     {
@@ -688,12 +782,20 @@
       "action": {
         "op": "v2",
         "method": "surface.action",
-        "params": { "workspace_id": "${session.0.result.workspace_id}" }
+        "params": {
+          "workspace_id": "${session.0.result.workspace_id}"
+        }
       }
     },
     {
       "id": "cli.tab_action_help_frozen",
-      "action": { "op": "cli", "argv": ["tab-action", "--help"] }
+      "action": {
+        "op": "cli",
+        "argv": [
+          "tab-action",
+          "--help"
+        ]
+      }
     },
     {
       "id": "cli.tab_action_pin",
@@ -722,12 +824,22 @@
       "id": "cli.tab_action_unknown_action",
       "action": {
         "op": "cli",
-        "argv": ["tab-action", "--action", "zzz-not-real"]
+        "argv": [
+          "tab-action",
+          "--action",
+          "zzz-not-real"
+        ]
       }
     },
     {
       "id": "cli.respawn_pane_help_frozen",
-      "action": { "op": "cli", "argv": ["respawn-pane", "--help"] }
+      "action": {
+        "op": "cli",
+        "argv": [
+          "respawn-pane",
+          "--help"
+        ]
+      }
     },
     {
       "id": "cli.respawn_pane_explicit_command",
@@ -735,7 +847,9 @@
         {
           "op": "v2",
           "method": "workspace.create",
-          "params": { "title": "parity-cli-respawn" }
+          "params": {
+            "title": "parity-cli-respawn"
+          }
         }
       ],
       "action": {

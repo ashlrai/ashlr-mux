@@ -422,6 +422,50 @@ class TimingSymbolizer:
         return self._walk(value)
 
 
+class UuidRenumberer:
+    """Deterministic compare-time renumbering of ``<uuid-N>`` symbols.
+
+    Capture-time UUID symbols are allocated in wire order, but JSON object key
+    order is explicitly non-contractual, so two behaviorally identical captures
+    can allocate the same entity different symbol numbers (and cascade that
+    offset over the whole session). This renumbers each capture's symbols by
+    first-seen order under a deterministic traversal — record order, dict keys
+    sorted, list order preserved — making symbol numbers independent of wire
+    key order. Values are only renamed token-for-token; nothing is hidden.
+    Idempotent: renumbering a renumbered capture is a no-op.
+    """
+
+    _TOKEN_RE = re.compile(r"<uuid-\d+>")
+
+    def __init__(self) -> None:
+        self._table: dict[str, str] = {}
+
+    def register(self, value: Any) -> None:
+        if isinstance(value, dict):
+            for key in sorted(value):
+                self.register(key)
+                self.register(value[key])
+        elif isinstance(value, list):
+            for item in value:
+                self.register(item)
+        elif isinstance(value, str):
+            for match in self._TOKEN_RE.finditer(value):
+                token = match.group(0)
+                if token not in self._table:
+                    self._table[token] = f"<uuid-{len(self._table) + 1}>"
+
+    def apply(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {self.apply(k): self.apply(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self.apply(item) for item in value]
+        if isinstance(value, str):
+            return self._TOKEN_RE.sub(
+                lambda match: self._table.get(match.group(0), match.group(0)), value
+            )
+        return value
+
+
 def shape_observation(
     action_result: dict[str, Any],
     probe_results: dict[str, list[dict[str, Any]]],
