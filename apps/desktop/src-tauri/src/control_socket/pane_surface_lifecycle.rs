@@ -1027,15 +1027,6 @@ fn set_published_selection(
     }
 }
 
-fn clear_published_selection(
-    workspace: &mut cmux_core::session::SessionWorkspaceSnapshot,
-    pane_id: &str,
-) {
-    if let Some(rows) = &mut workspace.published_pane_selections {
-        rows.retain(|row| row.pane_id != pane_id);
-    }
-}
-
 fn reconcile_closed_published_selection(
     snapshot: &mut AppSessionSnapshot,
     owner_ids: (&str, &str),
@@ -1081,30 +1072,53 @@ fn reconcile_closed_published_selection(
             .iter()
             .position(|workspace| workspace.workspace_id.as_deref() == Some(workspace_id))
     };
-    let pointer = publication_workspace_index
-        .and_then(|index| published_selection(&window.tab_manager.workspaces[index], pane_id))
+    let Some(workspace_index) = publication_workspace_index else {
+        return None;
+    };
+    let workspace = &mut window.tab_manager.workspaces[workspace_index];
+    let pointer_row_index = workspace
+        .published_pane_selections
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .position(|row| row.pane_id == pane_id);
+    let pointer = pointer_row_index
+        .and_then(|index| {
+            workspace
+                .published_pane_selections
+                .as_ref()
+                .and_then(|rows| rows.get(index))
+        })
+        .map(|row| row.panel_id.clone())
         .filter(|pointer| surviving_surface_ids.contains(pointer));
 
-    if is_dock {
-        for workspace in &mut window.tab_manager.workspaces {
-            clear_published_selection(workspace, pane_id);
+    if publish_selection && pointer.as_deref() != selected_surface_id {
+        if let Some(selected) = selected_surface_id {
+            match (pointer_row_index, pointer.is_some() || is_dock) {
+                (Some(index), true) => {
+                    workspace.published_pane_selections.as_mut().unwrap()[index].panel_id =
+                        selected.to_owned();
+                }
+                // Workspace surface.closed clears a dead pointer before the
+                // selection callback; its replacement is therefore appended.
+                // A Dock pointer belongs to its backing workspace and stays in place.
+                (Some(index), false) => {
+                    workspace
+                        .published_pane_selections
+                        .as_mut()
+                        .unwrap()
+                        .remove(index);
+                    set_published_selection(workspace, pane_id, selected);
+                }
+                (None, _) => set_published_selection(workspace, pane_id, selected),
+            }
         }
-    } else if let Some(index) = publication_workspace_index {
-        clear_published_selection(&mut window.tab_manager.workspaces[index], pane_id);
-    }
-    if let Some(index) = publication_workspace_index {
-        let replacement = if publish_selection {
-            selected_surface_id
-        } else {
-            pointer.as_deref()
-        };
-        if let Some(replacement) = replacement {
-            set_published_selection(
-                &mut window.tab_manager.workspaces[index],
-                pane_id,
-                replacement,
-            );
-        }
+    } else if let Some(index) = pointer_row_index.filter(|_| pointer.is_none()) {
+        workspace
+            .published_pane_selections
+            .as_mut()
+            .unwrap()
+            .remove(index);
     }
     pointer
 }
