@@ -345,3 +345,59 @@ fn pane_create_inherits_the_creator_directory() {
         Some("C:/repo")
     );
 }
+
+// ---------------------------------------------------------------------------
+// D7 — non-focus surface.create preserves the pane's selection
+// ---------------------------------------------------------------------------
+
+#[test]
+fn surface_create_without_focus_preserves_pane_selection() {
+    // Capture surface_list.rows_shape: the pre-existing surface keeps
+    // selected_in_pane=true (and focus) after a non-focus surface.create —
+    // canonical bonsplit transiently selects the new tab then RESTORES the
+    // previous selection (capture surface_create.terminal_happy event flip).
+    let snapshot = test_snapshot();
+    let created = transition(&snapshot, "surface.create", json!({"type": "terminal"}));
+    let created_id = ok_value(&created)["surface_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let list = transition(&created.snapshot, "surface.list", json!({}));
+    let rows = ok_value(&list)["surfaces"].as_array().unwrap().clone();
+    let selected = |id: &str| {
+        rows.iter()
+            .find(|row| row["id"] == json!(id))
+            .map(|row| row["selected_in_pane"] == json!(true))
+            .unwrap()
+    };
+    assert!(
+        selected("surface-1"),
+        "prior surface stays selected in its pane"
+    );
+    assert!(
+        !selected(&created_id),
+        "new non-focused tab is not selected"
+    );
+}
+
+#[test]
+fn surface_create_with_focus_selects_the_new_surface() {
+    let snapshot = test_snapshot();
+    let created = transition(
+        &snapshot,
+        "surface.create",
+        json!({"type": "terminal", "focus": true}),
+    );
+    let created_id = ok_value(&created)["surface_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let list = transition(&created.snapshot, "surface.list", json!({}));
+    let rows = ok_value(&list)["surfaces"].as_array().unwrap().clone();
+    let row = rows
+        .iter()
+        .find(|row| row["id"] == json!(created_id))
+        .unwrap();
+    assert_eq!(row["selected_in_pane"], json!(true));
+    assert_eq!(row["focused"], json!(true));
+}
