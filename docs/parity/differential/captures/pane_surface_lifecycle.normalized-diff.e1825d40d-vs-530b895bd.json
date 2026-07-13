@@ -1,0 +1,1390 @@
+{
+  "cases": 43,
+  "deltas": 9,
+  "identical": 34,
+  "results": [
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {
+        "events": {
+          "canonical": [
+            {
+              "boot_id": "<uuid-1>",
+              "filters": {
+                "categories": [],
+                "names": []
+              },
+              "heartbeat_interval_seconds": 15,
+              "protocol": "cmux-events",
+              "replay_count": 0,
+              "resume": {
+                "after_seq": null,
+                "gap": false,
+                "latest_seq": 30,
+                "next_seq": 31,
+                "oldest_seq": 1,
+                "requested_after_seq": 30
+              },
+              "subscription_id": "<uuid-2>",
+              "type": "ack",
+              "version": 1
+            },
+            {
+              "boot_id": "<uuid-1>",
+              "category": "pane",
+              "id": "<event-id-1>",
+              "name": "pane.created",
+              "occurred_at": "<ts-1>",
+              "pane_id": "<uuid-3>",
+              "payload": {
+                "orientation": "horizontal",
+                "origin": "terminal_split",
+                "pane_id": "<uuid-3>",
+                "source_pane_id": "<uuid-4>",
+                "surface_id": "<uuid-5>"
+              },
+              "protocol": "cmux-events",
+              "seq": 31,
+              "source": "workspace.lifecycle",
+              "surface_id": "<uuid-5>",
+              "type": "event",
+              "version": 1,
+              "window_id": null,
+              "workspace_id": "<uuid-6>"
+            },
+            {
+              "boot_id": "<uuid-1>",
+              "category": "surface",
+              "id": "<event-id-2>",
+              "name": "surface.created",
+              "occurred_at": "<ts-2>",
+              "pane_id": "<uuid-3>",
+              "payload": {
+                "focused": false,
+                "kind": "terminal",
+                "origin": "terminal_split",
+                "pane_id": "<uuid-3>",
+                "surface_id": "<uuid-5>"
+              },
+              "protocol": "cmux-events",
+              "seq": 32,
+              "source": "workspace.lifecycle",
+              "surface_id": "<uuid-5>",
+              "type": "event",
+              "version": 1,
+              "window_id": null,
+              "workspace_id": "<uuid-6>"
+            }
+          ],
+          "windows": [
+            {
+              "boot_id": "<uuid-1>",
+              "filters": {
+                "categories": [],
+                "names": []
+              },
+              "heartbeat_interval_seconds": 15,
+              "protocol": "cmux-events",
+              "replay_count": 0,
+              "resume": {
+                "after_seq": null,
+                "gap": false,
+                "latest_seq": 16,
+                "next_seq": 17,
+                "oldest_seq": 1,
+                "requested_after_seq": 16
+              },
+              "subscription_id": "<uuid-2>",
+              "type": "ack",
+              "version": 1
+            },
+            {
+              "boot_id": "<uuid-1>",
+              "category": "pane",
+              "id": "<event-id-1>",
+              "name": "pane.created",
+              "occurred_at": "<ts-1>",
+              "pane_id": "<uuid-3>",
+              "payload": {
+                "orientation": "horizontal",
+                "origin": "terminal_split",
+                "pane_id": "<uuid-3>",
+                "source_pane_id": "<uuid-4>",
+                "surface_id": "<uuid-5>"
+              },
+              "protocol": "cmux-events",
+              "seq": 17,
+              "source": "workspace.lifecycle",
+              "surface_id": "<uuid-5>",
+              "type": "event",
+              "version": 1,
+              "window_id": null,
+              "workspace_id": "<uuid-6>"
+            },
+            {
+              "boot_id": "<uuid-1>",
+              "category": "surface",
+              "id": "<event-id-2>",
+              "name": "surface.created",
+              "occurred_at": "<ts-2>",
+              "pane_id": "<uuid-3>",
+              "payload": {
+                "focused": false,
+                "kind": "terminal",
+                "origin": "terminal_split",
+                "pane_id": "<uuid-3>",
+                "surface_id": "<uuid-5>"
+              },
+              "protocol": "cmux-events",
+              "seq": 18,
+              "source": "workspace.lifecycle",
+              "surface_id": "<uuid-5>",
+              "type": "event",
+              "version": 1,
+              "window_id": null,
+              "workspace_id": "<uuid-6>"
+            }
+          ]
+        }
+      },
+      "id": "pane_create.direction_right_happy",
+      "identical": false,
+      "mismatches": [
+        "events"
+      ]
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "pane_create.direction_shorthand_l",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "pane_create.direction_invalid",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "pane_create.direction_missing",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "pane_create.divider_non_numeric",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "pane_create.divider_clamped_high",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "pane_create.placement_invalid",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "pane_create.placement_dock",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "pane_create.agent_session_rejected",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "pane_create.source_raw_uuid_honored",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "pane_create.source_ref_not_honored_quirk",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "pane_resize.relative_happy",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "pane_resize.direction_invalid",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "pane_resize.absolute_axis_invalid",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "pane_resize.target_pixels_zero",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {
+        "events": {
+          "canonical": [
+            {
+              "boot_id": "<uuid-1>",
+              "filters": {
+                "categories": [],
+                "names": []
+              },
+              "heartbeat_interval_seconds": 15,
+              "protocol": "cmux-events",
+              "replay_count": 0,
+              "resume": {
+                "after_seq": null,
+                "gap": false,
+                "latest_seq": 49,
+                "next_seq": 50,
+                "oldest_seq": 1,
+                "requested_after_seq": 49
+              },
+              "subscription_id": "<uuid-21>",
+              "type": "ack",
+              "version": 1
+            },
+            {
+              "boot_id": "<uuid-1>",
+              "category": "surface",
+              "id": "<event-id-3>",
+              "name": "surface.created",
+              "occurred_at": "<ts-3>",
+              "pane_id": "<uuid-4>",
+              "payload": {
+                "focused": false,
+                "kind": "terminal",
+                "origin": "terminal_tab",
+                "pane_id": "<uuid-4>",
+                "surface_id": "<uuid-22>"
+              },
+              "protocol": "cmux-events",
+              "seq": 50,
+              "source": "workspace.lifecycle",
+              "surface_id": "<uuid-22>",
+              "type": "event",
+              "version": 1,
+              "window_id": null,
+              "workspace_id": "<uuid-6>"
+            },
+            {
+              "boot_id": "<uuid-1>",
+              "category": "surface",
+              "id": "<event-id-4>",
+              "name": "surface.selected",
+              "occurred_at": "<ts-4>",
+              "pane_id": "<uuid-4>",
+              "payload": {
+                "focused": true,
+                "kind": "terminal",
+                "origin": "bonsplit_selection",
+                "pane_id": "<uuid-4>",
+                "previous_surface_id": "<uuid-8>",
+                "surface_id": "<uuid-22>"
+              },
+              "protocol": "cmux-events",
+              "seq": 51,
+              "source": "workspace.lifecycle",
+              "surface_id": "<uuid-22>",
+              "type": "event",
+              "version": 1,
+              "window_id": null,
+              "workspace_id": "<uuid-6>"
+            },
+            {
+              "boot_id": "<uuid-1>",
+              "category": "surface",
+              "id": "<event-id-5>",
+              "name": "surface.focused",
+              "occurred_at": "<ts-4>",
+              "pane_id": "<uuid-4>",
+              "payload": {
+                "kind": "terminal",
+                "origin": "bonsplit_selection",
+                "pane_id": "<uuid-4>",
+                "surface_id": "<uuid-22>"
+              },
+              "protocol": "cmux-events",
+              "seq": 52,
+              "source": "workspace.lifecycle",
+              "surface_id": "<uuid-22>",
+              "type": "event",
+              "version": 1,
+              "window_id": null,
+              "workspace_id": "<uuid-6>"
+            },
+            {
+              "boot_id": "<uuid-1>",
+              "category": "surface",
+              "id": "<event-id-6>",
+              "name": "surface.selected",
+              "occurred_at": "<ts-5>",
+              "pane_id": "<uuid-4>",
+              "payload": {
+                "focused": true,
+                "kind": "terminal",
+                "origin": "bonsplit_selection",
+                "pane_id": "<uuid-4>",
+                "previous_surface_id": "<uuid-22>",
+                "surface_id": "<uuid-8>"
+              },
+              "protocol": "cmux-events",
+              "seq": 53,
+              "source": "workspace.lifecycle",
+              "surface_id": "<uuid-8>",
+              "type": "event",
+              "version": 1,
+              "window_id": null,
+              "workspace_id": "<uuid-6>"
+            },
+            {
+              "boot_id": "<uuid-1>",
+              "category": "surface",
+              "id": "<event-id-7>",
+              "name": "surface.focused",
+              "occurred_at": "<ts-6>",
+              "pane_id": "<uuid-4>",
+              "payload": {
+                "kind": "terminal",
+                "origin": "bonsplit_selection",
+                "pane_id": "<uuid-4>",
+                "surface_id": "<uuid-8>"
+              },
+              "protocol": "cmux-events",
+              "seq": 54,
+              "source": "workspace.lifecycle",
+              "surface_id": "<uuid-8>",
+              "type": "event",
+              "version": 1,
+              "window_id": null,
+              "workspace_id": "<uuid-6>"
+            }
+          ],
+          "windows": [
+            {
+              "boot_id": "<uuid-1>",
+              "filters": {
+                "categories": [],
+                "names": []
+              },
+              "heartbeat_interval_seconds": 15,
+              "protocol": "cmux-events",
+              "replay_count": 0,
+              "resume": {
+                "after_seq": null,
+                "gap": false,
+                "latest_seq": 35,
+                "next_seq": 36,
+                "oldest_seq": 1,
+                "requested_after_seq": 35
+              },
+              "subscription_id": "<uuid-21>",
+              "type": "ack",
+              "version": 1
+            },
+            {
+              "boot_id": "<uuid-1>",
+              "category": "surface",
+              "id": "<event-id-3>",
+              "name": "surface.created",
+              "occurred_at": "<ts-3>",
+              "pane_id": "<uuid-4>",
+              "payload": {
+                "focused": false,
+                "kind": "terminal",
+                "origin": "terminal_tab",
+                "pane_id": "<uuid-4>",
+                "surface_id": "<uuid-22>"
+              },
+              "protocol": "cmux-events",
+              "seq": 36,
+              "source": "workspace.lifecycle",
+              "surface_id": "<uuid-22>",
+              "type": "event",
+              "version": 1,
+              "window_id": null,
+              "workspace_id": "<uuid-6>"
+            },
+            {
+              "boot_id": "<uuid-1>",
+              "category": "surface",
+              "id": "<event-id-4>",
+              "name": "surface.selected",
+              "occurred_at": "<ts-4>",
+              "pane_id": "<uuid-4>",
+              "payload": {
+                "focused": true,
+                "kind": "terminal",
+                "origin": "bonsplit_selection",
+                "pane_id": "<uuid-4>",
+                "previous_surface_id": "<uuid-8>",
+                "surface_id": "<uuid-22>"
+              },
+              "protocol": "cmux-events",
+              "seq": 37,
+              "source": "workspace.lifecycle",
+              "surface_id": "<uuid-22>",
+              "type": "event",
+              "version": 1,
+              "window_id": null,
+              "workspace_id": "<uuid-6>"
+            },
+            {
+              "boot_id": "<uuid-1>",
+              "category": "surface",
+              "id": "<event-id-5>",
+              "name": "surface.focused",
+              "occurred_at": "<ts-5>",
+              "pane_id": "<uuid-4>",
+              "payload": {
+                "kind": "terminal",
+                "origin": "bonsplit_selection",
+                "pane_id": "<uuid-4>",
+                "surface_id": "<uuid-22>"
+              },
+              "protocol": "cmux-events",
+              "seq": 38,
+              "source": "workspace.lifecycle",
+              "surface_id": "<uuid-22>",
+              "type": "event",
+              "version": 1,
+              "window_id": null,
+              "workspace_id": "<uuid-6>"
+            },
+            {
+              "boot_id": "<uuid-1>",
+              "category": "surface",
+              "id": "<event-id-6>",
+              "name": "surface.selected",
+              "occurred_at": "<ts-6>",
+              "pane_id": "<uuid-4>",
+              "payload": {
+                "focused": true,
+                "kind": "terminal",
+                "origin": "bonsplit_selection",
+                "pane_id": "<uuid-4>",
+                "previous_surface_id": "<uuid-22>",
+                "surface_id": "<uuid-8>"
+              },
+              "protocol": "cmux-events",
+              "seq": 39,
+              "source": "workspace.lifecycle",
+              "surface_id": "<uuid-8>",
+              "type": "event",
+              "version": 1,
+              "window_id": null,
+              "workspace_id": "<uuid-6>"
+            },
+            {
+              "boot_id": "<uuid-1>",
+              "category": "surface",
+              "id": "<event-id-7>",
+              "name": "surface.focused",
+              "occurred_at": "<ts-7>",
+              "pane_id": "<uuid-4>",
+              "payload": {
+                "kind": "terminal",
+                "origin": "bonsplit_selection",
+                "pane_id": "<uuid-4>",
+                "surface_id": "<uuid-8>"
+              },
+              "protocol": "cmux-events",
+              "seq": 40,
+              "source": "workspace.lifecycle",
+              "surface_id": "<uuid-8>",
+              "type": "event",
+              "version": 1,
+              "window_id": null,
+              "workspace_id": "<uuid-6>"
+            }
+          ]
+        }
+      },
+      "id": "surface_create.terminal_happy",
+      "identical": false,
+      "mismatches": [
+        "events"
+      ]
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "surface_create.unknown_type_falls_back_terminal",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "surface_create.agent_session_provider_invalid",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "surface_list.rows_shape",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "surface_current.workspace_selector_routing",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "surface_focus.missing_surface_id",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "surface_focus.happy",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {
+        "events": {
+          "canonical": [
+            {
+              "boot_id": "<uuid-1>",
+              "filters": {
+                "categories": [],
+                "names": []
+              },
+              "heartbeat_interval_seconds": 15,
+              "protocol": "cmux-events",
+              "replay_count": 0,
+              "resume": {
+                "after_seq": null,
+                "gap": false,
+                "latest_seq": 83,
+                "next_seq": 84,
+                "oldest_seq": 1,
+                "requested_after_seq": 83
+              },
+              "subscription_id": "<uuid-31>",
+              "type": "ack",
+              "version": 1
+            },
+            {
+              "boot_id": "<uuid-1>",
+              "category": "surface",
+              "id": "<event-id-8>",
+              "name": "surface.closed",
+              "occurred_at": "<ts-7>",
+              "pane_id": "<uuid-4>",
+              "payload": {
+                "kind": "terminal",
+                "origin": "tab_close",
+                "pane_id": "<uuid-4>",
+                "surface_id": "<uuid-32>"
+              },
+              "protocol": "cmux-events",
+              "seq": 84,
+              "source": "workspace.lifecycle",
+              "surface_id": "<uuid-32>",
+              "type": "event",
+              "version": 1,
+              "window_id": null,
+              "workspace_id": "<uuid-6>"
+            },
+            {
+              "boot_id": "<uuid-1>",
+              "category": "surface",
+              "id": "<event-id-9>",
+              "name": "surface.selected",
+              "occurred_at": "<ts-8>",
+              "pane_id": "<uuid-4>",
+              "payload": {
+                "focused": true,
+                "kind": "terminal",
+                "origin": "bonsplit_selection",
+                "pane_id": "<uuid-4>",
+                "previous_surface_id": "<uuid-30>",
+                "surface_id": "<uuid-25>"
+              },
+              "protocol": "cmux-events",
+              "seq": 85,
+              "source": "workspace.lifecycle",
+              "surface_id": "<uuid-25>",
+              "type": "event",
+              "version": 1,
+              "window_id": null,
+              "workspace_id": "<uuid-6>"
+            },
+            {
+              "boot_id": "<uuid-1>",
+              "category": "surface",
+              "id": "<event-id-10>",
+              "name": "surface.focused",
+              "occurred_at": "<ts-9>",
+              "pane_id": "<uuid-4>",
+              "payload": {
+                "kind": "terminal",
+                "origin": "bonsplit_selection",
+                "pane_id": "<uuid-4>",
+                "surface_id": "<uuid-25>"
+              },
+              "protocol": "cmux-events",
+              "seq": 86,
+              "source": "workspace.lifecycle",
+              "surface_id": "<uuid-25>",
+              "type": "event",
+              "version": 1,
+              "window_id": null,
+              "workspace_id": "<uuid-6>"
+            }
+          ],
+          "windows": [
+            {
+              "boot_id": "<uuid-1>",
+              "filters": {
+                "categories": [],
+                "names": []
+              },
+              "heartbeat_interval_seconds": 15,
+              "protocol": "cmux-events",
+              "replay_count": 0,
+              "resume": {
+                "after_seq": null,
+                "gap": false,
+                "latest_seq": 88,
+                "next_seq": 89,
+                "oldest_seq": 1,
+                "requested_after_seq": 88
+              },
+              "subscription_id": "<uuid-31>",
+              "type": "ack",
+              "version": 1
+            },
+            {
+              "boot_id": "<uuid-1>",
+              "category": "surface",
+              "id": "<event-id-8>",
+              "name": "surface.closed",
+              "occurred_at": "<ts-8>",
+              "pane_id": "<uuid-4>",
+              "payload": {
+                "kind": "terminal",
+                "origin": "tab_close",
+                "pane_id": "<uuid-4>",
+                "surface_id": "<uuid-32>"
+              },
+              "protocol": "cmux-events",
+              "seq": 89,
+              "source": "workspace.lifecycle",
+              "surface_id": "<uuid-32>",
+              "type": "event",
+              "version": 1,
+              "window_id": null,
+              "workspace_id": "<uuid-6>"
+            }
+          ]
+        }
+      },
+      "id": "surface_close.happy",
+      "identical": false,
+      "mismatches": [
+        "events"
+      ]
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "surface_close.last_surface_protected",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "surface_move.both_anchors_rejected",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "surface_move.missing_surface_id",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "surface_respawn.bogus_surface_id_not_found",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {
+        "response": {
+          "canonical": {
+            "id": 1,
+            "ok": true,
+            "result": {
+              "surface_id": "<uuid-34>",
+              "surface_ref": "surface:21",
+              "type": "terminal",
+              "window_id": "<uuid-7>",
+              "window_ref": "window:1",
+              "workspace_id": "<uuid-35>",
+              "workspace_ref": "workspace:5"
+            }
+          },
+          "windows": {
+            "id": 1,
+            "ok": true,
+            "result": {
+              "surface_id": "<uuid-34>",
+              "surface_ref": "surface:22",
+              "type": "terminal",
+              "window_id": "<uuid-7>",
+              "window_ref": "window:1",
+              "workspace_id": "<uuid-35>",
+              "workspace_ref": "workspace:5"
+            }
+          }
+        },
+        "state": {
+          "canonical": [
+            {
+              "op": "v2:surface.list",
+              "result": {
+                "error": null,
+                "kind": "v2",
+                "method": "surface.list",
+                "ok": true,
+                "response": {
+                  "id": 1,
+                  "ok": true,
+                  "result": {
+                    "surfaces": [
+                      {
+                        "focused": true,
+                        "id": "<uuid-34>",
+                        "index": 0,
+                        "index_in_pane": 0,
+                        "initial_command": "echo cmux-parity-respawn",
+                        "pane_id": "<uuid-36>",
+                        "pane_ref": "pane:11",
+                        "ref": "surface:21",
+                        "resume_binding": null,
+                        "selected_in_pane": true,
+                        "tmux_start_command": "echo cmux-parity-respawn",
+                        "type": "terminal"
+                      }
+                    ],
+                    "window_id": "<uuid-7>",
+                    "window_ref": "window:1",
+                    "workspace_id": "<uuid-35>",
+                    "workspace_ref": "workspace:5"
+                  }
+                }
+              }
+            }
+          ],
+          "windows": [
+            {
+              "op": "v2:surface.list",
+              "result": {
+                "error": null,
+                "kind": "v2",
+                "method": "surface.list",
+                "ok": true,
+                "response": {
+                  "id": 1,
+                  "ok": true,
+                  "result": {
+                    "surfaces": [
+                      {
+                        "focused": true,
+                        "id": "<uuid-34>",
+                        "index": 0,
+                        "index_in_pane": 0,
+                        "initial_command": "echo cmux-parity-respawn",
+                        "pane_id": "<uuid-36>",
+                        "pane_ref": "pane:10",
+                        "ref": "surface:22",
+                        "resume_binding": null,
+                        "selected_in_pane": true,
+                        "tmux_start_command": "echo cmux-parity-respawn",
+                        "type": "terminal"
+                      }
+                    ],
+                    "window_id": "<uuid-7>",
+                    "window_ref": "window:1",
+                    "workspace_id": "<uuid-35>",
+                    "workspace_ref": "workspace:5"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "id": "surface_respawn.focused_fallback_explicit_command",
+      "identical": false,
+      "mismatches": [
+        "response",
+        "state"
+      ]
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "surface_respawn.focus_invalid",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {
+        "response": {
+          "canonical": {
+            "id": 1,
+            "ok": true,
+            "result": {
+              "path": "/tmp/cmux-parity-pwd",
+              "surface_id": "<uuid-37>",
+              "surface_ref": "surface:22",
+              "workspace_id": "<uuid-6>",
+              "workspace_ref": "workspace:2"
+            }
+          },
+          "windows": {
+            "id": 1,
+            "ok": true,
+            "result": {
+              "path": "/tmp/cmux-parity-pwd",
+              "surface_id": "<uuid-37>",
+              "surface_ref": "surface:23",
+              "workspace_id": "<uuid-6>",
+              "workspace_ref": "workspace:2"
+            }
+          }
+        }
+      },
+      "id": "surface_report_pwd.local_happy",
+      "identical": false,
+      "mismatches": [
+        "response"
+      ]
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "surface_report_pwd.conflicting_aliases",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "surface_report_pwd.missing_path",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "surface_report_pwd.missing_workspace",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {
+        "events": {
+          "canonical": [
+            {
+              "boot_id": "<uuid-1>",
+              "filters": {
+                "categories": [],
+                "names": []
+              },
+              "heartbeat_interval_seconds": 15,
+              "protocol": "cmux-events",
+              "replay_count": 0,
+              "resume": {
+                "after_seq": null,
+                "gap": false,
+                "latest_seq": 118,
+                "next_seq": 119,
+                "oldest_seq": 1,
+                "requested_after_seq": 118
+              },
+              "subscription_id": "<uuid-38>",
+              "type": "ack",
+              "version": 1
+            },
+            {
+              "boot_id": "<uuid-1>",
+              "category": "surface",
+              "id": "<event-id-11>",
+              "name": "surface.action",
+              "occurred_at": "<ts-10>",
+              "pane_id": "<uuid-4>",
+              "payload": {
+                "method": "surface.action",
+                "params": {
+                  "action": "rename",
+                  "surface_id": "<uuid-39>",
+                  "title": "  Parity Title  "
+                },
+                "result": {
+                  "action": "rename",
+                  "pane_id": "<uuid-4>",
+                  "pane_ref": "pane:2",
+                  "surface_id": "<uuid-39>",
+                  "surface_ref": "surface:23",
+                  "tab_id": "<uuid-39>",
+                  "tab_ref": "tab:23",
+                  "title": "Parity Title",
+                  "window_id": "<uuid-7>",
+                  "window_ref": "window:1",
+                  "workspace_id": "<uuid-6>",
+                  "workspace_ref": "workspace:2"
+                }
+              },
+              "protocol": "cmux-events",
+              "seq": 119,
+              "source": "socket.v2",
+              "surface_id": "<uuid-39>",
+              "type": "event",
+              "version": 1,
+              "window_id": "<uuid-7>",
+              "workspace_id": "<uuid-6>"
+            }
+          ],
+          "windows": [
+            {
+              "boot_id": "<uuid-1>",
+              "filters": {
+                "categories": [],
+                "names": []
+              },
+              "heartbeat_interval_seconds": 15,
+              "protocol": "cmux-events",
+              "replay_count": 0,
+              "resume": {
+                "after_seq": null,
+                "gap": false,
+                "latest_seq": 126,
+                "next_seq": 127,
+                "oldest_seq": 1,
+                "requested_after_seq": 126
+              },
+              "subscription_id": "<uuid-38>",
+              "type": "ack",
+              "version": 1
+            },
+            {
+              "boot_id": "<uuid-1>",
+              "category": "surface",
+              "id": "<event-id-9>",
+              "name": "surface.action",
+              "occurred_at": "<ts-9>",
+              "pane_id": "<uuid-4>",
+              "payload": {
+                "method": "surface.action",
+                "params": {
+                  "action": "rename",
+                  "surface_id": "<uuid-39>",
+                  "title": "  Parity Title  "
+                },
+                "result": {
+                  "action": "rename",
+                  "pane_id": "<uuid-4>",
+                  "pane_ref": "pane:2",
+                  "surface_id": "<uuid-39>",
+                  "surface_ref": "surface:24",
+                  "tab_id": "<uuid-39>",
+                  "tab_ref": "tab:24",
+                  "title": "Parity Title",
+                  "window_id": "<uuid-7>",
+                  "window_ref": "window:1",
+                  "workspace_id": "<uuid-6>",
+                  "workspace_ref": "workspace:2"
+                }
+              },
+              "protocol": "cmux-events",
+              "seq": 127,
+              "source": "socket.v2",
+              "surface_id": "<uuid-39>",
+              "type": "event",
+              "version": 1,
+              "window_id": "<uuid-7>",
+              "workspace_id": "<uuid-6>"
+            }
+          ]
+        },
+        "response": {
+          "canonical": {
+            "id": 1,
+            "ok": true,
+            "result": {
+              "action": "rename",
+              "pane_id": "<uuid-4>",
+              "pane_ref": "pane:2",
+              "surface_id": "<uuid-39>",
+              "surface_ref": "surface:23",
+              "tab_id": "<uuid-39>",
+              "tab_ref": "tab:23",
+              "title": "Parity Title",
+              "window_id": "<uuid-7>",
+              "window_ref": "window:1",
+              "workspace_id": "<uuid-6>",
+              "workspace_ref": "workspace:2"
+            }
+          },
+          "windows": {
+            "id": 1,
+            "ok": true,
+            "result": {
+              "action": "rename",
+              "pane_id": "<uuid-4>",
+              "pane_ref": "pane:2",
+              "surface_id": "<uuid-39>",
+              "surface_ref": "surface:24",
+              "tab_id": "<uuid-39>",
+              "tab_ref": "tab:24",
+              "title": "Parity Title",
+              "window_id": "<uuid-7>",
+              "window_ref": "window:1",
+              "workspace_id": "<uuid-6>",
+              "workspace_ref": "workspace:2"
+            }
+          }
+        }
+      },
+      "id": "surface_action.rename_trims_title",
+      "identical": false,
+      "mismatches": [
+        "response",
+        "events"
+      ]
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {
+        "response": {
+          "canonical": {
+            "id": 1,
+            "ok": true,
+            "result": {
+              "action": "mark_read",
+              "pane_id": "<uuid-4>",
+              "pane_ref": "pane:2",
+              "surface_id": "<uuid-40>",
+              "surface_ref": "surface:24",
+              "tab_id": "<uuid-40>",
+              "tab_ref": "tab:24",
+              "window_id": "<uuid-7>",
+              "window_ref": "window:1",
+              "workspace_id": "<uuid-6>",
+              "workspace_ref": "workspace:2"
+            }
+          },
+          "windows": {
+            "id": 1,
+            "ok": true,
+            "result": {
+              "action": "mark_read",
+              "pane_id": "<uuid-4>",
+              "pane_ref": "pane:2",
+              "surface_id": "<uuid-40>",
+              "surface_ref": "surface:25",
+              "tab_id": "<uuid-40>",
+              "tab_ref": "tab:25",
+              "window_id": "<uuid-7>",
+              "window_ref": "window:1",
+              "workspace_id": "<uuid-6>",
+              "workspace_ref": "workspace:2"
+            }
+          }
+        }
+      },
+      "id": "surface_action.hyphen_uppercase_alias_mark_read",
+      "identical": false,
+      "mismatches": [
+        "response"
+      ]
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {
+        "response": {
+          "canonical": {
+            "id": 1,
+            "ok": true,
+            "result": {
+              "action": "pin",
+              "pane_id": "<uuid-4>",
+              "pane_ref": "pane:2",
+              "pinned": true,
+              "surface_id": "<uuid-41>",
+              "surface_ref": "surface:25",
+              "tab_id": "<uuid-41>",
+              "tab_ref": "tab:25",
+              "window_id": "<uuid-7>",
+              "window_ref": "window:1",
+              "workspace_id": "<uuid-6>",
+              "workspace_ref": "workspace:2"
+            }
+          },
+          "windows": {
+            "id": 1,
+            "ok": true,
+            "result": {
+              "action": "pin",
+              "pane_id": "<uuid-4>",
+              "pane_ref": "pane:2",
+              "pinned": true,
+              "surface_id": "<uuid-41>",
+              "surface_ref": "surface:26",
+              "tab_id": "<uuid-41>",
+              "tab_ref": "tab:26",
+              "window_id": "<uuid-7>",
+              "window_ref": "window:1",
+              "workspace_id": "<uuid-6>",
+              "workspace_ref": "workspace:2"
+            }
+          }
+        }
+      },
+      "id": "surface_action.tab_action_method_alias_pin",
+      "identical": false,
+      "mismatches": [
+        "response"
+      ]
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "surface_action.unknown_action_lists_supported",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "surface_action.missing_action",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "cli.tab_action_help_frozen",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {
+        "stdout": {
+          "canonical": "OK action=pin tab=tab:26 workspace=workspace:2\n",
+          "windows": "OK action=pin tab=tab:27 workspace=workspace:2\n"
+        }
+      },
+      "id": "cli.tab_action_pin",
+      "identical": false,
+      "mismatches": [
+        "stdout"
+      ]
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "cli.tab_action_unknown_action",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "cli.respawn_pane_help_frozen",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "cli.respawn_pane_explicit_command",
+      "identical": true,
+      "mismatches": []
+    }
+  ]
+}

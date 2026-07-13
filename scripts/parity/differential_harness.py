@@ -84,7 +84,10 @@ def compare_observations(
             raise ValueError("approved differences require non-empty path and rationale")
         remove_pointer(left, pointer)
         remove_pointer(right, pointer)
-    return [key for key in OBSERVATION_KEYS if left[key] != right[key]]
+    # Lane presence was validated on the ORIGINAL observations above; an
+    # approved difference may remove an entire lane from both normalized
+    # copies, which compares as equal (absent == absent).
+    return [key for key in OBSERVATION_KEYS if left.get(key) != right.get(key)]
 
 
 def run_adapter(executable: str, case: dict[str, Any]) -> dict[str, Any]:

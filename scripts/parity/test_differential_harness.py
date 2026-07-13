@@ -53,6 +53,12 @@ class DifferentialHarnessTests(unittest.TestCase):
         remove_pointer(value, "/rows/-1/title")
         self.assertEqual(value, {"rows": [{"title": "a"}]})
 
+    def test_approving_away_an_entire_lane_compares_equal(self):
+        left = observation(state={"platform": "mac"})
+        right = observation(state={"platform": "win"})
+        case = {"approved_differences": [{"path": "/state", "rationale": "whole-lane probe blob"}]}
+        self.assertEqual(compare_observations(left, right, case), [])
+
     def test_missing_observation_lane_is_rejected(self):
         right = observation()
         del right["persistence"]

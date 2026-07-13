@@ -160,6 +160,41 @@ class CompareCapturesTests(unittest.TestCase):
         self.assertEqual(report["deltas"], 1)
         self.assertEqual(report["results"][0]["mismatches"], ["events"])
 
+    def test_renumbering_ignores_uuids_inside_approved_regions(self):
+        # An approved-away probe blob contains platform-different uuid sets;
+        # they must not desynchronize the symbol tables for later values.
+        approved = [{"path": "/state", "rationale": "platform-scoped probe blob"}]
+        left = {
+            "a": case_record(
+                "a",
+                observation(state=[{"noise": "<uuid-1>"}], response={"id": "<uuid-2>"}),
+                approved=approved,
+            )
+        }
+        right = {
+            "a": case_record(
+                "a",
+                observation(state=[{"noise": "<uuid-1>", "extra": "<uuid-2>"}], response={"id": "<uuid-3>"}),
+                approved=approved,
+            )
+        }
+        report = compare_captures(left, right)
+        self.assertEqual(report["deltas"], 0)
+
+    def test_renumbering_still_aligns_key_order_dependent_allocation(self):
+        left = {
+            "a": case_record(
+                "a", observation(response={"pane_id": "<uuid-2>", "surface_id": "<uuid-1>"})
+            )
+        }
+        right = {
+            "a": case_record(
+                "a", observation(response={"pane_id": "<uuid-1>", "surface_id": "<uuid-2>"})
+            )
+        }
+        report = compare_captures(left, right)
+        self.assertEqual(report["deltas"], 0)
+
     def test_manifest_overrides_recorded_approved_differences(self):
         left = {"a": case_record("a", observation(response={"title": "zsh"}), approved=[])}
         right = {"a": case_record("a", observation(response={"title": "pwsh"}), approved=[])}

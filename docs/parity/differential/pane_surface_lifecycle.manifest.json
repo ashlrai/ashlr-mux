@@ -97,6 +97,46 @@
         {
           "path": "/state/0/result/response/result/surfaces/9/title",
           "rationale": "live terminal title embeds the platform shell/process name (contract platform_equivalence)"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/0/requested_working_directory",
+          "rationale": "platform home/current-directory path text (contract platform_equivalence); R1/D6 populate the field on both platforms - only the path text is platform-scoped"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/1/requested_working_directory",
+          "rationale": "platform home/current-directory path text (contract platform_equivalence); R1/D6 populate the field on both platforms - only the path text is platform-scoped"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/2/requested_working_directory",
+          "rationale": "platform home/current-directory path text (contract platform_equivalence); R1/D6 populate the field on both platforms - only the path text is platform-scoped"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/3/requested_working_directory",
+          "rationale": "platform home/current-directory path text (contract platform_equivalence); R1/D6 populate the field on both platforms - only the path text is platform-scoped"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/4/requested_working_directory",
+          "rationale": "platform home/current-directory path text (contract platform_equivalence); R1/D6 populate the field on both platforms - only the path text is platform-scoped"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/5/requested_working_directory",
+          "rationale": "platform home/current-directory path text (contract platform_equivalence); R1/D6 populate the field on both platforms - only the path text is platform-scoped"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/6/requested_working_directory",
+          "rationale": "platform home/current-directory path text (contract platform_equivalence); R1/D6 populate the field on both platforms - only the path text is platform-scoped"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/7/requested_working_directory",
+          "rationale": "platform home/current-directory path text (contract platform_equivalence); R1/D6 populate the field on both platforms - only the path text is platform-scoped"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/8/requested_working_directory",
+          "rationale": "platform home/current-directory path text (contract platform_equivalence); R1/D6 populate the field on both platforms - only the path text is platform-scoped"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/9/requested_working_directory",
+          "rationale": "platform home/current-directory path text (contract platform_equivalence); R1/D6 populate the field on both platforms - only the path text is platform-scoped"
         }
       ]
     },
@@ -367,6 +407,46 @@
         {
           "path": "/state/0/result/response/result/surfaces/9/title",
           "rationale": "live terminal title embeds the platform shell/process name (contract platform_equivalence)"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/0/requested_working_directory",
+          "rationale": "platform home/current-directory path text (contract platform_equivalence); R1/D6 populate the field on both platforms - only the path text is platform-scoped"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/1/requested_working_directory",
+          "rationale": "platform home/current-directory path text (contract platform_equivalence); R1/D6 populate the field on both platforms - only the path text is platform-scoped"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/2/requested_working_directory",
+          "rationale": "platform home/current-directory path text (contract platform_equivalence); R1/D6 populate the field on both platforms - only the path text is platform-scoped"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/3/requested_working_directory",
+          "rationale": "platform home/current-directory path text (contract platform_equivalence); R1/D6 populate the field on both platforms - only the path text is platform-scoped"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/4/requested_working_directory",
+          "rationale": "platform home/current-directory path text (contract platform_equivalence); R1/D6 populate the field on both platforms - only the path text is platform-scoped"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/5/requested_working_directory",
+          "rationale": "platform home/current-directory path text (contract platform_equivalence); R1/D6 populate the field on both platforms - only the path text is platform-scoped"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/6/requested_working_directory",
+          "rationale": "platform home/current-directory path text (contract platform_equivalence); R1/D6 populate the field on both platforms - only the path text is platform-scoped"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/7/requested_working_directory",
+          "rationale": "platform home/current-directory path text (contract platform_equivalence); R1/D6 populate the field on both platforms - only the path text is platform-scoped"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/8/requested_working_directory",
+          "rationale": "platform home/current-directory path text (contract platform_equivalence); R1/D6 populate the field on both platforms - only the path text is platform-scoped"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/9/requested_working_directory",
+          "rationale": "platform home/current-directory path text (contract platform_equivalence); R1/D6 populate the field on both platforms - only the path text is platform-scoped"
         }
       ]
     },
@@ -440,6 +520,22 @@
         {
           "path": "/multiwindow/0/result/response/result",
           "rationale": "default-routed list reflects the whole accumulated session surface set; row-level identity is covered by the explicit-workspace action while this probe pins only routing success shape"
+        },
+        {
+          "path": "/response/result/surfaces/0/requested_working_directory",
+          "rationale": "platform home/current-directory path text (contract platform_equivalence); R1/D6 populate the field on both platforms - only the path text is platform-scoped"
+        },
+        {
+          "path": "/response/result/surfaces/1/requested_working_directory",
+          "rationale": "platform home/current-directory path text (contract platform_equivalence); R1/D6 populate the field on both platforms - only the path text is platform-scoped"
+        },
+        {
+          "path": "/response/result/surfaces/2/requested_working_directory",
+          "rationale": "platform home/current-directory path text (contract platform_equivalence); R1/D6 populate the field on both platforms - only the path text is platform-scoped"
+        },
+        {
+          "path": "/response/result/surfaces/3/requested_working_directory",
+          "rationale": "platform home/current-directory path text (contract platform_equivalence); R1/D6 populate the field on both platforms - only the path text is platform-scoped"
         }
       ]
     },
@@ -633,6 +729,14 @@
         {
           "path": "/state/0/result/response/result/surfaces/0/title",
           "rationale": "live terminal title embeds the platform shell/process name (contract platform_equivalence)"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/0/requested_working_directory",
+          "rationale": "platform home/current-directory path text (contract platform_equivalence); R1/D6 populate the field on both platforms - only the path text is platform-scoped"
+        },
+        {
+          "path": "/state/0/result/response/result/surfaces/1/requested_working_directory",
+          "rationale": "platform home/current-directory path text (contract platform_equivalence); R1/D6 populate the field on both platforms - only the path text is platform-scoped"
         }
       ]
     },
