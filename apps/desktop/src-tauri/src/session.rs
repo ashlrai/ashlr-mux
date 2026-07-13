@@ -786,7 +786,7 @@ fn remint_noncanonical_identities(snapshot: &mut AppSessionSnapshot) -> bool {
         surfaces: HashMap<String, String>,
         panes: HashMap<String, String>,
         surface_owners: HashMap<String, String>,
-        ordered_surfaces: Vec<String>,
+        last_selected_surface: Option<String>,
     }
 
     fn mint(used: &mut HashSet<String>) -> String {
@@ -904,7 +904,6 @@ fn remint_noncanonical_identities(snapshot: &mut AppSessionSnapshot) -> bool {
                     aliases
                         .surface_owners
                         .insert(new_surface_id.clone(), new_pane_id.clone());
-                    aliases.ordered_surfaces.push(new_surface_id.clone());
                     panel_ids.push(new_surface_id.clone());
 
                     if let Some(source) = source {
@@ -915,13 +914,27 @@ fn remint_noncanonical_identities(snapshot: &mut AppSessionSnapshot) -> bool {
                     }
                 }
                 if panel_ids.is_empty() {
-                    return None;
+                    authoritative?;
+                    let scaffold_surface_id = mint(used_surfaces);
+                    aliases
+                        .surface_owners
+                        .insert(scaffold_surface_id.clone(), new_pane_id.clone());
+                    panel_ids.push(scaffold_surface_id.clone());
+                    created_surfaces.push(cmux_core::session::SessionSurfaceSnapshot {
+                        surface_id: scaffold_surface_id,
+                        pane_id: new_pane_id.clone(),
+                        generation: 1,
+                        kind: cmux_core::session::SessionSurfaceKindSnapshot::Terminal,
+                        metadata: Default::default(),
+                        terminal_startup: None,
+                    });
                 }
                 pane.pane_id = Some(new_pane_id);
                 pane.selected_panel_id = selected
                     .as_ref()
                     .and_then(|selected| local_aliases.get(selected).cloned())
                     .or_else(|| panel_ids.first().cloned());
+                aliases.last_selected_surface = pane.selected_panel_id.clone();
                 pane.panel_ids = panel_ids;
                 Some(SessionWorkspaceLayoutSnapshot::Pane(pane))
             }
@@ -1001,18 +1014,11 @@ fn remint_noncanonical_identities(snapshot: &mut AppSessionSnapshot) -> bool {
             .as_ref()
             .and_then(|panel_id| aliases.surfaces.get(panel_id).cloned());
 
-        let had_focus = workspace.focused_panel_id.is_some() || workspace.focused_pane_id.is_some();
         let focused_panel = workspace
             .focused_panel_id
             .as_ref()
             .and_then(|panel_id| aliases.surfaces.get(panel_id).cloned())
-            .or_else(|| {
-                if had_focus {
-                    aliases.ordered_surfaces.first().cloned()
-                } else {
-                    None
-                }
-            });
+            .or_else(|| aliases.last_selected_surface.clone());
         workspace.focused_pane_id = focused_panel
             .as_ref()
             .and_then(|panel_id| aliases.surface_owners.get(panel_id).cloned());
@@ -1043,19 +1049,21 @@ fn remint_noncanonical_identities(snapshot: &mut AppSessionSnapshot) -> bool {
                     .panel_ids
                     .take()
                     .unwrap_or_else(|| vec![canvas.panel_id.clone()]);
-                let mut seen = HashSet::new();
                 let panel_ids = old_panel_ids
                     .iter()
                     .filter_map(|panel_id| aliases.surfaces.get(panel_id).cloned())
-                    .filter(|panel_id| seen.insert(panel_id.clone()))
                     .collect::<Vec<_>>();
                 let Some(first) = panel_ids.first().cloned() else {
                     return false;
                 };
-                let selected = canvas
+                let selected_source = canvas
                     .selected_panel_id
                     .as_ref()
-                    .and_then(|panel_id| aliases.surfaces.get(panel_id).cloned())
+                    .unwrap_or(&canvas.panel_id);
+                let selected = aliases
+                    .surfaces
+                    .get(selected_source)
+                    .cloned()
                     .filter(|panel_id| panel_ids.contains(panel_id))
                     .unwrap_or_else(|| first.clone());
                 canvas.panel_id = first;
@@ -1209,29 +1217,37 @@ fn remint_noncanonical_identities(snapshot: &mut AppSessionSnapshot) -> bool {
                     .and_then(|workspace| workspace.workspace_id.clone())
             });
 
-        if let Some(groups) = &mut window.tab_manager.workspace_groups {
-            for group in groups {
-                let members = window
-                    .tab_manager
-                    .workspaces
-                    .iter()
-                    .filter(|workspace| workspace.group_id.as_deref() == Some(&group.id))
-                    .filter_map(|workspace| workspace.workspace_id.clone())
-                    .collect::<Vec<_>>();
-                group.anchor_workspace_id = group
-                    .anchor_member_index
-                    .and_then(|index| usize::try_from(index).ok())
-                    .and_then(|index| members.get(index).cloned())
-                    .or_else(|| {
-                        group
-                            .anchor_workspace_id
-                            .as_ref()
-                            .and_then(|workspace_id| workspace_aliases.get(workspace_id))
-                            .filter(|workspace_id| members.contains(workspace_id))
-                            .cloned()
-                    })
-                    .or_else(|| members.first().cloned());
-            }
+        if let Some(groups) = window.tab_manager.workspace_groups.take() {
+            let groups = groups
+                .into_iter()
+                .filter_map(|mut group| {
+                    let members = window
+                        .tab_manager
+                        .workspaces
+                        .iter()
+                        .filter(|workspace| workspace.group_id.as_deref() == Some(&group.id))
+                        .filter_map(|workspace| workspace.workspace_id.clone())
+                        .collect::<Vec<_>>();
+                    if members.is_empty() {
+                        return None;
+                    }
+                    group.anchor_workspace_id = group
+                        .anchor_member_index
+                        .and_then(|index| usize::try_from(index).ok())
+                        .and_then(|index| members.get(index).cloned())
+                        .or_else(|| {
+                            group
+                                .anchor_workspace_id
+                                .as_ref()
+                                .and_then(|workspace_id| workspace_aliases.get(workspace_id))
+                                .filter(|workspace_id| members.contains(workspace_id))
+                                .cloned()
+                        })
+                        .or_else(|| members.first().cloned());
+                    Some(group)
+                })
+                .collect::<Vec<_>>();
+            window.tab_manager.workspace_groups = (!groups.is_empty()).then_some(groups);
         }
 
         if let Some(dock) = &mut window.dock {
