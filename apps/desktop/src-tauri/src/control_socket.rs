@@ -3431,7 +3431,6 @@ fn handle_pane_surface_lifecycle_request(
         } => Some(((*failure_code).to_string(), (*failure_message).to_string())),
         _ => None,
     });
-    let publish_snapshot = lifecycle_snapshot_changed(&transition.snapshot, &current);
     let completion_events = transition.events.clone();
     let previous = current.clone();
     let mut target = current;
@@ -3475,14 +3474,10 @@ fn handle_pane_surface_lifecycle_request(
                 }
             });
     if matches!(result, ControlCallResult::Ok(_)) {
-        if publish_snapshot {
-            let suppressed = completion_events
-                .iter()
-                .filter(|event| event.source == "workspace.lifecycle")
-                .map(|event| event.name)
-                .collect::<HashSet<_>>();
-            record_session_changed_event_suppressing(app, &target, &suppressed);
-        }
+        // D8b: canonical emits ONLY the workspace.lifecycle / socket.v2
+        // completion frames for socket commands — no derived session.model
+        // extras (session.changed, pane.focused) on this path (capture frame
+        // lists for all four events cases).
         for completion in completion_events {
             record_event(
                 app,
