@@ -3,6 +3,7 @@ import unittest
 
 from capture_driver import (
     OBSERVATION_KEYS,
+    TimingSymbolizer,
     ManifestError,
     PlaceholderError,
     Symbolizer,
@@ -221,6 +222,79 @@ class SymbolizerTests(unittest.TestCase):
         symbolizer = Symbolizer()
         applied = symbolizer.apply({self.UUID_A: 1})
         self.assertEqual(applied, {"<uuid-1>": 1})
+
+
+class TimingSymbolizerTests(unittest.TestCase):
+    """Sanctioned events-lane timing normalization: occurred_at + seq-derived
+    event ids only. Counts, names, order, payload keys, and resume counters
+    stay strict."""
+
+    BOOT = "aaaaaaaa-1111-2222-3333-444444444444"
+
+    def frames(self):
+        return [
+            {
+                "boot_id": self.BOOT,
+                "protocol": "cmux-events",
+                "replay_count": 3,
+                "resume": {"after_seq": 0, "latest_seq": 14, "next_seq": 15},
+            },
+            {
+                "boot_id": self.BOOT,
+                "id": f"{self.BOOT}-31",
+                "name": "pane.created",
+                "occurred_at": "2026-07-13T09:09:30.494Z",
+                "payload": {"origin": "terminal_split"},
+            },
+            {
+                "boot_id": self.BOOT,
+                "id": f"{self.BOOT}-32",
+                "name": "surface.created",
+                "occurred_at": "2026-07-13T09:09:30.494Z",
+            },
+        ]
+
+    def test_symbolizes_occurred_at_by_first_seen_order(self):
+        timing = TimingSymbolizer()
+        out = timing.apply(self.frames())
+        self.assertEqual(out[1]["occurred_at"], "<ts-1>")
+        # Same raw timestamp shares the symbol.
+        self.assertEqual(out[2]["occurred_at"], "<ts-1>")
+        out2 = timing.apply([{"occurred_at": "2026-07-13T09:09:31.000Z"}])
+        self.assertEqual(out2[0]["occurred_at"], "<ts-2>")
+
+    def test_symbolizes_seq_derived_event_ids_raw_and_uuid_symbolized(self):
+        timing = TimingSymbolizer()
+        out = timing.apply(self.frames())
+        self.assertEqual(out[1]["id"], "<event-id-1>")
+        self.assertEqual(out[2]["id"], "<event-id-2>")
+        # The same pattern with an already-uuid-symbolized boot part (archived
+        # captures) also matches.
+        out2 = timing.apply([{"id": "<uuid-8>-31", "name": "x"}])
+        self.assertEqual(out2[0]["id"], "<event-id-3>")
+
+    def test_strict_fields_untouched(self):
+        out = TimingSymbolizer().apply(self.frames())
+        self.assertEqual(out[0]["replay_count"], 3)
+        self.assertEqual(out[0]["resume"], {"after_seq": 0, "latest_seq": 14, "next_seq": 15})
+        self.assertEqual(out[1]["name"], "pane.created")
+        self.assertEqual(out[1]["payload"], {"origin": "terminal_split"})
+        self.assertEqual(out[0]["boot_id"], self.BOOT)  # uuid pass owns boot_id
+        self.assertEqual(len(out), 3)
+
+    def test_non_seq_ids_untouched(self):
+        out = TimingSymbolizer().apply([{"id": "surface-2"}, {"id": self.BOOT}])
+        self.assertEqual(out[0]["id"], "surface-2")
+        self.assertEqual(out[1]["id"], self.BOOT)
+
+    def test_idempotent_on_already_symbolized_capture(self):
+        timing = TimingSymbolizer()
+        once = timing.apply(self.frames())
+        again = TimingSymbolizer().apply(once)
+        self.assertEqual(once, again)
+
+    def test_none_lane_passes_through(self):
+        self.assertIsNone(TimingSymbolizer().apply(None))
 
 
 class ObservationShapingTests(unittest.TestCase):

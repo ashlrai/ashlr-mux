@@ -21,6 +21,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from capture_driver import TimingSymbolizer
 from differential_harness import compare_observations, remove_pointer
 
 
@@ -30,7 +31,15 @@ class CaptureFormatError(ValueError):
 
 def load_capture(text: str, label: str) -> dict[str, dict[str, Any]]:
     """Parse one NDJSON capture into {case_id: record}. Session lines are
-    validated and skipped; duplicate case ids are rejected."""
+    validated and skipped; duplicate case ids are rejected.
+
+    The sanctioned events-lane timing normalization (TimingSymbolizer, see
+    capture_driver.py) is applied per capture at load time, in file order, so
+    pre-normalization archives — including the frozen canonical capture,
+    which is never rewritten — compare under the same rules as fresh
+    captures. Idempotent for captures already symbolized at capture time.
+    """
+    timing = TimingSymbolizer()
     cases: dict[str, dict[str, Any]] = {}
     for number, line in enumerate(text.splitlines(), start=1):
         if not line.strip():
@@ -53,6 +62,7 @@ def load_capture(text: str, label: str) -> dict[str, dict[str, Any]]:
             raise CaptureFormatError(f"{label}:{number}: duplicate case id {case_id!r}")
         if not isinstance(record.get("observation"), dict):
             raise CaptureFormatError(f"{label}:{number}: case {case_id!r} missing observation")
+        record["observation"]["events"] = timing.apply(record["observation"].get("events"))
         cases[case_id] = record
     return cases
 

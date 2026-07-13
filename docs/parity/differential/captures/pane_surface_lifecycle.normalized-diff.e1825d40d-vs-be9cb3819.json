@@ -35,9 +35,9 @@
             {
               "boot_id": "<uuid-8>",
               "category": "pane",
-              "id": "<uuid-8>-31",
+              "id": "<event-id-1>",
               "name": "pane.created",
-              "occurred_at": "2026-07-13T09:09:30.494Z",
+              "occurred_at": "<ts-1>",
               "pane_id": "<uuid-6>",
               "payload": {
                 "orientation": "horizontal",
@@ -58,9 +58,9 @@
             {
               "boot_id": "<uuid-8>",
               "category": "surface",
-              "id": "<uuid-8>-32",
+              "id": "<event-id-2>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T09:09:30.495Z",
+              "occurred_at": "<ts-2>",
               "pane_id": "<uuid-6>",
               "payload": {
                 "focused": false,
@@ -104,9 +104,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-1",
+              "id": "<event-id-1>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:32.9714044Z",
+              "occurred_at": "<ts-1>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -128,9 +128,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "workspace",
-              "id": "<uuid-6>-2",
+              "id": "<event-id-2>",
               "name": "workspace.created",
-              "occurred_at": "2026-07-13T10:18:32.9721299Z",
+              "occurred_at": "<ts-2>",
               "pane_id": null,
               "payload": {
                 "index": 0,
@@ -156,9 +156,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-3",
+              "id": "<event-id-3>",
               "name": "pane.created",
-              "occurred_at": "2026-07-13T10:18:32.9726254Z",
+              "occurred_at": "<ts-3>",
               "pane_id": "<uuid-9>",
               "payload": {
                 "index": 0,
@@ -187,9 +187,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-4",
+              "id": "<event-id-4>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:32.9731755Z",
+              "occurred_at": "<ts-4>",
               "pane_id": "<uuid-9>",
               "payload": {
                 "index": 0,
@@ -218,9 +218,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-5",
+              "id": "<event-id-5>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:32.9736152Z",
+              "occurred_at": "<ts-5>",
               "pane_id": null,
               "payload": {
                 "focused": true,
@@ -246,9 +246,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "workspace",
-              "id": "<uuid-6>-6",
+              "id": "<event-id-6>",
               "name": "workspace.created",
-              "occurred_at": "2026-07-13T10:18:32.9740436Z",
+              "occurred_at": "<ts-6>",
               "pane_id": null,
               "payload": {
                 "index": 1,
@@ -274,9 +274,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-7",
+              "id": "<event-id-7>",
               "name": "pane.created",
-              "occurred_at": "2026-07-13T10:18:32.9744677Z",
+              "occurred_at": "<ts-7>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "index": 0,
@@ -305,9 +305,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-8",
+              "id": "<event-id-8>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:32.9749007Z",
+              "occurred_at": "<ts-8>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "index": 0,
@@ -336,9 +336,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-9",
+              "id": "<event-id-9>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:32.9753207Z",
+              "occurred_at": "<ts-9>",
               "pane_id": null,
               "payload": {
                 "focused": true,
@@ -364,9 +364,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "workspace",
-              "id": "<uuid-6>-10",
+              "id": "<event-id-10>",
               "name": "workspace.selected",
-              "occurred_at": "2026-07-13T10:18:32.9757772Z",
+              "occurred_at": "<ts-10>",
               "pane_id": null,
               "payload": {
                 "index": 0,
@@ -392,9 +392,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-11",
+              "id": "<event-id-11>",
               "name": "surface.selected",
-              "occurred_at": "2026-07-13T10:18:32.9762045Z",
+              "occurred_at": "<ts-11>",
               "pane_id": null,
               "payload": {
                 "focused": true,
@@ -420,9 +420,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-12",
+              "id": "<event-id-12>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:33.0175209Z",
+              "occurred_at": "<ts-12>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -444,9 +444,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-13",
+              "id": "<event-id-13>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:33.0182441Z",
+              "occurred_at": "<ts-13>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "index": 0,
@@ -477,9 +477,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-14",
+              "id": "<event-id-14>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:33.018721Z",
+              "occurred_at": "<ts-14>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "focused": false,
@@ -500,9 +500,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-15",
+              "id": "<event-id-15>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:33.2406318Z",
+              "occurred_at": "<ts-15>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -524,9 +524,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-16",
+              "id": "<event-id-16>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:33.2412242Z",
+              "occurred_at": "<ts-16>",
               "pane_id": "<uuid-4>",
               "payload": {
                 "index": 1,
@@ -555,9 +555,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-17",
+              "id": "<event-id-17>",
               "name": "pane.created",
-              "occurred_at": "2026-07-13T10:18:33.2417418Z",
+              "occurred_at": "<ts-17>",
               "pane_id": "<uuid-4>",
               "payload": {
                 "orientation": "right",
@@ -578,9 +578,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-18",
+              "id": "<event-id-18>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:33.2421754Z",
+              "occurred_at": "<ts-18>",
               "pane_id": "<uuid-4>",
               "payload": {
                 "focused": false,
@@ -1240,9 +1240,9 @@
             {
               "boot_id": "<uuid-8>",
               "category": "surface",
-              "id": "<uuid-8>-50",
+              "id": "<event-id-3>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T09:09:33.340Z",
+              "occurred_at": "<ts-3>",
               "pane_id": "<uuid-5>",
               "payload": {
                 "focused": false,
@@ -1263,9 +1263,9 @@
             {
               "boot_id": "<uuid-8>",
               "category": "surface",
-              "id": "<uuid-8>-51",
+              "id": "<event-id-4>",
               "name": "surface.selected",
-              "occurred_at": "2026-07-13T09:09:33.344Z",
+              "occurred_at": "<ts-4>",
               "pane_id": "<uuid-5>",
               "payload": {
                 "focused": true,
@@ -1287,9 +1287,9 @@
             {
               "boot_id": "<uuid-8>",
               "category": "surface",
-              "id": "<uuid-8>-52",
+              "id": "<event-id-5>",
               "name": "surface.focused",
-              "occurred_at": "2026-07-13T09:09:33.344Z",
+              "occurred_at": "<ts-4>",
               "pane_id": "<uuid-5>",
               "payload": {
                 "kind": "terminal",
@@ -1309,9 +1309,9 @@
             {
               "boot_id": "<uuid-8>",
               "category": "surface",
-              "id": "<uuid-8>-53",
+              "id": "<event-id-6>",
               "name": "surface.selected",
-              "occurred_at": "2026-07-13T09:09:33.345Z",
+              "occurred_at": "<ts-5>",
               "pane_id": "<uuid-5>",
               "payload": {
                 "focused": true,
@@ -1333,9 +1333,9 @@
             {
               "boot_id": "<uuid-8>",
               "category": "surface",
-              "id": "<uuid-8>-54",
+              "id": "<event-id-7>",
               "name": "surface.focused",
-              "occurred_at": "2026-07-13T09:09:33.346Z",
+              "occurred_at": "<ts-6>",
               "pane_id": "<uuid-5>",
               "payload": {
                 "kind": "terminal",
@@ -1378,9 +1378,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-1",
+              "id": "<event-id-1>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:32.9714044Z",
+              "occurred_at": "<ts-1>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -1402,9 +1402,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "workspace",
-              "id": "<uuid-6>-2",
+              "id": "<event-id-2>",
               "name": "workspace.created",
-              "occurred_at": "2026-07-13T10:18:32.9721299Z",
+              "occurred_at": "<ts-2>",
               "pane_id": null,
               "payload": {
                 "index": 0,
@@ -1430,9 +1430,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-3",
+              "id": "<event-id-3>",
               "name": "pane.created",
-              "occurred_at": "2026-07-13T10:18:32.9726254Z",
+              "occurred_at": "<ts-3>",
               "pane_id": "<uuid-9>",
               "payload": {
                 "index": 0,
@@ -1461,9 +1461,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-4",
+              "id": "<event-id-4>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:32.9731755Z",
+              "occurred_at": "<ts-4>",
               "pane_id": "<uuid-9>",
               "payload": {
                 "index": 0,
@@ -1492,9 +1492,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-5",
+              "id": "<event-id-5>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:32.9736152Z",
+              "occurred_at": "<ts-5>",
               "pane_id": null,
               "payload": {
                 "focused": true,
@@ -1520,9 +1520,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "workspace",
-              "id": "<uuid-6>-6",
+              "id": "<event-id-6>",
               "name": "workspace.created",
-              "occurred_at": "2026-07-13T10:18:32.9740436Z",
+              "occurred_at": "<ts-6>",
               "pane_id": null,
               "payload": {
                 "index": 1,
@@ -1548,9 +1548,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-7",
+              "id": "<event-id-7>",
               "name": "pane.created",
-              "occurred_at": "2026-07-13T10:18:32.9744677Z",
+              "occurred_at": "<ts-7>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "index": 0,
@@ -1579,9 +1579,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-8",
+              "id": "<event-id-8>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:32.9749007Z",
+              "occurred_at": "<ts-8>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "index": 0,
@@ -1610,9 +1610,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-9",
+              "id": "<event-id-9>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:32.9753207Z",
+              "occurred_at": "<ts-9>",
               "pane_id": null,
               "payload": {
                 "focused": true,
@@ -1638,9 +1638,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "workspace",
-              "id": "<uuid-6>-10",
+              "id": "<event-id-10>",
               "name": "workspace.selected",
-              "occurred_at": "2026-07-13T10:18:32.9757772Z",
+              "occurred_at": "<ts-10>",
               "pane_id": null,
               "payload": {
                 "index": 0,
@@ -1666,9 +1666,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-11",
+              "id": "<event-id-11>",
               "name": "surface.selected",
-              "occurred_at": "2026-07-13T10:18:32.9762045Z",
+              "occurred_at": "<ts-11>",
               "pane_id": null,
               "payload": {
                 "focused": true,
@@ -1694,9 +1694,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-12",
+              "id": "<event-id-12>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:33.0175209Z",
+              "occurred_at": "<ts-12>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -1718,9 +1718,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-13",
+              "id": "<event-id-13>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:33.0182441Z",
+              "occurred_at": "<ts-13>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "index": 0,
@@ -1751,9 +1751,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-14",
+              "id": "<event-id-14>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:33.018721Z",
+              "occurred_at": "<ts-14>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "focused": false,
@@ -1774,9 +1774,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-15",
+              "id": "<event-id-15>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:33.2406318Z",
+              "occurred_at": "<ts-15>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -1798,9 +1798,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-16",
+              "id": "<event-id-16>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:33.2412242Z",
+              "occurred_at": "<ts-16>",
               "pane_id": "<uuid-4>",
               "payload": {
                 "index": 1,
@@ -1829,9 +1829,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-17",
+              "id": "<event-id-17>",
               "name": "pane.created",
-              "occurred_at": "2026-07-13T10:18:33.2417418Z",
+              "occurred_at": "<ts-17>",
               "pane_id": "<uuid-4>",
               "payload": {
                 "orientation": "right",
@@ -1852,9 +1852,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-18",
+              "id": "<event-id-18>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:33.2421754Z",
+              "occurred_at": "<ts-18>",
               "pane_id": "<uuid-4>",
               "payload": {
                 "focused": false,
@@ -1875,9 +1875,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-19",
+              "id": "<event-id-19>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:33.7073022Z",
+              "occurred_at": "<ts-19>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -1899,9 +1899,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-20",
+              "id": "<event-id-20>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:33.7078805Z",
+              "occurred_at": "<ts-20>",
               "pane_id": "<uuid-10>",
               "payload": {
                 "index": 0,
@@ -1930,9 +1930,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-21",
+              "id": "<event-id-21>",
               "name": "pane.created",
-              "occurred_at": "2026-07-13T10:18:33.7084231Z",
+              "occurred_at": "<ts-21>",
               "pane_id": "<uuid-10>",
               "payload": {
                 "orientation": "l",
@@ -1953,9 +1953,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-22",
+              "id": "<event-id-22>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:33.709076Z",
+              "occurred_at": "<ts-22>",
               "pane_id": "<uuid-10>",
               "payload": {
                 "focused": false,
@@ -1976,9 +1976,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-23",
+              "id": "<event-id-23>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:33.7324345Z",
+              "occurred_at": "<ts-23>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -2000,9 +2000,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-24",
+              "id": "<event-id-24>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:33.7329888Z",
+              "occurred_at": "<ts-24>",
               "pane_id": "<uuid-12>",
               "payload": {
                 "index": 2,
@@ -2031,9 +2031,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-25",
+              "id": "<event-id-25>",
               "name": "pane.created",
-              "occurred_at": "2026-07-13T10:18:33.7334606Z",
+              "occurred_at": "<ts-25>",
               "pane_id": "<uuid-12>",
               "payload": {
                 "orientation": "down",
@@ -2054,9 +2054,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-26",
+              "id": "<event-id-26>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:33.7339251Z",
+              "occurred_at": "<ts-26>",
               "pane_id": "<uuid-12>",
               "payload": {
                 "focused": false,
@@ -2077,9 +2077,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-27",
+              "id": "<event-id-27>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:33.7385464Z",
+              "occurred_at": "<ts-27>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -2101,9 +2101,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-28",
+              "id": "<event-id-28>",
               "name": "pane.resized",
-              "occurred_at": "2026-07-13T10:18:33.7390667Z",
+              "occurred_at": "<ts-28>",
               "pane_id": "<uuid-12>",
               "payload": {
                 "method": "pane.resize",
@@ -2136,9 +2136,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-29",
+              "id": "<event-id-29>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:33.7601675Z",
+              "occurred_at": "<ts-29>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -2160,9 +2160,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-30",
+              "id": "<event-id-30>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:33.7606982Z",
+              "occurred_at": "<ts-30>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "index": 1,
@@ -2194,9 +2194,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-31",
+              "id": "<event-id-31>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:33.7611514Z",
+              "occurred_at": "<ts-31>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "focused": false,
@@ -2217,9 +2217,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-32",
+              "id": "<event-id-32>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:33.7809363Z",
+              "occurred_at": "<ts-32>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -2241,9 +2241,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-33",
+              "id": "<event-id-33>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:33.7814311Z",
+              "occurred_at": "<ts-33>",
               "pane_id": "<uuid-16>",
               "payload": {
                 "index": 2,
@@ -2272,9 +2272,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-34",
+              "id": "<event-id-34>",
               "name": "pane.created",
-              "occurred_at": "2026-07-13T10:18:33.781929Z",
+              "occurred_at": "<ts-34>",
               "pane_id": "<uuid-16>",
               "payload": {
                 "orientation": "right",
@@ -2295,9 +2295,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-35",
+              "id": "<event-id-35>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:33.782495Z",
+              "occurred_at": "<ts-35>",
               "pane_id": "<uuid-16>",
               "payload": {
                 "focused": false,
@@ -2318,9 +2318,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-36",
+              "id": "<event-id-36>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:33.8058161Z",
+              "occurred_at": "<ts-36>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -2342,9 +2342,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-37",
+              "id": "<event-id-37>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:33.8063545Z",
+              "occurred_at": "<ts-37>",
               "pane_id": "<uuid-18>",
               "payload": {
                 "index": 2,
@@ -2373,9 +2373,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-38",
+              "id": "<event-id-38>",
               "name": "pane.created",
-              "occurred_at": "2026-07-13T10:18:33.8068314Z",
+              "occurred_at": "<ts-38>",
               "pane_id": "<uuid-18>",
               "payload": {
                 "orientation": "right",
@@ -2396,9 +2396,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-39",
+              "id": "<event-id-39>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:33.8072459Z",
+              "occurred_at": "<ts-39>",
               "pane_id": "<uuid-18>",
               "payload": {
                 "focused": false,
@@ -2419,9 +2419,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-40",
+              "id": "<event-id-40>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:33.8288669Z",
+              "occurred_at": "<ts-40>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -2443,9 +2443,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-41",
+              "id": "<event-id-41>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:33.8294614Z",
+              "occurred_at": "<ts-41>",
               "pane_id": "<uuid-20>",
               "payload": {
                 "index": 2,
@@ -2474,9 +2474,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-42",
+              "id": "<event-id-42>",
               "name": "pane.created",
-              "occurred_at": "2026-07-13T10:18:33.8299463Z",
+              "occurred_at": "<ts-42>",
               "pane_id": "<uuid-20>",
               "payload": {
                 "orientation": "right",
@@ -2497,9 +2497,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-43",
+              "id": "<event-id-43>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:33.830421Z",
+              "occurred_at": "<ts-43>",
               "pane_id": "<uuid-20>",
               "payload": {
                 "focused": false,
@@ -2520,9 +2520,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-44",
+              "id": "<event-id-44>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:33.8374167Z",
+              "occurred_at": "<ts-44>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -2544,9 +2544,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-45",
+              "id": "<event-id-45>",
               "name": "pane.resized",
-              "occurred_at": "2026-07-13T10:18:33.8379611Z",
+              "occurred_at": "<ts-45>",
               "pane_id": "<uuid-20>",
               "payload": {
                 "method": "pane.resize",
@@ -2579,9 +2579,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-46",
+              "id": "<event-id-46>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:34.1258832Z",
+              "occurred_at": "<ts-46>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -2603,9 +2603,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-47",
+              "id": "<event-id-47>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:34.1266696Z",
+              "occurred_at": "<ts-47>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "index": 1,
@@ -2638,9 +2638,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-48",
+              "id": "<event-id-48>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:34.1272596Z",
+              "occurred_at": "<ts-48>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "focused": false,
@@ -3449,9 +3449,9 @@
             {
               "boot_id": "<uuid-8>",
               "category": "surface",
-              "id": "<uuid-8>-84",
+              "id": "<event-id-8>",
               "name": "surface.closed",
-              "occurred_at": "2026-07-13T09:09:40.368Z",
+              "occurred_at": "<ts-7>",
               "pane_id": "<uuid-5>",
               "payload": {
                 "kind": "terminal",
@@ -3471,9 +3471,9 @@
             {
               "boot_id": "<uuid-8>",
               "category": "surface",
-              "id": "<uuid-8>-85",
+              "id": "<event-id-9>",
               "name": "surface.selected",
-              "occurred_at": "2026-07-13T09:09:40.378Z",
+              "occurred_at": "<ts-8>",
               "pane_id": "<uuid-5>",
               "payload": {
                 "focused": true,
@@ -3495,9 +3495,9 @@
             {
               "boot_id": "<uuid-8>",
               "category": "surface",
-              "id": "<uuid-8>-86",
+              "id": "<event-id-10>",
               "name": "surface.focused",
-              "occurred_at": "2026-07-13T09:09:40.379Z",
+              "occurred_at": "<ts-9>",
               "pane_id": "<uuid-5>",
               "payload": {
                 "kind": "terminal",
@@ -3540,9 +3540,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-1",
+              "id": "<event-id-1>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:32.9714044Z",
+              "occurred_at": "<ts-1>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -3564,9 +3564,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "workspace",
-              "id": "<uuid-6>-2",
+              "id": "<event-id-2>",
               "name": "workspace.created",
-              "occurred_at": "2026-07-13T10:18:32.9721299Z",
+              "occurred_at": "<ts-2>",
               "pane_id": null,
               "payload": {
                 "index": 0,
@@ -3592,9 +3592,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-3",
+              "id": "<event-id-3>",
               "name": "pane.created",
-              "occurred_at": "2026-07-13T10:18:32.9726254Z",
+              "occurred_at": "<ts-3>",
               "pane_id": "<uuid-9>",
               "payload": {
                 "index": 0,
@@ -3623,9 +3623,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-4",
+              "id": "<event-id-4>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:32.9731755Z",
+              "occurred_at": "<ts-4>",
               "pane_id": "<uuid-9>",
               "payload": {
                 "index": 0,
@@ -3654,9 +3654,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-5",
+              "id": "<event-id-5>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:32.9736152Z",
+              "occurred_at": "<ts-5>",
               "pane_id": null,
               "payload": {
                 "focused": true,
@@ -3682,9 +3682,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "workspace",
-              "id": "<uuid-6>-6",
+              "id": "<event-id-6>",
               "name": "workspace.created",
-              "occurred_at": "2026-07-13T10:18:32.9740436Z",
+              "occurred_at": "<ts-6>",
               "pane_id": null,
               "payload": {
                 "index": 1,
@@ -3710,9 +3710,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-7",
+              "id": "<event-id-7>",
               "name": "pane.created",
-              "occurred_at": "2026-07-13T10:18:32.9744677Z",
+              "occurred_at": "<ts-7>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "index": 0,
@@ -3741,9 +3741,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-8",
+              "id": "<event-id-8>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:32.9749007Z",
+              "occurred_at": "<ts-8>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "index": 0,
@@ -3772,9 +3772,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-9",
+              "id": "<event-id-9>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:32.9753207Z",
+              "occurred_at": "<ts-9>",
               "pane_id": null,
               "payload": {
                 "focused": true,
@@ -3800,9 +3800,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "workspace",
-              "id": "<uuid-6>-10",
+              "id": "<event-id-10>",
               "name": "workspace.selected",
-              "occurred_at": "2026-07-13T10:18:32.9757772Z",
+              "occurred_at": "<ts-10>",
               "pane_id": null,
               "payload": {
                 "index": 0,
@@ -3828,9 +3828,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-11",
+              "id": "<event-id-11>",
               "name": "surface.selected",
-              "occurred_at": "2026-07-13T10:18:32.9762045Z",
+              "occurred_at": "<ts-11>",
               "pane_id": null,
               "payload": {
                 "focused": true,
@@ -3856,9 +3856,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-12",
+              "id": "<event-id-12>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:33.0175209Z",
+              "occurred_at": "<ts-12>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -3880,9 +3880,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-13",
+              "id": "<event-id-13>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:33.0182441Z",
+              "occurred_at": "<ts-13>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "index": 0,
@@ -3913,9 +3913,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-14",
+              "id": "<event-id-14>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:33.018721Z",
+              "occurred_at": "<ts-14>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "focused": false,
@@ -3936,9 +3936,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-15",
+              "id": "<event-id-15>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:33.2406318Z",
+              "occurred_at": "<ts-15>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -3960,9 +3960,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-16",
+              "id": "<event-id-16>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:33.2412242Z",
+              "occurred_at": "<ts-16>",
               "pane_id": "<uuid-4>",
               "payload": {
                 "index": 1,
@@ -3991,9 +3991,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-17",
+              "id": "<event-id-17>",
               "name": "pane.created",
-              "occurred_at": "2026-07-13T10:18:33.2417418Z",
+              "occurred_at": "<ts-17>",
               "pane_id": "<uuid-4>",
               "payload": {
                 "orientation": "right",
@@ -4014,9 +4014,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-18",
+              "id": "<event-id-18>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:33.2421754Z",
+              "occurred_at": "<ts-18>",
               "pane_id": "<uuid-4>",
               "payload": {
                 "focused": false,
@@ -4037,9 +4037,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-19",
+              "id": "<event-id-19>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:33.7073022Z",
+              "occurred_at": "<ts-19>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -4061,9 +4061,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-20",
+              "id": "<event-id-20>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:33.7078805Z",
+              "occurred_at": "<ts-20>",
               "pane_id": "<uuid-10>",
               "payload": {
                 "index": 0,
@@ -4092,9 +4092,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-21",
+              "id": "<event-id-21>",
               "name": "pane.created",
-              "occurred_at": "2026-07-13T10:18:33.7084231Z",
+              "occurred_at": "<ts-21>",
               "pane_id": "<uuid-10>",
               "payload": {
                 "orientation": "l",
@@ -4115,9 +4115,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-22",
+              "id": "<event-id-22>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:33.709076Z",
+              "occurred_at": "<ts-22>",
               "pane_id": "<uuid-10>",
               "payload": {
                 "focused": false,
@@ -4138,9 +4138,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-23",
+              "id": "<event-id-23>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:33.7324345Z",
+              "occurred_at": "<ts-23>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -4162,9 +4162,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-24",
+              "id": "<event-id-24>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:33.7329888Z",
+              "occurred_at": "<ts-24>",
               "pane_id": "<uuid-12>",
               "payload": {
                 "index": 2,
@@ -4193,9 +4193,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-25",
+              "id": "<event-id-25>",
               "name": "pane.created",
-              "occurred_at": "2026-07-13T10:18:33.7334606Z",
+              "occurred_at": "<ts-25>",
               "pane_id": "<uuid-12>",
               "payload": {
                 "orientation": "down",
@@ -4216,9 +4216,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-26",
+              "id": "<event-id-26>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:33.7339251Z",
+              "occurred_at": "<ts-26>",
               "pane_id": "<uuid-12>",
               "payload": {
                 "focused": false,
@@ -4239,9 +4239,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-27",
+              "id": "<event-id-27>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:33.7385464Z",
+              "occurred_at": "<ts-27>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -4263,9 +4263,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-28",
+              "id": "<event-id-28>",
               "name": "pane.resized",
-              "occurred_at": "2026-07-13T10:18:33.7390667Z",
+              "occurred_at": "<ts-28>",
               "pane_id": "<uuid-12>",
               "payload": {
                 "method": "pane.resize",
@@ -4298,9 +4298,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-29",
+              "id": "<event-id-29>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:33.7601675Z",
+              "occurred_at": "<ts-29>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -4322,9 +4322,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-30",
+              "id": "<event-id-30>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:33.7606982Z",
+              "occurred_at": "<ts-30>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "index": 1,
@@ -4356,9 +4356,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-31",
+              "id": "<event-id-31>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:33.7611514Z",
+              "occurred_at": "<ts-31>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "focused": false,
@@ -4379,9 +4379,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-32",
+              "id": "<event-id-32>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:33.7809363Z",
+              "occurred_at": "<ts-32>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -4403,9 +4403,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-33",
+              "id": "<event-id-33>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:33.7814311Z",
+              "occurred_at": "<ts-33>",
               "pane_id": "<uuid-16>",
               "payload": {
                 "index": 2,
@@ -4434,9 +4434,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-34",
+              "id": "<event-id-34>",
               "name": "pane.created",
-              "occurred_at": "2026-07-13T10:18:33.781929Z",
+              "occurred_at": "<ts-34>",
               "pane_id": "<uuid-16>",
               "payload": {
                 "orientation": "right",
@@ -4457,9 +4457,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-35",
+              "id": "<event-id-35>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:33.782495Z",
+              "occurred_at": "<ts-35>",
               "pane_id": "<uuid-16>",
               "payload": {
                 "focused": false,
@@ -4480,9 +4480,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-36",
+              "id": "<event-id-36>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:33.8058161Z",
+              "occurred_at": "<ts-36>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -4504,9 +4504,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-37",
+              "id": "<event-id-37>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:33.8063545Z",
+              "occurred_at": "<ts-37>",
               "pane_id": "<uuid-18>",
               "payload": {
                 "index": 2,
@@ -4535,9 +4535,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-38",
+              "id": "<event-id-38>",
               "name": "pane.created",
-              "occurred_at": "2026-07-13T10:18:33.8068314Z",
+              "occurred_at": "<ts-38>",
               "pane_id": "<uuid-18>",
               "payload": {
                 "orientation": "right",
@@ -4558,9 +4558,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-39",
+              "id": "<event-id-39>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:33.8072459Z",
+              "occurred_at": "<ts-39>",
               "pane_id": "<uuid-18>",
               "payload": {
                 "focused": false,
@@ -4581,9 +4581,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-40",
+              "id": "<event-id-40>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:33.8288669Z",
+              "occurred_at": "<ts-40>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -4605,9 +4605,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-41",
+              "id": "<event-id-41>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:33.8294614Z",
+              "occurred_at": "<ts-41>",
               "pane_id": "<uuid-20>",
               "payload": {
                 "index": 2,
@@ -4636,9 +4636,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-42",
+              "id": "<event-id-42>",
               "name": "pane.created",
-              "occurred_at": "2026-07-13T10:18:33.8299463Z",
+              "occurred_at": "<ts-42>",
               "pane_id": "<uuid-20>",
               "payload": {
                 "orientation": "right",
@@ -4659,9 +4659,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-43",
+              "id": "<event-id-43>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:33.830421Z",
+              "occurred_at": "<ts-43>",
               "pane_id": "<uuid-20>",
               "payload": {
                 "focused": false,
@@ -4682,9 +4682,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-44",
+              "id": "<event-id-44>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:33.8374167Z",
+              "occurred_at": "<ts-44>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -4706,9 +4706,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-45",
+              "id": "<event-id-45>",
               "name": "pane.resized",
-              "occurred_at": "2026-07-13T10:18:33.8379611Z",
+              "occurred_at": "<ts-45>",
               "pane_id": "<uuid-20>",
               "payload": {
                 "method": "pane.resize",
@@ -4741,9 +4741,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-46",
+              "id": "<event-id-46>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:34.1258832Z",
+              "occurred_at": "<ts-46>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -4765,9 +4765,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-47",
+              "id": "<event-id-47>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:34.1266696Z",
+              "occurred_at": "<ts-47>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "index": 1,
@@ -4800,9 +4800,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-48",
+              "id": "<event-id-48>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:34.1272596Z",
+              "occurred_at": "<ts-48>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "focused": false,
@@ -4823,9 +4823,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-49",
+              "id": "<event-id-49>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:34.9789184Z",
+              "occurred_at": "<ts-49>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -4847,9 +4847,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-50",
+              "id": "<event-id-50>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:34.9795031Z",
+              "occurred_at": "<ts-50>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "index": 1,
@@ -4883,9 +4883,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-51",
+              "id": "<event-id-51>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:34.9800393Z",
+              "occurred_at": "<ts-51>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "focused": false,
@@ -4906,9 +4906,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-52",
+              "id": "<event-id-52>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:34.9859747Z",
+              "occurred_at": "<ts-52>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -4930,9 +4930,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "workspace",
-              "id": "<uuid-6>-53",
+              "id": "<event-id-53>",
               "name": "workspace.created",
-              "occurred_at": "2026-07-13T10:18:34.9864761Z",
+              "occurred_at": "<ts-53>",
               "pane_id": null,
               "payload": {
                 "index": 1,
@@ -4958,9 +4958,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-54",
+              "id": "<event-id-54>",
               "name": "pane.created",
-              "occurred_at": "2026-07-13T10:18:34.9869085Z",
+              "occurred_at": "<ts-54>",
               "pane_id": "<uuid-27>",
               "payload": {
                 "index": 0,
@@ -4989,9 +4989,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-55",
+              "id": "<event-id-55>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:34.9873722Z",
+              "occurred_at": "<ts-55>",
               "pane_id": "<uuid-27>",
               "payload": {
                 "index": 0,
@@ -5020,9 +5020,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-56",
+              "id": "<event-id-56>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:34.9878005Z",
+              "occurred_at": "<ts-56>",
               "pane_id": null,
               "payload": {
                 "focused": true,
@@ -5048,9 +5048,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-57",
+              "id": "<event-id-57>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:35.0112206Z",
+              "occurred_at": "<ts-57>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -5072,9 +5072,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-58",
+              "id": "<event-id-58>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:35.0117265Z",
+              "occurred_at": "<ts-58>",
               "pane_id": "<uuid-27>",
               "payload": {
                 "index": 0,
@@ -5105,9 +5105,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-59",
+              "id": "<event-id-59>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:35.0121952Z",
+              "occurred_at": "<ts-59>",
               "pane_id": "<uuid-27>",
               "payload": {
                 "focused": false,
@@ -5128,9 +5128,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-60",
+              "id": "<event-id-60>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:35.0401147Z",
+              "occurred_at": "<ts-60>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -5152,9 +5152,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-61",
+              "id": "<event-id-61>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:35.0406818Z",
+              "occurred_at": "<ts-61>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "index": 1,
@@ -5189,9 +5189,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-62",
+              "id": "<event-id-62>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:35.04122Z",
+              "occurred_at": "<ts-62>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "focused": false,
@@ -5212,9 +5212,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-63",
+              "id": "<event-id-63>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:35.0474712Z",
+              "occurred_at": "<ts-63>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -5236,9 +5236,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-64",
+              "id": "<event-id-64>",
               "name": "surface.selected",
-              "occurred_at": "2026-07-13T10:18:35.0480467Z",
+              "occurred_at": "<ts-64>",
               "pane_id": null,
               "payload": {
                 "focused": true,
@@ -5265,9 +5265,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-65",
+              "id": "<event-id-65>",
               "name": "surface.focused",
-              "occurred_at": "2026-07-13T10:18:35.0485439Z",
+              "occurred_at": "<ts-65>",
               "pane_id": "<uuid-2>",
               "payload": {},
               "protocol": "cmux-events",
@@ -5282,9 +5282,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-66",
+              "id": "<event-id-66>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:35.0711641Z",
+              "occurred_at": "<ts-66>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -5306,9 +5306,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-67",
+              "id": "<event-id-67>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:35.0716901Z",
+              "occurred_at": "<ts-67>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "index": 1,
@@ -5344,9 +5344,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-68",
+              "id": "<event-id-68>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:35.0721953Z",
+              "occurred_at": "<ts-68>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "focused": false,
@@ -5367,9 +5367,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-69",
+              "id": "<event-id-69>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:35.2805244Z",
+              "occurred_at": "<ts-69>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -5391,9 +5391,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-70",
+              "id": "<event-id-70>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:35.2811009Z",
+              "occurred_at": "<ts-70>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "index": 1,
@@ -5428,9 +5428,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-71",
+              "id": "<event-id-71>",
               "name": "surface.closed",
-              "occurred_at": "2026-07-13T10:18:35.2816462Z",
+              "occurred_at": "<ts-71>",
               "pane_id": "<uuid-2>",
               "payload": {},
               "protocol": "cmux-events",
@@ -5871,9 +5871,9 @@
             {
               "boot_id": "<uuid-8>",
               "category": "surface",
-              "id": "<uuid-8>-119",
+              "id": "<event-id-11>",
               "name": "surface.action",
-              "occurred_at": "2026-07-13T09:09:47.636Z",
+              "occurred_at": "<ts-10>",
               "pane_id": "<uuid-5>",
               "payload": {
                 "method": "surface.action",
@@ -5932,9 +5932,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-1",
+              "id": "<event-id-1>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:32.9714044Z",
+              "occurred_at": "<ts-1>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -5956,9 +5956,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "workspace",
-              "id": "<uuid-6>-2",
+              "id": "<event-id-2>",
               "name": "workspace.created",
-              "occurred_at": "2026-07-13T10:18:32.9721299Z",
+              "occurred_at": "<ts-2>",
               "pane_id": null,
               "payload": {
                 "index": 0,
@@ -5984,9 +5984,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-3",
+              "id": "<event-id-3>",
               "name": "pane.created",
-              "occurred_at": "2026-07-13T10:18:32.9726254Z",
+              "occurred_at": "<ts-3>",
               "pane_id": "<uuid-9>",
               "payload": {
                 "index": 0,
@@ -6015,9 +6015,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-4",
+              "id": "<event-id-4>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:32.9731755Z",
+              "occurred_at": "<ts-4>",
               "pane_id": "<uuid-9>",
               "payload": {
                 "index": 0,
@@ -6046,9 +6046,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-5",
+              "id": "<event-id-5>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:32.9736152Z",
+              "occurred_at": "<ts-5>",
               "pane_id": null,
               "payload": {
                 "focused": true,
@@ -6074,9 +6074,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "workspace",
-              "id": "<uuid-6>-6",
+              "id": "<event-id-6>",
               "name": "workspace.created",
-              "occurred_at": "2026-07-13T10:18:32.9740436Z",
+              "occurred_at": "<ts-6>",
               "pane_id": null,
               "payload": {
                 "index": 1,
@@ -6102,9 +6102,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-7",
+              "id": "<event-id-7>",
               "name": "pane.created",
-              "occurred_at": "2026-07-13T10:18:32.9744677Z",
+              "occurred_at": "<ts-7>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "index": 0,
@@ -6133,9 +6133,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-8",
+              "id": "<event-id-8>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:32.9749007Z",
+              "occurred_at": "<ts-8>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "index": 0,
@@ -6164,9 +6164,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-9",
+              "id": "<event-id-9>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:32.9753207Z",
+              "occurred_at": "<ts-9>",
               "pane_id": null,
               "payload": {
                 "focused": true,
@@ -6192,9 +6192,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "workspace",
-              "id": "<uuid-6>-10",
+              "id": "<event-id-10>",
               "name": "workspace.selected",
-              "occurred_at": "2026-07-13T10:18:32.9757772Z",
+              "occurred_at": "<ts-10>",
               "pane_id": null,
               "payload": {
                 "index": 0,
@@ -6220,9 +6220,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-11",
+              "id": "<event-id-11>",
               "name": "surface.selected",
-              "occurred_at": "2026-07-13T10:18:32.9762045Z",
+              "occurred_at": "<ts-11>",
               "pane_id": null,
               "payload": {
                 "focused": true,
@@ -6248,9 +6248,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-12",
+              "id": "<event-id-12>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:33.0175209Z",
+              "occurred_at": "<ts-12>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -6272,9 +6272,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-13",
+              "id": "<event-id-13>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:33.0182441Z",
+              "occurred_at": "<ts-13>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "index": 0,
@@ -6305,9 +6305,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-14",
+              "id": "<event-id-14>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:33.018721Z",
+              "occurred_at": "<ts-14>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "focused": false,
@@ -6328,9 +6328,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-15",
+              "id": "<event-id-15>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:33.2406318Z",
+              "occurred_at": "<ts-15>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -6352,9 +6352,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-16",
+              "id": "<event-id-16>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:33.2412242Z",
+              "occurred_at": "<ts-16>",
               "pane_id": "<uuid-4>",
               "payload": {
                 "index": 1,
@@ -6383,9 +6383,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-17",
+              "id": "<event-id-17>",
               "name": "pane.created",
-              "occurred_at": "2026-07-13T10:18:33.2417418Z",
+              "occurred_at": "<ts-17>",
               "pane_id": "<uuid-4>",
               "payload": {
                 "orientation": "right",
@@ -6406,9 +6406,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-18",
+              "id": "<event-id-18>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:33.2421754Z",
+              "occurred_at": "<ts-18>",
               "pane_id": "<uuid-4>",
               "payload": {
                 "focused": false,
@@ -6429,9 +6429,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-19",
+              "id": "<event-id-19>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:33.7073022Z",
+              "occurred_at": "<ts-19>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -6453,9 +6453,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-20",
+              "id": "<event-id-20>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:33.7078805Z",
+              "occurred_at": "<ts-20>",
               "pane_id": "<uuid-10>",
               "payload": {
                 "index": 0,
@@ -6484,9 +6484,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-21",
+              "id": "<event-id-21>",
               "name": "pane.created",
-              "occurred_at": "2026-07-13T10:18:33.7084231Z",
+              "occurred_at": "<ts-21>",
               "pane_id": "<uuid-10>",
               "payload": {
                 "orientation": "l",
@@ -6507,9 +6507,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-22",
+              "id": "<event-id-22>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:33.709076Z",
+              "occurred_at": "<ts-22>",
               "pane_id": "<uuid-10>",
               "payload": {
                 "focused": false,
@@ -6530,9 +6530,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-23",
+              "id": "<event-id-23>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:33.7324345Z",
+              "occurred_at": "<ts-23>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -6554,9 +6554,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-24",
+              "id": "<event-id-24>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:33.7329888Z",
+              "occurred_at": "<ts-24>",
               "pane_id": "<uuid-12>",
               "payload": {
                 "index": 2,
@@ -6585,9 +6585,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-25",
+              "id": "<event-id-25>",
               "name": "pane.created",
-              "occurred_at": "2026-07-13T10:18:33.7334606Z",
+              "occurred_at": "<ts-25>",
               "pane_id": "<uuid-12>",
               "payload": {
                 "orientation": "down",
@@ -6608,9 +6608,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-26",
+              "id": "<event-id-26>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:33.7339251Z",
+              "occurred_at": "<ts-26>",
               "pane_id": "<uuid-12>",
               "payload": {
                 "focused": false,
@@ -6631,9 +6631,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-27",
+              "id": "<event-id-27>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:33.7385464Z",
+              "occurred_at": "<ts-27>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -6655,9 +6655,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-28",
+              "id": "<event-id-28>",
               "name": "pane.resized",
-              "occurred_at": "2026-07-13T10:18:33.7390667Z",
+              "occurred_at": "<ts-28>",
               "pane_id": "<uuid-12>",
               "payload": {
                 "method": "pane.resize",
@@ -6690,9 +6690,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-29",
+              "id": "<event-id-29>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:33.7601675Z",
+              "occurred_at": "<ts-29>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -6714,9 +6714,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-30",
+              "id": "<event-id-30>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:33.7606982Z",
+              "occurred_at": "<ts-30>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "index": 1,
@@ -6748,9 +6748,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-31",
+              "id": "<event-id-31>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:33.7611514Z",
+              "occurred_at": "<ts-31>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "focused": false,
@@ -6771,9 +6771,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-32",
+              "id": "<event-id-32>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:33.7809363Z",
+              "occurred_at": "<ts-32>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -6795,9 +6795,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-33",
+              "id": "<event-id-33>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:33.7814311Z",
+              "occurred_at": "<ts-33>",
               "pane_id": "<uuid-16>",
               "payload": {
                 "index": 2,
@@ -6826,9 +6826,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-34",
+              "id": "<event-id-34>",
               "name": "pane.created",
-              "occurred_at": "2026-07-13T10:18:33.781929Z",
+              "occurred_at": "<ts-34>",
               "pane_id": "<uuid-16>",
               "payload": {
                 "orientation": "right",
@@ -6849,9 +6849,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-35",
+              "id": "<event-id-35>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:33.782495Z",
+              "occurred_at": "<ts-35>",
               "pane_id": "<uuid-16>",
               "payload": {
                 "focused": false,
@@ -6872,9 +6872,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-36",
+              "id": "<event-id-36>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:33.8058161Z",
+              "occurred_at": "<ts-36>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -6896,9 +6896,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-37",
+              "id": "<event-id-37>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:33.8063545Z",
+              "occurred_at": "<ts-37>",
               "pane_id": "<uuid-18>",
               "payload": {
                 "index": 2,
@@ -6927,9 +6927,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-38",
+              "id": "<event-id-38>",
               "name": "pane.created",
-              "occurred_at": "2026-07-13T10:18:33.8068314Z",
+              "occurred_at": "<ts-38>",
               "pane_id": "<uuid-18>",
               "payload": {
                 "orientation": "right",
@@ -6950,9 +6950,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-39",
+              "id": "<event-id-39>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:33.8072459Z",
+              "occurred_at": "<ts-39>",
               "pane_id": "<uuid-18>",
               "payload": {
                 "focused": false,
@@ -6973,9 +6973,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-40",
+              "id": "<event-id-40>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:33.8288669Z",
+              "occurred_at": "<ts-40>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -6997,9 +6997,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-41",
+              "id": "<event-id-41>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:33.8294614Z",
+              "occurred_at": "<ts-41>",
               "pane_id": "<uuid-20>",
               "payload": {
                 "index": 2,
@@ -7028,9 +7028,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-42",
+              "id": "<event-id-42>",
               "name": "pane.created",
-              "occurred_at": "2026-07-13T10:18:33.8299463Z",
+              "occurred_at": "<ts-42>",
               "pane_id": "<uuid-20>",
               "payload": {
                 "orientation": "right",
@@ -7051,9 +7051,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-43",
+              "id": "<event-id-43>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:33.830421Z",
+              "occurred_at": "<ts-43>",
               "pane_id": "<uuid-20>",
               "payload": {
                 "focused": false,
@@ -7074,9 +7074,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-44",
+              "id": "<event-id-44>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:33.8374167Z",
+              "occurred_at": "<ts-44>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -7098,9 +7098,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-45",
+              "id": "<event-id-45>",
               "name": "pane.resized",
-              "occurred_at": "2026-07-13T10:18:33.8379611Z",
+              "occurred_at": "<ts-45>",
               "pane_id": "<uuid-20>",
               "payload": {
                 "method": "pane.resize",
@@ -7133,9 +7133,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-46",
+              "id": "<event-id-46>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:34.1258832Z",
+              "occurred_at": "<ts-46>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -7157,9 +7157,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-47",
+              "id": "<event-id-47>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:34.1266696Z",
+              "occurred_at": "<ts-47>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "index": 1,
@@ -7192,9 +7192,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-48",
+              "id": "<event-id-48>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:34.1272596Z",
+              "occurred_at": "<ts-48>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "focused": false,
@@ -7215,9 +7215,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-49",
+              "id": "<event-id-49>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:34.9789184Z",
+              "occurred_at": "<ts-49>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -7239,9 +7239,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-50",
+              "id": "<event-id-50>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:34.9795031Z",
+              "occurred_at": "<ts-50>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "index": 1,
@@ -7275,9 +7275,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-51",
+              "id": "<event-id-51>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:34.9800393Z",
+              "occurred_at": "<ts-51>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "focused": false,
@@ -7298,9 +7298,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-52",
+              "id": "<event-id-52>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:34.9859747Z",
+              "occurred_at": "<ts-52>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -7322,9 +7322,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "workspace",
-              "id": "<uuid-6>-53",
+              "id": "<event-id-53>",
               "name": "workspace.created",
-              "occurred_at": "2026-07-13T10:18:34.9864761Z",
+              "occurred_at": "<ts-53>",
               "pane_id": null,
               "payload": {
                 "index": 1,
@@ -7350,9 +7350,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-54",
+              "id": "<event-id-54>",
               "name": "pane.created",
-              "occurred_at": "2026-07-13T10:18:34.9869085Z",
+              "occurred_at": "<ts-54>",
               "pane_id": "<uuid-27>",
               "payload": {
                 "index": 0,
@@ -7381,9 +7381,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-55",
+              "id": "<event-id-55>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:34.9873722Z",
+              "occurred_at": "<ts-55>",
               "pane_id": "<uuid-27>",
               "payload": {
                 "index": 0,
@@ -7412,9 +7412,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-56",
+              "id": "<event-id-56>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:34.9878005Z",
+              "occurred_at": "<ts-56>",
               "pane_id": null,
               "payload": {
                 "focused": true,
@@ -7440,9 +7440,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-57",
+              "id": "<event-id-57>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:35.0112206Z",
+              "occurred_at": "<ts-57>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -7464,9 +7464,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-58",
+              "id": "<event-id-58>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:35.0117265Z",
+              "occurred_at": "<ts-58>",
               "pane_id": "<uuid-27>",
               "payload": {
                 "index": 0,
@@ -7497,9 +7497,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-59",
+              "id": "<event-id-59>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:35.0121952Z",
+              "occurred_at": "<ts-59>",
               "pane_id": "<uuid-27>",
               "payload": {
                 "focused": false,
@@ -7520,9 +7520,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-60",
+              "id": "<event-id-60>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:35.0401147Z",
+              "occurred_at": "<ts-60>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -7544,9 +7544,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-61",
+              "id": "<event-id-61>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:35.0406818Z",
+              "occurred_at": "<ts-61>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "index": 1,
@@ -7581,9 +7581,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-62",
+              "id": "<event-id-62>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:35.04122Z",
+              "occurred_at": "<ts-62>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "focused": false,
@@ -7604,9 +7604,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-63",
+              "id": "<event-id-63>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:35.0474712Z",
+              "occurred_at": "<ts-63>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -7628,9 +7628,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-64",
+              "id": "<event-id-64>",
               "name": "surface.selected",
-              "occurred_at": "2026-07-13T10:18:35.0480467Z",
+              "occurred_at": "<ts-64>",
               "pane_id": null,
               "payload": {
                 "focused": true,
@@ -7657,9 +7657,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-65",
+              "id": "<event-id-65>",
               "name": "surface.focused",
-              "occurred_at": "2026-07-13T10:18:35.0485439Z",
+              "occurred_at": "<ts-65>",
               "pane_id": "<uuid-2>",
               "payload": {},
               "protocol": "cmux-events",
@@ -7674,9 +7674,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-66",
+              "id": "<event-id-66>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:35.0711641Z",
+              "occurred_at": "<ts-66>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -7698,9 +7698,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-67",
+              "id": "<event-id-67>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:35.0716901Z",
+              "occurred_at": "<ts-67>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "index": 1,
@@ -7736,9 +7736,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-68",
+              "id": "<event-id-68>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:35.0721953Z",
+              "occurred_at": "<ts-68>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "focused": false,
@@ -7759,9 +7759,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-69",
+              "id": "<event-id-69>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:35.2805244Z",
+              "occurred_at": "<ts-69>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -7783,9 +7783,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-70",
+              "id": "<event-id-70>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:35.2811009Z",
+              "occurred_at": "<ts-70>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "index": 1,
@@ -7820,9 +7820,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-71",
+              "id": "<event-id-71>",
               "name": "surface.closed",
-              "occurred_at": "2026-07-13T10:18:35.2816462Z",
+              "occurred_at": "<ts-71>",
               "pane_id": "<uuid-2>",
               "payload": {},
               "protocol": "cmux-events",
@@ -7837,9 +7837,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-72",
+              "id": "<event-id-72>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:35.5941527Z",
+              "occurred_at": "<ts-72>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -7861,9 +7861,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "workspace",
-              "id": "<uuid-6>-73",
+              "id": "<event-id-73>",
               "name": "workspace.created",
-              "occurred_at": "2026-07-13T10:18:35.5947269Z",
+              "occurred_at": "<ts-73>",
               "pane_id": null,
               "payload": {
                 "index": 1,
@@ -7889,9 +7889,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-74",
+              "id": "<event-id-74>",
               "name": "pane.created",
-              "occurred_at": "2026-07-13T10:18:35.5952412Z",
+              "occurred_at": "<ts-74>",
               "pane_id": "<uuid-41>",
               "payload": {
                 "index": 0,
@@ -7920,9 +7920,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-75",
+              "id": "<event-id-75>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:35.5957251Z",
+              "occurred_at": "<ts-75>",
               "pane_id": "<uuid-41>",
               "payload": {
                 "index": 0,
@@ -7951,9 +7951,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-76",
+              "id": "<event-id-76>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:35.596155Z",
+              "occurred_at": "<ts-76>",
               "pane_id": null,
               "payload": {
                 "focused": true,
@@ -7979,9 +7979,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-77",
+              "id": "<event-id-77>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:35.6238133Z",
+              "occurred_at": "<ts-77>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -8003,9 +8003,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-78",
+              "id": "<event-id-78>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:35.6244704Z",
+              "occurred_at": "<ts-78>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "index": 1,
@@ -8041,9 +8041,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-79",
+              "id": "<event-id-79>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:35.6252715Z",
+              "occurred_at": "<ts-79>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "focused": false,
@@ -8064,9 +8064,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-80",
+              "id": "<event-id-80>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:35.6474774Z",
+              "occurred_at": "<ts-80>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -8088,9 +8088,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-81",
+              "id": "<event-id-81>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:35.6480232Z",
+              "occurred_at": "<ts-81>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "index": 1,
@@ -8127,9 +8127,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-82",
+              "id": "<event-id-82>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:35.6486072Z",
+              "occurred_at": "<ts-82>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "focused": false,
@@ -8150,9 +8150,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-83",
+              "id": "<event-id-83>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:35.6548814Z",
+              "occurred_at": "<ts-83>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -8174,9 +8174,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-84",
+              "id": "<event-id-84>",
               "name": "surface.moved",
-              "occurred_at": "2026-07-13T10:18:35.6554102Z",
+              "occurred_at": "<ts-84>",
               "pane_id": "<uuid-9>",
               "payload": {
                 "method": "surface.move",
@@ -8208,9 +8208,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-85",
+              "id": "<event-id-85>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:35.6623921Z",
+              "occurred_at": "<ts-85>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -8232,9 +8232,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "workspace",
-              "id": "<uuid-6>-86",
+              "id": "<event-id-86>",
               "name": "workspace.created",
-              "occurred_at": "2026-07-13T10:18:35.6629058Z",
+              "occurred_at": "<ts-86>",
               "pane_id": null,
               "payload": {
                 "index": 1,
@@ -8260,9 +8260,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-87",
+              "id": "<event-id-87>",
               "name": "pane.created",
-              "occurred_at": "2026-07-13T10:18:35.663323Z",
+              "occurred_at": "<ts-87>",
               "pane_id": "<uuid-37>",
               "payload": {
                 "index": 0,
@@ -8291,9 +8291,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-88",
+              "id": "<event-id-88>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:35.6637346Z",
+              "occurred_at": "<ts-88>",
               "pane_id": "<uuid-37>",
               "payload": {
                 "index": 0,
@@ -8322,9 +8322,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-89",
+              "id": "<event-id-89>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:35.6641794Z",
+              "occurred_at": "<ts-89>",
               "pane_id": null,
               "payload": {
                 "focused": true,
@@ -8350,9 +8350,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-90",
+              "id": "<event-id-90>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:35.6922654Z",
+              "occurred_at": "<ts-90>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -8374,9 +8374,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-91",
+              "id": "<event-id-91>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:35.7179342Z",
+              "occurred_at": "<ts-91>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -8398,9 +8398,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-92",
+              "id": "<event-id-92>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:35.718464Z",
+              "occurred_at": "<ts-92>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "index": 1,
@@ -8437,9 +8437,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-93",
+              "id": "<event-id-93>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:35.7189899Z",
+              "occurred_at": "<ts-93>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "focused": false,
@@ -8460,9 +8460,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-94",
+              "id": "<event-id-94>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:35.7270353Z",
+              "occurred_at": "<ts-94>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -8484,9 +8484,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-95",
+              "id": "<event-id-95>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:35.749567Z",
+              "occurred_at": "<ts-95>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -8508,9 +8508,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "pane",
-              "id": "<uuid-6>-96",
+              "id": "<event-id-96>",
               "name": "pane.focused",
-              "occurred_at": "2026-07-13T10:18:35.7500968Z",
+              "occurred_at": "<ts-96>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "index": 1,
@@ -8548,9 +8548,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-97",
+              "id": "<event-id-97>",
               "name": "surface.created",
-              "occurred_at": "2026-07-13T10:18:35.7506426Z",
+              "occurred_at": "<ts-97>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "focused": false,
@@ -8571,9 +8571,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "session",
-              "id": "<uuid-6>-98",
+              "id": "<event-id-98>",
               "name": "session.changed",
-              "occurred_at": "2026-07-13T10:18:35.9627604Z",
+              "occurred_at": "<ts-98>",
               "pane_id": null,
               "payload": {
                 "origin": "session.changed",
@@ -8595,9 +8595,9 @@
             {
               "boot_id": "<uuid-6>",
               "category": "surface",
-              "id": "<uuid-6>-99",
+              "id": "<event-id-99>",
               "name": "surface.action",
-              "occurred_at": "2026-07-13T10:18:35.9632751Z",
+              "occurred_at": "<ts-99>",
               "pane_id": "<uuid-2>",
               "payload": {
                 "method": "surface.action",

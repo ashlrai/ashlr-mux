@@ -118,6 +118,48 @@ class CompareCapturesTests(unittest.TestCase):
         summary = render_summary(report)
         self.assertIn("capture_error[windows]: TransportError: boom", summary)
 
+    def test_timing_symbolization_applied_at_load_covers_timestamp_noise(self):
+        boot_c = "aaaaaaaa-1111-2222-3333-444444444444"
+        boot_w = "bbbbbbbb-1111-2222-3333-444444444444"
+
+        def events(boot, ts):
+            return [
+                {"boot_id": "<uuid-1>", "protocol": "cmux-events", "replay_count": 0},
+                {
+                    "boot_id": "<uuid-1>",
+                    "id": f"{boot}-31",
+                    "name": "pane.created",
+                    "occurred_at": ts,
+                },
+            ]
+
+        left_text = capture_text(
+            [case_record("a", observation(events=events(boot_c, "2026-07-13T09:00:00.1Z")))]
+        )
+        right_text = capture_text(
+            [case_record("a", observation(events=events(boot_w, "2026-07-13T10:30:59.9Z")))]
+        )
+        left = load_capture(left_text, "canonical")
+        right = load_capture(right_text, "windows")
+        report = compare_captures(left, right)
+        self.assertEqual(report["deltas"], 0)
+
+    def test_timing_symbolization_keeps_count_and_name_divergences_strict(self):
+        frame = {
+            "boot_id": "<uuid-1>",
+            "id": "<uuid-1>-1",
+            "name": "pane.created",
+            "occurred_at": "2026-07-13T09:00:00Z",
+        }
+        extra = dict(frame, id="<uuid-1>-2", name="session.changed")
+        left = load_capture(capture_text([case_record("a", observation(events=[frame]))]), "c")
+        right = load_capture(
+            capture_text([case_record("a", observation(events=[frame, extra]))]), "w"
+        )
+        report = compare_captures(left, right)
+        self.assertEqual(report["deltas"], 1)
+        self.assertEqual(report["results"][0]["mismatches"], ["events"])
+
     def test_result_order_follows_canonical_then_windows_strays(self):
         left = {"a": case_record("a"), "b": case_record("b")}
         right = {"b": case_record("b"), "z": case_record("z")}

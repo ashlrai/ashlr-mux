@@ -362,6 +362,66 @@ class Symbolizer:
                 yield match.group(0).lower()
 
 
+class TimingSymbolizer:
+    """Sanctioned normalization for event-frame timing nondeterminism ONLY.
+
+    Root decision (2026-07-13): `occurred_at` timestamps and seq-derived event
+    ids (`<boot uuid>-<seq>`) are nondeterministic across any two runs even at
+    perfect behavior parity, so they are symbolized by stable first-seen order
+    (`<ts-N>` / `<event-id-N>`), exactly like UUID symbolization. `boot_id` is
+    already covered by the UUID pass. Everything else about the events lane
+    stays STRICT: frame counts, event names, frame order, payload keys, and
+    the ack's replay/`after_seq`/`latest_seq`/`resume` counters — those are
+    real backend divergences and are never normalized here.
+
+    Application is idempotent (already-symbolized values pass through), so the
+    comparator can re-apply it at load time to archived captures produced
+    before this normalization existed; the frozen canonical NDJSON is never
+    rewritten.
+    """
+
+    _EVENT_SEQ_ID_RE = re.compile(
+        r"(?:<uuid-\d+>|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}"
+        r"-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})-\d+$"
+    )
+    _TS_SYMBOL_RE = re.compile(r"<ts-\d+>$")
+    _EVENT_ID_SYMBOL_RE = re.compile(r"<event-id-\d+>$")
+
+    def __init__(self) -> None:
+        self._ts_table: dict[str, str] = {}
+        self._id_table: dict[str, str] = {}
+
+    def apply(self, events: Any) -> Any:
+        """Symbolize the events lane; None (lane not captured) passes through."""
+        if events is None:
+            return None
+        return self._walk(events)
+
+    def _walk(self, value: Any) -> Any:
+        if isinstance(value, list):
+            return [self._walk(item) for item in value]
+        if isinstance(value, dict):
+            return {key: self._map(key, item) for key, item in value.items()}
+        return value
+
+    def _map(self, key: str, value: Any) -> Any:
+        if key == "occurred_at" and isinstance(value, str):
+            if self._TS_SYMBOL_RE.fullmatch(value):
+                return value
+            if value not in self._ts_table:
+                self._ts_table[value] = f"<ts-{len(self._ts_table) + 1}>"
+            return self._ts_table[value]
+        if key == "id" and isinstance(value, str):
+            if self._EVENT_ID_SYMBOL_RE.fullmatch(value):
+                return value
+            if self._EVENT_SEQ_ID_RE.fullmatch(value):
+                if value not in self._id_table:
+                    self._id_table[value] = f"<event-id-{len(self._id_table) + 1}>"
+                return self._id_table[value]
+            return value
+        return self._walk(value)
+
+
 def shape_observation(
     action_result: dict[str, Any],
     probe_results: dict[str, list[dict[str, Any]]],
@@ -720,13 +780,14 @@ def run_capture(
     output_lines: list[str],
 ) -> int:
     symbolizer = Symbolizer(socket_address=driver.socket_address)
+    timing = TimingSymbolizer()
     output_lines.append(
         json.dumps(
             {
                 "type": "session",
                 "family": manifest["family"],
                 "platform": platform_label,
-                "driver_version": 1,
+                "driver_version": 2,
             },
             sort_keys=True,
         )
@@ -776,7 +837,7 @@ def run_capture(
                 probe_results[lane] = lane_results
             if collector is not None:
                 time.sleep(0.3)
-                events = collector.stop()
+                events = timing.apply(collector.stop())
                 collector = None
                 symbolizer.register(events)
         except Exception as error:  # noqa: BLE001 - capture failure is per-case data
