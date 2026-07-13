@@ -3790,7 +3790,10 @@ fn pane_resize(
                 snapshot,
                 "invalid_state",
                 "No split ancestor for absolute pane resize",
-                None,
+                Some(json!({
+                    "pane_id": pane_id,
+                    "absolute_axis": params.get("absolute_axis").cloned().unwrap_or(Value::Null),
+                })),
             );
         }
         Err(session_ops::PaneResizeError::NoOrientationSplitAncestor) => {
@@ -3802,7 +3805,10 @@ fn pane_resize(
                 snapshot,
                 "invalid_state",
                 &format!("No {orientation} split ancestor for pane"),
-                None,
+                Some(json!({
+                    "pane_id": pane_id,
+                    "direction": params.get("direction").cloned().unwrap_or(Value::Null),
+                })),
             );
         }
         Err(session_ops::PaneResizeError::NoAdjacentBorder) => {
@@ -3814,16 +3820,20 @@ fn pane_resize(
                 snapshot,
                 "invalid_state",
                 &format!("Pane has no adjacent border in direction {direction}"),
-                None,
+                Some(json!({"pane_id": pane_id, "direction": direction})),
             );
         }
         Err(session_ops::PaneResizeError::MissingSplitIdentity) => {
+            // Canonical setDividerFailed carries the split's uuid
+            // (Pane.swift:473-477); this port's only reachable divider
+            // failure is a split WITHOUT identity, so the key is explicit
+            // null.
             return error(
                 snapshot,
                 "internal_error",
                 "Failed to set split divider position",
-                None,
-            )
+                Some(json!({"split_id": Value::Null})),
+            );
         }
     };
     // Canonical relative responses echo direction+amount and absolute
