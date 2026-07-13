@@ -196,6 +196,7 @@ mod tests {
             panel_pins: None,
             panel_unreads: None,
             restorable_agent_snapshots: None,
+            surface_resume_bindings: None,
             git_branch: None,
             panel_git_branches: None,
             panel_pull_requests: None,

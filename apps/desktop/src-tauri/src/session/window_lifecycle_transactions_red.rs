@@ -616,12 +616,17 @@ fn production_helpers_window_commands_and_socket_use_fallible_compensating_paths
     let window = include_str!("../window.rs");
     let new = function_source(window, "pub async fn window_new(");
     assert!(new.contains("Result<String, String>"));
-    assert!(new.contains("register_window_for_control("));
-    assert!(new.contains("set_visible(false)") || new.contains("visible = false"));
-    assert!(new.contains("show("));
-    assert!(new.contains("close("));
-    assert!(new.find("build(").unwrap() < new.find("register_window_for_control(").unwrap());
-    assert!(new.find("register_window_for_control(").unwrap() < new.rfind("show(").unwrap());
+    // The build/register/show fault-compensation flow moved into the shared
+    // create_window_for_label (also used by the control socket's
+    // window.create); window_new must still delegate to it.
+    assert!(new.contains("create_window_for_label("));
+    let create = function_source(window, "fn create_window_for_label(");
+    assert!(create.contains("register_window_for_control("));
+    assert!(create.contains("set_visible(false)") || create.contains("visible = false"));
+    assert!(create.contains("show("));
+    assert!(create.contains("close("));
+    assert!(create.find("build(").unwrap() < create.find("register_window_for_control(").unwrap());
+    assert!(create.find("register_window_for_control(").unwrap() < create.rfind("show(").unwrap());
 
     let close = function_source(window, "pub fn window_close(");
     assert!(close.contains("Result<(), String>"));

@@ -23,6 +23,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 mod pane_surface_lifecycle;
+mod window_lifecycle;
 
 #[cfg(test)]
 use crate::browser::strict_browser_runtime_teardown_transaction;
@@ -891,6 +892,9 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "window.current",
     "window.displays",
     "window.display",
+    "window.create",
+    "window.close",
+    "window.focus",
     "notification.list",
     "notification.dismiss",
     "notification.mark_read",
@@ -1006,6 +1010,10 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "surface.clear_history",
     "surface.trigger_flash",
     "surface.refresh_all",
+    "surface.refresh",
+    "surface.resume.set",
+    "surface.resume.get",
+    "surface.resume.clear",
     "surface.read_text",
     "surface.send_text",
     "surface.send_key",
@@ -1127,6 +1135,7 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ControlRequestRoute {
     PaneSurfaceLifecycle,
+    WindowLifecycle,
     Legacy,
 }
 
@@ -1136,6 +1145,13 @@ fn control_request_route_for_method(method: &str) -> ControlRequestRoute {
         | "surface.create" | "surface.current" | "surface.list" | "surface.report_pwd"
         | "surface.respawn" | "surface.close" | "surface.focus" | "surface.move"
         | "surface.split" => ControlRequestRoute::PaneSurfaceLifecycle,
+        "window.create"
+        | "window.close"
+        | "window.focus"
+        | "surface.refresh"
+        | "surface.resume.set"
+        | "surface.resume.get"
+        | "surface.resume.clear" => ControlRequestRoute::WindowLifecycle,
         _ => ControlRequestRoute::Legacy,
     }
 }
@@ -1147,6 +1163,23 @@ impl cmux_ipc::ControlRequestHandler for DesktopControlHandler {
 
     fn handle_stream(&mut self, request: ControlRequest) -> Option<ControlStream> {
         (request.method == "events.stream").then(|| events_live_stream(&self.app, &request.params))
+    }
+
+    /// v1 line-protocol commands the CLI contract depends on: `new_window`
+    /// (reply `OK <window-id>`), `focus_window <id>` / `close_window <id>`
+    /// (reply `OK`), with byte-frozen `ERROR:` lines
+    /// (TerminalController.swift:11899-11928 at pinned e1825d40d). Other v1
+    /// lines fall through to the JSON parse-error path.
+    fn handle_v1_line(&mut self, line: &str) -> Option<String> {
+        let command = window_lifecycle::parse_v1_window_command(line)?;
+        Some(match window_lifecycle::v1_window_request(&command) {
+            Err(early_error) => early_error,
+            Ok((method, params)) => {
+                let result =
+                    handle_control_request(&self.app, ControlRequest::new(None, method, params));
+                window_lifecycle::v1_window_reply(&command, &result)
+            }
+        })
     }
 }
 
@@ -1189,10 +1222,14 @@ fn handle_control_request(app: &AppHandle, mut request: ControlRequest) -> Contr
             .params
             .insert("__pane_create_raw_surface_id".into(), raw);
     }
-    if control_request_route_for_method(&request.method)
-        == ControlRequestRoute::PaneSurfaceLifecycle
-    {
-        return handle_pane_surface_lifecycle_request(app, &request.method, &request.params);
+    match control_request_route_for_method(&request.method) {
+        ControlRequestRoute::PaneSurfaceLifecycle => {
+            return handle_pane_surface_lifecycle_request(app, &request.method, &request.params);
+        }
+        ControlRequestRoute::WindowLifecycle => {
+            return handle_window_lifecycle_request(app, &request.method, request.params);
+        }
+        ControlRequestRoute::Legacy => {}
     }
     match request.method.as_str() {
         "ping" | "system.ping" => ok(json!("pong")),
@@ -3321,9 +3358,7 @@ fn handle_pane_surface_lifecycle_request(
             .ok()
             .map(|size| (f64::from(size.width), f64::from(size.height)))
     });
-    let active_window_id = app.webview_windows().iter().find_map(|(label, window)| {
-        (window.is_focused().ok() == Some(true)).then(|| label.clone())
-    });
+    let active_window_id = control_active_window_id(app);
     let mut transition = pane_surface_lifecycle::dispatch_lifecycle_request(
         &current,
         method,
@@ -3465,6 +3500,363 @@ fn handle_pane_surface_lifecycle_request(
         executor.flush_deferred_remote_departures();
     }
     result
+}
+
+/// Canonical quit-confirmation mode key: `app.confirmQuit`, default `always`
+/// (QuitConfirmationStore, Packages/macOS/CmuxSettings/Sources/CmuxSettings/
+/// Stores/QuitConfirmationStore.swift at pinned e1825d40d).
+pub(crate) const CONFIRM_QUIT_SETTING_KEY: &str = "app.confirmQuit";
+const WINDOW_QUIT_CONFIRMATION_EVENT: &str = "cmux://window-quit-confirmation";
+
+/// Whether the last-window close routes into the confirmation dialog.
+///
+/// Canonical `QuitConfirmationStore.shouldShowConfirmation`
+/// (handleQuitShortcutWarning, AppDelegate.swift:12831-12856): mode `always`
+/// (the default when the key is absent/unrecognized) confirms, `never`
+/// terminates immediately. `dirtyOnly` degrades to `always` on this port
+/// until dirty-workspace tracking exists (canonical consults
+/// `hasDirtyWorkspaces`); the dev-build and in-session-confirmed skips are
+/// terminate-flow concerns outside this socket path.
+fn window_quit_confirmation_required(
+    settings: Option<&crate::app_settings::SettingsStore>,
+) -> bool {
+    settings
+        .and_then(|store| store.get_string(CONFIRM_QUIT_SETTING_KEY))
+        .is_none_or(|mode| mode != "never")
+}
+
+/// The shared flat settings file (same rooting as right_sidebar.rs /
+/// agent_session.rs: `app_data_dir()/cmux/settings.json`).
+fn control_settings_store(app: &AppHandle) -> Option<crate::app_settings::SettingsStore> {
+    app.path()
+        .app_data_dir()
+        .ok()
+        .map(|dir| crate::app_settings::SettingsStore::new(dir.join("cmux").join("settings.json")))
+}
+
+/// The platform-equivalent of canonical QuitConfirmationAlertPresenter
+/// (Sources/QuitConfirmationAlertPresenter.swift:23-34 at pinned e1825d40d):
+/// a warning alert "Quit cmux?" / "This will close all windows and
+/// workspaces." with Quit/Cancel. Confirm terminates (NSApp.terminate
+/// parity); cancel is the veto. Non-blocking, mirroring canonical's async
+/// sheet — the reply already went out ("performClose invoked"). The
+/// suppression checkbox ("Don't warn again for Cmd+Q") has no Tauri dialog
+/// equivalent; users set `app.confirmQuit` to `never` instead. Live-verify
+/// only: canonical bypasses the alert under XCTest.
+fn present_quit_confirmation_dialog(app: &AppHandle) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    let exit_app = app.clone();
+    app.dialog()
+        .message("This will close all windows and workspaces.")
+        .title("Quit cmux?")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Quit".into(),
+            "Cancel".into(),
+        ))
+        .show(move |confirmed| {
+            if confirmed {
+                exit_app.exit(0);
+            }
+        });
+}
+
+/// Canonical activeTabManager pointer for socket routing: SetActiveWindow
+/// effects repoint it (socket create/close,
+/// TerminalControllerControlCommandContext.swift:71-76) and key-window
+/// transitions repoint it (CmuxLifecycleEventPublishing.swift:258-268) via
+/// the webview Focused listener. Selector-less routing prefers this pointer;
+/// the focused webview is only the pre-first-write fallback.
+#[derive(Default)]
+pub struct ControlActiveWindowState {
+    inner: Mutex<Option<String>>,
+}
+
+impl ControlActiveWindowState {
+    pub(crate) fn set(&self, window_id: &str) {
+        *self
+            .inner
+            .lock()
+            .expect("active window pointer mutex poisoned") = Some(window_id.to_owned());
+    }
+
+    pub(crate) fn get(&self) -> Option<String> {
+        self.inner
+            .lock()
+            .expect("active window pointer mutex poisoned")
+            .clone()
+    }
+}
+
+/// Pointer precedence: the stored pointer wins (canonical setActiveTabManager
+/// overrides the caller default until the next key transition rewrites it);
+/// the focused webview is only the fallback before the first write.
+fn control_active_window_from(
+    stored: Option<String>,
+    focused_webview: Option<String>,
+) -> Option<String> {
+    stored.or(focused_webview)
+}
+
+/// The active window id used by selector-less routing.
+fn control_active_window_id(app: &AppHandle) -> Option<String> {
+    let stored = app
+        .try_state::<ControlActiveWindowState>()
+        .and_then(|state| state.get());
+    let focused = app.webview_windows().iter().find_map(|(label, window)| {
+        (window.is_focused().ok() == Some(true)).then(|| label.clone())
+    });
+    control_active_window_from(stored, focused)
+}
+
+/// Webview focus listener hook: a key-window transition repoints the active
+/// pointer (canonical CmuxLifecycleEventPublishing.swift:258-268).
+pub(crate) fn note_window_focused(app: &AppHandle, label: &str) {
+    let Some(state) = app.try_state::<ControlActiveWindowState>() else {
+        return;
+    };
+    let window_id =
+        session_window_id_for_label(&snapshot(app), label).unwrap_or_else(|| label.to_owned());
+    state.set(&window_id);
+}
+
+/// The session window presented by a webview label: labels match session ids
+/// directly except "main", which hosts the first session window (the
+/// window.list mapping).
+fn session_window_id_for_label(snapshot: &AppSessionSnapshot, label: &str) -> Option<String> {
+    snapshot
+        .windows
+        .iter()
+        .find(|window| window.window_id.as_deref() == Some(label))
+        .and_then(|window| window.window_id.clone())
+        .or_else(|| {
+            (label == "main")
+                .then(|| {
+                    snapshot
+                        .windows
+                        .first()
+                        .and_then(|window| window.window_id.clone())
+                })
+                .flatten()
+        })
+}
+
+/// window.list rows expose identity ids ("window-1" is the main label's id,
+/// cmux_core::window_display::ordered_window_identities) while the session
+/// model keys windows by webview label (register_window_for_control). Map an
+/// identity id/label selector onto the session window id so the pure
+/// transition layer resolves it.
+fn normalize_window_identity_selector(
+    app: &AppHandle,
+    snapshot: &AppSessionSnapshot,
+    params: &mut serde_json::Map<String, Value>,
+) {
+    let Some(selector) = params.get("window_id").and_then(Value::as_str) else {
+        return;
+    };
+    if snapshot
+        .windows
+        .iter()
+        .any(|window| window.window_id.as_deref() == Some(selector))
+    {
+        return; // already a session id
+    }
+    let identities =
+        cmux_core::window_display::ordered_window_identities(app.webview_windows().keys().cloned());
+    let Some(index) = cmux_core::window_display::resolve_window_selector(&identities, selector)
+    else {
+        return;
+    };
+    if let Some(id) = session_window_id_for_label(snapshot, identities[index].label.as_str()) {
+        params.insert("window_id".into(), json!(id));
+    }
+}
+
+/// The webview label presenting a session window: labels match session ids
+/// directly except the first session window, which the "main" webview hosts.
+fn webview_label_for_session_window(
+    app: &AppHandle,
+    snapshot: &AppSessionSnapshot,
+    window_id: &str,
+) -> String {
+    if app.webview_windows().contains_key(window_id) {
+        return window_id.to_owned();
+    }
+    if snapshot
+        .windows
+        .first()
+        .and_then(|window| window.window_id.as_deref())
+        == Some(window_id)
+    {
+        return "main".to_owned();
+    }
+    window_id.to_owned()
+}
+
+fn handle_window_lifecycle_request(
+    app: &AppHandle,
+    method: &str,
+    mut params: serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    normalize_window_identity_selector(app, &current, &mut params);
+    let active_window_id = control_active_window_id(app);
+    let new_window_id =
+        (method == "window.create").then(|| crate::window::next_control_window_label(app));
+    let context = window_lifecycle::WindowLifecycleContext {
+        active_window_id,
+        quit_confirmation_required: window_quit_confirmation_required(
+            control_settings_store(app).as_ref(),
+        ),
+        now_epoch_seconds: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs_f64())
+            .unwrap_or(0.0),
+        new_window_id,
+        new_surface_id: None,
+    };
+    let mut transition =
+        window_lifecycle::dispatch_window_lifecycle_request(&current, method, &params, &context);
+    decorate_lifecycle_result_refs(app, method, &mut transition.result);
+    if matches!(transition.result, ControlCallResult::Err { .. }) {
+        return transition.result;
+    }
+    // window.create / window.close mutate the session model through the
+    // existing registration seams (register/unregister_window_for_control),
+    // driven by the effects below — committing the transition snapshot too
+    // would double-apply. Resume mutations have no such seam: commit here.
+    if transition.changed && method.starts_with("surface.resume.") {
+        let state = app.state::<SessionState>();
+        if let Err(message) = commit_lifecycle_snapshot_for_control_if_current(
+            app,
+            state.inner(),
+            &current,
+            &transition.snapshot,
+            false,
+        ) {
+            return ControlCallResult::Err {
+                code: "internal_error".into(),
+                message,
+                data: None,
+            };
+        }
+    }
+    for effect in &transition.effects {
+        if let Err((code, message)) = apply_window_lifecycle_effect(app, &current, effect) {
+            return ControlCallResult::Err {
+                code: code.into(),
+                message,
+                data: None,
+            };
+        }
+    }
+    for event in transition.events {
+        record_event(
+            app,
+            event.name,
+            event.category,
+            event.source,
+            event.window_id,
+            event.workspace_id,
+            event.pane_id,
+            event.surface_id,
+            event.payload,
+        );
+    }
+    transition.result
+}
+
+fn apply_window_lifecycle_effect(
+    app: &AppHandle,
+    current: &AppSessionSnapshot,
+    effect: &window_lifecycle::WindowLifecycleEffect,
+) -> Result<(), (&'static str, String)> {
+    use window_lifecycle::WindowLifecycleEffect as Effect;
+    match effect {
+        Effect::WindowCreate {
+            window_id,
+            failure_code,
+            failure_message,
+            ..
+        } => crate::window::create_socket_window(app, window_id).map_err(|error| {
+            // The wire message is byte-frozen ("Failed to create window");
+            // keep the detail on stderr only.
+            eprintln!("[control] window.create failed: {error}");
+            (*failure_code, (*failure_message).to_string())
+        }),
+        Effect::WindowCloseCommit { window_id } => {
+            let label = webview_label_for_session_window(app, current, window_id);
+            crate::window::close_socket_window(app, &label)
+                .map_err(|error| ("internal_error", error))
+        }
+        Effect::WindowFocus { window_id } => {
+            // Best-effort platform focus: canonical focus() returns true on
+            // every path, so focus failures never fail the RPC. Real Win32
+            // foregrounding is a platform_equivalent verified live.
+            let label = webview_label_for_session_window(app, current, window_id);
+            if let Err(error) = crate::window::focus_control_window(app, &label) {
+                eprintln!("[control] window.focus: {error}");
+            }
+            Ok(())
+        }
+        Effect::QuitConfirmation { window_id } => {
+            // Event kept for the web layer/tests; the real consumer is the
+            // native dialog below.
+            let _ = app.emit(
+                WINDOW_QUIT_CONFIRMATION_EVENT,
+                json!({ "window_id": window_id }),
+            );
+            present_quit_confirmation_dialog(app);
+            Ok(())
+        }
+        Effect::AppTerminate { .. } => {
+            app.exit(0);
+            Ok(())
+        }
+        Effect::TerminalRefresh { surface_id, reason } => {
+            let _ = app.emit(
+                SURFACE_REFRESH_EVENT,
+                json!({ "refresh": true, "surface_id": surface_id, "reason": reason }),
+            );
+            Ok(())
+        }
+        // Canonical defensive setActiveTabManager parity: repoint the
+        // selector-less routing pointer
+        // (TerminalControllerControlCommandContext.swift:71-76).
+        Effect::SetActiveWindow { window_id } => {
+            if let Some(state) = app.try_state::<ControlActiveWindowState>() {
+                state.set(window_id);
+            }
+            Ok(())
+        }
+        // The session commit paths persist; closed-window history, per-window
+        // geometry persistence, remote detach, and the resume approval store
+        // are platform-equivalence/deferred-subsystem candidates pinned by
+        // the transition tests until their subsystems land.
+        // Canonical unregisterMainWindow notification clearing
+        // (AppDelegate.swift:16274-16280). Best-effort like the rest of the
+        // teardown: a poisoned store must not fail an already-closed window.
+        Effect::ClearWindowNotifications {
+            window_id,
+            workspace_ids,
+        } => {
+            if let Some(state) = app.try_state::<crate::notifications::NotificationCommandState>() {
+                if let Err(error) = crate::notifications::notification_clear_window_for_control(
+                    state.inner(),
+                    window_id,
+                    workspace_ids,
+                ) {
+                    eprintln!("[control] window.close notification clear: {error}");
+                }
+            }
+            Ok(())
+        }
+        Effect::RecordClosedWindowHistory { .. }
+        | Effect::PersistWindowGeometry { .. }
+        | Effect::RemoteWorkspaceDetach { .. }
+        | Effect::ResumeApprovalPrompt { .. }
+        | Effect::PersistSession => Ok(()),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3649,6 +4041,10 @@ fn decorate_lifecycle_result_refs(
 fn error_data_ref_decoration_is_canonical(method: &str, code: &str, message: &str) -> bool {
     (matches!(method, "surface.action" | "tab.action") && message == "Tab not found")
         || (method == "surface.report_pwd" && code == "not_found")
+        // QUIRK: window.focus/window.close not_found data MINTS a window_ref
+        // for the nonexistent id (ControlCommandCoordinator+Window.swift:
+        // 129-135,155-161; ref() mints for ANY uuid).
+        || (matches!(method, "window.close" | "window.focus") && message == "Window not found")
 }
 
 fn decorate_lifecycle_result_refs_with(
@@ -20609,6 +21005,9 @@ mod tests {
 
     #[path = "pane_surface_lifecycle_red.rs"]
     mod pane_surface_lifecycle_red;
+
+    #[path = "window_lifecycle_red.rs"]
+    mod window_lifecycle_red;
 
     #[path = "surface_action_exhaustive_red.rs"]
     mod surface_action_exhaustive_red;

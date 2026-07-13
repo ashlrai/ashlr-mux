@@ -597,11 +597,11 @@ fn error(
 }
 
 #[derive(Clone)]
-struct Scope {
-    window_index: usize,
-    workspace_index: usize,
-    window_id: String,
-    workspace_id: String,
+pub(super) struct Scope {
+    pub window_index: usize,
+    pub workspace_index: usize,
+    pub window_id: String,
+    pub workspace_id: String,
 }
 
 fn workspace_contains_surface(
@@ -640,7 +640,7 @@ fn snapshot_contains_surface(snapshot: &AppSessionSnapshot, id: &str) -> bool {
 /// coordinator's `controlPaneRoutingResolvesTabManager` guard, which canonical
 /// pane.create runs BEFORE any input validation
 /// (ControlCommandCoordinator+Pane.swift:287-291).
-fn resolve_window_index(
+pub(super) fn resolve_window_index(
     snapshot: &AppSessionSnapshot,
     params: &Map<String, Value>,
     context: &LifecycleDispatchContext,
@@ -724,7 +724,7 @@ fn resolve_window_index(
     Ok(window_index)
 }
 
-fn scope(
+pub(super) fn scope(
     snapshot: &AppSessionSnapshot,
     params: &Map<String, Value>,
     context: &LifecycleDispatchContext,
@@ -990,7 +990,7 @@ fn public_owner_ids(
     (window_id, workspace_id)
 }
 
-fn dock_owner_from_workspace_selector(
+pub(super) fn dock_owner_from_workspace_selector(
     snapshot: &AppSessionSnapshot,
     params: &Map<String, Value>,
 ) -> Option<String> {
@@ -1203,7 +1203,22 @@ fn surface_list(
                             .as_ref()
                             .and_then(|startup| startup.tmux_start_command.clone())),
                     );
-                    object.insert("resume_binding".into(), Value::Null);
+                    // ONE shared payload builder with surface.resume.*
+                    // (canonical surfaceResumeBindingPayload rendered into
+                    // surface.list terminal rows,
+                    // ControlCommandCoordinator+Surface.swift:165-170).
+                    object.insert(
+                        "resume_binding".into(),
+                        super::window_lifecycle::resume_binding_payload(
+                            workspace
+                                .surface_resume_bindings
+                                .as_deref()
+                                .unwrap_or_default()
+                                .iter()
+                                .find(|row| row.surface_id == record.surface_id)
+                                .map(|row| &row.binding),
+                        ),
+                    );
                 }
                 SessionSurfaceKindSnapshot::Browser {
                     developer_tools_visible,

@@ -1,0 +1,670 @@
+{
+  "schema_version": 1,
+  "contract_id": "window_lifecycle",
+  "canonical_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+  "windows_audit_commit": "ae58a75e95425bff825cd7d90cb0319b90b43e29",
+  "windows_audit_branches": {
+    "windows-port_HEAD": "ae58a75e95425bff825cd7d90cb0319b90b43e29",
+    "parity/lifecycle-desktop-green": "e7e4a0e2da03739c42dbf9241239633291a076a8"
+  },
+  "scope": [
+    "product.window_lifecycle",
+    "v2:window.create",
+    "v2:window.close",
+    "v2:window.focus",
+    "v2:surface.refresh",
+    "v2:surface.resume.get",
+    "v2:surface.resume.set",
+    "v2:surface.resume.clear",
+    "cli:new-window",
+    "cli:close-window",
+    "cli:focus-window",
+    "cli:window",
+    "cli:surface-resume"
+  ],
+  "scope_count": 13,
+  "matrix_status_at_audit": {
+    "product.window_lifecycle": "missing",
+    "v2:window.create": "missing",
+    "v2:window.close": "missing",
+    "v2:window.focus": "missing",
+    "v2:surface.refresh": "missing",
+    "v2:surface.resume.get": "missing",
+    "v2:surface.resume.set": "missing",
+    "v2:surface.resume.clear": "missing",
+    "cli:new-window": "missing",
+    "cli:close-window": "missing",
+    "cli:focus-window": "missing",
+    "cli:window": "missing",
+    "cli:surface-resume": "missing"
+  },
+  "shared_canonical_rules": {
+    "capability_advertisement": "window.focus/window.create/window.close advertised in v2Capabilities at Sources/TerminalController.swift:2373-2375; surface.refresh at :2446; surface.resume.set/get/clear at :2448-2450 (all verified at pinned commit).",
+    "identity_refs": "uuid(params,key) accepts a UUID string OR a minted kind:N ref resolved through the handle registry (Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/ControlCommandCoordinator.swift:211-218). string() trims whitespace/newlines and treats whitespace-only as absent (:203-207). Responses pair *_id (UUID string or null via orNull :192-196) with *_ref minted by ref() (:184-187). QUIRK: ref(.window, someUUID) MINTS a ref for ANY uuid, including nonexistent windows, so not_found error data for window.focus/window.close carries a freshly minted window_ref for the invalid id (ControlCommandCoordinator+Window.swift:129-135,155-161).",
+    "routing_selectors": "routingSelectors builds {hasWindowIDParam, windowID, groupID, workspaceID, surfaceID: surface_id??terminal_id??tab_id, paneID} (ControlCommandCoordinator.swift:230-243). Precedence walked by resolveTabManager per the frozen pane_surface_lifecycle shared rules (Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/ControlRoutingSelectors.swift).",
+    "socket_focus_policy": "Every socket command runs inside withSocketCommandPolicy which pushes an allowsFocusMutation flag (Sources/TerminalController.swift:465-475 region). shouldSuppressSocketCommandActivation() is TRUE for every socket command (stack non-empty, :407-409). window.focus IS in focusIntentV2Methods (:253-275); window.create and window.close are NOT. explicitFocusParamV2Methods does NOT include any window.* method (Sources/TerminalController+MoveTabToNewWorkspace.swift:79-98). v1 focus_window IS in focusIntentV1Commands (:240-251); v1 new_window/close_window are not. MainWindowVisibilityController isActivationSuppressed = shouldSuppressSocketCommandActivation() && !socketCommandAllowsInAppFocusMutations() (Sources/AppDelegate.swift:876-886).",
+    "window_lifecycle_events": "publishCmuxWindowLifecycle(name, windowId, origin) publishes to CmuxEventBus with payload keys {windowId, workspaceId (selected), workspaceCount, selectedWorkspaceIndex, isKeyWindow, isMainWindow, origin} (Sources/CmuxLifecycleEventPublishing.swift:281-300). Emissions: window.created origin=create (AppDelegate.swift:8860), window.focused origin=focus_request (AppDelegate.swift:5697), window.closed origin=appkit_close (AppDelegate.swift:16270), window.keyed/window.unkeyed origin=appkit_key on AppKit key transitions (CmuxLifecycleEventPublishing.swift:264,276). NO socket-domain completion event is mapped for v2 window.create/close/focus or surface.refresh/resume.* (CmuxSocketEventMapper.swift:62-116 has no window.* mapping) and v1 new_window/focus_window/close_window are explicit no-op break cases (CmuxSocketEventMapper.swift:138-139).",
+    "threading": "window.list/window.current are worker-lane resolution reads with one controlResolveOnMain hop (ControlCommandCoordinator+Window.swift:49-121); window.focus/create/close and all surface.refresh/resume bodies run on the main-actor coordinator dispatch inside the active socket-command policy scope (ControlCommandCoordinator+Window.swift:11-33, TerminalControllerControlCommandContext.swift:38-45).",
+    "resume_unavailable_message": "surface.resume.* uses the DIFFERENT unavailable message 'cmux window is not available. Reopen the window and try again.' (Self.surfaceWindowUnavailableMessage, ControlCommandCoordinator+Surface.swift:79-80), not 'TabManager not available' used by surface.refresh.",
+    "sources": [
+      "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Window/ControlCommandCoordinator+Window.swift",
+      "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/ControlCommandCoordinator.swift:184-243",
+      "Sources/TerminalControllerControlCommandContext.swift",
+      "Sources/AppDelegate.swift:5693-5716,8624-8905,16232-16305",
+      "Sources/CmuxLifecycleEventPublishing.swift:258-300",
+      "Sources/CmuxSocketEventMapper.swift:62-145",
+      "Sources/App/MainWindowVisibilityController.swift:134-196",
+      "Sources/TerminalController.swift:240-275,395-450"
+    ]
+  },
+  "entries": [
+    {
+      "id": "product.window_lifecycle",
+      "kind": "product_behavior",
+      "sources": [
+        "Sources/AppDelegate.swift:8624-8905 (createMainWindow)",
+        "Sources/AppDelegate.swift:5693-5716 (focusMainWindow/closeMainWindow)",
+        "Sources/AppDelegate.swift:16232-16305 (shouldClose veto + unregisterMainWindow)",
+        "Sources/AppDelegate.swift:12831-12856 (handleQuitShortcutWarning)",
+        "Sources/App/MainWindowVisibilityController.swift:134-196",
+        "Sources/CmuxLifecycleEventPublishing.swift:258-300"
+      ],
+      "contract": {
+        "creation_defaults": "createMainWindow (AppDelegate.swift:8624-8905): window id = preferredWindowId ?? sessionSnapshot.windowId ?? fresh UUID via availableWindowIdForNewMainWindow (:8637-8638); new TabManager with ONE initial workspace (autoWelcomeIfNeeded when no initialTerminalInput, :8639-8645); sidebar visible=true width=SessionPersistencePolicy.defaultSidebarWidth unless snapshot (:8664-8680); styleMask [.titled,.closable,.miniaturizable,.resizable,.fullSizeContentView] (:8730); geometry precedence: session-snapshot frame > source-window content rect (current key window) > persisted geometry frame > defaultContentRect + center + Ghostty-style cascade from lastCascadePoint (:8745-8760,8784-8799); title hidden, titlebar transparent, isRestorable=false (cmux owns restoration, not AppKit) (:8777-8781); animationBehavior=.none; window.created event published after registerMainWindow (:8860); activation: full visibility-controller focus with .activateAllWindows UNLESS created under socket-command policy (see v2:window.create) (:8862-8874).",
+        "close_semantics": "closeMainWindow -> NSWindow.performClose (AppDelegate.swift:5702-5709). windowShouldClose = handleMainTerminalWindowShouldClose (:16232-16239): returns true (close proceeds) under XCTest, while terminating, or when >1 main windows exist; for the LAST window it invokes handleQuitShortcutWarning and returns FALSE (close vetoed). handleQuitShortcutWarning (:12831-12856): if quit confirmation not required -> NSApp.terminate immediately; else presents async quit-confirmation alert, terminating only on confirm. So last-window close is app-quit-or-veto, never a plain window close. unregisterMainWindow (:16241-16305): resets cascade point to closing frame, records closed-window history (unless suppressed/crash-diagnostic), captures window config frame + persists geometry (when not terminating), publishes window.closed, clears notifications for the window and its workspaces, repoints active TabManager to key-window context else first remaining, and saves the session snapshot (includeScrollback:false) unless terminating (:16297-16304).",
+        "focus_key_window": "focusMainWindow (AppDelegate.swift:5693-5700) -> MainWindowVisibilityController.focus(reason:.focusMainWindow): when activation suppressed only setActiveMainWindow; otherwise setActiveMainWindow, unhide app if hidden, deminiaturize, softShow, makeKeyAndOrderFront, then NSRunningApplication activate [.activateAllWindows] after ordering (MainWindowVisibilityController.swift:134-196). Returns true on both paths, so window.focused is published whenever the window id resolves. AppKit key transitions publish window.keyed/window.unkeyed (CmuxLifecycleEventPublishing.swift:264,276) and becoming key sets the active TabManager (:258-268).",
+        "session_persistence": "Window topology persists in SessionWindowSnapshot (windowId, tabManager tree, sidebar, configFrames); restore path recreates windows through createMainWindow(sessionWindowSnapshot:) preserving windowId, remapping closed-panel history when the id changes (AppDelegate.swift:8646-8662). Per-window geometry persists on close (:16255-16260). Surface resume bindings persist per terminal snapshot (Sources/SessionPersistence.swift:1388-1413).",
+        "multiwindow": "Each main window owns one TabManager; active TabManager pointer follows key window (AppDelegate.swift:16283-16293, CmuxLifecycleEventPublishing.swift:258-268). window.list orders by AppDelegate.listMainWindowSummaries with key/visible/workspace_count/selected_workspace per row (ControlCommandCoordinator+Window.swift:56-82)."
+      },
+      "adversarial": [
+        "Last-window window.close: v2/v1 reply is success but the window may stay open behind a quit-confirmation alert, or the whole app may terminate (AppDelegate.swift:16232-16239,12831-12856).",
+        "closeMainWindow(recordHistory:false) suppresses closed-window history via closedWindowHistorySuppressedWindowIds; a vetoed close removes the suppression again (AppDelegate.swift:5704-5706,8837-8846).",
+        "Window close of a remote-tmux window detaches (server survives) unless an explicit last-remote-workspace close marked kill-on-close (AppDelegate.swift:8809-8830).",
+        "Session snapshot is NOT saved per-window during app termination (would clobber the full snapshot) - only on individual window close (AppDelegate.swift:16297-16304).",
+        "Creating from a native-fullscreen source window temporarily sets fullScreenDisallowsTiling so the new window escapes the fullscreen Space (AppDelegate.swift:8741-8744,8876-8892)."
+      ],
+      "windows_gap": "missing product behavior. apps/desktop/src-tauri/src/window.rs (windows-port ae58a75e and parity/lifecycle-desktop-green e7e4a0e) has Tauri WebviewWindowBuilder creation, close, default-display and window-state listener plumbing (window.rs:355-366,376; green branch window.rs:298,397-439) but no window-id model exposed over the control socket, no window.created/focused/closed/keyed events, no last-window quit-confirmation semantics, and no per-window session snapshot restore parity."
+    },
+    {
+      "id": "v2:window.create",
+      "kind": "v2_method",
+      "sources": [
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Window/ControlCommandCoordinator+Window.swift:138-147",
+        "Sources/TerminalControllerControlCommandContext.swift:70-78",
+        "Sources/AppDelegate.swift:8624-8905",
+        "tests_v2/cmux.py:391-396"
+      ],
+      "request": {
+        "required": [],
+        "optional": [],
+        "notes": "windowCreate() takes NO params at all - request.params are ignored entirely (dispatch passes nothing, ControlCommandCoordinator+Window.swift:22-23,139). There is no focus param; window.create is NOT in explicitFocusParamV2Methods (Sources/TerminalController+MoveTabToNewWorkspace.swift:79-98)."
+      },
+      "errors": [
+        {
+          "order": 1,
+          "code": "internal_error",
+          "message": "Failed to create window",
+          "data": null,
+          "condition": "context nil or AppDelegate.createMainWindow returns nil (ControlCommandCoordinator+Window.swift:140-142)"
+        }
+      ],
+      "success": {
+        "keys": {
+          "window_id": "string (UUID, non-null)",
+          "window_ref": "string ref window:N (non-null)"
+        },
+        "source": "ControlCommandCoordinator+Window.swift:143-146"
+      },
+      "state_events_persistence": "Creates a full main window: fresh window UUID, new TabManager with one default workspace/terminal, default geometry/cascade (see product entry). Emits window.created (origin=create, AppDelegate.swift:8860). Because ANY socket command suppresses activation (shouldSuppressSocketCommandActivation, TerminalController.swift:407-409) and window.create is not focus-intent, the socket path always takes the orderFront-only branch: window is ordered front WITHOUT app activation and WITHOUT makeKey; setActiveMainWindow is skipped (socketCommandAllowsInAppFocusMutations()==false) (AppDelegate.swift:8862-8868). The seam then defensively calls setActiveTabManager(newManager) regardless (TerminalControllerControlCommandContext.swift:71-76), so the active-TabManager pointer moves to the new window even though OS focus does not. Persistence: window participates in the next session snapshot save; no immediate save on create. No socket-domain completion event (CmuxSocketEventMapper.swift has no window.create mapping).",
+      "adversarial": [
+        "Response contains ONLY window_id/window_ref - no workspace/surface identity of the created default workspace; callers must follow with window.current/workspace.list (tests_v2/cmux.py:391-396 relies on window_id only).",
+        "Repeated create cascades windows via lastCascadePoint; geometry copies the current key window's content rect when one exists (AppDelegate.swift:8745-8760).",
+        "Subsequent no-window_id commands route to the NEW window's TabManager because setActiveTabManager moved the caller default (TerminalControllerControlCommandContext.swift:71-76).",
+        "No key-window transfer: window.keyed is NOT emitted by socket window.create (activation suppressed)."
+      ],
+      "windows_gap": "missing: 'window.create' not present in apps/desktop/src-tauri/src/control_socket.rs SUPPORTED list or dispatch on windows-port (control_socket.rs:865-868,1142-1145) or parity/lifecycle-desktop-green (control_socket.rs:877-880,1193-1196). Tauri window creation exists in window.rs but is not socket-routed and mints no canonical window id/ref."
+    },
+    {
+      "id": "v2:window.close",
+      "kind": "v2_method",
+      "sources": [
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Window/ControlCommandCoordinator+Window.swift:149-162",
+        "Sources/TerminalControllerControlCommandContext.swift:80-82",
+        "Sources/AppDelegate.swift:5702-5709,16232-16305",
+        "tests_v2/cmux.py:401-402"
+      ],
+      "request": {
+        "required": [
+          "window_id: UUID string or window:N ref (uuid() helper, ControlCommandCoordinator.swift:211-218)"
+        ],
+        "optional": [],
+        "notes": "No routing fallback: absent/invalid window_id is terminal. No force/confirm param."
+      },
+      "errors": [
+        {
+          "order": 1,
+          "code": "invalid_params",
+          "message": "Missing or invalid window_id",
+          "data": null,
+          "condition": "window_id absent, non-string, whitespace-only, or neither UUID nor resolvable ref (ControlCommandCoordinator+Window.swift:151-153)"
+        },
+        {
+          "order": 2,
+          "code": "not_found",
+          "message": "Window not found",
+          "data": "{window_id: <requested uuid>, window_ref: <minted ref>}",
+          "condition": "context nil or no main window with that id (controlCloseWindow false; ControlCommandCoordinator+Window.swift:154-161). QUIRK: data mints a window_ref for the nonexistent id."
+        }
+      ],
+      "success": {
+        "keys": {
+          "window_id": "string (echoed UUID)",
+          "window_ref": "string ref"
+        },
+        "source": "ControlCommandCoordinator+Window.swift:155-160",
+        "notes": "Success means performClose was INVOKED on an existing window, not that the window closed (AppDelegate.swift:5702-5709)."
+      },
+      "state_events_persistence": "performClose runs the delegate chain: shouldClose veto for last window (quit-confirmation path, AppDelegate.swift:16232-16239,12831-12856); on actual close unregisterMainWindow records closed-window history, captures/persists geometry, publishes window.closed (origin=appkit_close), clears window+workspace notifications, repoints active TabManager, and saves session snapshot without scrollback (AppDelegate.swift:16241-16305). Remote-tmux workspaces detach (or kill if marked) on window close (AppDelegate.swift:8809-8830). No socket-domain completion event.",
+      "adversarial": [
+        "Last-window close: response ok:true while the close is vetoed pending quit confirmation, or the app terminates (no further socket replies).",
+        "Closing the window that owns the caller's active TabManager repoints active pointers to the key window else first remaining window (AppDelegate.swift:16283-16293).",
+        "Repeated close of the same id: second call returns not_found Window not found (window already unregistered).",
+        "window_id accepts a stale window:N ref: handle registry resolution can produce a UUID whose window is gone -> not_found with data.",
+        "Close is asynchronous UI teardown: window.closed event ordering vs the RPC reply is not guaranteed by the reply itself."
+      ],
+      "windows_gap": "missing: 'window.close' not routed in apps/desktop/src-tauri/src/control_socket.rs on either branch (windows-port control_socket.rs:865-868,1142-1145; green :877-880,1193-1196). window.rs closes Tauri windows directly (window.rs:376) with no socket contract, no last-window veto, no closed-window history/session-save hooks."
+    },
+    {
+      "id": "v2:window.focus",
+      "kind": "v2_method",
+      "sources": [
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Window/ControlCommandCoordinator+Window.swift:123-136",
+        "Sources/TerminalControllerControlCommandContext.swift:66-68",
+        "Sources/AppDelegate.swift:5693-5700",
+        "Sources/App/MainWindowVisibilityController.swift:134-196",
+        "Sources/TerminalController.swift:253-275 (focusIntentV2Methods includes window.focus)",
+        "tests_v2/cmux.py:398-399",
+        "cmuxTests/VMSSHCommandTests.swift:169,245"
+      ],
+      "request": {
+        "required": [
+          "window_id: UUID string or window:N ref"
+        ],
+        "optional": [],
+        "notes": "No routing fallback; no focus bool (the method IS the focus intent)."
+      },
+      "errors": [
+        {
+          "order": 1,
+          "code": "invalid_params",
+          "message": "Missing or invalid window_id",
+          "data": null,
+          "condition": "window_id absent/unresolvable (ControlCommandCoordinator+Window.swift:125-127)"
+        },
+        {
+          "order": 2,
+          "code": "not_found",
+          "message": "Window not found",
+          "data": "{window_id, window_ref}",
+          "condition": "controlFocusWindow false: no main window with that id (ControlCommandCoordinator+Window.swift:128-135). Same minted-ref-in-error-data quirk as window.close."
+        }
+      ],
+      "success": {
+        "keys": {
+          "window_id": "string (echoed UUID)",
+          "window_ref": "string ref"
+        },
+        "source": "ControlCommandCoordinator+Window.swift:129-134"
+      },
+      "state_events_persistence": "window.focus is in focusIntentV2Methods so isActivationSuppressed is false for this command (TerminalController.swift:253-275,407-413; AppDelegate.swift:878-882): MainWindowVisibilityController.focus(reason:.focusMainWindow) performs setActiveMainWindow, app unhide if hidden, deminiaturize if miniaturized, softShow, makeKeyAndOrderFront, then NSRunningApplication activate [.activateAllWindows] AFTER window ordering (MainWindowVisibilityController.swift:134-196). Emits window.focused (origin=focus_request) whenever didFocus (focus() returns true on every path) (AppDelegate.swift:5693-5700). The subsequent AppKit key transition publishes window.keyed and moves the active TabManager (CmuxLifecycleEventPublishing.swift:258-268). No persistence effect. No socket-domain completion event.",
+      "adversarial": [
+        "This is the ONLY window.* mutation allowed to steal OS focus; implementers must gate it through the focus-intent policy, not honor focus on create/close.",
+        "Focusing an already-key window still publishes window.focused (no key-change guard in focusMainWindow, AppDelegate.swift:5693-5700).",
+        "Focusing a miniaturized window deminiaturizes it with activation BEFORE window ordering (MainWindowVisibilityController.swift:160-175).",
+        "Focusing while the app is hidden unhides the whole app (:151-155).",
+        "v2 window.focus does NOT itself call setActiveTabManager (relies on becoming key); v1 focus_window explicitly does (TerminalController.swift:11899-11910) - subtle divergence between the two wire protocols in headless/no-key environments."
+      ],
+      "windows_gap": "missing: not routed in control_socket.rs on either branch. OS-level key-window activation/foregrounding is a candidate platform_equivalent (Win32 SetForegroundWindow restrictions); the event emission, id resolution, error order, and active-window model are headlessly testable."
+    },
+    {
+      "id": "v2:surface.refresh",
+      "kind": "v2_method",
+      "sources": [
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Surface/ControlCommandCoordinator+Surface2.swift:75-101",
+        "Sources/TerminalController+ControlSurfaceContext3.swift:77-110",
+        "tests_v2/cmux.py:694-699"
+      ],
+      "request": {
+        "required": [],
+        "optional": [
+          "shared routing selectors: window_id/group_id/workspace_id/surface_id(terminal_id/tab_id)/pane_id (routingSelectors, ControlCommandCoordinator.swift:230-243)"
+        ],
+        "notes": "No per-surface targeting: refreshes EVERY terminal surface in the resolved workspace (or resolved window-Dock). surface_id only influences routing/workspace resolution."
+      },
+      "errors": [
+        {
+          "order": 1,
+          "code": "unavailable",
+          "message": "TabManager not available",
+          "data": null,
+          "condition": "routing does not resolve a TabManager (ControlCommandCoordinator+Surface2.swift:77-80, drift-net duplicate at :83-85)"
+        },
+        {
+          "order": 2,
+          "code": "not_found",
+          "message": "Workspace not found",
+          "data": null,
+          "condition": "resolveSurfaceWorkspace nil and no dock route (ControlCommandCoordinator+Surface2.swift:86-87; TerminalController+ControlSurfaceContext3.swift:94-96)"
+        }
+      ],
+      "success": {
+        "keys": {
+          "window_id": "string|null",
+          "window_ref": "string ref|null",
+          "workspace_id": "string (non-null)",
+          "workspace_ref": "string ref",
+          "refreshed": "int (count of TERMINAL panels force-refreshed; browser/other kinds excluded)"
+        },
+        "source": "ControlCommandCoordinator+Surface2.swift:88-95"
+      },
+      "state_events_persistence": "Dock branch first: when routing resolves a window Dock, iterates dock.panels TerminalPanels calling surface.forceRefresh(reason:'terminalController.v2SurfaceRefresh.windowDock') and returns dock workspaceId + dockResultWindowId (TerminalController+ControlSurfaceContext3.swift:79-93). Workspace branch iterates ws.panels TerminalPanels with reason 'terminalController.v2SurfaceRefresh' (:94-110). Pure runtime redraw side effect: no model mutation, no event, no persistence. forceRefresh is a typing-latency-sensitive hot path (repo CLAUDE.md pitfall).",
+      "adversarial": [
+        "refreshed counts only terminal panels: a workspace of 3 browsers + 1 terminal returns refreshed=1.",
+        "Empty workspace (no terminal panels) succeeds with refreshed=0 - not an error.",
+        "Dock routing wins over the workspace branch when the routing selects a dock container; refreshed then counts dock terminals only.",
+        "window_id present but unresolved is terminal via shared routing (unavailable), never falls through to another window."
+      ],
+      "windows_gap": "missing exact method: only a noncanonical 'surface.refresh_all' exists on both branches (windows-port control_socket.rs:977,1299; green control_socket.rs:995,1350). It has a different name, no canonical routing, and no {window/workspace ids+refs, refreshed} payload."
+    },
+    {
+      "id": "v2:surface.resume.set",
+      "kind": "v2_method",
+      "sources": [
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Surface/ControlCommandCoordinator+Surface3.swift:10-77,120-145",
+        "Sources/TerminalController+ControlSurfaceContext4.swift:16-70,90-160,158-198",
+        "Sources/Workspace.swift:4719-4738",
+        "cmuxTests/AppDelegateIssue2907RoutingTests.swift:575-950,1343-1406",
+        "cmuxTests/AppDelegateSurfaceResumeTerminalIdTests.swift:47-73"
+      ],
+      "request": {
+        "required": [
+          "command: raw string, trimmed whitespace/newlines, must be non-empty (ControlCommandCoordinator+Surface3.swift:42-46)"
+        ],
+        "optional": [
+          "target selectors: surface_id, then terminal_id, then tab_id (explicit target precedence, :74-77); window_id/workspace_id as scope",
+          "name, kind, cwd: trimmed raw strings",
+          "checkpoint_id (snake) then checkpointId (camel) - snake wins (:56-57)",
+          "source: trimmed; QUIRK 'process-detected' is rewritten to 'manual' before storage (publicResumeSource, :28-32)",
+          "environment: string map",
+          "auto_resume: bool, HONORED ONLY when source=='agent-hook', else forced false (:60)"
+        ],
+        "target_resolution": "resolveSurfaceResumeTarget (TerminalController+ControlSurfaceContext4.swift:22-70), in order: (1) explicit target + workspace_id -> surface must be a terminal panel IN that workspace of the routing-resolved TabManager, else fail; (2) explicit target + resolved window_id -> search only that window's workspaces; (3) explicit target alone -> GLOBAL AppDelegate.locateSurface across all windows; (4) fallbackTabManager workspace scan; (5) routing-resolved workspace containing the surface; no explicit target -> resolved workspace's focusedPanelId, which must be a terminal."
+      },
+      "errors": [
+        {
+          "order": 1,
+          "code": "invalid_params",
+          "message": "Missing or invalid <key>",
+          "data": null,
+          "condition": "for each of window_id, workspace_id, surface_id, terminal_id, tab_id IN THAT ORDER: present-non-null but unresolvable as UUID/ref (surfaceResumeTargetValidationError, ControlCommandCoordinator+Surface3.swift:14-25). Pinned by test: malformed surface_id/terminal_id/tab_id never falls back to the focused surface (AppDelegateIssue2907RoutingTests.swift:587-640)."
+        },
+        {
+          "order": 2,
+          "code": "unavailable",
+          "message": "cmux window is not available. Reopen the window and try again.",
+          "data": null,
+          "condition": "routing does not resolve a TabManager (:39-41)"
+        },
+        {
+          "order": 3,
+          "code": "invalid_params",
+          "message": "Missing command",
+          "data": null,
+          "condition": "command absent or trims to empty (:42-46)"
+        },
+        {
+          "order": 4,
+          "code": "not_found",
+          "message": "Surface not found",
+          "data": null,
+          "condition": "target resolution fails (wrong window scope, non-terminal surface, no focused terminal) (surfaceResumeResult .surfaceNotFound, :124-125; seam :177-183). Pinned: explicit window_id + surface from another window fails with no mutation (AppDelegateIssue2907RoutingTests.swift:560-585); workspace_id mismatch after move fails both workspaces untouched (:1359-1406)."
+        },
+        {
+          "order": 5,
+          "code": "invalid_params",
+          "message": "Resume command is empty",
+          "data": null,
+          "condition": "Workspace.setSurfaceResumeBinding false: inlineStartupInput empty/whitespace (Workspace.swift:4720-4726; mapped at ControlCommandCoordinator+Surface3.swift:126-127)"
+        },
+        {
+          "order": 6,
+          "code": "internal_error",
+          "message": "Failed to set resume binding",
+          "data": null,
+          "condition": "context nil fallback .setFailed (:66-71,128-129)"
+        }
+      ],
+      "success": {
+        "keys": {
+          "window_id": "string|null",
+          "window_ref": "string ref|null",
+          "workspace_id": "string",
+          "workspace_ref": "string ref",
+          "pane_id": "string|null",
+          "pane_ref": "string ref|null",
+          "surface_id": "string (resolved target)",
+          "surface_ref": "string ref",
+          "cleared": "bool (false for set)",
+          "resume_binding": "object|null: {name, kind, command, cwd, checkpoint_id, source, environment (object|null), auto_resume (bool), approval_policy, approval_record_id, updated_at (double epoch)} with orNull explicit nulls (surfaceResumeBindingPayload, ControlCommandCoordinator+Surface3.swift:131-144,147-167)"
+        },
+        "source": "ControlCommandCoordinator+Surface3.swift:130-145"
+      },
+      "state_events_persistence": "Stores binding in workspace.surfaceResumeBindingsByPanelId keyed by terminal panel id (Workspace.swift:4719-4727) after running the approval flow: SurfaceResumeApprovalStore matching/stored-approval application, promptless CLI-manual path, and a BLOCKING NSAlert proposal prompt (Auto-Restore/Ask Each Time/Keep Manual) that is bypassed under XCTest or off-main (TerminalController+ControlSurfaceContext4.swift:90-155). Binding persists in session snapshots (SessionPersistence.swift:1388-1413) and is rendered in surface.list terminal rows as resume_binding (ControlCommandCoordinator+Surface.swift:165-170). updatedAt is stamped at request time (Date().timeIntervalSince1970, TerminalController+ControlSurfaceContext4.swift:170-179). No socket-domain completion event; no focus change.",
+      "adversarial": [
+        "auto_resume=true from a non-agent-hook source is silently stored as false (pinned: AppDelegateIssue2907RoutingTests.swift:784-833 'CannotEnableAutoResumeFromSocket'/'AllowsAgentHookAutoResume').",
+        "source='process-detected' is rewritten to 'manual' (ControlCommandCoordinator+Surface3.swift:28-32).",
+        "checkpointId camelCase accepted only when checkpoint_id absent (:56-57).",
+        "Explicit surface target with window_id restricts to that window; without any scope it locates GLOBALLY across windows (TerminalController+ControlSurfaceContext4.swift:32-58).",
+        "Approval flow can mutate the stored binding (approval_policy/approval_record_id/auto_resume) relative to the requested inputs (:105-118)."
+      ],
+      "windows_gap": "missing: no surface.resume.* routing in control_socket.rs on either branch. parity/lifecycle-desktop-green carries a read-only resume_binding surface.list projection from startup metadata / restorable-agent index (control_socket.rs:16230,16328; pane_surface_lifecycle.rs:1160) but no set/approval-store/persist mutation path."
+    },
+    {
+      "id": "v2:surface.resume.get",
+      "kind": "v2_method",
+      "sources": [
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Surface/ControlCommandCoordinator+Surface3.swift:79-95,120-145",
+        "Sources/TerminalController+ControlSurfaceContext4.swift:199-222",
+        "cmuxTests/AppDelegateSurfaceResumeTerminalIdTests.swift:57-64"
+      ],
+      "request": {
+        "required": [],
+        "optional": [
+          "same target/scope selectors and validation as surface.resume.set (no command/name/kind/etc.)"
+        ]
+      },
+      "errors": [
+        {
+          "order": 1,
+          "code": "invalid_params",
+          "message": "Missing or invalid <key>",
+          "data": null,
+          "condition": "same present-but-unresolvable check, same key order (ControlCommandCoordinator+Surface3.swift:82,14-25)"
+        },
+        {
+          "order": 2,
+          "code": "unavailable",
+          "message": "cmux window is not available. Reopen the window and try again.",
+          "data": null,
+          "condition": "routing does not resolve a TabManager (:83-85)"
+        },
+        {
+          "order": 3,
+          "code": "not_found",
+          "message": "Surface not found",
+          "data": null,
+          "condition": "target resolution fails (:86-94 -> .surfaceNotFound)"
+        }
+      ],
+      "success": {
+        "keys": "same 10-key shape as resume.set; cleared=false; resume_binding is the stored binding object or explicit null when no binding exists",
+        "source": "ControlCommandCoordinator+Surface3.swift:130-145; TerminalController+ControlSurfaceContext4.swift:199-222"
+      },
+      "state_events_persistence": "Read-only: no mutation, no event, no approval flow, no focus change.",
+      "adversarial": [
+        "No binding is SUCCESS with resume_binding:null, not not_found.",
+        "Same malformed-selector rejection and window/workspace scoping as set (shared resolver)."
+      ],
+      "windows_gap": "missing: not routed on either branch (green branch exposes resume_binding only inside surface.list rows, not via surface.resume.get)."
+    },
+    {
+      "id": "v2:surface.resume.clear",
+      "kind": "v2_method",
+      "sources": [
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Surface/ControlCommandCoordinator+Surface3.swift:97-118,120-145",
+        "Sources/TerminalController+ControlSurfaceContext4.swift:224-288",
+        "cmuxTests/AppDelegateIssue2907RoutingTests.swift:880-950 (checkpoint guard)",
+        "cmuxTests/AppDelegateSurfaceResumeTerminalIdTests.swift:65-73"
+      ],
+      "request": {
+        "required": [],
+        "optional": [
+          "same target/scope selectors as set/get",
+          "checkpoint_id then checkpointId: expected-checkpoint guard",
+          "source: expected-source guard"
+        ]
+      },
+      "errors": [
+        {
+          "order": 1,
+          "code": "invalid_params",
+          "message": "Missing or invalid <key>",
+          "data": null,
+          "condition": "same selector validation and key order (:100,14-25)"
+        },
+        {
+          "order": 2,
+          "code": "unavailable",
+          "message": "cmux window is not available. Reopen the window and try again.",
+          "data": null,
+          "condition": "routing does not resolve a TabManager (:101-103)"
+        },
+        {
+          "order": 3,
+          "code": "not_found",
+          "message": "Surface not found",
+          "data": null,
+          "condition": "target resolution fails (:104-112 default .surfaceNotFound)"
+        }
+      ],
+      "success": {
+        "keys": "same 10-key shape. Guard MISS (expected checkpoint_id != current binding checkpointId, checked first; else expected source != current binding source) returns SUCCESS with cleared=false and the UNTOUCHED current binding (TerminalController+ControlSurfaceContext4.swift:242-268). Guard pass (or no guards) removes the binding and returns cleared=true, resume_binding=null (:269-288).",
+        "source": "ControlCommandCoordinator+Surface3.swift:130-145"
+      },
+      "state_events_persistence": "Removes the binding from workspace.surfaceResumeBindingsByPanelId (Workspace.swift:4731-4733); no event; persisted snapshot drops the binding on next save. clearSurfaceResumeBinding's bool (whether a binding existed) is DISCARDED - clearing an already-clear surface still reports cleared=true (:269-288 `_ =`).",
+      "adversarial": [
+        "cleared=false is a SUCCESS response (guard miss), not an error - callers must inspect the flag (pinned: AppDelegateIssue2907RoutingTests.swift:880-950 keeps different-checkpoint binding).",
+        "checkpoint guard evaluated before source guard; both must match when both supplied.",
+        "Clearing a surface with no binding: guards compare against nil binding fields; a supplied checkpoint_id mismatches nil -> cleared=false; with NO guards it 'clears' nothing and still returns cleared=true, resume_binding=null.",
+        "Same alias precedence (surface_id > terminal_id > tab_id) and checkpointId camel fallback as set."
+      ],
+      "windows_gap": "missing: not routed on either branch."
+    },
+    {
+      "id": "cli:new-window",
+      "kind": "cli_command",
+      "sources": [
+        "CLI/cmux.swift:4294-4296 (dispatch)",
+        "CLI/cmux.swift:15477-15484 (help)",
+        "Sources/TerminalController.swift:1931-1932,11912-11921 (v1 handler)"
+      ],
+      "usage": "cmux new-window",
+      "wire": "v1 socket command `new_window` (no args) via sendV1Command (CLI/cmux.swift:4295).",
+      "flags": "none; takes no options. --json has NO effect (response printed raw, unlike current-window which json-wraps; CLI/cmux.swift:4286-4296).",
+      "output": {
+        "success": "prints the raw v1 reply: `OK <window-uuid>` (TerminalController.swift:11919-11920), exit 0",
+        "failure": "v1 `ERROR: Failed to create window` (TerminalController.swift:11913-11915) -> CLIError -> stderr, exit nonzero"
+      },
+      "backend_behavior": "v1 newWindow(): AppDelegate.createMainWindow() then setActiveTabManager(newManager) (TerminalController.swift:11912-11921). new_window is NOT in focusIntentV1Commands (TerminalController.swift:240-251) so activation is suppressed - same orderFront-only semantics as v2 window.create. No v1 completion event (CmuxSocketEventMapper.swift:138).",
+      "adversarial": [
+        "Output shape differs from v2: `OK <uuid>` text line, not JSON; a --json flag is silently ignored for this command.",
+        "Trailing arguments are ignored (no arg validation in the dispatch case)."
+      ],
+      "windows_gap": "classified only: crates/cmux-cli/src/classify.rs:390,523 lists new-window in TOP_LEVEL_COMMAND_NAMES and SUBCOMMAND_USAGE_COMMANDS; dispatch.rs:602-608 covers only the usage-help header path. No v1 `new_window` frame mapping, no output formatting, no backend route (desktop control socket has no v1 layer and no window.create)."
+    },
+    {
+      "id": "cli:focus-window",
+      "kind": "cli_command",
+      "sources": [
+        "CLI/cmux.swift:4298-4303 (dispatch)",
+        "CLI/cmux.swift:6072-6101 (normalizeWindowHandle)",
+        "CLI/cmux.swift:15486-15498 (help)",
+        "Sources/TerminalController.swift:1928-1929,11899-11910 (v1 handler)"
+      ],
+      "usage": "cmux focus-window --window <id|ref|index>",
+      "flags": "--window (required). QUIRK: the GLOBAL --window override is NOT consulted; only the per-command flag (optionValue(commandArgs), CLI/cmux.swift:4299).",
+      "arg_resolution": "normalizeWindowHandle (CLI/cmux.swift:6072-6101): UUID passes through; window:N ref matched against a live `window.list` v2 call (throws `Window not found: <ref>` when absent); bare integer treated as window.list index (throws `Window index not found`); other text throws `Invalid window handle: <raw> (expected UUID, ref like window:1, or index)`. Missing/blank --window -> CLIError `focus-window requires --window` (:4299-4301).",
+      "wire": "v1 `focus_window <resolved-window-uuid-or-ref-line>` (CLI/cmux.swift:4302). Server side parses a UUID only: `ERROR: Invalid window id` for non-UUID text, `ERROR: Window not found` for unknown windows (TerminalController.swift:11899-11903).",
+      "output": {
+        "success": "prints `OK`, exit 0 (TerminalController.swift:11910)",
+        "failure": "CLIError/ERROR text to stderr, exit nonzero"
+      },
+      "backend_behavior": "focus_window IS in focusIntentV1Commands (TerminalController.swift:240-243): AppDelegate.focusMainWindow with full activation (makeKeyAndOrderFront + app activate), publishes window.focused, then explicitly setActiveTabManager(windowTabManager) (TerminalController.swift:11899-11910).",
+      "adversarial": [
+        "Ref/index resolution happens CLIENT-side via v2 window.list; normalizeWindowHandle for a matched ref returns the item's id (or ref when id missing) - the v1 server accepts only a UUID, so a ref-only return would fail server-side with `ERROR: Invalid window id`.",
+        "Index handles are positional and racy: window.list order may change between the resolve call and the focus call."
+      ],
+      "windows_gap": "classified only (classify.rs:353,524); no handle-resolution helper, no v1 mapping, no backend focus route or window.focused event on either branch."
+    },
+    {
+      "id": "cli:close-window",
+      "kind": "cli_command",
+      "sources": [
+        "CLI/cmux.swift:4305-4310 (dispatch)",
+        "CLI/cmux.swift:15499-15510 (help)",
+        "Sources/TerminalController.swift:1934-1935,11922-11928 (v1 handler)"
+      ],
+      "usage": "cmux close-window --window <id|ref|index>",
+      "flags": "--window (required); same normalizeWindowHandle resolution and same global-override-ignored quirk as focus-window (CLI/cmux.swift:4306-4308). Missing -> CLIError `close-window requires --window`.",
+      "wire": "v1 `close_window <window-id>` (CLI/cmux.swift:4309). Server: `ERROR: Invalid window id` (non-UUID), `ERROR: Window not found`, else `OK` after performClose is invoked (TerminalController.swift:11922-11928).",
+      "output": {
+        "success": "prints `OK`, exit 0",
+        "failure": "error text, exit nonzero"
+      },
+      "backend_behavior": "Identical last-window semantics as v2 window.close: `OK` is returned as soon as performClose is called; the last window's close may be vetoed into a quit-confirmation dialog or terminate the app (AppDelegate.swift:5702-5709,16232-16239). close_window is not focus-intent. No v1 completion event.",
+      "adversarial": [
+        "`cmux close-window` on the last window prints OK while the app shows a quit dialog (or exits, dropping the socket).",
+        "Closing the window that hosted the caller's CMUX_* ambient context leaves subsequent ambient-target CLI calls pointing at a dead window."
+      ],
+      "windows_gap": "classified only (classify.rs:324,525); no v1 mapping/backend route."
+    },
+    {
+      "id": "cli:window",
+      "kind": "cli_command",
+      "sources": [
+        "CLI/cmux.swift:4363-4370 (dispatch)",
+        "CLI/cmux.swift:7894-7920 (runWindowNamespace)",
+        "CLI/cmux.swift:8050-8110 (runWindowDisplaysCommand/runWindowDisplayCommand incl. usage error at 8084)",
+        "CLI/cmux.swift:3244-3247,7830-7874 (pre-socket `window default-display`)",
+        "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Window/ControlCommandCoordinator+Window.swift:164-238 (window.displays/window.display)"
+      ],
+      "usage": "cmux window <displays|display|default-display> ...",
+      "subcommands": {
+        "displays": "v2 window.displays; --json prints raw payload; text prints `<index>: <name>` plus `  (main)` suffix; empty -> `No displays found.` (CLI/cmux.swift:8050-8070 region).",
+        "display": "cmux window display \"<name>\" [--list|-l]. --list/-l aliases displays. First non-flag positional is the display name; missing -> CLIError `window display requires a display name. Usage: cmux window display \"LG HDR 4K\"  (list names with: cmux window displays)` (CLI/cmux.swift:8084). Params {display: name} plus window_id when the GLOBAL --window override is present (normalized; here the global override IS honored - opposite of focus/close-window) (:8087-8091). Calls v2 window.display; text output `Moved <n> window(s) to <display>.`; --json prints id-formatted payload.",
+        "default-display": "handled PRE-SOCKET (no app connection): reads/writes the shared dev default-display setting file; `--clear` clears; missing name -> CLIError `window default-display requires a display name, or --clear` (CLI/cmux.swift:3244-3247,7830-7874). Applied to new windows only in DEBUG builds (Sources/AppDelegate.swift:8894-8900 DevWindowDisplayDefault)."
+      },
+      "errors_output": "No subcommand -> `window requires a subcommand. Try: display, displays, default-display` (CLI/cmux.swift:7901-7902). Unknown subcommand -> `Unknown window subcommand: <sub>. Try: display, displays` (:7917-7918) - QUIRK: the unknown-subcommand hint omits default-display while the no-subcommand hint includes it.",
+      "server_side": "window.display: invalid_params `Missing or invalid display` when display param absent; explicit window_id branch -> success {display, window_id, window_ref, moved:[id]} or not_found `Window not found` (data {window_id, window_ref}) when the window is missing, else not_found `Display not found: <query>` with data {requested, available:[names]}; all-windows branch -> {display, moved:[ids]} or the same display-not-found error (ControlCommandCoordinator+Window.swift:191-238).",
+      "adversarial": [
+        "canonical_cli.json lists --workspace and --json as significant flags for `window`; --workspace has NO parse site in runWindowNamespace/display paths at the pinned commit (extraction noise) - only --json, --window (global), --list/-l, --clear are real.",
+        "Window-not-found vs display-not-found error order in window.display: window existence is checked only AFTER the move fails (controlMoveWindow nil -> check controlWindowExists) (ControlCommandCoordinator+Window.swift:198-215).",
+        "Display name matching is a server-side query string; the CLI passes it verbatim (quoted names with spaces)."
+      ],
+      "windows_gap": "Partially present: window.displays/window.display ARE routed in apps/desktop/src-tauri/src/control_socket.rs on both branches (windows-port :867-868,1144-1145; green :879-880,1195-1196) - payload/error parity unverified. CLI `window` command: classify.rs:147,861-869 classifies `window default-display` pre-socket (WindowDefaultDisplay) per memory of the classify slice, but displays/display subcommand execution, output formatting, and v2 mapping are not implemented in cmux-cli."
+    },
+    {
+      "id": "cli:surface-resume",
+      "kind": "cli_command",
+      "sources": [
+        "CLI/cmux.swift:4611-4627 (dispatch: `surface` -> runSurfaceCommand with `resume` subcommand; `surface-resume` -> runSurfaceResumeCommand)",
+        "CLI/cmux.swift:6563-6662 (runSurfaceResumeCommand)",
+        "CLI/cmux.swift:6663-6759 (pre-socket value-option validation)",
+        "CLI/cmux.swift:6760-6812 (surfaceResumeTarget + cliShellQuote)",
+        "CLI/cmux.swift:16234-16262 (help, shared by `surface` and `surface-resume`)"
+      ],
+      "usage": "cmux surface resume set [flags] -- <argv...> | cmux surface resume set [flags] --shell <command> | cmux surface resume show|get [--json] [flags] | cmux surface resume clear [flags]  (also invocable as `cmux surface-resume <sub> ...`)",
+      "subcommands": "first arg lowercased; DEFAULT is `show` when no args (CLI/cmux.swift:6570). set / show / get (alias of show) / clear; anything else -> CLIError `Unsupported surface resume subcommand: <sub>` (:6659-6660).",
+      "flags": {
+        "target (all subcommands)": "--workspace, --surface, --window (surfaceResumeTargetValueOptions, CLI/cmux.swift:6730). --window falls back to the GLOBAL --window override (:6786).",
+        "set": "--name, --kind, --checkpoint, --checkpoint-id (takes precedence), --source (default 'cli'), --cwd (default $PWD env else FileManager cwd), --shell <command>, or `-- <argv...>` terminator (:6580-6617).",
+        "clear": "--checkpoint / --checkpoint-id (precedence), --source (:6641-6651).",
+        "note": "canonical_cli.json lists `-t` and `--session` for surface-resume; NO parse site exists in runSurfaceResumeCommand/surfaceResumeTarget at the pinned commit (those flags belong to tmux-compat/vm commands, CLI/cmux.swift:22689,11432) - extraction noise, do not implement."
+      },
+      "target_resolution": "surfaceResumeTarget (CLI/cmux.swift:6773-6808): parses --workspace/--surface/--window before `--`; ambient env defaults: CMUX_SURFACE_ID used when no --surface/--workspace/--window given; CMUX_WORKSPACE_ID used only when no --surface, no implicit surface, and no window; explicit --window (or global override) suppresses ambient env. Handles normalized via normalizeWindowHandle/normalizeWorkspaceHandle/normalizeSurfaceHandle (client-side ref/index resolution) into params window_id/workspace_id/surface_id.",
+      "pre_socket_validation": "validateSurfaceResumeValueOptions runs BEFORE any socket call: every recognized value option must be followed by a value that is not `--`, not another option name, and not blank -> CLIError `surface resume <sub>: <flag> requires a value` (:6737-6759). set additionally pre-validates the --shell/argv token contract (:6712-6728).",
+      "set_command_construction": "--shell wins: any leftover token (before or after --) -> CLIError `surface resume set: unexpected argument '<tok>' after --shell. Quote the full shell command or use -- <argv...>`; command = trimmed shell string. Without --shell: tokens after `--` (or remaining tokens) become argv, each single-quoted via cliShellQuote (`'` -> `'\\''`, CLI/cmux.swift:6810-6812) and space-joined; argv present + stray pre-`--` token -> `unexpected argument '<tok>' before --`; empty -> `surface resume set requires --shell <command> or -- <argv...>`; final empty command -> `surface resume set requires a non-empty command` (:6597-6615).",
+      "wire": "set -> v2 surface.resume.set with params {target ids, name?, kind?, checkpoint_id?, source (always sent, default 'cli'), cwd (always sent), command}; show/get -> surface.resume.get; clear -> surface.resume.clear with optional checkpoint_id/source (CLI/cmux.swift:6618-6657).",
+      "output": {
+        "set": "printV2Payload fallbackText `OK` (json/id-format aware) (:6618-6619)",
+        "show/get": "--json prints id-formatted payload; else prints the binding command string, or `No resume binding` when resume_binding null/command empty (:6629-6638)",
+        "clear": "printV2Payload fallbackText `OK` (:6653-6656)",
+        "errors": "CLIError/backend error -> stderr, exit nonzero"
+      },
+      "adversarial": [
+        "Bare `cmux surface-resume` (no subcommand) is `show`, hitting the focused surface via ambient/env resolution.",
+        "set ALWAYS sends source (default 'cli') and cwd (default caller $PWD) even when flags are omitted - the server-side approval store keys off source.",
+        "argv mode shell-quotes every token: `-- opencode --session x` becomes `'opencode' '--session' 'x'` as the stored command string.",
+        "--checkpoint-id silently beats --checkpoint when both given (set and clear).",
+        "Explicit --window suppresses BOTH ambient CMUX_SURFACE_ID and CMUX_WORKSPACE_ID (server resolves the window's focused terminal)."
+      ],
+      "windows_gap": "classified only (classify.rs:460,569 lists surface-resume; help text via SUBCOMMAND_USAGE). No target-resolution helpers, no argv quoting/`--` contract, no v2 mapping, no output formatting, no backend surface.resume.* to call on either branch."
+    }
+  ],
+  "exact_error_and_payload_reference": {
+    "purpose": "The entry summaries do not authorize approximate strings/shapes. Red tests must transcribe byte-for-byte from these pinned-commit sources.",
+    "sources": [
+      "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Window/ControlCommandCoordinator+Window.swift",
+      "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Surface/ControlCommandCoordinator+Surface2.swift:75-101",
+      "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Surface/ControlCommandCoordinator+Surface3.swift:10-167",
+      "Sources/TerminalController+ControlSurfaceContext4.swift:16-288",
+      "Sources/TerminalControllerControlCommandContext.swift:38-115",
+      "Sources/AppDelegate.swift:5693-5716,8624-8905,12831-12856,16232-16305",
+      "Sources/TerminalController.swift:11863-11950 (v1 window handlers)",
+      "CLI/cmux.swift:4285-4310,4363-4370,4611-4627,6072-6135,6563-6812,7894-8110,15477-15510,16234-16262"
+    ]
+  },
+  "proposed_red_test_build_scopes": [
+    {
+      "scope": "apps/desktop/src-tauri (control_socket transition layer)",
+      "targets": "Route window.create/window.close/window.focus, surface.refresh, surface.resume.set/get/clear in control_socket.rs. Red tests in apps/desktop/src-tauri/src/control_socket/tests/ (pattern: pane_surface_lifecycle_red.rs on parity/lifecycle-desktop-green): capability advertisement, exact error code/message/order (incl. the two distinct unavailable messages and the minted-ref-in-not_found-data quirk), exact success key sets with explicit nulls, resume target-resolution matrix (surface_id/terminal_id/tab_id aliases, window/workspace scoping, malformed-selector rejection BEFORE routing, global locate), checkpoint/source clear guards with cleared flag semantics, auto_resume agent-hook gate, process-detected->manual rewrite, surface.refresh terminal-only count, window lifecycle event emission (window.created/focused/closed with payload keys), last-window close veto seam (injectable confirmation), focus-intent policy gating (create/close never activate; focus does)."
+    },
+    {
+      "scope": "cmux-core / session model crates (whatever owns workspace/surface snapshots on windows-port)",
+      "targets": "Authoritative per-window model: window id registry + ref minting, active-window pointer transitions on create/close/key, closed-window history suppression flag, session snapshot save-on-window-close (no scrollback) vs termination path, per-surface resume-binding storage keyed by terminal surface with persistence round-trip and non-terminal rejection (Workspace.swift:4719-4738 parity), approval-store state machine (stored approval application, promptless CLI-manual, prompt bypass under tests)."
+    },
+    {
+      "scope": "crates/cmux-cli",
+      "targets": "Parser/mapping/help/formatter tests plus real named-pipe process-contract tests: new-window (v1 `new_window`, raw `OK <uuid>` passthrough, --json ignored), focus-window/close-window (--window required, per-command flag NOT global override, client-side normalizeWindowHandle UUID/ref/index resolution against window.list with exact error strings), window namespace (subcommand hints incl. the default-display omission quirk, displays/display text formats, default-display pre-socket file path), surface-resume (default-show, value-option pre-socket validation strings, --shell vs `--` argv quoting via cliShellQuote, ambient CMUX_SURFACE_ID/CMUX_WORKSPACE_ID suppression rules, always-sent source/cwd, show `No resume binding` output, byte-frozen help)."
+    }
+  ],
+  "batch_assessment": {
+    "coherent": true,
+    "dependencies_on_existing_code": [
+      "Shared routing selectors + uuid/ref helpers already specified and partially built for the pane_surface_lifecycle batch (ControlRoutingSelectors precedence, handle registry) - window.* and resume reuse them verbatim.",
+      "surface.resume rendering in surface.list rows (resume_binding payload) is shared with pane_surface_lifecycle's surface.list contract; the payload builder (surfaceResumeBindingPayload) must be ONE implementation.",
+      "window.list/window.current/window.displays/window.display already exist on the Windows desktop socket (both branches) and become regression dependencies: window.create/close/focus mutate the model those reads consume; CLI handle resolution (--window ref/index) calls window.list.",
+      "cmux-cli foundation (invocation/socket/classify/dispatch, v1+v2 client codecs in cmux-ipc) exists on windows-port; these five commands need per-command mapping layers on top (v1 line codec for new/focus/close-window, v2 for surface-resume and window display)."
+    ],
+    "risks": [
+      "window.close success-despite-veto and last-window quit-coupling are easy to get wrong: a naive implementation that closes unconditionally (current window.rs behavior) or errors on last window diverges from canonical.",
+      "Focus policy inversion: implementing window.create with activation (natural on Tauri) violates the suppress-by-default socket policy; only window.focus (and v1 focus_window) may take focus.",
+      "Resume target resolution has 6 ordered fallback branches including a GLOBAL cross-window locate; collapsing them to 'resolve workspace then surface' breaks the pinned multi-window tests.",
+      "The two different unavailable messages ('TabManager not available' vs 'cmux window is not available. Reopen the window and try again.') and validation-before-routing ordering are byte-frozen.",
+      "canonical_cli.json extraction noise (-t/--session on surface-resume, --workspace on window) must not be implemented; the Swift parse sites are the truth."
+    ],
+    "headless_impossibility_flags": [
+      {
+        "item": "OS key-window activation / app foregrounding for window.focus (makeKeyAndOrderFront + NSRunningApplication.activate equivalent)",
+        "classification": "platform_equivalent",
+        "rationale": "Win32 foreground rules (SetForegroundWindow lock) differ from macOS activation; headless CI cannot observe real key-window transfer. Contract-test the seam (focus request recorded, window.focused event emitted, active-window pointer moved) and mark the real foregrounding as platform_equivalent verified via hosted live differential only."
+      },
+      {
+        "item": "Quit-confirmation NSAlert on last-window close and the blocking resume-approval NSAlert",
+        "classification": "platform_equivalent",
+        "rationale": "Canonical itself bypasses both under XCTest (AppDelegate.swift:16234-16235; SurfaceResumeApprovalStore isRunningTests, TerminalController+ControlSurfaceContext4.swift:104-110). Windows red tests must inject a confirmation handler seam (canonical precedent: debugCloseMainWindowConfirmationHandler, AppDelegate.swift:5718-5723) rather than drive real dialogs."
+      },
+      {
+        "item": "surface.refresh actual renderer redraw (forceRefresh of the terminal surface)",
+        "classification": "platform_equivalent",
+        "rationale": "The wire contract (routing, terminal-only count, payload) is fully headless; the visual refresh maps to the xterm.js renderer refresh on Windows and is only observable in the live app."
+      },
+      {
+        "item": "window.displays / window.display physical multi-display behavior",
+        "classification": "not_applicable_headless",
+        "rationale": "Already-routed reads; frame/display enumeration needs real monitors. In scope here only as the cli:window mapping target; live differential required for promotion."
+      }
+    ],
+    "nothing_silently_dropped": "All 13 scoped entries are contracted above; no entry lacked canonical evidence. The only unevidenced items are the flagged canonical_cli.json extraction-noise flags (-t, --session, --workspace), documented in their entries."
+  }
+}

@@ -12,8 +12,8 @@
 use std::time::Duration;
 
 use cmux_ipc::{
-    authenticate_client, build_v2_request, connect_pipe, interpret_v2_response, read_frame,
-    write_frame, MAX_RPC_FRAME_BYTES,
+    authenticate_client, build_v2_request, connect_pipe, interpret_v1_response,
+    interpret_v2_response, read_frame, write_frame, MAX_RPC_FRAME_BYTES,
 };
 
 use crate::invocation::CliError;
@@ -55,6 +55,42 @@ pub async fn run_rpc(
     let raw =
         String::from_utf8(frame).map_err(|_| CliError::new("response was not valid UTF-8"))?;
     interpret_v2_response(&raw).map_err(|error| CliError::new(error.to_string()))
+}
+
+/// Run one v1 text-protocol round-trip: connect, authenticate when `password`
+/// is `Some`, send the raw command `line` (e.g. `focus_window <uuid>`), and
+/// return the raw reply body. A reply starting with `ERROR:` fails with the
+/// verbatim line as the error message, exactly as the macOS CLI surfaces it
+/// (`sendV1Command`, CLI/cmux.swift:5952-5958).
+pub async fn run_v1(
+    socket_addr: &str,
+    password: Option<&str>,
+    line: &str,
+) -> Result<String, CliError> {
+    let client = connect_pipe(socket_addr, CONNECT_TIMEOUT)
+        .await
+        .map_err(|error| CliError::new(format!("could not connect to {socket_addr}: {error}")))?;
+    let (mut reader, mut writer) = tokio::io::split(client);
+
+    if let Some(password) = password {
+        authenticate_client(&mut reader, &mut writer, password)
+            .await
+            .map_err(|error| CliError::new(format!("socket authentication failed: {error}")))?;
+    }
+
+    write_frame(&mut writer, line)
+        .await
+        .map_err(|error| CliError::new(format!("failed to send request: {error}")))?;
+
+    let frame = read_frame(&mut reader, MAX_RPC_FRAME_BYTES)
+        .await
+        .map_err(|error| CliError::new(format!("failed to read response: {error}")))?
+        .ok_or_else(|| CliError::new("connection closed before a response"))?;
+    let raw =
+        String::from_utf8(frame).map_err(|_| CliError::new("response was not valid UTF-8"))?;
+    interpret_v1_response(&raw)
+        .map(str::to_owned)
+        .map_err(|error| CliError::new(error.0))
 }
 
 /// Run a v2 request that takes over the connection and returns raw NDJSON
@@ -190,6 +226,42 @@ mod tests {
             let gate = PasswordAuthGate::new(OnePassword("s3cret"));
             let _ = serve_named_pipe_authenticated(&addr, || echo_method, gate).await;
         });
+    }
+
+    /// Spawn a raw text server at `addr` that answers every inbound line with
+    /// `reply` (v1 protocol shape: one line in, one line out).
+    fn spawn_raw_line_server(addr: &str, reply: &'static str) {
+        let addr = addr.to_owned();
+        tokio::spawn(async move {
+            let server = tokio::net::windows::named_pipe::ServerOptions::new()
+                .first_pipe_instance(true)
+                .create(&addr)
+                .expect("create pipe");
+            server.connect().await.expect("connect");
+            let (reader, mut writer) = tokio::io::split(server);
+            let mut reader = tokio::io::BufReader::new(reader);
+            while let Ok(Some(_line)) = read_frame(&mut reader, MAX_RPC_FRAME_BYTES).await {
+                if write_frame(&mut writer, reply).await.is_err() {
+                    break;
+                }
+            }
+        });
+    }
+
+    #[tokio::test]
+    async fn v1_round_trips_the_raw_reply_body() {
+        let addr = test_addr("v1-ok");
+        spawn_raw_line_server(&addr, "OK 44444444-4444-4444-8444-444444444444");
+        let reply = run_v1(&addr, None, "new_window").await.expect("v1");
+        assert_eq!(reply, "OK 44444444-4444-4444-8444-444444444444");
+    }
+
+    #[tokio::test]
+    async fn v1_error_replies_become_verbatim_cli_errors() {
+        let addr = test_addr("v1-err");
+        spawn_raw_line_server(&addr, "ERROR: Window not found");
+        let error = run_v1(&addr, None, "focus_window nope").await.unwrap_err();
+        assert_eq!(error.message, "ERROR: Window not found");
     }
 
     #[tokio::test]

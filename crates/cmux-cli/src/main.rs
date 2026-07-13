@@ -114,7 +114,17 @@ fn dispatch(
             Ok(())
         }
         DispatchPlan::RunVmPtyConnect(args) => cmux_cli::vm_pty_connect::run_vm_pty_connect(&args),
+        DispatchPlan::RunWindowLifecycle(lifecycle) => {
+            run_window_lifecycle_command(options, &lifecycle)
+        }
+        DispatchPlan::RunSurfaceResume(args) => run_surface_resume_command(options, &args),
         DispatchPlan::RunControl(control) => {
+            if command == "window" {
+                // Canonical `window display` honors the GLOBAL --window override
+                // with client-side normalizeWindowHandle resolution
+                // (CLI/cmux.swift:8087-8091) — opposite of focus/close-window.
+                return run_window_namespace_command(options, &control.method, &control.params);
+            }
             let ambient_workspace_id = std::env::var(CMUX_WORKSPACE_ID_ENV).ok();
             let ambient_surface_id = if command == "tab-action" {
                 std::env::var("CMUX_TAB_ID")
@@ -795,6 +805,469 @@ fn run_lifecycle_command(
         );
     }
     Ok(())
+}
+
+/// Execute a v1 window-lifecycle command: resolve the `--window` selector
+/// client-side (UUID passthrough; ref/index via a live `window.list`), send the
+/// v1 text frame, and print the raw reply (`OK` / `OK <uuid>`). `--json` has no
+/// effect (CLI/cmux.swift:4294-4310).
+#[cfg(windows)]
+fn run_window_lifecycle_command(
+    options: &GlobalOptions,
+    lifecycle: &cmux_cli::WindowLifecycleCommand,
+) -> Result<(), CliError> {
+    use cmux_cli::WindowLifecycleCommand as Lifecycle;
+    let line = match lifecycle {
+        Lifecycle::NewWindow => lifecycle.v1_command().to_owned(),
+        Lifecycle::FocusWindow(handle) | Lifecycle::CloseWindow(handle) => format!(
+            "{} {}",
+            lifecycle.v1_command(),
+            resolve_window_handle_value(options, handle)?
+        ),
+    };
+    let response = call_v1_command(options, &line)?;
+    println!("{response}");
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn run_window_lifecycle_command(
+    _options: &GlobalOptions,
+    _lifecycle: &cmux_cli::WindowLifecycleCommand,
+) -> Result<(), CliError> {
+    Err(CliError::new(
+        "socket commands are only supported on Windows in this build",
+    ))
+}
+
+/// Resolve a classified `--window` selector into the string sent on the v1
+/// wire / as `window_id`, per `normalizeWindowHandle`
+/// (CLI/cmux.swift:6084-6112): UUIDs pass through; a `kind:N` ref must match a
+/// `window.list` row's id or ref (`Window not found: <ref>`); a bare integer
+/// must match a row's `index` (`Window index not found`).
+#[cfg(windows)]
+fn resolve_window_handle_value(
+    options: &GlobalOptions,
+    handle: &cmux_cli::WindowHandle,
+) -> Result<String, CliError> {
+    use cmux_cli::WindowHandle as Handle;
+    match handle {
+        Handle::Uuid(value) => Ok(value.clone()),
+        Handle::Ref(reference) => {
+            for window in listed_windows(options)? {
+                if item_matches_handle(&window, reference) {
+                    return Ok(canonical_id_or_ref(&window).unwrap_or_else(|| reference.clone()));
+                }
+            }
+            Err(CliError::new(format!("Window not found: {reference}")))
+        }
+        Handle::Index(index) => {
+            for window in listed_windows(options)? {
+                if cmux_cli::int_from_any(window.get("index")) == Some(*index) {
+                    if let Some(resolved) = canonical_id_or_ref(&window) {
+                        return Ok(resolved);
+                    }
+                }
+            }
+            Err(CliError::new("Window index not found"))
+        }
+    }
+}
+
+/// Swift `windowHandleMatches` / `surfaceHandleMatches` shape: a list row
+/// matches when its `id` or `ref` handles-matches the target (UUID-aware,
+/// else case-insensitive; blank candidates never match).
+#[cfg(windows)]
+fn item_matches_handle(item: &serde_json::Value, handle: &str) -> bool {
+    ["id", "ref"].iter().any(|key| {
+        item.get(*key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|candidate| !candidate.is_empty())
+            .is_some_and(|candidate| cmux_cli::handles_match(handle, candidate))
+    })
+}
+
+/// Resolve the raw GLOBAL/explicit `--window` value like the canonical helpers
+/// do before scoping a request: classify (blank → `None`), then resolve
+/// refs/indexes through `window.list`.
+#[cfg(windows)]
+fn normalize_window_selector(
+    options: &GlobalOptions,
+    raw: &str,
+) -> Result<Option<String>, CliError> {
+    match cmux_cli::classify_window_handle(raw)? {
+        Some(handle) => resolve_window_handle_value(options, &handle).map(Some),
+        None => Ok(None),
+    }
+}
+
+/// The canonical CLI reads plain `id` / `ref` keys from v2 list rows
+/// (CLI/cmux.swift:6096-6101, 6109-6111).
+#[cfg(windows)]
+fn canonical_id_or_ref(item: &serde_json::Value) -> Option<String> {
+    item.get("id")
+        .or_else(|| item.get("ref"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+}
+
+#[cfg(windows)]
+fn listed_windows(options: &GlobalOptions) -> Result<Vec<serde_json::Value>, CliError> {
+    let listed = call_control_command(options, "window.list", &serde_json::json!({}))?;
+    Ok(listed
+        .get("windows")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default())
+}
+
+/// One blocking v1 text round-trip over the control pipe.
+#[cfg(windows)]
+fn call_v1_command(options: &GlobalOptions, line: &str) -> Result<String, CliError> {
+    let (socket_path, password) = resolved_control_connection(options)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| CliError::new(format!("failed to start async runtime: {error}")))?;
+    runtime.block_on(cmux_cli::transport::run_v1(
+        &socket_path,
+        password.as_deref(),
+        line,
+    ))
+}
+
+/// The `cmux window <displays|display>` namespace runner. `window.display`
+/// normalizes the GLOBAL --window override client-side and id-formats its
+/// `--json` payload (CLI/cmux.swift:8072-8110); `window.displays` keeps the
+/// plain control-command path (raw `--json`, canonical text rows).
+#[cfg(windows)]
+fn run_window_namespace_command(
+    options: &GlobalOptions,
+    method: &str,
+    params: &serde_json::Value,
+) -> Result<(), CliError> {
+    if method != "window.display" {
+        return run_control_command(options, method, params);
+    }
+    let mut request = params.clone();
+    if let Some(window_override) = options.window_id.as_deref() {
+        // Canonical: normalizeWindowHandle(windowOverride) ?? windowOverride —
+        // a blank override falls back to the raw string (CLI/cmux.swift:8088).
+        let normalized = normalize_window_selector(options, window_override)?
+            .unwrap_or_else(|| window_override.to_owned());
+        if let Some(object) = request.as_object_mut() {
+            object.insert("window_id".into(), serde_json::json!(normalized));
+        }
+    }
+    let result = call_control_command(options, method, &request)?;
+    if options.json_output {
+        let mut formatted = result;
+        filter_id_format(
+            &mut formatted,
+            options.id_format.as_deref().unwrap_or("refs"),
+        );
+        println!("{}", serde_json::to_string(&formatted).unwrap_or_default());
+    } else {
+        println!("{}", format_window_display_result(&result));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn run_window_namespace_command(
+    _options: &GlobalOptions,
+    _method: &str,
+    _params: &serde_json::Value,
+) -> Result<(), CliError> {
+    Err(CliError::new(
+        "socket commands are only supported on Windows in this build",
+    ))
+}
+
+/// Execute a parsed `surface resume` plan: resolve the raw target selectors
+/// (`normalizeWindowHandle` / `normalizeWorkspaceHandle` /
+/// `normalizeSurfaceHandle` parity), send the v2 `surface.resume.*` request,
+/// and print per canonical output rules (CLI/cmux.swift:6618-6657).
+#[cfg(windows)]
+fn run_surface_resume_command(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
+    let env = |name: &str| std::env::var(name).ok();
+    let fallback_cwd = std::env::current_dir()
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let plan = cmux_cli::parse_surface_resume_command(
+        args,
+        options.window_id.as_deref(),
+        &env,
+        &fallback_cwd,
+    )?;
+
+    let window_handle = match plan.window.as_deref() {
+        Some(raw) => normalize_window_selector(options, raw)?,
+        None => None,
+    };
+    let workspace_id = resolve_resume_workspace_handle(
+        options,
+        plan.workspace.as_deref(),
+        window_handle.as_deref(),
+    )?;
+    let surface_id = resolve_resume_surface_handle(
+        options,
+        plan.surface.as_deref(),
+        workspace_id.as_deref(),
+        window_handle.as_deref(),
+    )?;
+
+    let mut params = serde_json::Map::new();
+    if let Some(window_handle) = window_handle {
+        params.insert("window_id".into(), serde_json::json!(window_handle));
+    }
+    if let Some(workspace_id) = workspace_id {
+        params.insert("workspace_id".into(), serde_json::json!(workspace_id));
+    }
+    if let Some(surface_id) = surface_id {
+        params.insert("surface_id".into(), serde_json::json!(surface_id));
+    }
+    params.extend(plan.extra.clone());
+
+    let result = call_control_command(options, plan.method, &serde_json::Value::Object(params))?;
+    let id_format = options.id_format.as_deref().unwrap_or("refs");
+    if options.json_output {
+        let mut formatted = result;
+        filter_id_format(&mut formatted, id_format);
+        println!("{}", serde_json::to_string(&formatted).unwrap_or_default());
+        return Ok(());
+    }
+    match plan.action {
+        cmux_cli::SurfaceResumeAction::Set | cmux_cli::SurfaceResumeAction::Clear => {
+            println!("OK");
+        }
+        cmux_cli::SurfaceResumeAction::Show => {
+            let command = result
+                .get("resume_binding")
+                .and_then(|binding| binding.get("command"))
+                .and_then(serde_json::Value::as_str)
+                .filter(|command| !command.is_empty());
+            match command {
+                Some(command) => println!("{command}"),
+                None => println!("No resume binding"),
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn run_surface_resume_command(_options: &GlobalOptions, _args: &[String]) -> Result<(), CliError> {
+    Err(CliError::new(
+        "socket commands are only supported on Windows in this build",
+    ))
+}
+
+/// `normalizeWorkspaceHandle` without the allow-current path
+/// (CLI/cmux.swift:6137-6183): UUID passthrough; a ref passes through verbatim
+/// UNLESS a window handle scopes it (then `resolveWorkspaceId` matches the
+/// window's `workspace.list` refs exactly and requires an id); a bare integer
+/// resolves against `workspace.list` row indexes.
+#[cfg(windows)]
+fn resolve_resume_workspace_handle(
+    options: &GlobalOptions,
+    raw: Option<&str>,
+    window_handle: Option<&str>,
+) -> Result<Option<String>, CliError> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if cmux_cli::is_uuid_handle(trimmed) {
+        return Ok(Some(trimmed.to_owned()));
+    }
+    if cmux_cli::window_lifecycle::is_handle_ref(trimmed) {
+        let Some(window_handle) = window_handle else {
+            return Ok(Some(trimmed.to_owned()));
+        };
+        // resolveWorkspaceId (CLI/cmux.swift:14863-14880): exact `ref` match
+        // within the window; only an `id` resolves it.
+        let listed = call_control_command(
+            options,
+            "workspace.list",
+            &serde_json::json!({"window_id": window_handle}),
+        )?;
+        for workspace in listed
+            .get("workspaces")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if workspace.get("ref").and_then(serde_json::Value::as_str) == Some(trimmed) {
+                if let Some(id) = workspace.get("id").and_then(serde_json::Value::as_str) {
+                    return Ok(Some(id.to_owned()));
+                }
+            }
+        }
+        return Err(CliError::new(format!("Workspace ref not found: {trimmed}")));
+    }
+    if let Ok(index) = trimmed.parse::<i64>() {
+        let mut params = serde_json::Map::new();
+        if let Some(window_handle) = window_handle {
+            params.insert("window_id".into(), serde_json::json!(window_handle));
+        }
+        let listed = call_control_command(
+            options,
+            "workspace.list",
+            &serde_json::Value::Object(params),
+        )?;
+        for workspace in listed
+            .get("workspaces")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if cmux_cli::int_from_any(workspace.get("index")) == Some(index) {
+                if let Some(resolved) = canonical_id_or_ref(workspace) {
+                    return Ok(Some(resolved));
+                }
+            }
+        }
+        return Err(CliError::new("Workspace index not found"));
+    }
+    Err(CliError::new(format!(
+        "Invalid workspace handle: {trimmed} (expected UUID, ref like workspace:1, or index)"
+    )))
+}
+
+/// `normalizeSurfaceHandle` without the allow-focused path
+/// (CLI/cmux.swift:6308-6355): UUIDs/refs pass through verbatim unless a
+/// window handle scopes them (then the surface must exist in that window);
+/// bare integers resolve against `surface.list` row indexes.
+#[cfg(windows)]
+fn resolve_resume_surface_handle(
+    options: &GlobalOptions,
+    raw: Option<&str>,
+    workspace_handle: Option<&str>,
+    window_handle: Option<&str>,
+) -> Result<Option<String>, CliError> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if cmux_cli::is_uuid_handle(trimmed) || cmux_cli::window_lifecycle::is_handle_ref(trimmed) {
+        let Some(window_handle) = window_handle else {
+            return Ok(Some(trimmed.to_owned()));
+        };
+        return validate_surface_handle_in_window(
+            options,
+            trimmed,
+            workspace_handle,
+            window_handle,
+        )
+        .map(Some);
+    }
+    if let Ok(index) = trimmed.parse::<i64>() {
+        let mut params = serde_json::Map::new();
+        if let Some(window_handle) = window_handle {
+            params.insert("window_id".into(), serde_json::json!(window_handle));
+        }
+        if let Some(workspace_handle) = workspace_handle {
+            params.insert("workspace_id".into(), serde_json::json!(workspace_handle));
+        }
+        let listed =
+            call_control_command(options, "surface.list", &serde_json::Value::Object(params))?;
+        for surface in listed
+            .get("surfaces")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if cmux_cli::int_from_any(surface.get("index")) == Some(index) {
+                if let Some(resolved) = canonical_id_or_ref(surface) {
+                    return Ok(Some(resolved));
+                }
+            }
+        }
+        return Err(CliError::new("Surface index not found"));
+    }
+    Err(CliError::new(format!(
+        "Invalid surface handle: {trimmed} (expected UUID, ref like surface:1, or index)"
+    )))
+}
+
+/// `validateSurfaceHandleInWindow` (CLI/cmux.swift:6360-6395): scoped to the
+/// given workspace when present, otherwise every workspace of the window.
+#[cfg(windows)]
+fn validate_surface_handle_in_window(
+    options: &GlobalOptions,
+    surface_handle: &str,
+    workspace_handle: Option<&str>,
+    window_handle: &str,
+) -> Result<String, CliError> {
+    if let Some(workspace_handle) = workspace_handle {
+        if let Some(matched) =
+            matching_surface_in_workspace(options, surface_handle, workspace_handle, window_handle)?
+        {
+            return Ok(matched);
+        }
+        return Err(CliError::new("Surface not found in window"));
+    }
+    let listed = call_control_command(
+        options,
+        "workspace.list",
+        &serde_json::json!({"window_id": window_handle}),
+    )?;
+    for workspace in listed
+        .get("workspaces")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(workspace_handle) = canonical_id_or_ref(workspace) else {
+            continue;
+        };
+        if let Some(matched) = matching_surface_in_workspace(
+            options,
+            surface_handle,
+            &workspace_handle,
+            window_handle,
+        )? {
+            return Ok(matched);
+        }
+    }
+    Err(CliError::new("Surface not found in window"))
+}
+
+/// `matchingSurfaceHandleInWorkspace` (CLI/cmux.swift:6397-6420): match the
+/// handle against each row's `id`/`ref` (UUID-aware, else case-insensitive).
+#[cfg(windows)]
+fn matching_surface_in_workspace(
+    options: &GlobalOptions,
+    surface_handle: &str,
+    workspace_handle: &str,
+    window_handle: &str,
+) -> Result<Option<String>, CliError> {
+    let listed = call_control_command(
+        options,
+        "surface.list",
+        &serde_json::json!({"workspace_id": workspace_handle, "window_id": window_handle}),
+    )?;
+    for surface in listed
+        .get("surfaces")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if item_matches_handle(surface, surface_handle) {
+            return Ok(Some(
+                canonical_id_or_ref(surface).unwrap_or_else(|| surface_handle.to_owned()),
+            ));
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(windows)]

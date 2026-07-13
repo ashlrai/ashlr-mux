@@ -79,6 +79,8 @@ export type { SessionSplitLayoutSnapshot } from "./SessionSplitLayoutSnapshot";
 export type { SessionSplitOrientation } from "./SessionSplitOrientation";
 export type { SessionSurfaceKindSnapshot } from "./SessionSurfaceKindSnapshot";
 export type { SessionSurfaceMetadataSnapshot } from "./SessionSurfaceMetadataSnapshot";
+export type { SessionSurfaceResumeBindingRecordSnapshot } from "./SessionSurfaceResumeBindingRecordSnapshot";
+export type { SessionSurfaceResumeBindingSnapshot } from "./SessionSurfaceResumeBindingSnapshot";
 export type { SessionSurfaceSnapshot } from "./SessionSurfaceSnapshot";
 export type { SessionSurfaceTerminalStartupSnapshot } from "./SessionSurfaceTerminalStartupSnapshot";
 export type { SessionTabManagerSnapshot } from "./SessionTabManagerSnapshot";

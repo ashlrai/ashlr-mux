@@ -266,6 +266,23 @@ pub(crate) fn notification_clear_for_control(
     })
 }
 
+/// Canonical unregisterMainWindow drops stale notifications for the closing
+/// window and each of its workspaces (AppDelegate.swift:16274-16280 at pinned
+/// e1825d40d: clearNotifications(forTabId: removed.windowId), then one
+/// clearNotifications(forTabId:) per tab of the removed TabManager).
+pub(crate) fn notification_clear_window_for_control(
+    state: &NotificationCommandState,
+    window_id: &str,
+    workspace_ids: &[String],
+) -> Result<(), String> {
+    with_notification_store(state, |store| {
+        store.clear_for_tab(window_id);
+        for workspace_id in workspace_ids {
+            store.clear_for_tab(workspace_id);
+        }
+    })
+}
+
 pub(crate) fn notification_open_target_for_control(
     state: &NotificationCommandState,
     id: Option<&str>,
@@ -757,6 +774,43 @@ mod tests {
             pane_flash: true,
             click_action: None,
         }
+    }
+
+    /// Canonical unregisterMainWindow clearing scope (AppDelegate.swift:
+    /// 16274-16280 at pinned e1825d40d): the window id row and each workspace
+    /// row go; unrelated workspaces survive.
+    #[test]
+    fn clear_window_for_control_drops_window_and_workspace_rows_only() {
+        let state = NotificationCommandState::default();
+        let seed = |tab_id: &str, id: &str| {
+            let mut row = notification(id, false);
+            row.tab_id = tab_id.to_owned();
+            row
+        };
+        with_notification_store(&state, |store| {
+            store.record(seed("window-2", "n-window"), false);
+            store.record(seed("workspace-2", "n-ws2"), false);
+            store.record(seed("workspace-2b", "n-ws2b"), false);
+            store.record(seed("workspace-other", "n-keep"), false);
+        })
+        .expect("seed");
+
+        notification_clear_window_for_control(
+            &state,
+            "window-2",
+            &["workspace-2".to_owned(), "workspace-2b".to_owned()],
+        )
+        .expect("clear");
+
+        let remaining = with_notification_store(&state, |store| {
+            store
+                .notifications()
+                .iter()
+                .map(|row| row.id.clone())
+                .collect::<Vec<_>>()
+        })
+        .expect("read");
+        assert_eq!(remaining, ["n-keep"], "only unrelated workspaces survive");
     }
 
     fn request(command: &str) -> NotificationCommandRequest {
