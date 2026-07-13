@@ -829,24 +829,24 @@ fn lifecycle_wrapper_forgets_close_handles_before_decoration() {
 }
 
 #[test]
-fn forget_scope_is_close_only_with_surface_and_pane() {
-    // Round 3 item 2 (capture-adjudicated across all three canonical
-    // datasets): close forgets BOTH the surface AND the pane ref on EVERY
-    // close (canonical mints one extra pane ref right after
-    // surface_close.happy even when the pane survives); respawn forgets
-    // NOTHING (the respawn echo reuses the surface's pre-existing ref).
+fn forget_scope_is_close_only_and_pane_only_when_gone() {
+    // Round 5 item 1 (canonical counter-evidence: pane:2 SURVIVES across all
+    // three canonical datasets after a surface close on that pane): close
+    // forgets only the closed SURFACE ref; the pane ref is forgotten only
+    // when the pane left the tree. Respawn still forgets nothing (its echo
+    // reuses the pre-existing surface ref).
     let source = include_str!("../../control_socket.rs");
     let start = source
         .find("fn forget_recreated_lifecycle_handles(")
         .expect("forget helper present");
-    let body = &source[start..start + 2_500];
+    let body = &source[start..start + 2_800];
     assert!(
         !body.contains("surface.respawn"),
         "respawn must not forget any handles"
     );
     assert!(
-        !body.contains("pane_survives"),
-        "the pane ref is forgotten on every close, surviving pane or not"
+        body.contains("pane_survives"),
+        "the pane ref survives while the pane remains in the tree"
     );
 }
 
