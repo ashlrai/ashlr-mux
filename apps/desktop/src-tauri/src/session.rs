@@ -130,6 +130,10 @@ mod diff_durable_publication_red;
 mod restore_previous_launch_red;
 
 #[cfg(test)]
+#[path = "session/restore_identity_graph_red.rs"]
+mod restore_identity_graph_red;
+
+#[cfg(test)]
 #[path = "session/next_panel_allocation_fence_red.rs"]
 mod next_panel_allocation_fence_red;
 
