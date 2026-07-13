@@ -4385,6 +4385,9 @@ fn pane_create(
         let destination = remote
             .and_then(|remote| remote.destination.clone())
             .unwrap_or_else(|| "remote".into());
+        let remote_session_id = remote
+            .and_then(|remote| remote.persistent_daemon_slot.clone())
+            .unwrap_or_else(|| destination.clone());
         let reserved_surface_id = Uuid::new_v4().to_string();
         let reserved_pane_id = Uuid::new_v4().to_string();
         return ok_transition(
@@ -4394,7 +4397,7 @@ fn pane_create(
             vec![LifecycleEffect::RemoteCreate {
                 reserved_surface_id,
                 reserved_pane_id,
-                remote_session_id: destination.clone(),
+                remote_session_id,
                 destination,
                 window_id: scope.window_id,
                 workspace_id: scope.workspace_id,
