@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "batch": "pane-surface-lifecycle-integration",
+  "canonical_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+  "contract": "docs/parity/contracts/pane_surface_lifecycle.json",
+  "integration": {
+    "merge_commit": "7d877cc39",
+    "merged_branch": "parity/lifecycle-desktop-green",
+    "merge_conflicts": 1,
+    "merge_resolution_audit": "independent verifier confirmed no HEAD-side assertion dropped (RecordingExecutor signature evolution and RemoteTerminal lifecycle seeding only)",
+    "subsumed_branches": [
+      "parity/lifecycle-v2-red",
+      "parity/lifecycle-action-red",
+      "parity/lifecycle-action-adversarial-red",
+      "parity/lifecycle-dock-api-red",
+      "parity/lifecycle-dock-green",
+      "parity/lifecycle-dock-adversarial-red",
+      "parity/lifecycle-dock-rollback-red",
+      "parity/lifecycle-dock-rollback-concurrency-red",
+      "parity/lifecycle-dock-final-red",
+      "parity/surface-control-audit"
+    ]
+  },
+  "independent_verification": {
+    "round_1": {
+      "result": "fail",
+      "gaps_found": 12,
+      "critical": [
+        "pane.create accepted agent-session",
+        "surface.respawn missing focused-surface fallback",
+        "surface.report_pwd local-workspace semantics"
+      ],
+      "adversarial_probes": "7 of 10 failed"
+    },
+    "fix_commits": [
+      "b129bffed",
+      "d2259567a",
+      "58b958d8f",
+      "2562cf492",
+      "5a95d5a02",
+      "fbe93c3b4",
+      "66a656fb8"
+    ],
+    "round_2": {
+      "result": "pass",
+      "adversarial_probes": "15 of 15 passed",
+      "builder_deviations_adjudicated_correct": [
+        "canonical v2Double coerces JSON bool/numeric-string divider values",
+        "non-string surface_id respawn yields not_found with null data"
+      ],
+      "remaining_after_round_2": "R1 surface.create startup metadata (fixed in 66a656fb8)"
+    }
+  },
+  "gates": {
+    "desktop_lib_tests": "756 passed, 0 failed, 1 ignored (unrelated live-opencode diagnostic)",
+    "real_executable_cli_ipc": "pane_surface_lifecycle_cli_red 34 passed over real named pipes",
+    "bootstrap_crates": "cmux-core/agent/terminal/ipc/cli/golden all green",
+    "web": "1253 passed, 0 failed",
+    "desktop_test_matrix": "PASS (unit, contract, integration, e2e)",
+    "clippy_ci_gate": "clean (-D warnings, six CI-gated crates)",
+    "cargo_check_workspace": "clean",
+    "fmt": "clean",
+    "core_types_drift": "clean after regeneration (353c6d690)",
+    "desktop_contracts_check": "PASS"
+  },
+  "differential": {
+    "canonical_fixture": {
+      "workflow_run": "https://github.com/ashlrai/ashlr-mux/actions/runs/29236397366",
+      "captured_from": "live canonical cmux at pinned e1825d40d on macos-15",
+      "cases": 43,
+      "driver_failures": 0,
+      "archived": "docs/parity/differential/captures/pane_surface_lifecycle.canonical.e1825d40d.ndjson (parity/diff-lane)"
+    },
+    "windows_capture": "not yet run; CMUX_CONTROL_PIPE_NAME isolation override landed in a88607b33",
+    "promotion_status": "all batch entries remain implemented_unverified per contract differential_live_gate; verifier shortlist promotable once differential passes: pane.create, pane.resize, surface.action, surface.respawn, surface.report_pwd, surface.current, surface.create, cli:tab-action, cli:respawn-pane"
+  },
+  "known_open_items": [
+    "R2/G10: backend respawn default cmd.exe vs CLI ComSpec resolution (accepted platform equivalence, watch in differential)",
+    "R3: pane.create source filter 'UUID or existing surface id' marginally broader than canonical raw-UUID-only (test-fixture adaptation, unobservable with runtime UUIDv4 ids)",
+    "R4: cmux-desktop crate-wide clippy debt (43 pre-existing findings, outside CI gate; batch reduced from 53)"
+  ]
+}

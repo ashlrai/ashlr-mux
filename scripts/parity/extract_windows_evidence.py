@@ -24,7 +24,7 @@ CLASSIFY = Path("crates/cmux-cli/src/classify.rs")
 FORWARD = Path("crates/cmux-cli/src/command_forward.rs")
 DISPATCH = Path("crates/cmux-cli/src/dispatch.rs")
 DEFAULT_OUTPUT = Path("docs/parity/source/windows_evidence.json")
-PINNED_WINDOWS_COMMIT = "689854602b58dd1f6ee24f3d6a94182cfa8c7423"
+PINNED_WINDOWS_COMMIT = "05ddcd13d45a3c3d4744b00eb0554a0202786332"
 
 
 def line_number(text: str, offset: int) -> int:
