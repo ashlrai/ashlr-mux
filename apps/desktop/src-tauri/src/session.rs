@@ -7160,6 +7160,19 @@ pub(crate) fn clear_workspace_panel_pull_request_for_control(
     })
 }
 
+fn is_nonrestorable_remote_mirror(kind: &SessionSurfaceKindSnapshot) -> bool {
+    matches!(
+        kind,
+        SessionSurfaceKindSnapshot::RemoteTerminal {
+            remote_session_id: Some(remote_session_id),
+            remote_context: None,
+            arrival_generation: Some(_),
+        } if remote_session_id.strip_prefix('%').is_some_and(|digits| {
+            !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+        })
+    )
+}
+
 fn drop_nonrestorable_remote_mirrors(snapshot: &mut AppSessionSnapshot) {
     for workspace in snapshot
         .windows
@@ -7171,13 +7184,8 @@ fn drop_nonrestorable_remote_mirrors(snapshot: &mut AppSessionSnapshot) {
             .as_deref()
             .unwrap_or_default()
             .iter()
-            .filter_map(|surface| {
-                matches!(
-                    surface.kind,
-                    SessionSurfaceKindSnapshot::RemoteTerminal { .. }
-                )
-                .then(|| surface.surface_id.clone())
-            })
+            .filter(|surface| is_nonrestorable_remote_mirror(&surface.kind))
+            .map(|surface| surface.surface_id.clone())
             .collect::<HashSet<_>>();
         if remote_surface_ids.is_empty() {
             continue;
