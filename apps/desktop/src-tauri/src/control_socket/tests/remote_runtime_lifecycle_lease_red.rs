@@ -679,6 +679,54 @@ fn expired_await_command_lease_rejects_late_success_without_resurrection() {
 }
 
 #[test]
+fn publishing_claim_is_not_interruptible_by_watchdog_compensation() {
+    let mut registry = RemoteRuntimeLeaseRegistry::default();
+    let id = registry.reserve(
+        RemoteRuntimeLeaseScope {
+            endpoint: "ssh://host-a".into(),
+            session: "tmux-a".into(),
+        },
+        RemoteRuntimeSourceWitness {
+            window_id: WINDOW.into(),
+            workspace_id: WORKSPACE.into(),
+            pane_id: PANE.into(),
+            surface_id: SOURCE.into(),
+            surface_generation: 1,
+            remote_token: "%source".into(),
+            move_generation: 1,
+            restore_epoch: 0,
+        },
+        RESERVED.into(),
+        RESERVED_PANE.into(),
+        RemoteTmuxTarget::Window,
+    );
+    registry.record_command_outcome(
+        id,
+        RemoteRuntimeCommandOutcome::Succeeded,
+        Some("@42".into()),
+    );
+    let lease = registry.leases[&id].clone();
+    assert_eq!(
+        registry.claim_callback(
+            id,
+            &lease.scope,
+            &lease.source,
+            &lease.reserved_surface_id,
+            &lease.reserved_pane_id,
+        ),
+        RemoteRuntimeCallbackClaim::Publish
+    );
+    assert!(registry
+        .expire(id, Instant::now() + REMOTE_RUNTIME_LEASE_TTL)
+        .is_none());
+    assert_eq!(
+        registry.leases[&id].disposition,
+        RemoteRuntimeLeaseDisposition::Publishing,
+        "watchdog compensation cannot race an in-flight local snapshot commit"
+    );
+}
+
+#[test]
 fn stale_callbacks_are_fenced_by_source_kind_token_move_and_restore_epoch() {
     let mut coordinator = LeaseCoordinator::default();
     let id = coordinator.reserve(
