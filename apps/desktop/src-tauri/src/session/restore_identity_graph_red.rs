@@ -522,7 +522,15 @@ impl SnapshotPublicationOperations for RecordingPublication {
     }
 }
 
-fn restore_rejects_without_publication(restored: AppSessionSnapshot) -> bool {
+struct RestoreAttempt {
+    result: Result<AppSessionSnapshot, String>,
+    calls: Vec<&'static str>,
+    authority: AppSessionSnapshot,
+    current: AppSessionSnapshot,
+    next_panel: u64,
+}
+
+fn restore_attempt(restored: AppSessionSnapshot) -> RestoreAttempt {
     let current = initial_snapshot("surface-90");
     let authority = GatedSnapshot::new(current.clone());
     let next_panel = AtomicU64::new(91);
@@ -531,205 +539,552 @@ fn restore_rejects_without_publication(restored: AppSessionSnapshot) -> bool {
         restore_previous_launch_transaction(&authority, &next_panel, &mut publication, || {
             Some(restored)
         });
-    result.is_err()
-        && publication.calls.is_empty()
-        && *authority.lock().unwrap() == current
-        && next_panel.load(Ordering::Relaxed) == 91
+    let authoritative_snapshot = authority.lock().unwrap().clone();
+    RestoreAttempt {
+        result,
+        calls: publication.calls,
+        authority: authoritative_snapshot,
+        current,
+        next_panel: next_panel.load(Ordering::Relaxed),
+    }
+}
+
+fn restore_commits_atomically(restored: AppSessionSnapshot) -> Result<AppSessionSnapshot, String> {
+    let attempt = restore_attempt(restored);
+    let committed = attempt.result?;
+    if attempt.calls != ["persist", "baseline", "emit"] {
+        return Err(format!("publication calls were {:?}", attempt.calls));
+    }
+    if attempt.authority != committed {
+        return Err("published snapshot did not become authoritative".into());
+    }
+    Ok(committed)
+}
+
+fn restore_rejects_without_publication(restored: AppSessionSnapshot) -> bool {
+    let attempt = restore_attempt(restored);
+    attempt.result.is_err()
+        && attempt.calls.is_empty()
+        && attempt.authority == attempt.current
+        && attempt.next_panel == 91
 }
 
 type Mutation = fn(&mut AppSessionSnapshot);
+type Validation = fn(&AppSessionSnapshot) -> bool;
+
+fn workspace(snapshot: &AppSessionSnapshot, window: usize) -> &SessionWorkspaceSnapshot {
+    &snapshot.windows[window].tab_manager.workspaces[0]
+}
+
+fn pane_at(
+    snapshot: &AppSessionSnapshot,
+    window: usize,
+    pane_index: usize,
+) -> &cmux_core::session::SessionPaneLayoutSnapshot {
+    let SessionWorkspaceLayoutSnapshot::Split(split) =
+        workspace(snapshot, window).layout.as_ref().unwrap()
+    else {
+        panic!("split fixture")
+    };
+    let node = if pane_index == 0 {
+        &split.first
+    } else {
+        &split.second
+    };
+    let SessionWorkspaceLayoutSnapshot::Pane(pane) = node.as_ref() else {
+        panic!("pane fixture")
+    };
+    pane
+}
+
+fn first_pane_selects_first_panel(snapshot: &AppSessionSnapshot) -> bool {
+    let pane = pane_at(snapshot, 0, 0);
+    pane.selected_panel_id.as_ref() == pane.panel_ids.first()
+}
+
+fn focus_is_local_and_coherent(snapshot: &AppSessionSnapshot) -> bool {
+    let workspace = workspace(snapshot, 0);
+    let Some(panel) = workspace.focused_panel_id.as_deref() else {
+        return false;
+    };
+    let Some(pane) = workspace.focused_pane_id.as_deref() else {
+        return false;
+    };
+    [pane_at(snapshot, 0, 0), pane_at(snapshot, 0, 1)]
+        .into_iter()
+        .any(|candidate| {
+            candidate.pane_id.as_deref() == Some(pane)
+                && candidate
+                    .panel_ids
+                    .iter()
+                    .any(|candidate| candidate == panel)
+        })
+}
 
 #[test]
-fn uuid_only_stale_reference_is_validated_and_rejected_atomically() {
+fn uuid_only_stale_reference_is_normalized_before_atomic_publication() {
     let mut restored = graph_fixture();
     // Remove the Windows-only `dock:<owner>` derived id so every remaining
     // structural definition is UUID-shaped. This specifically guards against
     // an early return based on "no legacy replacements needed".
     restored.windows[0].dock = None;
     workspace_mut(&mut restored, 0).focused_panel_id = Some(id(0xffff));
-    assert!(
-        restore_rejects_without_publication(restored),
-        "UUID-shaped definitions must not bypass stale-reference validation"
+    let committed = restore_commits_atomically(restored)
+        .expect("UUID-shaped definitions still require canonical normalization");
+    assert!(focus_is_local_and_coherent(&committed));
+    assert_ne!(
+        workspace(&committed, 0).focused_panel_id.as_deref(),
+        Some(id(0xffff).as_str())
     );
 }
 
 #[test]
-fn every_typed_reference_is_scoped_to_its_exact_owner() {
-    let cases: &[(&str, Mutation)] = &[
-        ("window.selected_workspace_id", |snapshot| {
-            snapshot.windows[0].selected_workspace_id = Some(id(WORKSPACE_B));
-        }),
-        ("group.anchor_workspace_id", |snapshot| {
-            snapshot.windows[0]
-                .tab_manager
-                .workspace_groups
-                .as_mut()
-                .unwrap()[0]
-                .anchor_workspace_id = Some(id(WORKSPACE_B));
-        }),
-        ("workspace.group_id", |snapshot| {
-            workspace_mut(snapshot, 0).group_id = Some(id(GROUP_B));
-        }),
-        ("pane.selected_panel_id", |snapshot| {
-            pane_mut(snapshot, 0, 0).selected_panel_id = Some(id(SURFACE_B1));
-        }),
-        ("pane.selected_panel_id wrong sibling", |snapshot| {
-            pane_mut(snapshot, 0, 0).selected_panel_id = Some(id(SURFACE_A2));
-        }),
-        ("workspace.zoomed_panel_id", |snapshot| {
-            workspace_mut(snapshot, 0).zoomed_panel_id = Some(id(SURFACE_B1));
-        }),
-        ("workspace.focused_panel_id", |snapshot| {
-            workspace_mut(snapshot, 0).focused_panel_id = Some(id(SURFACE_B1));
-        }),
-        ("workspace.focused_pane_id", |snapshot| {
-            workspace_mut(snapshot, 0).focused_pane_id = Some(id(PANE_B1));
-        }),
-        ("surface.pane_id", |snapshot| {
-            workspace_mut(snapshot, 0).surfaces.as_mut().unwrap()[0].pane_id = id(PANE_B1);
-        }),
-        ("surface.pane_id wrong sibling", |snapshot| {
-            workspace_mut(snapshot, 0).surfaces.as_mut().unwrap()[0].pane_id = id(PANE_A2);
-        }),
-        ("pending_surface_pwds.surface_id", |snapshot| {
-            workspace_mut(snapshot, 0)
-                .pending_surface_pwds
-                .as_mut()
-                .unwrap()[0]
-                .surface_id = id(SURFACE_B1);
-        }),
-        ("panel_titles.panel_id", |snapshot| {
-            workspace_mut(snapshot, 0).panel_titles.as_mut().unwrap()[0].panel_id = id(SURFACE_B1);
-        }),
-        ("panel_pins.panel_id", |snapshot| {
-            workspace_mut(snapshot, 0).panel_pins.as_mut().unwrap()[0].panel_id = id(SURFACE_B1);
-        }),
-        ("panel_unreads.panel_id", |snapshot| {
-            workspace_mut(snapshot, 0).panel_unreads.as_mut().unwrap()[0].panel_id = id(SURFACE_B1);
-        }),
-        ("restorable_agent_snapshots.panel_id", |snapshot| {
-            workspace_mut(snapshot, 0)
-                .restorable_agent_snapshots
-                .as_mut()
-                .unwrap()[0]
-                .panel_id = id(SURFACE_B1);
-        }),
-        ("surface_resume_bindings.surface_id", |snapshot| {
-            workspace_mut(snapshot, 0)
-                .surface_resume_bindings
-                .as_mut()
-                .unwrap()[0]
-                .surface_id = id(SURFACE_B1);
-        }),
-        ("published_pane_selections.pane_id", |snapshot| {
-            workspace_mut(snapshot, 0)
-                .published_pane_selections
-                .as_mut()
-                .unwrap()[0]
-                .pane_id = id(PANE_B1);
-        }),
-        ("published_pane_selections.panel_id", |snapshot| {
-            workspace_mut(snapshot, 0)
-                .published_pane_selections
-                .as_mut()
-                .unwrap()[0]
-                .panel_id = id(SURFACE_B1);
-        }),
-        ("published selection mismatched pair", |snapshot| {
-            workspace_mut(snapshot, 0)
-                .published_pane_selections
-                .as_mut()
-                .unwrap()[0]
-                .panel_id = id(SURFACE_A2);
-        }),
-        ("panel_git_branches.panel_id", |snapshot| {
-            workspace_mut(snapshot, 0)
-                .panel_git_branches
-                .as_mut()
-                .unwrap()[0]
-                .panel_id = id(SURFACE_B1);
-        }),
-        ("panel_pull_requests.panel_id", |snapshot| {
-            workspace_mut(snapshot, 0)
-                .panel_pull_requests
-                .as_mut()
-                .unwrap()[0]
-                .panel_id = id(SURFACE_B1);
-        }),
-        ("panel_listening_ports.panel_id", |snapshot| {
-            workspace_mut(snapshot, 0)
-                .panel_listening_ports
-                .as_mut()
-                .unwrap()[0]
-                .panel_id = id(SURFACE_B1);
-        }),
-        ("panel_ttys.panel_id", |snapshot| {
-            workspace_mut(snapshot, 0).panel_ttys.as_mut().unwrap()[0].panel_id = id(SURFACE_B1);
-        }),
-        ("panel_shell_activity.panel_id", |snapshot| {
-            workspace_mut(snapshot, 0)
-                .panel_shell_activity
-                .as_mut()
-                .unwrap()[0]
-                .panel_id = id(SURFACE_B1);
-        }),
-        ("panel_terminal_startups.panel_id", |snapshot| {
-            workspace_mut(snapshot, 0)
-                .panel_terminal_startups
-                .as_mut()
-                .unwrap()[0]
-                .panel_id = id(SURFACE_B1);
-        }),
-        ("canvas.panel_id", |snapshot| {
-            workspace_mut(snapshot, 0).canvas_panes.as_mut().unwrap()[0].panel_id = id(SURFACE_B1);
-        }),
-        ("canvas.panel_ids", |snapshot| {
-            workspace_mut(snapshot, 0).canvas_panes.as_mut().unwrap()[0].panel_ids =
-                Some(vec![id(SURFACE_B1)]);
-        }),
-        ("canvas.selected_panel_id", |snapshot| {
-            workspace_mut(snapshot, 0).canvas_panes.as_mut().unwrap()[0].selected_panel_id =
-                Some(id(SURFACE_B1));
-        }),
-        ("canvas selected outside panel_ids", |snapshot| {
-            workspace_mut(snapshot, 0).canvas_panes.as_mut().unwrap()[0].selected_panel_id =
-                Some(id(SURFACE_A2));
-        }),
-        ("dock.workspace_id owner", |snapshot| {
-            snapshot.windows[0].dock.as_mut().unwrap().workspace_id =
-                format!("dock:{}", id(WINDOW_B));
-        }),
-        ("dock.layout.selected_panel_id", |snapshot| {
-            let dock = snapshot.windows[0].dock.as_mut().unwrap();
-            let SessionWorkspaceLayoutSnapshot::Pane(pane) = dock.layout.as_mut().unwrap() else {
-                panic!("dock pane")
-            };
-            pane.selected_panel_id = Some(id(SURFACE_A1));
-        }),
-        ("dock.surface.pane_id", |snapshot| {
-            snapshot.windows[0].dock.as_mut().unwrap().surfaces[0].pane_id = id(PANE_A1);
-        }),
-        ("dock.focused_surface_id", |snapshot| {
-            snapshot.windows[0]
-                .dock
-                .as_mut()
-                .unwrap()
-                .focused_surface_id = Some(id(SURFACE_A1));
-        }),
+fn every_typed_reference_uses_its_canonical_fallback_or_pruning_rule() {
+    let cases: &[(&str, Mutation, Validation)] = &[
+        (
+            "window.selected_workspace_id",
+            |snapshot| {
+                snapshot.windows[0].selected_workspace_id = Some(id(WORKSPACE_B));
+            },
+            |snapshot| {
+                snapshot.windows[0].selected_workspace_id == workspace(snapshot, 0).workspace_id
+            },
+        ),
+        (
+            "group.anchor_workspace_id",
+            |snapshot| {
+                snapshot.windows[0]
+                    .tab_manager
+                    .workspace_groups
+                    .as_mut()
+                    .unwrap()[0]
+                    .anchor_workspace_id = Some(id(WORKSPACE_B));
+            },
+            |snapshot| {
+                snapshot.windows[0]
+                    .tab_manager
+                    .workspace_groups
+                    .as_ref()
+                    .unwrap()[0]
+                    .anchor_workspace_id
+                    == workspace(snapshot, 0).workspace_id
+            },
+        ),
+        (
+            "workspace.group_id",
+            |snapshot| {
+                workspace_mut(snapshot, 0).group_id = Some(id(GROUP_B));
+            },
+            |snapshot| workspace(snapshot, 0).group_id.is_none(),
+        ),
+        (
+            "pane.selected_panel_id",
+            |snapshot| {
+                pane_mut(snapshot, 0, 0).selected_panel_id = Some(id(SURFACE_B1));
+            },
+            first_pane_selects_first_panel,
+        ),
+        (
+            "pane.selected_panel_id wrong sibling",
+            |snapshot| {
+                pane_mut(snapshot, 0, 0).selected_panel_id = Some(id(SURFACE_A2));
+            },
+            first_pane_selects_first_panel,
+        ),
+        (
+            "workspace.zoomed_panel_id",
+            |snapshot| {
+                workspace_mut(snapshot, 0).zoomed_panel_id = Some(id(SURFACE_B1));
+            },
+            |snapshot| workspace(snapshot, 0).zoomed_panel_id.is_none(),
+        ),
+        (
+            "workspace.focused_panel_id",
+            |snapshot| {
+                workspace_mut(snapshot, 0).focused_panel_id = Some(id(SURFACE_B1));
+            },
+            focus_is_local_and_coherent,
+        ),
+        (
+            "workspace.focused_pane_id",
+            |snapshot| {
+                workspace_mut(snapshot, 0).focused_pane_id = Some(id(PANE_B1));
+            },
+            focus_is_local_and_coherent,
+        ),
+        (
+            "surface.pane_id",
+            |snapshot| {
+                workspace_mut(snapshot, 0).surfaces.as_mut().unwrap()[0].pane_id = id(PANE_B1);
+            },
+            |snapshot| {
+                workspace(snapshot, 0).surfaces.as_ref().unwrap()[0].pane_id
+                    == pane_at(snapshot, 0, 0).pane_id.as_deref().unwrap()
+            },
+        ),
+        (
+            "surface.pane_id wrong sibling",
+            |snapshot| {
+                workspace_mut(snapshot, 0).surfaces.as_mut().unwrap()[0].pane_id = id(PANE_A2);
+            },
+            |snapshot| {
+                workspace(snapshot, 0).surfaces.as_ref().unwrap()[0].pane_id
+                    == pane_at(snapshot, 0, 0).pane_id.as_deref().unwrap()
+            },
+        ),
+        (
+            "pending_surface_pwds.surface_id",
+            |snapshot| {
+                workspace_mut(snapshot, 0)
+                    .pending_surface_pwds
+                    .as_mut()
+                    .unwrap()[0]
+                    .surface_id = id(SURFACE_B1);
+            },
+            |snapshot| {
+                workspace(snapshot, 0)
+                    .pending_surface_pwds
+                    .as_ref()
+                    .is_none_or(Vec::is_empty)
+            },
+        ),
+        (
+            "panel_titles.panel_id",
+            |snapshot| {
+                workspace_mut(snapshot, 0).panel_titles.as_mut().unwrap()[0].panel_id =
+                    id(SURFACE_B1);
+            },
+            |snapshot| {
+                workspace(snapshot, 0)
+                    .panel_titles
+                    .as_ref()
+                    .is_none_or(Vec::is_empty)
+            },
+        ),
+        (
+            "panel_pins.panel_id",
+            |snapshot| {
+                workspace_mut(snapshot, 0).panel_pins.as_mut().unwrap()[0].panel_id =
+                    id(SURFACE_B1);
+            },
+            |snapshot| {
+                workspace(snapshot, 0)
+                    .panel_pins
+                    .as_ref()
+                    .is_none_or(Vec::is_empty)
+            },
+        ),
+        (
+            "panel_unreads.panel_id",
+            |snapshot| {
+                workspace_mut(snapshot, 0).panel_unreads.as_mut().unwrap()[0].panel_id =
+                    id(SURFACE_B1);
+            },
+            |snapshot| {
+                workspace(snapshot, 0)
+                    .panel_unreads
+                    .as_ref()
+                    .is_none_or(Vec::is_empty)
+            },
+        ),
+        (
+            "restorable_agent_snapshots.panel_id",
+            |snapshot| {
+                workspace_mut(snapshot, 0)
+                    .restorable_agent_snapshots
+                    .as_mut()
+                    .unwrap()[0]
+                    .panel_id = id(SURFACE_B1);
+            },
+            |snapshot| {
+                workspace(snapshot, 0)
+                    .restorable_agent_snapshots
+                    .as_ref()
+                    .is_none_or(Vec::is_empty)
+            },
+        ),
+        (
+            "surface_resume_bindings.surface_id",
+            |snapshot| {
+                workspace_mut(snapshot, 0)
+                    .surface_resume_bindings
+                    .as_mut()
+                    .unwrap()[0]
+                    .surface_id = id(SURFACE_B1);
+            },
+            |snapshot| {
+                workspace(snapshot, 0)
+                    .surface_resume_bindings
+                    .as_ref()
+                    .is_none_or(Vec::is_empty)
+            },
+        ),
+        (
+            "published_pane_selections.pane_id",
+            |snapshot| {
+                workspace_mut(snapshot, 0)
+                    .published_pane_selections
+                    .as_mut()
+                    .unwrap()[0]
+                    .pane_id = id(PANE_B1);
+            },
+            |snapshot| {
+                workspace(snapshot, 0)
+                    .published_pane_selections
+                    .as_ref()
+                    .is_none_or(Vec::is_empty)
+            },
+        ),
+        (
+            "published_pane_selections.panel_id",
+            |snapshot| {
+                workspace_mut(snapshot, 0)
+                    .published_pane_selections
+                    .as_mut()
+                    .unwrap()[0]
+                    .panel_id = id(SURFACE_B1);
+            },
+            |snapshot| {
+                workspace(snapshot, 0)
+                    .published_pane_selections
+                    .as_ref()
+                    .is_none_or(Vec::is_empty)
+            },
+        ),
+        (
+            "published selection mismatched pair",
+            |snapshot| {
+                workspace_mut(snapshot, 0)
+                    .published_pane_selections
+                    .as_mut()
+                    .unwrap()[0]
+                    .panel_id = id(SURFACE_A2);
+            },
+            |snapshot| {
+                workspace(snapshot, 0)
+                    .published_pane_selections
+                    .as_ref()
+                    .is_none_or(Vec::is_empty)
+            },
+        ),
+        (
+            "panel_git_branches.panel_id",
+            |snapshot| {
+                workspace_mut(snapshot, 0)
+                    .panel_git_branches
+                    .as_mut()
+                    .unwrap()[0]
+                    .panel_id = id(SURFACE_B1);
+            },
+            |snapshot| {
+                workspace(snapshot, 0)
+                    .panel_git_branches
+                    .as_ref()
+                    .is_none_or(Vec::is_empty)
+            },
+        ),
+        (
+            "panel_pull_requests.panel_id",
+            |snapshot| {
+                workspace_mut(snapshot, 0)
+                    .panel_pull_requests
+                    .as_mut()
+                    .unwrap()[0]
+                    .panel_id = id(SURFACE_B1);
+            },
+            |snapshot| {
+                workspace(snapshot, 0)
+                    .panel_pull_requests
+                    .as_ref()
+                    .is_none_or(Vec::is_empty)
+            },
+        ),
+        (
+            "panel_listening_ports.panel_id",
+            |snapshot| {
+                workspace_mut(snapshot, 0)
+                    .panel_listening_ports
+                    .as_mut()
+                    .unwrap()[0]
+                    .panel_id = id(SURFACE_B1);
+            },
+            |snapshot| {
+                workspace(snapshot, 0)
+                    .panel_listening_ports
+                    .as_ref()
+                    .is_none_or(Vec::is_empty)
+            },
+        ),
+        (
+            "panel_ttys.panel_id",
+            |snapshot| {
+                workspace_mut(snapshot, 0).panel_ttys.as_mut().unwrap()[0].panel_id =
+                    id(SURFACE_B1);
+            },
+            |snapshot| {
+                workspace(snapshot, 0)
+                    .panel_ttys
+                    .as_ref()
+                    .is_none_or(Vec::is_empty)
+            },
+        ),
+        (
+            "panel_shell_activity.panel_id",
+            |snapshot| {
+                workspace_mut(snapshot, 0)
+                    .panel_shell_activity
+                    .as_mut()
+                    .unwrap()[0]
+                    .panel_id = id(SURFACE_B1);
+            },
+            |snapshot| {
+                workspace(snapshot, 0)
+                    .panel_shell_activity
+                    .as_ref()
+                    .is_none_or(Vec::is_empty)
+            },
+        ),
+        (
+            "panel_terminal_startups.panel_id",
+            |snapshot| {
+                workspace_mut(snapshot, 0)
+                    .panel_terminal_startups
+                    .as_mut()
+                    .unwrap()[0]
+                    .panel_id = id(SURFACE_B1);
+            },
+            |snapshot| {
+                workspace(snapshot, 0)
+                    .panel_terminal_startups
+                    .as_ref()
+                    .is_none_or(Vec::is_empty)
+            },
+        ),
+        (
+            "canvas.panel_id",
+            |snapshot| {
+                workspace_mut(snapshot, 0).canvas_panes.as_mut().unwrap()[0].panel_id =
+                    id(SURFACE_B1);
+            },
+            |snapshot| {
+                workspace(snapshot, 0).canvas_panes.as_ref().unwrap()[0].panel_id == id(SURFACE_A1)
+            },
+        ),
+        (
+            "canvas.panel_ids",
+            |snapshot| {
+                workspace_mut(snapshot, 0).canvas_panes.as_mut().unwrap()[0].panel_ids =
+                    Some(vec![id(SURFACE_B1)]);
+            },
+            |snapshot| {
+                workspace(snapshot, 0)
+                    .canvas_panes
+                    .as_ref()
+                    .is_none_or(Vec::is_empty)
+            },
+        ),
+        (
+            "canvas.selected_panel_id",
+            |snapshot| {
+                workspace_mut(snapshot, 0).canvas_panes.as_mut().unwrap()[0].selected_panel_id =
+                    Some(id(SURFACE_B1));
+            },
+            |snapshot| {
+                let canvas = &workspace(snapshot, 0).canvas_panes.as_ref().unwrap()[0];
+                canvas.selected_panel_id.as_ref() == canvas.panel_ids.as_ref().unwrap().first()
+            },
+        ),
+        (
+            "canvas selected outside panel_ids",
+            |snapshot| {
+                workspace_mut(snapshot, 0).canvas_panes.as_mut().unwrap()[0].selected_panel_id =
+                    Some(id(SURFACE_A2));
+            },
+            |snapshot| {
+                let canvas = &workspace(snapshot, 0).canvas_panes.as_ref().unwrap()[0];
+                canvas.selected_panel_id.as_ref() == canvas.panel_ids.as_ref().unwrap().first()
+            },
+        ),
+        (
+            "dock.workspace_id owner",
+            |snapshot| {
+                snapshot.windows[0].dock.as_mut().unwrap().workspace_id =
+                    format!("dock:{}", id(WINDOW_B));
+            },
+            |snapshot| {
+                snapshot.windows[0].dock.as_ref().unwrap().workspace_id
+                    == format!("dock:{}", snapshot.windows[0].window_id.as_deref().unwrap())
+            },
+        ),
+        (
+            "dock.layout.selected_panel_id",
+            |snapshot| {
+                let dock = snapshot.windows[0].dock.as_mut().unwrap();
+                let SessionWorkspaceLayoutSnapshot::Pane(pane) = dock.layout.as_mut().unwrap()
+                else {
+                    panic!("dock pane")
+                };
+                pane.selected_panel_id = Some(id(SURFACE_A1));
+            },
+            |snapshot| {
+                let SessionWorkspaceLayoutSnapshot::Pane(pane) = snapshot.windows[0]
+                    .dock
+                    .as_ref()
+                    .unwrap()
+                    .layout
+                    .as_ref()
+                    .unwrap()
+                else {
+                    return false;
+                };
+                pane.selected_panel_id.as_ref() == pane.panel_ids.first()
+            },
+        ),
+        (
+            "dock.surface.pane_id",
+            |snapshot| {
+                snapshot.windows[0].dock.as_mut().unwrap().surfaces[0].pane_id = id(PANE_A1);
+            },
+            |snapshot| {
+                let dock = snapshot.windows[0].dock.as_ref().unwrap();
+                let SessionWorkspaceLayoutSnapshot::Pane(pane) = dock.layout.as_ref().unwrap()
+                else {
+                    return false;
+                };
+                dock.surfaces[0].pane_id == pane.pane_id.as_deref().unwrap()
+            },
+        ),
+        (
+            "dock.focused_surface_id",
+            |snapshot| {
+                snapshot.windows[0]
+                    .dock
+                    .as_mut()
+                    .unwrap()
+                    .focused_surface_id = Some(id(SURFACE_A1));
+            },
+            |snapshot| {
+                let dock = snapshot.windows[0].dock.as_ref().unwrap();
+                dock.focused_surface_id.as_ref()
+                    == dock.surfaces.first().map(|surface| &surface.surface_id)
+            },
+        ),
     ];
 
-    let mut accepted = Vec::new();
-    for (name, mutation) in cases {
+    let mut wrong = Vec::new();
+    for (name, mutation, validation) in cases {
         let mut restored = graph_fixture();
         mutation(&mut restored);
-        if !restore_rejects_without_publication(restored) {
-            accepted.push(*name);
+        match restore_commits_atomically(restored) {
+            Ok(committed) if validation(&committed) => {}
+            Ok(_) => wrong.push(format!("{name}: wrong normalized value")),
+            Err(error) => wrong.push(format!("{name}: rejected ({error})")),
         }
     }
     assert!(
-        accepted.is_empty(),
-        "restore accepted cross-owner typed references: {}",
-        accepted.join(", ")
+        wrong.is_empty(),
+        "restore diverged from canonical typed-reference behavior:\n{}",
+        wrong.join("\n")
     );
 }
 
@@ -776,7 +1131,7 @@ fn replace_workspace_surface(
 }
 
 #[test]
-fn duplicate_uuid_and_legacy_definitions_reject_without_alias_collapse() {
+fn duplicate_definitions_follow_their_domain_specific_collision_policy() {
     let cases: &[(&str, Mutation)] = &[
         ("duplicate UUID window", |snapshot| {
             snapshot.windows[1].window_id = snapshot.windows[0].window_id.clone();
@@ -855,18 +1210,142 @@ fn duplicate_uuid_and_legacy_definitions_reject_without_alias_collapse() {
         }),
     ];
 
-    let mut accepted = Vec::new();
+    fn uuid(value: &str) -> bool {
+        Uuid::parse_str(value).is_ok()
+    }
+
+    fn unique(values: &[&str]) -> bool {
+        values.iter().copied().collect::<HashSet<_>>().len() == values.len()
+    }
+
+    fn canonical_collision_result(name: &str, snapshot: &AppSessionSnapshot) -> bool {
+        let window_ids = snapshot
+            .windows
+            .iter()
+            .map(|window| window.window_id.as_deref().unwrap())
+            .collect::<Vec<_>>();
+        let workspace_ids = snapshot
+            .windows
+            .iter()
+            .map(|window| {
+                window.tab_manager.workspaces[0]
+                    .workspace_id
+                    .as_deref()
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let split_ids = snapshot
+            .windows
+            .iter()
+            .map(|window| {
+                let SessionWorkspaceLayoutSnapshot::Split(split) =
+                    window.tab_manager.workspaces[0].layout.as_ref().unwrap()
+                else {
+                    panic!("split fixture")
+                };
+                split.split_id.as_deref().unwrap()
+            })
+            .collect::<Vec<_>>();
+        let pane_ids = snapshot
+            .windows
+            .iter()
+            .flat_map(|window| {
+                let SessionWorkspaceLayoutSnapshot::Split(split) =
+                    window.tab_manager.workspaces[0].layout.as_ref().unwrap()
+                else {
+                    panic!("split fixture")
+                };
+                [&split.first, &split.second].map(|node| {
+                    let SessionWorkspaceLayoutSnapshot::Pane(pane) = node.as_ref() else {
+                        panic!("pane fixture")
+                    };
+                    pane.pane_id.as_deref().unwrap()
+                })
+            })
+            .collect::<Vec<_>>();
+        let surface_ids = snapshot
+            .windows
+            .iter()
+            .flat_map(|window| {
+                window.tab_manager.workspaces[0]
+                    .surfaces
+                    .as_deref()
+                    .unwrap()
+                    .iter()
+                    .map(|surface| surface.surface_id.as_str())
+            })
+            .collect::<Vec<_>>();
+
+        match name {
+            "duplicate UUID window" => {
+                window_ids[0] == id(WINDOW_A)
+                    && window_ids[1] != window_ids[0]
+                    && uuid(window_ids[1])
+            }
+            "duplicate legacy window" => {
+                unique(&window_ids) && window_ids.iter().all(|id| uuid(id))
+            }
+            "duplicate UUID workspace" | "duplicate legacy workspace" => {
+                unique(&workspace_ids)
+                    && workspace_ids.iter().all(|id| uuid(id))
+                    && snapshot.windows.iter().enumerate().all(|(index, window)| {
+                        window.selected_workspace_id.as_deref() == Some(workspace_ids[index])
+                    })
+            }
+            "duplicate UUID group" => snapshot.windows.iter().all(|window| {
+                let group = &window.tab_manager.workspace_groups.as_ref().unwrap()[0];
+                group.id == id(GROUP_A)
+                    && window.tab_manager.workspaces[0].group_id.as_deref()
+                        == Some(id(GROUP_A).as_str())
+            }),
+            "duplicate legacy group" => {
+                let groups = snapshot
+                    .windows
+                    .iter()
+                    .map(|window| {
+                        window.tab_manager.workspace_groups.as_ref().unwrap()[0]
+                            .id
+                            .as_str()
+                    })
+                    .collect::<Vec<_>>();
+                unique(&groups)
+                    && groups.iter().all(|id| uuid(id))
+                    && snapshot.windows.iter().enumerate().all(|(index, window)| {
+                        window.tab_manager.workspaces[0].group_id.as_deref() == Some(groups[index])
+                    })
+            }
+            "duplicate UUID split" | "duplicate legacy split" => {
+                unique(&split_ids) && split_ids.iter().all(|id| uuid(id))
+            }
+            "duplicate UUID pane" | "duplicate legacy pane" => {
+                unique(&pane_ids) && pane_ids.iter().all(|id| uuid(id))
+            }
+            "duplicate UUID surface" => {
+                unique(&surface_ids)
+                    && surface_ids[0] == id(SURFACE_A1)
+                    && surface_ids.iter().all(|id| uuid(id))
+            }
+            "duplicate legacy surface" => {
+                unique(&surface_ids) && surface_ids.iter().all(|id| uuid(id))
+            }
+            _ => false,
+        }
+    }
+
+    let mut wrong = Vec::new();
     for (name, mutation) in cases {
         let mut restored = graph_fixture();
         mutation(&mut restored);
-        if !restore_rejects_without_publication(restored) {
-            accepted.push(*name);
+        match restore_commits_atomically(restored) {
+            Ok(committed) if canonical_collision_result(name, &committed) => {}
+            Ok(_) => wrong.push(format!("{name}: wrong collision result")),
+            Err(error) => wrong.push(format!("{name}: rejected ({error})")),
         }
     }
     assert!(
-        accepted.is_empty(),
-        "restore accepted duplicate definitions: {}",
-        accepted.join(", ")
+        wrong.is_empty(),
+        "restore diverged from canonical collision behavior:\n{}",
+        wrong.join("\n")
     );
 }
 
@@ -1124,7 +1603,7 @@ fn equal_legacy_literals_in_different_identity_domains_remain_unambiguous() {
 }
 
 #[test]
-fn ambiguous_layout_surface_aliases_reject_before_any_publication() {
+fn layout_surface_aliases_follow_canonical_filter_prune_and_collision_rules() {
     let cases: &[(&str, Mutation)] = &[
         ("same panel appears in two panes", |snapshot| {
             pane_mut(snapshot, 0, 1).panel_ids = vec![id(SURFACE_A1)];
@@ -1219,18 +1698,116 @@ fn ambiguous_layout_surface_aliases_reject_before_any_publication() {
         }),
     ];
 
-    let mut accepted = Vec::new();
+    fn collect_layout(
+        layout: &SessionWorkspaceLayoutSnapshot,
+        panes: &mut Vec<(String, Vec<String>, Option<String>)>,
+    ) {
+        match layout {
+            SessionWorkspaceLayoutSnapshot::Pane(pane) => panes.push((
+                pane.pane_id.clone().unwrap(),
+                pane.panel_ids.clone(),
+                pane.selected_panel_id.clone(),
+            )),
+            SessionWorkspaceLayoutSnapshot::Split(split) => {
+                collect_layout(&split.first, panes);
+                collect_layout(&split.second, panes);
+            }
+        }
+    }
+
+    fn canonical_alias_result(name: &str, snapshot: &AppSessionSnapshot) -> bool {
+        let workspace = workspace(snapshot, 0);
+        let mut panes = Vec::new();
+        collect_layout(workspace.layout.as_ref().unwrap(), &mut panes);
+        let layout_panels = panes
+            .iter()
+            .flat_map(|(_, panels, _)| panels.iter().map(String::as_str))
+            .collect::<Vec<_>>();
+        let surfaces = workspace
+            .surfaces
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(|surface| surface.surface_id.as_str())
+            .collect::<Vec<_>>();
+        let selections_are_local = panes.iter().all(|(_, panels, selected)| {
+            selected
+                .as_ref()
+                .is_none_or(|selected| panels.contains(selected))
+        });
+        let owners_follow_layout = workspace
+            .surfaces
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .all(|surface| {
+                panes.iter().any(|(pane, panels, _)| {
+                    pane == &surface.pane_id && panels.contains(&surface.surface_id)
+                })
+            });
+
+        match name {
+            "same panel appears in two panes" => {
+                layout_panels.len() == 2
+                    && layout_panels.iter().copied().collect::<HashSet<_>>().len() == 2
+                    && surfaces.iter().copied().collect::<HashSet<_>>().len() == 2
+                    && !layout_panels.contains(&id(SURFACE_A2).as_str())
+                    && selections_are_local
+                    && owners_follow_layout
+            }
+            "authoritative surface has wrong pane owner" => owners_follow_layout,
+            "authoritative surface absent from layout" => {
+                !surfaces.contains(&id(0x7fff).as_str()) && owners_follow_layout
+            }
+            "layout surface absent from authoritative rows" => {
+                !layout_panels.contains(&id(SURFACE_A1).as_str())
+                    && !surfaces.contains(&id(SURFACE_A1).as_str())
+                    && panes.iter().all(|(_, panels, _)| !panels.is_empty())
+                    && selections_are_local
+                    && owners_follow_layout
+            }
+            "missing pane id has conflicting surface owners" => {
+                panes.len() == 1
+                    && panes[0].1.len() == 2
+                    && Uuid::parse_str(&panes[0].0).is_ok()
+                    && panes[0].0 != id(PANE_A1)
+                    && panes[0].0 != id(PANE_A2)
+                    && selections_are_local
+                    && owners_follow_layout
+            }
+            "legacy layout-only alias is duplicated" => {
+                panes.len() == 2
+                    && layout_panels.len() == 2
+                    && layout_panels.iter().all(|id| Uuid::parse_str(id).is_ok())
+                    && layout_panels.iter().all(|id| *id != "legacy-duplicate")
+                    && layout_panels.iter().copied().collect::<HashSet<_>>().len() == 2
+                    && selections_are_local
+                    && owners_follow_layout
+            }
+            _ => false,
+        }
+    }
+
+    let mut wrong = Vec::new();
     for (name, mutation) in cases {
         let mut restored = graph_fixture();
         mutation(&mut restored);
-        if !restore_rejects_without_publication(restored) {
-            accepted.push(*name);
+        if *name == "duplicate authoritative surface row" {
+            if !restore_rejects_without_publication(restored) {
+                wrong.push(format!("{name}: not rejected atomically"));
+            }
+            continue;
+        }
+        match restore_commits_atomically(restored) {
+            Ok(committed) if canonical_alias_result(name, &committed) => {}
+            Ok(_) => wrong.push(format!("{name}: wrong normalized graph")),
+            Err(error) => wrong.push(format!("{name}: rejected ({error})")),
         }
     }
     assert!(
-        accepted.is_empty(),
-        "restore accepted ambiguous layout/surface representations: {}",
-        accepted.join(", ")
+        wrong.is_empty(),
+        "restore diverged from canonical layout/surface behavior:\n{}",
+        wrong.join("\n")
     );
 }
 
@@ -1245,12 +1822,36 @@ fn local_contract_must_match_the_frozen_domain_specific_restore_policy() {
     ));
     let tab_manager = include_str!("../../../../../Sources/TabManager.swift");
     assert!(tab_manager.contains("let workspace = Workspace("));
+    assert!(tab_manager.contains("seen.insert(groupSnapshot.id).inserted else { return nil }"));
+    assert!(tab_manager.contains("if let index = groupSnapshot.anchorMemberIndex,"));
+    assert!(tab_manager
+        .contains("if let stored = groupSnapshot.anchorWorkspaceId, members.contains(stored)"));
+    assert!(tab_manager.contains("return members[0]"));
+    assert!(tab_manager.contains("let knownGroupIds = Set(restoredGroups.map(\\.id))"));
+    assert!(tab_manager.contains("workspace.groupId = nil"));
     let workspace = include_str!("../../../../../Sources/Workspace.swift");
+    assert!(workspace
+        .contains("let panelSnapshotsById = Dictionary(uniqueKeysWithValues: snapshot.panels.map"));
     assert!(workspace.contains("restoreSessionLayoutNode(layout, inPane: rootPaneId"));
+    assert!(workspace.contains(
+        "let desiredOldPanelIds = snapshot.panelIds.filter { panelSnapshotsById[$0] != nil }"
+    ));
+    assert!(workspace.contains("guard !createdPanelIds.isEmpty else { return }"));
+    assert!(workspace.contains("return oldToNewPanelIds[selectedOldId]"));
+    assert!(workspace.contains("return createdPanelIds.first"));
+    assert!(workspace.contains("pruneSurfaceMetadata(validSurfaceIds: Set(panels.keys))"));
+    assert!(workspace.contains(
+        "else if let fallbackFocusedPanelId = focusedPanelId, panels[fallbackFocusedPanelId] != nil"
+    ));
     assert!(workspace.contains(
         "GhosttyApp.terminalSurfaceRegistry.surface(id: snapshot.id) == nil ? snapshot.id : nil"
     ));
     assert!(workspace.contains("oldToNewPanelIds[oldPanelId] = createdPanelId"));
+    let canvas = include_str!("../../../../../Sources/Canvas/Workspace+CanvasLayout.swift");
+    assert!(canvas.contains("let oldPanelIds = pane.panelIds ?? [pane.panelId]"));
+    assert!(canvas.contains("let newPanelIds = oldPanelIds.compactMap"));
+    assert!(canvas.contains("guard !newPanelIds.isEmpty else { return nil }"));
+    assert!(canvas.contains("selectedPanelId: newSelected ?? newPanelIds[0]"));
     assert!(
         !contract.contains("do not mint replacement public ids on restore"),
         "the blanket stable-id sentence contradicts frozen e1825d40: Workspace and bonsplit ids are rebuilt"
