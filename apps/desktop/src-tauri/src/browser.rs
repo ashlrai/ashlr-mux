@@ -18,12 +18,24 @@ const NETWORK_BODY_CAPTURE_LIMIT_BYTES: usize = 4 * 1024;
 #[allow(dead_code)]
 const NETWORK_HTTP_HEAD_CAPTURE_LIMIT_BYTES: usize = 64 * 1024;
 const BROWSER_EVAL_TIMEOUT: Duration = Duration::from_secs(5);
+const BROWSER_RUNTIME_LOCK_ORDER: [&str; 5] = [
+    "reserved_panel_ids",
+    "webviews",
+    "pending_cleanup_children",
+    "network_records",
+    "init_scripts",
+];
+
+pub(crate) type BrowserPendingCleanupId = u64;
 
 pub struct BrowserWebviewState {
     reserved_panel_ids: Mutex<BTreeSet<String>>,
     webviews: Mutex<HashMap<String, BrowserChild>>,
+    pending_cleanup_children:
+        Mutex<BTreeMap<String, BTreeMap<BrowserPendingCleanupId, BrowserChild>>>,
     init_scripts: Mutex<HashMap<String, Vec<String>>>,
     network_records: Mutex<HashMap<String, Vec<BrowserNetworkRecord>>>,
+    next_pending_cleanup_id: AtomicU64,
     next_network_record_id: AtomicU64,
 }
 
@@ -32,14 +44,17 @@ impl Default for BrowserWebviewState {
         Self {
             reserved_panel_ids: Mutex::new(BTreeSet::new()),
             webviews: Mutex::new(HashMap::new()),
+            pending_cleanup_children: Mutex::new(BTreeMap::new()),
             init_scripts: Mutex::new(HashMap::new()),
             network_records: Mutex::new(HashMap::new()),
+            next_pending_cleanup_id: AtomicU64::new(1),
             next_network_record_id: AtomicU64::new(1),
         }
     }
 }
 
 struct BrowserChild {
+    runtime_id: BrowserPendingCleanupId,
     webview: tauri::Webview,
     label: String,
     url: String,
@@ -52,6 +67,7 @@ struct BrowserChild {
 #[allow(dead_code)]
 pub(crate) struct BrowserPanelRuntimeEntry {
     child: Option<BrowserChild>,
+    pending_cleanup: BTreeMap<BrowserPendingCleanupId, BrowserChild>,
     network_records: Option<Vec<BrowserNetworkRecord>>,
     init_scripts: Option<Vec<String>>,
 }
@@ -77,6 +93,7 @@ pub(crate) struct BrowserPanelFinalizeError {
 struct BrowserPanelMutationReservation<'a> {
     state: &'a BrowserWebviewState,
     panel_id: String,
+    pending_cleanup_id: Option<BrowserPendingCleanupId>,
     active: bool,
 }
 
@@ -120,11 +137,15 @@ fn cleanup_built_browser_child_after_failure(
 ) -> String {
     let mut errors = vec![primary];
     if let Err(cleanup) = child.webview.close().map_err(|error| error.to_string()) {
-        let mut webviews = state
-            .webviews
+        let pending_cleanup_id = child.runtime_id;
+        state
+            .pending_cleanup_children
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        webviews.insert(panel_id.to_string(), child);
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entry(panel_id.to_string())
+            .or_default()
+            .insert(pending_cleanup_id, child);
+        mutation_reservation.pending_cleanup_id = Some(pending_cleanup_id);
         errors.push(format!("failed to close built browser child: {cleanup}"));
     }
     if owns_mutation_reservation {
@@ -139,25 +160,44 @@ fn cleanup_built_browser_child_after_failure(
 
 fn cleanup_tracked_browser_child_for_compensation(
     state: &BrowserWebviewState,
-    panel_id: &str,
+    mutation_reservation: &mut BrowserPanelMutationReservation<'_>,
 ) -> Result<(), String> {
+    let Some(pending_cleanup_id) = mutation_reservation.pending_cleanup_id.take() else {
+        return Ok(());
+    };
+    let panel_id = mutation_reservation.panel_id.as_str();
     let child = {
-        let mut webviews = state
-            .webviews
+        let mut pending_cleanup_children = state
+            .pending_cleanup_children
             .lock()
-            .map_err(|_| "browser webview state lock poisoned".to_string())?;
-        webviews.remove(panel_id)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let child = pending_cleanup_children
+            .get_mut(panel_id)
+            .and_then(|children| children.remove(&pending_cleanup_id));
+        if pending_cleanup_children
+            .get(panel_id)
+            .is_some_and(BTreeMap::is_empty)
+        {
+            pending_cleanup_children.remove(panel_id);
+        }
+        child
     };
     let Some(child) = child else {
-        return Ok(());
+        mutation_reservation.pending_cleanup_id = Some(pending_cleanup_id);
+        return Err(format!(
+            "pending browser cleanup child {panel_id}/{pending_cleanup_id} is unavailable"
+        ));
     };
 
     if let Err(cleanup) = child.webview.close().map_err(|error| error.to_string()) {
         state
-            .webviews
+            .pending_cleanup_children
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(panel_id.to_string(), child);
+            .entry(panel_id.to_string())
+            .or_default()
+            .insert(pending_cleanup_id, child);
+        mutation_reservation.pending_cleanup_id = Some(pending_cleanup_id);
         return Err(format!(
             "failed to close tracked new-script browser child: {cleanup}"
         ));
@@ -165,11 +205,44 @@ fn cleanup_tracked_browser_child_for_compensation(
     Ok(())
 }
 
+fn next_browser_pending_cleanup_id(state: &BrowserWebviewState) -> BrowserPendingCleanupId {
+    state
+        .next_pending_cleanup_id
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+            next.checked_add(1)
+        })
+        .expect("browser pending cleanup id space exhausted")
+}
+
+fn browser_child_is_authoritative(
+    state: &BrowserWebviewState,
+    panel_id: &str,
+    runtime_id: BrowserPendingCleanupId,
+) -> Result<bool, String> {
+    let reserved_panel_ids = state
+        .reserved_panel_ids
+        .lock()
+        .map_err(|_| "browser reservation state lock poisoned".to_string())?;
+    if reserved_panel_ids.contains(panel_id) {
+        return Ok(false);
+    }
+    state
+        .webviews
+        .lock()
+        .map(|webviews| {
+            webviews
+                .get(panel_id)
+                .is_some_and(|child| child.runtime_id == runtime_id)
+        })
+        .map_err(|_| "browser webview state lock poisoned".to_string())
+}
+
 #[allow(dead_code)]
 pub(crate) fn detach_browser_panels_for_control(
     state: &BrowserWebviewState,
     panel_ids: &BTreeSet<String>,
 ) -> Result<BrowserPanelRuntimeLease, String> {
+    let _lock_order = BROWSER_RUNTIME_LOCK_ORDER;
     let panel_ids = panel_ids
         .iter()
         .filter_map(|panel_id| {
@@ -185,6 +258,10 @@ pub(crate) fn detach_browser_panels_for_control(
         .webviews
         .lock()
         .map_err(|_| "browser webview state lock poisoned".to_string())?;
+    let mut pending_cleanup_children = state
+        .pending_cleanup_children
+        .lock()
+        .map_err(|_| "browser pending cleanup state lock poisoned".to_string())?;
     let mut network_records = state
         .network_records
         .lock()
@@ -208,6 +285,9 @@ pub(crate) fn detach_browser_panels_for_control(
                 panel_id.clone(),
                 BrowserPanelRuntimeEntry {
                     child: webviews.remove(panel_id),
+                    pending_cleanup: pending_cleanup_children
+                        .remove(panel_id)
+                        .unwrap_or_default(),
                     network_records: network_records.remove(panel_id),
                     init_scripts: init_scripts.remove(panel_id),
                 },
@@ -230,6 +310,10 @@ pub(crate) fn rollback_browser_panels_for_control(
         .webviews
         .lock()
         .expect("browser webview state lock poisoned");
+    let mut pending_cleanup_children = state
+        .pending_cleanup_children
+        .lock()
+        .expect("browser pending cleanup state lock poisoned");
     let mut network_records = state
         .network_records
         .lock()
@@ -245,6 +329,16 @@ pub(crate) fn rollback_browser_panels_for_control(
     let collision = lease.entries.iter().find_map(|(panel_id, entry)| {
         (entry.child.is_some() && webviews.contains_key(panel_id))
             .then(|| format!("webview collision for {panel_id}"))
+            .or_else(|| {
+                entry.pending_cleanup.keys().find_map(|pending_cleanup_id| {
+                    pending_cleanup_children
+                        .get(panel_id)
+                        .is_some_and(|children| children.contains_key(pending_cleanup_id))
+                        .then(|| {
+                            format!("pending cleanup collision for {panel_id}/{pending_cleanup_id}")
+                        })
+                })
+            })
             .or_else(|| {
                 (entry.network_records.is_some() && network_records.contains_key(panel_id))
                     .then(|| format!("network record collision for {panel_id}"))
@@ -265,6 +359,12 @@ pub(crate) fn rollback_browser_panels_for_control(
     for (panel_id, entry) in lease.entries {
         if let Some(child) = entry.child {
             webviews.insert(panel_id.clone(), child);
+        }
+        if !entry.pending_cleanup.is_empty() {
+            pending_cleanup_children
+                .entry(panel_id.clone())
+                .or_default()
+                .extend(entry.pending_cleanup);
         }
         if let Some(records) = entry.network_records {
             network_records.insert(panel_id.clone(), records);
@@ -304,13 +404,29 @@ pub(crate) fn finalize_browser_panels_for_control(
     let mut retry_panel_ids = BTreeSet::new();
     let mut retry = BTreeMap::new();
     for (panel_id, mut entry) in lease.entries {
-        let result = entry.child.as_mut().map_or(Ok(()), |child| {
-            child.webview.close().map_err(|error| error.to_string())
-        });
-        if let Err(error) = result {
-            failures.push(format!("{panel_id}: {error}"));
+        let mut retry_entry = BrowserPanelRuntimeEntry {
+            child: None,
+            pending_cleanup: BTreeMap::new(),
+            network_records: entry.network_records.take(),
+            init_scripts: entry.init_scripts.take(),
+        };
+        if let Some(child) = entry.child.take() {
+            if let Err(error) = child.webview.close().map_err(|error| error.to_string()) {
+                failures.push(format!("{panel_id}/main: {error}"));
+                retry_entry.child = Some(child);
+            }
+        }
+        for (pending_cleanup_id, child) in entry.pending_cleanup {
+            if let Err(error) = child.webview.close().map_err(|error| error.to_string()) {
+                failures.push(format!("{panel_id}/{pending_cleanup_id}: {error}"));
+                retry_entry
+                    .pending_cleanup
+                    .insert(pending_cleanup_id, child);
+            }
+        }
+        if retry_entry.child.is_some() || !retry_entry.pending_cleanup.is_empty() {
             retry_panel_ids.insert(panel_id.clone());
-            retry.insert(panel_id, entry);
+            retry.insert(panel_id, retry_entry);
         }
     }
 
@@ -563,7 +679,7 @@ pub(crate) fn browser_close_webview_strict_for_control(
     if lease
         .entries
         .get(panel_id)
-        .is_none_or(|entry| entry.child.is_none())
+        .is_none_or(|entry| entry.child.is_none() && entry.pending_cleanup.is_empty())
     {
         rollback_browser_panels_for_control(state, lease).map_err(|rollback| rollback.message)?;
         return Err(format!("browser runtime {panel_id} is unavailable"));
@@ -711,6 +827,7 @@ pub(crate) fn browser_add_init_script_for_control(
     let mut mutation_reservation = BrowserPanelMutationReservation {
         state,
         panel_id: panel_id.to_string(),
+        pending_cleanup_id: None,
         active: true,
     };
     let (old_child, prior_scripts) = {
@@ -785,7 +902,9 @@ pub(crate) fn browser_add_init_script_for_control(
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 restore_browser_init_scripts(&mut init_scripts, panel_id, prior_scripts);
             }
-            if let Err(cleanup) = cleanup_tracked_browser_child_for_compensation(state, panel_id) {
+            if let Err(cleanup) =
+                cleanup_tracked_browser_child_for_compensation(state, &mut mutation_reservation)
+            {
                 let mut errors = vec![primary, cleanup];
                 if let Err(release) = mutation_reservation.release() {
                     errors.push(format!(
@@ -911,6 +1030,7 @@ fn upsert_browser_webview<'a>(
         Some(BrowserPanelMutationReservation {
             state,
             panel_id: panel_id.clone(),
+            pending_cleanup_id: None,
             active: true,
         })
     } else {
@@ -1023,11 +1143,22 @@ fn upsert_browser_webview<'a>(
         }
     }
 
+    let runtime_id = next_browser_pending_cleanup_id(state);
     let event_app = app.clone();
     let event_panel_id = panel_id.clone();
+    let event_runtime_id = runtime_id;
     let mut builder = WebviewBuilder::new(label.clone(), WebviewUrl::External(webview_url))
         .on_navigation(move |url| {
             let browser_state = event_app.state::<BrowserWebviewState>();
+            if !browser_child_is_authoritative(
+                browser_state.inner(),
+                &event_panel_id,
+                event_runtime_id,
+            )
+            .unwrap_or(false)
+            {
+                return true;
+            }
             let _ =
                 record_observed_navigation(browser_state.inner(), &event_panel_id, url.as_str());
             let _ = event_app.emit(
@@ -1058,6 +1189,7 @@ fn upsert_browser_webview<'a>(
         )
         .map_err(|error| error.to_string())?;
     let child = BrowserChild {
+        runtime_id,
         webview,
         label: label.clone(),
         url: normalized_url.clone(),
