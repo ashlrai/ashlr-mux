@@ -46,6 +46,7 @@ pub(super) enum LifecycleEffect {
         generation: u64,
         command: String,
         working_directory: Option<String>,
+        tmux_start_command: String,
     },
     BrowserAttach {
         surface_id: String,
@@ -527,7 +528,7 @@ pub(super) fn dispatch_lifecycle_request(
         "surface.create" => surface_create(snapshot, params, context),
         "surface.action" | "tab.action" => surface_action(snapshot, method, params, context),
         "surface.report_pwd" => surface_report_pwd(snapshot, params),
-        "surface.respawn" => surface_respawn(snapshot, params),
+        "surface.respawn" => surface_respawn(snapshot, params, context),
         "surface.close" => surface_close(snapshot, params, context),
         "surface.focus" => surface_focus(snapshot, params),
         "surface.move" => surface_move(snapshot, params, context),
@@ -2817,16 +2818,21 @@ fn surface_report_pwd(
     )
 }
 
+fn has_non_null(params: &Map<String, Value>, key: &str) -> bool {
+    params.get(key).is_some_and(|value| !value.is_null())
+}
+
 fn surface_respawn(
     snapshot: &AppSessionSnapshot,
     params: &Map<String, Value>,
+    context: &LifecycleDispatchContext,
 ) -> LifecycleTransition {
-    if params.contains_key("focus") && params.get("focus").and_then(Value::as_bool).is_none() {
+    // Canonical: ControlCommandCoordinator+Surface.swift:429-432 — a
+    // present-but-non-bool focus errors before the surface resolves; a null
+    // focus counts as absent (hasNonNull).
+    if has_non_null(params, "focus") && super::bool_param(params, &["focus"]).is_none() {
         return error(snapshot, "invalid_params", "Missing or invalid focus", None);
     }
-    let Some(surface_id) = params.get("surface_id").and_then(Value::as_str) else {
-        return error(snapshot, "not_found", "No focused surface", None);
-    };
     let mut model = match SurfaceLifecycleModel::from_app_session(snapshot) {
         Ok(model) => model,
         Err(_) => {
@@ -2838,6 +2844,41 @@ fn surface_respawn(
             )
         }
     };
+    // Canonical target semantics — ControlCommandCoordinator+Surface.swift:438-441
+    // + TerminalController+ControlSurfaceContext2.swift:216-250: a present
+    // surface_id is located globally and overrides routing; a non-UUID value is
+    // surfaceNotFoundForID(nil) with null data; without it resolve routing →
+    // workspace → focused surface, with the localized respawn strings
+    // (ControlSurfaceContext2.swift:11-35).
+    let surface_id = if has_non_null(params, "surface_id") {
+        let Some(requested) = params.get("surface_id").and_then(Value::as_str) else {
+            return error(
+                snapshot,
+                "not_found",
+                "Surface not found for the given surface_id",
+                None,
+            );
+        };
+        requested.to_owned()
+    } else {
+        let scope = match scope(snapshot, params, context) {
+            Ok(scope) => scope,
+            Err(("unavailable", _)) => {
+                return error(
+                    snapshot,
+                    "unavailable",
+                    "Unable to access the target workspace",
+                    None,
+                )
+            }
+            Err((code, message)) => return error(snapshot, code, message, None),
+        };
+        let Some(focused) = model.focused_surface(&scope.workspace_id) else {
+            return error(snapshot, "not_found", "No focused surface", None);
+        };
+        focused.to_owned()
+    };
+    let surface_id = surface_id.as_str();
     let Some(record) = model.surface(surface_id).cloned() else {
         return error(
             snapshot,
@@ -2857,19 +2898,24 @@ fn surface_respawn(
             Some(json!({"surface_id":surface_id})),
         );
     }
-    let command = params
-        .get("command")
-        .and_then(Value::as_str)
-        .or_else(|| params.get("initial_command").and_then(Value::as_str))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("cmd.exe")
-        .to_owned();
-    let working_directory = params.get("working_directory").and_then(Value::as_str);
+    // Canonical: ControlCommandCoordinator+Surface.swift:424-427 — trimmed
+    // command then initial_command (native default shell is accepted platform
+    // equivalence for the canonical exec ${SHELL:-/bin/zsh} -l), trimmed
+    // tmux_start_command defaulting to the command, trimmed working_directory.
+    let command = super::string_param(params, &["command", "initial_command"])
+        .unwrap_or_else(|| "cmd.exe".to_owned());
+    let tmux_start_command = super::string_param(params, &["tmux_start_command"])
+        .unwrap_or_else(|| command.clone());
+    let working_directory = super::string_param(params, &["working_directory"]);
     let reservation = model
-        .begin_respawn(surface_id, &command, working_directory)
+        .begin_respawn(
+            surface_id,
+            &command,
+            working_directory.as_deref(),
+            Some(&tmux_start_command),
+        )
         .unwrap();
-    if params.get("focus").and_then(Value::as_bool) == Some(true) {
+    if super::bool_param(params, &["focus"]) == Some(true) {
         let _ = model.focus_surface(surface_id);
     }
     let owner = model.owner_of_surface(surface_id).cloned().unwrap();
@@ -2884,7 +2930,8 @@ fn surface_respawn(
                 previous_generation: record.generation,
                 generation: reservation.generation,
                 command,
-                working_directory: working_directory.map(str::to_owned),
+                working_directory,
+                tmux_start_command,
             },
             LifecycleEffect::PersistSession,
         ],

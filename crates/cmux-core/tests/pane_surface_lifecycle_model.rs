@@ -386,7 +386,7 @@ fn respawn_keeps_public_identity_and_replaces_runtime_generation() {
     );
 
     let replacement = model
-        .begin_respawn("surface-1", "pwsh -NoLogo", Some("C:/repo"))
+        .begin_respawn("surface-1", "pwsh -NoLogo", Some("C:/repo"), None)
         .unwrap();
     assert_eq!(replacement.surface_id, "surface-1");
     assert!(replacement.generation > token.generation);
@@ -699,7 +699,7 @@ fn close_move_and_respawn_project_back_into_the_real_session_schema() {
         .unwrap();
     move_ok(&mut model, "terminal-a", "pane-b", 1);
     let respawn = model
-        .begin_respawn("terminal-a", "pwsh -NoProfile", Some("C:/repo"))
+        .begin_respawn("terminal-a", "pwsh -NoProfile", Some("C:/repo"), None)
         .unwrap();
     assert_eq!(respawn.surface_id, "terminal-a");
 
@@ -948,7 +948,7 @@ fn pending_remote_pwd_is_persisted_moved_applied_once_and_cleaned_on_close_or_re
             .as_deref(),
         Some("/srv/a")
     );
-    restored.begin_respawn("surface-1", "pwsh", None).unwrap();
+    restored.begin_respawn("surface-1", "pwsh", None, None).unwrap();
     assert!(!restored.has_pending_remote_pwd("workspace-b", "remote-1"));
     restored
         .queue_remote_pwd("workspace-b", Some("remote-1"), "/srv/b")

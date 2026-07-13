@@ -476,16 +476,33 @@ fn respawn_pane_resolves_numeric_surface_without_changing_focused_fallback() {
 
 #[test]
 fn no_context_lifecycle_commands_resolve_current_workspace_before_server_focus() {
-    for (tag, args, final_method) in [
+    // Canonical focused-fallback wire behavior: without a surface selector the
+    // CLI sends the request WITHOUT surface_id and the backend resolves routing
+    // → workspace → focused surface itself
+    // (TerminalController+ControlSurfaceContext2.swift:234-250); the server
+    // answers with the canonical respawn success payload and the CLI prints OK.
+    for (tag, args, final_method, response, expected_stdout) in [
         (
             "tab-action-current-workspace",
             vec!["tab-action", "pin"],
             "tab.action",
+            json!({"action":"pin"}),
+            None,
         ),
         (
             "respawn-pane-current-workspace",
             vec!["respawn-pane", "--command", "echo ok"],
             "surface.respawn",
+            json!({
+                "workspace_id": WORKSPACE_ID,
+                "workspace_ref": "workspace:4",
+                "surface_id": SURFACE_ID,
+                "surface_ref": "surface:9",
+                "type": "terminal",
+                "window_id": WINDOW_ID,
+                "window_ref": "window:1"
+            }),
+            Some("OK\n"),
         ),
     ] {
         let (pipe, request_rx) = spawn_method_server(
@@ -495,7 +512,7 @@ fn no_context_lifecycle_commands_resolve_current_workspace_before_server_focus()
                     "workspace.current".into(),
                     json!({"workspace_id":WORKSPACE_ID,"workspace_ref":"workspace:4"}),
                 ),
-                (final_method.into(), json!({"action":"pin"})),
+                (final_method.into(), response),
             ]),
         );
         let output = executable(Some(&pipe), &args);
@@ -504,6 +521,9 @@ fn no_context_lifecycle_commands_resolve_current_workspace_before_server_focus()
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
+        if let Some(expected_stdout) = expected_stdout {
+            assert_eq!(String::from_utf8_lossy(&output.stdout), expected_stdout);
+        }
         assert_eq!(
             request_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
             ("workspace.current".into(), serde_json::Map::new())
@@ -511,7 +531,10 @@ fn no_context_lifecycle_commands_resolve_current_workspace_before_server_focus()
         let (method, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(method, final_method);
         assert_eq!(params.get("workspace_id"), Some(&json!(WORKSPACE_ID)));
-        assert!(params.get("surface_id").is_none());
+        assert!(
+            params.get("surface_id").is_none(),
+            "surface-less respawn must leave focused-surface resolution to the backend"
+        );
     }
 }
 

@@ -638,6 +638,7 @@ impl SurfaceLifecycleModel {
         surface_id: &str,
         command: &str,
         working_directory: Option<&str>,
+        tmux_start_command: Option<&str>,
     ) -> Result<Reservation, LifecycleError> {
         let owner_workspace = self
             .surface_owners
@@ -673,6 +674,7 @@ impl SurfaceLifecycleModel {
             .insert(surface_id.into(), record.generation);
         record.terminal_startup.command = Some(command.into());
         record.terminal_startup.working_directory = working_directory.map(str::to_owned);
+        record.terminal_startup.tmux_start_command = tmux_start_command.map(str::to_owned);
         Ok(Reservation {
             surface_id: surface_id.into(),
             generation: record.generation,

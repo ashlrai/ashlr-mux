@@ -2050,3 +2050,124 @@ fn pane_create_applies_and_persists_full_terminal_startup_metadata() {
         })
     );
 }
+
+#[test]
+fn respawn_without_surface_id_resolves_routing_workspace_then_focused_surface() {
+    // Canonical: TerminalController+ControlSurfaceContext2.swift:234-250 — when
+    // surface_id is absent, surface.respawn resolves routing → workspace →
+    // FOCUSED surface and respawns it; the unavailable/Workspace-not-found
+    // fallbacks are reachable in that order with the localized respawn strings
+    // (ControlSurfaceContext2.swift:11-35).
+    let snapshot = mixed_surface_snapshot();
+    let respawned = transition(
+        &snapshot,
+        "surface.respawn",
+        json!({"workspace_id": "workspace-1", "command": "run"}),
+    );
+    let value = ok_value(&respawned);
+    assert_eq!(value["surface_id"], json!("surface-terminal"));
+    assert_eq!(value["workspace_id"], json!("workspace-1"));
+    assert_eq!(value["type"], json!("terminal"));
+    assert!(respawned.effects.iter().any(|effect| matches!(
+        effect,
+        LifecycleEffect::TerminalReplace { surface_id, .. } if surface_id == "surface-terminal"
+    )));
+
+    let unavailable = transition(
+        &snapshot,
+        "surface.respawn",
+        json!({"window_id": "missing-window"}),
+    );
+    assert_error(
+        &unavailable,
+        "unavailable",
+        "Unable to access the target workspace",
+    );
+
+    let missing_workspace = transition(
+        &snapshot,
+        "surface.respawn",
+        json!({"workspace_id": "missing-workspace"}),
+    );
+    assert_error(&missing_workspace, "not_found", "Workspace not found");
+
+    let mut unfocused = mixed_surface_snapshot();
+    unfocused.windows[0].tab_manager.workspaces[0].focused_panel_id = None;
+    let no_focus = transition(&unfocused, "surface.respawn", json!({}));
+    assert_error(&no_focus, "not_found", "No focused surface");
+
+    // An explicit null surface_id counts as absent (hasNonNull,
+    // ControlCommandCoordinator+Surface.swift:438-441) and takes the focused
+    // fallback; same for a null focus (Surface.swift:429-432).
+    let null_id = transition(
+        &snapshot,
+        "surface.respawn",
+        json!({"surface_id": null, "focus": null}),
+    );
+    assert_eq!(ok_value(&null_id)["surface_id"], json!("surface-terminal"));
+
+    // A present-but-non-string surface_id parses to no UUID, which is the
+    // canonical surfaceNotFoundForID(nil): not_found with null data
+    // (ControlCommandCoordinator+Surface.swift:449-455,
+    // TerminalController+ControlSurfaceContext2.swift:218-221).
+    let non_string = transition(&snapshot, "surface.respawn", json!({"surface_id": 42}));
+    assert_eq!(
+        assert_error(
+            &non_string,
+            "not_found",
+            "Surface not found for the given surface_id"
+        ),
+        Value::Null
+    );
+}
+
+#[test]
+fn respawn_threads_tmux_start_command_defaulting_to_command() {
+    // Canonical: ControlCommandCoordinator+Surface.swift:424-427 parses
+    // tmux_start_command ?? command, and the app passes it through to
+    // respawnTerminalSurface (TerminalController+ControlSurfaceContext2.swift:261-267);
+    // the replacement runtime effect and the persisted startup carry it.
+    let snapshot = mixed_surface_snapshot();
+    let explicit = transition(
+        &snapshot,
+        "surface.respawn",
+        json!({
+            "surface_id": "surface-terminal",
+            "command": "run",
+            "tmux_start_command": " htop "
+        }),
+    );
+    let effect = explicit
+        .effects
+        .iter()
+        .find(|effect| matches!(effect, LifecycleEffect::TerminalReplace { .. }))
+        .expect("terminal replace effect");
+    let effect = serde_json::to_value(effect).unwrap();
+    assert_eq!(effect["TerminalReplace"]["command"], json!("run"));
+    assert_eq!(effect["TerminalReplace"]["tmux_start_command"], json!("htop"));
+    let startup = explicit.snapshot.windows[0].tab_manager.workspaces[0]
+        .surfaces
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .find(|record| record.surface_id == "surface-terminal")
+        .expect("respawned record")
+        .terminal_startup
+        .clone()
+        .expect("persisted startup");
+    assert_eq!(startup.command.as_deref(), Some("run"));
+    assert_eq!(startup.tmux_start_command.as_deref(), Some("htop"));
+
+    let defaulted = transition(
+        &snapshot,
+        "surface.respawn",
+        json!({"surface_id": "surface-terminal", "command": "run"}),
+    );
+    let effect = defaulted
+        .effects
+        .iter()
+        .find(|effect| matches!(effect, LifecycleEffect::TerminalReplace { .. }))
+        .expect("terminal replace effect");
+    let effect = serde_json::to_value(effect).unwrap();
+    assert_eq!(effect["TerminalReplace"]["tmux_start_command"], json!("run"));
+}
