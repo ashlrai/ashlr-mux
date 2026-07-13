@@ -760,9 +760,53 @@ fn initial_snapshot(first_panel_id: &str) -> AppSessionSnapshot {
             },
         }],
     };
+    // Canonical Workspace init: currentDirectory = requested ?? home
+    // (Workspace.swift:2885-2891 at pinned e1825d40d).
+    snapshot.windows[0].tab_manager.workspaces[0].current_directory = default_workspace_directory();
     ensure_workspace_ids(&mut snapshot);
     ensure_pane_ids(&mut snapshot);
+    seed_initial_surface_record(&mut snapshot.windows[0].tab_manager.workspaces[0]);
     snapshot
+}
+
+/// Canonical Workspace init falls back to the user's home directory
+/// (FileManager.default.homeDirectoryForCurrentUser, Workspace.swift:2885-2891).
+fn default_workspace_directory() -> Option<String> {
+    ["USERPROFILE", "HOME"]
+        .iter()
+        .find_map(|key| std::env::var(*key).ok())
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+/// Materialize the authoritative surface record for a fresh single-pane
+/// workspace so its first terminal carries `requested_working_directory`
+/// from birth, like canonical's first-panel spawn with `initialDirectory`
+/// (REMEDIATION.md divergence 6).
+fn seed_initial_surface_record(workspace: &mut SessionWorkspaceSnapshot) {
+    if workspace.surfaces.is_some() {
+        return;
+    }
+    let Some(SessionWorkspaceLayoutSnapshot::Pane(pane)) = workspace.layout.as_ref() else {
+        return;
+    };
+    let (Some(pane_id), Some(panel_id)) = (pane.pane_id.clone(), pane.panel_ids.first().cloned())
+    else {
+        return;
+    };
+    workspace.surfaces = Some(vec![cmux_core::session::SessionSurfaceSnapshot {
+        surface_id: panel_id,
+        pane_id,
+        generation: 1,
+        kind: cmux_core::session::SessionSurfaceKindSnapshot::Terminal,
+        metadata: Default::default(),
+        terminal_startup: workspace.current_directory.clone().map(|directory| {
+            cmux_core::session::SessionSurfaceTerminalStartupSnapshot {
+                working_directory: Some(directory),
+                ..Default::default()
+            }
+        }),
+    }]);
 }
 
 /// Mint a `workspace_id` for every workspace that lacks one. Canonical parity:
@@ -2277,6 +2321,12 @@ fn apply_new_workspace(
     // minted here, in the stateful layer (see `ensure_workspace_ids`).
     ensure_workspace_ids(snapshot);
     ensure_pane_ids(snapshot);
+    if let Some(workspace) = snapshot.windows.first_mut().and_then(|window| {
+        let index = usize::try_from(window.tab_manager.selected_workspace_index?).ok()?;
+        window.tab_manager.workspaces.get_mut(index)
+    }) {
+        seed_initial_surface_record(workspace);
+    }
 }
 
 /// Move an existing panel/surface into a newly-created workspace and select it.
@@ -9181,6 +9231,60 @@ mod tests {
     // The tab-manager workspace logic is unit-tested in `cmux_core::session_ops`;
     // these verify the desktop `apply_*` fns delegate to it against the first
     // window of a real `AppSessionSnapshot`.
+
+    #[test]
+    fn bootstrap_workspace_carries_default_directory_and_surface_startup() {
+        // Canonical Workspace init: currentDirectory = requested ?? home
+        // (Workspace.swift:2885-2891 at pinned e1825d40d); the first terminal
+        // spawns with it, so its requestedWorkingDirectory is present from
+        // birth (REMEDIATION.md divergence 6: null-vs-present is capture-pinned).
+        let snapshot = initial_snapshot("surface-1");
+        let workspace = &snapshot.windows[0].tab_manager.workspaces[0];
+        let directory = workspace
+            .current_directory
+            .clone()
+            .expect("bootstrap workspace directory");
+        assert!(!directory.trim().is_empty());
+        let records = workspace
+            .surfaces
+            .as_deref()
+            .expect("bootstrap surface records");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].surface_id, "surface-1");
+        assert_eq!(
+            records[0]
+                .terminal_startup
+                .as_ref()
+                .and_then(|startup| startup.working_directory.as_deref()),
+            Some(directory.as_str())
+        );
+    }
+
+    #[test]
+    fn new_workspace_seeds_its_initial_surface_directory() {
+        let mut snapshot = initial_snapshot("surface-1");
+        apply_new_workspace(
+            &mut snapshot,
+            "surface-2",
+            Some("C:/inherited"),
+            None,
+            None,
+            None,
+        );
+        let tabs = tab_manager(&snapshot);
+        let index = usize::try_from(tabs.selected_workspace_index.unwrap()).unwrap();
+        let workspace = &tabs.workspaces[index];
+        assert_eq!(workspace.current_directory.as_deref(), Some("C:/inherited"));
+        let records = workspace.surfaces.as_deref().expect("surface records");
+        assert_eq!(records[0].surface_id, "surface-2");
+        assert_eq!(
+            records[0]
+                .terminal_startup
+                .as_ref()
+                .and_then(|startup| startup.working_directory.as_deref()),
+            Some("C:/inherited")
+        );
+    }
 
     #[test]
     fn apply_new_workspace_appends_and_selects_it() {

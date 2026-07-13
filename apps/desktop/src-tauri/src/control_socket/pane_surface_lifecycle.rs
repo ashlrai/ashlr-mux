@@ -621,6 +621,40 @@ fn workspace_contains_surface(
         })
 }
 
+/// Canonical resolvedTerminalStartupWorkingDirectory (Workspace.swift:
+/// 6805-6824 at pinned e1825d40d): when a created terminal has no explicit
+/// working_directory and no startup command, inherit the creator's reported
+/// pwd, then the creator's own requested working directory, then the
+/// workspace's currentDirectory — first trimmed non-empty (differential
+/// remediation D6; presence-vs-null is capture-pinned).
+fn inherited_working_directory(
+    workspace: &cmux_core::session::SessionWorkspaceSnapshot,
+    source_surface_id: Option<&str>,
+) -> Option<String> {
+    fn trimmed(value: &str) -> Option<String> {
+        let value = value.trim();
+        (!value.is_empty()).then(|| value.to_owned())
+    }
+    let source = source_surface_id.and_then(|id| {
+        workspace
+            .surfaces
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .find(|record| record.surface_id == id)
+    });
+    source
+        .and_then(|record| record.metadata.reported_directory.as_deref())
+        .and_then(trimmed)
+        .or_else(|| {
+            source
+                .and_then(|record| record.terminal_startup.as_ref())
+                .and_then(|startup| startup.working_directory.as_deref())
+                .and_then(trimmed)
+        })
+        .or_else(|| workspace.current_directory.as_deref().and_then(trimmed))
+}
+
 fn workspace_contains_pane(
     workspace: &cmux_core::session::SessionWorkspaceSnapshot,
     id: &str,
@@ -1635,6 +1669,12 @@ fn surface_create(
     let Some(anchor) = anchor else {
         return error(snapshot, "not_found", "Pane not found", None);
     };
+    // Canonical fallbackSource for cwd inheritance is the target pane's
+    // selected tab (Workspace.swift:7515-7517).
+    let inherit_source = find_pane(workspace.layout.as_ref(), &pane_id)
+        .and_then(|pane| pane.selected_panel_id.clone())
+        .or_else(|| Some(anchor.clone()));
+    let inherited_directory = inherited_working_directory(workspace, inherit_source.as_deref());
     let surface_id = Uuid::new_v4().to_string();
     if !workspace
         .layout
@@ -1675,7 +1715,15 @@ fn surface_create(
     // (TerminalController+ControlSurfaceContext2.swift:393-404); persist the
     // full startup metadata on the created terminal.
     let initial_command = super::string_param(params, &["initial_command"]);
-    let working_directory = super::string_param(params, &["working_directory"]);
+    // D6: inherit the creator's directory when no explicit request and no
+    // startup command (canonical inheritWorkingDirectoryFallback gate,
+    // Workspace.swift:7515-7521).
+    let working_directory = super::string_param(params, &["working_directory"]).or_else(|| {
+        initial_command
+            .is_none()
+            .then_some(inherited_directory)
+            .flatten()
+    });
     let tmux_start_command = super::string_param(params, &["tmux_start_command"]);
     let remote_pty_session_id = super::string_param(params, &["remote_pty_session_id"]);
     let startup_environment = super::first_present_trimmed_string_map_param(
@@ -3902,7 +3950,31 @@ fn pane_create(
     // initial_env) to newTerminalSplitOutcome, and the created terminal
     // persists that startup metadata.
     let initial_command = super::string_param(params, &["initial_command"]);
-    let working_directory = super::string_param(params, &["working_directory"]);
+    // D6: splits inherit the split-source surface's directory (raw-uuid
+    // source honored per the pane.create quirk, else the focused surface),
+    // bottoming out at the workspace currentDirectory (Workspace.swift:
+    // 6805-6824, 7515-7521).
+    let split_inherit_source = params
+        .get("__pane_create_raw_surface_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| {
+            snapshot.windows[scope.window_index].tab_manager.workspaces[scope.workspace_index]
+                .focused_panel_id
+                .clone()
+        });
+    let working_directory = super::string_param(params, &["working_directory"]).or_else(|| {
+        initial_command
+            .is_none()
+            .then(|| {
+                inherited_working_directory(
+                    &snapshot.windows[scope.window_index].tab_manager.workspaces
+                        [scope.workspace_index],
+                    split_inherit_source.as_deref(),
+                )
+            })
+            .flatten()
+    });
     let tmux_start_command = super::string_param(params, &["tmux_start_command"]);
     let startup_environment = super::first_present_trimmed_string_map_param(
         params,
