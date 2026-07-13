@@ -675,6 +675,77 @@ fn split_close_snapshot() -> AppSessionSnapshot {
     serde_json::from_value(encoded).expect("decode split close fixture")
 }
 
+fn set_published_rows(
+    snapshot: &mut AppSessionSnapshot,
+    window_index: usize,
+    workspace_index: usize,
+    rows: &[(&str, &str)],
+) {
+    snapshot.windows[window_index].tab_manager.workspaces[workspace_index]
+        .published_pane_selections = Some(
+        rows.iter()
+            .map(
+                |(pane_id, panel_id)| cmux_core::session::SessionPanePublishedSelectionSnapshot {
+                    pane_id: (*pane_id).into(),
+                    panel_id: (*panel_id).into(),
+                },
+            )
+            .collect(),
+    );
+}
+
+fn published_rows(
+    snapshot: &AppSessionSnapshot,
+    window_index: usize,
+    workspace_index: usize,
+) -> Vec<(String, String)> {
+    snapshot.windows[window_index].tab_manager.workspaces[workspace_index]
+        .published_pane_selections
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|row| (row.pane_id.clone(), row.panel_id.clone()))
+        .collect()
+}
+
+fn lifecycle_event_names(transition: &LifecycleTransition) -> Vec<&'static str> {
+    transition.events.iter().map(|event| event.name).collect()
+}
+
+fn publication_matrix_snapshot(focused_surface_id: &str) -> AppSessionSnapshot {
+    let mut snapshot = resizable_snapshot();
+    let workspace = &mut snapshot.windows[0].tab_manager.workspaces[0];
+    workspace.focused_panel_id = Some(focused_surface_id.into());
+    let SessionWorkspaceLayoutSnapshot::Split(split) = workspace.layout.as_mut().unwrap() else {
+        unreachable!()
+    };
+    let SessionWorkspaceLayoutSnapshot::Pane(matrix) = split.first.as_mut() else {
+        unreachable!()
+    };
+    matrix.pane_id = Some("pane-matrix".into());
+    matrix.panel_ids = vec![
+        "surface-before".into(),
+        "surface-selected".into(),
+        "surface-after".into(),
+    ];
+    matrix.selected_panel_id = Some("surface-selected".into());
+    let SessionWorkspaceLayoutSnapshot::Pane(other) = split.second.as_mut() else {
+        unreachable!()
+    };
+    other.pane_id = Some("pane-other".into());
+    other.panel_ids = vec!["surface-other".into()];
+    other.selected_panel_id = Some("surface-other".into());
+
+    let mut encoded = serde_json::to_value(snapshot).expect("encode publication matrix");
+    encoded["windows"][0]["tab_manager"]["workspaces"][0]["surfaces"] = json!([
+        {"surface_id":"surface-before","pane_id":"pane-matrix","generation":1,"kind":{"type":"terminal"}},
+        {"surface_id":"surface-selected","pane_id":"pane-matrix","generation":1,"kind":{"type":"terminal"}},
+        {"surface_id":"surface-after","pane_id":"pane-matrix","generation":1,"kind":{"type":"terminal"}},
+        {"surface_id":"surface-other","pane_id":"pane-other","generation":1,"kind":{"type":"terminal"}}
+    ]);
+    serde_json::from_value(encoded).expect("decode publication matrix")
+}
+
 #[derive(Default)]
 struct CloseCommitExecutor {
     fail_commit: bool,
@@ -718,6 +789,299 @@ fn commit_close(
     )
     .expect("close transition commits");
     snapshot
+}
+
+#[test]
+fn close_publication_position_focus_pointer_matrix_preserves_canonical_state() {
+    // Frozen capture evidence proves the unfocused predecessor callback.
+    // Bonsplit callback occurrence for the other positional/focus combinations
+    // still needs a canonical capture, so those
+    // rows deliberately accept either canonical event shape while enforcing
+    // the invariants common to both: closed first, dead-pointer pruning,
+    // pointer-backed previous ids, and no rewrite when publication suppresses.
+    let positions = [
+        (
+            "before",
+            "surface-before",
+            "surface-selected",
+            "surface-after",
+        ),
+        (
+            "selected",
+            "surface-selected",
+            "surface-after",
+            "surface-before",
+        ),
+        (
+            "after",
+            "surface-after",
+            "surface-selected",
+            "surface-before",
+        ),
+    ];
+    let pointer_states = ["empty", "dead", "stale-surviving", "already-selected"];
+    let mut violations = Vec::new();
+
+    for (position, closed_id, post_selected, stale_survivor) in positions {
+        for closed_focused in [false, true] {
+            for pointer_state in pointer_states {
+                let focused_id = if closed_focused {
+                    closed_id
+                } else if position == "selected" {
+                    "surface-before"
+                } else {
+                    "surface-selected"
+                };
+                let mut snapshot = publication_matrix_snapshot(focused_id);
+                let initial_pointer = match pointer_state {
+                    "empty" => None,
+                    "dead" => Some(closed_id),
+                    "stale-surviving" => Some(stale_survivor),
+                    "already-selected" => Some(post_selected),
+                    _ => unreachable!(),
+                };
+                let mut initial_rows = Vec::new();
+                if let Some(pointer) = initial_pointer {
+                    initial_rows.push(("pane-matrix", pointer));
+                }
+                initial_rows.push(("pane-other", "surface-other"));
+                set_published_rows(&mut snapshot, 0, 0, &initial_rows);
+
+                let closed =
+                    transition(&snapshot, "surface.close", json!({"surface_id": closed_id}));
+                let names = lifecycle_event_names(&closed);
+                let pair_published =
+                    names == ["surface.closed", "surface.selected", "surface.focused"];
+                let closed_only = names == ["surface.closed"];
+                let label = format!("{position}/{closed_focused}/{pointer_state}");
+                if !pair_published && !closed_only {
+                    violations.push(format!("{label}: invalid event order {names:?}"));
+                    continue;
+                }
+
+                let surviving_pointer = initial_pointer.filter(|pointer| *pointer != closed_id);
+                let callback_is_frozen = position == "before" && !closed_focused;
+                if callback_is_frozen {
+                    let expected_pair = surviving_pointer != Some(post_selected);
+                    if pair_published != expected_pair {
+                        violations.push(format!(
+                            "{label}: frozen callback expected pair={expected_pair}, got {names:?}"
+                        ));
+                    }
+                }
+                if pair_published {
+                    let expected_previous =
+                        surviving_pointer.map(Value::from).unwrap_or(Value::Null);
+                    if closed.events[1].payload["previous_surface_id"] != expected_previous {
+                        violations.push(format!(
+                            "{label}: previous was {:?}, expected {expected_previous}",
+                            closed.events[1].payload["previous_surface_id"]
+                        ));
+                    }
+                    if closed.events[1].payload["surface_id"] != json!(post_selected) {
+                        violations.push(format!("{label}: selected wrong survivor"));
+                    }
+                }
+
+                let mut expected_rows: Vec<(String, String)> = initial_rows
+                    .iter()
+                    .filter(|(_, panel_id)| *panel_id != closed_id)
+                    .map(|(pane_id, panel_id)| ((*pane_id).into(), (*panel_id).into()))
+                    .collect();
+                if pair_published {
+                    if let Some(row) = expected_rows
+                        .iter_mut()
+                        .find(|(pane_id, _)| pane_id == "pane-matrix")
+                    {
+                        row.1 = post_selected.into();
+                    } else {
+                        expected_rows.push(("pane-matrix".into(), post_selected.into()));
+                    }
+                }
+                let actual_rows = published_rows(&closed.snapshot, 0, 0);
+                if actual_rows != expected_rows {
+                    violations.push(format!(
+                        "{label}: pointer rows {actual_rows:?}, expected {expected_rows:?}"
+                    ));
+                }
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "close publication matrix violations:\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
+fn close_publication_suppressed_trailing_close_keeps_exact_pointer_row_order() {
+    let mut snapshot = publication_matrix_snapshot("surface-selected");
+    set_published_rows(
+        &mut snapshot,
+        0,
+        0,
+        &[
+            ("pane-matrix", "surface-selected"),
+            ("pane-other", "surface-other"),
+        ],
+    );
+    let before = published_rows(&snapshot, 0, 0);
+    let closed = transition(
+        &snapshot,
+        "surface.close",
+        json!({"surface_id":"surface-after"}),
+    );
+    assert_eq!(lifecycle_event_names(&closed), ["surface.closed"]);
+    assert_eq!(published_rows(&closed.snapshot, 0, 0), before);
+}
+
+#[test]
+fn close_publication_predecessor_callback_suppression_does_not_rewrite_rows() {
+    let mut snapshot = publication_matrix_snapshot("surface-selected");
+    set_published_rows(
+        &mut snapshot,
+        0,
+        0,
+        &[
+            ("pane-matrix", "surface-selected"),
+            ("pane-other", "surface-other"),
+        ],
+    );
+    let before = published_rows(&snapshot, 0, 0);
+    let closed = transition(
+        &snapshot,
+        "surface.close",
+        json!({"surface_id":"surface-before"}),
+    );
+    assert_eq!(lifecycle_event_names(&closed), ["surface.closed"]);
+    assert_eq!(published_rows(&closed.snapshot, 0, 0), before);
+}
+
+#[test]
+fn close_publication_dock_keeps_backing_workspace_and_public_event_owner_stable() {
+    let mut snapshot = test_snapshot();
+    snapshot.windows[0].window_id = Some("main".into());
+    snapshot.windows[0].selected_workspace_id = Some("workspace-1".into());
+    let mut second_workspace = snapshot.windows[0].tab_manager.workspaces[0].clone();
+    second_workspace.workspace_id = Some("workspace-2".into());
+    second_workspace.focused_panel_id = Some("surface-w2".into());
+    let SessionWorkspaceLayoutSnapshot::Pane(pane) = second_workspace.layout.as_mut().unwrap()
+    else {
+        unreachable!()
+    };
+    pane.pane_id = Some("pane-w2".into());
+    pane.panel_ids = vec!["surface-w2".into()];
+    pane.selected_panel_id = Some("surface-w2".into());
+    snapshot.windows[0]
+        .tab_manager
+        .workspaces
+        .push(second_workspace);
+
+    let first = DockStore
+        .create(
+            &mut snapshot,
+            "main",
+            DockCreateRequest {
+                kind: DockSurfaceKind::Terminal,
+                focus: true,
+                ..DockCreateRequest::default()
+            },
+        )
+        .expect("seed first Dock surface");
+    let second = DockStore
+        .create(
+            &mut snapshot,
+            "main",
+            DockCreateRequest {
+                kind: DockSurfaceKind::Terminal,
+                pane_id: Some(first.pane_id),
+                focus: false,
+                ..DockCreateRequest::default()
+            },
+        )
+        .expect("seed second Dock surface");
+    snapshot = transition(
+        &snapshot,
+        "surface.focus",
+        json!({"surface_id": second.surface_id}),
+    )
+    .snapshot;
+
+    let pane_id = first.pane_id.to_string();
+    let first_id = first.surface_id.to_string();
+    let second_id = second.surface_id.to_string();
+    set_published_rows(&mut snapshot, 0, 0, &[("pane-1", "surface-1")]);
+    set_published_rows(
+        &mut snapshot,
+        0,
+        1,
+        &[(&pane_id, &first_id), ("pane-w2", "surface-w2")],
+    );
+    let first_workspace_before = published_rows(&snapshot, 0, 0);
+    let closed = transition(&snapshot, "surface.close", json!({"surface_id": first_id}));
+    assert_eq!(
+        lifecycle_event_names(&closed),
+        ["surface.closed", "surface.selected", "surface.focused"]
+    );
+    assert_eq!(closed.events[1].payload["previous_surface_id"], Value::Null);
+    assert_eq!(closed.events[1].payload["surface_id"], json!(second_id));
+    for event in &closed.events {
+        assert_eq!(event.workspace_id.as_deref(), Some("main"));
+        assert_eq!(event.window_id, None);
+    }
+    assert_eq!(
+        published_rows(&closed.snapshot, 0, 0),
+        first_workspace_before
+    );
+    assert_eq!(
+        published_rows(&closed.snapshot, 0, 1),
+        vec![
+            (pane_id, second_id),
+            ("pane-w2".into(), "surface-w2".into()),
+        ]
+    );
+}
+
+#[test]
+fn close_publication_exact_rows_are_isolated_from_another_window() {
+    let mut snapshot = publication_matrix_snapshot("surface-selected");
+    set_published_rows(
+        &mut snapshot,
+        0,
+        0,
+        &[
+            ("pane-matrix", "surface-before"),
+            ("pane-other", "surface-other"),
+        ],
+    );
+    let mut other_window = test_snapshot().windows.remove(0);
+    other_window.window_id = Some("window-2".into());
+    let other_workspace = &mut other_window.tab_manager.workspaces[0];
+    other_workspace.workspace_id = Some("workspace-2".into());
+    other_workspace.published_pane_selections = Some(vec![
+        cmux_core::session::SessionPanePublishedSelectionSnapshot {
+            pane_id: "window-2-pane-a".into(),
+            panel_id: "window-2-surface-a".into(),
+        },
+        cmux_core::session::SessionPanePublishedSelectionSnapshot {
+            pane_id: "window-2-pane-b".into(),
+            panel_id: "window-2-surface-b".into(),
+        },
+    ]);
+    snapshot.windows.push(other_window);
+    let other_rows_before = published_rows(&snapshot, 1, 0);
+    let closed = transition(
+        &snapshot,
+        "surface.close",
+        json!({"surface_id":"surface-before"}),
+    );
+    assert_eq!(published_rows(&closed.snapshot, 1, 0), other_rows_before);
+    assert!(closed
+        .events
+        .iter()
+        .all(|event| event.workspace_id.as_deref() == Some("workspace-1")));
 }
 
 #[test]
