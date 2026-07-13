@@ -294,8 +294,11 @@ fn command_has_usage_entry(command: &str) -> bool {
 }
 
 /// The authoritative top-level command names (verbatim from
-/// `cmux.swift` `topLevelCommandNames`, 156 entries).
-const TOP_LEVEL_COMMAND_NAMES: &[&str] = &[
+/// `cmux.swift` `topLevelCommandNames`, 156 entries). `pub(crate)` so the
+/// dispatch layer's `unknownCommandError` "Did you mean" suggestions
+/// (CMUXCLI+CommandSuggestions.swift) rank against the same set — the table
+/// itself is parity-frozen and MUST NOT change here.
+pub(crate) const TOP_LEVEL_COMMAND_NAMES: &[&str] = &[
     "__codex-teams-watch",
     "__tmux-compat",
     "agent-hibernation",

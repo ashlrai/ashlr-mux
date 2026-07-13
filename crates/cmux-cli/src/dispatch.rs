@@ -37,9 +37,9 @@ pub enum DispatchPlan {
     PrintVersion,
     /// Print the top-level help to stdout and exit 0.
     PrintTopLevelHelp,
-    /// Print this exact line to stdout and exit 0 (unknown-command / subcommand
-    /// help). The string carries no trailing newline; the executor's `println!`
-    /// supplies it, matching Swift's `print`.
+    /// Print this exact line to stdout and exit 0 (subcommand help). The
+    /// string carries no trailing newline; the executor's `println!` supplies
+    /// it, matching Swift's `print`.
     PrintLine(String),
     /// Run the `rpc` control-socket round-trip (reads socket/password from the
     /// ambient options + environment in the executor).
@@ -100,10 +100,76 @@ pub enum DispatchPlan {
     Fail(CliError),
 }
 
-/// The bare-`help` / unknown-command pointer line, verbatim from Swift
-/// `CLI/cmux.swift:3157`.
-pub fn unknown_command_message(command: &str) -> String {
-    format!("Unknown command '{command}'. Run 'cmux help' to see available commands.")
+/// Swift `unknownCommandError` (CMUXCLI+CommandSuggestions.swift:4-11 at
+/// pinned commit e1825d40d): `Unknown command '<command>'.` plus an optional
+/// `Did you mean '<suggestion>'?`, then `Run 'cmux --help' for the full
+/// command list.` — a thrown [`CliError`] with **exit code 2**, rendered by
+/// the top-level catch as `Error: <message>` on stderr. This is what the help
+/// gate produces when `subcommandUsage(command)` has no entry
+/// (`throw unknownCommandError(command)`, CLI/cmux.swift:3213-3216); canonical
+/// never falls through to the socket dispatch on `--help`.
+pub fn unknown_command_error(command: &str) -> CliError {
+    let mut message = format!("Unknown command '{command}'.");
+    if let Some(suggestion) = suggested_command_name(command) {
+        message.push_str(&format!(" Did you mean '{suggestion}'?"));
+    }
+    message.push_str(" Run 'cmux --help' for the full command list.");
+    CliError::with_exit_code(message, 2)
+}
+
+/// Swift `suggestedCommandName` (CMUXCLI+CommandSuggestions.swift:13-27): the
+/// best top-level command within edit distance 2 (skipping `__`-prefixed
+/// internals; the distance must be positive and smaller than the candidate's
+/// length). Ties break to the lexicographically smaller candidate.
+fn suggested_command_name(command: &str) -> Option<&'static str> {
+    let mut best_name: Option<&'static str> = None;
+    let mut best_distance = usize::MAX;
+    for candidate in crate::classify::TOP_LEVEL_COMMAND_NAMES {
+        if candidate.starts_with("__") {
+            continue;
+        }
+        let distance = edit_distance(command, candidate);
+        if distance == 0 || distance > 2 || distance >= candidate.chars().count() {
+            continue;
+        }
+        if distance < best_distance
+            || (distance == best_distance && best_name.is_none_or(|best| *candidate < best))
+        {
+            best_name = Some(candidate);
+            best_distance = distance;
+        }
+    }
+    best_name
+}
+
+/// Levenshtein distance over characters (Swift `editDistance`,
+/// CMUXCLI+CommandSuggestions.swift:29-51).
+fn edit_distance(lhs: &str, rhs: &str) -> usize {
+    let left: Vec<char> = lhs.chars().collect();
+    let right: Vec<char> = rhs.chars().collect();
+    if left.is_empty() {
+        return right.len();
+    }
+    if right.is_empty() {
+        return left.len();
+    }
+    let mut previous: Vec<usize> = (0..=right.len()).collect();
+    let mut current = vec![0usize; right.len() + 1];
+    for (left_index, left_char) in left.iter().enumerate() {
+        current[0] = left_index + 1;
+        for (right_index, right_char) in right.iter().enumerate() {
+            current[right_index + 1] = if left_char == right_char {
+                previous[right_index]
+            } else {
+                previous[right_index + 1]
+                    .min(current[right_index])
+                    .min(previous[right_index])
+                    + 1
+            };
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous[right.len()]
 }
 
 /// The subcommand-help render: Swift `dispatchSubcommandHelp` prints
@@ -481,7 +547,7 @@ pub fn plan_with_args(action: &PreSocketAction, command: &str, args: &[String]) 
         PreSocketAction::BareVersion => DispatchPlan::PrintVersion,
         PreSocketAction::Help => DispatchPlan::PrintTopLevelHelp,
         PreSocketAction::UnknownCommandHelp { command } => {
-            DispatchPlan::PrintLine(unknown_command_message(command))
+            DispatchPlan::Fail(unknown_command_error(command))
         }
         PreSocketAction::SubcommandHelp { command } => {
             DispatchPlan::PrintLine(subcommand_help_text(command))
@@ -618,19 +684,47 @@ mod tests {
     }
 
     #[test]
-    fn unknown_command_help_prints_exact_pointer_line() {
+    fn unknown_command_help_fails_with_the_canonical_error() {
+        // Canonical `unknownCommandError` (CMUXCLI+CommandSuggestions.swift:
+        // 4-11): thrown CLIError, exit code 2, `Run 'cmux --help'` pointer.
         let plan = plan(
             &PreSocketAction::UnknownCommandHelp {
                 command: "bogus".to_owned(),
             },
             "bogus",
         );
+        match plan {
+            DispatchPlan::Fail(error) => {
+                assert_eq!(
+                    error.message,
+                    "Unknown command 'bogus'. Run 'cmux --help' for the full command list."
+                );
+                assert_eq!(error.exit_code, 2);
+            }
+            other => panic!("expected Fail, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_command_error_suggests_close_top_level_names() {
+        // Distance 1 → suggested.
+        let error = unknown_command_error("pingg");
         assert_eq!(
-            plan,
-            DispatchPlan::PrintLine(
-                "Unknown command 'bogus'. Run 'cmux help' to see available commands.".to_owned()
-            )
+            error.message,
+            "Unknown command 'pingg'. Did you mean 'ping'? Run 'cmux --help' for the full command list."
         );
+        assert_eq!(error.exit_code, 2);
+        // `window` has no candidate within distance 2 → no suggestion
+        // (and `__`-prefixed internals are never suggested).
+        assert_eq!(
+            unknown_command_error("window").message,
+            "Unknown command 'window'. Run 'cmux --help' for the full command list."
+        );
+        // The suggestion must be strictly closer than the candidate's own
+        // length (guards nonsense like 2-char candidates for 1-char input).
+        assert_eq!(edit_distance("pingg", "ping"), 1);
+        assert_eq!(edit_distance("", "ping"), 4);
+        assert_eq!(edit_distance("ping", "ping"), 0);
     }
 
     #[test]
