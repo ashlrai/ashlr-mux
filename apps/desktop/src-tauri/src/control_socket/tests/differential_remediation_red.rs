@@ -243,3 +243,105 @@ fn surface_move_rejects_both_anchor_params() {
         "Specify at most one of before_surface_id or after_surface_id"
     );
 }
+
+// ---------------------------------------------------------------------------
+// D6 — created terminals inherit requested_working_directory from the creator
+// ---------------------------------------------------------------------------
+//
+// Canonical resolvedTerminalStartupWorkingDirectory (Workspace.swift:6805-6824
+// at pinned e1825d40d): explicit request wins; otherwise, when no startup
+// command is present, inherit the creator's reported pwd, then the creator's
+// own requested working directory, then the workspace currentDirectory (first
+// trimmed non-empty). Capture: every fixture surface row carries a non-null
+// requested_working_directory (path TEXT is approved-differencable; null is
+// not).
+
+fn reported_directory_snapshot() -> AppSessionSnapshot {
+    let snapshot = test_snapshot();
+    let mut encoded = serde_json::to_value(snapshot).expect("encode");
+    encoded["windows"][0]["tab_manager"]["workspaces"][0]["surfaces"] = json!([
+        {"surface_id": "surface-1", "pane_id": "pane-1", "generation": 1,
+         "kind": {"type": "terminal"},
+         "metadata": {"reported_directory": "C:/reported"}}
+    ]);
+    serde_json::from_value(encoded).expect("decode")
+}
+
+fn created_surface_working_directory(transition: &LifecycleTransition) -> Option<String> {
+    let created = ok_value(transition)["surface_id"]
+        .as_str()
+        .expect("created surface id")
+        .to_owned();
+    transition
+        .snapshot
+        .windows
+        .iter()
+        .flat_map(|window| &window.tab_manager.workspaces)
+        .flat_map(|workspace| workspace.surfaces.as_deref().unwrap_or_default())
+        .find(|record| record.surface_id == created)
+        .and_then(|record| record.terminal_startup.as_ref())
+        .and_then(|startup| startup.working_directory.clone())
+}
+
+#[test]
+fn surface_create_inherits_creator_reported_directory_first() {
+    let snapshot = reported_directory_snapshot();
+    let created = transition(&snapshot, "surface.create", json!({"type": "terminal"}));
+    assert_eq!(
+        created_surface_working_directory(&created).as_deref(),
+        Some("C:/reported"),
+        "creator reported pwd wins over the workspace directory"
+    );
+}
+
+#[test]
+fn surface_create_falls_back_to_workspace_current_directory() {
+    // test_snapshot workspace current_directory = C:/repo, no reported pwd.
+    let snapshot = test_snapshot();
+    let created = transition(&snapshot, "surface.create", json!({"type": "terminal"}));
+    assert_eq!(
+        created_surface_working_directory(&created).as_deref(),
+        Some("C:/repo")
+    );
+    // The spawn effect carries the inherited directory too.
+    let effect_dir = created.effects.iter().find_map(|effect| match effect {
+        super::pane_surface_lifecycle::LifecycleEffect::TerminalCreate {
+            working_directory,
+            ..
+        } => Some(working_directory.clone()),
+        _ => None,
+    });
+    assert_eq!(effect_dir, Some(Some("C:/repo".into())));
+}
+
+#[test]
+fn surface_create_explicit_directory_and_startup_command_gate_inheritance() {
+    let snapshot = test_snapshot();
+    let explicit = transition(
+        &snapshot,
+        "surface.create",
+        json!({"type": "terminal", "working_directory": "C:/explicit"}),
+    );
+    assert_eq!(
+        created_surface_working_directory(&explicit).as_deref(),
+        Some("C:/explicit")
+    );
+    // Canonical: inheritance only when startupCommand == nil
+    // (Workspace.swift:7515-7521).
+    let with_command = transition(
+        &snapshot,
+        "surface.create",
+        json!({"type": "terminal", "initial_command": "cargo test"}),
+    );
+    assert_eq!(created_surface_working_directory(&with_command), None);
+}
+
+#[test]
+fn pane_create_inherits_the_creator_directory() {
+    let snapshot = test_snapshot();
+    let created = transition(&snapshot, "pane.create", json!({"direction": "right"}));
+    assert_eq!(
+        created_surface_working_directory(&created).as_deref(),
+        Some("C:/repo")
+    );
+}
