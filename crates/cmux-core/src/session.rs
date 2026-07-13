@@ -817,6 +817,9 @@ pub enum SessionSurfaceKindSnapshot {
         url: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[cfg_attr(feature = "ts", ts(optional))]
+        profile: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
         proxy_url: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[cfg_attr(feature = "ts", ts(optional))]
@@ -950,6 +953,9 @@ pub struct SessionSurfaceTerminalStartupSnapshot {
     pub tmux_start_command: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
+    pub remote_pty_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
     pub resume_binding: Option<Box<SessionRestorableAgentSnapshot>>,
 }
 
@@ -1001,7 +1007,26 @@ pub struct SessionWindowSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub selected_workspace_id: Option<String>,
+    /// The window-scoped Dock uses the same pane/surface persistence schema as
+    /// workspaces while remaining a distinct lifecycle container.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub dock: Option<SessionDockSnapshot>,
     pub tab_manager: SessionTabManagerSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionDockSnapshot {
+    pub workspace_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub layout: Option<SessionWorkspaceLayoutSnapshot>,
+    #[serde(default)]
+    pub surfaces: Vec<SessionSurfaceSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub focused_surface_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

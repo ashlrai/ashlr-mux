@@ -4,7 +4,14 @@ use super::pane_surface_lifecycle::{
     RuntimeArrival,
 };
 use super::*;
+use crate::dock::{
+    DockCreateRequest, DockRuntimeIntent, DockRuntimeOperation, DockStore, DockSurfaceKind,
+};
 use cmux_core::surface_lifecycle::{AttachOutcome, RuntimeHandle, SurfaceLifecycleModel};
+use cmux_core::{
+    session::{decode_session, encode_session},
+    surface_lifecycle::ContainerKind,
+};
 
 const V2_LIFECYCLE_METHODS: [&str; 11] = [
     "pane.create",
@@ -149,6 +156,7 @@ fn context() -> LifecycleDispatchContext {
         viewport_size: Some((1_000.0, 800.0)),
         browser_enabled: true,
         dock_available: true,
+        active_window_id: None,
     }
 }
 
@@ -182,6 +190,59 @@ fn assert_error(transition: &LifecycleTransition, code: &str, message: &str) -> 
     data.clone().map(Value::from).unwrap_or(Value::Null)
 }
 
+fn main_window_snapshot() -> AppSessionSnapshot {
+    let mut snapshot = test_snapshot();
+    snapshot.windows[0].window_id = Some("main".into());
+    snapshot
+}
+
+fn main_dock_snapshot() -> (AppSessionSnapshot, String, String) {
+    let mut snapshot = main_window_snapshot();
+    let created = DockStore
+        .create(
+            &mut snapshot,
+            "main",
+            DockCreateRequest {
+                kind: DockSurfaceKind::Terminal,
+                title: Some("Dock shell".into()),
+                working_directory: Some("C:/repo".into()),
+                command: Some("cargo test".into()),
+                focus: true,
+                ..DockCreateRequest::default()
+            },
+        )
+        .expect("seed Dock surface");
+    (
+        snapshot,
+        created.pane_id.to_string(),
+        created.surface_id.to_string(),
+    )
+}
+
+fn main_context(dock_available: bool, browser_enabled: bool) -> LifecycleDispatchContext {
+    LifecycleDispatchContext {
+        viewport_size: Some((1_000.0, 800.0)),
+        browser_enabled,
+        dock_available,
+        active_window_id: Some("main".into()),
+    }
+}
+
+fn main_transition(
+    snapshot: &AppSessionSnapshot,
+    method: &str,
+    params: Value,
+    dock_available: bool,
+    browser_enabled: bool,
+) -> LifecycleTransition {
+    dispatch_lifecycle_request(
+        snapshot,
+        method,
+        params.as_object().expect("decoded params object"),
+        &main_context(dock_available, browser_enabled),
+    )
+}
+
 #[derive(Default)]
 struct RecordingExecutor {
     staged: Vec<LifecycleEffect>,
@@ -191,11 +252,11 @@ struct RecordingExecutor {
 }
 
 impl LifecycleEffectExecutor for RecordingExecutor {
-    type Error = &'static str;
+    type Error = String;
 
     fn stage(&mut self, effect: &LifecycleEffect) -> Result<(), Self::Error> {
         if self.fail_stage_at == Some(self.staged.len()) {
-            return Err("injected effect failure");
+            return Err("injected effect failure".into());
         }
         self.staged.push(effect.clone());
         Ok(())
@@ -206,9 +267,10 @@ impl LifecycleEffectExecutor for RecordingExecutor {
         Ok(())
     }
 
-    fn rollback_staged(&mut self) {
+    fn rollback_staged(&mut self) -> Result<(), Self::Error> {
         self.rollback_count += 1;
         self.staged.clear();
+        Ok(())
     }
 }
 
@@ -340,6 +402,51 @@ fn pane_create_preserves_exact_validation_and_committed_event_contract() {
 }
 
 #[test]
+fn lifecycle_events_carry_complete_owner_envelopes() {
+    let created = transition(
+        &test_snapshot(),
+        "pane.create",
+        json!({"direction":"right","type":"browser","url":"https://events.test"}),
+    );
+    let value = ok_value(&created);
+    for event in &created.events {
+        assert_eq!(event.source, "workspace.lifecycle");
+        assert!(matches!(event.category, "pane" | "surface"));
+        assert_eq!(event.window_id.as_deref(), Some("window-1"));
+        assert_eq!(event.workspace_id.as_deref(), Some("workspace-1"));
+        assert_eq!(event.pane_id.as_deref(), value["pane_id"].as_str());
+        assert_eq!(event.surface_id.as_deref(), value["surface_id"].as_str());
+        assert_eq!(event.payload["pane_id"], value["pane_id"]);
+        assert_eq!(event.payload["surface_id"], value["surface_id"]);
+        assert!(event.payload.get("window_id").is_none());
+        assert!(event.payload.get("workspace_id").is_none());
+        assert_eq!(event.payload["origin"], "browser_split");
+    }
+
+    let action = transition(
+        &created.snapshot,
+        "surface.action",
+        json!({"surface_id":value["surface_id"],"action":"pin"}),
+    );
+    let completion = action
+        .events
+        .iter()
+        .find(|event| event.name == "surface.action")
+        .unwrap();
+    assert_eq!(completion.source, "socket.v2");
+    assert_eq!(completion.window_id.as_deref(), Some("window-1"));
+    assert_eq!(completion.workspace_id.as_deref(), Some("workspace-1"));
+    assert_eq!(completion.pane_id.as_deref(), value["pane_id"].as_str());
+    assert_eq!(
+        completion.surface_id.as_deref(),
+        value["surface_id"].as_str()
+    );
+    assert_eq!(completion.payload["method"], "surface.action");
+    assert_eq!(completion.payload["params"]["action"], "pin");
+    assert_eq!(completion.payload["result"]["pinned"], true);
+}
+
+#[test]
 fn pane_resize_uses_injected_dimensions_and_absolute_validation_precedence() {
     let snapshot = resizable_snapshot();
     let invalid = transition(
@@ -464,7 +571,19 @@ fn dock_and_remote_create_require_real_typed_effects_not_counter_payloads() {
         .iter()
         .any(|effect| matches!(effect, LifecycleEffect::RemoteCreate { .. })));
 
-    let remote_snapshot = mark_remote_tmux_workspace(test_snapshot(), 0);
+    let mut remote_snapshot = mark_remote_tmux_workspace(test_snapshot(), 0);
+    let mut lifecycle = SurfaceLifecycleModel::from_app_session_snapshot(&remote_snapshot).unwrap();
+    lifecycle
+        .replace_kind(
+            "surface-1",
+            SessionSurfaceKindSnapshot::RemoteTerminal {
+                remote_session_id: Some("%1".into()),
+                remote_context: None,
+                arrival_generation: Some(1),
+            },
+        )
+        .unwrap();
+    remote_snapshot = lifecycle.to_app_session(&remote_snapshot).unwrap();
     let remote = transition(
         &remote_snapshot,
         "pane.create",
@@ -521,11 +640,7 @@ fn current_and_list_run_through_shared_dispatch_without_focus_side_effects() {
 fn surface_focus_requires_an_identity_and_commits_workspace_focus() {
     let snapshot = mixed_surface_snapshot();
     let invalid = transition(&snapshot, "surface.focus", json!({}));
-    assert_error(
-        &invalid,
-        "invalid_params",
-        "Missing or invalid surface_id",
-    );
+    assert_error(&invalid, "invalid_params", "Missing or invalid surface_id");
     assert!(!invalid.changed);
 
     let focused = transition(
@@ -628,6 +743,53 @@ fn report_pwd_preserves_raw_path_and_reconciles_pending_remote_once() {
     );
     assert_eq!(first.directory_apply_count("arriving-surface"), 1);
     assert_eq!(second.directory_apply_count("arriving-surface"), 1);
+}
+
+#[test]
+fn runtime_arrival_preserves_nonempty_topology_and_fences_duplicate_and_stale_callbacks() {
+    let remote = mark_remote_tmux_workspace(two_window_snapshot(), 1);
+    let pending = transition(
+        &remote,
+        "surface.report_pwd",
+        json!({"workspace_id":"workspace-2","surface_id":"arriving-surface","path":"C:/remote"}),
+    );
+    let arrival = RuntimeArrival::remote(
+        "window-2",
+        "workspace-2",
+        "pane-remote",
+        "arriving-surface",
+        "remote-42",
+        1,
+    );
+    let first = reconcile_runtime_arrival(&pending.snapshot, arrival.clone());
+    let model = SurfaceLifecycleModel::from_app_session_snapshot(&first.snapshot).unwrap();
+    assert!(model.surface("surface-2").is_some());
+    assert!(model.surface("arriving-surface").is_some());
+    assert_eq!(
+        model.owner_of_surface("surface-2").unwrap().pane_id,
+        "pane-2"
+    );
+    assert_eq!(
+        model.owner_of_surface("arriving-surface").unwrap().pane_id,
+        "pane-remote"
+    );
+    assert_eq!(first.directory_apply_count("arriving-surface"), 1);
+    assert_eq!(
+        reconcile_runtime_arrival(&first.snapshot, arrival).snapshot,
+        first.snapshot
+    );
+    let stale = RuntimeArrival::remote(
+        "window-2",
+        "workspace-2",
+        "pane-remote",
+        "arriving-surface",
+        "remote-42",
+        0,
+    );
+    assert_eq!(
+        reconcile_runtime_arrival(&first.snapshot, stale).snapshot,
+        first.snapshot
+    );
 }
 
 #[test]
@@ -889,4 +1051,1407 @@ fn persisted_schema_has_one_per_surface_authority() {
     ] {
         assert!(pane.get(obsolete).is_none(), "pane retained {obsolete}");
     }
+}
+
+#[test]
+fn dock_api_create_returns_owner_and_dock_scoped_identities_and_commits_runtime_state() {
+    for (kind, url) in [("terminal", None), ("browser", Some("https://dock.test"))] {
+        let mut params = json!({
+            "placement": "dock",
+            "type": kind,
+            "focus": false,
+        });
+        if let Some(url) = url {
+            params["url"] = json!(url);
+        }
+        let transition = main_transition(
+            &main_window_snapshot(),
+            "surface.create",
+            params,
+            true,
+            true,
+        );
+        let value = ok_value(&transition);
+        assert_eq!(value["window_id"], "main");
+        assert_eq!(value["workspace_id"], "main");
+        assert_eq!(value["placement"], "dock");
+        assert_eq!(value["pane_id"], Value::Null);
+        assert_eq!(value["pane_ref"], Value::Null);
+        assert_eq!(value["surface_id"], Value::Null);
+        assert_eq!(value["surface_ref"], Value::Null);
+        let dock_pane_id = value["dock_pane_id"].as_str().expect("Dock pane identity");
+        let dock_surface_id = value["dock_surface_id"]
+            .as_str()
+            .expect("Dock surface identity");
+        assert!(Uuid::parse_str(dock_pane_id).is_ok());
+        assert!(Uuid::parse_str(dock_surface_id).is_ok());
+        assert_eq!(value["type"], kind);
+        assert!(transition.effects.iter().any(|effect| matches!(
+            effect,
+            LifecycleEffect::DockCreate { dock_surface_id: effect_id, kind: effect_kind, .. }
+                if effect_id == dock_surface_id && effect_kind == kind
+        )));
+        assert!(!transition
+            .effects
+            .iter()
+            .any(|effect| matches!(effect, LifecycleEffect::ActivateWindow { .. })));
+        assert!(!transition
+            .effects
+            .iter()
+            .any(|effect| matches!(effect, LifecycleEffect::DockReveal { .. })));
+        assert_eq!(
+            transition
+                .effects
+                .iter()
+                .filter(|effect| matches!(effect, LifecycleEffect::DockChanged { .. }))
+                .count(),
+            1
+        );
+
+        let model = SurfaceLifecycleModel::from_app_session(&transition.snapshot).unwrap();
+        let record = model
+            .surface(dock_surface_id)
+            .expect("runtime identity is published into the authoritative snapshot");
+        assert_eq!(record.generation, 1);
+        let owner = model.owner_of_surface(dock_surface_id).unwrap();
+        assert_eq!(owner.window_id, "main");
+        assert_eq!(owner.workspace_id, "dock:main");
+        assert_eq!(owner.pane_id, dock_pane_id);
+        assert_eq!(
+            model.pane(dock_pane_id).unwrap().container,
+            ContainerKind::Dock
+        );
+        let dock = DockStore.snapshot(&transition.snapshot, "main");
+        let dock_surface = dock
+            .surfaces
+            .iter()
+            .find(|surface| surface.surface_id.to_string() == dock_surface_id)
+            .unwrap();
+        assert_eq!(dock_surface.generation, 1);
+        match (&dock_surface.runtime, kind) {
+            (DockRuntimeIntent::Terminal { .. }, "terminal")
+            | (DockRuntimeIntent::Browser { .. }, "browser") => {}
+            _ => panic!("Dock runtime intent did not match {kind}"),
+        }
+
+        let event = transition
+            .events
+            .iter()
+            .find(|event| event.name == "surface.created")
+            .expect("one Dock surface.created event");
+        assert_eq!(event.window_id.as_deref(), Some("main"));
+        assert_eq!(event.workspace_id.as_deref(), Some("main"));
+        assert_eq!(event.pane_id.as_deref(), Some(dock_pane_id));
+        assert_eq!(event.surface_id.as_deref(), Some(dock_surface_id));
+        assert_eq!(
+            transition
+                .events
+                .iter()
+                .filter(|candidate| candidate.name == "surface.created")
+                .count(),
+            1
+        );
+
+        let restored = decode_session(&encode_session(&transition.snapshot).unwrap()).unwrap();
+        let restored_model = SurfaceLifecycleModel::from_app_session(&restored).unwrap();
+        restored_model.validate_indexes().unwrap();
+        assert_eq!(
+            restored_model.surface(dock_surface_id).unwrap().generation,
+            1
+        );
+    }
+}
+
+#[test]
+fn dock_api_validation_precedes_browser_fallback_and_rejects_non_dock_kinds() {
+    for method in ["surface.create", "pane.create"] {
+        let mut invalid_params = json!({
+            "placement": "not-a-place",
+            "type": "browser",
+            "url": "https://example.test",
+        });
+        if method == "pane.create" {
+            invalid_params["direction"] = json!("right");
+        }
+        let invalid = main_transition(
+            &main_window_snapshot(),
+            method,
+            invalid_params,
+            false,
+            false,
+        );
+        assert_eq!(
+            assert_error(
+                &invalid,
+                "invalid_params",
+                "placement must be one of: workspace, dock"
+            ),
+            json!({"placement":"not-a-place"})
+        );
+
+        let mut disabled_params = json!({"placement":"dock", "type":"browser"});
+        if method == "pane.create" {
+            disabled_params["direction"] = json!("right");
+        }
+        let disabled = main_transition(
+            &main_window_snapshot(),
+            method,
+            disabled_params,
+            false,
+            false,
+        );
+        assert_eq!(
+            assert_error(&disabled, "invalid_params", "Dock placement is disabled"),
+            json!({"placement":"dock"})
+        );
+
+        let mut unsupported_params = json!({"placement":"dock", "type":"markdown"});
+        if method == "pane.create" {
+            unsupported_params["direction"] = json!("down");
+        }
+        let unsupported = main_transition(
+            &main_window_snapshot(),
+            method,
+            unsupported_params,
+            true,
+            true,
+        );
+        assert_eq!(
+            assert_error(
+                &unsupported,
+                "invalid_params",
+                "Dock placement supports only terminal and browser surfaces"
+            ),
+            json!({"type":"markdown"})
+        );
+    }
+}
+
+#[test]
+fn remote_window_arrival_inserts_a_tab_right_of_non_last_source_without_a_pane_event() {
+    let snapshot = mixed_surface_snapshot();
+    let arrival = RuntimeArrival::remote_tab(
+        "window-1",
+        "workspace-1",
+        "pane-mixed",
+        "surface-observed",
+        "%42",
+        1,
+        "surface-terminal",
+        false,
+    );
+    assert_eq!(
+        runtime_arrival_event_semantics(&arrival),
+        (false, "terminal_tab")
+    );
+
+    let reconciled = reconcile_runtime_arrival(&snapshot, arrival);
+    let workspace = &reconciled.snapshot.windows[0].tab_manager.workspaces[0];
+    let SessionWorkspaceLayoutSnapshot::Pane(pane) = workspace.layout.as_ref().unwrap() else {
+        unreachable!()
+    };
+    assert_eq!(
+        pane.panel_ids,
+        ["surface-terminal", "surface-observed", "surface-browser"]
+    );
+    assert_eq!(
+        workspace.focused_panel_id.as_deref(),
+        Some("surface-terminal")
+    );
+    let model = SurfaceLifecycleModel::from_app_session_snapshot(&reconciled.snapshot).unwrap();
+    assert_eq!(
+        model.owner_of_surface("surface-observed").unwrap().pane_id,
+        "pane-mixed"
+    );
+
+    let focused = reconcile_runtime_arrival(
+        &snapshot,
+        RuntimeArrival::remote_tab(
+            "window-1",
+            "workspace-1",
+            "pane-mixed",
+            "surface-focused",
+            "%43",
+            1,
+            "surface-terminal",
+            true,
+        ),
+    );
+    assert_eq!(
+        focused.snapshot.windows[0].tab_manager.workspaces[0]
+            .focused_panel_id
+            .as_deref(),
+        Some("surface-focused")
+    );
+}
+
+#[test]
+fn dock_api_combined_invalid_inputs_follow_frozen_validation_and_owner_precedence() {
+    let invalid_provider = main_transition(
+        &main_window_snapshot(),
+        "surface.create",
+        json!({"placement":"dock","type":"agentSession","provider":"invalid"}),
+        false,
+        false,
+    );
+    assert_error(
+        &invalid_provider,
+        "invalid_params",
+        "Invalid provider (codex|claude|opencode)",
+    );
+
+    let unsupported_before_disabled = main_transition(
+        &main_window_snapshot(),
+        "surface.create",
+        json!({"placement":"dock","type":"markdown"}),
+        false,
+        false,
+    );
+    assert_error(
+        &unsupported_before_disabled,
+        "invalid_params",
+        "Dock placement supports only terminal and browser surfaces",
+    );
+
+    let direction_before_placement = main_transition(
+        &main_window_snapshot(),
+        "pane.create",
+        json!({"placement":"invalid","direction":"diagonal"}),
+        true,
+        true,
+    );
+    assert_error(
+        &direction_before_placement,
+        "invalid_params",
+        "Missing or invalid direction (left|right|up|down)",
+    );
+    // Canonical: TerminalController+ControlPaneContext.swift:297-300 resolves
+    // placement BEFORE the divider guard at :313-319 (the previous assertion
+    // pinned the reversed, non-canonical order).
+    let placement_before_divider = main_transition(
+        &main_window_snapshot(),
+        "pane.create",
+        json!({"placement":"invalid","direction":"right","initial_divider_position":"wide"}),
+        true,
+        true,
+    );
+    assert_eq!(
+        assert_error(
+            &placement_before_divider,
+            "invalid_params",
+            "placement must be one of: workspace, dock",
+        ),
+        json!({"placement":"invalid"})
+    );
+
+    let invalid_url = main_transition(
+        &main_window_snapshot(),
+        "surface.create",
+        json!({"placement":"dock","type":"browser","url":"http://["}),
+        true,
+        false,
+    );
+    assert_eq!(
+        assert_error(&invalid_url, "invalid_params", "Invalid URL"),
+        json!({"url":"http://["})
+    );
+
+    let mut snapshot = two_window_snapshot();
+    snapshot.windows[0].window_id = Some("main".into());
+    let created = DockStore
+        .create(
+            &mut snapshot,
+            "main",
+            DockCreateRequest {
+                focus: true,
+                ..DockCreateRequest::default()
+            },
+        )
+        .unwrap();
+    let conflict = main_transition(
+        &snapshot,
+        "surface.create",
+        json!({"placement":"dock","window_id":"window-2","pane_id":created.pane_id.to_string()}),
+        true,
+        true,
+    );
+    assert_error(
+        &conflict,
+        "invalid_params",
+        "Conflicting Dock routing selectors",
+    );
+    let unresolved = main_transition(
+        &snapshot,
+        "surface.create",
+        json!({"placement":"dock","window_id":"missing-window"}),
+        true,
+        true,
+    );
+    assert_error(&unresolved, "unavailable", "TabManager not available");
+}
+
+#[test]
+fn dock_api_pane_create_maps_direction_to_dock_split_without_touching_workspace_focus() {
+    let (snapshot, source_pane_id, source_surface_id) = main_dock_snapshot();
+    let workspace_before = snapshot.windows[0].tab_manager.clone();
+    let created = main_transition(
+        &snapshot,
+        "pane.create",
+        json!({
+            "placement":"dock",
+            "direction":"down",
+            "surface_id":source_surface_id,
+            "type":"browser",
+            "url":"https://split.test",
+            "initial_divider_position":0.4,
+            "focus":false,
+        }),
+        true,
+        true,
+    );
+    let value = ok_value(&created);
+    assert_eq!(value["window_id"], "main");
+    assert_eq!(value["workspace_id"], "main");
+    assert_eq!(value["placement"], "dock");
+    assert_eq!(value["pane_id"], Value::Null);
+    assert_eq!(value["surface_id"], Value::Null);
+    let dock_pane_id = value["dock_pane_id"].as_str().expect("new Dock pane");
+    let dock_surface_id = value["dock_surface_id"].as_str().expect("new Dock surface");
+    assert_ne!(dock_pane_id, source_pane_id);
+    assert_ne!(dock_surface_id, source_surface_id);
+    assert_eq!(created.snapshot.windows[0].tab_manager, workspace_before);
+    assert!(!created
+        .effects
+        .iter()
+        .any(|effect| matches!(effect, LifecycleEffect::ActivateWindow { .. })));
+    let dock = DockStore.snapshot(&created.snapshot, "main");
+    assert_eq!(dock.panes.len(), 2);
+    let pane = dock
+        .panes
+        .iter()
+        .find(|pane| pane.id.to_string() == dock_pane_id)
+        .unwrap();
+    assert_eq!(pane.placement, "split_down");
+    assert_eq!(pane.divider_position, Some(0.4));
+    assert_eq!(
+        pane.surface_ids,
+        vec![Uuid::parse_str(dock_surface_id).unwrap()]
+    );
+    assert_eq!(
+        created
+            .events
+            .iter()
+            .filter(|event| event.name == "pane.created")
+            .count(),
+        1
+    );
+    assert_eq!(
+        created
+            .events
+            .iter()
+            .filter(|event| event.name == "surface.created")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn dock_api_read_focus_and_close_route_through_the_main_owner() {
+    let (mut snapshot, pane_id, first_surface_id) = main_dock_snapshot();
+    let second = DockStore
+        .create(
+            &mut snapshot,
+            "main",
+            DockCreateRequest {
+                kind: DockSurfaceKind::Browser,
+                pane_id: Some(Uuid::parse_str(&pane_id).unwrap()),
+                url: Some("https://read.test".into()),
+                focus: false,
+                ..DockCreateRequest::default()
+            },
+        )
+        .unwrap();
+
+    let listed = main_transition(
+        &snapshot,
+        "surface.list",
+        json!({"workspace_id":"main"}),
+        true,
+        true,
+    );
+    let list_value = ok_value(&listed);
+    assert_eq!(list_value["window_id"], "main");
+    assert_eq!(list_value["workspace_id"], "main");
+    let second_surface_id = second.surface_id.to_string();
+    let listed_ids = list_value["surfaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|surface| surface["id"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        listed_ids,
+        vec![first_surface_id.as_str(), second_surface_id.as_str()]
+    );
+    assert!(!listed.changed);
+    assert!(listed.effects.is_empty());
+
+    let current = main_transition(
+        &snapshot,
+        "surface.current",
+        json!({"workspace_id":"main"}),
+        true,
+        true,
+    );
+    let current_value = ok_value(&current);
+    assert_eq!(current_value["window_id"], "main");
+    assert_eq!(current_value["workspace_id"], "main");
+    assert_eq!(current_value["surface_id"], first_surface_id);
+
+    let focused = main_transition(
+        &snapshot,
+        "surface.focus",
+        json!({"surface_id":second.surface_id}),
+        true,
+        true,
+    );
+    let focused_value = ok_value(&focused);
+    assert_eq!(focused_value["window_id"], "main");
+    assert_eq!(focused_value["workspace_id"], "main");
+    assert_eq!(focused_value["surface_id"], second.surface_id.to_string());
+    assert_eq!(
+        DockStore
+            .current(&focused.snapshot, "main")
+            .unwrap()
+            .surface_id,
+        second.surface_id
+    );
+    assert!(focused.effects.iter().any(|effect| matches!(
+        effect,
+        LifecycleEffect::DockReveal { owner_id } if owner_id == "main"
+    )));
+    assert_eq!(
+        focused
+            .effects
+            .iter()
+            .filter(|effect| matches!(effect, LifecycleEffect::DockChanged { .. }))
+            .count(),
+        1
+    );
+
+    let closed = main_transition(
+        &focused.snapshot,
+        "surface.close",
+        json!({"workspace_id":"main"}),
+        true,
+        true,
+    );
+    let closed_value = ok_value(&closed);
+    assert_eq!(closed_value["window_id"], "main");
+    assert_eq!(closed_value["workspace_id"], "main");
+    assert_eq!(closed_value["surface_id"], second.surface_id.to_string());
+    assert!(DockStore
+        .list(&closed.snapshot, "main")
+        .iter()
+        .all(|surface| surface.surface_id != second.surface_id));
+    assert_eq!(
+        closed
+            .effects
+            .iter()
+            .filter(|effect| matches!(effect, LifecycleEffect::DockChanged { .. }))
+            .count(),
+        1
+    );
+    let closed_event = closed
+        .events
+        .iter()
+        .find(|event| event.name == "surface.closed")
+        .unwrap();
+    assert_eq!(closed_event.window_id.as_deref(), Some("main"));
+    assert_eq!(closed_event.workspace_id.as_deref(), Some("main"));
+    assert_eq!(closed_event.pane_id.as_deref(), Some(pane_id.as_str()));
+    assert_eq!(
+        closed_event.surface_id.as_deref(),
+        Some(second_surface_id.as_str())
+    );
+}
+
+#[test]
+fn dock_api_move_preserves_generation_persistence_and_one_owner_across_containers() {
+    let (snapshot, dock_pane_id, dock_surface_id) = main_dock_snapshot();
+    let workspace_created = main_transition(
+        &snapshot,
+        "surface.create",
+        json!({"pane_id":"pane-1", "type":"terminal", "focus":false}),
+        true,
+        true,
+    );
+    let workspace_id = ok_value(&workspace_created)["surface_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let before = SurfaceLifecycleModel::from_app_session(&workspace_created.snapshot).unwrap();
+    let generation = before.surface(&workspace_id).unwrap().generation;
+
+    let moved_into_dock = main_transition(
+        &workspace_created.snapshot,
+        "surface.move",
+        json!({
+            "surface_id":workspace_id,
+            "pane_id":dock_pane_id,
+            "index":0,
+            "focus":false,
+        }),
+        true,
+        true,
+    );
+    let moved_value = ok_value(&moved_into_dock);
+    assert_eq!(moved_value["window_id"], "main");
+    assert_eq!(moved_value["workspace_id"], "main");
+    assert_eq!(moved_value["pane_id"], dock_pane_id);
+    let dock_model = SurfaceLifecycleModel::from_app_session(&moved_into_dock.snapshot).unwrap();
+    dock_model.validate_indexes().unwrap();
+    assert_eq!(
+        dock_model.surface(&workspace_id).unwrap().generation,
+        generation
+    );
+    assert_eq!(
+        dock_model
+            .pane(&dock_model.owner_of_surface(&workspace_id).unwrap().pane_id)
+            .unwrap()
+            .container,
+        ContainerKind::Dock
+    );
+    assert_eq!(
+        dock_model
+            .snapshot()
+            .panes
+            .iter()
+            .flat_map(|pane| pane.surface_ids.iter())
+            .filter(|surface_id| *surface_id == &workspace_id)
+            .count(),
+        1
+    );
+
+    let moved_out = main_transition(
+        &moved_into_dock.snapshot,
+        "surface.move",
+        json!({
+            "surface_id":dock_surface_id,
+            "pane_id":"pane-1",
+            "index":0,
+            "focus":false,
+        }),
+        true,
+        true,
+    );
+    let moved_out_value = ok_value(&moved_out);
+    assert_eq!(moved_out_value["workspace_id"], "workspace-1");
+    assert_eq!(moved_out_value["pane_id"], "pane-1");
+    let restored = decode_session(&encode_session(&moved_out.snapshot).unwrap()).unwrap();
+    let restored_model = SurfaceLifecycleModel::from_app_session(&restored).unwrap();
+    restored_model.validate_indexes().unwrap();
+    assert_eq!(
+        restored_model
+            .snapshot()
+            .panes
+            .iter()
+            .flat_map(|pane| pane.surface_ids.iter())
+            .filter(|surface_id| *surface_id == &dock_surface_id)
+            .count(),
+        1
+    );
+    assert_eq!(
+        restored_model
+            .pane(
+                &restored_model
+                    .owner_of_surface(&dock_surface_id)
+                    .unwrap()
+                    .pane_id
+            )
+            .unwrap()
+            .container,
+        ContainerKind::Workspace
+    );
+}
+
+#[test]
+fn dock_api_stage_failure_rolls_back_without_publishing_claimed_identity() {
+    let mut snapshot = main_window_snapshot();
+    let before = snapshot.clone();
+    let planned = main_transition(
+        &snapshot,
+        "surface.create",
+        json!({"placement":"dock", "type":"terminal", "focus":false}),
+        true,
+        true,
+    );
+    let claimed_id = ok_value(&planned)["dock_surface_id"]
+        .as_str()
+        .expect("planned Dock identity")
+        .to_owned();
+    let mut executor = RecordingExecutor {
+        fail_stage_at: Some(0),
+        ..RecordingExecutor::default()
+    };
+    assert!(commit_lifecycle_transition(&mut snapshot, planned, &mut executor).is_err());
+    assert_eq!(snapshot, before);
+    assert_eq!(executor.rollback_count, 1);
+    assert!(executor.staged.is_empty());
+    assert!(executor.committed.is_empty());
+    assert!(SurfaceLifecycleModel::from_app_session(&snapshot)
+        .unwrap()
+        .surface(&claimed_id)
+        .is_none());
+    assert!(DockStore.list(&snapshot, "main").is_empty());
+}
+
+#[test]
+fn dock_api_runtime_stage_receives_reserved_identity_generation_and_intent() {
+    let mut snapshot = main_window_snapshot();
+    let reserved = Uuid::new_v4();
+    let created = DockStore
+        .create_transactionally(
+            &mut snapshot,
+            "main",
+            DockCreateRequest {
+                kind: DockSurfaceKind::Browser,
+                url: Some("https://runtime.test".into()),
+                browser_profile: Some("isolated".into()),
+                surface_id: Some(reserved),
+                focus: false,
+                ..DockCreateRequest::default()
+            },
+            |operation| {
+                assert_eq!(
+                    operation,
+                    &DockRuntimeOperation::Create {
+                        surface_id: reserved.to_string(),
+                        generation: 1,
+                        intent: DockRuntimeIntent::Browser {
+                            url: "https://runtime.test".into(),
+                            profile: Some("isolated".into()),
+                        },
+                    }
+                );
+                Ok::<(), String>(())
+            },
+        )
+        .unwrap();
+    assert_eq!(created.surface_id, reserved);
+    assert_eq!(created.generation, 1);
+    let model = SurfaceLifecycleModel::from_app_session(&snapshot).unwrap();
+    assert_eq!(model.surface(&reserved.to_string()).unwrap().generation, 1);
+    assert_eq!(
+        model
+            .pane(
+                &model
+                    .owner_of_surface(&reserved.to_string())
+                    .unwrap()
+                    .pane_id
+            )
+            .unwrap()
+            .container,
+        ContainerKind::Dock
+    );
+}
+
+fn pane_created_source_pane(transition: &LifecycleTransition) -> String {
+    transition
+        .events
+        .iter()
+        .find(|event| event.name == "pane.created")
+        .expect("pane.created event")
+        .payload["source_pane_id"]
+        .as_str()
+        .expect("source_pane_id")
+        .to_owned()
+}
+
+#[test]
+fn pane_create_rejects_agent_session_before_provider_placement_and_workspace() {
+    // Canonical: ControlCommandCoordinator+Pane.swift:330-331 +
+    // TerminalController+ControlPaneContext.swift:293-296 — pane.create rejects
+    // type=agent-session right after the direction parse, before provider
+    // validation, placement parsing, and workspace resolution; the error data
+    // echoes PanelType.agentSession.rawValue ("agentSession").
+    for method in ["pane.create", "surface.split"] {
+        // surface.split shares the reject verbatim:
+        // ControlCommandCoordinator+Surface.swift:330-334.
+        let rejected = transition(
+            &test_snapshot(),
+            method,
+            json!({
+                "direction": "right",
+                "type": "agent-session",
+                "provider": "bogus",
+                "placement": "bogus",
+                "workspace_id": "missing-workspace"
+            }),
+        );
+        assert_eq!(
+            assert_error(
+                &rejected,
+                "invalid_params",
+                "agent-session is only supported by surface.create"
+            ),
+            json!({"type": "agentSession"}),
+            "{method}"
+        );
+        assert!(!rejected.changed);
+    }
+}
+
+#[test]
+fn pane_create_checks_tab_manager_availability_before_direction() {
+    // Canonical: ControlCommandCoordinator+Pane.swift:287-291 — the routing
+    // TabManager guard runs before any input validation, so an unresolvable
+    // explicit window_id errors unavailable even when direction is missing.
+    let unavailable = transition(
+        &test_snapshot(),
+        "pane.create",
+        json!({"window_id": "missing-window"}),
+    );
+    assert_error(&unavailable, "unavailable", "TabManager not available");
+}
+
+#[test]
+fn pane_create_validates_placement_before_divider_position() {
+    // Canonical: TerminalController+ControlPaneContext.swift:297-300 resolves
+    // placement before the divider guard at :313-319, so an invalid placement
+    // wins over a non-numeric initial_divider_position.
+    let invalid = transition(
+        &test_snapshot(),
+        "pane.create",
+        json!({
+            "direction": "right",
+            "placement": "bogus",
+            "initial_divider_position": {"nested": true}
+        }),
+    );
+    assert_eq!(
+        assert_error(
+            &invalid,
+            "invalid_params",
+            "placement must be one of: workspace, dock"
+        ),
+        json!({"placement": "bogus"})
+    );
+}
+
+#[test]
+fn pane_create_browser_disabled_follows_canonical_outcomes_and_order() {
+    // Canonical: TerminalController+ControlPaneContext.swift:308-310 + :437-452
+    // — with the browser disabled, pane.create resolves the browser-disabled
+    // outcome before divider validation and before workspace resolution.
+    let no_url = main_transition(
+        &test_snapshot(),
+        "pane.create",
+        json!({"direction": "right", "type": "browser"}),
+        true,
+        false,
+    );
+    assert_error(&no_url, "browser_disabled", "cmux browser is disabled");
+
+    let invalid_url = main_transition(
+        &test_snapshot(),
+        "pane.create",
+        json!({"direction": "right", "type": "browser", "url": "http://["}),
+        true,
+        false,
+    );
+    assert_eq!(
+        assert_error(&invalid_url, "invalid_params", "Invalid URL"),
+        json!({"url": "http://["})
+    );
+
+    let before_divider = main_transition(
+        &test_snapshot(),
+        "pane.create",
+        json!({
+            "direction": "right",
+            "type": "browser",
+            "initial_divider_position": [1],
+            "workspace_id": "missing-workspace"
+        }),
+        true,
+        false,
+    );
+    assert_error(
+        &before_divider,
+        "browser_disabled",
+        "cmux browser is disabled",
+    );
+
+    let external = main_transition(
+        &test_snapshot(),
+        "pane.create",
+        json!({"direction": "right", "type": "browser", "url": "https://ext.test/x"}),
+        true,
+        false,
+    );
+    let value = ok_value(&external);
+    assert_eq!(
+        value,
+        json!({
+            "window_id": "window-1",
+            "workspace_id": Value::Null,
+            "pane_id": Value::Null,
+            "surface_id": Value::Null,
+            "created_split": false,
+            "opened_externally": true,
+            "browser_disabled": true,
+            "placement_strategy": "external_browser_disabled",
+            "url": "https://ext.test/x"
+        })
+    );
+    assert!(external.events.is_empty());
+    assert!(external.effects.iter().any(|effect| matches!(
+        effect,
+        LifecycleEffect::ExternalBrowserOpen { url, .. } if url == "https://ext.test/x"
+    )));
+}
+
+#[test]
+fn placement_parsing_trims_lowercases_and_maps_canonical_aliases() {
+    // Canonical: TerminalController+ControlPaneContext.swift:788-802
+    // (resolveControlPlacement) — trim + lowercase; empty/main/content/split →
+    // workspace; rightsidebardock/right-sidebar-dock/sidebar → dock; anything
+    // else invalid with the ORIGINAL raw value echoed.
+    for placement in ["main", " Content ", "SPLIT", "", "workspace", " Main\n"] {
+        let created = transition(
+            &test_snapshot(),
+            "pane.create",
+            json!({"direction": "right", "type": "terminal", "placement": placement}),
+        );
+        let value = ok_value(&created);
+        assert!(value["pane_id"].is_string(), "{placement:?}");
+        assert!(value.get("placement").is_none(), "{placement:?}");
+    }
+    for placement in [
+        "Sidebar",
+        "right-sidebar-dock",
+        "RIGHTSIDEBARDOCK",
+        " dock \n",
+    ] {
+        let created = main_transition(
+            &main_window_snapshot(),
+            "pane.create",
+            json!({"direction": "right", "type": "terminal", "placement": placement}),
+            true,
+            true,
+        );
+        let value = ok_value(&created);
+        assert_eq!(value["placement"], json!("dock"), "{placement:?}");
+    }
+    let invalid = transition(
+        &test_snapshot(),
+        "surface.create",
+        json!({"type": "terminal", "placement": " Bogus "}),
+    );
+    assert_eq!(
+        assert_error(
+            &invalid,
+            "invalid_params",
+            "placement must be one of: workspace, dock"
+        ),
+        json!({"placement": " Bogus "})
+    );
+}
+
+#[test]
+fn pane_create_source_is_raw_uuid_only_with_focused_fallback() {
+    // Canonical: ControlCommandCoordinator+Pane.swift:300 — the split source
+    // comes ONLY from surface_id parsed as a UUID; any other string (including
+    // surface:N refs) falls back to the workspace focused surface
+    // (TerminalController+ControlPaneContext.swift:342-345). Windows fixtures
+    // use non-UUID surface ids, so "parses as a UUID" adapts to "is a UUID or
+    // an existing surface id"; minted kind:N refs never collide with either.
+    let snapshot = resizable_snapshot();
+    let ref_shaped = transition(
+        &snapshot,
+        "pane.create",
+        json!({"direction": "right", "surface_id": "surface:9"}),
+    );
+    assert!(ok_value(&ref_shaped)["surface_id"].is_string());
+    assert_eq!(pane_created_source_pane(&ref_shaped), "pane-left");
+
+    let existing_id = transition(
+        &snapshot,
+        "pane.create",
+        json!({"direction": "right", "surface_id": "surface-right"}),
+    );
+    assert_eq!(pane_created_source_pane(&existing_id), "pane-right");
+
+    // A syntactically valid UUID that is not in the workspace is terminal:
+    // canonical guards ws.panels[sourcePanelId] without falling back.
+    let unknown_uuid = transition(
+        &snapshot,
+        "pane.create",
+        json!({
+            "direction": "right",
+            "surface_id": "123e4567-e89b-42d3-a456-426614174000"
+        }),
+    );
+    assert_error(&unknown_uuid, "not_found", "No source surface to split");
+
+    // No focused surface and no source: canonical returns noSourceSurface —
+    // there is no first-layout-surface fallback.
+    let mut unfocused = resizable_snapshot();
+    unfocused.windows[0].tab_manager.workspaces[0].focused_panel_id = None;
+    let no_source = transition(&unfocused, "pane.create", json!({"direction": "right"}));
+    assert_error(&no_source, "not_found", "No source surface to split");
+}
+
+#[test]
+fn pane_create_applies_and_persists_full_terminal_startup_metadata() {
+    // Canonical: TerminalController+ControlPaneContext.swift:374-384 —
+    // pane.create forwards trimmed initial_command / working_directory /
+    // tmux_start_command and the startup_environment (startup_environment then
+    // initial_env, trimmed non-empty keys) to newTerminalSplitOutcome, and the
+    // created surface persists that startup metadata.
+    let created = transition(
+        &test_snapshot(),
+        "pane.create",
+        json!({
+            "direction": "right",
+            "type": "terminal",
+            "initial_command": "  cargo run  ",
+            "working_directory": " C:/w ",
+            "tmux_start_command": " htop ",
+            "startup_environment": {"FOO": "bar", "  ": "dropped"}
+        }),
+    );
+    let value = ok_value(&created);
+    let created_id = value["surface_id"].as_str().unwrap();
+    let effect = created
+        .effects
+        .iter()
+        .find(|effect| matches!(effect, LifecycleEffect::TerminalCreate { .. }))
+        .expect("terminal create effect");
+    let effect = serde_json::to_value(effect).unwrap();
+    assert_eq!(effect["TerminalCreate"]["command"], json!("cargo run"));
+    assert_eq!(effect["TerminalCreate"]["working_directory"], json!("C:/w"));
+    assert_eq!(
+        effect["TerminalCreate"]["tmux_start_command"],
+        json!("htop")
+    );
+    assert_eq!(
+        effect["TerminalCreate"]["startup_environment"],
+        json!({"FOO": "bar"})
+    );
+    let record = created.snapshot.windows[0].tab_manager.workspaces[0]
+        .surfaces
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .find(|record| record.surface_id == created_id)
+        .expect("created surface record")
+        .clone();
+    assert_eq!(
+        record.terminal_startup,
+        Some(cmux_core::session::SessionSurfaceTerminalStartupSnapshot {
+            command: Some("cargo run".into()),
+            working_directory: Some("C:/w".into()),
+            tmux_start_command: Some("htop".into()),
+            environment: Some(std::collections::BTreeMap::from([(
+                "FOO".to_string(),
+                "bar".to_string()
+            )])),
+            ..Default::default()
+        })
+    );
+}
+
+#[test]
+fn respawn_without_surface_id_resolves_routing_workspace_then_focused_surface() {
+    // Canonical: TerminalController+ControlSurfaceContext2.swift:234-250 — when
+    // surface_id is absent, surface.respawn resolves routing → workspace →
+    // FOCUSED surface and respawns it; the unavailable/Workspace-not-found
+    // fallbacks are reachable in that order with the localized respawn strings
+    // (ControlSurfaceContext2.swift:11-35).
+    let snapshot = mixed_surface_snapshot();
+    let respawned = transition(
+        &snapshot,
+        "surface.respawn",
+        json!({"workspace_id": "workspace-1", "command": "run"}),
+    );
+    let value = ok_value(&respawned);
+    assert_eq!(value["surface_id"], json!("surface-terminal"));
+    assert_eq!(value["workspace_id"], json!("workspace-1"));
+    assert_eq!(value["type"], json!("terminal"));
+    assert!(respawned.effects.iter().any(|effect| matches!(
+        effect,
+        LifecycleEffect::TerminalReplace { surface_id, .. } if surface_id == "surface-terminal"
+    )));
+
+    let unavailable = transition(
+        &snapshot,
+        "surface.respawn",
+        json!({"window_id": "missing-window"}),
+    );
+    assert_error(
+        &unavailable,
+        "unavailable",
+        "Unable to access the target workspace",
+    );
+
+    let missing_workspace = transition(
+        &snapshot,
+        "surface.respawn",
+        json!({"workspace_id": "missing-workspace"}),
+    );
+    assert_error(&missing_workspace, "not_found", "Workspace not found");
+
+    let mut unfocused = mixed_surface_snapshot();
+    unfocused.windows[0].tab_manager.workspaces[0].focused_panel_id = None;
+    let no_focus = transition(&unfocused, "surface.respawn", json!({}));
+    assert_error(&no_focus, "not_found", "No focused surface");
+
+    // An explicit null surface_id counts as absent (hasNonNull,
+    // ControlCommandCoordinator+Surface.swift:438-441) and takes the focused
+    // fallback; same for a null focus (Surface.swift:429-432).
+    let null_id = transition(
+        &snapshot,
+        "surface.respawn",
+        json!({"surface_id": null, "focus": null}),
+    );
+    assert_eq!(ok_value(&null_id)["surface_id"], json!("surface-terminal"));
+
+    // A present-but-non-string surface_id parses to no UUID, which is the
+    // canonical surfaceNotFoundForID(nil): not_found with null data
+    // (ControlCommandCoordinator+Surface.swift:449-455,
+    // TerminalController+ControlSurfaceContext2.swift:218-221).
+    let non_string = transition(&snapshot, "surface.respawn", json!({"surface_id": 42}));
+    assert_eq!(
+        assert_error(
+            &non_string,
+            "not_found",
+            "Surface not found for the given surface_id"
+        ),
+        Value::Null
+    );
+}
+
+#[test]
+fn respawn_threads_tmux_start_command_defaulting_to_command() {
+    // Canonical: ControlCommandCoordinator+Surface.swift:424-427 parses
+    // tmux_start_command ?? command, and the app passes it through to
+    // respawnTerminalSurface (TerminalController+ControlSurfaceContext2.swift:261-267);
+    // the replacement runtime effect and the persisted startup carry it.
+    let snapshot = mixed_surface_snapshot();
+    let explicit = transition(
+        &snapshot,
+        "surface.respawn",
+        json!({
+            "surface_id": "surface-terminal",
+            "command": "run",
+            "tmux_start_command": " htop "
+        }),
+    );
+    let effect = explicit
+        .effects
+        .iter()
+        .find(|effect| matches!(effect, LifecycleEffect::TerminalReplace { .. }))
+        .expect("terminal replace effect");
+    let effect = serde_json::to_value(effect).unwrap();
+    assert_eq!(effect["TerminalReplace"]["command"], json!("run"));
+    assert_eq!(
+        effect["TerminalReplace"]["tmux_start_command"],
+        json!("htop")
+    );
+    let startup = explicit.snapshot.windows[0].tab_manager.workspaces[0]
+        .surfaces
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .find(|record| record.surface_id == "surface-terminal")
+        .expect("respawned record")
+        .terminal_startup
+        .clone()
+        .expect("persisted startup");
+    assert_eq!(startup.command.as_deref(), Some("run"));
+    assert_eq!(startup.tmux_start_command.as_deref(), Some("htop"));
+
+    let defaulted = transition(
+        &snapshot,
+        "surface.respawn",
+        json!({"surface_id": "surface-terminal", "command": "run"}),
+    );
+    let effect = defaulted
+        .effects
+        .iter()
+        .find(|effect| matches!(effect, LifecycleEffect::TerminalReplace { .. }))
+        .expect("terminal replace effect");
+    let effect = serde_json::to_value(effect).unwrap();
+    assert_eq!(
+        effect["TerminalReplace"]["tmux_start_command"],
+        json!("run")
+    );
+}
+
+#[test]
+fn report_pwd_local_workspace_follows_canonical_resolution_and_identity_blocks() {
+    // Canonical: ControlCommandCoordinator+Surface3.swift:215-248 +
+    // TerminalController+ControlSurfaceContext4.swift:444-480 — on a LOCAL
+    // workspace an unknown surface_id is "Surface not found" (never pending),
+    // an absent surface_id records against the focused panel, a
+    // present-but-non-string surface_id fails syntax validation BEFORE the
+    // path checks, errors carry the requested-identity block, and the recorded
+    // payload has no window_id.
+    let snapshot = mixed_surface_snapshot();
+
+    let unknown = transition(
+        &snapshot,
+        "surface.report_pwd",
+        json!({"workspace_id": "workspace-1", "surface_id": "missing-surface", "path": "C:/x"}),
+    );
+    assert_eq!(
+        assert_error(&unknown, "not_found", "Surface not found"),
+        json!({"workspace_id": "workspace-1", "surface_id": "missing-surface"})
+    );
+    assert!(!unknown.changed);
+
+    let focused = transition(
+        &snapshot,
+        "surface.report_pwd",
+        json!({"workspace_id": "workspace-1", "path": " C:/focused "}),
+    );
+    let value = ok_value(&focused);
+    assert_eq!(
+        value,
+        json!({
+            "workspace_id": "workspace-1",
+            "surface_id": "surface-terminal",
+            "path": " C:/focused "
+        }),
+        "recorded payload must drop the noncanonical window_id key"
+    );
+    // Canonical cwd projection (Sources/Workspace.swift:4484-4487): the
+    // focused panel's report updates the workspace current directory
+    // (trimmed).
+    assert_eq!(
+        focused.snapshot.windows[0].tab_manager.workspaces[0]
+            .current_directory
+            .as_deref(),
+        Some("C:/focused")
+    );
+
+    // A non-focused surface report records metadata without touching the
+    // workspace cwd projection.
+    let unfocused = transition(
+        &snapshot,
+        "surface.report_pwd",
+        json!({"workspace_id": "workspace-1", "surface_id": "surface-browser", "path": "C:/other"}),
+    );
+    assert_eq!(ok_value(&unfocused)["surface_id"], json!("surface-browser"));
+    assert_eq!(
+        unfocused.snapshot.windows[0].tab_manager.workspaces[0]
+            .current_directory
+            .as_deref(),
+        Some("C:/repo")
+    );
+
+    let mut no_focus = mixed_surface_snapshot();
+    no_focus.windows[0].tab_manager.workspaces[0].focused_panel_id = None;
+    let unresolved = transition(
+        &no_focus,
+        "surface.report_pwd",
+        json!({"workspace_id": "workspace-1", "path": "C:/x"}),
+    );
+    assert_eq!(
+        assert_error(&unresolved, "not_found", "Surface not found"),
+        json!({"workspace_id": "workspace-1", "surface_id": Value::Null})
+    );
+
+    // Syntax validation precedes the path checks
+    // (ControlCommandCoordinator+Surface3.swift:220-223).
+    let non_string = transition(
+        &snapshot,
+        "surface.report_pwd",
+        json!({"workspace_id": "workspace-1", "surface_id": 7}),
+    );
+    assert_error(
+        &non_string,
+        "invalid_params",
+        "Missing or invalid surface_id",
+    );
+
+    // Workspace lookup happens before any surface resolution and its error
+    // carries the identity block too.
+    let no_workspace = transition(
+        &snapshot,
+        "surface.report_pwd",
+        json!({"workspace_id": "missing-workspace", "surface_id": "surface-terminal", "path": "C:/x"}),
+    );
+    assert_eq!(
+        assert_error(&no_workspace, "not_found", "Workspace not found"),
+        json!({"workspace_id": "missing-workspace", "surface_id": "surface-terminal"})
+    );
+}
+
+#[test]
+fn surface_type_tokens_map_unknowns_to_terminal_after_normalization() {
+    // Canonical surfacePanelType
+    // (TerminalController+ControlSurfaceContext2.swift:517-528) recognizes only
+    // terminal/browser/markdown/filepreview/rightsidebartool/agentsession after
+    // v2NormalizedToken normalization (strip '-','_',' ' + lowercase,
+    // TerminalControllerV2ParamParsingSupport.swift:204-209); every other
+    // token — including diff/file/projectSidebar — maps to terminal.
+    for token in ["diff", "file", "projectSidebar", "project_sidebar", "bogus"] {
+        let created = transition(
+            &test_snapshot(),
+            "surface.create",
+            json!({"pane_id": "pane-1", "type": token}),
+        );
+        let value = ok_value(&created);
+        assert_eq!(value["type"], json!("terminal"), "{token}");
+        assert!(
+            created
+                .effects
+                .iter()
+                .any(|effect| matches!(effect, LifecycleEffect::TerminalCreate { .. })),
+            "{token}"
+        );
+    }
+    // Space-separated forms normalize into the canonical tokens.
+    let spaced = transition(
+        &test_snapshot(),
+        "surface.create",
+        json!({"pane_id": "pane-1", "type": "file preview"}),
+    );
+    assert_eq!(ok_value(&spaced)["type"], json!("filePreview"));
+
+    // Dock placement treats unknown tokens as terminal too (canonical
+    // panelType(forRawToken:) shared by the dock validation path).
+    let dock = main_transition(
+        &main_window_snapshot(),
+        "surface.create",
+        json!({"placement": "dock", "type": "diff"}),
+        true,
+        true,
+    );
+    assert_eq!(ok_value(&dock)["type"], json!("terminal"));
+}
+
+#[test]
+fn agent_session_provider_and_renderer_use_v2_normalized_tokens() {
+    // Canonical: TerminalController+ControlSurfaceContext2.swift:296-320 —
+    // provider/renderer tokens normalize with v2NormalizedToken (lowercase AND
+    // strip '-','_',' '), so \"claude-code\" == \"claudecode\" is a valid
+    // provider mapping to claude, and \"re_act\" is a valid renderer.
+    let created = transition(
+        &test_snapshot(),
+        "surface.create",
+        json!({
+            "pane_id": "pane-1",
+            "type": "agent-session",
+            "provider_id": "CLAUDE-CODE",
+            "renderer": "re_act"
+        }),
+    );
+    let value = ok_value(&created);
+    assert_eq!(value["type"], json!("agentSession"));
+    let created_id = value["surface_id"].as_str().unwrap();
+    let record = created.snapshot.windows[0].tab_manager.workspaces[0]
+        .surfaces
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .find(|record| record.surface_id == created_id)
+        .expect("created agent record")
+        .clone();
+    assert_eq!(
+        record.kind,
+        SessionSurfaceKindSnapshot::AgentSession {
+            provider: Some("claude".into()),
+            renderer: Some("react".into()),
+            working_directory: None,
+            session_id: None,
+            lifecycle: None,
+            restorable_agent: None,
+        }
+    );
+
+    let invalid = transition(
+        &test_snapshot(),
+        "surface.create",
+        json!({"pane_id": "pane-1", "type": "agentSession", "provider": "claude code x"}),
+    );
+    assert_eq!(
+        assert_error(
+            &invalid,
+            "invalid_params",
+            "Invalid provider (codex|claude|opencode)"
+        ),
+        json!({"provider": "claude code x"})
+    );
+}
+
+#[test]
+fn surface_create_applies_and_persists_full_terminal_startup_metadata() {
+    // Canonical: ControlCommandCoordinator+Surface.swift:495-506 parses trimmed
+    // working_directory / initial_command / tmux_start_command /
+    // remote_pty_session_id plus the startup_environment|initial_env map
+    // (trimmed non-empty keys), and controlSurfaceCreate forwards all of them
+    // to newTerminalSurfaceOutcome
+    // (TerminalController+ControlSurfaceContext2.swift:393-404); the created
+    // terminal persists that startup metadata.
+    let created = transition(
+        &test_snapshot(),
+        "surface.create",
+        json!({
+            "pane_id": "pane-1",
+            "type": "terminal",
+            "initial_command": "  cargo run  ",
+            "working_directory": " C:/w ",
+            "tmux_start_command": " htop ",
+            "remote_pty_session_id": " %41 ",
+            "startup_environment": {"FOO": "bar", "  ": "dropped"}
+        }),
+    );
+    let value = ok_value(&created);
+    let created_id = value["surface_id"].as_str().unwrap();
+    let effect = created
+        .effects
+        .iter()
+        .find(|effect| matches!(effect, LifecycleEffect::TerminalCreate { .. }))
+        .expect("terminal create effect");
+    let effect = serde_json::to_value(effect).unwrap();
+    assert_eq!(effect["TerminalCreate"]["command"], json!("cargo run"));
+    assert_eq!(effect["TerminalCreate"]["working_directory"], json!("C:/w"));
+    assert_eq!(
+        effect["TerminalCreate"]["tmux_start_command"],
+        json!("htop")
+    );
+    assert_eq!(
+        effect["TerminalCreate"]["remote_pty_session_id"],
+        json!("%41")
+    );
+    assert_eq!(
+        effect["TerminalCreate"]["startup_environment"],
+        json!({"FOO": "bar"})
+    );
+    let record = created.snapshot.windows[0].tab_manager.workspaces[0]
+        .surfaces
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .find(|record| record.surface_id == created_id)
+        .expect("created surface record")
+        .clone();
+    assert_eq!(
+        record.terminal_startup,
+        Some(cmux_core::session::SessionSurfaceTerminalStartupSnapshot {
+            command: Some("cargo run".into()),
+            working_directory: Some("C:/w".into()),
+            tmux_start_command: Some("htop".into()),
+            remote_pty_session_id: Some("%41".into()),
+            environment: Some(std::collections::BTreeMap::from([(
+                "FOO".to_string(),
+                "bar".to_string()
+            )])),
+            ..Default::default()
+        })
+    );
 }

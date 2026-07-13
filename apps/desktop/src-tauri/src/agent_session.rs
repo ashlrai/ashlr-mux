@@ -690,7 +690,11 @@ pub async fn agent_session_rpc(
         .recv()
         .unwrap_or_else(|_| err_envelope("actorUnavailable", "Agent session host stopped."));
     if let Some(started) = start_scope.and_then(|scope| started_agent_snapshot(&scope, &reply)) {
-        crate::session::record_started_agent_session(&app, &session_state, started);
+        if let Err(error) =
+            crate::session::record_started_agent_session(&app, &session_state, started)
+        {
+            eprintln!("[agent-session] failed to persist restorable session: {error}");
+        }
     }
     Ok(reply)
 }
@@ -757,7 +761,7 @@ fn scan_agent_listening_ports(
             session_state,
             workspace_index,
             &ports,
-        );
+        )?;
         updates.push(AgentListeningPortsWorkspace {
             workspace_index,
             workspace_id: workspace.workspace_id.clone(),
@@ -2248,6 +2252,7 @@ mod tests {
             windows: vec![SessionWindowSnapshot {
                 window_id: Some("window-1".to_string()),
                 selected_workspace_id: None,
+                dock: None,
                 tab_manager: SessionTabManagerSnapshot {
                     selected_workspace_index: Some(0),
                     workspaces: vec![SessionWorkspaceSnapshot {

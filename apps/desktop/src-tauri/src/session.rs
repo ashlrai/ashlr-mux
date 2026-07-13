@@ -12,10 +12,11 @@
 //! headless-testable while the ConPTY plumbing lives in `terminal.rs`.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LockResult, Mutex, MutexGuard, PoisonError};
 
 use cmux_config::{CmuxLayoutNode, CmuxSplitDirection, CmuxSurfaceType};
 use cmux_core::session::{
@@ -52,7 +53,10 @@ const FIRST_PANEL_ID: &str = "surface-1";
 /// Managed Tauri state: the authoritative session snapshot + a monotonic panel
 /// id counter so every new pane gets a unique, stable id.
 pub struct SessionState {
-    snapshot: Mutex<AppSessionSnapshot>,
+    /// Every read/write guard automatically joins the same reentrant mutation
+    /// gate used by complete control requests. Reentrancy lets a request hold
+    /// the outer gate while helpers take snapshot guards on the same thread.
+    snapshot: GatedSnapshot,
     next_panel: AtomicU64,
     closed_browser_tabs: Mutex<Vec<ClosedBrowserTabSnapshot>>,
     closed_workspaces: Mutex<Vec<ClosedWorkspaceSnapshot>>,
@@ -61,12 +65,100 @@ pub struct SessionState {
     remote_workspace_rename_controller: Arc<dyn RemoteWorkspaceRenameController>,
 }
 
+#[cfg(test)]
+#[path = "session/change_gated_direct_writers_red.rs"]
+mod change_gated_direct_writers_red;
+
+#[cfg(test)]
+#[path = "session/always_publish_direct_writers_red.rs"]
+mod always_publish_direct_writers_red;
+
+#[cfg(test)]
+#[path = "session/terminal_structural_writers_red.rs"]
+mod terminal_structural_writers_red;
+
+#[cfg(test)]
+#[path = "session/move_panel_workspace_red.rs"]
+mod move_panel_workspace_red;
+
+#[cfg(test)]
+#[path = "session/pane_topology_red.rs"]
+mod pane_topology_red;
+
+#[cfg(test)]
+#[path = "session/surface_move_reorder_red.rs"]
+mod surface_move_reorder_red;
+
+#[cfg(test)]
+#[path = "session/focus_navigation_red.rs"]
+mod focus_navigation_red;
+
+#[cfg(test)]
+#[path = "session/pane_layout_red.rs"]
+mod pane_layout_red;
+
+#[cfg(test)]
+#[path = "session/workspace_selection_reorder_red.rs"]
+mod workspace_selection_reorder_red;
+
+#[cfg(test)]
+#[path = "session/sidebar_metadata_red.rs"]
+mod sidebar_metadata_red;
+
+#[cfg(test)]
+#[path = "session/public_control_metadata_red.rs"]
+mod public_control_metadata_red;
+
+#[cfg(test)]
+#[path = "session/runtime_model_facts_red.rs"]
+mod runtime_model_facts_red;
+
+#[cfg(test)]
+#[path = "session/browser_view_state_red.rs"]
+mod browser_view_state_red;
+
+#[cfg(test)]
+#[path = "session/pure_typed_writers_red.rs"]
+mod pure_typed_writers_red;
+
+#[cfg(test)]
+#[path = "session/diff_durable_publication_red.rs"]
+mod diff_durable_publication_red;
+
+#[cfg(test)]
+#[path = "session/restore_previous_launch_red.rs"]
+mod restore_previous_launch_red;
+
+#[cfg(test)]
+#[path = "session/next_panel_allocation_fence_red.rs"]
+mod next_panel_allocation_fence_red;
+
+#[cfg(test)]
+#[path = "session/browser_proxy_transactions_red.rs"]
+mod browser_proxy_transactions_red;
+
+#[cfg(test)]
+#[path = "session/window_lifecycle_transactions_red.rs"]
+mod window_lifecycle_transactions_red;
+
+#[cfg(test)]
+#[path = "session/activation_workspace_transactions_red.rs"]
+mod activation_workspace_transactions_red;
+
+#[cfg(test)]
+#[path = "session/runtime_close_leases_red.rs"]
+mod runtime_close_leases_red;
+
+#[cfg(test)]
+#[path = "session/browser_runtime_close_leases_red.rs"]
+mod browser_runtime_close_leases_red;
+
 impl Default for SessionState {
     fn default() -> Self {
         let snapshot = initial_snapshot(FIRST_PANEL_ID);
         let workspace_focus_history = workspace_focus_history_for_snapshot(&snapshot);
         Self {
-            snapshot: Mutex::new(snapshot),
+            snapshot: GatedSnapshot::new(snapshot),
             next_panel: AtomicU64::new(2),
             closed_browser_tabs: Mutex::new(Vec::new()),
             closed_workspaces: Mutex::new(Vec::new()),
@@ -75,6 +167,300 @@ impl Default for SessionState {
             remote_workspace_rename_controller: Arc::new(SshRemoteWorkspaceRenameController),
         }
     }
+}
+
+impl SessionState {
+    pub(crate) fn lock_control_mutation(
+        &self,
+    ) -> Result<parking_lot::ReentrantMutexGuard<'_, ()>, String> {
+        Ok(self.snapshot.lock_gate())
+    }
+
+    #[cfg(test)]
+    /// Exercises the exact snapshot-lock and mutation primitives used by the
+    /// structural (`session_new_terminal_tab`), focus (`session_focus_panel`),
+    /// and metadata (`session_set_process_title`) Tauri writer categories.
+    pub(crate) fn exercise_ui_writer_for_test(
+        &self,
+        category: TestUiWriterCategory,
+    ) -> Result<(), String> {
+        let mut snapshot = self
+            .snapshot
+            .lock()
+            .map_err(|_| "Session state is unavailable".to_string())?;
+        match category {
+            TestUiWriterCategory::Structural => {
+                let _ = apply_new_terminal_tab(
+                    &mut snapshot,
+                    FIRST_PANEL_ID,
+                    "surface-ui-writer",
+                    None,
+                    None,
+                    None,
+                );
+            }
+            TestUiWriterCategory::Focus => {
+                let _ = apply_focus_panel(&mut snapshot, FIRST_PANEL_ID);
+            }
+            TestUiWriterCategory::Metadata => {
+                let _ = apply_set_process_title(&mut snapshot, FIRST_PANEL_ID, "writer-title");
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn snapshot_for_lifecycle(&self) -> Result<AppSessionSnapshot, String> {
+        self.snapshot
+            .lock()
+            .map(|snapshot| snapshot.clone())
+            .map_err(|_| "Session state is unavailable".to_string())
+    }
+
+    pub(crate) fn transact_lifecycle<R>(
+        &self,
+        app: &AppHandle,
+        mutation: impl FnOnce(&mut AppSessionSnapshot) -> Result<R, String>,
+    ) -> Result<(R, AppSessionSnapshot), String> {
+        let mut operations =
+            ProductionSnapshotPublicationOperations::new(app, self, DerivedEventPolicy::Record);
+        transact_lifecycle_snapshot(&self.snapshot, &mut operations, mutation)
+    }
+
+    pub(crate) fn transact_pane_topology<R, E>(
+        &self,
+        app: &AppHandle,
+        mutation: impl FnOnce(&mut AppSessionSnapshot) -> Result<R, E>,
+    ) -> Result<(R, AppSessionSnapshot), PaneTopologyControlError<E>> {
+        let mut operations =
+            ProductionSnapshotPublicationOperations::new(app, self, DerivedEventPolicy::Record);
+        transact_pane_topology_snapshot(&self.snapshot, &mut operations, mutation)
+    }
+
+    pub(crate) fn transact_snapshot_if_changed(
+        &self,
+        app: &AppHandle,
+        mutation: impl FnOnce(&mut AppSessionSnapshot) -> bool,
+    ) -> Result<AppSessionSnapshot, String> {
+        let mut operations =
+            ProductionSnapshotPublicationOperations::new(app, self, DerivedEventPolicy::Record);
+        transact_snapshot_if_changed(&self.snapshot, &mut operations, mutation)
+    }
+
+    pub(crate) fn transact_result_if_changed<E>(
+        &self,
+        app: &AppHandle,
+        mutation: impl FnOnce(&mut AppSessionSnapshot) -> Result<bool, E>,
+    ) -> Result<AppSessionSnapshot, PaneTopologyControlError<E>> {
+        let mut operations =
+            ProductionSnapshotPublicationOperations::new(app, self, DerivedEventPolicy::Record);
+        transact_result_if_changed_snapshot(&self.snapshot, &mut operations, mutation)
+    }
+
+    pub(crate) fn transact_value_if_changed<R, E>(
+        &self,
+        app: &AppHandle,
+        mutation: impl FnOnce(&mut AppSessionSnapshot) -> Result<(R, bool), E>,
+    ) -> Result<(R, AppSessionSnapshot), PaneTopologyControlError<E>> {
+        let mut operations =
+            ProductionSnapshotPublicationOperations::new(app, self, DerivedEventPolicy::Record);
+        transact_value_if_changed_snapshot(&self.snapshot, &mut operations, mutation)
+    }
+
+    pub(crate) fn transact_snapshot_always(
+        &self,
+        app: &AppHandle,
+        mutation: impl FnOnce(&mut AppSessionSnapshot) -> bool,
+    ) -> Result<AppSessionSnapshot, String> {
+        let mut operations =
+            ProductionSnapshotPublicationOperations::new(app, self, DerivedEventPolicy::Record);
+        transact_snapshot_always(&self.snapshot, &mut operations, mutation)
+    }
+}
+
+trait SnapshotPublicationOperations {
+    fn persist(&mut self, candidate: &AppSessionSnapshot) -> Result<(), String>;
+    fn update_event_baseline(&mut self, candidate: &AppSessionSnapshot);
+    fn emit(&mut self, candidate: &AppSessionSnapshot) -> Result<(), String>;
+}
+
+fn publish_snapshot_transaction(
+    authority: &GatedSnapshot,
+    expected: Option<&AppSessionSnapshot>,
+    candidate: &AppSessionSnapshot,
+    operations: &mut impl SnapshotPublicationOperations,
+) -> Result<AppSessionSnapshot, String> {
+    let _publication_gate = authority.lock_gate();
+    let mut guard = authority
+        .lock()
+        .map_err(|_| "Session state is unavailable".to_string())?;
+    if let Some(expected) = expected {
+        ensure_lifecycle_snapshot_current(&guard, expected)?;
+    }
+    operations.persist(candidate)?;
+    *guard = candidate.clone();
+    let committed = guard.clone();
+    drop(guard);
+    operations.update_event_baseline(&committed);
+    operations.emit(&committed)?;
+    Ok(committed)
+}
+
+fn transact_lifecycle_snapshot<R>(
+    authority: &GatedSnapshot,
+    operations: &mut impl SnapshotPublicationOperations,
+    mutation: impl FnOnce(&mut AppSessionSnapshot) -> Result<R, String>,
+) -> Result<(R, AppSessionSnapshot), String> {
+    transact_pane_topology_snapshot(authority, operations, mutation).map_err(|error| match error {
+        PaneTopologyControlError::Operation(error)
+        | PaneTopologyControlError::Publication(error) => error,
+    })
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PaneTopologyControlError<E> {
+    Operation(E),
+    Publication(String),
+}
+
+fn transact_pane_topology_snapshot<R, E>(
+    authority: &GatedSnapshot,
+    operations: &mut impl SnapshotPublicationOperations,
+    mutation: impl FnOnce(&mut AppSessionSnapshot) -> Result<R, E>,
+) -> Result<(R, AppSessionSnapshot), PaneTopologyControlError<E>> {
+    let _transaction_gate = authority.lock_gate();
+    let current = authority
+        .lock()
+        .map_err(|_| {
+            PaneTopologyControlError::Publication("Session state is unavailable".to_string())
+        })?
+        .clone();
+    let mut candidate = current.clone();
+    let result = mutation(&mut candidate).map_err(PaneTopologyControlError::Operation)?;
+    let committed = publish_snapshot_transaction(authority, Some(&current), &candidate, operations)
+        .map_err(PaneTopologyControlError::Publication)?;
+    Ok((result, committed))
+}
+
+fn transact_snapshot_if_changed(
+    authority: &GatedSnapshot,
+    operations: &mut impl SnapshotPublicationOperations,
+    mutation: impl FnOnce(&mut AppSessionSnapshot) -> bool,
+) -> Result<AppSessionSnapshot, String> {
+    match transact_result_if_changed_snapshot(authority, operations, |candidate| {
+        Ok::<_, std::convert::Infallible>(mutation(candidate))
+    }) {
+        Ok(snapshot) => Ok(snapshot),
+        Err(PaneTopologyControlError::Publication(error)) => Err(error),
+        Err(PaneTopologyControlError::Operation(error)) => match error {},
+    }
+}
+
+fn transact_result_if_changed_snapshot<E>(
+    authority: &GatedSnapshot,
+    operations: &mut impl SnapshotPublicationOperations,
+    mutation: impl FnOnce(&mut AppSessionSnapshot) -> Result<bool, E>,
+) -> Result<AppSessionSnapshot, PaneTopologyControlError<E>> {
+    transact_value_if_changed_snapshot(authority, operations, |candidate| {
+        mutation(candidate).map(|changed| ((), changed))
+    })
+    .map(|((), snapshot)| snapshot)
+}
+
+fn transact_value_if_changed_snapshot<R, E>(
+    authority: &GatedSnapshot,
+    operations: &mut impl SnapshotPublicationOperations,
+    mutation: impl FnOnce(&mut AppSessionSnapshot) -> Result<(R, bool), E>,
+) -> Result<(R, AppSessionSnapshot), PaneTopologyControlError<E>> {
+    let _transaction_gate = authority.lock_gate();
+    let current = authority
+        .lock()
+        .map_err(|_| {
+            PaneTopologyControlError::Publication("Session state is unavailable".to_string())
+        })?
+        .clone();
+    let mut candidate = current.clone();
+    let (value, changed) = mutation(&mut candidate).map_err(PaneTopologyControlError::Operation)?;
+    if !changed {
+        return Ok((value, current));
+    }
+    let committed = publish_snapshot_transaction(authority, Some(&current), &candidate, operations)
+        .map_err(PaneTopologyControlError::Publication)?;
+    Ok((value, committed))
+}
+
+fn transact_snapshot_always(
+    authority: &GatedSnapshot,
+    operations: &mut impl SnapshotPublicationOperations,
+    mutation: impl FnOnce(&mut AppSessionSnapshot) -> bool,
+) -> Result<AppSessionSnapshot, String> {
+    match transact_pane_topology_snapshot(authority, operations, |candidate| {
+        let _ = mutation(candidate);
+        Ok::<_, std::convert::Infallible>(())
+    }) {
+        Ok(((), snapshot)) => Ok(snapshot),
+        Err(PaneTopologyControlError::Publication(error)) => Err(error),
+        Err(PaneTopologyControlError::Operation(error)) => match error {},
+    }
+}
+
+/// A snapshot mutex whose guards always participate in the control mutation
+/// gate. Keeping the gate inside this wrapper makes bypasses impossible for
+/// existing and future `SessionState` writers that call `snapshot.lock()`.
+struct GatedSnapshot {
+    gate: parking_lot::ReentrantMutex<()>,
+    value: Mutex<AppSessionSnapshot>,
+}
+
+impl GatedSnapshot {
+    fn new(value: AppSessionSnapshot) -> Self {
+        Self {
+            gate: parking_lot::ReentrantMutex::new(()),
+            value: Mutex::new(value),
+        }
+    }
+
+    fn lock_gate(&self) -> parking_lot::ReentrantMutexGuard<'_, ()> {
+        self.gate.lock()
+    }
+
+    fn lock(&self) -> LockResult<GatedSnapshotGuard<'_>> {
+        let gate = self.gate.lock();
+        match self.value.lock() {
+            Ok(value) => Ok(GatedSnapshotGuard { value, _gate: gate }),
+            Err(poisoned) => Err(PoisonError::new(GatedSnapshotGuard {
+                value: poisoned.into_inner(),
+                _gate: gate,
+            })),
+        }
+    }
+}
+
+struct GatedSnapshotGuard<'a> {
+    // Drop the snapshot guard before releasing the mutation gate.
+    value: MutexGuard<'a, AppSessionSnapshot>,
+    _gate: parking_lot::ReentrantMutexGuard<'a, ()>,
+}
+
+impl Deref for GatedSnapshotGuard<'_> {
+    type Target = AppSessionSnapshot;
+
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
+}
+
+impl DerefMut for GatedSnapshotGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.value
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TestUiWriterCategory {
+    Structural,
+    Focus,
+    Metadata,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -366,6 +752,7 @@ fn initial_snapshot(first_panel_id: &str) -> AppSessionSnapshot {
         windows: vec![SessionWindowSnapshot {
             window_id: Some("main".to_string()),
             selected_workspace_id: None,
+            dock: None,
             tab_manager: SessionTabManagerSnapshot {
                 selected_workspace_index: Some(0),
                 workspaces: vec![session_ops::fresh_terminal_workspace(first_panel_id)],
@@ -452,26 +839,60 @@ fn load_snapshot_file(path: &Path) -> Option<AppSessionSnapshot> {
         .and_then(|bytes| serde_json::from_slice::<AppSessionSnapshot>(&bytes).ok())
 }
 
-fn write_snapshot_file(path: &Path, snapshot: &AppSessionSnapshot) {
-    let Ok(bytes) = serde_json::to_vec_pretty(snapshot) else {
-        return;
-    };
-    let Some(parent) = path.parent() else {
-        return;
-    };
-    if std::fs::create_dir_all(parent).is_err() {
-        return;
+trait SnapshotFileOperations {
+    fn create_parent(&mut self, parent: &Path) -> Result<(), String>;
+    fn write_staged(&mut self, path: &Path, bytes: &[u8]) -> Result<(), String>;
+    fn atomic_replace(&mut self, staged: &Path, destination: &Path) -> Result<(), String>;
+}
+
+fn write_snapshot_file_strict(
+    path: &Path,
+    snapshot: &AppSessionSnapshot,
+    operations: &mut impl SnapshotFileOperations,
+) -> Result<(), String> {
+    let bytes = serde_json::to_vec_pretty(snapshot).map_err(|error| error.to_string())?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "session snapshot path has no parent".to_string())?;
+    let staged = path.with_extension(format!("json.{}.staged", Uuid::new_v4()));
+    operations.create_parent(parent)?;
+    operations.write_staged(&staged, &bytes)?;
+    operations.atomic_replace(&staged, path)
+}
+
+struct ProductionSnapshotFileOperations;
+
+impl SnapshotFileOperations for ProductionSnapshotFileOperations {
+    fn create_parent(&mut self, parent: &Path) -> Result<(), String> {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())
     }
-    let tmp = path.with_extension("json.tmp");
-    if std::fs::write(&tmp, bytes).is_ok() {
-        let _ = std::fs::rename(&tmp, path);
+
+    fn write_staged(&mut self, path: &Path, bytes: &[u8]) -> Result<(), String> {
+        if let Err(error) = std::fs::write(path, bytes) {
+            let _ = std::fs::remove_file(path);
+            return Err(error.to_string());
+        }
+        Ok(())
+    }
+
+    fn atomic_replace(&mut self, staged: &Path, destination: &Path) -> Result<(), String> {
+        if let Err(error) = replace_file_atomically(staged, destination) {
+            let _ = std::fs::remove_file(staged);
+            return Err(error);
+        }
+        Ok(())
     }
 }
 
-fn persist_current_snapshot(app: &AppHandle, snapshot: &AppSessionSnapshot) {
+fn write_snapshot_file(path: &Path, snapshot: &AppSessionSnapshot) -> Result<(), String> {
+    write_snapshot_file_strict(path, snapshot, &mut ProductionSnapshotFileOperations)
+}
+
+fn persist_current_snapshot(app: &AppHandle, snapshot: &AppSessionSnapshot) -> Result<(), String> {
     if let Some((current, _previous)) = session_snapshot_paths(app) {
-        write_snapshot_file(&current, snapshot);
+        write_snapshot_file(&current, snapshot)?;
     }
+    Ok(())
 }
 
 fn next_panel_counter(snapshot: &AppSessionSnapshot) -> u64 {
@@ -533,7 +954,7 @@ pub fn bootstrap_session_persistence(app: &AppHandle, state: State<'_, SessionSt
         .lock()
         .expect("workspace focus history mutex poisoned") =
         workspace_focus_history_for_snapshot(&snapshot);
-    persist_current_snapshot(app, &snapshot);
+    let _ = persist_current_snapshot(app, &snapshot);
 }
 
 /// The `Option<layout>` slot of the currently-selected workspace of the first
@@ -2376,6 +2797,7 @@ fn apply_set_panel_pinned(snapshot: &mut AppSessionSnapshot, panel_id: &str, pin
 /// Set or clear the unread state for `panel_id` in the active workspace,
 /// stamping new unread markers for notification ordering. Returns whether
 /// unread metadata actually changed.
+#[cfg(test)]
 fn apply_set_panel_unread(snapshot: &mut AppSessionSnapshot, panel_id: &str, unread: bool) -> bool {
     apply_set_panel_unread_at(snapshot, panel_id, unread, current_unix_timestamp_seconds())
 }
@@ -2408,27 +2830,28 @@ fn apply_set_panel_listening_ports(
     set_workspace_panel_listening_ports(workspace, panel_id, ports)
 }
 
+#[cfg(test)]
 fn apply_set_panel_tty(
     snapshot: &mut AppSessionSnapshot,
     workspace_index: usize,
     panel_id: &str,
     tty: &str,
 ) -> bool {
-    let Some(workspace) = snapshot
-        .windows
-        .first_mut()
-        .and_then(|window| window.tab_manager.workspaces.get_mut(workspace_index))
-    else {
-        return false;
-    };
-    set_workspace_panel_tty(workspace, panel_id, tty, current_unix_timestamp_seconds())
+    apply_set_panel_tty_at(
+        snapshot,
+        workspace_index,
+        panel_id,
+        tty,
+        current_unix_timestamp_seconds(),
+    )
 }
 
-fn apply_set_panel_shell_activity(
+fn apply_set_panel_tty_at(
     snapshot: &mut AppSessionSnapshot,
     workspace_index: usize,
     panel_id: &str,
-    state: SessionPanelShellActivityStateSnapshot,
+    tty: &str,
+    updated_at: i64,
 ) -> bool {
     let Some(workspace) = snapshot
         .windows
@@ -2437,7 +2860,40 @@ fn apply_set_panel_shell_activity(
     else {
         return false;
     };
-    set_workspace_panel_shell_activity(workspace, panel_id, state, current_unix_timestamp_seconds())
+    set_workspace_panel_tty(workspace, panel_id, tty, updated_at)
+}
+
+#[cfg(test)]
+fn apply_set_panel_shell_activity(
+    snapshot: &mut AppSessionSnapshot,
+    workspace_index: usize,
+    panel_id: &str,
+    state: SessionPanelShellActivityStateSnapshot,
+) -> bool {
+    apply_set_panel_shell_activity_at(
+        snapshot,
+        workspace_index,
+        panel_id,
+        state,
+        current_unix_timestamp_seconds(),
+    )
+}
+
+fn apply_set_panel_shell_activity_at(
+    snapshot: &mut AppSessionSnapshot,
+    workspace_index: usize,
+    panel_id: &str,
+    state: SessionPanelShellActivityStateSnapshot,
+    updated_at: i64,
+) -> bool {
+    let Some(workspace) = snapshot
+        .windows
+        .first_mut()
+        .and_then(|window| window.tab_manager.workspaces.get_mut(workspace_index))
+    else {
+        return false;
+    };
+    set_workspace_panel_shell_activity(workspace, panel_id, state, updated_at)
 }
 
 fn apply_set_workspace_agent_listening_ports(
@@ -2455,11 +2911,28 @@ fn apply_set_workspace_agent_listening_ports(
     set_workspace_agent_listening_ports(workspace, ports)
 }
 
+#[cfg(test)]
 fn apply_set_workspace_agent_pid(
     snapshot: &mut AppSessionSnapshot,
     workspace_index: usize,
     key: &str,
     pid: u32,
+) -> bool {
+    apply_set_workspace_agent_pid_at(
+        snapshot,
+        workspace_index,
+        key,
+        pid,
+        current_unix_timestamp_seconds(),
+    )
+}
+
+fn apply_set_workspace_agent_pid_at(
+    snapshot: &mut AppSessionSnapshot,
+    workspace_index: usize,
+    key: &str,
+    pid: u32,
+    updated_at: i64,
 ) -> bool {
     let Some(workspace) = snapshot
         .windows
@@ -2468,7 +2941,7 @@ fn apply_set_workspace_agent_pid(
     else {
         return false;
     };
-    set_workspace_agent_pid(workspace, key, pid, current_unix_timestamp_seconds())
+    set_workspace_agent_pid(workspace, key, pid, updated_at)
 }
 
 fn apply_clear_workspace_agent_pid(
@@ -2611,25 +3084,20 @@ pub(crate) fn record_started_agent_session(
     app: &AppHandle,
     state: &SessionState,
     started: StartedAgentSessionSnapshot,
-) -> bool {
+) -> Result<bool, String> {
     let restorable = restorable_snapshot_from_started(&started);
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_restorable_agent_snapshot(
-            &mut guard,
-            started.workspace_id.as_deref(),
-            &started.panel_id,
-            restorable,
-        );
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    changed
+    let (changed, _) = state
+        .transact_value_if_changed(app, |snapshot| {
+            let changed = apply_restorable_agent_snapshot(
+                snapshot,
+                started.workspace_id.as_deref(),
+                &started.panel_id,
+                restorable,
+            );
+            Ok::<(bool, bool), std::convert::Infallible>((changed, changed))
+        })
+        .map_err(collapse_infallible_publication_error)?;
+    Ok(changed)
 }
 
 fn restorable_snapshot_from_started(
@@ -2721,6 +3189,7 @@ fn current_unix_timestamp_seconds() -> i64 {
 
 /// Mark a workspace read/unread by updating its representative panel unread
 /// metadata, stamping new unread markers for notification ordering.
+#[cfg(test)]
 fn apply_set_workspace_unread(
     snapshot: &mut AppSessionSnapshot,
     index: i64,
@@ -2847,11 +3316,87 @@ fn notify_session_changed(app: &AppHandle, snapshot: &AppSessionSnapshot) {
     if let Some(state) = app.try_state::<SessionState>() {
         record_workspace_focus_history(state.inner(), snapshot);
     }
-    persist_current_snapshot(app, snapshot);
+    let _ = persist_current_snapshot(app, snapshot);
     crate::control_socket::record_session_changed_event(app, snapshot);
     emit_session_changed(app, snapshot);
     crate::window_title::refresh_window_titles(app, snapshot);
     crate::window::emit_window_states(app);
+}
+
+#[derive(Clone, Copy)]
+enum DerivedEventPolicy {
+    Record,
+    Suppress,
+}
+
+struct ProductionSnapshotPublicationOperations<'a> {
+    app: &'a AppHandle,
+    state: &'a SessionState,
+    derived_events: DerivedEventPolicy,
+    reseed_next_panel: bool,
+}
+
+impl<'a> ProductionSnapshotPublicationOperations<'a> {
+    fn new(
+        app: &'a AppHandle,
+        state: &'a SessionState,
+        derived_events: DerivedEventPolicy,
+    ) -> Self {
+        Self {
+            app,
+            state,
+            derived_events,
+            reseed_next_panel: true,
+        }
+    }
+
+    fn with_deferred_next_panel_reseed(app: &'a AppHandle, state: &'a SessionState) -> Self {
+        Self {
+            app,
+            state,
+            derived_events: DerivedEventPolicy::Record,
+            reseed_next_panel: false,
+        }
+    }
+}
+
+impl SnapshotPublicationOperations for ProductionSnapshotPublicationOperations<'_> {
+    fn persist(&mut self, candidate: &AppSessionSnapshot) -> Result<(), String> {
+        persist_current_snapshot(self.app, candidate)
+    }
+
+    fn update_event_baseline(&mut self, candidate: &AppSessionSnapshot) {
+        if self.reseed_next_panel {
+            self.state
+                .next_panel
+                .fetch_max(next_panel_counter(candidate), Ordering::Relaxed);
+        }
+        record_workspace_focus_history(self.state, candidate);
+        if matches!(self.derived_events, DerivedEventPolicy::Record) {
+            crate::control_socket::record_session_changed_event(self.app, candidate);
+        }
+    }
+
+    fn emit(&mut self, candidate: &AppSessionSnapshot) -> Result<(), String> {
+        emit_session_changed(self.app, candidate);
+        crate::window_title::refresh_window_titles(self.app, candidate);
+        crate::window::emit_window_states(self.app);
+        Ok(())
+    }
+}
+
+fn mutate_optional_snapshot_for_control(
+    app: &AppHandle,
+    state: &SessionState,
+    mutation: impl FnOnce(&mut AppSessionSnapshot) -> bool,
+) -> Result<Option<AppSessionSnapshot>, String> {
+    let (resolved, snapshot) = state
+        .transact_value_if_changed(app, |snapshot| {
+            let resolved = mutation(snapshot);
+            Ok::<(bool, bool), std::convert::Infallible>((resolved, resolved))
+        })
+        .map_err(collapse_infallible_publication_error)?;
+    Ok(resolved.then_some(snapshot))
 }
 
 pub(crate) fn open_markdown_file_in_panel(
@@ -2859,19 +3404,10 @@ pub(crate) fn open_markdown_file_in_panel(
     state: &SessionState,
     panel_id: &str,
     file_path: &str,
-) -> Option<AppSessionSnapshot> {
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        if !apply_open_markdown_file(&mut guard, panel_id, file_path) {
-            return None;
-        }
-        guard.clone()
-    };
-    notify_session_changed(app, &snapshot);
-    Some(snapshot)
+) -> Result<Option<AppSessionSnapshot>, String> {
+    mutate_optional_snapshot_for_control(app, state, |snapshot| {
+        apply_open_markdown_file(snapshot, panel_id, file_path)
+    })
 }
 
 pub(crate) fn open_file_in_panel(
@@ -2879,19 +3415,10 @@ pub(crate) fn open_file_in_panel(
     state: &SessionState,
     panel_id: &str,
     file_path: &str,
-) -> Option<AppSessionSnapshot> {
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        if !apply_open_file(&mut guard, panel_id, file_path) {
-            return None;
-        }
-        guard.clone()
-    };
-    notify_session_changed(app, &snapshot);
-    Some(snapshot)
+) -> Result<Option<AppSessionSnapshot>, String> {
+    mutate_optional_snapshot_for_control(app, state, |snapshot| {
+        apply_open_file(snapshot, panel_id, file_path)
+    })
 }
 
 pub(crate) fn open_custom_sidebar_in_panel(
@@ -2899,19 +3426,10 @@ pub(crate) fn open_custom_sidebar_in_panel(
     state: &SessionState,
     panel_id: &str,
     file_path: &str,
-) -> Option<AppSessionSnapshot> {
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        if !apply_open_custom_sidebar(&mut guard, panel_id, file_path) {
-            return None;
-        }
-        guard.clone()
-    };
-    notify_session_changed(app, &snapshot);
-    Some(snapshot)
+) -> Result<Option<AppSessionSnapshot>, String> {
+    mutate_optional_snapshot_for_control(app, state, |snapshot| {
+        apply_open_custom_sidebar(snapshot, panel_id, file_path)
+    })
 }
 
 pub(crate) fn open_diff_viewer_in_panel(
@@ -2921,27 +3439,253 @@ pub(crate) fn open_diff_viewer_in_panel(
     panel_id: &str,
     token: &str,
     request_path: &str,
-) -> Option<AppSessionSnapshot> {
-    let normalized_request_path = normalize_diff_request_path(request_path)?;
+) -> Result<Option<AppSessionSnapshot>, String> {
+    let Some(normalized_request_path) = normalize_diff_request_path(request_path) else {
+        return Ok(None);
+    };
     if !diff_state.has_registered_request(
         token.trim(),
         &normalized_request_path,
         std::time::SystemTime::now(),
     ) {
-        return None;
+        return Ok(None);
     }
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        if !apply_open_diff_viewer(&mut guard, panel_id, token, &normalized_request_path) {
-            return None;
-        }
-        guard.clone()
+    let (resolved, snapshot) = state
+        .transact_value_if_changed(app, |snapshot| {
+            let resolved =
+                apply_open_diff_viewer(snapshot, panel_id, token, &normalized_request_path);
+            Ok::<_, std::convert::Infallible>((resolved, resolved))
+        })
+        .map_err(collapse_infallible_publication_error)?;
+    Ok(resolved.then_some(snapshot))
+}
+
+struct BrowserProxyLease(crate::remote_proxy::WorkspacePanelBrokerLease);
+
+impl BrowserProxyLease {
+    fn proxy_url(&self) -> &str {
+        self.0.proxy_url()
+    }
+}
+
+trait BrowserProxyEffects {
+    fn prepare(
+        &mut self,
+        snapshot: &AppSessionSnapshot,
+        panel_id: &str,
+    ) -> Option<BrowserProxyLease>;
+    fn rollback(&mut self, lease: BrowserProxyLease);
+    fn commit(&mut self, lease: BrowserProxyLease);
+}
+
+struct ProductionBrowserProxyEffects<'a> {
+    app: &'a AppHandle,
+}
+
+impl BrowserProxyEffects for ProductionBrowserProxyEffects<'_> {
+    fn prepare(
+        &mut self,
+        snapshot: &AppSessionSnapshot,
+        panel_id: &str,
+    ) -> Option<BrowserProxyLease> {
+        let workspace_id = workspace_id_for_panel_in_snapshot(snapshot, panel_id)?;
+        let observer = Arc::new(PanelBrowserProxyObserver {
+            app: self.app.clone(),
+            panel_id: panel_id.to_string(),
+        });
+        self.app
+            .state::<crate::remote_proxy::RemoteProxyBrokerState>()
+            .prepare_workspace_panel_broker(&workspace_id, panel_id, Some(observer))
+            .ok()
+            .map(BrowserProxyLease)
+    }
+
+    fn rollback(&mut self, lease: BrowserProxyLease) {
+        self.app
+            .state::<crate::remote_proxy::RemoteProxyBrokerState>()
+            .rollback_workspace_panel_broker(lease.0);
+    }
+
+    fn commit(&mut self, lease: BrowserProxyLease) {
+        self.app
+            .state::<crate::remote_proxy::RemoteProxyBrokerState>()
+            .commit_workspace_panel_broker(lease.0);
+    }
+}
+
+fn bind_browser_proxy_lease(
+    snapshot: &mut AppSessionSnapshot,
+    panel_id: &str,
+    lease: Option<&BrowserProxyLease>,
+) {
+    let Some(lease) = lease else {
+        return;
     };
-    notify_session_changed(app, &snapshot);
-    Some(snapshot)
+    let Some(layout) = active_layout_slot(snapshot).and_then(Option::as_mut) else {
+        return;
+    };
+    set_layout_browser_proxy_url_for_panel(layout, panel_id, Some(lease.proxy_url()));
+}
+
+fn publish_browser_candidate(
+    authority: &GatedSnapshot,
+    publication: &mut impl SnapshotPublicationOperations,
+    proxy: &mut impl BrowserProxyEffects,
+    current: &AppSessionSnapshot,
+    mut candidate: AppSessionSnapshot,
+    panel_id: &str,
+) -> Result<AppSessionSnapshot, String> {
+    let lease = proxy.prepare(&candidate, panel_id);
+    bind_browser_proxy_lease(&mut candidate, panel_id, lease.as_ref());
+    match publish_snapshot_transaction(authority, Some(current), &candidate, publication) {
+        Ok(committed) => {
+            if let Some(lease) = lease {
+                proxy.commit(lease);
+            }
+            Ok(committed)
+        }
+        Err(message) => {
+            if let Some(lease) = lease {
+                proxy.rollback(lease);
+            }
+            Err(message)
+        }
+    }
+}
+
+fn transaction_current_snapshot(authority: &GatedSnapshot) -> Result<AppSessionSnapshot, String> {
+    authority
+        .lock()
+        .map(|snapshot| snapshot.clone())
+        .map_err(|_| "Session state is unavailable".to_string())
+}
+
+fn transact_open_browser_url(
+    authority: &GatedSnapshot,
+    publication: &mut impl SnapshotPublicationOperations,
+    proxy: &mut impl BrowserProxyEffects,
+    panel_id: &str,
+    url: Option<&str>,
+) -> Result<Option<AppSessionSnapshot>, String> {
+    let _transaction_guard = authority.lock_gate();
+    let current = transaction_current_snapshot(authority)?;
+    let mut candidate = current.clone();
+    if !apply_open_browser_url(&mut candidate, panel_id, url) {
+        return Ok(None);
+    }
+    publish_browser_candidate(authority, publication, proxy, &current, candidate, panel_id)
+        .map(Some)
+}
+
+#[derive(Debug)]
+pub(crate) enum BrowserPanelCreateError {
+    NotFound(String),
+    Publication(String),
+}
+
+impl std::fmt::Display for BrowserPanelCreateError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound(message) | Self::Publication(message) => formatter.write_str(message),
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn transact_split_browser(
+    authority: &GatedSnapshot,
+    next_panel: &AtomicU64,
+    publication: &mut impl SnapshotPublicationOperations,
+    proxy: &mut impl BrowserProxyEffects,
+    panel_id: &str,
+    orientation: SessionSplitOrientation,
+    insert_first: bool,
+    url: Option<&str>,
+) -> Result<AppSessionSnapshot, BrowserPanelCreateError> {
+    let _transaction_guard = authority.lock_gate();
+    let current =
+        transaction_current_snapshot(authority).map_err(BrowserPanelCreateError::Publication)?;
+    let new_panel_id = format!("surface-{}", next_panel.load(Ordering::Relaxed));
+    let mut candidate = current.clone();
+    if !apply_split(
+        &mut candidate,
+        panel_id,
+        orientation,
+        &new_panel_id,
+        insert_first,
+    ) {
+        return Err(BrowserPanelCreateError::NotFound(format!(
+            "no pane holds panel id {panel_id}"
+        )));
+    }
+    apply_open_browser_url(&mut candidate, &new_panel_id, url);
+    let committed = publish_browser_candidate(
+        authority,
+        publication,
+        proxy,
+        &current,
+        candidate,
+        &new_panel_id,
+    )
+    .map_err(BrowserPanelCreateError::Publication)?;
+    next_panel.fetch_add(1, Ordering::Relaxed);
+    Ok(committed)
+}
+
+fn transact_new_browser_workspace(
+    authority: &GatedSnapshot,
+    next_panel: &AtomicU64,
+    publication: &mut impl SnapshotPublicationOperations,
+    proxy: &mut impl BrowserProxyEffects,
+    url: Option<&str>,
+) -> Result<AppSessionSnapshot, String> {
+    let _transaction_guard = authority.lock_gate();
+    let current = transaction_current_snapshot(authority)?;
+    let new_panel_id = format!("surface-{}", next_panel.load(Ordering::Relaxed));
+    let mut candidate = current.clone();
+    apply_new_workspace(&mut candidate, &new_panel_id, None, None, None, None);
+    apply_open_browser_url(&mut candidate, &new_panel_id, url);
+    let committed = publish_browser_candidate(
+        authority,
+        publication,
+        proxy,
+        &current,
+        candidate,
+        &new_panel_id,
+    )?;
+    next_panel.fetch_add(1, Ordering::Relaxed);
+    Ok(committed)
+}
+
+fn transact_reopen_closed_browser_tab(
+    authority: &GatedSnapshot,
+    next_panel: &AtomicU64,
+    history: &Mutex<Vec<ClosedBrowserTabSnapshot>>,
+    publication: &mut impl SnapshotPublicationOperations,
+    proxy: &mut impl BrowserProxyEffects,
+) -> Result<AppSessionSnapshot, String> {
+    let _transaction_guard = authority.lock_gate();
+    let mut history = history
+        .lock()
+        .expect("closed browser history mutex poisoned");
+    let current = transaction_current_snapshot(authority)?;
+    let Some(tab) = history.last().cloned() else {
+        return Ok(current);
+    };
+    let new_panel_id = format!("surface-{}", next_panel.load(Ordering::Relaxed));
+    let mut candidate = current.clone();
+    apply_reopen_closed_browser_tab(&mut candidate, &tab, &new_panel_id);
+    let committed = publish_browser_candidate(
+        authority,
+        publication,
+        proxy,
+        &current,
+        candidate,
+        &new_panel_id,
+    )?;
+    history.pop();
+    next_panel.fetch_add(1, Ordering::Relaxed);
+    Ok(committed)
 }
 
 pub(crate) fn open_browser_url_in_panel(
@@ -2949,22 +3693,11 @@ pub(crate) fn open_browser_url_in_panel(
     state: &SessionState,
     panel_id: &str,
     url: Option<&str>,
-) -> Option<AppSessionSnapshot> {
-    let mut snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        if !apply_open_browser_url(&mut guard, panel_id, url) {
-            return None;
-        }
-        guard.clone()
-    };
-    if let Some(updated) = start_panel_browser_proxy_for_control(app, state, &snapshot, panel_id) {
-        snapshot = updated;
-    }
-    notify_session_changed(app, &snapshot);
-    Some(snapshot)
+) -> Result<Option<AppSessionSnapshot>, String> {
+    let mut publication =
+        ProductionSnapshotPublicationOperations::new(app, state, DerivedEventPolicy::Record);
+    let mut proxy = ProductionBrowserProxyEffects { app };
+    transact_open_browser_url(&state.snapshot, &mut publication, &mut proxy, panel_id, url)
 }
 
 fn mutate_browser_for_control<F>(
@@ -2972,29 +3705,18 @@ fn mutate_browser_for_control<F>(
     state: &SessionState,
     panel_id: &str,
     mutator: F,
-) -> AppSessionSnapshot
+) -> Result<AppSessionSnapshot, String>
 where
     F: FnOnce(&mut AppSessionSnapshot, &str) -> bool,
 {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = mutator(&mut guard, panel_id);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+    state.transact_snapshot_if_changed(app, |snapshot| mutator(snapshot, panel_id))
 }
 
 pub(crate) fn browser_go_back_for_control(
     app: &AppHandle,
     state: &SessionState,
     panel_id: &str,
-) -> AppSessionSnapshot {
+) -> Result<AppSessionSnapshot, String> {
     mutate_browser_for_control(app, state, panel_id, apply_browser_go_back)
 }
 
@@ -3002,7 +3724,7 @@ pub(crate) fn browser_go_forward_for_control(
     app: &AppHandle,
     state: &SessionState,
     panel_id: &str,
-) -> AppSessionSnapshot {
+) -> Result<AppSessionSnapshot, String> {
     mutate_browser_for_control(app, state, panel_id, apply_browser_go_forward)
 }
 
@@ -3010,7 +3732,7 @@ pub(crate) fn clear_browser_history_for_control(
     app: &AppHandle,
     state: &SessionState,
     panel_id: &str,
-) -> AppSessionSnapshot {
+) -> Result<AppSessionSnapshot, String> {
     mutate_browser_for_control(app, state, panel_id, apply_clear_browser_history)
 }
 
@@ -3018,7 +3740,7 @@ pub(crate) fn toggle_browser_omnibar_for_control(
     app: &AppHandle,
     state: &SessionState,
     panel_id: &str,
-) -> AppSessionSnapshot {
+) -> Result<AppSessionSnapshot, String> {
     mutate_browser_for_control(app, state, panel_id, apply_toggle_browser_omnibar)
 }
 
@@ -3026,7 +3748,7 @@ pub(crate) fn toggle_browser_focus_mode_for_control(
     app: &AppHandle,
     state: &SessionState,
     panel_id: &str,
-) -> AppSessionSnapshot {
+) -> Result<AppSessionSnapshot, String> {
     mutate_browser_for_control(app, state, panel_id, apply_toggle_browser_focus_mode)
 }
 
@@ -3034,7 +3756,7 @@ pub(crate) fn toggle_browser_developer_tools_for_control(
     app: &AppHandle,
     state: &SessionState,
     panel_id: &str,
-) -> AppSessionSnapshot {
+) -> Result<AppSessionSnapshot, String> {
     mutate_browser_for_control(app, state, panel_id, apply_toggle_browser_developer_tools)
 }
 
@@ -3043,7 +3765,7 @@ pub(crate) fn show_browser_developer_tools_for_control(
     state: &SessionState,
     panel_id: &str,
     panel: &str,
-) -> AppSessionSnapshot {
+) -> Result<AppSessionSnapshot, String> {
     let normalized_panel = match panel {
         "console" | "react" => panel.to_string(),
         _ => "inspector".to_string(),
@@ -3058,7 +3780,7 @@ pub(crate) fn set_browser_zoom_for_control(
     state: &SessionState,
     panel_id: &str,
     zoom: f64,
-) -> AppSessionSnapshot {
+) -> Result<AppSessionSnapshot, String> {
     mutate_browser_for_control(app, state, panel_id, |snapshot, panel_id| {
         apply_set_browser_zoom(snapshot, panel_id, zoom)
     })
@@ -3072,7 +3794,6 @@ pub fn session_snapshot(
     state: State<'_, SessionState>,
 ) -> AppSessionSnapshot {
     let snapshot = current_session_snapshot(&state);
-    persist_current_snapshot(&app, &snapshot);
     crate::window_title::refresh_window_titles(&app, &snapshot);
     crate::window::emit_window_states(&app);
     snapshot_for_window(&snapshot, window.label())
@@ -3088,76 +3809,307 @@ pub(crate) fn current_session_snapshot(state: &SessionState) -> AppSessionSnapsh
     guard.clone()
 }
 
+#[cfg(windows)]
+fn replace_file_atomically(staged: &Path, destination: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let staged: Vec<u16> = staged.as_os_str().encode_wide().chain(Some(0)).collect();
+    let destination: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    unsafe {
+        MoveFileExW(
+            PCWSTR(staged.as_ptr()),
+            PCWSTR(destination.as_ptr()),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    }
+    .map_err(|error| error.to_string())
+}
+
+#[cfg(not(windows))]
+fn replace_file_atomically(staged: &Path, destination: &Path) -> Result<(), String> {
+    std::fs::rename(staged, destination).map_err(|error| error.to_string())
+}
+
+/// Atomically publish one already-validated application-wide lifecycle
+/// snapshot. Persistence is prepared and installed before the in-memory
+/// authority changes, so a filesystem failure cannot leave the live model and
+/// restore state describing different topologies.
+pub(crate) fn commit_lifecycle_snapshot_for_control(
+    app: &AppHandle,
+    state: &SessionState,
+    candidate: &AppSessionSnapshot,
+    record_derived_events: bool,
+) -> Result<AppSessionSnapshot, String> {
+    commit_lifecycle_snapshot_for_control_inner(app, state, None, candidate, record_derived_events)
+}
+
+pub(crate) fn commit_lifecycle_snapshot_for_control_if_current(
+    app: &AppHandle,
+    state: &SessionState,
+    expected: &AppSessionSnapshot,
+    candidate: &AppSessionSnapshot,
+    record_derived_events: bool,
+) -> Result<AppSessionSnapshot, String> {
+    commit_lifecycle_snapshot_for_control_inner(
+        app,
+        state,
+        Some(expected),
+        candidate,
+        record_derived_events,
+    )
+}
+
+pub(crate) fn ensure_lifecycle_snapshot_current(
+    current: &AppSessionSnapshot,
+    expected: &AppSessionSnapshot,
+) -> Result<(), String> {
+    (current == expected)
+        .then_some(())
+        .ok_or_else(|| "Stale lifecycle transition".to_string())
+}
+
+fn commit_lifecycle_snapshot_for_control_inner(
+    app: &AppHandle,
+    state: &SessionState,
+    expected: Option<&AppSessionSnapshot>,
+    candidate: &AppSessionSnapshot,
+    record_derived_events: bool,
+) -> Result<AppSessionSnapshot, String> {
+    cmux_core::surface_lifecycle::SurfaceLifecycleModel::from_app_session(candidate)
+        .and_then(|model| model.validate_indexes())
+        .map_err(|error| error.to_string())?;
+
+    let mut operations = ProductionSnapshotPublicationOperations::new(
+        app,
+        state,
+        if record_derived_events {
+            DerivedEventPolicy::Record
+        } else {
+            DerivedEventPolicy::Suppress
+        },
+    );
+    publish_snapshot_transaction(&state.snapshot, expected, candidate, &mut operations)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum RegisterWindowOutcome {
+    Unchanged(AppSessionSnapshot),
+    Registered(AppSessionSnapshot),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RemovedWindowLease {
+    removed: SessionWindowSnapshot,
+    original_index: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum UnregisterWindowOutcome {
+    Unchanged(AppSessionSnapshot),
+    Removed {
+        snapshot: AppSessionSnapshot,
+        lease: RemovedWindowLease,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MoveWorkspaceToWindowControlError {
+    NotFound,
+    Publication(String),
+}
+
+fn auxiliary_window_snapshot(window_id: &str, panel_id: &str) -> SessionWindowSnapshot {
+    SessionWindowSnapshot {
+        window_id: Some(window_id.to_string()),
+        selected_workspace_id: None,
+        dock: None,
+        tab_manager: SessionTabManagerSnapshot {
+            selected_workspace_index: Some(0),
+            workspaces: vec![session_ops::fresh_terminal_workspace(panel_id)],
+            workspace_groups: None,
+        },
+    }
+}
+
+fn transact_register_window(
+    authority: &GatedSnapshot,
+    next_panel: &AtomicU64,
+    publication: &mut impl SnapshotPublicationOperations,
+    window_id: &str,
+) -> Result<RegisterWindowOutcome, String> {
+    let _transaction_guard = authority.lock_gate();
+    let before = transaction_current_snapshot(authority)?;
+    if window_id.trim().is_empty() {
+        return Ok(RegisterWindowOutcome::Unchanged(before));
+    }
+    if before
+        .windows
+        .iter()
+        .any(|window| window.window_id.as_deref() == Some(window_id))
+    {
+        return Ok(RegisterWindowOutcome::Unchanged(before));
+    }
+    if window_id == "main" && !before.windows.is_empty() {
+        let mut candidate = before.clone();
+        candidate.windows[0].window_id = Some("main".to_string());
+        let committed =
+            publish_snapshot_transaction(authority, Some(&before), &candidate, publication)?;
+        return Ok(RegisterWindowOutcome::Registered(committed));
+    }
+    let panel_id = format!("surface-{}", next_panel.load(Ordering::Relaxed));
+    let mut candidate = before.clone();
+    candidate
+        .windows
+        .push(auxiliary_window_snapshot(window_id, &panel_id));
+    ensure_workspace_ids(&mut candidate);
+    ensure_pane_ids(&mut candidate);
+    let committed =
+        publish_snapshot_transaction(authority, Some(&before), &candidate, publication)?;
+    next_panel.fetch_add(1, Ordering::Relaxed);
+    Ok(RegisterWindowOutcome::Registered(committed))
+}
+
+fn transact_unregister_window(
+    authority: &GatedSnapshot,
+    publication: &mut impl SnapshotPublicationOperations,
+    window_id: &str,
+) -> Result<UnregisterWindowOutcome, String> {
+    let _transaction_guard = authority.lock_gate();
+    let before = transaction_current_snapshot(authority)?;
+    let Some(index) = before
+        .windows
+        .iter()
+        .position(|window| window.window_id.as_deref() == Some(window_id))
+        .filter(|index| *index != 0)
+    else {
+        return Ok(UnregisterWindowOutcome::Unchanged(before));
+    };
+    let mut candidate = before.clone();
+    let removed = candidate.windows.remove(index);
+    let committed =
+        publish_snapshot_transaction(authority, Some(&before), &candidate, publication)?;
+    Ok(UnregisterWindowOutcome::Removed {
+        snapshot: committed,
+        lease: RemovedWindowLease {
+            removed,
+            original_index: index,
+        },
+    })
+}
+
+fn transact_restore_removed_window(
+    authority: &GatedSnapshot,
+    publication: &mut impl SnapshotPublicationOperations,
+    lease: &RemovedWindowLease,
+) -> Result<AppSessionSnapshot, String> {
+    let _transaction_guard = authority.lock_gate();
+    let current = transaction_current_snapshot(authority)?;
+    let removed_window_id = lease.removed.window_id.as_deref();
+    if current
+        .windows
+        .iter()
+        .any(|window| window.window_id.as_deref() == removed_window_id)
+    {
+        return Ok(current);
+    }
+    let mut candidate = current.clone();
+    let index = lease.original_index.min(candidate.windows.len());
+    candidate.windows.insert(index, lease.removed.clone());
+    publish_snapshot_transaction(authority, Some(&current), &candidate, publication)
+}
+
+fn transact_move_workspace_and_register_window(
+    authority: &GatedSnapshot,
+    next_panel: &AtomicU64,
+    publication: &mut impl SnapshotPublicationOperations,
+    workspace_id: &str,
+    target_window_id: &str,
+    focus: bool,
+) -> Result<AppSessionSnapshot, MoveWorkspaceToWindowControlError> {
+    let _transaction_guard = authority.lock_gate();
+    let before = transaction_current_snapshot(authority)
+        .map_err(MoveWorkspaceToWindowControlError::Publication)?;
+    if !before.windows.iter().any(|window| {
+        window
+            .tab_manager
+            .workspaces
+            .iter()
+            .any(|workspace| workspace.workspace_id.as_deref() == Some(workspace_id))
+    }) {
+        return Err(MoveWorkspaceToWindowControlError::NotFound);
+    }
+    let mut candidate = before.clone();
+    let mut used = 0;
+    if !candidate
+        .windows
+        .iter()
+        .any(|window| window.window_id.as_deref() == Some(target_window_id))
+    {
+        let panel_id = format!("surface-{}", next_panel.load(Ordering::Relaxed) + used);
+        used += 1;
+        candidate
+            .windows
+            .push(auxiliary_window_snapshot(target_window_id, &panel_id));
+    }
+    let bootstrap_panel_id = format!("surface-{}", next_panel.load(Ordering::Relaxed) + used);
+    used += 1;
+    session_ops::move_workspace_to_window(
+        &mut candidate,
+        workspace_id,
+        target_window_id,
+        session_ops::fresh_terminal_workspace(&bootstrap_panel_id),
+        focus,
+    )
+    .map_err(|_| MoveWorkspaceToWindowControlError::NotFound)?;
+    ensure_workspace_ids(&mut candidate);
+    ensure_pane_ids(&mut candidate);
+    let committed = publish_snapshot_transaction(authority, Some(&before), &candidate, publication)
+        .map_err(MoveWorkspaceToWindowControlError::Publication)?;
+    next_panel.fetch_add(used, Ordering::Relaxed);
+    Ok(committed)
+}
+
 pub(crate) fn register_window_for_control(
     app: &AppHandle,
     state: &SessionState,
     window_id: &str,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let exact_window_index = guard
-            .windows
-            .iter()
-            .position(|window| window.window_id.as_deref() == Some(window_id));
-        let changed =
-            if exact_window_index.is_none() && window_id == "main" && !guard.windows.is_empty() {
-                guard.windows[0].window_id = Some("main".to_string());
-                true
-            } else if exact_window_index.is_none() {
-                let panel_id = format!(
-                    "surface-{}",
-                    state.next_panel.fetch_add(1, Ordering::Relaxed)
-                );
-                guard.windows.push(SessionWindowSnapshot {
-                    window_id: Some(window_id.to_string()),
-                    selected_workspace_id: None,
-                    tab_manager: SessionTabManagerSnapshot {
-                        selected_workspace_index: Some(0),
-                        workspaces: vec![session_ops::fresh_terminal_workspace(&panel_id)],
-                        workspace_groups: None,
-                    },
-                });
-                ensure_workspace_ids(&mut guard);
-                ensure_pane_ids(&mut guard);
-                true
-            } else {
-                false
-            };
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<RegisterWindowOutcome, String> {
+    let mut publication =
+        ProductionSnapshotPublicationOperations::with_deferred_next_panel_reseed(app, state);
+    transact_register_window(
+        &state.snapshot,
+        &state.next_panel,
+        &mut publication,
+        window_id,
+    )
 }
 
 pub(crate) fn unregister_window_for_control(
     app: &AppHandle,
     state: &SessionState,
     window_id: &str,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = if let Some(index) =
-            window_index_for_label(&guard, window_id).filter(|index| *index != 0)
-        {
-            guard.windows.remove(index);
-            true
-        } else {
-            false
-        };
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<UnregisterWindowOutcome, String> {
+    let mut publication =
+        ProductionSnapshotPublicationOperations::new(app, state, DerivedEventPolicy::Record);
+    transact_unregister_window(&state.snapshot, &mut publication, window_id)
+}
+
+pub(crate) fn restore_removed_window_for_control(
+    app: &AppHandle,
+    state: &SessionState,
+    lease: &RemovedWindowLease,
+) -> Result<AppSessionSnapshot, String> {
+    let mut publication =
+        ProductionSnapshotPublicationOperations::new(app, state, DerivedEventPolicy::Record);
+    transact_restore_removed_window(&state.snapshot, &mut publication, lease)
 }
 
 pub(crate) fn move_workspace_to_window_for_control(
@@ -3166,29 +4118,17 @@ pub(crate) fn move_workspace_to_window_for_control(
     workspace_id: &str,
     target_window_id: &str,
     focus: bool,
-) -> Result<AppSessionSnapshot, session_ops::MoveWorkspaceToWindowError> {
-    let bootstrap_panel_id = format!(
-        "surface-{}",
-        state.next_panel.fetch_add(1, Ordering::Relaxed)
-    );
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        session_ops::move_workspace_to_window(
-            &mut guard,
-            workspace_id,
-            target_window_id,
-            session_ops::fresh_terminal_workspace(&bootstrap_panel_id),
-            focus,
-        )?;
-        ensure_workspace_ids(&mut guard);
-        ensure_pane_ids(&mut guard);
-        guard.clone()
-    };
-    notify_session_changed(app, &snapshot);
-    Ok(snapshot)
+) -> Result<AppSessionSnapshot, MoveWorkspaceToWindowControlError> {
+    let mut publication =
+        ProductionSnapshotPublicationOperations::with_deferred_next_panel_reseed(app, state);
+    transact_move_workspace_and_register_window(
+        &state.snapshot,
+        &state.next_panel,
+        &mut publication,
+        workspace_id,
+        target_window_id,
+        focus,
+    )
 }
 
 pub(crate) fn configure_workspace_remote_for_control(
@@ -3461,7 +4401,7 @@ fn mark_workspace_remote_proxy_ready_for_control(
         apply_workspace_browser_proxy_url(workspace, Some(&proxy_url));
         guard.clone()
     };
-    persist_current_snapshot(app, &snapshot);
+    let _ = persist_current_snapshot(app, &snapshot);
     Some(snapshot)
 }
 
@@ -3500,7 +4440,7 @@ fn mark_workspace_remote_proxy_unavailable_for_control(
         apply_workspace_browser_proxy_url(workspace, None);
         guard.clone()
     };
-    persist_current_snapshot(app, &snapshot);
+    let _ = persist_current_snapshot(app, &snapshot);
     Some(snapshot)
 }
 
@@ -3610,6 +4550,7 @@ fn start_panel_browser_proxy_for_control(
     snapshot: &AppSessionSnapshot,
     panel_id: &str,
 ) -> Option<AppSessionSnapshot> {
+    let _proxy_guard = state.snapshot.lock_gate();
     let workspace_id = workspace_id_for_panel_in_snapshot(snapshot, panel_id)?;
     let observer = Arc::new(PanelBrowserProxyObserver {
         app: app.clone(),
@@ -3643,6 +4584,7 @@ pub(crate) fn start_direct_browser_proxy_for_control(
     panel_id: &str,
     target_override: Option<crate::remote_proxy::ProxyTarget>,
 ) -> Result<(AppSessionSnapshot, String), String> {
+    let _proxy_guard = state.snapshot.lock_gate();
     let workspace_id = workspace_id_for_panel_in_snapshot(snapshot, panel_id)
         .ok_or_else(|| "browser panel is not attached to a workspace".to_string())?;
     let observer = Arc::new(PanelBrowserProxyObserver {
@@ -3871,17 +4813,13 @@ pub(crate) fn select_workspace_for_control(
     app: &AppHandle,
     state: &SessionState,
     index: i64,
-) -> AppSessionSnapshot {
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        apply_select_workspace(&mut guard, index);
-        guard.clone()
-    };
-    notify_session_changed(app, &snapshot);
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_always(app, |snapshot| apply_select_workspace(snapshot, index))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WorkspaceSelectControlError {
+    WindowNotFound,
 }
 
 pub(crate) fn select_workspace_in_window_for_control(
@@ -3889,40 +4827,80 @@ pub(crate) fn select_workspace_in_window_for_control(
     state: &SessionState,
     window_index: usize,
     workspace_index: usize,
-) -> Option<AppSessionSnapshot> {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let window = guard.windows.get_mut(window_index)?;
-        let changed =
-            session_ops::select_workspace(&mut window.tab_manager, workspace_index as i64);
-        if changed {
-            sync_window_selected_workspace_id(window);
+) -> Result<AppSessionSnapshot, PaneTopologyControlError<WorkspaceSelectControlError>> {
+    let ((), snapshot) = state.transact_value_if_changed(app, |snapshot| {
+        let window = snapshot
+            .windows
+            .get_mut(window_index)
+            .ok_or(WorkspaceSelectControlError::WindowNotFound)?;
+        if workspace_index >= window.tab_manager.workspaces.len() {
+            return Ok(((), false));
         }
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    Some(snapshot)
+        session_ops::select_workspace(&mut window.tab_manager, workspace_index as i64);
+        sync_window_selected_workspace_id(window);
+        Ok(((), true))
+    })?;
+    Ok(snapshot)
 }
 
 pub(crate) fn equalize_dividers_for_control(
     app: &AppHandle,
     state: &SessionState,
-) -> AppSessionSnapshot {
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        apply_equalize_dividers(&mut guard);
-        guard.clone()
-    };
-    notify_session_changed(app, &snapshot);
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_always(app, apply_equalize_dividers)
+}
+
+#[derive(Debug)]
+struct DeferredPanelIds {
+    base: u64,
+    used: u64,
+}
+
+impl DeferredPanelIds {
+    fn new(counter: &AtomicU64) -> Self {
+        Self {
+            base: counter.load(Ordering::Relaxed),
+            used: 0,
+        }
+    }
+
+    fn next(&mut self) -> String {
+        let panel_id = format!("surface-{}", self.base + self.used);
+        self.used += 1;
+        panel_id
+    }
+
+    fn commit(self, counter: &AtomicU64) {
+        counter.fetch_add(self.used, Ordering::Relaxed);
+    }
+}
+
+fn transact_new_workspace(
+    authority: &GatedSnapshot,
+    next_panel: &AtomicU64,
+    publication: &mut impl SnapshotPublicationOperations,
+    current_directory: Option<&str>,
+    initial_terminal_command: Option<&str>,
+    initial_terminal_input: Option<&str>,
+    initial_terminal_environment: Option<BTreeMap<String, String>>,
+) -> Result<AppSessionSnapshot, String> {
+    let _transaction_guard = authority.lock_gate();
+    let current = transaction_current_snapshot(authority)?;
+    let mut ids = DeferredPanelIds::new(next_panel);
+    let new_panel_id = ids.next();
+    let mut candidate = current.clone();
+    apply_new_workspace(
+        &mut candidate,
+        &new_panel_id,
+        current_directory,
+        initial_terminal_command,
+        initial_terminal_input,
+        initial_terminal_environment,
+    );
+    let committed =
+        publish_snapshot_transaction(authority, Some(&current), &candidate, publication)?;
+    ids.commit(next_panel);
+    Ok(committed)
 }
 
 pub(crate) fn new_workspace_for_control(
@@ -3932,34 +4910,25 @@ pub(crate) fn new_workspace_for_control(
     initial_terminal_command: Option<&str>,
     initial_terminal_input: Option<&str>,
     initial_terminal_environment: Option<BTreeMap<String, String>>,
-) -> AppSessionSnapshot {
-    let new_panel_id = format!(
-        "surface-{}",
-        state.next_panel.fetch_add(1, Ordering::Relaxed)
-    );
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        apply_new_workspace(
-            &mut guard,
-            &new_panel_id,
-            current_directory,
-            initial_terminal_command,
-            initial_terminal_input,
-            initial_terminal_environment,
-        );
-        guard.clone()
-    };
-    notify_session_changed(app, &snapshot);
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let mut publication =
+        ProductionSnapshotPublicationOperations::with_deferred_next_panel_reseed(app, state);
+    transact_new_workspace(
+        &state.snapshot,
+        &state.next_panel,
+        &mut publication,
+        current_directory,
+        initial_terminal_command,
+        initial_terminal_input,
+        initial_terminal_environment,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn new_workspace_in_window_for_control(
-    app: &AppHandle,
-    state: &SessionState,
+fn transact_new_workspace_in_window(
+    authority: &GatedSnapshot,
+    next_panel: &AtomicU64,
+    publication: &mut impl SnapshotPublicationOperations,
     window_index: usize,
     current_directory: Option<&str>,
     initial_terminal_command: Option<&str>,
@@ -3971,17 +4940,21 @@ pub(crate) fn new_workspace_in_window_for_control(
     layout: Option<CmuxLayoutNode>,
     group_insert_index: Option<usize>,
     focus: bool,
-) -> Option<(AppSessionSnapshot, usize)> {
-    let new_panel_id = format!(
-        "surface-{}",
-        state.next_panel.fetch_add(1, Ordering::Relaxed)
-    );
-    let (snapshot, created_index) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let tabs = &mut guard.windows.get_mut(window_index)?.tab_manager;
+) -> Result<Option<(AppSessionSnapshot, usize)>, String> {
+    let _transaction_guard = authority.lock_gate();
+    let current = transaction_current_snapshot(authority)?;
+    if current.windows.get(window_index).is_none() {
+        return Ok(None);
+    }
+    let mut ids = DeferredPanelIds::new(next_panel);
+    let new_panel_id = ids.next();
+    let mut candidate = current.clone();
+    let created_index = {
+        let tabs = &mut candidate
+            .windows
+            .get_mut(window_index)
+            .expect("validated window")
+            .tab_manager;
         let previous_selected_id = tabs
             .selected_workspace_index
             .and_then(|index| usize::try_from(index).ok())
@@ -3989,7 +4962,11 @@ pub(crate) fn new_workspace_in_window_for_control(
             .and_then(|workspace| workspace.workspace_id.clone());
         let previous_selected_index = tabs.selected_workspace_index;
         session_ops::new_workspace(tabs, &new_panel_id);
-        let mut created_index = usize::try_from(tabs.selected_workspace_index?).ok()?;
+        let mut created_index = usize::try_from(
+            tabs.selected_workspace_index
+                .expect("new workspace is selected"),
+        )
+        .expect("selected workspace index is non-negative");
         if let Some(insert_index) = group_insert_index {
             let workspace = tabs.workspaces.remove(created_index);
             let insert_index = insert_index.min(tabs.workspaces.len());
@@ -3997,13 +4974,17 @@ pub(crate) fn new_workspace_in_window_for_control(
             created_index = insert_index;
             tabs.selected_workspace_index = Some(created_index as i64);
         }
-        let workspace = tabs.workspaces.get_mut(created_index)?;
+        let workspace = tabs
+            .workspaces
+            .get_mut(created_index)
+            .expect("selected workspace exists");
         if let Some(current_directory) = current_directory {
             workspace.current_directory = Some(current_directory.to_owned());
         }
         workspace.initial_terminal_command = initial_terminal_command.map(str::to_owned);
+        let initial_terminal_environment = initial_terminal_environment.unwrap_or_default();
         let mut effective_environment = workspace_environment.clone().unwrap_or_default();
-        effective_environment.extend(initial_terminal_environment.unwrap_or_default());
+        effective_environment.extend(initial_terminal_environment.clone());
         workspace.initial_terminal_environment =
             (!effective_environment.is_empty()).then_some(effective_environment);
         workspace.custom_title = title.map(str::to_owned);
@@ -4014,9 +4995,13 @@ pub(crate) fn new_workspace_in_window_for_control(
             workspace_environment.filter(|environment| !environment.is_empty());
         if let Some(layout) = layout {
             let (layout, focused_panel_id, mut terminal_startups) =
-                session_layout_from_cmux(layout, &state.next_panel)?;
+                match session_layout_from_cmux(layout, &mut ids) {
+                    Some(layout) => layout,
+                    None => return Ok(None),
+                };
             for startup in &mut terminal_startups {
                 let mut environment = workspace.workspace_environment.clone().unwrap_or_default();
+                environment.extend(initial_terminal_environment.clone());
                 environment.extend(
                     startup
                         .initial_terminal_environment
@@ -4044,12 +5029,50 @@ pub(crate) fn new_workspace_in_window_for_control(
                 .map(|index| index as i64)
                 .or(previous_selected_index);
         }
-        ensure_workspace_ids(&mut guard);
-        ensure_pane_ids(&mut guard);
-        (guard.clone(), created_index)
+        created_index
     };
-    notify_session_changed(app, &snapshot);
-    Some((snapshot, created_index))
+    ensure_workspace_ids(&mut candidate);
+    ensure_pane_ids(&mut candidate);
+    let committed =
+        publish_snapshot_transaction(authority, Some(&current), &candidate, publication)?;
+    ids.commit(next_panel);
+    Ok(Some((committed, created_index)))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn new_workspace_in_window_for_control(
+    app: &AppHandle,
+    state: &SessionState,
+    window_index: usize,
+    current_directory: Option<&str>,
+    initial_terminal_command: Option<&str>,
+    initial_terminal_environment: Option<BTreeMap<String, String>>,
+    title: Option<&str>,
+    description: Option<&str>,
+    workspace_environment: Option<BTreeMap<String, String>>,
+    group_id: Option<&str>,
+    layout: Option<CmuxLayoutNode>,
+    group_insert_index: Option<usize>,
+    focus: bool,
+) -> Result<Option<(AppSessionSnapshot, usize)>, String> {
+    let mut publication =
+        ProductionSnapshotPublicationOperations::with_deferred_next_panel_reseed(app, state);
+    transact_new_workspace_in_window(
+        &state.snapshot,
+        &state.next_panel,
+        &mut publication,
+        window_index,
+        current_directory,
+        initial_terminal_command,
+        initial_terminal_environment,
+        title,
+        description,
+        workspace_environment,
+        group_id,
+        layout,
+        group_insert_index,
+        focus,
+    )
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -4110,32 +5133,36 @@ fn apply_reopen_closed_workspace(
     true
 }
 
+fn transact_reopen_closed_workspace(
+    authority: &GatedSnapshot,
+    history: &Mutex<Vec<ClosedWorkspaceSnapshot>>,
+    publication: &mut impl SnapshotPublicationOperations,
+) -> Result<Option<AppSessionSnapshot>, String> {
+    let _transaction_guard = authority.lock_gate();
+    let mut history = history
+        .lock()
+        .expect("closed workspace history mutex poisoned");
+    let current = transaction_current_snapshot(authority)?;
+    let Some(closed) = history.last().cloned() else {
+        return Ok(None);
+    };
+    let mut candidate = current.clone();
+    if !apply_reopen_closed_workspace(&mut candidate, closed) {
+        return Ok(None);
+    }
+    let committed =
+        publish_snapshot_transaction(authority, Some(&current), &candidate, publication)?;
+    history.pop();
+    Ok(Some(committed))
+}
+
 pub(crate) fn reopen_closed_workspace_for_control(
     app: &AppHandle,
     state: &SessionState,
-) -> Option<AppSessionSnapshot> {
-    let closed = state
-        .closed_workspaces
-        .lock()
-        .expect("closed workspace history mutex poisoned")
-        .pop()?;
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        if !apply_reopen_closed_workspace(&mut guard, closed.clone()) {
-            state
-                .closed_workspaces
-                .lock()
-                .expect("closed workspace history mutex poisoned")
-                .push(closed);
-            return None;
-        }
-        guard.clone()
-    };
-    notify_session_changed(app, &snapshot);
-    Some(snapshot)
+) -> Result<Option<AppSessionSnapshot>, String> {
+    let mut publication =
+        ProductionSnapshotPublicationOperations::new(app, state, DerivedEventPolicy::Record);
+    transact_reopen_closed_workspace(&state.snapshot, &state.closed_workspaces, &mut publication)
 }
 
 fn remote_workspace_rename_intent(
@@ -4180,7 +5207,7 @@ fn remote_workspace_rename_request(
 
 fn session_layout_from_cmux(
     node: CmuxLayoutNode,
-    next_panel: &AtomicU64,
+    ids: &mut DeferredPanelIds,
 ) -> Option<(
     SessionWorkspaceLayoutSnapshot,
     Option<String>,
@@ -4188,7 +5215,7 @@ fn session_layout_from_cmux(
 )> {
     fn build(
         node: CmuxLayoutNode,
-        next_panel: &AtomicU64,
+        ids: &mut DeferredPanelIds,
         focused: &mut Option<String>,
         startups: &mut Vec<SessionPanelTerminalStartupSnapshot>,
     ) -> Option<SessionWorkspaceLayoutSnapshot> {
@@ -4202,8 +5229,7 @@ fn session_layout_from_cmux(
                 let mut selected_kind = None;
                 let mut selected_url = None;
                 for surface in pane.surfaces {
-                    let panel_id =
-                        format!("surface-{}", next_panel.fetch_add(1, Ordering::Relaxed));
+                    let panel_id = ids.next();
                     let is_terminal = surface.surface_type == CmuxSurfaceType::Terminal;
                     if selected_panel_id.is_none() || surface.focus == Some(true) {
                         selected_panel_id = Some(panel_id.clone());
@@ -4245,8 +5271,8 @@ fn session_layout_from_cmux(
             }
             CmuxLayoutNode::Split(split) => {
                 let mut children = split.children.into_iter();
-                let first = build(children.next()?, next_panel, focused, startups)?;
-                let second = build(children.next()?, next_panel, focused, startups)?;
+                let first = build(children.next()?, ids, focused, startups)?;
+                let second = build(children.next()?, ids, focused, startups)?;
                 if children.next().is_some() {
                     return None;
                 }
@@ -4268,7 +5294,7 @@ fn session_layout_from_cmux(
 
     let mut focused = None;
     let mut startups = Vec::new();
-    let layout = build(node, next_panel, &mut focused, &mut startups)?;
+    let layout = build(node, ids, &mut focused, &mut startups)?;
     Some((layout, focused, startups))
 }
 
@@ -4276,51 +5302,33 @@ pub(crate) fn new_browser_workspace_for_control(
     app: &AppHandle,
     state: &SessionState,
     url: Option<&str>,
-) -> AppSessionSnapshot {
-    let new_panel_id = format!(
-        "surface-{}",
-        state.next_panel.fetch_add(1, Ordering::Relaxed)
-    );
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        apply_new_workspace(&mut guard, &new_panel_id, None, None, None, None);
-        apply_open_browser_url(&mut guard, &new_panel_id, url);
-        guard.clone()
-    };
-    notify_session_changed(app, &snapshot);
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let mut publication =
+        ProductionSnapshotPublicationOperations::with_deferred_next_panel_reseed(app, state);
+    let mut proxy = ProductionBrowserProxyEffects { app };
+    transact_new_browser_workspace(
+        &state.snapshot,
+        &state.next_panel,
+        &mut publication,
+        &mut proxy,
+        url,
+    )
 }
 
 pub(crate) fn reopen_closed_browser_tab_for_control(
     app: &AppHandle,
     state: &SessionState,
-) -> AppSessionSnapshot {
-    let Some(tab) = ({
-        let mut history = state
-            .closed_browser_tabs
-            .lock()
-            .expect("closed browser history mutex poisoned");
-        history.pop()
-    }) else {
-        return current_session_snapshot(state);
-    };
-    let new_panel_id = format!(
-        "surface-{}",
-        state.next_panel.fetch_add(1, Ordering::Relaxed)
-    );
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        apply_reopen_closed_browser_tab(&mut guard, &tab, &new_panel_id);
-        guard.clone()
-    };
-    notify_session_changed(app, &snapshot);
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let mut publication =
+        ProductionSnapshotPublicationOperations::with_deferred_next_panel_reseed(app, state);
+    let mut proxy = ProductionBrowserProxyEffects { app };
+    transact_reopen_closed_browser_tab(
+        &state.snapshot,
+        &state.next_panel,
+        &state.closed_browser_tabs,
+        &mut publication,
+        &mut proxy,
+    )
 }
 
 pub(crate) fn close_workspace_in_window_for_control(
@@ -4536,6 +5544,20 @@ pub(crate) fn rename_workspace_in_window_for_control(
     Ok(Some((snapshot, resolution)))
 }
 
+#[derive(Debug)]
+pub(crate) enum TerminalPanelCreateError {
+    NotFound(String),
+    Publication(String),
+}
+
+impl std::fmt::Display for TerminalPanelCreateError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound(message) | Self::Publication(message) => formatter.write_str(message),
+        }
+    }
+}
+
 pub(crate) fn split_panel_for_control(
     app: &AppHandle,
     state: &SessionState,
@@ -4545,18 +5567,33 @@ pub(crate) fn split_panel_for_control(
     initial_terminal_command: Option<&str>,
     initial_terminal_input: Option<&str>,
     initial_terminal_environment: Option<BTreeMap<String, String>>,
-) -> Result<AppSessionSnapshot, String> {
+) -> Result<AppSessionSnapshot, TerminalPanelCreateError> {
+    let control_mutation = state.lock_control_mutation();
+    let _control_guard = control_mutation.map_err(TerminalPanelCreateError::Publication)?;
+    let mut validation = state
+        .snapshot_for_lifecycle()
+        .map_err(TerminalPanelCreateError::Publication)?;
+    if !apply_split_with_terminal_startup(
+        &mut validation,
+        panel_id,
+        orientation.clone(),
+        "surface-validation",
+        insert_first,
+        initial_terminal_command,
+        initial_terminal_input,
+        initial_terminal_environment.clone(),
+    ) {
+        return Err(TerminalPanelCreateError::NotFound(format!(
+            "no pane holds panel id {panel_id}"
+        )));
+    }
     let new_panel_id = format!(
         "surface-{}",
         state.next_panel.fetch_add(1, Ordering::Relaxed)
     );
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
+    let transaction = state.transact_lifecycle(app, |snapshot| {
         if !apply_split_with_terminal_startup(
-            &mut guard,
+            snapshot,
             panel_id,
             orientation,
             &new_panel_id,
@@ -4565,12 +5602,15 @@ pub(crate) fn split_panel_for_control(
             initial_terminal_input,
             initial_terminal_environment,
         ) {
-            return Err(format!("no pane holds panel id {panel_id}"));
+            return Err(format!(
+                "validated pane disappeared for panel id {panel_id}"
+            ));
         }
-        guard.clone()
-    };
-    notify_session_changed(app, &snapshot);
-    Ok(snapshot)
+        Ok(())
+    });
+    transaction
+        .map(|(_, snapshot)| snapshot)
+        .map_err(TerminalPanelCreateError::Publication)
 }
 
 pub(crate) fn split_off_surface_for_control(
@@ -4582,29 +5622,24 @@ pub(crate) fn split_off_surface_for_control(
     orientation: SessionSplitOrientation,
     insert_first: bool,
     focus: bool,
-) -> Result<AppSessionSnapshot, session_ops::SplitOffSurfaceError> {
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let workspace = guard
+) -> Result<AppSessionSnapshot, PaneTopologyControlError<session_ops::SplitOffSurfaceError>> {
+    let transaction = state.transact_pane_topology(app, |snapshot| {
+        let workspace = snapshot
             .windows
             .get_mut(window_index)
             .and_then(|window| window.tab_manager.workspaces.get_mut(workspace_index))
             .ok_or(session_ops::SplitOffSurfaceError::SurfaceNotFound)?;
         session_ops::split_off_surface(workspace, panel_id, orientation, insert_first)?;
         if focus {
-            guard.windows[window_index]
+            snapshot.windows[window_index]
                 .tab_manager
                 .selected_workspace_index = Some(workspace_index as i64);
-            sync_window_selected_workspace_id(&mut guard.windows[window_index]);
+            sync_window_selected_workspace_id(&mut snapshot.windows[window_index]);
         }
-        ensure_pane_ids(&mut guard);
-        guard.clone()
-    };
-    notify_session_changed(app, &snapshot);
-    Ok(snapshot)
+        ensure_pane_ids(snapshot);
+        Ok(())
+    });
+    transaction.map(|(_, snapshot)| snapshot)
 }
 
 pub(crate) fn swap_panes_for_control(
@@ -4615,13 +5650,12 @@ pub(crate) fn swap_panes_for_control(
     source_pane_id: &str,
     target_pane_id: &str,
     focus: bool,
-) -> Result<(session_ops::PaneSwapResult, AppSessionSnapshot), session_ops::PaneSwapError> {
-    let (swap, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let workspace = guard
+) -> Result<
+    (session_ops::PaneSwapResult, AppSessionSnapshot),
+    PaneTopologyControlError<session_ops::PaneSwapError>,
+> {
+    state.transact_pane_topology(app, |snapshot| {
+        let workspace = snapshot
             .windows
             .get_mut(window_index)
             .and_then(|window| window.tab_manager.workspaces.get_mut(workspace_index))
@@ -4629,15 +5663,13 @@ pub(crate) fn swap_panes_for_control(
         let swap =
             session_ops::swap_selected_pane_surfaces(workspace, source_pane_id, target_pane_id)?;
         if focus {
-            guard.windows[window_index]
+            snapshot.windows[window_index]
                 .tab_manager
                 .selected_workspace_index = Some(workspace_index as i64);
-            sync_window_selected_workspace_id(&mut guard.windows[window_index]);
+            sync_window_selected_workspace_id(&mut snapshot.windows[window_index]);
         }
-        (swap, guard.clone())
-    };
-    notify_session_changed(app, &snapshot);
-    Ok((swap, snapshot))
+        Ok(swap)
+    })
 }
 
 pub(crate) fn break_pane_for_control(
@@ -4647,25 +5679,22 @@ pub(crate) fn break_pane_for_control(
     workspace_index: usize,
     panel_id: &str,
     focus: bool,
-) -> Result<(session_ops::PaneBreakResult, AppSessionSnapshot), session_ops::PaneBreakError> {
-    let (broken, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let tabs = &mut guard
+) -> Result<
+    (session_ops::PaneBreakResult, AppSessionSnapshot),
+    PaneTopologyControlError<session_ops::PaneBreakError>,
+> {
+    state.transact_pane_topology(app, |snapshot| {
+        let tabs = &mut snapshot
             .windows
             .get_mut(window_index)
             .ok_or(session_ops::PaneBreakError::WorkspaceNotFound)?
             .tab_manager;
         let broken =
             session_ops::break_surface_to_new_workspace(tabs, workspace_index, panel_id, focus)?;
-        ensure_workspace_ids(&mut guard);
-        ensure_pane_ids(&mut guard);
-        (broken, guard.clone())
-    };
-    notify_session_changed(app, &snapshot);
-    Ok((broken, snapshot))
+        ensure_workspace_ids(snapshot);
+        ensure_pane_ids(snapshot);
+        Ok(broken)
+    })
 }
 
 #[derive(Debug)]
@@ -4707,16 +5736,12 @@ pub(crate) fn focus_pane_for_control(
     window_index: usize,
     workspace_index: usize,
     pane_id: &str,
-) -> Result<AppSessionSnapshot, PaneFocusControlError> {
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        apply_focus_pane(&mut guard, window_index, workspace_index, pane_id)?;
-        guard.clone()
-    };
-    notify_session_changed(app, &snapshot);
+) -> Result<AppSessionSnapshot, PaneTopologyControlError<PaneFocusControlError>> {
+    let ((), snapshot) = state.transact_value_if_changed(app, |snapshot| {
+        let before = snapshot.clone();
+        apply_focus_pane(snapshot, window_index, workspace_index, pane_id)?;
+        Ok(((), *snapshot != before))
+    })?;
     Ok(snapshot)
 }
 
@@ -4725,13 +5750,13 @@ pub(crate) fn focus_last_pane_for_control(
     state: &SessionState,
     window_index: usize,
     workspace_index: usize,
-) -> Result<(session_ops::PaneLastResult, AppSessionSnapshot), PaneLastControlError> {
-    let (focused, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let workspace = guard
+) -> Result<
+    (session_ops::PaneLastResult, AppSessionSnapshot),
+    PaneTopologyControlError<PaneLastControlError>,
+> {
+    state.transact_value_if_changed(app, |snapshot| {
+        let before = snapshot.clone();
+        let workspace = snapshot
             .windows
             .get_mut(window_index)
             .and_then(|window| window.tab_manager.workspaces.get_mut(workspace_index))
@@ -4742,14 +5767,12 @@ pub(crate) fn focus_last_pane_for_control(
         let focused = session_ops::focus_alternate_pane(workspace, focused_pane_id.as_deref())
             .map_err(PaneLastControlError::Pane)?;
         workspace.focused_panel_id = focused.surface_id.clone();
-        guard.windows[window_index]
+        snapshot.windows[window_index]
             .tab_manager
             .selected_workspace_index = Some(workspace_index as i64);
-        sync_window_selected_workspace_id(&mut guard.windows[window_index]);
-        (focused, guard.clone())
-    };
-    notify_session_changed(app, &snapshot);
-    Ok((focused, snapshot))
+        sync_window_selected_workspace_id(&mut snapshot.windows[window_index]);
+        Ok((focused, *snapshot != before))
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4830,13 +5853,12 @@ pub(crate) fn resize_pane_for_control(
     intent: PaneResizeControlIntent,
     width: f64,
     height: f64,
-) -> Result<(session_ops::PaneResizeResult, AppSessionSnapshot), PaneResizeControlError> {
-    let (resized, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let workspace = guard
+) -> Result<
+    (session_ops::PaneResizeResult, AppSessionSnapshot),
+    PaneTopologyControlError<PaneResizeControlError>,
+> {
+    state.transact_pane_topology(app, |snapshot| {
+        let workspace = snapshot
             .windows
             .get_mut(window_index)
             .and_then(|window| window.tab_manager.workspaces.get_mut(workspace_index))
@@ -4860,10 +5882,8 @@ pub(crate) fn resize_pane_for_control(
             ),
         }
         .map_err(PaneResizeControlError::Pane)?;
-        (resized, guard.clone())
-    };
-    notify_session_changed(app, &snapshot);
-    Ok((resized, snapshot))
+        Ok(resized)
+    })
 }
 
 pub(crate) fn new_terminal_tab_for_control(
@@ -4873,30 +5893,46 @@ pub(crate) fn new_terminal_tab_for_control(
     initial_terminal_command: Option<&str>,
     initial_terminal_input: Option<&str>,
     initial_terminal_environment: Option<BTreeMap<String, String>>,
-) -> Result<AppSessionSnapshot, String> {
+) -> Result<AppSessionSnapshot, TerminalPanelCreateError> {
+    let control_mutation = state.lock_control_mutation();
+    let _control_guard = control_mutation.map_err(TerminalPanelCreateError::Publication)?;
+    let mut validation = state
+        .snapshot_for_lifecycle()
+        .map_err(TerminalPanelCreateError::Publication)?;
+    if !apply_new_terminal_tab(
+        &mut validation,
+        panel_id,
+        "surface-validation",
+        initial_terminal_command,
+        initial_terminal_input,
+        initial_terminal_environment.clone(),
+    ) {
+        return Err(TerminalPanelCreateError::NotFound(format!(
+            "no pane holds panel id {panel_id}"
+        )));
+    }
     let new_panel_id = format!(
         "surface-{}",
         state.next_panel.fetch_add(1, Ordering::Relaxed)
     );
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
+    let transaction = state.transact_lifecycle(app, |snapshot| {
         if !apply_new_terminal_tab(
-            &mut guard,
+            snapshot,
             panel_id,
             &new_panel_id,
             initial_terminal_command,
             initial_terminal_input,
             initial_terminal_environment,
         ) {
-            return Err(format!("no pane holds panel id {panel_id}"));
+            return Err(format!(
+                "validated pane disappeared for panel id {panel_id}"
+            ));
         }
-        guard.clone()
-    };
-    notify_session_changed(app, &snapshot);
-    Ok(snapshot)
+        Ok(())
+    });
+    transaction
+        .map(|(_, snapshot)| snapshot)
+        .map_err(TerminalPanelCreateError::Publication)
 }
 
 pub(crate) fn split_browser_for_control(
@@ -4906,35 +5942,20 @@ pub(crate) fn split_browser_for_control(
     orientation: SessionSplitOrientation,
     insert_first: bool,
     url: Option<&str>,
-) -> Result<AppSessionSnapshot, String> {
-    let new_panel_id = format!(
-        "surface-{}",
-        state.next_panel.fetch_add(1, Ordering::Relaxed)
-    );
-    let mut snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        if !apply_split(
-            &mut guard,
-            panel_id,
-            orientation,
-            &new_panel_id,
-            insert_first,
-        ) {
-            return Err(format!("no pane holds panel id {panel_id}"));
-        }
-        apply_open_browser_url(&mut guard, &new_panel_id, url);
-        guard.clone()
-    };
-    if let Some(updated) =
-        start_panel_browser_proxy_for_control(app, state, &snapshot, &new_panel_id)
-    {
-        snapshot = updated;
-    }
-    notify_session_changed(app, &snapshot);
-    Ok(snapshot)
+) -> Result<AppSessionSnapshot, BrowserPanelCreateError> {
+    let mut publication =
+        ProductionSnapshotPublicationOperations::with_deferred_next_panel_reseed(app, state);
+    let mut proxy = ProductionBrowserProxyEffects { app };
+    transact_split_browser(
+        &state.snapshot,
+        &state.next_panel,
+        &mut publication,
+        &mut proxy,
+        panel_id,
+        orientation,
+        insert_first,
+        url,
+    )
 }
 
 pub(crate) fn close_panel_for_control(
@@ -4971,17 +5992,10 @@ pub(crate) fn set_surface_kind_for_control(
     state: &SessionState,
     panel_id: &str,
     kind: Option<String>,
-) -> AppSessionSnapshot {
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        apply_set_surface_kind(&mut guard, panel_id, kind);
-        guard.clone()
-    };
-    notify_session_changed(app, &snapshot);
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_always(app, |snapshot| {
+        apply_set_surface_kind(snapshot, panel_id, kind)
+    })
 }
 
 pub(crate) fn select_adjacent_panel_for_control(
@@ -4989,57 +6003,30 @@ pub(crate) fn select_adjacent_panel_for_control(
     state: &SessionState,
     panel_id: &str,
     next: bool,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_select_adjacent_panel(&mut guard, panel_id, next);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, PaneTopologyControlError<std::convert::Infallible>> {
+    let ((), snapshot) = state.transact_value_if_changed(app, |snapshot| {
+        let changed = apply_select_adjacent_panel(snapshot, panel_id, next);
+        Ok(((), changed))
+    })?;
+    Ok(snapshot)
 }
 
 pub(crate) fn toggle_split_zoom_for_control(
     app: &AppHandle,
     state: &SessionState,
     panel_id: &str,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_toggle_split_zoom(&mut guard, panel_id);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| apply_toggle_split_zoom(snapshot, panel_id))
 }
 
 pub(crate) fn move_panel_to_new_workspace_for_control(
     app: &AppHandle,
     state: &SessionState,
     panel_id: &str,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_move_panel_to_new_workspace(&mut guard, panel_id);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_move_panel_to_new_workspace(snapshot, panel_id)
+    })
 }
 
 pub(crate) fn set_workspace_description_for_control(
@@ -5047,38 +6034,18 @@ pub(crate) fn set_workspace_description_for_control(
     state: &SessionState,
     index: i64,
     description: &str,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_workspace_description(&mut guard, index, description);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_set_workspace_description(snapshot, index, description)
+    })
 }
 
 pub(crate) fn reset_workspace_color_for_control(
     app: &AppHandle,
     state: &SessionState,
     index: i64,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_reset_workspace_color(&mut guard, index);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| apply_reset_workspace_color(snapshot, index))
 }
 
 pub(crate) fn set_workspace_sidebar_progress_for_control(
@@ -5087,38 +6054,20 @@ pub(crate) fn set_workspace_sidebar_progress_for_control(
     index: i64,
     value: f64,
     label: Option<&str>,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_workspace_sidebar_progress(&mut guard, index, value, label);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_set_workspace_sidebar_progress(snapshot, index, value, label)
+    })
 }
 
 pub(crate) fn clear_workspace_sidebar_progress_for_control(
     app: &AppHandle,
     state: &SessionState,
     index: i64,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_clear_workspace_sidebar_progress(&mut guard, index);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_clear_workspace_sidebar_progress(snapshot, index)
+    })
 }
 
 pub(crate) fn set_workspace_sidebar_status_for_control(
@@ -5128,25 +6077,16 @@ pub(crate) fn set_workspace_sidebar_status_for_control(
     key: &str,
     value: &str,
     priority: Option<i64>,
-) -> AppSessionSnapshot {
+) -> Result<AppSessionSnapshot, String> {
     let now = current_unix_timestamp_seconds();
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
+    state.transact_snapshot_if_changed(app, |snapshot| {
         let changed_status =
-            apply_set_workspace_sidebar_status(&mut guard, index, key, value, priority, now);
+            apply_set_workspace_sidebar_status(snapshot, index, key, value, priority, now);
         let changed_metadata = apply_set_workspace_sidebar_metadata(
-            &mut guard, index, key, value, None, None, None, priority, None, now,
+            snapshot, index, key, value, None, None, None, priority, None, now,
         );
-        let changed = changed_status || changed_metadata;
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+        changed_status || changed_metadata
+    })
 }
 
 pub(crate) fn clear_workspace_sidebar_status_for_control(
@@ -5154,21 +6094,12 @@ pub(crate) fn clear_workspace_sidebar_status_for_control(
     state: &SessionState,
     index: i64,
     key: &str,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed_status = apply_clear_workspace_sidebar_status(&mut guard, index, key);
-        let changed_metadata = apply_clear_workspace_sidebar_metadata(&mut guard, index, key);
-        let changed = changed_status || changed_metadata;
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        let changed_status = apply_clear_workspace_sidebar_status(snapshot, index, key);
+        let changed_metadata = apply_clear_workspace_sidebar_metadata(snapshot, index, key);
+        changed_status || changed_metadata
+    })
 }
 
 pub(crate) fn set_workspace_sidebar_metadata_for_control(
@@ -5182,25 +6113,16 @@ pub(crate) fn set_workspace_sidebar_metadata_for_control(
     url: Option<&str>,
     priority: Option<i64>,
     format: Option<&str>,
-) -> AppSessionSnapshot {
+) -> Result<AppSessionSnapshot, String> {
     let now = current_unix_timestamp_seconds();
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
+    state.transact_snapshot_if_changed(app, |snapshot| {
         let changed_status =
-            apply_set_workspace_sidebar_status(&mut guard, index, key, value, priority, now);
+            apply_set_workspace_sidebar_status(snapshot, index, key, value, priority, now);
         let changed_metadata = apply_set_workspace_sidebar_metadata(
-            &mut guard, index, key, value, icon, color, url, priority, format, now,
+            snapshot, index, key, value, icon, color, url, priority, format, now,
         );
-        let changed = changed_status || changed_metadata;
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+        changed_status || changed_metadata
+    })
 }
 
 pub(crate) fn clear_workspace_sidebar_metadata_for_control(
@@ -5208,21 +6130,12 @@ pub(crate) fn clear_workspace_sidebar_metadata_for_control(
     state: &SessionState,
     index: i64,
     key: &str,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed_status = apply_clear_workspace_sidebar_status(&mut guard, index, key);
-        let changed_metadata = apply_clear_workspace_sidebar_metadata(&mut guard, index, key);
-        let changed = changed_status || changed_metadata;
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        let changed_status = apply_clear_workspace_sidebar_status(snapshot, index, key);
+        let changed_metadata = apply_clear_workspace_sidebar_metadata(snapshot, index, key);
+        changed_status || changed_metadata
+    })
 }
 
 pub(crate) fn set_workspace_sidebar_metadata_block_for_control(
@@ -5232,22 +6145,11 @@ pub(crate) fn set_workspace_sidebar_metadata_block_for_control(
     key: &str,
     markdown: &str,
     priority: Option<i64>,
-) -> AppSessionSnapshot {
+) -> Result<AppSessionSnapshot, String> {
     let now = current_unix_timestamp_seconds();
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_workspace_sidebar_metadata_block(
-            &mut guard, index, key, markdown, priority, now,
-        );
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_set_workspace_sidebar_metadata_block(snapshot, index, key, markdown, priority, now)
+    })
 }
 
 pub(crate) fn clear_workspace_sidebar_metadata_block_for_control(
@@ -5255,38 +6157,20 @@ pub(crate) fn clear_workspace_sidebar_metadata_block_for_control(
     state: &SessionState,
     index: i64,
     key: &str,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_clear_workspace_sidebar_metadata_block(&mut guard, index, key);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_clear_workspace_sidebar_metadata_block(snapshot, index, key)
+    })
 }
 
 pub(crate) fn reset_workspace_sidebar_metadata_for_control(
     app: &AppHandle,
     state: &SessionState,
     index: i64,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_reset_workspace_sidebar_metadata(&mut guard, index);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_reset_workspace_sidebar_metadata(snapshot, index)
+    })
 }
 
 pub(crate) fn append_workspace_sidebar_log_for_control(
@@ -5295,39 +6179,21 @@ pub(crate) fn append_workspace_sidebar_log_for_control(
     index: i64,
     message: &str,
     level: &str,
-) -> AppSessionSnapshot {
+) -> Result<AppSessionSnapshot, String> {
     let now = current_unix_timestamp_seconds();
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_append_workspace_sidebar_log(&mut guard, index, message, level, now);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_append_workspace_sidebar_log(snapshot, index, message, level, now)
+    })
 }
 
 pub(crate) fn clear_workspace_sidebar_log_for_control(
     app: &AppHandle,
     state: &SessionState,
     index: i64,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_clear_workspace_sidebar_log(&mut guard, index);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_clear_workspace_sidebar_log(snapshot, index)
+    })
 }
 
 pub(crate) fn set_workspace_unread_for_control(
@@ -5336,19 +6202,11 @@ pub(crate) fn set_workspace_unread_for_control(
     index: i64,
     preferred_panel_id: Option<&str>,
     unread: bool,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_workspace_unread(&mut guard, index, preferred_panel_id, unread);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let unread_at = current_unix_timestamp_seconds();
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_set_workspace_unread_at(snapshot, index, preferred_panel_id, unread, unread_at)
+    })
 }
 
 pub(crate) fn set_workspace_pinned_for_control(
@@ -5356,19 +6214,10 @@ pub(crate) fn set_workspace_pinned_for_control(
     state: &SessionState,
     index: i64,
     pinned: bool,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_workspace_pinned(&mut guard, index, pinned);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_set_workspace_pinned(snapshot, index, pinned)
+    })
 }
 
 pub(crate) fn reorder_workspaces_for_control(
@@ -5377,19 +6226,10 @@ pub(crate) fn reorder_workspaces_for_control(
     index: i64,
     to_index: i64,
     uses_top_level_rows: bool,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_reorder_workspaces(&mut guard, index, to_index, uses_top_level_rows);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_reorder_workspaces(snapshot, index, to_index, uses_top_level_rows)
+    })
 }
 
 pub(crate) fn reorder_surface_for_control(
@@ -5399,25 +6239,24 @@ pub(crate) fn reorder_surface_for_control(
     panel_id: &str,
     destination_index: i64,
     focus: bool,
-) -> Option<AppSessionSnapshot> {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let workspace = guard
+) -> Result<AppSessionSnapshot, PaneTopologyControlError<SurfacePositionControlError>> {
+    state.transact_result_if_changed(app, |snapshot| {
+        let workspace = snapshot
             .windows
-            .first_mut()?
+            .first_mut()
+            .ok_or(SurfacePositionControlError::InvalidRequest)?
             .tab_manager
             .workspaces
-            .get_mut(workspace_index)?;
-        let changed = session_ops::reorder_surface(workspace, panel_id, destination_index, focus)?;
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    Some(snapshot)
+            .get_mut(workspace_index)
+            .ok_or(SurfacePositionControlError::InvalidRequest)?;
+        session_ops::reorder_surface(workspace, panel_id, destination_index, focus)
+            .ok_or(SurfacePositionControlError::InvalidRequest)
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SurfacePositionControlError {
+    InvalidRequest,
 }
 
 pub(crate) fn move_surface_for_control(
@@ -5429,14 +6268,14 @@ pub(crate) fn move_surface_for_control(
     target_pane_id: &str,
     destination_index: Option<i64>,
     focus: bool,
-) -> Option<AppSessionSnapshot> {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let tabs = &mut guard.windows.first_mut()?.tab_manager;
-        let changed = session_ops::move_surface(
+) -> Result<AppSessionSnapshot, PaneTopologyControlError<SurfacePositionControlError>> {
+    state.transact_result_if_changed(app, |snapshot| {
+        let tabs = &mut snapshot
+            .windows
+            .first_mut()
+            .ok_or(SurfacePositionControlError::InvalidRequest)?
+            .tab_manager;
+        session_ops::move_surface(
             tabs,
             source_workspace_index,
             panel_id,
@@ -5444,13 +6283,9 @@ pub(crate) fn move_surface_for_control(
             target_pane_id,
             destination_index,
             focus,
-        )?;
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    Some(snapshot)
+        )
+        .ok_or(SurfacePositionControlError::InvalidRequest)
+    })
 }
 
 pub(crate) fn reorder_workspaces_many_for_control(
@@ -5458,14 +6293,29 @@ pub(crate) fn reorder_workspaces_many_for_control(
     state: &SessionState,
     ordered_workspace_ids: &[Uuid],
     dry_run: bool,
-) -> Result<(Vec<WorkspaceReorderPlanItem>, AppSessionSnapshot), ReorderWorkspacesManyControlError>
-{
-    let (plan, snapshot) = if dry_run {
-        let guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let mut snapshot = guard.clone();
+) -> Result<
+    (Vec<WorkspaceReorderPlanItem>, AppSessionSnapshot),
+    PaneTopologyControlError<ReorderWorkspacesManyControlError>,
+> {
+    if dry_run {
+        let current = state.snapshot_for_lifecycle();
+        let mut snapshot = current.map_err(PaneTopologyControlError::Publication)?;
+        let window = snapshot
+            .windows
+            .first_mut()
+            .ok_or(PaneTopologyControlError::Operation(
+                ReorderWorkspacesManyControlError::Unavailable,
+            ))?;
+        let plan = session_ops::reorder_workspaces_many(
+            &mut window.tab_manager,
+            ordered_workspace_ids,
+            false,
+        )
+        .map_err(ReorderWorkspacesManyControlError::Batch)
+        .map_err(PaneTopologyControlError::Operation)?;
+        return Ok((plan, snapshot));
+    }
+    state.transact_value_if_changed(app, |snapshot| {
         let window = snapshot
             .windows
             .first_mut()
@@ -5474,28 +6324,11 @@ pub(crate) fn reorder_workspaces_many_for_control(
             &mut window.tab_manager,
             ordered_workspace_ids,
             false,
-        )?;
-        (plan, snapshot)
-    } else {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let window = guard
-            .windows
-            .first_mut()
-            .ok_or(ReorderWorkspacesManyControlError::Unavailable)?;
-        let plan = session_ops::reorder_workspaces_many(
-            &mut window.tab_manager,
-            ordered_workspace_ids,
-            false,
-        )?;
-        (plan, guard.clone())
-    };
-    if !dry_run && plan.iter().any(|item| item.from_index != item.to_index) {
-        notify_session_changed(app, &snapshot);
-    }
-    Ok((plan, snapshot))
+        )
+        .map_err(ReorderWorkspacesManyControlError::Batch)?;
+        let changed = plan.iter().any(|item| item.from_index != item.to_index);
+        Ok((plan, changed))
+    })
 }
 
 pub(crate) enum ReorderWorkspacesManyControlError {
@@ -5503,30 +6336,15 @@ pub(crate) enum ReorderWorkspacesManyControlError {
     Batch(WorkspaceBatchReorderError),
 }
 
-impl From<WorkspaceBatchReorderError> for ReorderWorkspacesManyControlError {
-    fn from(error: WorkspaceBatchReorderError) -> Self {
-        Self::Batch(error)
-    }
-}
-
 pub(crate) fn set_group_collapsed_for_control(
     app: &AppHandle,
     state: &SessionState,
     group_id: &str,
     collapsed: bool,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_group_collapsed(&mut guard, group_id, collapsed);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_set_group_collapsed(snapshot, group_id, collapsed)
+    })
 }
 
 pub(crate) fn set_panel_title_for_control(
@@ -5534,19 +6352,10 @@ pub(crate) fn set_panel_title_for_control(
     state: &SessionState,
     panel_id: &str,
     title: &str,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_panel_title(&mut guard, panel_id, title);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_set_panel_title(snapshot, panel_id, title)
+    })
 }
 
 pub(crate) fn set_process_title_for_panel(
@@ -5554,23 +6363,11 @@ pub(crate) fn set_process_title_for_panel(
     state: &SessionState,
     panel_id: &str,
     title: &str,
-) -> AppSessionSnapshot {
+) -> Result<AppSessionSnapshot, String> {
     let panel_id = panel_id.trim();
-    if panel_id.is_empty() {
-        return current_session_snapshot(state);
-    }
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_process_title(&mut guard, panel_id, title);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_set_process_title(snapshot, panel_id, title)
+    })
 }
 
 pub(crate) fn set_panel_pinned_for_control(
@@ -5578,19 +6375,10 @@ pub(crate) fn set_panel_pinned_for_control(
     state: &SessionState,
     panel_id: &str,
     pinned: bool,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_panel_pinned(&mut guard, panel_id, pinned);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_set_panel_pinned(snapshot, panel_id, pinned)
+    })
 }
 
 pub(crate) fn set_panel_unread_for_control(
@@ -5598,19 +6386,11 @@ pub(crate) fn set_panel_unread_for_control(
     state: &SessionState,
     panel_id: &str,
     unread: bool,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_panel_unread(&mut guard, panel_id, unread);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let unread_at = current_unix_timestamp_seconds();
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_set_panel_unread_at(snapshot, panel_id, unread, unread_at)
+    })
 }
 
 pub(crate) fn set_panel_listening_ports_for_control(
@@ -5619,19 +6399,10 @@ pub(crate) fn set_panel_listening_ports_for_control(
     workspace_index: usize,
     panel_id: &str,
     ports: &[u16],
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_panel_listening_ports(&mut guard, workspace_index, panel_id, ports);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_set_panel_listening_ports(snapshot, workspace_index, panel_id, ports)
+    })
 }
 
 pub(crate) fn set_panel_tty_for_control(
@@ -5640,19 +6411,11 @@ pub(crate) fn set_panel_tty_for_control(
     workspace_index: usize,
     panel_id: &str,
     tty: &str,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_panel_tty(&mut guard, workspace_index, panel_id, tty);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let updated_at = current_unix_timestamp_seconds();
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_set_panel_tty_at(snapshot, workspace_index, panel_id, tty, updated_at)
+    })
 }
 
 pub(crate) fn set_panel_shell_activity_for_control(
@@ -5661,20 +6424,17 @@ pub(crate) fn set_panel_shell_activity_for_control(
     workspace_index: usize,
     panel_id: &str,
     shell_activity: SessionPanelShellActivityStateSnapshot,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed =
-            apply_set_panel_shell_activity(&mut guard, workspace_index, panel_id, shell_activity);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let updated_at = current_unix_timestamp_seconds();
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_set_panel_shell_activity_at(
+            snapshot,
+            workspace_index,
+            panel_id,
+            shell_activity,
+            updated_at,
+        )
+    })
 }
 
 pub(crate) fn set_panel_listening_ports_for_panel(
@@ -5682,17 +6442,10 @@ pub(crate) fn set_panel_listening_ports_for_panel(
     state: &SessionState,
     panel_id: &str,
     ports: &[u16],
-) -> AppSessionSnapshot {
+) -> Result<AppSessionSnapshot, String> {
     let panel_id = panel_id.trim();
-    if panel_id.is_empty() {
-        return current_session_snapshot(state);
-    }
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let workspace_index = guard.windows.first().and_then(|window| {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        let workspace_index = snapshot.windows.first().and_then(|window| {
             window.tab_manager.workspaces.iter().position(|workspace| {
                 workspace
                     .layout
@@ -5700,15 +6453,10 @@ pub(crate) fn set_panel_listening_ports_for_panel(
                     .is_some_and(|layout| session_ops::contains_panel(layout, panel_id))
             })
         });
-        let changed = workspace_index
-            .map(|index| apply_set_panel_listening_ports(&mut guard, index, panel_id, ports))
-            .unwrap_or(false);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+        workspace_index
+            .map(|index| apply_set_panel_listening_ports(snapshot, index, panel_id, ports))
+            .unwrap_or(false)
+    })
 }
 
 pub(crate) fn set_workspace_agent_listening_ports_for_control(
@@ -5716,19 +6464,10 @@ pub(crate) fn set_workspace_agent_listening_ports_for_control(
     state: &SessionState,
     workspace_index: usize,
     ports: &[u16],
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_workspace_agent_listening_ports(&mut guard, workspace_index, ports);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_set_workspace_agent_listening_ports(snapshot, workspace_index, ports)
+    })
 }
 
 pub(crate) fn set_workspace_agent_pid_for_control(
@@ -5737,19 +6476,11 @@ pub(crate) fn set_workspace_agent_pid_for_control(
     workspace_index: usize,
     key: &str,
     pid: u32,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_workspace_agent_pid(&mut guard, workspace_index, key, pid);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let updated_at = current_unix_timestamp_seconds();
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_set_workspace_agent_pid_at(snapshot, workspace_index, key, pid, updated_at)
+    })
 }
 
 pub(crate) fn clear_workspace_agent_pid_for_control(
@@ -5757,19 +6488,10 @@ pub(crate) fn clear_workspace_agent_pid_for_control(
     state: &SessionState,
     workspace_index: usize,
     key: &str,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_clear_workspace_agent_pid(&mut guard, workspace_index, key);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_clear_workspace_agent_pid(snapshot, workspace_index, key)
+    })
 }
 
 pub(crate) fn set_workspace_git_facts_for_control(
@@ -5779,25 +6501,16 @@ pub(crate) fn set_workspace_git_facts_for_control(
     git_branch: Option<SessionGitBranchSnapshot>,
     panel_git_branches: Vec<SessionPanelGitBranchSnapshot>,
     panel_pull_requests: Vec<SessionPanelPullRequestSnapshot>,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_workspace_git_facts(
-            &mut guard,
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_set_workspace_git_facts(
+            snapshot,
             workspace_index,
             git_branch,
             panel_git_branches,
             panel_pull_requests,
-        );
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+        )
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5812,14 +6525,10 @@ pub(crate) fn set_workspace_panel_pull_request_for_control(
     status: SessionPullRequestStatusSnapshot,
     branch: Option<String>,
     is_stale: bool,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_workspace_panel_pull_request(
-            &mut guard,
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_set_workspace_panel_pull_request(
+            snapshot,
             workspace_index,
             panel_id,
             number,
@@ -5828,13 +6537,8 @@ pub(crate) fn set_workspace_panel_pull_request_for_control(
             status,
             branch,
             is_stale,
-        );
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
-    }
-    snapshot
+        )
+    })
 }
 
 pub(crate) fn clear_workspace_panel_pull_request_for_control(
@@ -5842,47 +6546,52 @@ pub(crate) fn clear_workspace_panel_pull_request_for_control(
     state: &SessionState,
     workspace_index: usize,
     panel_id: &str,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed =
-            apply_clear_workspace_panel_pull_request(&mut guard, workspace_index, panel_id);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(app, |snapshot| {
+        apply_clear_workspace_panel_pull_request(snapshot, workspace_index, panel_id)
+    })
+}
+
+fn restore_previous_launch_transaction(
+    authority: &GatedSnapshot,
+    next_panel: &AtomicU64,
+    publication: &mut impl SnapshotPublicationOperations,
+    load_previous: impl FnOnce() -> Option<AppSessionSnapshot>,
+) -> Result<AppSessionSnapshot, String> {
+    let _restore_gate = authority.lock_gate();
+    let (reseed, snapshot) =
+        transact_value_if_changed_snapshot(authority, publication, |candidate| {
+            let Some(mut restored) = load_previous() else {
+                return Ok::<_, std::convert::Infallible>((None, false));
+            };
+            ensure_workspace_ids(&mut restored);
+            ensure_pane_ids(&mut restored);
+            let reseed = next_panel_counter(&restored);
+            *candidate = restored;
+            Ok((Some(reseed), true))
+        })
+        .map_err(collapse_infallible_publication_error)?;
+    if let Some(reseed) = reseed {
+        next_panel.store(reseed, Ordering::Relaxed);
     }
-    snapshot
+    Ok(snapshot)
 }
 
 pub(crate) fn restore_previous_launch_for_control(
     app: &AppHandle,
     state: &SessionState,
-) -> AppSessionSnapshot {
-    let Some(mut restored) =
-        session_snapshot_paths(app).and_then(|(_current, previous)| load_snapshot_file(&previous))
-    else {
-        return current_session_snapshot(state);
-    };
-
-    ensure_workspace_ids(&mut restored);
-    ensure_pane_ids(&mut restored);
-    let next_panel = next_panel_counter(&restored);
-
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        *guard = restored;
-        state.next_panel.store(next_panel, Ordering::Relaxed);
-        guard.clone()
-    };
-    notify_session_changed(app, &snapshot);
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let mut publication =
+        ProductionSnapshotPublicationOperations::with_deferred_next_panel_reseed(app, state);
+    restore_previous_launch_transaction(
+        &state.snapshot,
+        &state.next_panel,
+        &mut publication,
+        || {
+            session_snapshot_paths(app)
+                .and_then(|(_current, previous)| load_snapshot_file(&previous))
+        },
+    )
 }
 
 /// Restore the previous launch's persisted session snapshot if one exists.
@@ -5893,7 +6602,7 @@ pub(crate) fn restore_previous_launch_for_control(
 pub fn session_restore_previous_launch(
     app: AppHandle,
     state: State<'_, SessionState>,
-) -> AppSessionSnapshot {
+) -> Result<AppSessionSnapshot, String> {
     restore_previous_launch_for_control(&app, &state)
 }
 
@@ -5908,19 +6617,10 @@ pub fn session_set_process_title(
     state: State<'_, SessionState>,
     panel_id: String,
     title: String,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_process_title(&mut guard, &panel_id, &title);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(&app, |snapshot| {
+        apply_set_process_title(snapshot, &panel_id, &title)
+    })
 }
 
 /// Split the pane holding `panel_id` in `orientation`, allocating a fresh panel
@@ -5936,31 +6636,17 @@ pub fn session_split(
     initial_terminal_input: Option<String>,
     initial_terminal_environment: Option<BTreeMap<String, String>>,
 ) -> Result<AppSessionSnapshot, String> {
-    let new_panel_id = format!(
-        "surface-{}",
-        state.next_panel.fetch_add(1, Ordering::Relaxed)
-    );
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        if !apply_split_with_terminal_startup(
-            &mut guard,
-            &panel_id,
-            orientation,
-            &new_panel_id,
-            insert_first.unwrap_or(false),
-            initial_terminal_command.as_deref(),
-            initial_terminal_input.as_deref(),
-            initial_terminal_environment,
-        ) {
-            return Err(format!("no pane holds panel id {panel_id}"));
-        }
-        guard.clone()
-    };
-    notify_session_changed(&app, &snapshot);
-    Ok(snapshot)
+    split_panel_for_control(
+        &app,
+        &state,
+        &panel_id,
+        orientation,
+        insert_first.unwrap_or(false),
+        initial_terminal_command.as_deref(),
+        initial_terminal_input.as_deref(),
+        initial_terminal_environment,
+    )
+    .map_err(|error| error.to_string())
 }
 
 /// Add a new terminal tab beside `panel_id` in the same pane.
@@ -5973,29 +6659,15 @@ pub fn session_new_terminal_tab(
     initial_terminal_input: Option<String>,
     initial_terminal_environment: Option<BTreeMap<String, String>>,
 ) -> Result<AppSessionSnapshot, String> {
-    let new_panel_id = format!(
-        "surface-{}",
-        state.next_panel.fetch_add(1, Ordering::Relaxed)
-    );
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        if !apply_new_terminal_tab(
-            &mut guard,
-            &panel_id,
-            &new_panel_id,
-            initial_terminal_command.as_deref(),
-            initial_terminal_input.as_deref(),
-            initial_terminal_environment,
-        ) {
-            return Err(format!("no pane holds panel id {panel_id}"));
-        }
-        guard.clone()
-    };
-    notify_session_changed(&app, &snapshot);
-    Ok(snapshot)
+    new_terminal_tab_for_control(
+        &app,
+        &state,
+        &panel_id,
+        initial_terminal_command.as_deref(),
+        initial_terminal_input.as_deref(),
+        initial_terminal_environment,
+    )
+    .map_err(|error| error.to_string())
 }
 
 /// Split the pane holding `panel_id`, making the new pane a browser surface.
@@ -6008,34 +6680,15 @@ pub fn session_split_browser(
     insert_first: Option<bool>,
     url: Option<String>,
 ) -> Result<AppSessionSnapshot, String> {
-    let new_panel_id = format!(
-        "surface-{}",
-        state.next_panel.fetch_add(1, Ordering::Relaxed)
-    );
-    let mut snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        if !apply_split(
-            &mut guard,
-            &panel_id,
-            orientation,
-            &new_panel_id,
-            insert_first.unwrap_or(false),
-        ) {
-            return Err(format!("no pane holds panel id {panel_id}"));
-        }
-        apply_open_browser_url(&mut guard, &new_panel_id, url.as_deref());
-        guard.clone()
-    };
-    if let Some(updated) =
-        start_panel_browser_proxy_for_control(&app, &state, &snapshot, &new_panel_id)
-    {
-        snapshot = updated;
-    }
-    notify_session_changed(&app, &snapshot);
-    Ok(snapshot)
+    split_browser_for_control(
+        &app,
+        &state,
+        &panel_id,
+        orientation,
+        insert_first.unwrap_or(false),
+        url.as_deref(),
+    )
+    .map_err(|error| error.to_string())
 }
 
 /// Close the pane/panel `panel_id`. Emits `cmux://session-changed` and returns
@@ -6078,17 +6731,10 @@ pub fn session_set_divider(
     state: State<'_, SessionState>,
     path: Vec<SplitChild>,
     position: f64,
-) -> AppSessionSnapshot {
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        apply_set_divider(&mut guard, &path, position);
-        guard.clone()
-    };
-    notify_session_changed(&app, &snapshot);
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_always(&app, |snapshot| {
+        apply_set_divider(snapshot, &path, position)
+    })
 }
 
 /// Equalize every split divider in the active workspace layout so panes share
@@ -6098,17 +6744,9 @@ pub fn session_set_divider(
 pub fn session_equalize_dividers(
     app: AppHandle,
     state: State<'_, SessionState>,
-) -> AppSessionSnapshot {
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        apply_equalize_dividers(&mut guard);
-        guard.clone()
-    };
-    notify_session_changed(&app, &snapshot);
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = equalize_dividers_for_control(&app, &state)?;
+    Ok(snapshot)
 }
 
 /// Toggle split zoom for the active pane. When zoomed, the web workspace renders
@@ -6118,19 +6756,9 @@ pub fn session_toggle_split_zoom(
     app: AppHandle,
     state: State<'_, SessionState>,
     panel_id: String,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_toggle_split_zoom(&mut guard, &panel_id);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = toggle_split_zoom_for_control(&app, &state, &panel_id)?;
+    Ok(snapshot)
 }
 
 /// Set the active workspace layout mode. `"canvas"` enables freeform canvas
@@ -6141,19 +6769,10 @@ pub fn session_set_layout_mode(
     app: AppHandle,
     state: State<'_, SessionState>,
     mode: Option<String>,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_layout_mode(&mut guard, mode.as_deref());
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(&app, |snapshot| {
+        apply_set_layout_mode(snapshot, mode.as_deref())
+    })
 }
 
 #[tauri::command]
@@ -6165,19 +6784,10 @@ pub fn session_set_canvas_pane_frame(
     y: i64,
     width: i64,
     height: i64,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_canvas_pane_frame(&mut guard, &panel_id, x, y, width, height);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(&app, |snapshot| {
+        apply_set_canvas_pane_frame(snapshot, &panel_id, x, y, width, height)
+    })
 }
 
 #[tauri::command]
@@ -6186,19 +6796,10 @@ pub fn session_apply_canvas_action(
     state: State<'_, SessionState>,
     action: String,
     pane_gap: Option<i64>,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_canvas_action(&mut guard, &action, pane_gap);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(&app, |snapshot| {
+        apply_canvas_action(snapshot, &action, pane_gap)
+    })
 }
 
 /// Set (or clear) the surface kind of the pane holding `panelId`: `"agent"` for
@@ -6211,17 +6812,10 @@ pub fn session_set_surface_kind(
     state: State<'_, SessionState>,
     panel_id: String,
     kind: Option<String>,
-) -> AppSessionSnapshot {
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        apply_set_surface_kind(&mut guard, &panel_id, kind);
-        guard.clone()
-    };
-    notify_session_changed(&app, &snapshot);
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_always(&app, |snapshot| {
+        apply_set_surface_kind(snapshot, &panel_id, kind)
+    })
 }
 
 /// Select the next/previous tab inside the pane holding `panelId`.
@@ -6231,19 +6825,10 @@ pub fn session_select_adjacent_panel(
     state: State<'_, SessionState>,
     panel_id: String,
     next: bool,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_select_adjacent_panel(&mut guard, &panel_id, next);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = select_adjacent_panel_for_control(&app, &state, &panel_id, next)
+        .map_err(collapse_infallible_publication_error)?;
+    Ok(snapshot)
 }
 
 /// Select a workspace by id and focus a panel/tab inside it.
@@ -6253,9 +6838,10 @@ pub fn session_select_workspace_surface(
     state: State<'_, SessionState>,
     workspace_id: String,
     panel_id: String,
-) -> AppSessionSnapshot {
-    let (_, snapshot) = select_workspace_surface(&app, &state, &workspace_id, &panel_id);
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let (_, snapshot) = select_workspace_surface(&app, &state, &workspace_id, &panel_id)
+        .map_err(collapse_infallible_publication_error)?;
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -6263,39 +6849,29 @@ pub fn session_focus_panel(
     app: AppHandle,
     state: State<'_, SessionState>,
     panel_id: String,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_focus_panel(&mut guard, &panel_id);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(&app, |snapshot| apply_focus_panel(snapshot, &panel_id))
 }
 
 pub(crate) fn select_workspace_surface(
     app: &AppHandle,
-    state: &State<'_, SessionState>,
+    state: &SessionState,
     workspace_id: &str,
     panel_id: &str,
-) -> (bool, AppSessionSnapshot) {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_select_workspace_surface(&mut guard, workspace_id, panel_id);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
+) -> Result<(bool, AppSessionSnapshot), PaneTopologyControlError<std::convert::Infallible>> {
+    state.transact_value_if_changed(app, |snapshot| {
+        let changed = apply_select_workspace_surface(snapshot, workspace_id, panel_id);
+        Ok((changed, changed))
+    })
+}
+
+fn collapse_infallible_publication_error(
+    error: PaneTopologyControlError<std::convert::Infallible>,
+) -> String {
+    match error {
+        PaneTopologyControlError::Publication(error) => error,
+        PaneTopologyControlError::Operation(error) => match error {},
     }
-    (changed, snapshot)
 }
 
 pub(crate) fn workspace_surface_is_selected(
@@ -6377,46 +6953,61 @@ fn workspace_is_selected(snapshot: &AppSessionSnapshot, workspace_id: &str) -> b
 
 fn select_workspace_by_id(
     app: &AppHandle,
-    state: &State<'_, SessionState>,
+    state: &SessionState,
     workspace_id: &str,
-) -> (bool, AppSessionSnapshot) {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_select_workspace_by_id(&mut guard, workspace_id);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(app, &snapshot);
+) -> Result<(bool, AppSessionSnapshot), PaneTopologyControlError<std::convert::Infallible>> {
+    state.transact_value_if_changed(app, |snapshot| {
+        let changed = apply_select_workspace_by_id(snapshot, workspace_id);
+        Ok((changed, changed))
+    })
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum OpenSshUrlControlError {
+    NotFound(String),
+    Publication(String),
+}
+
+impl std::fmt::Display for OpenSshUrlControlError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound(message) | Self::Publication(message) => formatter.write_str(message),
+        }
     }
-    (changed, snapshot)
 }
 
 fn open_ssh_url_request(
     app: &AppHandle,
-    state: &State<'_, SessionState>,
+    state: &SessionState,
     request: &cmux_ssh::CmuxSSHURLRequest,
-) -> Result<(bool, AppSessionSnapshot, String), String> {
-    let new_panel_id = format!(
-        "surface-{}",
-        state.next_panel.fetch_add(1, Ordering::Relaxed)
-    );
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let anchor_panel_id = active_panel_id(&guard)
-            .ok_or_else(|| "no active terminal pane is available for SSH URL".to_string())?;
-        if !apply_ssh_url_request(&mut guard, &anchor_panel_id, &new_panel_id, request) {
-            return Err(format!("no pane holds panel id {anchor_panel_id}"));
-        }
-        (true, guard.clone())
-    };
-    notify_session_changed(app, &snapshot);
-    Ok((changed, snapshot, new_panel_id))
+) -> Result<(bool, AppSessionSnapshot, String), OpenSshUrlControlError> {
+    let _transact_guard = state.snapshot.lock_gate();
+    let current = transaction_current_snapshot(&state.snapshot)
+        .map_err(OpenSshUrlControlError::Publication)?;
+    let anchor_panel_id = active_panel_id(&current).ok_or_else(|| {
+        OpenSshUrlControlError::NotFound(
+            "no active terminal pane is available for SSH URL".to_string(),
+        )
+    })?;
+    let mut ids = DeferredPanelIds::new(&state.next_panel);
+    let new_panel_id = ids.next();
+    let mut candidate = current.clone();
+    if !apply_ssh_url_request(&mut candidate, &anchor_panel_id, &new_panel_id, request) {
+        return Err(OpenSshUrlControlError::NotFound(format!(
+            "no pane holds panel id {anchor_panel_id}"
+        )));
+    }
+    let mut publication =
+        ProductionSnapshotPublicationOperations::with_deferred_next_panel_reseed(app, state);
+    let snapshot = publish_snapshot_transaction(
+        &state.snapshot,
+        Some(&current),
+        &candidate,
+        &mut publication,
+    )
+    .map_err(OpenSshUrlControlError::Publication)?;
+    ids.commit(&state.next_panel);
+    Ok((true, snapshot, new_panel_id))
 }
 
 fn parse_ssh_uri(uri: &str) -> Result<cmux_ssh::CmuxSSHURLRequest, String> {
@@ -6519,7 +7110,7 @@ pub fn session_open_markdown_file(
     panel_id: String,
     file_path: String,
 ) -> Result<AppSessionSnapshot, String> {
-    open_markdown_file_in_panel(&app, &state, &panel_id, &file_path)
+    open_markdown_file_in_panel(&app, &state, &panel_id, &file_path)?
         .ok_or_else(|| format!("unable to open markdown file in pane {panel_id}"))
 }
 
@@ -6533,7 +7124,7 @@ pub fn session_open_file(
     panel_id: String,
     file_path: String,
 ) -> Result<AppSessionSnapshot, String> {
-    open_file_in_panel(&app, &state, &panel_id, &file_path)
+    open_file_in_panel(&app, &state, &panel_id, &file_path)?
         .ok_or_else(|| format!("unable to open file in pane {panel_id}"))
 }
 
@@ -6558,7 +7149,7 @@ pub fn session_open_diff_viewer(
         &panel_id,
         &token,
         request_path.as_deref().unwrap_or("/index.html"),
-    )
+    )?
     .ok_or_else(|| format!("unable to open diff viewer in pane {panel_id}"))
 }
 
@@ -6571,7 +7162,7 @@ pub fn session_open_browser_url(
     panel_id: String,
     url: Option<String>,
 ) -> Result<AppSessionSnapshot, String> {
-    open_browser_url_in_panel(&app, &state, &panel_id, url.as_deref())
+    open_browser_url_in_panel(&app, &state, &panel_id, url.as_deref())?
         .ok_or_else(|| format!("unable to open browser in pane {panel_id}"))
 }
 
@@ -6581,19 +7172,9 @@ pub fn session_browser_go_back(
     app: AppHandle,
     state: State<'_, SessionState>,
     panel_id: String,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_browser_go_back(&mut guard, &panel_id);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = browser_go_back_for_control(&app, &state, &panel_id)?;
+    Ok(snapshot)
 }
 
 /// Navigate the pane-local browser forward if it has persisted history.
@@ -6602,19 +7183,9 @@ pub fn session_browser_go_forward(
     app: AppHandle,
     state: State<'_, SessionState>,
     panel_id: String,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_browser_go_forward(&mut guard, &panel_id);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = browser_go_forward_for_control(&app, &state, &panel_id)?;
+    Ok(snapshot)
 }
 
 /// Clear the pane-local browser history while preserving the current page.
@@ -6623,19 +7194,9 @@ pub fn session_clear_browser_history(
     app: AppHandle,
     state: State<'_, SessionState>,
     panel_id: String,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_clear_browser_history(&mut guard, &panel_id);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = clear_browser_history_for_control(&app, &state, &panel_id)?;
+    Ok(snapshot)
 }
 
 /// Toggle the pane-local browser omnibar/toolbar visibility.
@@ -6644,19 +7205,9 @@ pub fn session_toggle_browser_omnibar(
     app: AppHandle,
     state: State<'_, SessionState>,
     panel_id: String,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_toggle_browser_omnibar(&mut guard, &panel_id);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = toggle_browser_omnibar_for_control(&app, &state, &panel_id)?;
+    Ok(snapshot)
 }
 
 /// Toggle browser focus mode for the pane holding `panelId`.
@@ -6665,19 +7216,9 @@ pub fn session_toggle_browser_focus_mode(
     app: AppHandle,
     state: State<'_, SessionState>,
     panel_id: String,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_toggle_browser_focus_mode(&mut guard, &panel_id);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = toggle_browser_focus_mode_for_control(&app, &state, &panel_id)?;
+    Ok(snapshot)
 }
 
 /// Toggle the browser developer-tools drawer for the pane holding `panelId`.
@@ -6686,19 +7227,9 @@ pub fn session_toggle_browser_developer_tools(
     app: AppHandle,
     state: State<'_, SessionState>,
     panel_id: String,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_toggle_browser_developer_tools(&mut guard, &panel_id);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = toggle_browser_developer_tools_for_control(&app, &state, &panel_id)?;
+    Ok(snapshot)
 }
 
 /// Show the browser developer-tools drawer on a specific panel/lane.
@@ -6708,23 +7239,9 @@ pub fn session_show_browser_developer_tools(
     state: State<'_, SessionState>,
     panel_id: String,
     panel: String,
-) -> AppSessionSnapshot {
-    let normalized_panel = match panel.as_str() {
-        "console" | "react" => panel,
-        _ => "inspector".to_string(),
-    };
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_show_browser_developer_tools(&mut guard, &panel_id, &normalized_panel);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = show_browser_developer_tools_for_control(&app, &state, &panel_id, &panel)?;
+    Ok(snapshot)
 }
 
 /// Persist the browser zoom factor for the pane holding `panelId`.
@@ -6735,17 +7252,16 @@ pub fn session_set_browser_zoom(
     panel_id: String,
     zoom: f64,
 ) -> Result<AppSessionSnapshot, String> {
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        if !apply_set_browser_zoom(&mut guard, &panel_id, zoom) {
-            return Err(format!("unable to set browser zoom for pane {panel_id}"));
-        }
-        guard.clone()
-    };
-    notify_session_changed(&app, &snapshot);
+    let (_, snapshot) = state
+        .transact_pane_topology(&app, |snapshot| {
+            apply_set_browser_zoom(snapshot, &panel_id, zoom)
+                .then_some(())
+                .ok_or_else(|| format!("unable to set browser zoom for pane {panel_id}"))
+        })
+        .map_err(|error| match error {
+            PaneTopologyControlError::Operation(message)
+            | PaneTopologyControlError::Publication(message) => message,
+        })?;
     Ok(snapshot)
 }
 
@@ -6759,28 +7275,15 @@ pub fn session_new_workspace(
     initial_terminal_command: Option<String>,
     initial_terminal_input: Option<String>,
     initial_terminal_environment: Option<BTreeMap<String, String>>,
-) -> AppSessionSnapshot {
-    let new_panel_id = format!(
-        "surface-{}",
-        state.next_panel.fetch_add(1, Ordering::Relaxed)
-    );
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        apply_new_workspace(
-            &mut guard,
-            &new_panel_id,
-            current_directory.as_deref(),
-            initial_terminal_command.as_deref(),
-            initial_terminal_input.as_deref(),
-            initial_terminal_environment,
-        );
-        guard.clone()
-    };
-    notify_session_changed(&app, &snapshot);
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    new_workspace_for_control(
+        &app,
+        &state,
+        current_directory.as_deref(),
+        initial_terminal_command.as_deref(),
+        initial_terminal_input.as_deref(),
+        initial_terminal_environment,
+    )
 }
 
 /// Create a new browser workspace, select it, and bind its initial URL.
@@ -6789,22 +7292,8 @@ pub fn session_new_browser_workspace(
     app: AppHandle,
     state: State<'_, SessionState>,
     url: Option<String>,
-) -> AppSessionSnapshot {
-    let new_panel_id = format!(
-        "surface-{}",
-        state.next_panel.fetch_add(1, Ordering::Relaxed)
-    );
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        apply_new_workspace(&mut guard, &new_panel_id, None, None, None, None);
-        apply_open_browser_url(&mut guard, &new_panel_id, url.as_deref());
-        guard.clone()
-    };
-    notify_session_changed(&app, &snapshot);
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    new_browser_workspace_for_control(&app, &state, url.as_deref())
 }
 
 /// Reopen the most recent browser pane/workspace that disappeared, restoring
@@ -6815,30 +7304,8 @@ pub fn session_new_browser_workspace(
 pub fn session_reopen_closed_browser_tab(
     app: AppHandle,
     state: State<'_, SessionState>,
-) -> AppSessionSnapshot {
-    let Some(tab) = ({
-        let mut history = state
-            .closed_browser_tabs
-            .lock()
-            .expect("closed browser history mutex poisoned");
-        history.pop()
-    }) else {
-        return current_session_snapshot(&state);
-    };
-    let new_panel_id = format!(
-        "surface-{}",
-        state.next_panel.fetch_add(1, Ordering::Relaxed)
-    );
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        apply_reopen_closed_browser_tab(&mut guard, &tab, &new_panel_id);
-        guard.clone()
-    };
-    notify_session_changed(&app, &snapshot);
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    reopen_closed_browser_tab_for_control(&app, &state)
 }
 
 /// Reopen the most recently closed workspace with its complete session model.
@@ -6847,7 +7314,7 @@ pub fn session_reopen_closed_workspace(
     app: AppHandle,
     state: State<'_, SessionState>,
 ) -> Result<AppSessionSnapshot, String> {
-    reopen_closed_workspace_for_control(&app, &state)
+    reopen_closed_workspace_for_control(&app, &state)?
         .ok_or_else(|| "No recently closed workspace".to_string())
 }
 
@@ -6857,19 +7324,8 @@ pub fn session_move_panel_to_new_workspace(
     app: AppHandle,
     state: State<'_, SessionState>,
     panel_id: String,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_move_panel_to_new_workspace(&mut guard, &panel_id);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    move_panel_to_new_workspace_for_control(&app, &state, &panel_id)
 }
 
 #[tauri::command]
@@ -6881,8 +7337,10 @@ pub fn session_handle_navigation_uri(
     let target = parse_session_navigation_uri(&uri)?;
     let (changed, snapshot) = if let Some(panel_id) = target.panel_id.as_deref() {
         select_workspace_surface(&app, &state, &target.workspace_id, panel_id)
+            .map_err(collapse_infallible_publication_error)?
     } else {
         select_workspace_by_id(&app, &state, &target.workspace_id)
+            .map_err(collapse_infallible_publication_error)?
     };
     let handled = match target.panel_id.as_deref() {
         Some(panel_id) => {
@@ -6912,7 +7370,8 @@ pub fn session_handle_ssh_uri(
     uri: String,
 ) -> Result<SessionSshUriHandleReply, String> {
     let request = parse_ssh_uri(&uri)?;
-    let (changed, _snapshot, panel_id) = open_ssh_url_request(&app, &state, &request)?;
+    let (changed, _snapshot, panel_id) =
+        open_ssh_url_request(&app, &state, &request).map_err(|error| error.to_string())?;
     Ok(SessionSshUriHandleReply {
         handled: true,
         changed,
@@ -6930,17 +7389,9 @@ pub fn session_select_workspace(
     app: AppHandle,
     state: State<'_, SessionState>,
     index: i64,
-) -> AppSessionSnapshot {
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        apply_select_workspace(&mut guard, index);
-        guard.clone()
-    };
-    notify_session_changed(&app, &snapshot);
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = select_workspace_for_control(&app, &state, index)?;
+    Ok(snapshot)
 }
 
 /// Close the workspace at `index`. Closing the sole remaining workspace is a
@@ -7049,19 +7500,9 @@ pub fn session_set_group_collapsed(
     state: State<'_, SessionState>,
     group_id: String,
     collapsed: bool,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_group_collapsed(&mut guard, &group_id, collapsed);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = set_group_collapsed_for_control(&app, &state, &group_id, collapsed)?;
+    Ok(snapshot)
 }
 
 /// Rename the workspace at `index`. Canonical `Workspace.setCustomTitle`
@@ -7077,19 +7518,10 @@ pub fn session_rename_workspace(
     state: State<'_, SessionState>,
     index: i64,
     title: String,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_rename_workspace(&mut guard, index, &title);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    state.transact_snapshot_if_changed(&app, |snapshot| {
+        apply_rename_workspace(snapshot, index, &title)
+    })
 }
 
 /// Set or clear the workspace description at `index`. Blank/whitespace-only
@@ -7104,19 +7536,9 @@ pub fn session_set_workspace_description(
     state: State<'_, SessionState>,
     index: i64,
     description: String,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_workspace_description(&mut guard, index, &description);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = set_workspace_description_for_control(&app, &state, index, &description)?;
+    Ok(snapshot)
 }
 
 /// Clear the custom workspace tab color at `index`. Emits
@@ -7126,19 +7548,9 @@ pub fn session_reset_workspace_color(
     app: AppHandle,
     state: State<'_, SessionState>,
     index: i64,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_reset_workspace_color(&mut guard, index);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = reset_workspace_color_for_control(&app, &state, index)?;
+    Ok(snapshot)
 }
 
 /// Set or clear a panel/tab custom title in the active workspace. Empty or
@@ -7149,19 +7561,9 @@ pub fn session_set_panel_title(
     state: State<'_, SessionState>,
     panel_id: String,
     title: String,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_panel_title(&mut guard, &panel_id, &title);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = set_panel_title_for_control(&app, &state, &panel_id, &title)?;
+    Ok(snapshot)
 }
 
 /// Pin or unpin a panel/tab in the active workspace.
@@ -7171,19 +7573,9 @@ pub fn session_set_panel_pinned(
     state: State<'_, SessionState>,
     panel_id: String,
     pinned: bool,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_panel_pinned(&mut guard, &panel_id, pinned);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = set_panel_pinned_for_control(&app, &state, &panel_id, pinned)?;
+    Ok(snapshot)
 }
 
 /// Mark a panel/tab read or unread in the active workspace.
@@ -7193,19 +7585,9 @@ pub fn session_set_panel_unread(
     state: State<'_, SessionState>,
     panel_id: String,
     unread: bool,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_panel_unread(&mut guard, &panel_id, unread);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = set_panel_unread_for_control(&app, &state, &panel_id, unread)?;
+    Ok(snapshot)
 }
 
 /// Mark a workspace read or unread.
@@ -7216,20 +7598,15 @@ pub fn session_set_workspace_unread(
     index: i64,
     unread: bool,
     preferred_panel_id: Option<String>,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed =
-            apply_set_workspace_unread(&mut guard, index, preferred_panel_id.as_deref(), unread);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = set_workspace_unread_for_control(
+        &app,
+        &state,
+        index,
+        preferred_panel_id.as_deref(),
+        unread,
+    )?;
+    Ok(snapshot)
 }
 
 /// Pin/unpin the workspace at `index`. Canonical
@@ -7248,19 +7625,9 @@ pub fn session_set_workspace_pinned(
     state: State<'_, SessionState>,
     index: i64,
     pinned: bool,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_set_workspace_pinned(&mut guard, index, pinned);
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = set_workspace_pinned_for_control(&app, &state, index, pinned)?;
+    Ok(snapshot)
 }
 
 /// Reorder the workspace at `index` toward `toIndex`. Canonical
@@ -7290,24 +7657,15 @@ pub fn session_reorder_workspaces(
     index: i64,
     to_index: i64,
     uses_top_level_rows: Option<bool>,
-) -> AppSessionSnapshot {
-    let (changed, snapshot) = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        let changed = apply_reorder_workspaces(
-            &mut guard,
-            index,
-            to_index,
-            uses_top_level_rows.unwrap_or(false),
-        );
-        (changed, guard.clone())
-    };
-    if changed {
-        notify_session_changed(&app, &snapshot);
-    }
-    snapshot
+) -> Result<AppSessionSnapshot, String> {
+    let snapshot = reorder_workspaces_for_control(
+        &app,
+        &state,
+        index,
+        to_index,
+        uses_top_level_rows.unwrap_or(false),
+    )?;
+    Ok(snapshot)
 }
 
 #[cfg(test)]
@@ -7385,6 +7743,7 @@ mod tests {
         snapshot.windows.push(SessionWindowSnapshot {
             window_id: Some("window-2".to_string()),
             selected_workspace_id: None,
+            dock: None,
             tab_manager: SessionTabManagerSnapshot {
                 selected_workspace_index: Some(0),
                 workspaces: vec![session_ops::fresh_terminal_workspace("surface-2")],
@@ -7456,7 +7815,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("session.json");
         let snapshot = initial_snapshot(FIRST_PANEL_ID);
-        write_snapshot_file(&path, &snapshot);
+        write_snapshot_file(&path, &snapshot).unwrap();
         let loaded = load_snapshot_file(&path).expect("snapshot reloads");
         assert_eq!(loaded, snapshot);
     }
@@ -8892,12 +9251,15 @@ mod tests {
         }))
         .unwrap();
         let next = AtomicU64::new(10);
+        let mut ids = DeferredPanelIds::new(&next);
 
         let (layout, focused, startups) =
-            session_layout_from_cmux(layout, &next).expect("valid canonical layout");
+            session_layout_from_cmux(layout, &mut ids).expect("valid canonical layout");
 
         assert!(matches!(layout, SessionWorkspaceLayoutSnapshot::Split(_)));
         assert_eq!(focused.as_deref(), Some("surface-11"));
+        assert_eq!(next.load(Ordering::Relaxed), 10);
+        assert_eq!(ids.used, 2);
         assert_eq!(startups.len(), 1);
         assert_eq!(
             startups[0].initial_terminal_command.as_deref(),
@@ -10097,5 +10459,252 @@ mod tests {
         assert!(json.contains("\"orientation\":\"vertical\""));
         let round: AppSessionSnapshot = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(round, snapshot);
+    }
+
+    #[test]
+    fn lifecycle_snapshot_replace_overwrites_existing_and_preserves_it_on_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let current = directory.path().join("session.json");
+        let staged = directory.path().join("session.staged");
+        std::fs::write(&current, b"old").unwrap();
+        std::fs::write(&staged, b"new").unwrap();
+        replace_file_atomically(&staged, &current).unwrap();
+        assert_eq!(std::fs::read(&current).unwrap(), b"new");
+        assert!(!staged.exists());
+
+        let missing = directory.path().join("missing.staged");
+        assert!(replace_file_atomically(&missing, &current).is_err());
+        assert_eq!(std::fs::read(&current).unwrap(), b"new");
+    }
+
+    struct TestSnapshotPublicationOperations {
+        name: &'static str,
+        calls: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        persist_entered: Option<std::sync::mpsc::Sender<()>>,
+        persist_release: Option<std::sync::mpsc::Receiver<()>>,
+        persist_error: Option<String>,
+        event_baseline: String,
+    }
+
+    impl SnapshotPublicationOperations for TestSnapshotPublicationOperations {
+        fn persist(&mut self, _candidate: &AppSessionSnapshot) -> Result<(), String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("{}:persist", self.name));
+            if let Some(entered) = self.persist_entered.take() {
+                entered.send(()).unwrap();
+            }
+            if let Some(release) = self.persist_release.take() {
+                release.recv().unwrap();
+            }
+            if let Some(error) = self.persist_error.take() {
+                return Err(error);
+            }
+            Ok(())
+        }
+
+        fn update_event_baseline(&mut self, candidate: &AppSessionSnapshot) {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("{}:baseline", self.name));
+            self.event_baseline = candidate.windows[0].tab_manager.workspaces[0]
+                .current_directory
+                .clone()
+                .unwrap_or_default();
+        }
+
+        fn emit(&mut self, _candidate: &AppSessionSnapshot) -> Result<(), String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("{}:emit", self.name));
+            Ok(())
+        }
+    }
+
+    fn publication_candidate(base: &AppSessionSnapshot, marker: &str) -> AppSessionSnapshot {
+        let mut candidate = base.clone();
+        candidate.windows[0].tab_manager.workspaces[0].current_directory = Some(marker.into());
+        candidate
+    }
+
+    #[test]
+    fn snapshot_publication_gate_covers_persist_authority_baseline_and_emit() {
+        let initial = initial_snapshot("surface-1");
+        let older = publication_candidate(&initial, "older");
+        let newer = publication_candidate(&older, "newer");
+        let authority = std::sync::Arc::new(GatedSnapshot::new(initial.clone()));
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (older_entered_tx, older_entered_rx) = std::sync::mpsc::channel();
+        let (release_older_tx, release_older_rx) = std::sync::mpsc::channel();
+        let (newer_entered_tx, newer_entered_rx) = std::sync::mpsc::channel();
+
+        let older_authority = authority.clone();
+        let older_calls = calls.clone();
+        let older_initial = initial.clone();
+        let older_thread = std::thread::spawn(move || {
+            let mut operations = TestSnapshotPublicationOperations {
+                name: "older",
+                calls: older_calls,
+                persist_entered: Some(older_entered_tx),
+                persist_release: Some(release_older_rx),
+                persist_error: None,
+                event_baseline: "initial".into(),
+            };
+            publish_snapshot_transaction(
+                &older_authority,
+                Some(&older_initial),
+                &older,
+                &mut operations,
+            )
+            .unwrap();
+        });
+        older_entered_rx.recv().unwrap();
+
+        let newer_authority = authority.clone();
+        let newer_calls = calls.clone();
+        let newer_expected = publication_candidate(&initial, "older");
+        let newer_thread = std::thread::spawn(move || {
+            let mut operations = TestSnapshotPublicationOperations {
+                name: "newer",
+                calls: newer_calls,
+                persist_entered: Some(newer_entered_tx),
+                persist_release: None,
+                persist_error: None,
+                event_baseline: "older".into(),
+            };
+            publish_snapshot_transaction(
+                &newer_authority,
+                Some(&newer_expected),
+                &newer,
+                &mut operations,
+            )
+            .unwrap();
+        });
+
+        assert!(matches!(
+            newer_entered_rx.recv_timeout(std::time::Duration::from_millis(100)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        release_older_tx.send(()).unwrap();
+        older_thread.join().unwrap();
+        newer_entered_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        newer_thread.join().unwrap();
+
+        assert_eq!(
+            calls.lock().unwrap().as_slice(),
+            [
+                "older:persist",
+                "older:baseline",
+                "older:emit",
+                "newer:persist",
+                "newer:baseline",
+                "newer:emit",
+            ]
+        );
+        assert_eq!(
+            authority.lock().unwrap().windows[0].tab_manager.workspaces[0]
+                .current_directory
+                .as_deref(),
+            Some("newer")
+        );
+    }
+
+    #[test]
+    fn snapshot_persistence_failure_preserves_authority_and_event_baseline() {
+        let initial = initial_snapshot("surface-1");
+        let candidate = publication_candidate(&initial, "candidate");
+        let authority = GatedSnapshot::new(initial.clone());
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut operations = TestSnapshotPublicationOperations {
+            name: "failed",
+            calls: calls.clone(),
+            persist_entered: None,
+            persist_release: None,
+            persist_error: Some("snapshot write failed".into()),
+            event_baseline: "initial".into(),
+        };
+
+        assert_eq!(
+            publish_snapshot_transaction(&authority, Some(&initial), &candidate, &mut operations)
+                .unwrap_err(),
+            "snapshot write failed"
+        );
+        assert_eq!(*authority.lock().unwrap(), initial);
+        assert_eq!(operations.event_baseline, "initial");
+        assert_eq!(calls.lock().unwrap().as_slice(), ["failed:persist"]);
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum TestSnapshotWriterFailure {
+        CreateDirectory,
+        WriteStaged,
+        AtomicReplace,
+    }
+
+    struct TestSnapshotFileOperations {
+        failure: TestSnapshotWriterFailure,
+        calls: Vec<&'static str>,
+    }
+
+    impl SnapshotFileOperations for TestSnapshotFileOperations {
+        fn create_parent(&mut self, _parent: &Path) -> Result<(), String> {
+            self.calls.push("mkdir");
+            (self.failure != TestSnapshotWriterFailure::CreateDirectory)
+                .then_some(())
+                .ok_or_else(|| "mkdir failed".into())
+        }
+
+        fn write_staged(&mut self, _path: &Path, bytes: &[u8]) -> Result<(), String> {
+            self.calls.push("write");
+            assert!(!bytes.is_empty());
+            (self.failure != TestSnapshotWriterFailure::WriteStaged)
+                .then_some(())
+                .ok_or_else(|| "write failed".into())
+        }
+
+        fn atomic_replace(&mut self, _staged: &Path, _destination: &Path) -> Result<(), String> {
+            self.calls.push("replace");
+            (self.failure != TestSnapshotWriterFailure::AtomicReplace)
+                .then_some(())
+                .ok_or_else(|| "replace failed".into())
+        }
+    }
+
+    #[test]
+    fn strict_snapshot_writer_surfaces_directory_write_and_replace_failures() {
+        let snapshot = initial_snapshot("surface-1");
+        let path = Path::new("state/session.json");
+        for (failure, expected_error, expected_calls) in [
+            (
+                TestSnapshotWriterFailure::CreateDirectory,
+                "mkdir failed",
+                &["mkdir"][..],
+            ),
+            (
+                TestSnapshotWriterFailure::WriteStaged,
+                "write failed",
+                &["mkdir", "write"][..],
+            ),
+            (
+                TestSnapshotWriterFailure::AtomicReplace,
+                "replace failed",
+                &["mkdir", "write", "replace"][..],
+            ),
+        ] {
+            let mut operations = TestSnapshotFileOperations {
+                failure,
+                calls: Vec::new(),
+            };
+            assert_eq!(
+                write_snapshot_file_strict(path, &snapshot, &mut operations).unwrap_err(),
+                expected_error
+            );
+            assert_eq!(operations.calls, expected_calls);
+        }
     }
 }

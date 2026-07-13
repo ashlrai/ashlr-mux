@@ -5,9 +5,10 @@
 //! owner maps here are derived indexes and are never serialized.
 
 use crate::session::{
-    AppSessionSnapshot, SessionPaneLayoutSnapshot, SessionPanelTerminalStartupSnapshot,
-    SessionPendingRemotePwdSnapshot, SessionPendingSurfacePwdSnapshot, SessionSurfaceSnapshot,
-    SessionTabManagerSnapshot, SessionWorkspaceLayoutSnapshot,
+    AppSessionSnapshot, SessionDockSnapshot, SessionPaneLayoutSnapshot,
+    SessionPanelTerminalStartupSnapshot, SessionPendingRemotePwdSnapshot,
+    SessionPendingSurfacePwdSnapshot, SessionSurfaceSnapshot, SessionTabManagerSnapshot,
+    SessionWorkspaceLayoutSnapshot,
 };
 pub use crate::session::{
     SessionSurfaceKindSnapshot as SurfaceKind, SessionSurfaceMetadataSnapshot as SurfaceMetadata,
@@ -452,7 +453,11 @@ impl SurfaceLifecycleModel {
                     && candidate.workspace_id == owner.workspace_id
             })
             .count();
-        if count <= 1 {
+        let is_dock = self
+            .panes
+            .get(&owner.pane_id)
+            .is_some_and(|pane| pane.container == ContainerKind::Dock);
+        if count <= 1 && !is_dock {
             return Err(LifecycleError::Invalid(
                 "cannot close the last surface".into(),
             ));
@@ -633,6 +638,7 @@ impl SurfaceLifecycleModel {
         surface_id: &str,
         command: &str,
         working_directory: Option<&str>,
+        tmux_start_command: Option<&str>,
     ) -> Result<Reservation, LifecycleError> {
         let owner_workspace = self
             .surface_owners
@@ -668,6 +674,7 @@ impl SurfaceLifecycleModel {
             .insert(surface_id.into(), record.generation);
         record.terminal_startup.command = Some(command.into());
         record.terminal_startup.working_directory = working_directory.map(str::to_owned);
+        record.terminal_startup.tmux_start_command = tmux_start_command.map(str::to_owned);
         Ok(Reservation {
             surface_id: surface_id.into(),
             generation: record.generation,
@@ -1014,9 +1021,88 @@ impl SurfaceLifecycleModel {
                 .unwrap_or_else(|| format!("window:{index}"));
             let part = Self::from_session_snapshot(&window_id, &window.tab_manager)?;
             merged.merge(part)?;
+            if let Some(dock) = &window.dock {
+                merged.merge(Self::from_dock_snapshot(&window_id, dock)?)?;
+            }
         }
         merged.validate_indexes()?;
         Ok(merged)
+    }
+
+    fn from_dock_snapshot(
+        window_id: &str,
+        dock: &SessionDockSnapshot,
+    ) -> Result<Self, LifecycleError> {
+        let mut model = Self::new();
+        if let Some(layout) = &dock.layout {
+            add_layout_panes_with_container(
+                &mut model,
+                layout,
+                window_id,
+                &dock.workspace_id,
+                ContainerKind::Dock,
+            )?;
+        }
+        for persisted in &dock.surfaces {
+            let pane = model
+                .panes
+                .get(&persisted.pane_id)
+                .ok_or_else(|| LifecycleError::PaneNotFound(persisted.pane_id.clone()))?;
+            if !pane.surface_ids.contains(&persisted.surface_id)
+                || persisted.generation == 0
+                || model
+                    .last_generation
+                    .insert(persisted.surface_id.clone(), persisted.generation)
+                    .is_some()
+                || model
+                    .surfaces
+                    .insert(persisted.surface_id.clone(), record_from_session(persisted))
+                    .is_some()
+                || model
+                    .surface_owners
+                    .insert(
+                        persisted.surface_id.clone(),
+                        Owner {
+                            window_id: window_id.into(),
+                            workspace_id: dock.workspace_id.clone(),
+                            pane_id: persisted.pane_id.clone(),
+                            surface_id: persisted.surface_id.clone(),
+                        },
+                    )
+                    .is_some()
+            {
+                return Err(LifecycleError::Invalid(format!(
+                    "duplicate or invalid Dock surface {}",
+                    persisted.surface_id
+                )));
+            }
+        }
+        if let Some(focused) = &dock.focused_surface_id {
+            if !model.surface_owners.contains_key(focused) {
+                return Err(LifecycleError::Invalid(format!(
+                    "stale Dock focus {focused}"
+                )));
+            }
+            model
+                .focused_surfaces
+                .insert(dock.workspace_id.clone(), focused.clone());
+            model
+                .surfaces
+                .get_mut(focused)
+                .unwrap()
+                .is_workspace_focused = true;
+        }
+        model.validate_indexes()?;
+        Ok(model)
+    }
+
+    /// Explicitly named compatibility constructor used by desktop lifecycle
+    /// callers to distinguish the application-wide authority from the
+    /// single-window session constructor.
+    pub fn from_app_session_snapshot(
+        snapshot: &AppSessionSnapshot,
+    ) -> Result<Self, LifecycleError> {
+        Self::from_app_session(snapshot)
     }
 
     fn merge(&mut self, other: Self) -> Result<(), LifecycleError> {
@@ -1101,6 +1187,25 @@ impl SurfaceLifecycleModel {
                 .clone()
                 .unwrap_or_else(|| format!("window:{index}"));
             window.tab_manager = self.project_tab_manager(Some(&window_id), &window.tab_manager)?;
+            if let Some(dock) = window.dock.as_mut() {
+                dock.surfaces = self
+                    .pane_order
+                    .iter()
+                    .filter_map(|id| self.panes.get(id))
+                    .filter(|pane| {
+                        pane.container == ContainerKind::Dock
+                            && pane.window_id == window_id
+                            && pane.workspace_id == dock.workspace_id
+                    })
+                    .flat_map(|pane| pane.surface_ids.iter())
+                    .filter_map(|id| self.surfaces.get(id))
+                    .map(record_to_session)
+                    .collect();
+                dock.focused_surface_id = self.focused_surfaces.get(&dock.workspace_id).cloned();
+                if let Some(layout) = dock.layout.take() {
+                    dock.layout = project_layout(layout, &self.panes, &self.collapsed_panes);
+                }
+            }
         }
         Ok(projected)
     }
@@ -1320,6 +1425,16 @@ fn add_layout_panes(
     window: &str,
     workspace: &str,
 ) -> Result<(), LifecycleError> {
+    add_layout_panes_with_container(model, layout, window, workspace, ContainerKind::Workspace)
+}
+
+fn add_layout_panes_with_container(
+    model: &mut SurfaceLifecycleModel,
+    layout: &SessionWorkspaceLayoutSnapshot,
+    window: &str,
+    workspace: &str,
+    container: ContainerKind,
+) -> Result<(), LifecycleError> {
     match layout {
         SessionWorkspaceLayoutSnapshot::Pane(pane) => {
             let pane_id = pane.pane_id.clone().unwrap_or_else(|| {
@@ -1332,7 +1447,7 @@ fn add_layout_panes(
                 pane_id: pane_id.clone(),
                 window_id: window.into(),
                 workspace_id: workspace.into(),
-                container: ContainerKind::Workspace,
+                container,
             })?;
             let row = model.panes.get_mut(&pane_id).unwrap();
             row.surface_ids = pane.panel_ids.clone();
@@ -1343,8 +1458,14 @@ fn add_layout_panes(
                 .unwrap_or_default();
         }
         SessionWorkspaceLayoutSnapshot::Split(split) => {
-            add_layout_panes(model, &split.first, window, workspace)?;
-            add_layout_panes(model, &split.second, window, workspace)?;
+            add_layout_panes_with_container(
+                model,
+                &split.first,
+                window,
+                workspace,
+                container.clone(),
+            )?;
+            add_layout_panes_with_container(model, &split.second, window, workspace, container)?;
         }
     }
     Ok(())
@@ -1412,6 +1533,7 @@ fn migrate_workspace_legacy(
                 kind = match kind {
                     SurfaceKind::Browser { url, .. } => SurfaceKind::Browser {
                         url,
+                        profile: None,
                         proxy_url: legacy.browser_proxy_url.clone(),
                         back_history: legacy.browser_back_history.clone(),
                         forward_history: legacy.browser_forward_history.clone(),
@@ -1490,6 +1612,7 @@ fn kind_from_legacy(kind: &str, browser_url: Option<String>) -> SurfaceKind {
     match kind {
         "browser" => SurfaceKind::Browser {
             url: browser_url,
+            profile: None,
             proxy_url: None,
             back_history: None,
             forward_history: None,
@@ -1601,6 +1724,7 @@ fn startup_from_legacy(value: &SessionPanelTerminalStartupSnapshot) -> TerminalS
         initial_input: value.initial_terminal_input.clone(),
         environment: value.initial_terminal_environment.clone(),
         tmux_start_command: None,
+        remote_pty_session_id: None,
         resume_binding: None,
     }
 }

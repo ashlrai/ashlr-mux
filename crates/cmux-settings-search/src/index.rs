@@ -140,15 +140,12 @@ impl SettingsSearchIndex {
     pub fn match_score(entry: &SettingsSearchEntry, query: &str, tokens: &[String]) -> Option<i32> {
         let mut score: i32 = 0;
         for token in tokens {
-            match Self::match_score_token(
+            score += Self::match_score_token(
                 token,
                 &entry.normalized_search_text,
                 &entry.normalized_search_words,
                 &entry.normalized_search_word_set,
-            ) {
-                Some(token_score) => score += token_score,
-                None => return None,
-            }
+            )?;
         }
 
         let title = Self::normalized(&entry.title);

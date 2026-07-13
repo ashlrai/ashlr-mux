@@ -2,9 +2,10 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Mutex;
 use std::thread;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
@@ -21,13 +22,23 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+mod pane_surface_lifecycle;
+
+#[cfg(test)]
+use crate::browser::strict_browser_runtime_teardown_transaction;
 use crate::browser::{
     browser_add_init_script_for_control, browser_attach_webview_for_control,
-    browser_clear_network_requests_for_control, browser_eval_for_control,
+    browser_clear_network_requests_for_control, browser_close_webview_strict_for_control,
+    browser_eval_for_control, browser_has_webview_for_control,
     browser_network_requests_for_control, browser_webview_command_for_control,
     BrowserNetworkRequestsQuery, BrowserWebviewState,
 };
 use crate::diff::DiffState;
+use crate::dock::{
+    publish_runtime_claim, rollback_runtime_claim, runtime_exists_for_control,
+    stage_runtime_for_control, teardown_runtime_for_control, DockRuntimeClaim,
+    DockRuntimeOperation,
+};
 use crate::session::{
     append_workspace_sidebar_log_for_control, break_pane_for_control, browser_go_back_for_control,
     browser_go_forward_for_control, clear_browser_history_for_control,
@@ -37,6 +48,7 @@ use crate::session::{
     clear_workspace_sidebar_metadata_for_control, clear_workspace_sidebar_progress_for_control,
     clear_workspace_sidebar_status_for_control, close_panel_for_control,
     close_workspace_in_window_for_control, close_workspaces_for_control,
+    commit_lifecycle_snapshot_for_control, commit_lifecycle_snapshot_for_control_if_current,
     configure_workspace_remote_for_control, current_session_snapshot,
     equalize_dividers_for_control, focus_last_pane_for_control, focus_pane_for_control,
     move_panel_to_new_workspace_for_control, move_surface_for_control,
@@ -44,35 +56,37 @@ use crate::session::{
     new_terminal_tab_for_control, new_workspace_in_window_for_control, open_browser_url_in_panel,
     open_custom_sidebar_in_panel, open_diff_viewer_in_panel, open_file_in_panel,
     open_markdown_file_in_panel, reconnect_workspace_remote_for_control,
-    register_window_for_control, rename_workspace_in_window_for_control,
-    reopen_closed_browser_tab_for_control, reopen_closed_workspace_for_control,
-    reorder_surface_for_control, reorder_workspaces_for_control,
-    reorder_workspaces_many_for_control, reset_workspace_color_for_control,
-    reset_workspace_sidebar_metadata_for_control, resize_pane_for_control,
-    restore_previous_launch_for_control, select_adjacent_panel_for_control,
-    select_last_workspace_for_control, select_workspace_for_control,
-    select_workspace_in_window_for_control, select_workspace_surface, set_browser_zoom_for_control,
-    set_group_collapsed_for_control, set_panel_listening_ports_for_control,
-    set_panel_pinned_for_control, set_panel_shell_activity_for_control,
-    set_panel_title_for_control, set_panel_tty_for_control, set_panel_unread_for_control,
-    set_surface_kind_for_control, set_workspace_agent_listening_ports_for_control,
-    set_workspace_agent_pid_for_control, set_workspace_description_for_control,
-    set_workspace_panel_pull_request_for_control, set_workspace_pinned_for_control,
-    set_workspace_sidebar_metadata_block_for_control, set_workspace_sidebar_metadata_for_control,
-    set_workspace_sidebar_progress_for_control, set_workspace_sidebar_status_for_control,
-    set_workspace_unread_for_control, show_browser_developer_tools_for_control,
-    split_browser_for_control, split_off_surface_for_control, split_panel_for_control,
-    start_direct_browser_proxy_for_control, swap_panes_for_control,
-    toggle_browser_developer_tools_for_control, toggle_browser_focus_mode_for_control,
-    toggle_browser_omnibar_for_control, toggle_split_zoom_for_control, PaneFocusControlError,
-    PaneLastControlError, PaneResizeControlError, PaneResizeControlIntent,
-    ReorderWorkspacesManyControlError, SessionState, WorkspaceLastControlError,
-    WorkspaceRemoteControlConfig, WorkspaceRenameResolution,
+    rename_workspace_in_window_for_control, reopen_closed_browser_tab_for_control,
+    reopen_closed_workspace_for_control, reorder_surface_for_control,
+    reorder_workspaces_for_control, reorder_workspaces_many_for_control,
+    reset_workspace_color_for_control, reset_workspace_sidebar_metadata_for_control,
+    resize_pane_for_control, restore_previous_launch_for_control,
+    select_adjacent_panel_for_control, select_last_workspace_for_control,
+    select_workspace_for_control, select_workspace_in_window_for_control, select_workspace_surface,
+    set_browser_zoom_for_control, set_group_collapsed_for_control,
+    set_panel_listening_ports_for_control, set_panel_pinned_for_control,
+    set_panel_shell_activity_for_control, set_panel_title_for_control, set_panel_tty_for_control,
+    set_panel_unread_for_control, set_surface_kind_for_control,
+    set_workspace_agent_listening_ports_for_control, set_workspace_agent_pid_for_control,
+    set_workspace_description_for_control, set_workspace_panel_pull_request_for_control,
+    set_workspace_pinned_for_control, set_workspace_sidebar_metadata_block_for_control,
+    set_workspace_sidebar_metadata_for_control, set_workspace_sidebar_progress_for_control,
+    set_workspace_sidebar_status_for_control, set_workspace_unread_for_control,
+    show_browser_developer_tools_for_control, split_browser_for_control,
+    split_off_surface_for_control, split_panel_for_control, start_direct_browser_proxy_for_control,
+    swap_panes_for_control, toggle_browser_developer_tools_for_control,
+    toggle_browser_focus_mode_for_control, toggle_browser_omnibar_for_control,
+    toggle_split_zoom_for_control, BrowserPanelCreateError, MoveWorkspaceToWindowControlError,
+    PaneFocusControlError, PaneLastControlError, PaneResizeControlError, PaneResizeControlIntent,
+    PaneTopologyControlError, ReorderWorkspacesManyControlError, SessionState,
+    SurfacePositionControlError, TerminalPanelCreateError, WorkspaceLastControlError,
+    WorkspaceRemoteControlConfig, WorkspaceRenameResolution, WorkspaceSelectControlError,
 };
 use crate::terminal::{
     scan_listening_ports_for_root_pid, scan_panel_listening_ports, terminal_clear_history_panel,
-    terminal_grid_size_for_panel, terminal_read_panel, terminal_runtime_snapshots,
-    terminal_write_panel, TerminalState,
+    terminal_grid_size_for_panel, terminal_ids_for_panel_for_control, terminal_open_for_control,
+    terminal_read_panel, terminal_remove_id_for_control, terminal_runtime_snapshots,
+    terminal_shutdown_id_preserving_authority_for_control, terminal_write_panel, TerminalState,
 };
 
 const CONTROL_PIPE_BASE_NAME: &str = "cmux";
@@ -847,8 +861,19 @@ fn restart_control_socket_listener_inner(
 }
 
 fn control_pipe_path() -> String {
-    cmux_ipc::control_pipe_path(CONTROL_PIPE_BASE_NAME)
-        .expect("static control pipe base name is valid")
+    control_pipe_path_for_base(std::env::var("CMUX_CONTROL_PIPE_NAME").ok().as_deref())
+}
+
+/// `CMUX_CONTROL_PIPE_NAME` overrides the control pipe base name so test
+/// fixtures can isolate the named pipe. Values the pipe-path builder rejects
+/// (empty, backslash, over-long) fall back to the default — never panic.
+fn control_pipe_path_for_base(override_name: Option<&str>) -> String {
+    override_name
+        .and_then(|name| cmux_ipc::control_pipe_path(name).ok())
+        .unwrap_or_else(|| {
+            cmux_ipc::control_pipe_path(CONTROL_PIPE_BASE_NAME)
+                .expect("static control pipe base name is valid")
+        })
 }
 
 #[derive(Clone)]
@@ -942,6 +967,12 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "workspace.group.set_collapsed",
     "workspace_group.set_collapsed",
     "surface.list",
+    "surface.current",
+    "surface.create",
+    "surface.action",
+    "tab.action",
+    "surface.report_pwd",
+    "surface.respawn",
     "surface.split",
     "surface.new_terminal_tab",
     "surface.new_tab",
@@ -987,6 +1018,7 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "surface.previous",
     "surface.toggle_split_zoom",
     "pane.swap",
+    "pane.create",
     "pane.focus",
     "pane.list",
     "pane.surfaces",
@@ -1092,6 +1124,22 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "debug.terminals",
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ControlRequestRoute {
+    PaneSurfaceLifecycle,
+    Legacy,
+}
+
+fn control_request_route_for_method(method: &str) -> ControlRequestRoute {
+    match method {
+        "pane.create" | "pane.resize" | "pane.focus" | "surface.action" | "tab.action"
+        | "surface.create" | "surface.current" | "surface.list" | "surface.report_pwd"
+        | "surface.respawn" | "surface.close" | "surface.focus" | "surface.move"
+        | "surface.split" => ControlRequestRoute::PaneSurfaceLifecycle,
+        _ => ControlRequestRoute::Legacy,
+    }
+}
+
 impl cmux_ipc::ControlRequestHandler for DesktopControlHandler {
     fn handle(&mut self, request: ControlRequest) -> ControlCallResult {
         handle_control_request(&self.app, request)
@@ -1103,6 +1151,17 @@ impl cmux_ipc::ControlRequestHandler for DesktopControlHandler {
 }
 
 fn handle_control_request(app: &AppHandle, mut request: ControlRequest) -> ControlCallResult {
+    let session_state = app.state::<SessionState>();
+    let _control_guard = match session_state.lock_control_mutation() {
+        Ok(guard) => guard,
+        Err(message) => {
+            return ControlCallResult::Err {
+                code: "internal_error".into(),
+                message,
+                data: None,
+            }
+        }
+    };
     if request.method.starts_with("workspace.") && request.params.contains_key("window") {
         return ControlCallResult::Err {
             code: "invalid_params".to_string(),
@@ -1116,7 +1175,25 @@ fn handle_control_request(app: &AppHandle, mut request: ControlRequest) -> Contr
             .ok(),
         };
     }
+    // pane.create's split source honors ONLY a raw-UUID surface_id (canonical
+    // ControlCommandCoordinator+Pane.swift:300); routing still resolves refs.
+    // Preserve the pre-resolution value on a reserved key (stripped first so a
+    // caller cannot spoof it) for the lifecycle dispatcher's source selection.
+    request.params.remove("__pane_create_raw_surface_id");
+    let pane_create_raw_surface_id = (request.method == "pane.create")
+        .then(|| request.params.get("surface_id").cloned())
+        .flatten();
     resolve_request_handle_refs(app, &mut request.params);
+    if let Some(raw) = pane_create_raw_surface_id {
+        request
+            .params
+            .insert("__pane_create_raw_surface_id".into(), raw);
+    }
+    if control_request_route_for_method(&request.method)
+        == ControlRequestRoute::PaneSurfaceLifecycle
+    {
+        return handle_pane_surface_lifecycle_request(app, &request.method, &request.params);
+    }
     match request.method.as_str() {
         "ping" | "system.ping" => ok(json!("pong")),
         "system.identify" => ok(json!({
@@ -1458,6 +1535,2191 @@ fn handle_control_request(app: &AppHandle, mut request: ControlRequest) -> Contr
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum LifecycleRuntimeKind {
+    Terminal,
+    Browser,
+}
+
+trait LifecycleRuntimeRegistry {
+    fn runtime_ids(&self, kind: LifecycleRuntimeKind, surface_id: &str) -> Vec<u32>;
+    fn shutdown_runtime(&mut self, kind: LifecycleRuntimeKind, id: u32) -> Result<(), String>;
+    fn remove_runtime(
+        &mut self,
+        kind: LifecycleRuntimeKind,
+        surface_id: &str,
+        id: u32,
+    ) -> Result<(), String>;
+    fn restore_runtime(
+        &mut self,
+        kind: LifecycleRuntimeKind,
+        surface_id: &str,
+        id: u32,
+    ) -> Result<(), String>;
+}
+
+fn combine_failures(failures: Vec<String>) -> Result<(), String> {
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
+}
+
+fn strict_lifecycle_runtime_teardown(
+    registry: &mut impl LifecycleRuntimeRegistry,
+    kind: LifecycleRuntimeKind,
+    surface_id: &str,
+) -> Result<(), String> {
+    for id in registry.runtime_ids(kind, surface_id) {
+        registry.shutdown_runtime(kind, id)?;
+        if let Err(remove_error) = registry.remove_runtime(kind, surface_id, id) {
+            let mut failures = vec![remove_error];
+            if let Err(restore_error) = registry.restore_runtime(kind, surface_id, id) {
+                failures.push(restore_error);
+            }
+            return combine_failures(failures);
+        }
+    }
+    Ok(())
+}
+
+fn commit_terminal_runtime_replacement(
+    registry: &mut impl LifecycleRuntimeRegistry,
+    surface_id: &str,
+    replacement_id: u32,
+) -> Result<(), String> {
+    let old_ids = registry
+        .runtime_ids(LifecycleRuntimeKind::Terminal, surface_id)
+        .into_iter()
+        .filter(|id| *id != replacement_id)
+        .collect::<Vec<_>>();
+    for old_id in old_ids {
+        if let Err(retirement_error) =
+            registry.shutdown_runtime(LifecycleRuntimeKind::Terminal, old_id)
+        {
+            let mut failures = vec![retirement_error];
+            failures.extend(
+                compensate_terminal_replacement(registry, surface_id, replacement_id).err(),
+            );
+            return combine_failures(failures);
+        }
+        if let Err(remove_error) =
+            registry.remove_runtime(LifecycleRuntimeKind::Terminal, surface_id, old_id)
+        {
+            let mut failures = vec![remove_error];
+            failures.extend(
+                registry
+                    .restore_runtime(LifecycleRuntimeKind::Terminal, surface_id, old_id)
+                    .err(),
+            );
+            failures.extend(
+                compensate_terminal_replacement(registry, surface_id, replacement_id).err(),
+            );
+            return combine_failures(failures);
+        }
+    }
+    Ok(())
+}
+
+fn compensate_terminal_replacement(
+    registry: &mut impl LifecycleRuntimeRegistry,
+    surface_id: &str,
+    replacement_id: u32,
+) -> Result<(), String> {
+    let shutdown_error = registry
+        .shutdown_runtime(LifecycleRuntimeKind::Terminal, replacement_id)
+        .err();
+    let remove_error = registry
+        .remove_runtime(LifecycleRuntimeKind::Terminal, surface_id, replacement_id)
+        .err();
+    combine_failures(shutdown_error.into_iter().chain(remove_error).collect())
+}
+
+#[derive(Default)]
+struct LifecycleRollbackPlan {
+    terminal_ids: Vec<u32>,
+    remote_targets: Vec<String>,
+    browser_surface_ids: Vec<String>,
+}
+
+trait LifecycleRollbackOperations {
+    fn rollback_dock(&mut self) -> Result<(), String>;
+    fn cleanup_terminal(&mut self, id: u32) -> Result<(), String>;
+    fn cleanup_remote(&mut self, target: &str) -> Result<(), String>;
+    fn cleanup_browser(&mut self, surface_id: &str) -> Result<(), String>;
+}
+
+fn run_lifecycle_rollback_cleanup(
+    plan: &LifecycleRollbackPlan,
+    operations: &mut impl LifecycleRollbackOperations,
+) -> Result<(), String> {
+    let mut failures = Vec::new();
+    if let Err(error) = operations.rollback_dock() {
+        failures.push(error);
+    }
+    for id in &plan.terminal_ids {
+        if let Err(error) = operations.cleanup_terminal(*id) {
+            failures.push(error);
+        }
+    }
+    for target in &plan.remote_targets {
+        if let Err(error) = operations.cleanup_remote(target) {
+            failures.push(error);
+        }
+    }
+    for surface_id in &plan.browser_surface_ids {
+        if let Err(error) = operations.cleanup_browser(surface_id) {
+            failures.push(error);
+        }
+    }
+    combine_failures(failures)
+}
+
+struct ProductionLifecycleExecutor<'a> {
+    app: &'a AppHandle,
+    candidate: Option<AppSessionSnapshot>,
+    previous: Option<AppSessionSnapshot>,
+    staged: Vec<pane_surface_lifecycle::LifecycleEffect>,
+    staged_terminals: Vec<(String, u32, bool)>,
+    staged_remote_creations: Vec<StagedRemoteCreation>,
+    deferred_remote_reconciliations: Vec<StagedRemoteCreation>,
+    deferred_remote_departures: Vec<String>,
+    staged_browsers: Vec<(String, String, Option<String>)>,
+    dock_journal: DockCommitJournal<DockRuntimeClaim, DockTeardownCompensation>,
+}
+
+struct DockTeardownCompensation {
+    owner_id: String,
+    operation: DockRuntimeOperation,
+}
+
+struct ProductionLifecycleRuntimeRegistry<'a> {
+    terminal: &'a TerminalState,
+    browser: &'a BrowserWebviewState,
+    browser_surface_id: Option<&'a str>,
+}
+
+impl LifecycleRuntimeRegistry for ProductionLifecycleRuntimeRegistry<'_> {
+    fn runtime_ids(&self, kind: LifecycleRuntimeKind, surface_id: &str) -> Vec<u32> {
+        match kind {
+            LifecycleRuntimeKind::Terminal => {
+                terminal_ids_for_panel_for_control(self.terminal, surface_id)
+            }
+            LifecycleRuntimeKind::Browser => (self.browser_surface_id == Some(surface_id)
+                && browser_has_webview_for_control(self.browser, surface_id).unwrap_or(true))
+            .then_some(0)
+            .into_iter()
+            .collect(),
+        }
+    }
+
+    fn shutdown_runtime(&mut self, kind: LifecycleRuntimeKind, id: u32) -> Result<(), String> {
+        match kind {
+            LifecycleRuntimeKind::Terminal => {
+                terminal_shutdown_id_preserving_authority_for_control(self.terminal, id)
+            }
+            LifecycleRuntimeKind::Browser => {
+                let surface_id = self
+                    .browser_surface_id
+                    .ok_or_else(|| "browser runtime identity is unavailable".to_string())?;
+                browser_close_webview_strict_for_control(self.browser, surface_id)
+            }
+        }
+    }
+
+    fn remove_runtime(
+        &mut self,
+        kind: LifecycleRuntimeKind,
+        surface_id: &str,
+        id: u32,
+    ) -> Result<(), String> {
+        match kind {
+            LifecycleRuntimeKind::Terminal => terminal_remove_id_for_control(self.terminal, id),
+            LifecycleRuntimeKind::Browser => {
+                let _ = (surface_id, id);
+                Ok(())
+            }
+        }
+    }
+
+    fn restore_runtime(
+        &mut self,
+        _kind: LifecycleRuntimeKind,
+        _surface_id: &str,
+        _id: u32,
+    ) -> Result<(), String> {
+        // Production removal is the final infallible registry step. If it
+        // reports an error, the authoritative entry was not removed.
+        Ok(())
+    }
+}
+
+struct DockCommitJournal<C, T> {
+    claims: Vec<C>,
+    teardowns: Vec<T>,
+    snapshot_committed: bool,
+}
+
+enum DockRollbackStep<C, T> {
+    RestoreSnapshot,
+    RollbackClaim(C),
+    RecreateTeardown(T),
+}
+
+#[derive(Debug)]
+struct DockRollbackErrors<E>(Vec<E>);
+
+impl<E: std::fmt::Display> std::fmt::Display for DockRollbackErrors<E> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let messages = self.0.iter().map(ToString::to_string).collect::<Vec<_>>();
+        write!(formatter, "{}", messages.join("; "))
+    }
+}
+
+impl<C, T> Default for DockCommitJournal<C, T> {
+    fn default() -> Self {
+        Self {
+            claims: Vec::new(),
+            teardowns: Vec::new(),
+            snapshot_committed: false,
+        }
+    }
+}
+
+impl<C, T> DockCommitJournal<C, T> {
+    fn stage_claim(&mut self, claim: C) {
+        self.claims.push(claim);
+    }
+
+    fn stage_teardown(&mut self, teardown: T) {
+        self.teardowns.push(teardown);
+    }
+
+    fn commit_snapshot<E>(&mut self, commit: impl FnOnce() -> Result<(), E>) -> Result<(), E> {
+        commit()?;
+        self.snapshot_committed = true;
+        Ok(())
+    }
+
+    fn publish_claims<E>(&self, mut publish: impl FnMut(&C) -> Result<(), E>) -> Result<(), E> {
+        for claim in &self.claims {
+            publish(claim)?;
+        }
+        Ok(())
+    }
+
+    fn rollback<E>(
+        mut self,
+        mut apply: impl FnMut(DockRollbackStep<C, T>) -> Result<(), E>,
+    ) -> Result<(), DockRollbackErrors<E>> {
+        if self.snapshot_committed {
+            if let Err(error) = apply(DockRollbackStep::RestoreSnapshot) {
+                return Err(DockRollbackErrors(vec![error]));
+            }
+        }
+        let mut errors = Vec::new();
+        for claim in self.claims.drain(..) {
+            if let Err(error) = apply(DockRollbackStep::RollbackClaim(claim)) {
+                errors.push(error);
+            }
+        }
+        for teardown in self.teardowns.drain(..).rev() {
+            if let Err(error) = apply(DockRollbackStep::RecreateTeardown(teardown)) {
+                errors.push(error);
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(DockRollbackErrors(errors))
+        }
+    }
+
+    fn finish(&mut self) {
+        self.claims.clear();
+        self.teardowns.clear();
+        self.snapshot_committed = false;
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RemoteTmuxTarget {
+    Pane,
+    Window,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+enum RemoteTmuxSplitDirection {
+    #[serde(rename = "-h")]
+    Horizontal,
+    #[serde(rename = "-v")]
+    Vertical,
+}
+
+impl RemoteTmuxSplitDirection {
+    fn tmux_flag(self) -> &'static str {
+        match self {
+            Self::Horizontal => "-h",
+            Self::Vertical => "-v",
+        }
+    }
+}
+
+fn tmux_split_flag(split_direction: RemoteTmuxSplitDirection) -> &'static str {
+    split_direction.tmux_flag()
+}
+
+impl RemoteTmuxTarget {
+    fn for_create(operation: &str) -> Result<Self, String> {
+        match operation {
+            "split-window" => Ok(Self::Pane),
+            "new-window" => Ok(Self::Window),
+            _ => Err(format!("unsupported remote tmux operation: {operation}")),
+        }
+    }
+
+    fn rollback_operation(self) -> &'static str {
+        match self {
+            Self::Pane => "kill-pane",
+            Self::Window => "kill-window",
+        }
+    }
+
+    fn permits_immediate_arrival(self, arrival_policy: &str) -> bool {
+        self == Self::Pane && arrival_policy == "runtime-pane-add"
+    }
+
+    fn identity_prefix(self) -> char {
+        match self {
+            Self::Pane => '%',
+            Self::Window => '@',
+        }
+    }
+}
+
+fn remote_tmux_kill_command(target: RemoteTmuxTarget, token: &str) -> Result<Vec<String>, String> {
+    if !valid_tmux_identity(token, target.identity_prefix()) {
+        return Err("invalid tmux rollback identity".into());
+    }
+    Ok(vec![format!(
+        "tmux {} -t {}",
+        target.rollback_operation(),
+        shell_quote_remote(token)?,
+    )])
+}
+
+struct RemoteTmuxCreateSpec<'a> {
+    operation: &'a str,
+    focus: bool,
+    source_target: Option<&'a str>,
+    working_directory: Option<&'a str>,
+}
+
+#[cfg(test)]
+fn remote_tmux_create_argv(spec: &RemoteTmuxCreateSpec<'_>) -> Result<Vec<String>, String> {
+    remote_tmux_create_argv_with_split(spec, None)
+}
+
+fn remote_tmux_create_argv_with_split(
+    spec: &RemoteTmuxCreateSpec<'_>,
+    split_direction: Option<RemoteTmuxSplitDirection>,
+) -> Result<Vec<String>, String> {
+    let target = RemoteTmuxTarget::for_create(spec.operation)?;
+    let mut parts = vec!["tmux".to_string(), spec.operation.to_string()];
+    if target == RemoteTmuxTarget::Window && !spec.focus {
+        parts.push("-d".into());
+    }
+    if target == RemoteTmuxTarget::Window {
+        let source = spec.source_target.unwrap_or("{end}");
+        if source != "{end}" && !valid_tmux_identity(source, '@') {
+            return Err("invalid tmux source window identity".into());
+        }
+        parts.extend(["-a".into(), "-t".into(), shell_quote_remote(source)?]);
+        if spec.source_target.is_some() {
+            if let Some(directory) = usable_remote_working_directory(spec.working_directory) {
+                parts.extend(["-c".into(), shell_quote_remote(directory)?]);
+            }
+        }
+    } else if let Some(source) = spec.source_target {
+        let valid_source = valid_tmux_split_target(source);
+        if !valid_source && split_direction.is_some() {
+            return Err("invalid tmux split target".into());
+        }
+        if valid_source {
+            let direction = split_direction.unwrap_or(RemoteTmuxSplitDirection::Horizontal);
+            parts.extend([
+                tmux_split_flag(direction).into(),
+                "-t".into(),
+                shell_quote_remote(source)?,
+            ]);
+        }
+    }
+    parts.extend([
+        "-P".into(),
+        "-F".into(),
+        quote_tmux_format(match target {
+            RemoteTmuxTarget::Pane => "#{pane_id}",
+            RemoteTmuxTarget::Window => "#{window_id}\t#{pane_id}",
+        }),
+    ]);
+    Ok(vec![parts.join(" ")])
+}
+
+fn usable_remote_working_directory(value: Option<&str>) -> Option<&str> {
+    let value = value?.trim();
+    (!value.is_empty() && !value.chars().any(|character| character.is_control())).then_some(value)
+}
+
+fn remote_tmux_source_window_command(pane_token: &str) -> Result<Vec<String>, String> {
+    if !valid_tmux_identity(pane_token, '%') {
+        return Err("invalid tmux source pane identity".into());
+    }
+    Ok(vec![format!(
+        "tmux display-message -p -t {} {}",
+        shell_quote_remote(pane_token)?,
+        quote_tmux_format("#{window_id}"),
+    )])
+}
+
+fn remote_tmux_rename_window_command(
+    window_token: &str,
+    title: &str,
+) -> Result<Vec<String>, String> {
+    if !valid_tmux_identity(window_token, '@') {
+        return Err("invalid tmux window identity".into());
+    }
+    Ok(vec![format!(
+        "tmux rename-window -t {} {}",
+        shell_quote_remote(window_token)?,
+        shell_quote_remote(title)?,
+    )])
+}
+
+fn remote_tmux_list_windows_command() -> Vec<String> {
+    vec!["tmux list-windows -F '#{window_id}'".into()]
+}
+
+fn parse_remote_tmux_window_ids(output: &str) -> Result<Vec<String>, String> {
+    if output.is_empty() {
+        return Ok(Vec::new());
+    }
+    let normalized = output.replace("\r\n", "\n");
+    if normalized.contains('\r') || !normalized.ends_with('\n') {
+        return Err("invalid tmux window list output".into());
+    }
+    normalized
+        .lines()
+        .map(|line| {
+            valid_tmux_identity(line, '@')
+                .then(|| line.to_string())
+                .ok_or_else(|| "invalid tmux window list identity".into())
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingRemoteWindowDeparture {
+    destination: String,
+    remote_window_id: String,
+    departure: pane_surface_lifecycle::RuntimeDeparture,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoteWindowPresenceObservation {
+    Present,
+    Absent,
+    QueryFailed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RemoteTmuxCommandOutput {
+    exit_code: i32,
+    stdout: String,
+    stderr: String,
+}
+
+fn classify_remote_tmux_window_presence(
+    remote_window_id: &str,
+    output: Result<RemoteTmuxCommandOutput, String>,
+) -> RemoteWindowPresenceObservation {
+    let Ok(output) = output else {
+        return RemoteWindowPresenceObservation::QueryFailed;
+    };
+    if output.exit_code == 0 {
+        return parse_remote_tmux_window_ids(&output.stdout)
+            .map(|window_ids| {
+                if window_ids
+                    .iter()
+                    .any(|window_id| window_id == remote_window_id)
+                {
+                    RemoteWindowPresenceObservation::Present
+                } else {
+                    RemoteWindowPresenceObservation::Absent
+                }
+            })
+            .unwrap_or(RemoteWindowPresenceObservation::QueryFailed);
+    }
+    let no_server = output.stderr.strip_suffix('\n').unwrap_or(&output.stderr);
+    if output.exit_code == 1
+        && output.stdout.is_empty()
+        && no_server
+            .strip_prefix("no server running on ")
+            .is_some_and(|socket| !socket.is_empty() && !socket.contains(['\r', '\n']))
+    {
+        return RemoteWindowPresenceObservation::Absent;
+    }
+    RemoteWindowPresenceObservation::QueryFailed
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoteWindowDepartureAction {
+    RetainAndPoll,
+    CommitDeparture,
+}
+
+#[derive(Default)]
+struct RemoteWindowDepartureRegistry {
+    next_key: u64,
+    pending: BTreeMap<String, PendingRemoteWindowDeparture>,
+    retry: BTreeMap<String, RemoteWindowDepartureRetryState>,
+}
+
+#[derive(Default)]
+struct RemoteWindowDepartureRetryState {
+    attempts: usize,
+    next_failure_report_at: Option<Instant>,
+}
+
+impl RemoteWindowDepartureRegistry {
+    fn register(&mut self, pending: PendingRemoteWindowDeparture) -> String {
+        self.next_key = self.next_key.saturating_add(1);
+        let key = format!("remote-window-departure-{}", self.next_key);
+        self.pending.insert(key.clone(), pending);
+        self.retry.insert(key.clone(), Default::default());
+        key
+    }
+
+    fn get(&self, key: &str) -> Option<&PendingRemoteWindowDeparture> {
+        self.pending.get(key)
+    }
+
+    #[cfg(test)]
+    fn contains(&self, key: &str) -> bool {
+        self.pending.contains_key(key)
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.pending.len()
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
+
+    fn record_observation(
+        &mut self,
+        key: &str,
+        observation: RemoteWindowPresenceObservation,
+    ) -> RemoteWindowDepartureAction {
+        if !self.pending.contains_key(key) {
+            return RemoteWindowDepartureAction::RetainAndPoll;
+        }
+        match observation {
+            RemoteWindowPresenceObservation::Absent => RemoteWindowDepartureAction::CommitDeparture,
+            RemoteWindowPresenceObservation::Present
+            | RemoteWindowPresenceObservation::QueryFailed => {
+                if let Some(retry) = self.retry.get_mut(key) {
+                    retry.attempts = retry.attempts.saturating_add(1);
+                }
+                RemoteWindowDepartureAction::RetainAndPoll
+            }
+        }
+    }
+
+    fn record_commit_result(
+        &mut self,
+        key: &str,
+        result: Result<RuntimeDepartureCommitOutcome, String>,
+    ) -> bool {
+        if result.is_ok() {
+            self.retry.remove(key);
+            self.pending.remove(key).is_some()
+        } else {
+            if let Some(retry) = self.retry.get_mut(key) {
+                retry.attempts = retry.attempts.saturating_add(1);
+            }
+            false
+        }
+    }
+
+    fn retry_attempts(&self, key: &str) -> Option<usize> {
+        self.retry.get(key).map(|retry| retry.attempts)
+    }
+
+    fn retry_delay(&self, key: &str) -> Option<Duration> {
+        let attempts = self.retry_attempts(key)?.min(6) as u32;
+        Some(Duration::from_millis(250 * 2_u64.pow(attempts)))
+    }
+
+    fn take_failure_report_permit(&mut self, key: &str) -> bool {
+        let now = Instant::now();
+        let Some(retry) = self.retry.get_mut(key) else {
+            return false;
+        };
+        if retry.next_failure_report_at.is_some_and(|next| now < next) {
+            return false;
+        }
+        retry.next_failure_report_at = Some(now + Duration::from_secs(30));
+        true
+    }
+
+    fn pending_failure_payload(&self, key: &str, message: &str) -> Option<Value> {
+        let pending = self.pending.get(key)?;
+        Some(json!({
+            "surface_id": pending.departure.surface_id,
+            "remote_window_id": pending.remote_window_id,
+            "message": message,
+            "pending_reconciliation": true,
+        }))
+    }
+}
+
+fn retain_remote_window_departure_after_kill(
+    registry: &mut RemoteWindowDepartureRegistry,
+    destination: &str,
+    remote_window_id: &str,
+    departure: pane_surface_lifecycle::RuntimeDeparture,
+) -> Result<String, String> {
+    if !valid_tmux_identity(remote_window_id, '@') {
+        return Err("invalid killed tmux window identity".into());
+    }
+    Ok(registry.register(PendingRemoteWindowDeparture {
+        destination: destination.into(),
+        remote_window_id: remote_window_id.into(),
+        departure,
+    }))
+}
+
+fn execute_remote_window_kill_and_register<F>(
+    registry: &Mutex<RemoteWindowDepartureRegistry>,
+    destination: &str,
+    source_pane: &str,
+    departure: pane_surface_lifecycle::RuntimeDeparture,
+    kill: F,
+) -> Result<String, String>
+where
+    F: FnOnce(&str, &str) -> Result<String, String>,
+{
+    if !valid_tmux_identity(source_pane, '%') {
+        return Err("invalid remote tmux pane identity".into());
+    }
+    let remote_window_id = kill(destination, source_pane)?;
+    let mut registry = registry
+        .lock()
+        .map_err(|_| "remote departure registry lock poisoned".to_string())?;
+    retain_remote_window_departure_after_kill(
+        &mut registry,
+        destination,
+        &remote_window_id,
+        departure,
+    )
+}
+
+#[derive(Default)]
+pub struct RemoteWindowDepartureRegistryState {
+    registry: Mutex<RemoteWindowDepartureRegistry>,
+}
+
+fn run_remote_tmux_command_output(
+    destination: &str,
+    command: Vec<String>,
+) -> Result<RemoteTmuxCommandOutput, String> {
+    let output = Command::new("ssh")
+        .args(["-T", "-o", "BatchMode=yes", destination])
+        .args(command)
+        .output()
+        .map_err(|error| error.to_string())?;
+    Ok(RemoteTmuxCommandOutput {
+        exit_code: output.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    })
+}
+
+fn run_remote_tmux_command(destination: &str, command: Vec<String>) -> Result<String, String> {
+    let output = run_remote_tmux_command_output(destination, command)?;
+    if output.exit_code != 0 {
+        return Err(format!(
+            "remote tmux command exited with {}",
+            output.exit_code
+        ));
+    }
+    Ok(output.stdout)
+}
+
+fn remote_tmux_window_for_pane(destination: &str, pane_token: &str) -> Result<String, String> {
+    let output =
+        run_remote_tmux_command(destination, remote_tmux_source_window_command(pane_token)?)?;
+    let window_token = output.trim().to_string();
+    valid_tmux_identity(&window_token, '@')
+        .then_some(window_token)
+        .ok_or_else(|| "invalid remote tmux window observation".into())
+}
+
+fn execute_remote_tmux_window_mutation(
+    destination: &str,
+    pane_token: &str,
+    command: impl FnOnce(&str) -> Result<Vec<String>, String>,
+) -> Result<String, String> {
+    let window_token = remote_tmux_window_for_pane(destination, pane_token)?;
+    run_remote_tmux_command(destination, command(&window_token)?)?;
+    Ok(window_token)
+}
+
+fn shell_quote_remote(value: &str) -> Result<String, String> {
+    if value.chars().any(|character| character.is_control()) {
+        return Err("remote shell value contains control characters".into());
+    }
+    Ok(format!("'{}'", value.replace('\'', r#"'"'"'"#)))
+}
+
+fn quote_tmux_format(value: &str) -> String {
+    format!("'{value}'")
+}
+
+fn valid_tmux_identity(value: &str, prefix: char) -> bool {
+    value.strip_prefix(prefix).is_some_and(|digits| {
+        !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+    })
+}
+
+fn valid_tmux_split_target(value: &str) -> bool {
+    value.split_once('.').is_some_and(|(window, pane)| {
+        valid_tmux_identity(window, '@') && valid_tmux_identity(pane, '%')
+    })
+}
+
+fn parse_remote_tmux_pane_observation(output: &str) -> Result<String, String> {
+    let line = output
+        .strip_suffix("\r\n")
+        .or_else(|| output.strip_suffix('\n'))
+        .unwrap_or(output);
+    if line.contains(['\r', '\n']) || !valid_tmux_identity(line, '%') {
+        return Err("remote tmux split returned invalid pane observation".into());
+    }
+    Ok(line.into())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RemoteTmuxObservation {
+    window_token: String,
+    pane_token: String,
+}
+
+fn parse_remote_tmux_observation(output: &str) -> Result<RemoteTmuxObservation, String> {
+    let line = output
+        .strip_suffix("\r\n")
+        .or_else(|| output.strip_suffix('\n'))
+        .unwrap_or(output);
+    if line.is_empty()
+        || line.contains(['\r', '\n'])
+        || line
+            .chars()
+            .any(|character| character.is_control() && character != '\t')
+    {
+        return Err("remote tmux create returned invalid window observation".into());
+    }
+    let (window_token, pane_token) = line.split_once('\t').ok_or_else(|| {
+        "remote tmux create returned no authoritative window observation".to_string()
+    })?;
+    if !valid_tmux_identity(window_token, '@') || !valid_tmux_identity(pane_token, '%') {
+        return Err("remote tmux create returned invalid window observation".into());
+    }
+    Ok(RemoteTmuxObservation {
+        window_token: window_token.into(),
+        pane_token: pane_token.into(),
+    })
+}
+
+const REMOTE_OBSERVATION_MAX_RETRIES: usize = 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoteObservationAction {
+    Reconcile,
+    RetainAndRetry,
+    CompensateKillWindow,
+}
+
+fn remote_observation_action(
+    source_exists: bool,
+    commit_error: Option<&str>,
+    attempts: usize,
+) -> RemoteObservationAction {
+    if !source_exists || (commit_error.is_some() && attempts >= REMOTE_OBSERVATION_MAX_RETRIES) {
+        RemoteObservationAction::CompensateKillWindow
+    } else if commit_error.is_some() {
+        RemoteObservationAction::RetainAndRetry
+    } else {
+        RemoteObservationAction::Reconcile
+    }
+}
+
+fn lifecycle_snapshot_changed(
+    candidate: &AppSessionSnapshot,
+    previous: &AppSessionSnapshot,
+) -> bool {
+    candidate != previous
+}
+
+fn immediate_remote_arrival(
+    target: RemoteTmuxTarget,
+    arrival_policy: &str,
+    window_id: &str,
+    workspace_id: &str,
+    token: &str,
+) -> Option<pane_surface_lifecycle::RuntimeArrival> {
+    target.permits_immediate_arrival(arrival_policy).then(|| {
+        pane_surface_lifecycle::RuntimeArrival::remote(
+            window_id,
+            workspace_id,
+            Uuid::new_v4().to_string(),
+            Uuid::new_v4().to_string(),
+            token,
+            1,
+        )
+    })
+}
+
+#[derive(Clone)]
+struct StagedRemoteCreation {
+    destination: String,
+    target: RemoteTmuxTarget,
+    token: String,
+    window_id: String,
+    workspace_id: String,
+    target_pane_id: Option<String>,
+    source_surface_id: Option<String>,
+    source_pane_id: Option<String>,
+    split_orientation: Option<SessionSplitOrientation>,
+    focus: bool,
+    observation: Option<RemoteTmuxObservation>,
+    pane_observation: Option<String>,
+    arrival: Option<pane_surface_lifecycle::RuntimeArrival>,
+}
+
+fn observed_remote_window_arrival(
+    remote: &StagedRemoteCreation,
+    pane_token: &str,
+) -> Option<pane_surface_lifecycle::RuntimeArrival> {
+    if remote.target != RemoteTmuxTarget::Window || remote.arrival.is_some() {
+        return None;
+    }
+    Some(pane_surface_lifecycle::RuntimeArrival::remote_tab(
+        &remote.window_id,
+        &remote.workspace_id,
+        remote.target_pane_id.as_ref()?,
+        Uuid::new_v4().to_string(),
+        pane_token,
+        1,
+        remote.source_surface_id.as_ref()?,
+        remote.focus,
+    ))
+}
+
+fn staged_remote_arrival(
+    remote: &StagedRemoteCreation,
+) -> Option<pane_surface_lifecycle::RuntimeArrival> {
+    if let Some(observation) = &remote.observation {
+        return observed_remote_window_arrival(remote, &observation.pane_token);
+    }
+    let pane_token = remote.pane_observation.as_ref()?;
+    let mut arrival = pane_surface_lifecycle::RuntimeArrival::remote(
+        &remote.window_id,
+        &remote.workspace_id,
+        Uuid::new_v4().to_string(),
+        Uuid::new_v4().to_string(),
+        pane_token,
+        1,
+    );
+    arrival.anchor_surface_id = remote.source_surface_id.clone();
+    arrival.source_pane_id = remote.source_pane_id.clone();
+    arrival.split_orientation = remote.split_orientation.clone();
+    arrival.focused = remote.focus;
+    Some(arrival)
+}
+
+fn schedule_remote_window_reconciliation(app: &AppHandle, remote: StagedRemoteCreation) {
+    let compensation_token = remote.token.clone();
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(arrival) = staged_remote_arrival(&remote) else {
+            return;
+        };
+        let mut attempt = 0;
+        let failure = loop {
+            match commit_runtime_arrival_for_control(&app, arrival.clone()) {
+                Ok(outcome) => match outcome {
+                    RuntimeArrivalCommitOutcome::Committed => {
+                        if remote.target == RemoteTmuxTarget::Window
+                            && should_focus_window_after_remote_arrival(remote.focus, true)
+                        {
+                            if let Some(window) = app.get_webview_window(&remote.window_id) {
+                                let _ = window.set_focus();
+                            }
+                        }
+                        return;
+                    }
+                    RuntimeArrivalCommitOutcome::DuplicateOrStale => return,
+                    RuntimeArrivalCommitOutcome::SourceMissing => {
+                        let action = RemoteObservationAction::CompensateKillWindow;
+                        debug_assert_eq!(action, RemoteObservationAction::CompensateKillWindow);
+                        break "Remote source tab disappeared before window arrival".to_string();
+                    }
+                },
+                Err(error) => {
+                    if remote_observation_action(true, Some(&error), attempt)
+                        != RemoteObservationAction::RetainAndRetry
+                    {
+                        break format!("Remote window reconciliation failed after retry: {error}");
+                    }
+                    attempt += 1;
+                }
+            }
+        };
+        let compensation = remote_tmux_kill_command(remote.target, &compensation_token)
+            .and_then(|command| {
+                Command::new("ssh")
+                    .args(["-T", "-o", "BatchMode=yes", &remote.destination])
+                    .args(command)
+                    .status()
+                    .map_err(|error| error.to_string())
+            })
+            .map(|status| status.success())
+            .unwrap_or(false);
+        record_event(
+            &app,
+            "surface.create_failed",
+            "surface",
+            "workspace.lifecycle",
+            Some(remote.window_id),
+            Some(remote.workspace_id),
+            remote.target_pane_id,
+            None,
+            json!({
+                "message": failure,
+                "remote_target_id": compensation_token,
+                "compensated": compensation,
+            }),
+        );
+    });
+}
+
+fn schedule_remote_window_departure_reconciliation(app: &AppHandle, key: String) {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<RemoteWindowDepartureRegistryState>();
+        let pending = match state.registry.lock() {
+            Ok(registry) => registry.get(&key).cloned(),
+            Err(_) => None,
+        };
+        let Some(pending) = pending else {
+            return;
+        };
+        let observation = classify_remote_tmux_window_presence(
+            &pending.remote_window_id,
+            run_remote_tmux_command_output(
+                &pending.destination,
+                remote_tmux_list_windows_command(),
+            ),
+        );
+        let action = state
+            .registry
+            .lock()
+            .map(|mut registry| registry.record_observation(&key, observation))
+            .unwrap_or(RemoteWindowDepartureAction::RetainAndPoll);
+        let failure = match action {
+            RemoteWindowDepartureAction::RetainAndPoll => (observation
+                == RemoteWindowPresenceObservation::QueryFailed)
+                .then_some("Failed to query remote window departure".to_string()),
+            RemoteWindowDepartureAction::CommitDeparture => {
+                let result = commit_runtime_departure_for_control(&app, pending.departure.clone());
+                let error = result.as_ref().err().cloned();
+                let completed = state
+                    .registry
+                    .lock()
+                    .map(|mut registry| registry.record_commit_result(&key, result))
+                    .unwrap_or(false);
+                if completed {
+                    return;
+                }
+                error.or_else(|| Some("Failed to commit remote window departure".into()))
+            }
+        };
+        if let Some(message) = failure {
+            let payload = state.registry.lock().ok().and_then(|mut registry| {
+                registry
+                    .take_failure_report_permit(&key)
+                    .then(|| registry.pending_failure_payload(&key, &message))
+                    .flatten()
+            });
+            if let Some(payload) = payload {
+                record_event(
+                    &app,
+                    "surface.close_failed",
+                    "surface",
+                    "workspace.lifecycle",
+                    Some(pending.departure.window_id.clone()),
+                    Some(pending.departure.workspace_id.clone()),
+                    Some(pending.departure.pane_id.clone()),
+                    Some(pending.departure.surface_id.clone()),
+                    payload,
+                );
+            }
+        }
+        let retry_delay = state
+            .registry
+            .lock()
+            .ok()
+            .and_then(|registry| registry.retry_delay(&key))
+            .unwrap_or(Duration::from_millis(250));
+        thread::sleep(retry_delay);
+        schedule_remote_window_departure_reconciliation(&app, key);
+    });
+}
+
+fn should_focus_window_after_remote_arrival(requested: bool, committed: bool) -> bool {
+    requested && committed
+}
+
+#[cfg(windows)]
+fn open_external_url_checked(url: &str) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let operation: Vec<u16> = "open".encode_utf16().chain(Some(0)).collect();
+    let target: Vec<u16> = std::ffi::OsStr::new(url)
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            PCWSTR(operation.as_ptr()),
+            PCWSTR(target.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    shell_execute_succeeded(result.0 as isize)
+        .then_some(())
+        .ok_or_else(|| "Failed to open URL externally".to_string())
+}
+
+#[cfg(not(windows))]
+fn open_external_url_checked(url: &str) -> Result<(), String> {
+    Command::new("xdg-open")
+        .arg(url)
+        .status()
+        .map_err(|_| "Failed to open URL externally".to_string())?
+        .success()
+        .then_some(())
+        .ok_or_else(|| "Failed to open URL externally".to_string())
+}
+
+fn shell_execute_succeeded(code: isize) -> bool {
+    code > 32
+}
+
+struct ProductionLifecycleRollbackOperations<'a> {
+    app: &'a AppHandle,
+    previous: Option<AppSessionSnapshot>,
+    candidate: Option<AppSessionSnapshot>,
+    dock_journal: DockCommitJournal<DockRuntimeClaim, DockTeardownCompensation>,
+    remote_creations: Vec<StagedRemoteCreation>,
+}
+
+impl LifecycleRollbackOperations for ProductionLifecycleRollbackOperations<'_> {
+    fn rollback_dock(&mut self) -> Result<(), String> {
+        let app = self.app;
+        let previous = self.previous.as_ref();
+        let candidate = self.candidate.as_ref();
+        std::mem::take(&mut self.dock_journal)
+            .rollback(|step| match step {
+                DockRollbackStep::RestoreSnapshot => {
+                    let previous = previous.ok_or_else(|| {
+                        "previous lifecycle snapshot was not prepared".to_string()
+                    })?;
+                    let candidate = candidate
+                        .ok_or_else(|| "lifecycle candidate was not prepared".to_string())?;
+                    commit_lifecycle_snapshot_for_control_if_current(
+                        app,
+                        app.state::<SessionState>().inner(),
+                        candidate,
+                        previous,
+                        false,
+                    )
+                    .map(|_| ())
+                }
+                DockRollbackStep::RollbackClaim(claim) => rollback_runtime_claim(app, claim),
+                DockRollbackStep::RecreateTeardown(teardown) => {
+                    ProductionLifecycleExecutor::compensate_dock_teardown(app, teardown)
+                }
+            })
+            .map_err(|errors| format!("Lifecycle rollback failed: {errors}"))
+    }
+
+    fn cleanup_terminal(&mut self, id: u32) -> Result<(), String> {
+        let state = self
+            .app
+            .try_state::<TerminalState>()
+            .ok_or_else(|| "terminal runtime state is unavailable".to_string())?;
+        terminal_shutdown_id_preserving_authority_for_control(state.inner(), id)?;
+        terminal_remove_id_for_control(state.inner(), id)
+    }
+
+    fn cleanup_remote(&mut self, target: &str) -> Result<(), String> {
+        let index = self
+            .remote_creations
+            .iter()
+            .position(|remote| remote.token == target)
+            .ok_or_else(|| format!("remote rollback target {target} is unavailable"))?;
+        let remote = self.remote_creations.remove(index);
+        let command = remote_tmux_kill_command(remote.target, target)?;
+        let status = Command::new("ssh")
+            .args(["-T", "-o", "BatchMode=yes", &remote.destination])
+            .args(command)
+            .status()
+            .map_err(|error| format!("failed to launch remote rollback: {error}"))?;
+        status
+            .success()
+            .then_some(())
+            .ok_or_else(|| format!("remote rollback exited with {status}"))
+    }
+
+    fn cleanup_browser(&mut self, surface_id: &str) -> Result<(), String> {
+        let state = self
+            .app
+            .try_state::<BrowserWebviewState>()
+            .ok_or_else(|| "browser runtime state is unavailable".to_string())?;
+        browser_close_webview_strict_for_control(state.inner(), surface_id)
+    }
+}
+
+impl ProductionLifecycleExecutor<'_> {
+    fn flush_deferred_remote_reconciliations(&mut self) {
+        for remote in self.deferred_remote_reconciliations.drain(..) {
+            schedule_remote_window_reconciliation(self.app, remote);
+        }
+    }
+
+    fn flush_deferred_remote_departures(&mut self) {
+        for departure in self.deferred_remote_departures.drain(..) {
+            schedule_remote_window_departure_reconciliation(self.app, departure);
+        }
+    }
+
+    fn compensate_dock_teardown(
+        app: &AppHandle,
+        compensation: DockTeardownCompensation,
+    ) -> Result<(), String> {
+        let DockRuntimeOperation::Teardown {
+            surface_id,
+            generation,
+            intent,
+        } = compensation.operation
+        else {
+            return Err("Expected Dock teardown compensation".into());
+        };
+        let operation = DockRuntimeOperation::Create {
+            surface_id,
+            generation,
+            intent,
+        };
+        let claim = stage_runtime_for_control(app, &compensation.owner_id, &operation)?;
+        if let Err(error) = publish_runtime_claim(app, &claim) {
+            return match rollback_runtime_claim(app, claim) {
+                Ok(()) => Err(error),
+                Err(rollback_error) => Err(format!(
+                    "{error}; failed to roll back replacement runtime: {rollback_error}"
+                )),
+            };
+        }
+        Ok(())
+    }
+
+    fn rollback_resources(&mut self) -> Result<(), String> {
+        let plan = LifecycleRollbackPlan {
+            terminal_ids: self
+                .staged_terminals
+                .drain(..)
+                .map(|(_, id, _)| id)
+                .collect(),
+            remote_targets: self
+                .staged_remote_creations
+                .iter()
+                .map(|remote| remote.token.clone())
+                .collect(),
+            browser_surface_ids: self
+                .staged_browsers
+                .drain(..)
+                .map(|(_, surface_id, _)| surface_id)
+                .collect(),
+        };
+        let mut operations = ProductionLifecycleRollbackOperations {
+            app: self.app,
+            previous: self.previous.take(),
+            candidate: self.candidate.take(),
+            dock_journal: std::mem::take(&mut self.dock_journal),
+            remote_creations: self.staged_remote_creations.drain(..).collect(),
+        };
+        let rollback = run_lifecycle_rollback_cleanup(&plan, &mut operations);
+        self.deferred_remote_reconciliations.clear();
+        for key in self.deferred_remote_departures.drain(..) {
+            schedule_remote_window_departure_reconciliation(self.app, key);
+        }
+        self.staged.clear();
+        rollback
+    }
+}
+
+impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExecutor<'_> {
+    type Error = String;
+
+    fn prepare_transition(&mut self, candidate: &AppSessionSnapshot) -> Result<(), Self::Error> {
+        cmux_core::surface_lifecycle::SurfaceLifecycleModel::from_app_session(candidate)
+            .and_then(|model| model.validate_indexes())
+            .map_err(|error| error.to_string())?;
+        if self.previous.is_none() {
+            return Err("previous lifecycle snapshot was not prepared".to_string());
+        }
+        self.candidate = Some(candidate.clone());
+        Ok(())
+    }
+
+    fn stage(
+        &mut self,
+        effect: &pane_surface_lifecycle::LifecycleEffect,
+    ) -> Result<(), Self::Error> {
+        let terminal_state = self.app.state::<TerminalState>();
+        match effect {
+            pane_surface_lifecycle::LifecycleEffect::DockCreate {
+                owner_id,
+                dock_surface_id,
+                generation,
+                intent,
+                ..
+            } => {
+                let operation = DockRuntimeOperation::Create {
+                    surface_id: dock_surface_id.clone(),
+                    generation: *generation,
+                    intent: intent.clone(),
+                };
+                let claim = stage_runtime_for_control(self.app, owner_id, &operation)?;
+                self.dock_journal.stage_claim(claim);
+            }
+            pane_surface_lifecycle::LifecycleEffect::TerminalCreate {
+                surface_id,
+                command,
+                working_directory,
+                startup_environment,
+                ..
+            } => {
+                let id = terminal_open_for_control(
+                    self.app,
+                    terminal_state.inner(),
+                    Some(surface_id),
+                    working_directory.as_deref(),
+                    command.as_deref(),
+                    None,
+                    startup_environment.clone(),
+                    None,
+                    None,
+                )?;
+                self.staged_terminals.push((surface_id.clone(), id, false));
+            }
+            pane_surface_lifecycle::LifecycleEffect::TerminalReplace {
+                surface_id,
+                command,
+                working_directory,
+                ..
+            } => {
+                let id = terminal_open_for_control(
+                    self.app,
+                    terminal_state.inner(),
+                    Some(surface_id),
+                    working_directory.as_deref(),
+                    Some(command),
+                    None,
+                    None,
+                    None,
+                    None,
+                )?;
+                self.staged_terminals.push((surface_id.clone(), id, true));
+            }
+            pane_surface_lifecycle::LifecycleEffect::RemoteCreate {
+                destination,
+                window_id,
+                workspace_id,
+                tmux_operation,
+                arrival_policy,
+                target_pane_id,
+                source_surface_id,
+                source_remote_pane_id,
+                source_pane_id,
+                split_direction,
+                split_orientation,
+                focus,
+                working_directory,
+                ..
+            } => {
+                let target = RemoteTmuxTarget::for_create(tmux_operation)?;
+                let source_window = source_remote_pane_id.as_ref().and_then(|pane_token| {
+                    let command = remote_tmux_source_window_command(pane_token).ok()?;
+                    let output = Command::new("ssh")
+                        .args(["-T", "-o", "BatchMode=yes", destination])
+                        .args(command)
+                        .output()
+                        .ok()?;
+                    if !output.status.success() {
+                        return None;
+                    }
+                    let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    valid_tmux_identity(&token, '@').then_some(token)
+                });
+                let source_target = match target {
+                    RemoteTmuxTarget::Window => source_window,
+                    RemoteTmuxTarget::Pane => source_window
+                        .zip(source_remote_pane_id.clone())
+                        .map(|(window, pane)| format!("{window}.{pane}")),
+                };
+                if target == RemoteTmuxTarget::Pane && source_target.is_none() {
+                    return Err("remote tmux split source is unavailable".into());
+                }
+                let argv = remote_tmux_create_argv_with_split(
+                    &RemoteTmuxCreateSpec {
+                        operation: tmux_operation,
+                        focus: *focus,
+                        source_target: source_target.as_deref(),
+                        working_directory: working_directory.as_deref(),
+                    },
+                    *split_direction,
+                )?;
+                let output = Command::new("ssh")
+                    .args(["-T", "-o", "BatchMode=yes", destination])
+                    .args(&argv)
+                    .output()
+                    .map_err(|error| format!("failed to launch remote tmux create: {error}"))?;
+                if !output.status.success() {
+                    return Err(format!("remote tmux create exited with {}", output.status));
+                }
+                let raw_output = String::from_utf8_lossy(&output.stdout);
+                let observation = (target == RemoteTmuxTarget::Window)
+                    .then(|| parse_remote_tmux_observation(&raw_output))
+                    .transpose()?;
+                let pane_observation = (target == RemoteTmuxTarget::Pane)
+                    .then(|| parse_remote_tmux_pane_observation(&raw_output))
+                    .transpose()?;
+                let token = observation
+                    .as_ref()
+                    .map(|observation| observation.window_token.clone())
+                    .or_else(|| pane_observation.clone())
+                    .unwrap_or_default();
+                if token.is_empty() {
+                    return Err("remote tmux create returned no target identity".to_string());
+                }
+                let arrival = if target == RemoteTmuxTarget::Pane {
+                    None
+                } else {
+                    immediate_remote_arrival(
+                        target,
+                        arrival_policy,
+                        window_id,
+                        workspace_id,
+                        &token,
+                    )
+                };
+                self.staged_remote_creations.push(StagedRemoteCreation {
+                    destination: destination.clone(),
+                    target,
+                    token,
+                    window_id: window_id.clone(),
+                    workspace_id: workspace_id.clone(),
+                    target_pane_id: target_pane_id.clone(),
+                    source_surface_id: source_surface_id.clone(),
+                    source_pane_id: source_pane_id.clone(),
+                    split_orientation: split_orientation.clone(),
+                    focus: *focus,
+                    observation,
+                    pane_observation,
+                    arrival,
+                });
+            }
+            pane_surface_lifecycle::LifecycleEffect::BrowserAttach {
+                surface_id, url, ..
+            } => {
+                let window_id = self
+                    .candidate
+                    .as_ref()
+                    .and_then(|candidate| {
+                        cmux_core::surface_lifecycle::SurfaceLifecycleModel::from_app_session(
+                            candidate,
+                        )
+                        .ok()
+                    })
+                    .and_then(|model| {
+                        model
+                            .owner_of_surface(surface_id)
+                            .map(|owner| owner.window_id.clone())
+                    })
+                    .unwrap_or_else(|| "main".into());
+                let state = self.app.state::<BrowserWebviewState>();
+                browser_attach_webview_for_control(
+                    self.app,
+                    state.inner(),
+                    &window_id,
+                    surface_id,
+                    url.as_deref(),
+                    None,
+                    false,
+                )?;
+                self.staged_browsers
+                    .push((window_id, surface_id.clone(), url.clone()));
+            }
+            pane_surface_lifecycle::LifecycleEffect::RuntimeTeardown {
+                surface_id,
+                generation,
+                owner_id,
+                dock_intent,
+                must_succeed,
+                failure_message,
+                phase,
+                ..
+            } => {
+                if *phase == "commit" {
+                    self.staged.push(effect.clone());
+                    return Ok(());
+                }
+                if let Some(intent) = dock_intent {
+                    let operation = DockRuntimeOperation::Teardown {
+                        surface_id: surface_id.clone(),
+                        generation: *generation,
+                        intent: intent.clone(),
+                    };
+                    let exists = runtime_exists_for_control(self.app, &operation);
+                    if *must_succeed && exists.is_err() {
+                        return Err((*failure_message).to_string());
+                    }
+                    if exists.unwrap_or(false) {
+                        self.dock_journal.stage_teardown(DockTeardownCompensation {
+                            owner_id: owner_id.clone(),
+                            operation: operation.clone(),
+                        });
+                    }
+                    let teardown = teardown_runtime_for_control(self.app, &operation);
+                    if *must_succeed && teardown.is_err() {
+                        return Err((*failure_message).to_string());
+                    }
+                } else {
+                    let browser_state = self.app.state::<BrowserWebviewState>();
+                    let kind = self.previous.as_ref().and_then(|previous| {
+                        cmux_core::surface_lifecycle::SurfaceLifecycleModel::from_app_session(
+                            previous,
+                        )
+                        .ok()
+                        .and_then(|model| {
+                            model.surface(surface_id).map(|record| record.kind.clone())
+                        })
+                    });
+                    let mut registry = ProductionLifecycleRuntimeRegistry {
+                        terminal: terminal_state.inner(),
+                        browser: browser_state.inner(),
+                        browser_surface_id: Some(surface_id),
+                    };
+                    let teardown = match kind {
+                        Some(SessionSurfaceKindSnapshot::Browser { .. }) => {
+                            strict_lifecycle_runtime_teardown(
+                                &mut registry,
+                                LifecycleRuntimeKind::Browser,
+                                surface_id,
+                            )
+                        }
+                        _ => strict_lifecycle_runtime_teardown(
+                            &mut registry,
+                            LifecycleRuntimeKind::Terminal,
+                            surface_id,
+                        ),
+                    };
+                    if *must_succeed && teardown.is_err() {
+                        return Err((*failure_message).to_string());
+                    }
+                }
+                self.app
+                    .state::<crate::remote_proxy::RemoteProxyBrokerState>()
+                    .stop_panel_broker(surface_id);
+            }
+            _ => {}
+        }
+        self.staged.push(effect.clone());
+        Ok(())
+    }
+
+    fn commit_staged(&mut self) -> Result<(), Self::Error> {
+        let candidate = self
+            .candidate
+            .as_ref()
+            .ok_or_else(|| "lifecycle candidate was not prepared".to_string())?;
+        let browser_state = self.app.state::<BrowserWebviewState>();
+        let state = self.app.state::<SessionState>();
+        let previous = self
+            .previous
+            .as_ref()
+            .ok_or_else(|| "previous lifecycle snapshot was not prepared".to_string())?;
+        if lifecycle_snapshot_changed(candidate, previous) {
+            self.dock_journal.commit_snapshot(|| {
+                commit_lifecycle_snapshot_for_control_if_current(
+                    self.app,
+                    state.inner(),
+                    previous,
+                    candidate,
+                    false,
+                )
+                .map(|_| ())
+            })?;
+        }
+        self.dock_journal
+            .publish_claims(|claim| publish_runtime_claim(self.app, claim))?;
+        for (window_id, surface_id, url) in &self.staged_browsers {
+            browser_attach_webview_for_control(
+                self.app,
+                browser_state.inner(),
+                window_id,
+                surface_id,
+                url.as_deref(),
+                None,
+                true,
+            )?;
+        }
+        let terminal_state = self.app.state::<TerminalState>();
+        let replacements = self
+            .staged_terminals
+            .iter()
+            .filter(|(_, _, replace)| *replace)
+            .cloned()
+            .collect::<Vec<_>>();
+        for (surface_id, id, _) in replacements {
+            let mut registry = ProductionLifecycleRuntimeRegistry {
+                terminal: terminal_state.inner(),
+                browser: browser_state.inner(),
+                browser_surface_id: None,
+            };
+            if let Err(error) = commit_terminal_runtime_replacement(&mut registry, &surface_id, id)
+            {
+                self.staged_terminals
+                    .retain(|(_, staged_id, _)| *staged_id != id);
+                return Err(error);
+            }
+        }
+        for effect in &self.staged {
+            match effect {
+                pane_surface_lifecycle::LifecycleEffect::ActivateWindow { window_id } => {
+                    if let Some(window) = self.app.get_webview_window(window_id) {
+                        let _ = window.set_focus();
+                    }
+                }
+                pane_surface_lifecycle::LifecycleEffect::RuntimeTeardown {
+                    surface_id,
+                    generation,
+                    dock_intent,
+                    phase,
+                    must_succeed,
+                    failure_message,
+                    ..
+                } if *phase == "commit" => {
+                    if let Some(intent) = dock_intent {
+                        let operation = DockRuntimeOperation::Teardown {
+                            surface_id: surface_id.clone(),
+                            generation: *generation,
+                            intent: intent.clone(),
+                        };
+                        let teardown = teardown_runtime_for_control(self.app, &operation);
+                        if *must_succeed && teardown.is_err() {
+                            return Err((*failure_message).to_string());
+                        }
+                    } else {
+                        let kind = self.previous.as_ref().and_then(|previous| {
+                            cmux_core::surface_lifecycle::SurfaceLifecycleModel::from_app_session(
+                                previous,
+                            )
+                            .ok()
+                            .and_then(|model| {
+                                model.surface(surface_id).map(|record| record.kind.clone())
+                            })
+                        });
+                        let mut registry = ProductionLifecycleRuntimeRegistry {
+                            terminal: terminal_state.inner(),
+                            browser: browser_state.inner(),
+                            browser_surface_id: Some(surface_id),
+                        };
+                        let teardown = match kind {
+                            Some(SessionSurfaceKindSnapshot::Browser { .. }) => {
+                                strict_lifecycle_runtime_teardown(
+                                    &mut registry,
+                                    LifecycleRuntimeKind::Browser,
+                                    surface_id,
+                                )
+                            }
+                            _ => strict_lifecycle_runtime_teardown(
+                                &mut registry,
+                                LifecycleRuntimeKind::Terminal,
+                                surface_id,
+                            ),
+                        };
+                        if *must_succeed && teardown.is_err() {
+                            return Err((*failure_message).to_string());
+                        }
+                    }
+                    self.app
+                        .state::<crate::remote_proxy::RemoteProxyBrokerState>()
+                        .stop_panel_broker(surface_id);
+                }
+                pane_surface_lifecycle::LifecycleEffect::RuntimeTeardown { .. } => {}
+                pane_surface_lifecycle::LifecycleEffect::TerminalCreate { .. }
+                | pane_surface_lifecycle::LifecycleEffect::TerminalReplace { .. }
+                | pane_surface_lifecycle::LifecycleEffect::BrowserAttach { .. }
+                | pane_surface_lifecycle::LifecycleEffect::UiSurfaceAttach { .. } => {}
+                pane_surface_lifecycle::LifecycleEffect::BrowserReload { surface_id, .. } => {
+                    browser_webview_command_for_control(
+                        browser_state.inner(),
+                        surface_id,
+                        "reload",
+                    )?;
+                }
+                pane_surface_lifecycle::LifecycleEffect::ExternalBrowserOpen { url, .. } => {
+                    open_external_url_checked(url)?;
+                }
+                pane_surface_lifecycle::LifecycleEffect::RemoteWindowRename {
+                    destination,
+                    source_remote_pane_id,
+                    title,
+                    must_succeed,
+                    ..
+                } => {
+                    let result = execute_remote_tmux_window_mutation(
+                        destination,
+                        source_remote_pane_id,
+                        |window_token| remote_tmux_rename_window_command(window_token, title),
+                    );
+                    if *must_succeed {
+                        result?;
+                    }
+                }
+                pane_surface_lifecycle::LifecycleEffect::RemoteWindowClose {
+                    destination,
+                    window_id,
+                    workspace_id,
+                    pane_id,
+                    surface_id,
+                    generation,
+                    source_remote_pane_id,
+                    must_succeed,
+                    ..
+                } => {
+                    let registry_state = self.app.state::<RemoteWindowDepartureRegistryState>();
+                    let result = execute_remote_window_kill_and_register(
+                        &registry_state.registry,
+                        destination,
+                        source_remote_pane_id,
+                        pane_surface_lifecycle::RuntimeDeparture {
+                            window_id: window_id.clone(),
+                            workspace_id: workspace_id.clone(),
+                            pane_id: pane_id.clone(),
+                            surface_id: surface_id.clone(),
+                            generation: *generation,
+                        },
+                        |destination, source_pane| {
+                            execute_remote_tmux_window_mutation(
+                                destination,
+                                source_pane,
+                                |window_token| {
+                                    remote_tmux_kill_command(RemoteTmuxTarget::Window, window_token)
+                                },
+                            )
+                        },
+                    );
+                    if let Ok(key) = &result {
+                        self.deferred_remote_departures.push(key.clone());
+                    } else if *must_succeed {
+                        result?;
+                    }
+                }
+                pane_surface_lifecycle::LifecycleEffect::RemoteCreate { .. } => {}
+                pane_surface_lifecycle::LifecycleEffect::DockCreate { .. } => {}
+                pane_surface_lifecycle::LifecycleEffect::DockReveal { owner_id } => {
+                    let change = self
+                        .app
+                        .state::<crate::right_sidebar::RightSidebarState>()
+                        .reveal_dock_for_control();
+                    if let Ok(Some(change)) = change {
+                        let _ = self
+                            .app
+                            .emit(crate::right_sidebar::RIGHT_SIDEBAR_CHANGED_EVENT, change);
+                    }
+                    if let Some(window) = self.app.get_webview_window(owner_id) {
+                        let _ = window.set_focus();
+                    }
+                }
+                pane_surface_lifecycle::LifecycleEffect::DockChanged { owner_id, .. } => {
+                    let snapshot = self
+                        .app
+                        .state::<crate::dock::DockStore>()
+                        .snapshot(candidate, owner_id);
+                    let _ = self.app.emit(crate::dock::DOCK_CHANGED_EVENT, snapshot);
+                }
+                pane_surface_lifecycle::LifecycleEffect::PersistSession => {}
+            }
+        }
+        self.deferred_remote_reconciliations.extend(
+            self.staged_remote_creations
+                .iter()
+                .filter(|remote| remote.observation.is_some() || remote.pane_observation.is_some())
+                .cloned(),
+        );
+        self.staged.clear();
+        self.staged_terminals.clear();
+        self.staged_remote_creations.clear();
+        self.staged_browsers.clear();
+        self.dock_journal.finish();
+        self.previous = None;
+        self.candidate = None;
+        Ok(())
+    }
+
+    fn rollback_staged(&mut self) -> Result<(), Self::Error> {
+        self.rollback_resources()
+    }
+
+    fn rollback_committed(&mut self) -> Result<(), Self::Error> {
+        self.rollback_resources()
+    }
+}
+
+fn handle_pane_surface_lifecycle_request(
+    app: &AppHandle,
+    method: &str,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let viewport_size = app.webview_windows().values().find_map(|window| {
+        window
+            .inner_size()
+            .ok()
+            .map(|size| (f64::from(size.width), f64::from(size.height)))
+    });
+    let active_window_id = app.webview_windows().iter().find_map(|(label, window)| {
+        (window.is_focused().ok() == Some(true)).then(|| label.clone())
+    });
+    let mut transition = pane_surface_lifecycle::dispatch_lifecycle_request(
+        &current,
+        method,
+        params,
+        &pane_surface_lifecycle::LifecycleDispatchContext {
+            viewport_size,
+            browser_enabled: app.try_state::<BrowserWebviewState>().is_some(),
+            dock_available: app
+                .try_state::<crate::right_sidebar::RightSidebarState>()
+                .is_some_and(|state| state.beta_settings().dock_enabled),
+            active_window_id,
+        },
+    );
+    if let Some(decorated) = decorate_lifecycle_result_refs(app, method, &mut transition.result) {
+        for event in &mut transition.events {
+            if let Some(result) = event.payload.get_mut("result") {
+                *result = decorated.clone();
+            }
+        }
+    }
+    if !transition.changed && transition.effects.is_empty() {
+        return transition.result;
+    }
+    let external_url = transition.effects.iter().find_map(|effect| match effect {
+        pane_surface_lifecycle::LifecycleEffect::ExternalBrowserOpen { url, .. } => {
+            Some(url.clone())
+        }
+        _ => None,
+    });
+    let lifecycle_failure = transition.effects.iter().find_map(|effect| match effect {
+        pane_surface_lifecycle::LifecycleEffect::DockCreate {
+            failure_code,
+            failure_message,
+            ..
+        }
+        | pane_surface_lifecycle::LifecycleEffect::RuntimeTeardown {
+            failure_code,
+            failure_message,
+            ..
+        }
+        | pane_surface_lifecycle::LifecycleEffect::TerminalCreate {
+            failure_code,
+            failure_message,
+            ..
+        }
+        | pane_surface_lifecycle::LifecycleEffect::BrowserAttach {
+            failure_code,
+            failure_message,
+            ..
+        }
+        | pane_surface_lifecycle::LifecycleEffect::BrowserReload {
+            failure_code,
+            failure_message,
+            ..
+        }
+        | pane_surface_lifecycle::LifecycleEffect::ExternalBrowserOpen {
+            failure_code,
+            failure_message,
+            ..
+        }
+        | pane_surface_lifecycle::LifecycleEffect::RemoteCreate {
+            failure_code,
+            failure_message,
+            ..
+        }
+        | pane_surface_lifecycle::LifecycleEffect::RemoteWindowClose {
+            failure_code,
+            failure_message,
+            ..
+        } => Some(((*failure_code).to_string(), (*failure_message).to_string())),
+        _ => None,
+    });
+    let publish_snapshot = lifecycle_snapshot_changed(&transition.snapshot, &current);
+    let completion_events = transition.events.clone();
+    let previous = current.clone();
+    let mut target = current;
+    let mut executor = ProductionLifecycleExecutor {
+        app,
+        candidate: None,
+        previous: Some(previous),
+        staged: Vec::new(),
+        staged_terminals: Vec::new(),
+        staged_remote_creations: Vec::new(),
+        deferred_remote_reconciliations: Vec::new(),
+        deferred_remote_departures: Vec::new(),
+        staged_browsers: Vec::new(),
+        dock_journal: DockCommitJournal::default(),
+    };
+    let result =
+        pane_surface_lifecycle::commit_lifecycle_transition(&mut target, transition, &mut executor)
+            .unwrap_or_else(|message| {
+                if message == "Failed to open URL externally" {
+                    ControlCallResult::Err {
+                        code: "external_open_failed".into(),
+                        message,
+                        data: external_url
+                            .and_then(|url| JsonValue::try_from(json!({"url":url})).ok()),
+                    }
+                } else if message.contains("Lifecycle rollback failed:") {
+                    ControlCallResult::Err {
+                        code: "internal_error".into(),
+                        message,
+                        data: None,
+                    }
+                } else {
+                    let (code, mapped_message) = lifecycle_failure
+                        .clone()
+                        .unwrap_or_else(|| ("internal_error".into(), message.clone()));
+                    ControlCallResult::Err {
+                        code,
+                        message: mapped_message,
+                        data: None,
+                    }
+                }
+            });
+    if matches!(result, ControlCallResult::Ok(_)) {
+        if publish_snapshot {
+            let suppressed = completion_events
+                .iter()
+                .filter(|event| event.source == "workspace.lifecycle")
+                .map(|event| event.name)
+                .collect::<HashSet<_>>();
+            record_session_changed_event_suppressing(app, &target, &suppressed);
+        }
+        for completion in completion_events {
+            record_event(
+                app,
+                completion.name,
+                completion.category,
+                completion.source,
+                completion.window_id,
+                completion.workspace_id,
+                completion.pane_id,
+                completion.surface_id,
+                completion.payload,
+            );
+        }
+        executor.flush_deferred_remote_reconciliations();
+        executor.flush_deferred_remote_departures();
+    }
+    result
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeArrivalCommitOutcome {
+    Committed,
+    DuplicateOrStale,
+    SourceMissing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeDepartureCommitOutcome {
+    Committed,
+    DuplicateOrStale,
+}
+
+fn commit_runtime_arrival_for_control(
+    app: &AppHandle,
+    arrival: pane_surface_lifecycle::RuntimeArrival,
+) -> Result<RuntimeArrivalCommitOutcome, String> {
+    let state = app.state::<SessionState>();
+    let _control_guard = state.lock_control_mutation()?;
+    let current = current_session_snapshot(&state);
+    let model = cmux_core::surface_lifecycle::SurfaceLifecycleModel::from_app_session(&current)
+        .map_err(|error| error.to_string())?;
+    if arrival.generation == 0 || model.surface(&arrival.surface_id).is_some() {
+        return Ok(RuntimeArrivalCommitOutcome::DuplicateOrStale);
+    }
+    let scope_exists =
+        current.windows.iter().any(|window| {
+            window.window_id.as_deref() == Some(&arrival.window_id)
+                && window.tab_manager.workspaces.iter().any(|workspace| {
+                    workspace.workspace_id.as_deref() == Some(&arrival.workspace_id)
+                })
+        });
+    if !scope_exists {
+        return Ok(RuntimeArrivalCommitOutcome::SourceMissing);
+    }
+    if !arrival.creates_pane {
+        let source_matches = arrival.anchor_surface_id.as_ref().is_some_and(|source| {
+            model.owner_of_surface(source).is_some_and(|owner| {
+                owner.window_id == arrival.window_id
+                    && owner.workspace_id == arrival.workspace_id
+                    && owner.pane_id == arrival.pane_id
+            })
+        });
+        if !source_matches {
+            return Ok(RuntimeArrivalCommitOutcome::SourceMissing);
+        }
+    } else if let Some(source) = &arrival.anchor_surface_id {
+        let source_matches = model.owner_of_surface(source).is_some_and(|owner| {
+            owner.window_id == arrival.window_id
+                && owner.workspace_id == arrival.workspace_id
+                && arrival.source_pane_id.as_deref() == Some(owner.pane_id.as_str())
+        });
+        if !source_matches {
+            return Ok(RuntimeArrivalCommitOutcome::SourceMissing);
+        }
+    }
+    let reconciled = pane_surface_lifecycle::reconcile_runtime_arrival(&current, arrival.clone());
+    if reconciled.snapshot == current {
+        return Ok(RuntimeArrivalCommitOutcome::DuplicateOrStale);
+    }
+    commit_lifecycle_snapshot_for_control(app, state.inner(), &reconciled.snapshot, false)?;
+    record_session_changed_event_suppressing(
+        app,
+        &reconciled.snapshot,
+        &HashSet::from(["pane.created", "surface.created"]),
+    );
+    let (emit_pane_created, origin) = runtime_arrival_event_semantics(&arrival);
+    if emit_pane_created {
+        record_event(
+            app,
+            "pane.created",
+            "pane",
+            "workspace.lifecycle",
+            Some(arrival.window_id.clone()),
+            Some(arrival.workspace_id.clone()),
+            Some(arrival.pane_id.clone()),
+            Some(arrival.surface_id.clone()),
+            json!({"pane_id":arrival.pane_id,"source_pane_id":arrival.source_pane_id,"orientation":arrival.split_orientation,"surface_id":arrival.surface_id,"origin":"terminal_split"}),
+        );
+    }
+    record_event(
+        app,
+        "surface.created",
+        "surface",
+        "workspace.lifecycle",
+        Some(arrival.window_id),
+        Some(arrival.workspace_id),
+        Some(arrival.pane_id.clone()),
+        Some(arrival.surface_id.clone()),
+        json!({"surface_id":arrival.surface_id,"pane_id":arrival.pane_id,"kind":"terminal","origin":origin,"focused":arrival.focused}),
+    );
+    Ok(RuntimeArrivalCommitOutcome::Committed)
+}
+
+fn commit_runtime_departure_for_control(
+    app: &AppHandle,
+    departure: pane_surface_lifecycle::RuntimeDeparture,
+) -> Result<RuntimeDepartureCommitOutcome, String> {
+    let state = app.state::<SessionState>();
+    let _control_guard = state.lock_control_mutation()?;
+    let current = current_session_snapshot(&state);
+    let model = cmux_core::surface_lifecycle::SurfaceLifecycleModel::from_app_session(&current)
+        .map_err(|error| error.to_string())?;
+    let Some(record) = model.surface(&departure.surface_id) else {
+        return Ok(RuntimeDepartureCommitOutcome::DuplicateOrStale);
+    };
+    let owner_matches = model
+        .owner_of_surface(&departure.surface_id)
+        .is_some_and(|owner| {
+            owner.window_id == departure.window_id
+                && owner.workspace_id == departure.workspace_id
+                && owner.pane_id == departure.pane_id
+        });
+    if record.generation != departure.generation || !owner_matches {
+        return Ok(RuntimeDepartureCommitOutcome::DuplicateOrStale);
+    }
+    let reconciled = pane_surface_lifecycle::reconcile_runtime_departure(&current, &departure);
+    if reconciled.snapshot == current {
+        return Err("remote departure reconciliation made no progress".into());
+    }
+    commit_lifecycle_snapshot_for_control(app, state.inner(), &reconciled.snapshot, false)?;
+    record_session_changed_event_suppressing(
+        app,
+        &reconciled.snapshot,
+        &HashSet::from(["surface.closed"]),
+    );
+    record_event(
+        app,
+        "surface.closed",
+        "surface",
+        "workspace.lifecycle",
+        Some(departure.window_id),
+        Some(departure.workspace_id),
+        Some(departure.pane_id),
+        Some(departure.surface_id.clone()),
+        json!({"surface_id":departure.surface_id,"origin":"remote_window_close"}),
+    );
+    Ok(RuntimeDepartureCommitOutcome::Committed)
+}
+
+fn runtime_arrival_event_semantics(
+    arrival: &pane_surface_lifecycle::RuntimeArrival,
+) -> (bool, &'static str) {
+    if arrival.creates_pane {
+        (true, "terminal_split")
+    } else {
+        (false, "terminal_tab")
+    }
+}
+
+const LIFECYCLE_ID_REF_FIELDS: [(&str, &str, &str); 10] = [
+    ("window_id", "window_ref", "window"),
+    ("source_window_id", "source_window_ref", "window"),
+    ("workspace_id", "workspace_ref", "workspace"),
+    ("source_workspace_id", "source_workspace_ref", "workspace"),
+    ("created_workspace_id", "created_workspace_ref", "workspace"),
+    ("pane_id", "pane_ref", "pane"),
+    ("surface_id", "surface_ref", "surface"),
+    ("created_surface_id", "created_surface_ref", "surface"),
+    ("tab_id", "tab_ref", "surface"),
+    ("created_tab_id", "created_tab_ref", "surface"),
+];
+
+fn decorate_lifecycle_result_refs(
+    app: &AppHandle,
+    method: &str,
+    result: &mut ControlCallResult,
+) -> Option<Value> {
+    decorate_lifecycle_result_refs_with(method, result, &mut |kind, id| {
+        control_handle_ref(app, kind, id)
+    })
+}
+
+/// Canonical error payloads carry plain ids without refs, with two exceptions:
+/// the tab.action/surface.action Tab-not-found data
+/// (ControlCommandCoordinator+SystemTabAction.swift:39-48) and
+/// surface.report_pwd's not_found requested-identity block
+/// (ControlCommandCoordinator+Surface3.swift:240-251,365-375). Success
+/// payloads are always decorated.
+fn error_data_ref_decoration_is_canonical(method: &str, code: &str, message: &str) -> bool {
+    (matches!(method, "surface.action" | "tab.action") && message == "Tab not found")
+        || (method == "surface.report_pwd" && code == "not_found")
+}
+
+fn decorate_lifecycle_result_refs_with(
+    method: &str,
+    result: &mut ControlCallResult,
+    mint: &mut impl FnMut(&'static str, &str) -> String,
+) -> Option<Value> {
+    let success = matches!(result, ControlCallResult::Ok(_));
+    let payload = match result {
+        ControlCallResult::Ok(payload) => payload,
+        ControlCallResult::Err {
+            code,
+            message,
+            data: Some(data),
+        } if error_data_ref_decoration_is_canonical(method, code, message) => data,
+        ControlCallResult::Err { .. } => return None,
+    };
+    let mut value = Value::from(payload.clone());
+    decorate_lifecycle_value_refs(&mut value, mint);
+    if let Ok(decorated) = JsonValue::try_from(value) {
+        *payload = decorated;
+    }
+    success.then(|| Value::from(payload.clone()))
+}
+
+fn decorate_lifecycle_value_refs(
+    value: &mut Value,
+    mint: &mut impl FnMut(&'static str, &str) -> String,
+) {
+    fn decorate(
+        value: &mut Value,
+        row_is_surface: bool,
+        mint: &mut impl FnMut(&'static str, &str) -> String,
+    ) {
+        match value {
+            Value::Array(values) => {
+                for value in values {
+                    decorate(value, true, mint);
+                }
+            }
+            Value::Object(object) => {
+                for (id_key, ref_key, kind) in LIFECYCLE_ID_REF_FIELDS {
+                    if let Some(id) = object.get(id_key) {
+                        let reference = id.as_str().map(|id| {
+                            let reference = mint(kind, id);
+                            if matches!(ref_key, "tab_ref" | "created_tab_ref") {
+                                tab_ref_from_surface_ref(&reference)
+                            } else {
+                                reference
+                            }
+                        });
+                        object.entry(ref_key).or_insert_with(|| json!(reference));
+                    }
+                }
+                if row_is_surface {
+                    if let Some(id) = object.get("id").and_then(Value::as_str).map(str::to_owned) {
+                        object
+                            .entry("ref")
+                            .or_insert_with(|| json!(mint("surface", &id)));
+                    }
+                }
+                for child in object.values_mut() {
+                    decorate(child, false, mint);
+                }
+            }
+            _ => {}
+        }
+    }
+    decorate(value, false, mint);
+}
+
 fn resolve_request_handle_refs(app: &AppHandle, params: &mut serde_json::Map<String, Value>) {
     for (key, kind) in [
         ("window_id", "window"),
@@ -1473,13 +3735,38 @@ fn resolve_request_handle_refs(app: &AppHandle, params: &mut serde_json::Map<Str
         let Some(reference) = params.get(key).and_then(Value::as_str) else {
             continue;
         };
-        if let Some(id) = resolve_control_handle_ref(app, kind, reference) {
+        let normalized = (key == "tab_id")
+            .then(|| surface_ref_from_tab_ref(reference))
+            .flatten();
+        if let Some(id) =
+            resolve_control_handle_ref(app, kind, normalized.as_deref().unwrap_or(reference))
+        {
             params.insert(key.to_string(), json!(id));
         }
     }
 }
 
+fn tab_ref_from_surface_ref(reference: &str) -> String {
+    reference
+        .strip_prefix("surface:")
+        .map_or_else(|| reference.to_string(), |suffix| format!("tab:{suffix}"))
+}
+
+fn surface_ref_from_tab_ref(reference: &str) -> Option<String> {
+    reference
+        .strip_prefix("tab:")
+        .map(|suffix| format!("surface:{suffix}"))
+}
+
 pub(crate) fn record_session_changed_event(app: &AppHandle, snapshot: &AppSessionSnapshot) {
+    record_session_changed_event_suppressing(app, snapshot, &HashSet::new());
+}
+
+fn record_session_changed_event_suppressing(
+    app: &AppHandle,
+    snapshot: &AppSessionSnapshot,
+    suppressed_names: &HashSet<&str>,
+) {
     let Some(state) = app.try_state::<ControlEventState>() else {
         return;
     };
@@ -1495,6 +3782,14 @@ pub(crate) fn record_session_changed_event(app: &AppHandle, snapshot: &AppSessio
     };
     for (key, summary) in &current {
         for event in derived_session_event_specs(previous.get(key), summary) {
+            if suppressed_names.contains(event.name) {
+                continue;
+            }
+            let pane_id = event
+                .payload
+                .get("pane_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
             record_event(
                 app,
                 event.name,
@@ -1502,6 +3797,7 @@ pub(crate) fn record_session_changed_event(app: &AppHandle, snapshot: &AppSessio
                 event.source,
                 event.window_id,
                 event.workspace_id,
+                pane_id,
                 event.surface_id,
                 event.payload,
             );
@@ -1518,6 +3814,14 @@ pub(crate) fn record_session_changed_event(app: &AppHandle, snapshot: &AppSessio
             workspaces: Vec::new(),
         };
         for event in derived_session_event_specs(Some(previous_summary), &empty) {
+            if suppressed_names.contains(event.name) {
+                continue;
+            }
+            let pane_id = event
+                .payload
+                .get("pane_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
             record_event(
                 app,
                 event.name,
@@ -1525,6 +3829,7 @@ pub(crate) fn record_session_changed_event(app: &AppHandle, snapshot: &AppSessio
                 event.source,
                 event.window_id,
                 event.workspace_id,
+                pane_id,
                 event.surface_id,
                 event.payload,
             );
@@ -1879,6 +4184,39 @@ fn append_surface_diff_events(
         .iter()
         .map(|workspace| (workspace.key.as_str(), workspace))
         .collect();
+    let previous_owners = previous
+        .workspaces
+        .iter()
+        .flat_map(|workspace| {
+            workspace
+                .surface_ids
+                .iter()
+                .map(move |id| (id.as_str(), workspace))
+        })
+        .collect::<HashMap<_, _>>();
+    let current_owners = current
+        .workspaces
+        .iter()
+        .flat_map(|workspace| {
+            workspace
+                .surface_ids
+                .iter()
+                .map(move |id| (id.as_str(), workspace))
+        })
+        .collect::<HashMap<_, _>>();
+    let moved = current_owners
+        .iter()
+        .filter_map(|(surface_id, destination)| {
+            previous_owners
+                .get(surface_id)
+                .filter(|source| source.key != destination.key)
+                .map(|source| ((*surface_id).to_string(), *source, *destination))
+        })
+        .collect::<Vec<_>>();
+    let moved_ids = moved
+        .iter()
+        .map(|(surface_id, _, _)| surface_id.as_str())
+        .collect::<HashSet<_>>();
     for workspace in &current.workspaces {
         let Some(previous_workspace) = previous_by_key.get(workspace.key.as_str()) else {
             for surface_id in &workspace.surface_ids {
@@ -1900,7 +4238,9 @@ fn append_surface_diff_events(
         let current_surfaces: HashSet<&str> =
             workspace.surface_ids.iter().map(String::as_str).collect();
         for surface_id in &workspace.surface_ids {
-            if !previous_surfaces.contains(surface_id.as_str()) {
+            if !moved_ids.contains(surface_id.as_str())
+                && !previous_surfaces.contains(surface_id.as_str())
+            {
                 events.push(surface_event_spec(
                     "surface.created",
                     current,
@@ -1911,7 +4251,9 @@ fn append_surface_diff_events(
             }
         }
         for surface_id in &previous_workspace.surface_ids {
-            if !current_surfaces.contains(surface_id.as_str()) {
+            if !moved_ids.contains(surface_id.as_str())
+                && !current_surfaces.contains(surface_id.as_str())
+            {
                 events.push(surface_event_spec(
                     "surface.closed",
                     current,
@@ -1938,6 +4280,9 @@ fn append_surface_diff_events(
             continue;
         }
         for surface_id in &workspace.surface_ids {
+            if moved_ids.contains(surface_id.as_str()) {
+                continue;
+            }
             events.push(surface_event_spec(
                 "surface.closed",
                 current,
@@ -2426,6 +4771,7 @@ fn record_event(
     source: &str,
     window_id: Option<String>,
     workspace_id: Option<String>,
+    pane_id: Option<String>,
     surface_id: Option<String>,
     payload: Value,
 ) {
@@ -2452,7 +4798,7 @@ fn record_event(
         "occurred_at": event_timestamp(),
         "workspace_id": workspace_id,
         "surface_id": surface_id,
-        "pane_id": Value::Null,
+        "pane_id": pane_id,
         "window_id": window_id,
         "payload": payload,
     });
@@ -2903,7 +5249,7 @@ fn workspace_create(app: &AppHandle, params: &serde_json::Map<String, Value>) ->
         )
     });
     let state = app.state::<SessionState>();
-    let Some((result, created_index)) = new_workspace_in_window_for_control(
+    let (result, created_index) = match new_workspace_in_window_for_control(
         app,
         &state,
         window_index,
@@ -2924,12 +5270,22 @@ fn workspace_create(app: &AppHandle, params: &serde_json::Map<String, Value>) ->
         layout,
         group_insert_index,
         false,
-    ) else {
-        return ControlCallResult::Err {
-            code: "internal_error".to_string(),
-            message: "Failed to create workspace".to_string(),
-            data: None,
-        };
+    ) {
+        Ok(Some(created)) => created,
+        Ok(None) => {
+            return ControlCallResult::Err {
+                code: "internal".to_string(),
+                message: "Failed to create workspace".to_string(),
+                data: None,
+            };
+        }
+        Err(message) => {
+            return ControlCallResult::Err {
+                code: "internal".to_string(),
+                message,
+                data: None,
+            };
+        }
     };
     let window = &result.windows[window_index];
     let workspace = &window.tab_manager.workspaces[created_index];
@@ -2967,6 +5323,7 @@ fn record_resolved_workspace_rename_event(
         event.source,
         event.window_id,
         event.workspace_id,
+        None,
         event.surface_id,
         event.payload,
     );
@@ -3117,11 +5474,14 @@ fn workspace_create_browser(
 ) -> ControlCallResult {
     let url = raw_string_param(params, &["url"]);
     let state = app.state::<SessionState>();
-    workspace_current(&new_browser_workspace_for_control(
-        app,
-        &state,
-        url.as_deref(),
-    ))
+    match new_browser_workspace_for_control(app, &state, url.as_deref()) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn config_reload(app: &AppHandle) -> ControlCallResult {
@@ -3699,12 +6059,22 @@ fn notification_open_selected(
         .clone()
         .or(notification.panel_id.clone());
     let opened = if let Some(surface_id) = target_surface.as_deref() {
-        let (changed, snapshot) = crate::session::select_workspace_surface(
+        let (changed, snapshot) = match crate::session::select_workspace_surface(
             app,
             &session_state,
             &notification.tab_id,
             surface_id,
-        );
+        ) {
+            Ok(result) => result,
+            Err(PaneTopologyControlError::Operation(error)) => match error {},
+            Err(PaneTopologyControlError::Publication(message)) => {
+                return ControlCallResult::Err {
+                    code: "internal".to_string(),
+                    message,
+                    data: None,
+                };
+            }
+        };
         changed
             || crate::session::workspace_surface_is_selected(
                 &snapshot,
@@ -3714,10 +6084,16 @@ fn notification_open_selected(
     } else {
         let current = snapshot(app);
         match workspace_index_for_id(&current, &notification.tab_id) {
-            Some(index) => {
-                select_workspace_for_control(app, &session_state, index as i64);
-                true
-            }
+            Some(index) => match select_workspace_for_control(app, &session_state, index as i64) {
+                Ok(_) => true,
+                Err(message) => {
+                    return ControlCallResult::Err {
+                        code: "internal".to_string(),
+                        message,
+                        data: None,
+                    };
+                }
+            },
             None => false,
         }
     };
@@ -3757,7 +6133,14 @@ fn notification_open_selected(
 
 fn session_restore_previous_launch(app: &AppHandle) -> ControlCallResult {
     let state = app.state::<SessionState>();
-    workspace_current(&restore_previous_launch_for_control(app, &state))
+    match restore_previous_launch_for_control(app, &state) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_close(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
@@ -3807,12 +6190,22 @@ fn workspace_close(app: &AppHandle, params: &serde_json::Map<String, Value>) -> 
 
 fn workspace_reopen_closed(app: &AppHandle) -> ControlCallResult {
     let state = app.state::<SessionState>();
-    let Some(snapshot) = reopen_closed_workspace_for_control(app, &state) else {
-        return ControlCallResult::Err {
-            code: "not_found".to_string(),
-            message: "No recently closed workspace".to_string(),
-            data: None,
-        };
+    let snapshot = match reopen_closed_workspace_for_control(app, &state) {
+        Ok(Some(snapshot)) => snapshot,
+        Ok(None) => {
+            return ControlCallResult::Err {
+                code: "not_found".to_string(),
+                message: "No recently closed workspace".to_string(),
+                data: None,
+            };
+        }
+        Err(message) => {
+            return ControlCallResult::Err {
+                code: "internal".to_string(),
+                message,
+                data: None,
+            };
+        }
     };
     workspace_current(&snapshot)
 }
@@ -3904,13 +6297,22 @@ fn workspace_select(app: &AppHandle, params: &serde_json::Map<String, Value>) ->
         .clone()
         .unwrap_or_default();
     let state = app.state::<SessionState>();
-    let Some(result) = select_workspace_in_window_for_control(app, &state, window_index, index)
-    else {
-        return ControlCallResult::Err {
-            code: "unavailable".to_string(),
-            message: "TabManager not available".to_string(),
-            data: None,
-        };
+    let result = match select_workspace_in_window_for_control(app, &state, window_index, index) {
+        Ok(result) => result,
+        Err(PaneTopologyControlError::Operation(WorkspaceSelectControlError::WindowNotFound)) => {
+            return ControlCallResult::Err {
+                code: "unavailable".to_string(),
+                message: "TabManager not available".to_string(),
+                data: None,
+            };
+        }
+        Err(PaneTopologyControlError::Publication(message)) => {
+            return ControlCallResult::Err {
+                code: "internal".to_string(),
+                message,
+                data: None,
+            };
+        }
     };
     if let Some(window_id) = workspace_select_focus_selector(&result, window_index) {
         let _ = crate::window::focus_control_window(app, window_id);
@@ -3995,6 +6397,14 @@ fn workspace_id_for_window_move(
         .then_some(workspace_id)
 }
 
+fn focus_window_after_workspace_move(app: &AppHandle, label: &str, focus: bool) {
+    if focus {
+        if let Some(window) = app.get_webview_window(label) {
+            let _ = window.set_focus();
+        }
+    }
+}
+
 fn workspace_move_to_window(
     app: &AppHandle,
     params: &serde_json::Map<String, Value>,
@@ -4028,7 +6438,6 @@ fn workspace_move_to_window(
         };
     };
     let state = app.state::<SessionState>();
-    register_window_for_control(app, &state, &window_identity.label);
     let focus = bool_param(params, &["focus"]).unwrap_or(false);
     let result = match move_workspace_to_window_for_control(
         app,
@@ -4038,7 +6447,7 @@ fn workspace_move_to_window(
         focus,
     ) {
         Ok(result) => result,
-        Err(session_ops::MoveWorkspaceToWindowError::WorkspaceNotFound) => {
+        Err(MoveWorkspaceToWindowControlError::NotFound) => {
             return ControlCallResult::Err {
                 code: "not_found".to_string(),
                 message: "Workspace not found".to_string(),
@@ -4049,23 +6458,14 @@ fn workspace_move_to_window(
                 ),
             };
         }
-        Err(session_ops::MoveWorkspaceToWindowError::WindowNotFound) => {
+        Err(MoveWorkspaceToWindowControlError::Publication(message)) => {
             return ControlCallResult::Err {
-                code: "not_found".to_string(),
-                message: "Window not found".to_string(),
-                data: Some(
-                    json!({"window_id": window_identity.id})
-                        .try_into()
-                        .unwrap_or(JsonValue::Null),
-                ),
+                code: "internal".to_string(),
+                message,
+                data: None,
             };
         }
     };
-    if focus {
-        if let Some(window) = app.get_webview_window(&window_identity.label) {
-            let _ = window.set_focus();
-        }
-    }
     let Some(target_window) = result
         .windows
         .iter()
@@ -4077,6 +6477,7 @@ fn workspace_move_to_window(
             data: None,
         };
     };
+    focus_window_after_workspace_move(app, &window_identity.label, focus);
     let workspace_ref_value = target_window
         .tab_manager
         .workspaces
@@ -4138,13 +6539,22 @@ fn workspace_reorder(
         planned
     } else {
         let state = app.state::<SessionState>();
-        reorder_workspaces_for_control(
+        match reorder_workspaces_for_control(
             app,
             &state,
             index as i64,
             requested_index,
             uses_top_level_rows,
-        )
+        ) {
+            Ok(result) => result,
+            Err(message) => {
+                return ControlCallResult::Err {
+                    code: "internal".to_string(),
+                    message,
+                    data: None,
+                };
+            }
+        }
     };
     let window = result.windows.first();
     let window_id = window.and_then(|window| window.window_id.clone());
@@ -4211,16 +6621,18 @@ fn workspace_reorder_many(
     let (plan, result) =
         match reorder_workspaces_many_for_control(app, &state, &ordered_workspace_ids, dry_run) {
             Ok(result) => result,
-            Err(ReorderWorkspacesManyControlError::Unavailable) => {
+            Err(PaneTopologyControlError::Operation(
+                ReorderWorkspacesManyControlError::Unavailable,
+            )) => {
                 return ControlCallResult::Err {
                     code: "unavailable".to_string(),
                     message: "TabManager not available".to_string(),
                     data: None,
                 };
             }
-            Err(ReorderWorkspacesManyControlError::Batch(
+            Err(PaneTopologyControlError::Operation(ReorderWorkspacesManyControlError::Batch(
                 WorkspaceBatchReorderError::DuplicateWorkspace(workspace_id),
-            )) => {
+            ))) => {
                 return ControlCallResult::Err {
                 code: "invalid_params".to_string(),
                 message: "Duplicate workspace in order".to_string(),
@@ -4235,9 +6647,9 @@ fn workspace_reorder_many(
                 ),
             };
             }
-            Err(ReorderWorkspacesManyControlError::Batch(
+            Err(PaneTopologyControlError::Operation(ReorderWorkspacesManyControlError::Batch(
                 WorkspaceBatchReorderError::WorkspaceNotFound(workspace_id),
-            )) => {
+            ))) => {
                 return ControlCallResult::Err {
                     code: "not_found".to_string(),
                     message: "Workspace not found".to_string(),
@@ -4249,6 +6661,13 @@ fn workspace_reorder_many(
                         .try_into()
                         .unwrap_or(JsonValue::Null),
                     ),
+                };
+            }
+            Err(PaneTopologyControlError::Publication(message)) => {
+                return ControlCallResult::Err {
+                    code: "internal".to_string(),
+                    message,
+                    data: None,
                 };
             }
         };
@@ -4377,7 +6796,14 @@ fn workspace_select_relative(app: &AppHandle, delta: i64) -> ControlCallResult {
     let selected = selected_workspace_index(&current).min(count - 1);
     let next = (selected as i64 + delta).rem_euclid(count as i64);
     let state = app.state::<SessionState>();
-    workspace_current(&select_workspace_for_control(app, &state, next))
+    match select_workspace_for_control(app, &state, next) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_last(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
@@ -4443,7 +6869,14 @@ fn workspace_last(app: &AppHandle, params: &serde_json::Map<String, Value>) -> C
 
 fn workspace_equalize_splits(app: &AppHandle) -> ControlCallResult {
     let state = app.state::<SessionState>();
-    workspace_current(&equalize_dividers_for_control(app, &state))
+    match equalize_dividers_for_control(app, &state) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_set_description(
@@ -4458,12 +6891,14 @@ fn workspace_set_description(
         return invalid_params("Missing or invalid workspace selector");
     };
     let state = app.state::<SessionState>();
-    workspace_current(&set_workspace_description_for_control(
-        app,
-        &state,
-        index as i64,
-        &description,
-    ))
+    match set_workspace_description_for_control(app, &state, index as i64, &description) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_reset_color(
@@ -4475,11 +6910,14 @@ fn workspace_reset_color(
         return invalid_params("Missing or invalid workspace selector");
     };
     let state = app.state::<SessionState>();
-    workspace_current(&reset_workspace_color_for_control(
-        app,
-        &state,
-        index as i64,
-    ))
+    match reset_workspace_color_for_control(app, &state, index as i64) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_set_progress(
@@ -4498,13 +6936,20 @@ fn workspace_set_progress(
     };
     let label = raw_string_param(params, &["label", "text"]);
     let state = app.state::<SessionState>();
-    workspace_current(&set_workspace_sidebar_progress_for_control(
+    match set_workspace_sidebar_progress_for_control(
         app,
         &state,
         index as i64,
         value,
         label.as_deref(),
-    ))
+    ) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_clear_progress(
@@ -4516,11 +6961,14 @@ fn workspace_clear_progress(
         return invalid_params("Missing or invalid workspace selector");
     };
     let state = app.state::<SessionState>();
-    workspace_current(&clear_workspace_sidebar_progress_for_control(
-        app,
-        &state,
-        index as i64,
-    ))
+    match clear_workspace_sidebar_progress_for_control(app, &state, index as i64) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_set_status(
@@ -4539,14 +6987,21 @@ fn workspace_set_status(
     };
     let priority = i64_param(params, &["priority"]);
     let state = app.state::<SessionState>();
-    workspace_current(&set_workspace_sidebar_status_for_control(
+    match set_workspace_sidebar_status_for_control(
         app,
         &state,
         index as i64,
         &key,
         &value,
         priority,
-    ))
+    ) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_clear_status(
@@ -4561,12 +7016,14 @@ fn workspace_clear_status(
         return invalid_params("Missing or invalid workspace selector");
     };
     let state = app.state::<SessionState>();
-    workspace_current(&clear_workspace_sidebar_status_for_control(
-        app,
-        &state,
-        index as i64,
-        &key,
-    ))
+    match clear_workspace_sidebar_status_for_control(app, &state, index as i64, &key) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_list_status(
@@ -4601,9 +7058,14 @@ fn workspace_set_agent_pid(
         return invalid_params("Missing or invalid workspace selector");
     };
     let state = app.state::<SessionState>();
-    workspace_current(&set_workspace_agent_pid_for_control(
-        app, &state, index, &key, pid,
-    ))
+    match set_workspace_agent_pid_for_control(app, &state, index, &key, pid) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_clear_agent_pid(
@@ -4618,7 +7080,16 @@ fn workspace_clear_agent_pid(
         return invalid_params("Missing or invalid workspace selector");
     };
     let state = app.state::<SessionState>();
-    let snapshot = clear_workspace_agent_pid_for_control(app, &state, index, &key);
+    let snapshot = match clear_workspace_agent_pid_for_control(app, &state, index, &key) {
+        Ok(snapshot) => snapshot,
+        Err(message) => {
+            return ControlCallResult::Err {
+                code: "internal".to_string(),
+                message,
+                data: None,
+            };
+        }
+    };
     let snapshot = refresh_workspace_agent_ports(app, &snapshot, index).unwrap_or(snapshot);
     workspace_current(&snapshot)
 }
@@ -4657,7 +7128,7 @@ fn workspace_report_pr(
         .and_then(|branch| (!branch.trim().is_empty()).then(|| branch.trim().to_string()));
     let is_stale = bool_param(params, &["stale", "is_stale", "isStale"]).unwrap_or(false);
     let state = app.state::<SessionState>();
-    workspace_current(&set_workspace_panel_pull_request_for_control(
+    match set_workspace_panel_pull_request_for_control(
         app,
         &state,
         workspace_index,
@@ -4668,7 +7139,14 @@ fn workspace_report_pr(
         status,
         branch,
         is_stale,
-    ))
+    ) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_clear_pr(
@@ -4686,12 +7164,14 @@ fn workspace_clear_pr(
         return invalid_params("Missing or invalid surface selector");
     };
     let state = app.state::<SessionState>();
-    workspace_current(&clear_workspace_panel_pull_request_for_control(
-        app,
-        &state,
-        workspace_index,
-        &panel_id,
-    ))
+    match clear_workspace_panel_pull_request_for_control(app, &state, workspace_index, &panel_id) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_report_meta(
@@ -4714,7 +7194,7 @@ fn workspace_report_meta(
     let url = string_param(params, &["url", "href"]);
     let format = string_param(params, &["format"]);
     let state = app.state::<SessionState>();
-    workspace_current(&set_workspace_sidebar_metadata_for_control(
+    match set_workspace_sidebar_metadata_for_control(
         app,
         &state,
         index as i64,
@@ -4725,7 +7205,14 @@ fn workspace_report_meta(
         url.as_deref(),
         priority,
         format.as_deref(),
-    ))
+    ) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_clear_meta(
@@ -4740,12 +7227,14 @@ fn workspace_clear_meta(
         return invalid_params("Missing or invalid workspace selector");
     };
     let state = app.state::<SessionState>();
-    workspace_current(&clear_workspace_sidebar_metadata_for_control(
-        app,
-        &state,
-        index as i64,
-        &key,
-    ))
+    match clear_workspace_sidebar_metadata_for_control(app, &state, index as i64, &key) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_list_meta(
@@ -4778,14 +7267,21 @@ fn workspace_report_meta_block(
     };
     let priority = i64_param(params, &["priority"]);
     let state = app.state::<SessionState>();
-    workspace_current(&set_workspace_sidebar_metadata_block_for_control(
+    match set_workspace_sidebar_metadata_block_for_control(
         app,
         &state,
         index as i64,
         &key,
         &markdown,
         priority,
-    ))
+    ) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_clear_meta_block(
@@ -4800,12 +7296,14 @@ fn workspace_clear_meta_block(
         return invalid_params("Missing or invalid workspace selector");
     };
     let state = app.state::<SessionState>();
-    workspace_current(&clear_workspace_sidebar_metadata_block_for_control(
-        app,
-        &state,
-        index as i64,
-        &key,
-    ))
+    match clear_workspace_sidebar_metadata_block_for_control(app, &state, index as i64, &key) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_list_meta_blocks(
@@ -4831,11 +7329,14 @@ fn workspace_reset_sidebar(
         return invalid_params("Missing or invalid workspace selector");
     };
     let state = app.state::<SessionState>();
-    workspace_current(&reset_workspace_sidebar_metadata_for_control(
-        app,
-        &state,
-        index as i64,
-    ))
+    match reset_workspace_sidebar_metadata_for_control(app, &state, index as i64) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_log(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
@@ -4848,13 +7349,14 @@ fn workspace_log(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Co
     };
     let level = string_param(params, &["level"]).unwrap_or_else(|| "info".to_string());
     let state = app.state::<SessionState>();
-    workspace_current(&append_workspace_sidebar_log_for_control(
-        app,
-        &state,
-        index as i64,
-        &message,
-        &level,
-    ))
+    match append_workspace_sidebar_log_for_control(app, &state, index as i64, &message, &level) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_clear_log(
@@ -4866,11 +7368,14 @@ fn workspace_clear_log(
         return invalid_params("Missing or invalid workspace selector");
     };
     let state = app.state::<SessionState>();
-    workspace_current(&clear_workspace_sidebar_log_for_control(
-        app,
-        &state,
-        index as i64,
-    ))
+    match clear_workspace_sidebar_log_for_control(app, &state, index as i64) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_list_log(
@@ -4948,13 +7453,20 @@ fn workspace_set_unread(
     let preferred_panel_id =
         string_param(params, &["preferred_panel_id", "panel_id", "surface_id"]);
     let state = app.state::<SessionState>();
-    workspace_current(&set_workspace_unread_for_control(
+    match set_workspace_unread_for_control(
         app,
         &state,
         index as i64,
         preferred_panel_id.as_deref(),
         unread,
-    ))
+    ) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_set_pinned(
@@ -4969,12 +7481,14 @@ fn workspace_set_pinned(
         return invalid_params("Missing or invalid workspace selector");
     };
     let state = app.state::<SessionState>();
-    workspace_current(&set_workspace_pinned_for_control(
-        app,
-        &state,
-        index as i64,
-        pinned,
-    ))
+    match set_workspace_pinned_for_control(app, &state, index as i64, pinned) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn workspace_remote_status(
@@ -5152,9 +7666,14 @@ fn workspace_group_set_collapsed(
         return invalid_params("Missing or invalid collapsed flag");
     };
     let state = app.state::<SessionState>();
-    workspace_current(&set_group_collapsed_for_control(
-        app, &state, &group_id, collapsed,
-    ))
+    match set_group_collapsed_for_control(app, &state, &group_id, collapsed) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn surface_split(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
@@ -5180,8 +7699,13 @@ fn surface_split(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Co
         initial_terminal_environment,
     ) {
         Ok(snapshot) => surface_list_from_params(&snapshot, params),
-        Err(message) => ControlCallResult::Err {
+        Err(TerminalPanelCreateError::NotFound(message)) => ControlCallResult::Err {
             code: "not_found".to_string(),
+            message,
+            data: None,
+        },
+        Err(TerminalPanelCreateError::Publication(message)) => ControlCallResult::Err {
+            code: "internal".to_string(),
             message,
             data: None,
         },
@@ -5208,8 +7732,13 @@ fn surface_new_terminal_tab(
         initial_terminal_environment,
     ) {
         Ok(snapshot) => surface_list_from_params(&snapshot, params),
-        Err(message) => ControlCallResult::Err {
+        Err(TerminalPanelCreateError::NotFound(message)) => ControlCallResult::Err {
             code: "not_found".to_string(),
+            message,
+            data: None,
+        },
+        Err(TerminalPanelCreateError::Publication(message)) => ControlCallResult::Err {
+            code: "internal".to_string(),
             message,
             data: None,
         },
@@ -5238,8 +7767,13 @@ fn surface_split_browser(
         url.as_deref(),
     ) {
         Ok(snapshot) => surface_list_from_params(&snapshot, params),
-        Err(message) => ControlCallResult::Err {
+        Err(BrowserPanelCreateError::NotFound(message)) => ControlCallResult::Err {
             code: "not_found".to_string(),
+            message,
+            data: None,
+        },
+        Err(BrowserPanelCreateError::Publication(message)) => ControlCallResult::Err {
+            code: "internal".to_string(),
             message,
             data: None,
         },
@@ -5445,7 +7979,9 @@ fn surface_split_off(
         focus,
     ) {
         Ok(result) => result,
-        Err(session_ops::SplitOffSurfaceError::WouldEmptySourcePane) => {
+        Err(PaneTopologyControlError::Operation(
+            session_ops::SplitOffSurfaceError::WouldEmptySourcePane,
+        )) => {
             return ControlCallResult::Err {
                 code: "invalid_state".to_string(),
                 message: "splitting off would leave the source pane empty".to_string(),
@@ -5456,10 +7992,19 @@ fn surface_split_off(
                 ),
             };
         }
-        Err(session_ops::SplitOffSurfaceError::SurfaceNotFound) => {
+        Err(PaneTopologyControlError::Operation(
+            session_ops::SplitOffSurfaceError::SurfaceNotFound,
+        )) => {
             return ControlCallResult::Err {
                 code: "not_found".to_string(),
                 message: "Surface not found".to_string(),
+                data: None,
+            };
+        }
+        Err(PaneTopologyControlError::Publication(message)) => {
+            return ControlCallResult::Err {
+                code: "internal".to_string(),
+                message,
                 data: None,
             };
         }
@@ -5672,14 +8217,14 @@ fn pane_focus(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Contr
     let result = match focus_pane_for_control(app, &state, window_index, workspace_index, &pane_id)
     {
         Ok(snapshot) => snapshot,
-        Err(PaneFocusControlError::WorkspaceNotFound) => {
+        Err(PaneTopologyControlError::Operation(PaneFocusControlError::WorkspaceNotFound)) => {
             return ControlCallResult::Err {
                 code: "not_found".to_string(),
                 message: "Workspace not found".to_string(),
                 data: None,
             };
         }
-        Err(PaneFocusControlError::PaneNotFound) => {
+        Err(PaneTopologyControlError::Operation(PaneFocusControlError::PaneNotFound)) => {
             return ControlCallResult::Err {
                 code: "not_found".to_string(),
                 message: "Pane not found".to_string(),
@@ -5688,6 +8233,13 @@ fn pane_focus(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Contr
                         .try_into()
                         .unwrap_or(JsonValue::Null),
                 ),
+            };
+        }
+        Err(PaneTopologyControlError::Publication(message)) => {
+            return ControlCallResult::Err {
+                code: "internal".to_string(),
+                message,
+                data: None,
             };
         }
     };
@@ -6066,27 +8618,40 @@ fn pane_swap(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Contro
         focus,
     ) {
         Ok(result) => result,
-        Err(session_ops::PaneSwapError::SamePane) => {
+        Err(PaneTopologyControlError::Operation(session_ops::PaneSwapError::SamePane)) => {
             return invalid_params("pane_id and target_pane_id must be different");
         }
-        Err(session_ops::PaneSwapError::SourcePaneNotFound) => {
+        Err(PaneTopologyControlError::Operation(
+            session_ops::PaneSwapError::SourcePaneNotFound,
+        )) => {
             return ControlCallResult::Err {
                 code: "not_found".to_string(),
                 message: "Source pane not found".to_string(),
                 data: None,
             };
         }
-        Err(session_ops::PaneSwapError::TargetPaneNotFound) => {
+        Err(PaneTopologyControlError::Operation(
+            session_ops::PaneSwapError::TargetPaneNotFound,
+        )) => {
             return ControlCallResult::Err {
                 code: "not_found".to_string(),
                 message: "Target pane not found in source workspace".to_string(),
                 data: None,
             };
         }
-        Err(session_ops::PaneSwapError::BothPanesNeedSurface) => {
+        Err(PaneTopologyControlError::Operation(
+            session_ops::PaneSwapError::BothPanesNeedSurface,
+        )) => {
             return ControlCallResult::Err {
                 code: "invalid_state".to_string(),
                 message: "Both panes must have a selected surface".to_string(),
+                data: None,
+            };
+        }
+        Err(PaneTopologyControlError::Publication(message)) => {
+            return ControlCallResult::Err {
+                code: "internal".to_string(),
+                message,
                 data: None,
             };
         }
@@ -6245,14 +8810,16 @@ fn pane_break(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Contr
         focus,
     ) {
         Ok(result) => result,
-        Err(session_ops::PaneBreakError::WorkspaceNotFound) => {
+        Err(PaneTopologyControlError::Operation(
+            session_ops::PaneBreakError::WorkspaceNotFound,
+        )) => {
             return ControlCallResult::Err {
                 code: "not_found".to_string(),
                 message: "Workspace not found".to_string(),
                 data: None,
             };
         }
-        Err(session_ops::PaneBreakError::SurfaceNotFound) => {
+        Err(PaneTopologyControlError::Operation(session_ops::PaneBreakError::SurfaceNotFound)) => {
             return ControlCallResult::Err {
                 code: "not_found".to_string(),
                 message: "Surface not found".to_string(),
@@ -6263,10 +8830,17 @@ fn pane_break(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Contr
                 ),
             };
         }
-        Err(session_ops::PaneBreakError::DetachFailed) => {
+        Err(PaneTopologyControlError::Operation(session_ops::PaneBreakError::DetachFailed)) => {
             return ControlCallResult::Err {
                 code: "internal_error".to_string(),
                 message: "Failed to detach source surface".to_string(),
+                data: None,
+            };
+        }
+        Err(PaneTopologyControlError::Publication(message)) => {
+            return ControlCallResult::Err {
+                code: "internal".to_string(),
+                message,
                 data: None,
             };
         }
@@ -6446,24 +9020,35 @@ fn pane_last(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Contro
     let (focused, result) =
         match focus_last_pane_for_control(app, &state, window_index, workspace_index) {
             Ok(result) => result,
-            Err(PaneLastControlError::WorkspaceNotFound) => {
+            Err(PaneTopologyControlError::Operation(PaneLastControlError::WorkspaceNotFound)) => {
                 return ControlCallResult::Err {
                     code: "not_found".to_string(),
                     message: "Workspace not found".to_string(),
                     data: None,
                 };
             }
-            Err(PaneLastControlError::Pane(session_ops::PaneLastError::NoFocusedPane)) => {
+            Err(PaneTopologyControlError::Operation(PaneLastControlError::Pane(
+                session_ops::PaneLastError::NoFocusedPane,
+            ))) => {
                 return ControlCallResult::Err {
                     code: "not_found".to_string(),
                     message: "No focused pane".to_string(),
                     data: None,
                 };
             }
-            Err(PaneLastControlError::Pane(session_ops::PaneLastError::NoAlternatePane)) => {
+            Err(PaneTopologyControlError::Operation(PaneLastControlError::Pane(
+                session_ops::PaneLastError::NoAlternatePane,
+            ))) => {
                 return ControlCallResult::Err {
                     code: "not_found".to_string(),
                     message: "No alternate pane available".to_string(),
+                    data: None,
+                };
+            }
+            Err(PaneTopologyControlError::Publication(message)) => {
+                return ControlCallResult::Err {
+                    code: "internal".to_string(),
+                    message,
                     data: None,
                 };
             }
@@ -6601,23 +9186,25 @@ fn pane_resize(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Cont
         height,
     ) {
         Ok(result) => result,
-        Err(PaneResizeControlError::WorkspaceNotFound) => {
+        Err(PaneTopologyControlError::Operation(PaneResizeControlError::WorkspaceNotFound)) => {
             return ControlCallResult::Err {
                 code: "not_found".to_string(),
                 message: "Workspace not found".to_string(),
                 data: None,
             };
         }
-        Err(PaneResizeControlError::Pane(session_ops::PaneResizeError::PaneNotFoundInTree)) => {
+        Err(PaneTopologyControlError::Operation(PaneResizeControlError::Pane(
+            session_ops::PaneResizeError::PaneNotFoundInTree,
+        ))) => {
             return ControlCallResult::Err {
                 code: "not_found".to_string(),
                 message: "Pane not found in split tree".to_string(),
                 data: None,
             };
         }
-        Err(PaneResizeControlError::Pane(
+        Err(PaneTopologyControlError::Operation(PaneResizeControlError::Pane(
             session_ops::PaneResizeError::NoOrientationSplitAncestor,
-        )) => {
+        ))) => {
             let message = match intent {
                 PaneResizeControlIntent::Absolute { .. } => {
                     "No split ancestor for absolute pane resize".to_string()
@@ -6638,7 +9225,9 @@ fn pane_resize(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Cont
                 data: None,
             };
         }
-        Err(PaneResizeControlError::Pane(session_ops::PaneResizeError::NoAdjacentBorder)) => {
+        Err(PaneTopologyControlError::Operation(PaneResizeControlError::Pane(
+            session_ops::PaneResizeError::NoAdjacentBorder,
+        ))) => {
             let direction = match intent {
                 PaneResizeControlIntent::Relative { direction, .. } => match direction {
                     session_ops::PaneResizeDirection::Left => "left",
@@ -6654,10 +9243,19 @@ fn pane_resize(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Cont
                 data: None,
             };
         }
-        Err(PaneResizeControlError::Pane(session_ops::PaneResizeError::MissingSplitIdentity)) => {
+        Err(PaneTopologyControlError::Operation(PaneResizeControlError::Pane(
+            session_ops::PaneResizeError::MissingSplitIdentity,
+        ))) => {
             return ControlCallResult::Err {
                 code: "internal_error".to_string(),
                 message: "Failed to resize pane".to_string(),
+                data: None,
+            };
+        }
+        Err(PaneTopologyControlError::Publication(message)) => {
+            return ControlCallResult::Err {
+                code: "internal".to_string(),
+                message,
                 data: None,
             };
         }
@@ -6728,10 +9326,14 @@ fn surface_set_kind(app: &AppHandle, params: &serde_json::Map<String, Value>) ->
         return invalid_params("Invalid surface type");
     }
     let state = app.state::<SessionState>();
-    surface_list_from_params(
-        &set_surface_kind_for_control(app, &state, &panel_id, kind),
-        params,
-    )
+    match set_surface_kind_for_control(app, &state, &panel_id, kind) {
+        Ok(snapshot) => surface_list_from_params(&snapshot, params),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn surface_set_title(
@@ -6746,10 +9348,14 @@ fn surface_set_title(
         return invalid_params("Missing or invalid surface selector");
     };
     let state = app.state::<SessionState>();
-    surface_list_from_params(
-        &set_panel_title_for_control(app, &state, &panel_id, &title),
-        params,
-    )
+    match set_panel_title_for_control(app, &state, &panel_id, &title) {
+        Ok(snapshot) => surface_list_from_params(&snapshot, params),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn surface_set_pinned(
@@ -6764,10 +9370,14 @@ fn surface_set_pinned(
         return invalid_params("Missing or invalid surface selector");
     };
     let state = app.state::<SessionState>();
-    surface_list_from_params(
-        &set_panel_pinned_for_control(app, &state, &panel_id, pinned),
-        params,
-    )
+    match set_panel_pinned_for_control(app, &state, &panel_id, pinned) {
+        Ok(snapshot) => surface_list_from_params(&snapshot, params),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn surface_set_unread(
@@ -6782,10 +9392,14 @@ fn surface_set_unread(
         return invalid_params("Missing or invalid surface selector");
     };
     let state = app.state::<SessionState>();
-    surface_list_from_params(
-        &set_panel_unread_for_control(app, &state, &panel_id, unread),
-        params,
-    )
+    match set_panel_unread_for_control(app, &state, &panel_id, unread) {
+        Ok(snapshot) => surface_list_from_params(&snapshot, params),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -7113,7 +9727,7 @@ fn surface_move(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Con
         }
     };
     let state = app.state::<SessionState>();
-    let Some(result) = move_surface_for_control(
+    let result = match move_surface_for_control(
         app,
         &state,
         resolution.source_workspace_index,
@@ -7122,12 +9736,22 @@ fn surface_move(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Con
         &resolution.target_pane_id,
         resolution.destination_index,
         resolution.focus,
-    ) else {
-        return ControlCallResult::Err {
-            code: "internal_error".to_string(),
-            message: "Failed to move surface".to_string(),
-            data: None,
-        };
+    ) {
+        Ok(result) => result,
+        Err(PaneTopologyControlError::Operation(SurfacePositionControlError::InvalidRequest)) => {
+            return ControlCallResult::Err {
+                code: "internal_error".to_string(),
+                message: "Failed to move surface".to_string(),
+                data: None,
+            };
+        }
+        Err(PaneTopologyControlError::Publication(message)) => {
+            return ControlCallResult::Err {
+                code: "internal".to_string(),
+                message,
+                data: None,
+            };
+        }
     };
     let window = &result.windows[0];
     let workspace = &window.tab_manager.workspaces[resolution.target_workspace_index];
@@ -7225,19 +9849,29 @@ fn surface_reorder(app: &AppHandle, params: &serde_json::Map<String, Value>) -> 
     };
     let focus = bool_param(params, &["focus"]).unwrap_or(false);
     let state = app.state::<SessionState>();
-    let Some(result) = reorder_surface_for_control(
+    let result = match reorder_surface_for_control(
         app,
         &state,
         workspace_index,
         &panel_id,
         destination_index,
         focus,
-    ) else {
-        return ControlCallResult::Err {
-            code: "internal_error".to_string(),
-            message: "Failed to reorder surface".to_string(),
-            data: None,
-        };
+    ) {
+        Ok(result) => result,
+        Err(PaneTopologyControlError::Operation(SurfacePositionControlError::InvalidRequest)) => {
+            return ControlCallResult::Err {
+                code: "internal_error".to_string(),
+                message: "Failed to reorder surface".to_string(),
+                data: None,
+            };
+        }
+        Err(PaneTopologyControlError::Publication(message)) => {
+            return ControlCallResult::Err {
+                code: "internal".to_string(),
+                message,
+                data: None,
+            };
+        }
     };
     let window = &result.windows[0];
     let workspace = &window.tab_manager.workspaces[workspace_index];
@@ -7366,10 +10000,14 @@ fn surface_report_tty(
         return invalid_params("Missing or invalid surface selector");
     };
     let state = app.state::<SessionState>();
-    surface_list_from_params(
-        &set_panel_tty_for_control(app, &state, workspace_index, &panel_id, &tty),
-        params,
-    )
+    match set_panel_tty_for_control(app, &state, workspace_index, &panel_id, &tty) {
+        Ok(snapshot) => surface_list_from_params(&snapshot, params),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn surface_report_shell_state(
@@ -7389,16 +10027,20 @@ fn surface_report_shell_state(
         return invalid_params("Missing or invalid surface selector");
     };
     let state = app.state::<SessionState>();
-    surface_list_from_params(
-        &set_panel_shell_activity_for_control(
-            app,
-            &state,
-            workspace_index,
-            &panel_id,
-            shell_activity,
-        ),
-        params,
-    )
+    match set_panel_shell_activity_for_control(
+        app,
+        &state,
+        workspace_index,
+        &panel_id,
+        shell_activity,
+    ) {
+        Ok(snapshot) => surface_list_from_params(&snapshot, params),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn surface_clear_ports(
@@ -7423,10 +10065,14 @@ fn surface_set_ports(
         return invalid_params("Missing or invalid surface selector");
     };
     let state = app.state::<SessionState>();
-    surface_list_from_params(
-        &set_panel_listening_ports_for_control(app, &state, workspace_index, &panel_id, ports),
-        params,
-    )
+    match set_panel_listening_ports_for_control(app, &state, workspace_index, &panel_id, ports) {
+        Ok(snapshot) => surface_list_from_params(&snapshot, params),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn surface_ports_kick(
@@ -7500,12 +10146,7 @@ fn refresh_workspace_agent_ports(
     ports.sort_unstable();
     ports.dedup();
     let state = app.state::<SessionState>();
-    Ok(set_workspace_agent_listening_ports_for_control(
-        app,
-        &state,
-        workspace_index,
-        &ports,
-    ))
+    set_workspace_agent_listening_ports_for_control(app, &state, workspace_index, &ports)
 }
 
 fn surface_ports_kick_target(
@@ -7544,7 +10185,18 @@ fn surface_focus(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Co
         return invalid_params("Missing or invalid workspace selector");
     };
     let state = app.state::<SessionState>();
-    let (changed, _snapshot) = select_workspace_surface(app, &state, &workspace_id, &panel_id);
+    let (changed, _snapshot) = match select_workspace_surface(app, &state, &workspace_id, &panel_id)
+    {
+        Ok(result) => result,
+        Err(PaneTopologyControlError::Operation(error)) => match error {},
+        Err(PaneTopologyControlError::Publication(message)) => {
+            return ControlCallResult::Err {
+                code: "internal".to_string(),
+                message,
+                data: None,
+            };
+        }
+    };
     ok(json!({
         "accepted": true,
         "changed": changed,
@@ -7857,9 +10509,14 @@ fn surface_move_to_new_workspace(
         return invalid_params("Missing or invalid surface selector");
     };
     let state = app.state::<SessionState>();
-    workspace_current(&move_panel_to_new_workspace_for_control(
-        app, &state, &panel_id,
-    ))
+    match move_panel_to_new_workspace_for_control(app, &state, &panel_id) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn surface_open_browser(
@@ -7873,10 +10530,15 @@ fn surface_open_browser(
     let url = string_param(params, &["url"]);
     let state = app.state::<SessionState>();
     match open_browser_url_in_panel(app, &state, &panel_id, url.as_deref()) {
-        Some(snapshot) => surface_list_from_params(&snapshot, params),
-        None => ControlCallResult::Err {
+        Ok(Some(snapshot)) => surface_list_from_params(&snapshot, params),
+        Ok(None) => ControlCallResult::Err {
             code: "not_found".to_string(),
             message: format!("unable to open browser in pane {panel_id}"),
+            data: None,
+        },
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
             data: None,
         },
     }
@@ -7932,8 +10594,13 @@ fn browser_open_split(
                 None => surface_list_from_params(&snapshot, params),
             }
         }
-        Err(message) => ControlCallResult::Err {
+        Err(BrowserPanelCreateError::NotFound(message)) => ControlCallResult::Err {
             code: "not_found".to_string(),
+            message,
+            data: None,
+        },
+        Err(BrowserPanelCreateError::Publication(message)) => ControlCallResult::Err {
+            code: "internal".to_string(),
             message,
             data: None,
         },
@@ -7959,13 +10626,20 @@ fn browser_navigate(app: &AppHandle, params: &serde_json::Map<String, Value>) ->
     }
     let state = app.state::<SessionState>();
     match open_browser_url_in_panel(app, &state, &panel_id, Some(&url)) {
-        Some(snapshot) => match browser_surface_payload(&snapshot, workspace_index, &panel_id) {
-            Some(payload) => ok(payload),
-            None => invalid_params("Missing or invalid surface selector"),
-        },
-        None => ControlCallResult::Err {
+        Ok(Some(snapshot)) => {
+            match browser_surface_payload(&snapshot, workspace_index, &panel_id) {
+                Some(payload) => ok(payload),
+                None => invalid_params("Missing or invalid surface selector"),
+            }
+        }
+        Ok(None) => ControlCallResult::Err {
             code: "not_found".to_string(),
             message: format!("unable to navigate browser surface {panel_id}"),
+            data: None,
+        },
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
             data: None,
         },
     }
@@ -7984,10 +10658,15 @@ fn surface_open_markdown(
     };
     let state = app.state::<SessionState>();
     match open_markdown_file_in_panel(app, &state, &panel_id, &file_path) {
-        Some(snapshot) => surface_list_from_params(&snapshot, params),
-        None => ControlCallResult::Err {
+        Ok(Some(snapshot)) => surface_list_from_params(&snapshot, params),
+        Ok(None) => ControlCallResult::Err {
             code: "not_found".to_string(),
             message: format!("unable to open markdown file in pane {panel_id}"),
+            data: None,
+        },
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
             data: None,
         },
     }
@@ -8006,10 +10685,15 @@ fn surface_open_file(
     };
     let state = app.state::<SessionState>();
     match open_file_in_panel(app, &state, &panel_id, &file_path) {
-        Some(snapshot) => surface_list_from_params(&snapshot, params),
-        None => ControlCallResult::Err {
+        Ok(Some(snapshot)) => surface_list_from_params(&snapshot, params),
+        Ok(None) => ControlCallResult::Err {
             code: "not_found".to_string(),
             message: format!("unable to open file in pane {panel_id}"),
+            data: None,
+        },
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
             data: None,
         },
     }
@@ -8024,14 +10708,19 @@ fn surface_open_diff(
         return invalid_params("Missing or invalid surface selector");
     };
     let diff_state = app.state::<DiffState>();
-    let (token, request_path) = match string_param(params, &["token", "diff_token"]) {
+    let (token, request_path, created_token) = match string_param(params, &["token", "diff_token"])
+    {
         Some(token) => (
             token,
             string_param(params, &["request_path", "path"])
                 .unwrap_or_else(|| "/index.html".to_string()),
+            None,
         ),
         None => match diff_state.create_starter_session(SystemTime::now()) {
-            Ok(created) => (created.token, created.request_path),
+            Ok(created) => {
+                let created_token = created.token.clone();
+                (created.token, created.request_path, Some(created_token))
+            }
             Err(message) => {
                 return ControlCallResult::Err {
                     code: "internal_error".to_string(),
@@ -8043,12 +10732,27 @@ fn surface_open_diff(
     };
     let state = app.state::<SessionState>();
     match open_diff_viewer_in_panel(app, &state, &diff_state, &panel_id, &token, &request_path) {
-        Some(snapshot) => surface_list_from_params(&snapshot, params),
-        None => ControlCallResult::Err {
-            code: "not_found".to_string(),
-            message: format!("unable to open diff viewer in pane {panel_id}"),
-            data: None,
-        },
+        Ok(Some(snapshot)) => surface_list_from_params(&snapshot, params),
+        Ok(None) => {
+            if let Some(token) = created_token.as_deref() {
+                diff_state.unregister_starter_session(token);
+            }
+            ControlCallResult::Err {
+                code: "not_found".to_string(),
+                message: format!("unable to open diff viewer in pane {panel_id}"),
+                data: None,
+            }
+        }
+        Err(message) => {
+            if let Some(token) = created_token.as_deref() {
+                diff_state.unregister_starter_session(token);
+            }
+            ControlCallResult::Err {
+                code: "internal".to_string(),
+                message,
+                data: None,
+            }
+        }
     }
 }
 
@@ -8062,10 +10766,18 @@ fn surface_select_adjacent(
         return invalid_params("Missing or invalid surface selector");
     };
     let state = app.state::<SessionState>();
-    surface_list_from_params(
-        &select_adjacent_panel_for_control(app, &state, &panel_id, next),
-        params,
-    )
+    let snapshot = match select_adjacent_panel_for_control(app, &state, &panel_id, next) {
+        Ok(snapshot) => snapshot,
+        Err(PaneTopologyControlError::Operation(error)) => match error {},
+        Err(PaneTopologyControlError::Publication(message)) => {
+            return ControlCallResult::Err {
+                code: "internal".to_string(),
+                message,
+                data: None,
+            };
+        }
+    };
+    surface_list_from_params(&snapshot, params)
 }
 
 fn surface_toggle_split_zoom(
@@ -8077,10 +10789,14 @@ fn surface_toggle_split_zoom(
         return invalid_params("Missing or invalid surface selector");
     };
     let state = app.state::<SessionState>();
-    surface_list_from_params(
-        &toggle_split_zoom_for_control(app, &state, &panel_id),
-        params,
-    )
+    match toggle_split_zoom_for_control(app, &state, &panel_id) {
+        Ok(snapshot) => surface_list_from_params(&snapshot, params),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn browser_back(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
@@ -8089,7 +10805,14 @@ fn browser_back(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Con
         return invalid_params("Missing or invalid surface selector");
     };
     let state = app.state::<SessionState>();
-    surface_list_from_params(&browser_go_back_for_control(app, &state, &panel_id), params)
+    match browser_go_back_for_control(app, &state, &panel_id) {
+        Ok(snapshot) => surface_list_from_params(&snapshot, params),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn browser_forward(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
@@ -8098,10 +10821,14 @@ fn browser_forward(app: &AppHandle, params: &serde_json::Map<String, Value>) -> 
         return invalid_params("Missing or invalid surface selector");
     };
     let state = app.state::<SessionState>();
-    surface_list_from_params(
-        &browser_go_forward_for_control(app, &state, &panel_id),
-        params,
-    )
+    match browser_go_forward_for_control(app, &state, &panel_id) {
+        Ok(snapshot) => surface_list_from_params(&snapshot, params),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn browser_reload(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
@@ -8186,7 +10913,17 @@ fn browser_focus_webview(
     };
     let session_state = app.state::<SessionState>();
     let (_changed, snapshot) =
-        select_workspace_surface(app, &session_state, &workspace_id, &panel_id);
+        match select_workspace_surface(app, &session_state, &workspace_id, &panel_id) {
+            Ok(result) => result,
+            Err(PaneTopologyControlError::Operation(error)) => match error {},
+            Err(PaneTopologyControlError::Publication(message)) => {
+                return ControlCallResult::Err {
+                    code: "internal".to_string(),
+                    message,
+                    data: None,
+                };
+            }
+        };
     let browser_state = app.state::<BrowserWebviewState>();
     let reply = match browser_webview_command_for_control(browser_state.inner(), &panel_id, "focus")
     {
@@ -10726,6 +13463,7 @@ fn debug_browser_attach_webview(
     match browser_attach_webview_for_control(
         app,
         browser_state.inner(),
+        "main",
         &panel_id,
         Some(&url),
         proxy_url.as_deref(),
@@ -10742,7 +13480,14 @@ fn debug_browser_attach_webview(
 
 fn browser_reopen_closed(app: &AppHandle) -> ControlCallResult {
     let state = app.state::<SessionState>();
-    workspace_current(&reopen_closed_browser_tab_for_control(app, &state))
+    match reopen_closed_browser_tab_for_control(app, &state) {
+        Ok(snapshot) => workspace_current(&snapshot),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn browser_clear_history(
@@ -10754,10 +13499,14 @@ fn browser_clear_history(
         return invalid_params("Missing or invalid surface selector");
     };
     let state = app.state::<SessionState>();
-    surface_list_from_params(
-        &clear_browser_history_for_control(app, &state, &panel_id),
-        params,
-    )
+    match clear_browser_history_for_control(app, &state, &panel_id) {
+        Ok(snapshot) => surface_list_from_params(&snapshot, params),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn browser_toggle_omnibar(
@@ -10769,10 +13518,14 @@ fn browser_toggle_omnibar(
         return invalid_params("Missing or invalid surface selector");
     };
     let state = app.state::<SessionState>();
-    surface_list_from_params(
-        &toggle_browser_omnibar_for_control(app, &state, &panel_id),
-        params,
-    )
+    match toggle_browser_omnibar_for_control(app, &state, &panel_id) {
+        Ok(snapshot) => surface_list_from_params(&snapshot, params),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn browser_toggle_focus_mode(
@@ -10784,10 +13537,14 @@ fn browser_toggle_focus_mode(
         return invalid_params("Missing or invalid surface selector");
     };
     let state = app.state::<SessionState>();
-    surface_list_from_params(
-        &toggle_browser_focus_mode_for_control(app, &state, &panel_id),
-        params,
-    )
+    match toggle_browser_focus_mode_for_control(app, &state, &panel_id) {
+        Ok(snapshot) => surface_list_from_params(&snapshot, params),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn browser_toggle_developer_tools(
@@ -10799,10 +13556,14 @@ fn browser_toggle_developer_tools(
         return invalid_params("Missing or invalid surface selector");
     };
     let state = app.state::<SessionState>();
-    surface_list_from_params(
-        &toggle_browser_developer_tools_for_control(app, &state, &panel_id),
-        params,
-    )
+    match toggle_browser_developer_tools_for_control(app, &state, &panel_id) {
+        Ok(snapshot) => surface_list_from_params(&snapshot, params),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn browser_show_developer_tools(
@@ -10815,10 +13576,14 @@ fn browser_show_developer_tools(
     };
     let panel = string_param(params, &["panel"]).unwrap_or_else(|| "inspector".to_string());
     let state = app.state::<SessionState>();
-    surface_list_from_params(
-        &show_browser_developer_tools_for_control(app, &state, &panel_id, &panel),
-        params,
-    )
+    match show_browser_developer_tools_for_control(app, &state, &panel_id, &panel) {
+        Ok(snapshot) => surface_list_from_params(&snapshot, params),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn browser_set_zoom(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {
@@ -10830,10 +13595,14 @@ fn browser_set_zoom(app: &AppHandle, params: &serde_json::Map<String, Value>) ->
         return invalid_params("Missing or invalid browser zoom");
     };
     let state = app.state::<SessionState>();
-    surface_list_from_params(
-        &set_browser_zoom_for_control(app, &state, &panel_id, zoom),
-        params,
-    )
+    match set_browser_zoom_for_control(app, &state, &panel_id, zoom) {
+        Ok(snapshot) => surface_list_from_params(&snapshot, params),
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
+            data: None,
+        },
+    }
 }
 
 fn browser_network_requests(
@@ -11218,7 +13987,7 @@ fn sidebar_open(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Con
     let state = app.state::<SessionState>();
     let path = candidate.path.to_string_lossy().to_string();
     match open_custom_sidebar_in_panel(app, &state, &panel_id, &path) {
-        Some(snapshot) => {
+        Ok(Some(snapshot)) => {
             let surface = surface_list_from_params(&snapshot, params);
             ok(json!({
                 "accepted": true,
@@ -11233,9 +14002,14 @@ fn sidebar_open(app: &AppHandle, params: &serde_json::Map<String, Value>) -> Con
                 "warnings": validation.get("warnings").cloned().unwrap_or_else(|| json!([])),
             }))
         }
-        None => ControlCallResult::Err {
+        Ok(None) => ControlCallResult::Err {
             code: "not_found".to_string(),
             message: format!("unable to open custom sidebar in pane {panel_id}"),
+            data: None,
+        },
+        Err(message) => ControlCallResult::Err {
+            code: "internal".to_string(),
+            message,
             data: None,
         },
     }
@@ -12839,17 +15613,42 @@ fn string_map_param(
     None
 }
 
+fn first_present_trimmed_string_map_param(
+    params: &serde_json::Map<String, Value>,
+    keys: &[&str],
+) -> Option<BTreeMap<String, String>> {
+    keys.iter().find_map(|key| {
+        let object = params.get(*key)?.as_object()?;
+        Some(
+            object
+                .iter()
+                .filter_map(|(key, value)| {
+                    let key = key.trim();
+                    (!key.is_empty()).then(|| {
+                        value
+                            .as_str()
+                            .map(|value| (key.to_string(), value.to_string()))
+                    })?
+                })
+                .collect(),
+        )
+    })
+}
+
 fn bool_param(params: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<bool> {
     keys.iter().find_map(|key| {
         params.get(*key).and_then(|value| {
-            value.as_bool().or_else(|| {
-                let normalized = value.as_str()?.trim().to_ascii_lowercase();
-                match normalized.as_str() {
-                    "1" | "true" | "yes" | "on" => Some(true),
-                    "0" | "false" | "no" | "off" => Some(false),
-                    _ => None,
-                }
-            })
+            value
+                .as_bool()
+                .or_else(|| value.as_f64().map(|number| number != 0.0))
+                .or_else(|| {
+                    let normalized = value.as_str()?.trim().to_ascii_lowercase();
+                    match normalized.as_str() {
+                        "1" | "true" | "yes" | "on" => Some(true),
+                        "0" | "false" | "no" | "off" => Some(false),
+                        _ => None,
+                    }
+                })
         })
     })
 }
@@ -12967,6 +15766,29 @@ fn f64_param(params: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<f
             })
         })
     })
+}
+
+fn v2_double_param(params: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<f64> {
+    keys.iter().find_map(|key| {
+        let value = params.get(*key)?;
+        value
+            .as_bool()
+            .map(|value| if value { 1.0 } else { 0.0 })
+            .or_else(|| value.as_f64())
+            .or_else(|| value.as_str().and_then(|value| value.parse::<f64>().ok()))
+            .filter(|value| value.is_finite())
+    })
+}
+
+fn initial_divider_position_param(
+    params: &serde_json::Map<String, Value>,
+) -> Result<Option<f64>, ()> {
+    match params.get("initial_divider_position") {
+        None | Some(Value::Null) => Ok(None),
+        Some(_) => v2_double_param(params, &["initial_divider_position"])
+            .map(|value| Some(value.clamp(0.1, 0.9)))
+            .ok_or(()),
+    }
 }
 
 fn ports_param(params: &serde_json::Map<String, Value>) -> Option<Vec<u16>> {
@@ -13840,6 +16662,7 @@ mod tests {
             windows: vec![SessionWindowSnapshot {
                 window_id: Some("window-1".to_string()),
                 selected_workspace_id: None,
+                dock: None,
                 tab_manager: SessionTabManagerSnapshot {
                     selected_workspace_index: Some(0),
                     workspaces: vec![SessionWorkspaceSnapshot {
@@ -13847,6 +16670,7 @@ mod tests {
                         process_title: "shell".to_string(),
                         custom_title: Some("Phoenix".to_string()),
                         current_directory: Some("C:/repo".to_string()),
+                        focused_panel_id: Some("surface-1".to_string()),
                         layout: Some(SessionWorkspaceLayoutSnapshot::Pane(
                             SessionPaneLayoutSnapshot {
                                 pane_id: Some("pane-1".to_string()),
@@ -14140,6 +16964,7 @@ mod tests {
         snapshot.windows.push(SessionWindowSnapshot {
             window_id: Some("window-2".to_string()),
             selected_workspace_id: None,
+            dock: None,
             tab_manager: SessionTabManagerSnapshot {
                 selected_workspace_index: Some(0),
                 workspaces: vec![destination],
@@ -15089,6 +17914,44 @@ mod tests {
             .find(|event| event.name == "surface.closed")
             .expect("surface closed event");
         assert_eq!(closed_surface.surface_id, Some("surface-a".to_string()));
+    }
+
+    #[test]
+    fn derived_session_events_emit_one_move_without_close_create_duplicates() {
+        let previous = event_summary(
+            vec![
+                event_workspace(
+                    "workspace-a",
+                    "Alpha",
+                    0,
+                    &["surface-a", "surface-b"],
+                    Some("surface-a"),
+                ),
+                event_workspace("workspace-b", "Beta", 1, &["surface-c"], Some("surface-c")),
+            ],
+            0,
+        );
+        let current = event_summary(
+            vec![
+                event_workspace("workspace-a", "Alpha", 0, &["surface-b"], Some("surface-b")),
+                event_workspace(
+                    "workspace-b",
+                    "Beta",
+                    1,
+                    &["surface-c", "surface-a"],
+                    Some("surface-a"),
+                ),
+            ],
+            1,
+        );
+        let events = derived_session_event_specs(Some(&previous), &current);
+        assert!(!events.iter().any(|event| {
+            event.name == "surface.moved" && event.surface_id.as_deref() == Some("surface-a")
+        }));
+        assert!(!events.iter().any(|event| {
+            matches!(event.name, "surface.created" | "surface.closed")
+                && event.surface_id.as_deref() == Some("surface-a")
+        }));
     }
 
     #[test]
@@ -16931,6 +19794,7 @@ mod tests {
                 browser_page_zoom: None,
             },
         ));
+        workspace.focused_panel_id = Some("surface-2".to_string());
 
         assert_eq!(
             surface_id_from_params_or_focused(
@@ -16985,6 +19849,7 @@ mod tests {
                 browser_page_zoom: None,
             },
         ));
+        second.focused_panel_id = Some("surface-3".to_string());
         snapshot.windows[0].tab_manager.workspaces.push(second);
         snapshot.windows[0].tab_manager.selected_workspace_index = Some(0);
 
@@ -17182,6 +20047,578 @@ mod tests {
         );
     }
 
+    #[test]
+    fn remote_tmux_creation_uses_observed_window_arrival_and_typed_rollback() {
+        let pane = RemoteTmuxTarget::for_create("split-window").unwrap();
+        assert_eq!(pane.rollback_operation(), "kill-pane");
+        assert!(pane.permits_immediate_arrival("runtime-pane-add"));
+
+        let window = RemoteTmuxTarget::for_create("new-window").unwrap();
+        assert_eq!(window.rollback_operation(), "kill-window");
+        assert!(!window.permits_immediate_arrival("runtime-window-add"));
+        assert!(!window.permits_immediate_arrival("runtime-pane-add"));
+        assert!(immediate_remote_arrival(
+            window,
+            "runtime-window-add",
+            "window",
+            "workspace",
+            "@12"
+        )
+        .is_none());
+        assert!(
+            immediate_remote_arrival(pane, "runtime-pane-add", "window", "workspace", "%34")
+                .is_some()
+        );
+
+        let observed_window = StagedRemoteCreation {
+            destination: "ssh://example.test".into(),
+            target: window,
+            token: "@12".into(),
+            window_id: "window".into(),
+            workspace_id: "workspace".into(),
+            target_pane_id: Some("pane-existing".into()),
+            source_surface_id: Some("surface-source".into()),
+            source_pane_id: Some("pane-existing".into()),
+            split_orientation: None,
+            focus: false,
+            observation: Some(RemoteTmuxObservation {
+                window_token: "@12".into(),
+                pane_token: "%34".into(),
+            }),
+            pane_observation: None,
+            arrival: None,
+        };
+        let arrival = observed_remote_window_arrival(&observed_window, "%34")
+            .expect("observed window pane should reconcile");
+        assert_eq!(arrival.window_id, "window");
+        assert_eq!(arrival.workspace_id, "workspace");
+        assert_eq!(arrival.pane_id, "pane-existing");
+        assert_eq!(arrival.remote_session_id, "%34");
+        assert!(!arrival.creates_pane);
+        assert_eq!(arrival.anchor_surface_id.as_deref(), Some("surface-source"));
+
+        let immediate_pane = StagedRemoteCreation {
+            destination: "ssh://example.test".into(),
+            target: pane,
+            token: "%34".into(),
+            window_id: "window".into(),
+            workspace_id: "workspace".into(),
+            target_pane_id: None,
+            source_surface_id: None,
+            source_pane_id: None,
+            split_orientation: None,
+            focus: false,
+            observation: None,
+            pane_observation: Some("%34".into()),
+            arrival: immediate_remote_arrival(
+                pane,
+                "runtime-pane-add",
+                "window",
+                "workspace",
+                "%34",
+            ),
+        };
+        assert!(observed_remote_window_arrival(&immediate_pane, "%34").is_none());
+    }
+
+    #[test]
+    fn production_remote_new_window_builder_is_exact_for_focus_and_background() {
+        let focused = RemoteTmuxCreateSpec {
+            operation: "new-window",
+            focus: true,
+            source_target: Some("@7"),
+            working_directory: Some("/srv/repo with spaces"),
+        };
+        assert_eq!(
+            remote_tmux_create_argv(&focused).unwrap(),
+            ["tmux new-window -a -t '@7' -c '/srv/repo with spaces' -P -F '#{window_id}\t#{pane_id}'"]
+        );
+
+        let background = RemoteTmuxCreateSpec {
+            focus: false,
+            ..focused
+        };
+        assert_eq!(
+            remote_tmux_create_argv(&background).unwrap(),
+            ["tmux new-window -d -a -t '@7' -c '/srv/repo with spaces' -P -F '#{window_id}\t#{pane_id}'"]
+        );
+
+        let fallback = RemoteTmuxCreateSpec {
+            operation: "new-window",
+            focus: false,
+            source_target: None,
+            working_directory: Some("/must/not/inherit"),
+        };
+        assert_eq!(
+            remote_tmux_create_argv(&fallback).unwrap(),
+            ["tmux new-window -d -a -t '{end}' -P -F '#{window_id}\t#{pane_id}'"]
+        );
+
+        let split = RemoteTmuxCreateSpec {
+            operation: "split-window",
+            focus: true,
+            source_target: Some("@ignored"),
+            working_directory: Some("/ignored"),
+        };
+        assert_eq!(
+            remote_tmux_create_argv(&split).unwrap(),
+            ["tmux split-window -P -F '#{pane_id}'"]
+        );
+        assert_eq!(
+            remote_tmux_source_window_command("%7").unwrap(),
+            ["tmux display-message -p -t '%7' '#{window_id}'"]
+        );
+        for invalid in ["@", "@x", "@7;echo", "@７"] {
+            assert!(remote_tmux_create_argv(&RemoteTmuxCreateSpec {
+                operation: "new-window",
+                focus: false,
+                source_target: Some(invalid),
+                working_directory: None,
+            })
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn production_remote_observation_is_authoritative_retried_and_compensated() {
+        let observation = parse_remote_tmux_observation("@12\t%34\n").unwrap();
+        assert_eq!(observation.window_token, "@12");
+        assert_eq!(observation.pane_token, "%34");
+        assert_eq!(
+            parse_remote_tmux_observation("@12\t%34\r\n").unwrap(),
+            observation
+        );
+        for invalid in [
+            "@12\t%34\textra\n",
+            "@12x\t%34\n",
+            "@12\t%34\nextra\n",
+            "@12\t%x\n",
+        ] {
+            assert!(parse_remote_tmux_observation(invalid).is_err());
+        }
+        assert_eq!(
+            remote_observation_action(true, None, 0),
+            RemoteObservationAction::Reconcile
+        );
+        assert_eq!(
+            remote_observation_action(true, Some("transient persistence failure"), 0),
+            RemoteObservationAction::RetainAndRetry
+        );
+        assert_eq!(
+            remote_observation_action(false, None, 0),
+            RemoteObservationAction::CompensateKillWindow
+        );
+        assert_eq!(
+            remote_observation_action(true, Some("still failing"), REMOTE_OBSERVATION_MAX_RETRIES),
+            RemoteObservationAction::CompensateKillWindow
+        );
+        assert!(should_focus_window_after_remote_arrival(true, true));
+        assert!(!should_focus_window_after_remote_arrival(true, false));
+        assert!(!should_focus_window_after_remote_arrival(false, true));
+    }
+
+    #[test]
+    fn unchanged_effect_only_transition_skips_snapshot_commit_and_publication() {
+        let previous = test_snapshot();
+        assert!(!lifecycle_snapshot_changed(&previous, &previous));
+        let mut candidate = previous.clone();
+        candidate.created_at += 1;
+        assert!(lifecycle_snapshot_changed(&candidate, &previous));
+    }
+
+    #[test]
+    fn lifecycle_commit_failure_keeps_model_unpublished_and_compensates_resources() {
+        #[derive(Default)]
+        struct CommitFailure {
+            prepared: Option<AppSessionSnapshot>,
+            staged: usize,
+            compensated: usize,
+        }
+        impl pane_surface_lifecycle::LifecycleEffectExecutor for CommitFailure {
+            type Error = String;
+
+            fn prepare_transition(
+                &mut self,
+                candidate: &AppSessionSnapshot,
+            ) -> Result<(), Self::Error> {
+                self.prepared = Some(candidate.clone());
+                Ok(())
+            }
+
+            fn stage(
+                &mut self,
+                _effect: &pane_surface_lifecycle::LifecycleEffect,
+            ) -> Result<(), Self::Error> {
+                self.staged += 1;
+                Ok(())
+            }
+
+            fn commit_staged(&mut self) -> Result<(), Self::Error> {
+                Err("injected post-stage commit failure".into())
+            }
+
+            fn rollback_staged(&mut self) -> Result<(), Self::Error> {
+                self.staged = 0;
+                Ok(())
+            }
+
+            fn rollback_committed(&mut self) -> Result<(), Self::Error> {
+                self.compensated += self.staged;
+                self.staged = 0;
+                Ok(())
+            }
+        }
+
+        let before = test_snapshot();
+        let transition = pane_surface_lifecycle::dispatch_lifecycle_request(
+            &before,
+            "pane.create",
+            json!({"direction":"right","type":"terminal"})
+                .as_object()
+                .unwrap(),
+            &pane_surface_lifecycle::LifecycleDispatchContext {
+                viewport_size: Some((1_000.0, 800.0)),
+                browser_enabled: true,
+                dock_available: false,
+                active_window_id: None,
+            },
+        );
+        let candidate = transition.snapshot.clone();
+        let effect_count = transition.effects.len();
+        let mut published = before.clone();
+        let mut executor = CommitFailure::default();
+        assert!(pane_surface_lifecycle::commit_lifecycle_transition(
+            &mut published,
+            transition,
+            &mut executor
+        )
+        .is_err());
+        assert_eq!(published, before);
+        assert_eq!(executor.prepared, Some(candidate));
+        assert_eq!(executor.compensated, effect_count);
+    }
+
+    #[test]
+    fn lifecycle_routing_uses_active_window_and_group_manager_selected_workspace() {
+        let mut snapshot = test_snapshot();
+        let mut second = snapshot.windows[0].clone();
+        second.window_id = Some("window-2".into());
+        let mut selected = second.tab_manager.workspaces[0].clone();
+        selected.workspace_id = Some("workspace-selected".into());
+        let SessionWorkspaceLayoutSnapshot::Pane(pane) = selected.layout.as_mut().unwrap() else {
+            unreachable!()
+        };
+        pane.pane_id = Some("pane-selected".into());
+        pane.panel_ids = vec!["surface-selected".into()];
+        pane.selected_panel_id = Some("surface-selected".into());
+        selected.focused_panel_id = Some("surface-selected".into());
+        let mut anchor = selected.clone();
+        anchor.workspace_id = Some("workspace-anchor".into());
+        anchor.focused_panel_id = Some("surface-anchor".into());
+        let SessionWorkspaceLayoutSnapshot::Pane(pane) = anchor.layout.as_mut().unwrap() else {
+            unreachable!()
+        };
+        pane.pane_id = Some("pane-anchor".into());
+        pane.panel_ids = vec!["surface-anchor".into()];
+        pane.selected_panel_id = Some("surface-anchor".into());
+        second.tab_manager.workspaces = vec![selected, anchor];
+        second.tab_manager.selected_workspace_index = Some(0);
+        second.tab_manager.workspace_groups = Some(vec![SessionWorkspaceGroupSnapshot {
+            id: "group-2".into(),
+            name: "Group".into(),
+            anchor_workspace_id: Some("workspace-anchor".into()),
+            ..Default::default()
+        }]);
+        snapshot.windows.push(second);
+        let context = pane_surface_lifecycle::LifecycleDispatchContext {
+            viewport_size: None,
+            browser_enabled: true,
+            dock_available: false,
+            active_window_id: Some("window-2".into()),
+        };
+
+        for params in [
+            json!({}),
+            json!({"window_id":null}),
+            json!({"group_id":"group-2"}),
+        ] {
+            let transition = pane_surface_lifecycle::dispatch_lifecycle_request(
+                &snapshot,
+                "surface.current",
+                params.as_object().unwrap(),
+                &context,
+            );
+            let ControlCallResult::Ok(value) = transition.result else {
+                panic!("route failed")
+            };
+            let value = Value::from(value);
+            assert_eq!(value["window_id"], "window-2");
+            assert_eq!(value["workspace_id"], "workspace-selected");
+        }
+    }
+
+    #[test]
+    fn lifecycle_surface_create_preserves_all_heterogeneous_kinds() {
+        let context = pane_surface_lifecycle::LifecycleDispatchContext {
+            viewport_size: None,
+            browser_enabled: true,
+            dock_available: false,
+            active_window_id: None,
+        };
+        // Canonical surfacePanelType (ControlSurfaceContext2.swift:517-528):
+        // only the recognized tokens map to non-terminal kinds; unknown tokens
+        // such as projectSidebar/diff fall back to terminal (the previous
+        // assertions pinned noncanonical distinct kinds for those tokens).
+        for (token, expected) in [
+            ("markdown", "markdown"),
+            ("filePreview", "filePreview"),
+            ("rightSidebarTool", "rightSidebarTool"),
+        ] {
+            let snapshot = test_snapshot();
+            let params = json!({"pane_id":"pane-1","type":token});
+            let transition = pane_surface_lifecycle::dispatch_lifecycle_request(
+                &snapshot,
+                "surface.create",
+                params.as_object().unwrap(),
+                &context,
+            );
+            let ControlCallResult::Ok(value) = &transition.result else {
+                panic!("{token} failed")
+            };
+            assert_eq!(Value::from(value.clone())["type"], expected);
+            assert!(transition.effects.iter().any(|effect| matches!(
+                effect,
+                pane_surface_lifecycle::LifecycleEffect::UiSurfaceAttach { kind, .. }
+                    if kind == expected
+            )));
+        }
+        for token in ["projectSidebar", "diff"] {
+            let snapshot = test_snapshot();
+            let params = json!({"pane_id":"pane-1","type":token});
+            let transition = pane_surface_lifecycle::dispatch_lifecycle_request(
+                &snapshot,
+                "surface.create",
+                params.as_object().unwrap(),
+                &context,
+            );
+            let ControlCallResult::Ok(value) = &transition.result else {
+                panic!("{token} failed")
+            };
+            assert_eq!(Value::from(value.clone())["type"], "terminal");
+            assert!(transition.effects.iter().any(|effect| matches!(
+                effect,
+                pane_surface_lifecycle::LifecycleEffect::TerminalCreate { .. }
+            )));
+        }
+
+        let invalid = pane_surface_lifecycle::dispatch_lifecycle_request(
+            &test_snapshot(),
+            "surface.create",
+            json!({"pane_id":"pane-1","type":"agentSession","renderer_kind":"canvas"})
+                .as_object()
+                .unwrap(),
+            &context,
+        );
+        assert!(
+            matches!(invalid.result, ControlCallResult::Err { code, .. } if code == "invalid_params")
+        );
+    }
+
+    #[test]
+    fn lifecycle_tab_refs_share_the_surface_handle_number() {
+        let mut registry = ControlHandleRegistry::default();
+        let surface_ref = registry.mint("surface", "550e8400-e29b-41d4-a716-446655440000");
+        assert_eq!(surface_ref, "surface:1");
+        let tab_ref = tab_ref_from_surface_ref(&surface_ref);
+        assert_eq!(tab_ref, "tab:1");
+        let normalized = surface_ref_from_tab_ref(&tab_ref).unwrap();
+        assert_eq!(normalized, "surface:1");
+        assert_eq!(
+            registry.resolve("surface", &normalized).as_deref(),
+            Some("550e8400-e29b-41d4-a716-446655440000")
+        );
+        assert_eq!(
+            registry.resolve("surface", "550e8400-e29b-41d4-a716-446655440000"),
+            None,
+            "UUIDs bypass the ref registry and remain unchanged"
+        );
+    }
+
+    #[test]
+    fn shell_execute_codes_only_succeed_above_documented_error_range() {
+        for code in [isize::MIN, 0, 2, 31, 32] {
+            assert!(!shell_execute_succeeded(code), "code {code}");
+        }
+        for code in [33, 42, isize::MAX] {
+            assert!(shell_execute_succeeded(code), "code {code}");
+        }
+    }
+
+    #[test]
+    fn lifecycle_result_decoration_covers_source_created_and_tab_id_families() {
+        let mut value = json!({
+            "window_id": "window-current",
+            "source_window_id": "window-source",
+            "workspace_id": "workspace-current",
+            "source_workspace_id": "workspace-source",
+            "created_workspace_id": "workspace-created",
+            "pane_id": "pane-current",
+            "surface_id": "surface-current",
+            "created_surface_id": "surface-created",
+            "tab_id": "surface-current",
+            "created_tab_id": "surface-created",
+            "nullable": { "created_surface_id": null },
+            "rows": [{ "id": "surface-row" }]
+        });
+        let mut registry = ControlHandleRegistry::default();
+        decorate_lifecycle_value_refs(&mut value, &mut |kind, id| registry.mint(kind, id));
+
+        assert_eq!(value["window_ref"], "window:1");
+        assert_eq!(value["source_window_ref"], "window:2");
+        assert_eq!(value["workspace_ref"], "workspace:1");
+        assert_eq!(value["source_workspace_ref"], "workspace:2");
+        assert_eq!(value["created_workspace_ref"], "workspace:3");
+        assert_eq!(value["pane_ref"], "pane:1");
+        assert_eq!(value["surface_ref"], "surface:1");
+        assert_eq!(value["created_surface_ref"], "surface:2");
+        assert_eq!(value["tab_ref"], "tab:1");
+        assert_eq!(value["created_tab_ref"], "tab:2");
+        assert_eq!(value["nullable"]["created_surface_ref"], Value::Null);
+        assert_eq!(value["rows"][0]["ref"], "surface:3");
+    }
+
+    #[test]
+    fn lifecycle_error_ref_decoration_is_restricted_to_canonical_cases() {
+        // Canonical: only the tab.action/surface.action Tab-not-found error
+        // data carries refs (ControlCommandCoordinator+SystemTabAction.swift:39-48)
+        // and surface.report_pwd's not_found errors carry the ref-bearing
+        // requested-identity block
+        // (ControlCommandCoordinator+Surface3.swift:240-251,365-375); every
+        // other lifecycle error keeps plain ids in its data (e.g.
+        // surface.respawn, ControlCommandCoordinator+Surface.swift:449-473).
+        // Success payloads stay decorated.
+        let mut registry = ControlHandleRegistry::default();
+        let mut mint = |kind: &'static str, id: &str| registry.mint(kind, id);
+        let error = |code: &str, message: &str, data: Value| ControlCallResult::Err {
+            code: code.into(),
+            message: message.into(),
+            data: JsonValue::try_from(data).ok(),
+        };
+        let data_of = |result: &ControlCallResult| -> Value {
+            let ControlCallResult::Err {
+                data: Some(data), ..
+            } = result
+            else {
+                panic!("expected error data");
+            };
+            Value::from(data.clone())
+        };
+
+        let mut respawn_error = error(
+            "not_found",
+            "Surface not found for the given surface_id",
+            json!({"surface_id":"550e8400-e29b-41d4-a716-446655440000"}),
+        );
+        assert!(decorate_lifecycle_result_refs_with(
+            "surface.respawn",
+            &mut respawn_error,
+            &mut mint
+        )
+        .is_none());
+        assert!(
+            data_of(&respawn_error).get("surface_ref").is_none(),
+            "non-canonical error decoration for surface.respawn"
+        );
+
+        let mut close_error = error(
+            "not_found",
+            "Surface not found",
+            json!({"surface_id":"550e8400-e29b-41d4-a716-446655440000"}),
+        );
+        decorate_lifecycle_result_refs_with("surface.close", &mut close_error, &mut mint);
+        assert!(data_of(&close_error).get("surface_ref").is_none());
+
+        for method in ["tab.action", "surface.action"] {
+            let mut tab_not_found = error(
+                "not_found",
+                "Tab not found",
+                json!({
+                    "surface_id":"550e8400-e29b-41d4-a716-446655440000",
+                    "tab_id":"550e8400-e29b-41d4-a716-446655440000"
+                }),
+            );
+            decorate_lifecycle_result_refs_with(method, &mut tab_not_found, &mut mint);
+            let data = data_of(&tab_not_found);
+            assert!(data["surface_ref"].is_string(), "{method}");
+            assert!(data["tab_ref"].is_string(), "{method}");
+
+            let mut unknown_action = error(
+                "invalid_params",
+                "Unknown tab action",
+                json!({"action":"bogus","supported_actions":[]}),
+            );
+            decorate_lifecycle_result_refs_with(method, &mut unknown_action, &mut mint);
+            assert_eq!(
+                data_of(&unknown_action),
+                json!({"action":"bogus","supported_actions":[]}),
+                "{method}"
+            );
+        }
+
+        let mut report_error = error(
+            "not_found",
+            "Workspace not found",
+            json!({"workspace_id":"650e8400-e29b-41d4-a716-446655440000","surface_id":null}),
+        );
+        decorate_lifecycle_result_refs_with("surface.report_pwd", &mut report_error, &mut mint);
+        let data = data_of(&report_error);
+        assert!(data["workspace_ref"].is_string());
+        assert_eq!(data["surface_ref"], Value::Null);
+
+        let mut success = ControlCallResult::Ok(
+            JsonValue::try_from(json!({"surface_id":"550e8400-e29b-41d4-a716-446655440000"}))
+                .unwrap(),
+        );
+        let decorated =
+            decorate_lifecycle_result_refs_with("surface.respawn", &mut success, &mut mint)
+                .expect("success decoration returns the decorated payload");
+        assert!(decorated["surface_ref"].is_string());
+    }
+
+    #[test]
+    fn control_pipe_name_override_is_validated_with_default_fallback() {
+        let default_path = cmux_ipc::control_pipe_path(CONTROL_PIPE_BASE_NAME).unwrap();
+        // Default unchanged when no override is present.
+        assert_eq!(control_pipe_path_for_base(None), default_path);
+        // A valid override is honored.
+        assert_eq!(
+            control_pipe_path_for_base(Some("cmux-test-fixture-7")),
+            cmux_ipc::control_pipe_path("cmux-test-fixture-7").unwrap()
+        );
+        // Invalid overrides (same rules as the pipe-path builder: empty,
+        // backslash, over-long) fall back to the default — never panic.
+        let long = "x".repeat(300);
+        for invalid in ["", "bad\\name", long.as_str()] {
+            assert_eq!(
+                control_pipe_path_for_base(Some(invalid)),
+                default_path,
+                "{invalid:?}"
+            );
+        }
+    }
+
     #[path = "pane_surface_lifecycle_red.rs"]
     mod pane_surface_lifecycle_red;
+
+    #[path = "surface_action_exhaustive_red.rs"]
+    mod surface_action_exhaustive_red;
+
+    #[path = "dock_api_adversarial_red.rs"]
+    mod dock_api_adversarial_red;
+
+    #[path = "dock_production_rollback_red.rs"]
+    mod dock_production_rollback_red;
+
+    #[path = "surface_action_adversarial_red.rs"]
+    mod surface_action_adversarial_red;
 }

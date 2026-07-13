@@ -244,12 +244,14 @@ pub async fn cmux_lib_rpc(
             "openMarkdownFile" => {
                 if let Some(path) = message.get("path").and_then(Value::as_str) {
                     if let Some(resolved) = resolve_markdown_file(path, &md_file, &cwd) {
-                        let _ = crate::session::open_markdown_file_in_panel(
+                        if let Err(error) = crate::session::open_markdown_file_in_panel(
                             &app,
                             &session_state,
                             &panel_id,
                             &resolved,
-                        );
+                        ) {
+                            eprintln!("[markdown] failed to persist opened file: {error}");
+                        }
                     }
                 }
             }

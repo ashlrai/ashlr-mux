@@ -28,13 +28,14 @@ describe("right sidebar remote state", () => {
     ).toEqual({ visible: false, mode: "find" });
   });
 
-  test("accepts Feed events but ignores unimplemented or malformed modes", () => {
+  test("accepts implemented beta modes but ignores malformed modes", () => {
     expect(
       rightSidebarStateFromRemote(filesClosed, { visible: true, mode: "feed" }),
     ).toEqual({ visible: true, mode: "feed" });
-    expect(
-      rightSidebarStateFromRemote(filesClosed, { visible: true, mode: "dock" }),
-    ).toEqual({ visible: true, mode: "files" });
+    expect(rightSidebarStateFromRemote(filesClosed, { visible: true, mode: "dock" })).toEqual({
+      visible: true,
+      mode: "dock",
+    });
     expect(
       rightSidebarStateFromRemote(filesClosed, { visible: true, mode: 42 }),
     ).toEqual({ visible: true, mode: "files" });
@@ -49,6 +50,10 @@ describe("right sidebar remote state", () => {
     expect(rightSidebarModeItems({ feedEnabled: true, dockEnabled: false })).toContainEqual({
       mode: "feed",
       label: "Feed",
+    });
+    expect(rightSidebarModeItems({ feedEnabled: false, dockEnabled: true })).toContainEqual({
+      mode: "dock",
+      label: "Dock",
     });
   });
 });

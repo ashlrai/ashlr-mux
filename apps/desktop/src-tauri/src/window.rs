@@ -286,6 +286,18 @@ fn cloned_main_window_config(
     Ok(config)
 }
 
+fn append_compensation_failures(primary: String, failures: Vec<String>) -> String {
+    if failures.is_empty() {
+        primary
+    } else {
+        format!("{primary}; compensation failed: {}", failures.join("; "))
+    }
+}
+
+fn close_main_window(window: &WebviewWindow) -> Result<(), String> {
+    window.close().map_err(|error| error.to_string())
+}
+
 pub fn emit_window_state(window: &WebviewWindow) -> Result<WindowStateSnapshot, String> {
     let snapshot = read_window_state(&window)?;
     window
@@ -351,7 +363,8 @@ pub fn window_toggle_fullscreen(window: WebviewWindow) -> Result<WindowStateSnap
 #[tauri::command]
 pub async fn window_new(app: AppHandle, window: WebviewWindow) -> Result<String, String> {
     let label = next_window_label(&app);
-    let config = cloned_main_window_config(&app, label.clone())?;
+    let mut config = cloned_main_window_config(&app, label.clone())?;
+    config.visible = false;
     let new_window = tauri::WebviewWindowBuilder::from_config(&app, &config)
         .map_err(|error| error.to_string())?
         .build()
@@ -362,10 +375,31 @@ pub async fn window_new(app: AppHandle, window: WebviewWindow) -> Result<String,
     if let Ok(title) = window.title() {
         let _ = new_window.set_title(&title);
     }
-    install_window_state_listener(&new_window);
-    let _ = emit_window_state(&new_window);
     let state = app.state::<crate::session::SessionState>();
-    crate::session::register_window_for_control(&app, state.inner(), &label);
+    if let Err(message) = crate::session::register_window_for_control(&app, state.inner(), &label) {
+        let failures = new_window
+            .close()
+            .err()
+            .map(|error| vec![error.to_string()])
+            .unwrap_or_default();
+        return Err(append_compensation_failures(message, failures));
+    }
+    install_window_state_listener(&new_window);
+    if let Err(error) = new_window.show() {
+        let mut failures = Vec::new();
+        match crate::session::unregister_window_for_control(&app, state.inner(), &label) {
+            Ok(crate::session::UnregisterWindowOutcome::Removed { .. }) => {}
+            Ok(crate::session::UnregisterWindowOutcome::Unchanged(_)) => {
+                failures.push(format!("registered window model {label} was not removed"))
+            }
+            Err(error) => failures.push(error),
+        }
+        if let Err(error) = new_window.close() {
+            failures.push(error.to_string());
+        }
+        return Err(append_compensation_failures(error.to_string(), failures));
+    }
+    let _ = emit_window_state(&new_window);
     Ok(label)
 }
 
@@ -373,10 +407,46 @@ pub async fn window_new(app: AppHandle, window: WebviewWindow) -> Result<String,
 pub fn window_close(window: WebviewWindow) -> Result<(), String> {
     let label = window.label().to_string();
     let app = window.app_handle().clone();
-    window.close().map_err(|error| error.to_string())?;
-    if label != MAIN_WINDOW_LABEL {
-        let state = app.state::<crate::session::SessionState>();
-        crate::session::unregister_window_for_control(&app, state.inner(), &label);
+    if label == MAIN_WINDOW_LABEL {
+        return close_main_window(&window);
+    }
+    window.hide().map_err(|error| error.to_string())?;
+    let state = app.state::<crate::session::SessionState>();
+    let outcome = match crate::session::unregister_window_for_control(&app, state.inner(), &label) {
+        Ok(outcome) => outcome,
+        Err(message) => {
+            let failures = window
+                .show()
+                .err()
+                .map(|error| vec![error.to_string()])
+                .unwrap_or_default();
+            return Err(append_compensation_failures(message, failures));
+        }
+    };
+    let crate::session::UnregisterWindowOutcome::Removed { lease, .. } = outcome else {
+        return match window.close() {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let failures = window
+                    .show()
+                    .err()
+                    .map(|error| vec![error.to_string()])
+                    .unwrap_or_default();
+                Err(append_compensation_failures(error.to_string(), failures))
+            }
+        };
+    };
+    if let Err(error) = window.close() {
+        let mut failures = Vec::new();
+        if let Err(error) =
+            crate::session::restore_removed_window_for_control(&app, state.inner(), &lease)
+        {
+            failures.push(error);
+        }
+        if let Err(error) = window.show() {
+            failures.push(error.to_string());
+        }
+        return Err(append_compensation_failures(error.to_string(), failures));
     }
     Ok(())
 }

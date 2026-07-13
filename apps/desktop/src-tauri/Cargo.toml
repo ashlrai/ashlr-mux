@@ -51,6 +51,7 @@ time = "0.3"
 tauri-plugin-deep-link = "2.0.0"
 native-tls = "0.2"
 url = "2"
+parking_lot = "0.12"
 
 [dev-dependencies]
 # Temp fixtures for the diff-store / markdown-asset / scheme unit tests.
@@ -65,4 +66,7 @@ windows = { version = "0.61", features = [
   "Win32_Networking_WinSock",
   "Win32_NetworkManagement_IpHelper",
   "Win32_System_Diagnostics_ToolHelp",
+  "Win32_Storage_FileSystem",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
 ] }

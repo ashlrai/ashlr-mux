@@ -1317,6 +1317,7 @@ export function App(): React.JSX.Element {
           preferredEditor={settingsConfig?.app?.preferredEditor}
           rightMaxWidth={sidebarSettings?.right_max_width}
           feedEnabled={rightSidebarBetaSettings?.feed_enabled ?? false}
+          dockEnabled={rightSidebarBetaSettings?.dock_enabled ?? false}
           onModeChange={setRightSidebarMode}
           onOpenFind={openFindInDirectory}
           onClose={() => setFileExplorerOpen(false)}
@@ -1329,7 +1330,7 @@ export function App(): React.JSX.Element {
           setRightSidebarMode: openRightSidebarMode,
           rightSidebarModeAvailability: {
             feedEnabled: rightSidebarBetaSettings?.feed_enabled ?? false,
-            dockEnabled: false,
+            dockEnabled: rightSidebarBetaSettings?.dock_enabled ?? false,
           },
           openSettings,
           openNotifications: () => setNotificationsOpen(true),

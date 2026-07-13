@@ -500,7 +500,11 @@ fn route_notification_activation(
         &state,
         &activation.tab_id,
         &target_panel_id,
-    );
+    )
+    .map_err(|error| match error {
+        crate::session::PaneTopologyControlError::Publication(error) => error,
+        crate::session::PaneTopologyControlError::Operation(error) => match error {},
+    })?;
     let handled = changed
         || crate::session::workspace_surface_is_selected(
             &snapshot,

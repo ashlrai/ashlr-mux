@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
@@ -20,6 +20,7 @@ const NETWORK_HTTP_HEAD_CAPTURE_LIMIT_BYTES: usize = 64 * 1024;
 const BROWSER_EVAL_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct BrowserWebviewState {
+    reserved_panel_ids: Mutex<BTreeSet<String>>,
     webviews: Mutex<HashMap<String, BrowserChild>>,
     init_scripts: Mutex<HashMap<String, Vec<String>>>,
     network_records: Mutex<HashMap<String, Vec<BrowserNetworkRecord>>>,
@@ -29,6 +30,7 @@ pub struct BrowserWebviewState {
 impl Default for BrowserWebviewState {
     fn default() -> Self {
         Self {
+            reserved_panel_ids: Mutex::new(BTreeSet::new()),
             webviews: Mutex::new(HashMap::new()),
             init_scripts: Mutex::new(HashMap::new()),
             network_records: Mutex::new(HashMap::new()),
@@ -45,6 +47,253 @@ struct BrowserChild {
     bounds: BrowserWebviewBounds,
     visible: bool,
     zoom: Option<f64>,
+}
+
+#[allow(dead_code)]
+pub(crate) struct BrowserPanelRuntimeEntry {
+    child: Option<BrowserChild>,
+    network_records: Option<Vec<BrowserNetworkRecord>>,
+    init_scripts: Option<Vec<String>>,
+}
+
+#[allow(dead_code)]
+pub(crate) struct BrowserPanelRuntimeLease {
+    panel_ids: BTreeSet<String>,
+    entries: BTreeMap<String, BrowserPanelRuntimeEntry>,
+}
+
+#[allow(dead_code)]
+pub(crate) struct BrowserPanelRollbackError {
+    pub(crate) message: String,
+    pub(crate) lease: BrowserPanelRuntimeLease,
+}
+
+#[allow(dead_code)]
+pub(crate) struct BrowserPanelFinalizeError {
+    pub(crate) failures: Vec<String>,
+    pub(crate) retry: BrowserPanelRuntimeLease,
+}
+
+struct BrowserPanelMutationReservation<'a> {
+    state: &'a BrowserWebviewState,
+    panel_id: String,
+    active: bool,
+}
+
+impl BrowserPanelMutationReservation<'_> {
+    fn release(&mut self) -> Result<(), String> {
+        self.state
+            .reserved_panel_ids
+            .lock()
+            .map_err(|_| "browser reservation state lock poisoned".to_string())?
+            .remove(&self.panel_id);
+        self.active = false;
+        Ok(())
+    }
+
+    fn disarm(&mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for BrowserPanelMutationReservation<'_> {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        let mut reserved_panel_ids = self
+            .state
+            .reserved_panel_ids
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        reserved_panel_ids.remove(&self.panel_id);
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) fn detach_browser_panels_for_control(
+    state: &BrowserWebviewState,
+    panel_ids: &BTreeSet<String>,
+) -> Result<BrowserPanelRuntimeLease, String> {
+    let panel_ids = panel_ids
+        .iter()
+        .filter_map(|panel_id| {
+            let panel_id = panel_id.trim();
+            (!panel_id.is_empty()).then(|| panel_id.to_string())
+        })
+        .collect::<BTreeSet<_>>();
+    let mut reserved_panel_ids = state
+        .reserved_panel_ids
+        .lock()
+        .map_err(|_| "browser reservation state lock poisoned".to_string())?;
+    let mut webviews = state
+        .webviews
+        .lock()
+        .map_err(|_| "browser webview state lock poisoned".to_string())?;
+    let mut network_records = state
+        .network_records
+        .lock()
+        .map_err(|_| "browser network record state lock poisoned".to_string())?;
+    let mut init_scripts = state
+        .init_scripts
+        .lock()
+        .map_err(|_| "browser init script state lock poisoned".to_string())?;
+    if let Some(panel_id) = panel_ids
+        .iter()
+        .find(|panel_id| reserved_panel_ids.contains(*panel_id))
+    {
+        return Err(format!("browser panel {panel_id} is already reserved"));
+    }
+
+    reserved_panel_ids.extend(panel_ids.iter().cloned());
+    let entries = panel_ids
+        .iter()
+        .map(|panel_id| {
+            (
+                panel_id.clone(),
+                BrowserPanelRuntimeEntry {
+                    child: webviews.remove(panel_id),
+                    network_records: network_records.remove(panel_id),
+                    init_scripts: init_scripts.remove(panel_id),
+                },
+            )
+        })
+        .collect();
+    Ok(BrowserPanelRuntimeLease { panel_ids, entries })
+}
+
+#[allow(dead_code)]
+pub(crate) fn rollback_browser_panels_for_control(
+    state: &BrowserWebviewState,
+    lease: BrowserPanelRuntimeLease,
+) -> Result<(), BrowserPanelRollbackError> {
+    let mut reserved_panel_ids = state
+        .reserved_panel_ids
+        .lock()
+        .expect("browser reservation state lock poisoned");
+    let mut webviews = state
+        .webviews
+        .lock()
+        .expect("browser webview state lock poisoned");
+    let mut network_records = state
+        .network_records
+        .lock()
+        .expect("browser network record state lock poisoned");
+    let mut init_scripts = state
+        .init_scripts
+        .lock()
+        .expect("browser init script state lock poisoned");
+    let lost_ownership = lease
+        .panel_ids
+        .iter()
+        .find(|panel_id| !reserved_panel_ids.contains(*panel_id));
+    let collision = lease.entries.iter().find_map(|(panel_id, entry)| {
+        (entry.child.is_some() && webviews.contains_key(panel_id))
+            .then(|| format!("webview collision for {panel_id}"))
+            .or_else(|| {
+                (entry.network_records.is_some() && network_records.contains_key(panel_id))
+                    .then(|| format!("network record collision for {panel_id}"))
+            })
+            .or_else(|| {
+                (entry.init_scripts.is_some() && init_scripts.contains_key(panel_id))
+                    .then(|| format!("init script collision for {panel_id}"))
+            })
+    });
+    if lost_ownership.is_some() || collision.is_some() {
+        let message = lost_ownership
+            .map(|panel_id| format!("reservation ownership lost for {panel_id}"))
+            .or(collision)
+            .expect("browser rollback precheck failed");
+        return Err(BrowserPanelRollbackError { message, lease });
+    }
+
+    for (panel_id, entry) in lease.entries {
+        if let Some(child) = entry.child {
+            webviews.insert(panel_id.clone(), child);
+        }
+        if let Some(records) = entry.network_records {
+            network_records.insert(panel_id.clone(), records);
+        }
+        if let Some(scripts) = entry.init_scripts {
+            init_scripts.insert(panel_id, scripts);
+        }
+    }
+    for panel_id in lease.panel_ids {
+        reserved_panel_ids.remove(&panel_id);
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub(crate) fn finalize_browser_panels_for_control(
+    state: &BrowserWebviewState,
+    lease: BrowserPanelRuntimeLease,
+) -> Result<(), BrowserPanelFinalizeError> {
+    let reserved_panel_ids = state
+        .reserved_panel_ids
+        .lock()
+        .expect("browser reservation state lock poisoned");
+    let owned = lease
+        .panel_ids
+        .iter()
+        .all(|panel_id| reserved_panel_ids.contains(panel_id));
+    drop(reserved_panel_ids);
+    if !owned {
+        return Err(BrowserPanelFinalizeError {
+            failures: vec!["browser finalize reservation ownership lost".to_string()],
+            retry: lease,
+        });
+    }
+
+    let mut failures = Vec::new();
+    let mut retry_panel_ids = BTreeSet::new();
+    let mut retry = BTreeMap::new();
+    for (panel_id, mut entry) in lease.entries {
+        let result = entry.child.as_mut().map_or(Ok(()), |child| {
+            child.webview.close().map_err(|error| error.to_string())
+        });
+        if let Err(error) = result {
+            failures.push(format!("{panel_id}: {error}"));
+            retry_panel_ids.insert(panel_id.clone());
+            retry.insert(panel_id, entry);
+        }
+    }
+
+    let mut reserved_panel_ids = state
+        .reserved_panel_ids
+        .lock()
+        .expect("browser reservation state lock poisoned");
+    for panel_id in &lease.panel_ids {
+        if !retry_panel_ids.contains(panel_id) {
+            reserved_panel_ids.remove(panel_id);
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(BrowserPanelFinalizeError {
+            failures,
+            retry: BrowserPanelRuntimeLease {
+                panel_ids: retry_panel_ids,
+                entries: retry,
+            },
+        })
+    }
+}
+
+fn finalize_or_restore_browser_panels(
+    state: &BrowserWebviewState,
+    lease: BrowserPanelRuntimeLease,
+) -> Result<(), String> {
+    match finalize_browser_panels_for_control(state, lease) {
+        Ok(()) => Ok(()),
+        Err(finalize) => {
+            let message = finalize.failures.join("; ");
+            rollback_browser_panels_for_control(state, finalize.retry)
+                .map_err(|rollback| format!("{message}; {}", rollback.message))?;
+            Err(message)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -168,20 +417,22 @@ pub async fn browser_attach_webview(
         visible.unwrap_or(true),
         zoom,
         proxy_url,
+        None,
     )
 }
 
 pub(crate) fn browser_attach_webview_for_control(
     app: &AppHandle,
     state: &BrowserWebviewState,
+    window_id: &str,
     panel_id: &str,
     url: Option<&str>,
     proxy_url: Option<&str>,
     visible: bool,
 ) -> Result<BrowserWebviewReply, String> {
     let window = app
-        .get_window("main")
-        .ok_or_else(|| "main window is not available for browser WebView attach".to_string())?;
+        .get_window(window_id)
+        .ok_or_else(|| format!("{window_id} window is not available for browser WebView attach"))?;
     upsert_browser_webview(
         app,
         &window,
@@ -197,6 +448,7 @@ pub(crate) fn browser_attach_webview_for_control(
         visible,
         None,
         proxy_url.map(str::to_string),
+        None,
     )
 }
 
@@ -222,6 +474,7 @@ pub async fn browser_update_webview(
         visible.unwrap_or(true),
         zoom,
         proxy_url,
+        None,
     )
 }
 
@@ -230,25 +483,55 @@ pub fn browser_close_webview(
     state: State<'_, BrowserWebviewState>,
     panel_id: String,
 ) -> Result<(), String> {
-    let Some(child) = state
+    let panel_ids = BTreeSet::from([panel_id]);
+    let lease = detach_browser_panels_for_control(state.inner(), &panel_ids)?;
+    finalize_or_restore_browser_panels(state.inner(), lease)
+}
+
+#[cfg(test)]
+pub(crate) fn strict_browser_runtime_teardown_transaction<T>(
+    prepare: impl FnOnce() -> Result<T, String>,
+    close: impl FnOnce(&T) -> Result<(), String>,
+    commit: impl FnOnce(T) -> Result<(), String>,
+) -> Result<(), String> {
+    let prepared = prepare()?;
+    close(&prepared)?;
+    commit(prepared)
+}
+
+pub(crate) fn browser_close_webview_strict_for_control(
+    state: &BrowserWebviewState,
+    panel_id: &str,
+) -> Result<(), String> {
+    let panel_ids = BTreeSet::from([panel_id.to_string()]);
+    let lease = detach_browser_panels_for_control(state, &panel_ids)?;
+    if lease
+        .entries
+        .get(panel_id)
+        .is_none_or(|entry| entry.child.is_none())
+    {
+        rollback_browser_panels_for_control(state, lease).map_err(|rollback| rollback.message)?;
+        return Err(format!("browser runtime {panel_id} is unavailable"));
+    }
+    finalize_or_restore_browser_panels(state, lease)
+}
+
+pub(crate) fn browser_has_webview_for_control(
+    state: &BrowserWebviewState,
+    panel_id: &str,
+) -> Result<bool, String> {
+    let reserved_panel_ids = state
+        .reserved_panel_ids
+        .lock()
+        .map_err(|_| "browser reservation state lock poisoned".to_string())?;
+    if reserved_panel_ids.contains(panel_id) {
+        return Err(format!("browser panel {panel_id} is reserved"));
+    }
+    state
         .webviews
         .lock()
-        .map_err(|_| "browser webview state lock poisoned".to_string())?
-        .remove(&panel_id)
-    else {
-        return Ok(());
-    };
-    state
-        .network_records
-        .lock()
-        .map_err(|_| "browser network record state lock poisoned".to_string())?
-        .remove(&panel_id);
-    state
-        .init_scripts
-        .lock()
-        .map_err(|_| "browser init script state lock poisoned".to_string())?
-        .remove(&panel_id);
-    child.webview.close().map_err(|error| error.to_string())
+        .map(|webviews| webviews.contains_key(panel_id))
+        .map_err(|_| "browser webview state lock poisoned".to_string())
 }
 
 #[tauri::command]
@@ -274,6 +557,13 @@ pub(crate) fn browser_webview_command_for_control(
     command: &str,
 ) -> Result<BrowserWebviewCommandReply, String> {
     let webview = {
+        let reserved_panel_ids = state
+            .reserved_panel_ids
+            .lock()
+            .map_err(|_| "browser reservation state lock poisoned".to_string())?;
+        if reserved_panel_ids.contains(panel_id) {
+            return Err(format!("browser panel {panel_id} is reserved"));
+        }
         let guard = state
             .webviews
             .lock()
@@ -313,6 +603,13 @@ pub(crate) fn browser_eval_for_control(
     script: &str,
 ) -> Result<Value, String> {
     let webview = {
+        let reserved_panel_ids = state
+            .reserved_panel_ids
+            .lock()
+            .map_err(|_| "browser reservation state lock poisoned".to_string())?;
+        if reserved_panel_ids.contains(panel_id) {
+            return Err(format!("browser panel {panel_id} is reserved"));
+        }
         let guard = state
             .webviews
             .lock()
@@ -347,56 +644,135 @@ pub(crate) fn browser_add_init_script_for_control(
     panel_id: &str,
     script: &str,
 ) -> Result<BrowserWebviewReply, String> {
-    let window = app
-        .get_window("main")
-        .ok_or_else(|| "main window is not available for browser WebView attach".to_string())?;
-    let (url, proxy_url, bounds, visible, zoom, webview) = {
-        let mut guard = state
+    let mut reserved_panel_ids = state
+        .reserved_panel_ids
+        .lock()
+        .map_err(|_| "browser reservation state lock poisoned".to_string())?;
+    if reserved_panel_ids.contains(panel_id) {
+        return Err(format!("browser panel {panel_id} is reserved"));
+    }
+    reserved_panel_ids.insert(panel_id.to_string());
+    drop(reserved_panel_ids);
+    let mut mutation_reservation = BrowserPanelMutationReservation {
+        state,
+        panel_id: panel_id.to_string(),
+        active: true,
+    };
+    let (old_child, prior_scripts) = {
+        let mut webviews = state
             .webviews
             .lock()
             .map_err(|_| "browser webview state lock poisoned".to_string())?;
-        let Some(child) = guard.get_mut(panel_id) else {
-            return Err(format!(
-                "browser WebView is not attached for surface {panel_id}"
-            ));
-        };
-        (
-            child.url.clone(),
-            child.proxy_url.clone(),
-            child.bounds.clone(),
-            child.visible,
-            child.zoom,
-            child.webview.clone(),
-        )
-    };
-    {
-        state
+        let mut init_scripts = state
             .init_scripts
             .lock()
-            .map_err(|_| "browser init script state lock poisoned".to_string())?
+            .map_err(|_| "browser init script state lock poisoned".to_string())?;
+        let old_child = webviews
+            .remove(panel_id)
+            .ok_or_else(|| format!("browser WebView is not attached for surface {panel_id}"))?;
+        let prior_scripts = init_scripts.get(panel_id).cloned();
+        init_scripts
             .entry(panel_id.to_string())
             .or_default()
             .push(script.to_string());
-    }
-    {
-        state
+        (old_child, prior_scripts)
+    };
+    let url = old_child.url.clone();
+    let proxy_url = old_child.proxy_url.clone();
+    let bounds = old_child.bounds.clone();
+    let visible = old_child.visible;
+    let zoom = old_child.zoom;
+    if let Err(error) = old_child.webview.close().map_err(|error| error.to_string()) {
+        let mut webviews = state
             .webviews
             .lock()
-            .map_err(|_| "browser webview state lock poisoned".to_string())?
-            .remove(panel_id);
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut init_scripts = state
+            .init_scripts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        webviews.insert(panel_id.to_string(), old_child);
+        restore_browser_init_scripts(&mut init_scripts, panel_id, prior_scripts);
+        drop(init_scripts);
+        drop(webviews);
+        mutation_reservation.release()?;
+        return Err(error);
     }
-    webview.close().map_err(|error| error.to_string())?;
-    upsert_browser_webview(
-        app,
-        &window,
-        state,
-        panel_id.to_string(),
-        Some(url),
-        bounds,
-        visible,
-        zoom,
-        proxy_url,
-    )
+
+    let rebuilt = app
+        .get_window("main")
+        .ok_or_else(|| "main window is not available for browser WebView attach".to_string())
+        .and_then(|window| {
+            upsert_browser_webview(
+                app,
+                &window,
+                state,
+                panel_id.to_string(),
+                Some(url.clone()),
+                bounds.clone(),
+                visible,
+                zoom,
+                proxy_url.clone(),
+                Some(&mut mutation_reservation),
+            )
+        });
+    match rebuilt {
+        Ok(reply) => {
+            mutation_reservation.release()?;
+            record_observed_navigation(state, panel_id, &url)?;
+            Ok(reply)
+        }
+        Err(primary) => {
+            {
+                let mut init_scripts = state
+                    .init_scripts
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                restore_browser_init_scripts(&mut init_scripts, panel_id, prior_scripts);
+            }
+            let restored = app
+                .get_window("main")
+                .ok_or_else(|| {
+                    "main window is not available for browser WebView restore".to_string()
+                })
+                .and_then(|window| {
+                    upsert_browser_webview(
+                        app,
+                        &window,
+                        state,
+                        panel_id.to_string(),
+                        Some(url),
+                        bounds,
+                        visible,
+                        zoom,
+                        proxy_url,
+                        Some(&mut mutation_reservation),
+                    )
+                });
+            mutation_reservation.release()?;
+            match restored {
+                Ok(_) => Err(primary),
+                Err(restore) => Err(format!(
+                    "{primary}; failed to restore browser runtime: {restore}"
+                )),
+            }
+        }
+    }
+}
+
+fn restore_browser_init_scripts(
+    init_scripts: &mut HashMap<String, Vec<String>>,
+    panel_id: &str,
+    prior_scripts: Option<Vec<String>>,
+) {
+    match prior_scripts {
+        Some(scripts) => {
+            init_scripts.insert(panel_id.to_string(), scripts);
+        }
+        None => {
+            init_scripts.remove(panel_id);
+        }
+    }
 }
 
 fn parse_webview_eval_callback_value(raw: &str) -> Result<Value, String> {
@@ -439,16 +815,17 @@ pub fn browser_clear_network_requests(
     browser_clear_network_requests_for_control(state.inner(), &panel_id)
 }
 
-fn upsert_browser_webview(
+fn upsert_browser_webview<'a>(
     app: &AppHandle,
     window: &Window,
-    state: &BrowserWebviewState,
+    state: &'a BrowserWebviewState,
     panel_id: String,
     url: Option<String>,
     bounds: BrowserWebviewBounds,
     visible: bool,
     zoom: Option<f64>,
     proxy_url: Option<String>,
+    mutation_reservation: Option<&mut BrowserPanelMutationReservation<'a>>,
 ) -> Result<BrowserWebviewReply, String> {
     let normalized_url = normalize_child_url(url.as_deref())?;
     let webview_url = parse_child_url(&normalized_url)?;
@@ -456,6 +833,47 @@ fn upsert_browser_webview(
     let bounds = normalize_bounds(bounds);
     let label = browser_webview_label(&panel_id);
 
+    let owns_mutation_reservation = mutation_reservation.is_none();
+    let mut owned_mutation_reservation = if owns_mutation_reservation {
+        let mut reserved_panel_ids = state
+            .reserved_panel_ids
+            .lock()
+            .map_err(|_| "browser reservation state lock poisoned".to_string())?;
+        if reserved_panel_ids.contains(&panel_id) {
+            return Err(format!("browser panel {panel_id} is reserved"));
+        }
+        reserved_panel_ids.insert(panel_id.clone());
+        drop(reserved_panel_ids);
+        Some(BrowserPanelMutationReservation {
+            state,
+            panel_id: panel_id.clone(),
+            active: true,
+        })
+    } else {
+        None
+    };
+    let mutation_reservation = match mutation_reservation {
+        Some(reservation) => {
+            let reserved_panel_ids = state
+                .reserved_panel_ids
+                .lock()
+                .map_err(|_| "browser reservation state lock poisoned".to_string())?;
+            if !reservation.active
+                || !std::ptr::eq(reservation.state, state)
+                || reservation.panel_id != panel_id
+                || !reserved_panel_ids.contains(&panel_id)
+            {
+                return Err(format!(
+                    "browser panel {panel_id} mutation ownership is unavailable"
+                ));
+            }
+            drop(reserved_panel_ids);
+            reservation
+        }
+        None => owned_mutation_reservation
+            .as_mut()
+            .expect("owned browser mutation reservation"),
+    };
     let existing = {
         let guard = state
             .webviews
@@ -479,13 +897,15 @@ fn upsert_browser_webview(
         .unwrap_or_default();
     if let Some((webview, child_label, child_url, child_proxy_url)) = existing {
         if child_proxy_url != normalized_proxy_url {
-            state
+            let mut webviews = state
                 .webviews
                 .lock()
-                .map_err(|_| "browser webview state lock poisoned".to_string())?
-                .remove(&panel_id);
+                .map_err(|_| "browser webview state lock poisoned".to_string())?;
+            webviews.remove(&panel_id);
+            drop(webviews);
             webview.close().map_err(|error| error.to_string())?;
         } else {
+            let mut navigated = false;
             webview
                 .set_position(LogicalPosition::new(bounds.x, bounds.y))
                 .map_err(|error| error.to_string())?;
@@ -497,7 +917,7 @@ fn upsert_browser_webview(
                 webview
                     .navigate(webview_url)
                     .map_err(|error| error.to_string())?;
-                record_observed_navigation(state, &panel_id, &normalized_url)?;
+                navigated = true;
                 if let Some(child) = state
                     .webviews
                     .lock()
@@ -521,6 +941,12 @@ fn upsert_browser_webview(
                 child.bounds = bounds.clone();
                 child.visible = visible;
                 child.zoom = zoom.or(child.zoom);
+            }
+            if owns_mutation_reservation {
+                mutation_reservation.release()?;
+            }
+            if navigated && owns_mutation_reservation {
+                record_observed_navigation(state, &panel_id, &normalized_url)?;
             }
             return Ok(BrowserWebviewReply {
                 panel_id,
@@ -567,29 +993,60 @@ fn upsert_browser_webview(
             LogicalSize::new(bounds.width, bounds.height),
         )
         .map_err(|error| error.to_string())?;
-    apply_visibility(&webview, visible)?;
-    if let Some(zoom) = zoom {
-        webview
-            .set_zoom(normalize_zoom(zoom))
-            .map_err(|error| error.to_string())?;
+    if let Err(error) = apply_visibility(&webview, visible) {
+        let _ = webview.close();
+        return Err(error);
     }
-    state
-        .webviews
-        .lock()
-        .map_err(|_| "browser webview state lock poisoned".to_string())?
-        .insert(
-            panel_id.clone(),
-            BrowserChild {
-                webview,
-                label: label.clone(),
-                url: normalized_url.clone(),
-                proxy_url: normalized_proxy_url.clone(),
-                bounds: bounds.clone(),
-                visible,
-                zoom,
-            },
-        );
-    record_observed_navigation(state, &panel_id, &normalized_url)?;
+    if let Some(zoom) = zoom {
+        if let Err(error) = webview
+            .set_zoom(normalize_zoom(zoom))
+            .map_err(|error| error.to_string())
+        {
+            let _ = webview.close();
+            return Err(error);
+        }
+    }
+    let mut reserved_panel_ids = match state.reserved_panel_ids.lock() {
+        Ok(reserved_panel_ids) => reserved_panel_ids,
+        Err(_) => {
+            let _ = webview.close();
+            return Err("browser reservation state lock poisoned".to_string());
+        }
+    };
+    if !reserved_panel_ids.contains(&panel_id) {
+        drop(reserved_panel_ids);
+        webview.close().map_err(|error| error.to_string())?;
+        return Err(format!("browser panel {panel_id} reservation was lost"));
+    }
+    let mut webviews = match state.webviews.lock() {
+        Ok(webviews) => webviews,
+        Err(_) => {
+            drop(reserved_panel_ids);
+            let _ = webview.close();
+            return Err("browser webview state lock poisoned".to_string());
+        }
+    };
+    webviews.insert(
+        panel_id.clone(),
+        BrowserChild {
+            webview,
+            label: label.clone(),
+            url: normalized_url.clone(),
+            proxy_url: normalized_proxy_url.clone(),
+            bounds: bounds.clone(),
+            visible,
+            zoom,
+        },
+    );
+    if owns_mutation_reservation {
+        reserved_panel_ids.remove(&panel_id);
+        mutation_reservation.disarm();
+    }
+    drop(webviews);
+    drop(reserved_panel_ids);
+    if owns_mutation_reservation {
+        record_observed_navigation(state, &panel_id, &normalized_url)?;
+    }
 
     Ok(BrowserWebviewReply {
         panel_id,
@@ -606,6 +1063,13 @@ pub(crate) fn browser_network_requests_for_control(
     panel_id: &str,
     query: BrowserNetworkRequestsQuery,
 ) -> Result<BrowserNetworkRequestsReply, String> {
+    let reserved_panel_ids = state
+        .reserved_panel_ids
+        .lock()
+        .map_err(|_| "browser reservation state lock poisoned".to_string())?;
+    if reserved_panel_ids.contains(panel_id) {
+        return Err(format!("browser panel {panel_id} is reserved"));
+    }
     let all_requests = state
         .network_records
         .lock()
@@ -633,6 +1097,13 @@ pub(crate) fn browser_clear_network_requests_for_control(
     state: &BrowserWebviewState,
     panel_id: &str,
 ) -> Result<BrowserNetworkClearReply, String> {
+    let reserved_panel_ids = state
+        .reserved_panel_ids
+        .lock()
+        .map_err(|_| "browser reservation state lock poisoned".to_string())?;
+    if reserved_panel_ids.contains(panel_id) {
+        return Err(format!("browser panel {panel_id} is reserved"));
+    }
     let mut guard = state
         .network_records
         .lock()
@@ -1182,6 +1653,13 @@ fn push_network_record(
     state: &BrowserWebviewState,
     record: BrowserNetworkRecord,
 ) -> Result<(), String> {
+    let reserved_panel_ids = state
+        .reserved_panel_ids
+        .lock()
+        .map_err(|_| "browser reservation state lock poisoned".to_string())?;
+    if reserved_panel_ids.contains(&record.panel_id) {
+        return Err(format!("browser panel {} is reserved", record.panel_id));
+    }
     let mut guard = state
         .network_records
         .lock()
