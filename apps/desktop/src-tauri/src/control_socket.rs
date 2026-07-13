@@ -861,8 +861,19 @@ fn restart_control_socket_listener_inner(
 }
 
 fn control_pipe_path() -> String {
-    cmux_ipc::control_pipe_path(CONTROL_PIPE_BASE_NAME)
-        .expect("static control pipe base name is valid")
+    control_pipe_path_for_base(std::env::var("CMUX_CONTROL_PIPE_NAME").ok().as_deref())
+}
+
+/// `CMUX_CONTROL_PIPE_NAME` overrides the control pipe base name so test
+/// fixtures can isolate the named pipe. Values the pipe-path builder rejects
+/// (empty, backslash, over-long) fall back to the default — never panic.
+fn control_pipe_path_for_base(override_name: Option<&str>) -> String {
+    override_name
+        .and_then(|name| cmux_ipc::control_pipe_path(name).ok())
+        .unwrap_or_else(|| {
+            cmux_ipc::control_pipe_path(CONTROL_PIPE_BASE_NAME)
+                .expect("static control pipe base name is valid")
+        })
 }
 
 #[derive(Clone)]
@@ -20572,6 +20583,28 @@ mod tests {
             decorate_lifecycle_result_refs_with("surface.respawn", &mut success, &mut mint)
                 .expect("success decoration returns the decorated payload");
         assert!(decorated["surface_ref"].is_string());
+    }
+
+    #[test]
+    fn control_pipe_name_override_is_validated_with_default_fallback() {
+        let default_path = cmux_ipc::control_pipe_path(CONTROL_PIPE_BASE_NAME).unwrap();
+        // Default unchanged when no override is present.
+        assert_eq!(control_pipe_path_for_base(None), default_path);
+        // A valid override is honored.
+        assert_eq!(
+            control_pipe_path_for_base(Some("cmux-test-fixture-7")),
+            cmux_ipc::control_pipe_path("cmux-test-fixture-7").unwrap()
+        );
+        // Invalid overrides (same rules as the pipe-path builder: empty,
+        // backslash, over-long) fall back to the default — never panic.
+        let long = "x".repeat(300);
+        for invalid in ["", "bad\\name", long.as_str()] {
+            assert_eq!(
+                control_pipe_path_for_base(Some(invalid)),
+                default_path,
+                "{invalid:?}"
+            );
+        }
     }
 
     #[path = "pane_surface_lifecycle_red.rs"]
