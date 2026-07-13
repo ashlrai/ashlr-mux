@@ -774,100 +774,374 @@ fn initial_snapshot(first_panel_id: &str) -> AppSessionSnapshot {
 
 /// Canonical Workspace init falls back to the user's home directory
 /// (FileManager.default.homeDirectoryForCurrentUser, Workspace.swift:2885-2891).
-/// V1 (differential remediation): a pre-remediation persisted snapshot
-/// resurrects the literal "main" window id and "surface-N" panel ids at
-/// restore. Re-mint every non-UUID window/panel/pane/split id with a fresh
-/// UUIDv4 and remap ALL intra-snapshot references consistently (layout
-/// panel_ids/selected/focused/zoomed, surface records, every panel_* keyed
-/// list, resume bindings, pending pwds, dock rows) via a generic exact-match
-/// string walk over the encoded snapshot. Free-text fields are excluded so a
-/// title that happens to equal an old id is never rewritten.
-fn remint_noncanonical_identities(snapshot: &mut AppSessionSnapshot) {
-    use std::collections::HashMap;
-    fn collect(layout: &SessionWorkspaceLayoutSnapshot, ids: &mut Vec<String>) {
+/// Re-mint legacy structural identities without inspecting opaque strings.
+/// Definitions are collected before any mutation, references are then resolved
+/// against those definitions, and the candidate replaces `snapshot` only when
+/// every typed reference resolves. A stale/missing reference therefore cannot
+/// leave a partially migrated graph.
+fn remint_noncanonical_identities(snapshot: &mut AppSessionSnapshot) -> bool {
+    #[derive(Default)]
+    struct IdentityDomain {
+        replacements: HashMap<String, String>,
+        final_ids: HashSet<String>,
+    }
+
+    impl IdentityDomain {
+        fn register_definition(&mut self, id: &str) {
+            let final_id = if Uuid::parse_str(id).is_ok() {
+                id.to_string()
+            } else {
+                self.replacements
+                    .entry(id.to_string())
+                    .or_insert_with(|| Uuid::new_v4().to_string())
+                    .clone()
+            };
+            self.final_ids.insert(final_id);
+        }
+
+        fn remap_definition(&self, id: &mut String) {
+            if let Some(replacement) = self.replacements.get(id) {
+                *id = replacement.clone();
+            }
+        }
+
+        fn remap_optional_definition(&self, id: &mut Option<String>) {
+            if let Some(id) = id {
+                self.remap_definition(id);
+            }
+        }
+
+        fn remap_reference(&self, id: &mut String) -> bool {
+            if let Some(replacement) = self.replacements.get(id) {
+                *id = replacement.clone();
+                true
+            } else {
+                self.final_ids.contains(id)
+            }
+        }
+
+        fn remap_optional_reference(&self, id: &mut Option<String>) -> bool {
+            id.as_mut().is_none_or(|id| self.remap_reference(id))
+        }
+    }
+
+    #[derive(Default)]
+    struct IdentityDomains {
+        windows: IdentityDomain,
+        workspaces: IdentityDomain,
+        groups: IdentityDomain,
+        panes: IdentityDomain,
+        splits: IdentityDomain,
+        surfaces: IdentityDomain,
+    }
+
+    impl IdentityDomains {
+        fn has_replacements(&self) -> bool {
+            [
+                &self.windows,
+                &self.workspaces,
+                &self.groups,
+                &self.panes,
+                &self.splits,
+                &self.surfaces,
+            ]
+            .into_iter()
+            .any(|domain| !domain.replacements.is_empty())
+        }
+    }
+
+    fn collect_layout_definitions(
+        layout: &SessionWorkspaceLayoutSnapshot,
+        domains: &mut IdentityDomains,
+    ) {
         match layout {
             SessionWorkspaceLayoutSnapshot::Pane(pane) => {
-                ids.extend(pane.pane_id.clone());
-                ids.extend(pane.panel_ids.iter().cloned());
+                if let Some(pane_id) = pane.pane_id.as_deref() {
+                    domains.panes.register_definition(pane_id);
+                }
+                for panel_id in &pane.panel_ids {
+                    domains.surfaces.register_definition(panel_id);
+                }
             }
             SessionWorkspaceLayoutSnapshot::Split(split) => {
-                ids.extend(split.split_id.clone());
-                collect(&split.first, ids);
-                collect(&split.second, ids);
+                if let Some(split_id) = split.split_id.as_deref() {
+                    domains.splits.register_definition(split_id);
+                }
+                collect_layout_definitions(&split.first, domains);
+                collect_layout_definitions(&split.second, domains);
             }
         }
     }
-    let mut structural = Vec::new();
+
+    fn remap_layout_definitions(
+        layout: &mut SessionWorkspaceLayoutSnapshot,
+        domains: &IdentityDomains,
+    ) {
+        match layout {
+            SessionWorkspaceLayoutSnapshot::Pane(pane) => {
+                domains.panes.remap_optional_definition(&mut pane.pane_id);
+                for panel_id in &mut pane.panel_ids {
+                    domains.surfaces.remap_definition(panel_id);
+                }
+            }
+            SessionWorkspaceLayoutSnapshot::Split(split) => {
+                domains
+                    .splits
+                    .remap_optional_definition(&mut split.split_id);
+                remap_layout_definitions(&mut split.first, domains);
+                remap_layout_definitions(&mut split.second, domains);
+            }
+        }
+    }
+
+    fn remap_layout_references(
+        layout: &mut SessionWorkspaceLayoutSnapshot,
+        domains: &IdentityDomains,
+    ) -> bool {
+        match layout {
+            SessionWorkspaceLayoutSnapshot::Pane(pane) => domains
+                .surfaces
+                .remap_optional_reference(&mut pane.selected_panel_id),
+            SessionWorkspaceLayoutSnapshot::Split(split) => {
+                remap_layout_references(&mut split.first, domains)
+                    && remap_layout_references(&mut split.second, domains)
+            }
+        }
+    }
+
+    fn remap_workspace_references(
+        workspace: &mut SessionWorkspaceSnapshot,
+        domains: &IdentityDomains,
+    ) -> bool {
+        fn remap_rows<T>(
+            rows: &mut Option<Vec<T>>,
+            domain: &IdentityDomain,
+            identity: fn(&mut T) -> &mut String,
+        ) -> bool {
+            rows.as_mut().is_none_or(|rows| {
+                rows.iter_mut()
+                    .all(|row| domain.remap_reference(identity(row)))
+            })
+        }
+
+        if workspace
+            .layout
+            .as_mut()
+            .is_some_and(|layout| !remap_layout_references(layout, domains))
+            || !domains
+                .surfaces
+                .remap_optional_reference(&mut workspace.zoomed_panel_id)
+            || !domains
+                .surfaces
+                .remap_optional_reference(&mut workspace.focused_panel_id)
+            || !domains
+                .panes
+                .remap_optional_reference(&mut workspace.focused_pane_id)
+            || !domains
+                .groups
+                .remap_optional_reference(&mut workspace.group_id)
+        {
+            return false;
+        }
+
+        if !remap_rows(&mut workspace.surfaces, &domains.panes, |surface| {
+            &mut surface.pane_id
+        }) || !remap_rows(
+            &mut workspace.pending_surface_pwds,
+            &domains.surfaces,
+            |pending| &mut pending.surface_id,
+        ) || !remap_rows(&mut workspace.panel_titles, &domains.surfaces, |row| {
+            &mut row.panel_id
+        }) || !remap_rows(&mut workspace.panel_pins, &domains.surfaces, |row| {
+            &mut row.panel_id
+        }) || !remap_rows(&mut workspace.panel_unreads, &domains.surfaces, |row| {
+            &mut row.panel_id
+        }) || !remap_rows(
+            &mut workspace.restorable_agent_snapshots,
+            &domains.surfaces,
+            |row| &mut row.panel_id,
+        ) || !remap_rows(
+            &mut workspace.surface_resume_bindings,
+            &domains.surfaces,
+            |row| &mut row.surface_id,
+        ) {
+            return false;
+        }
+        for row in workspace
+            .published_pane_selections
+            .as_mut()
+            .into_iter()
+            .flatten()
+        {
+            if !domains.panes.remap_reference(&mut row.pane_id)
+                || !domains.surfaces.remap_reference(&mut row.panel_id)
+            {
+                return false;
+            }
+        }
+        if !remap_rows(
+            &mut workspace.panel_git_branches,
+            &domains.surfaces,
+            |row| &mut row.panel_id,
+        ) || !remap_rows(
+            &mut workspace.panel_pull_requests,
+            &domains.surfaces,
+            |row| &mut row.panel_id,
+        ) || !remap_rows(
+            &mut workspace.panel_listening_ports,
+            &domains.surfaces,
+            |row| &mut row.panel_id,
+        ) || !remap_rows(&mut workspace.panel_ttys, &domains.surfaces, |row| {
+            &mut row.panel_id
+        }) || !remap_rows(
+            &mut workspace.panel_shell_activity,
+            &domains.surfaces,
+            |row| &mut row.panel_id,
+        ) || !remap_rows(
+            &mut workspace.panel_terminal_startups,
+            &domains.surfaces,
+            |row| &mut row.panel_id,
+        ) {
+            return false;
+        }
+        for canvas in workspace.canvas_panes.as_mut().into_iter().flatten() {
+            if !domains.surfaces.remap_reference(&mut canvas.panel_id)
+                || !canvas.panel_ids.as_mut().is_none_or(|panel_ids| {
+                    panel_ids
+                        .iter_mut()
+                        .all(|panel_id| domains.surfaces.remap_reference(panel_id))
+                })
+                || !domains
+                    .surfaces
+                    .remap_optional_reference(&mut canvas.selected_panel_id)
+            {
+                return false;
+            }
+        }
+        true
+    }
+
+    let mut domains = IdentityDomains::default();
     for window in &snapshot.windows {
-        structural.extend(window.window_id.clone());
+        if let Some(window_id) = window.window_id.as_deref() {
+            domains.windows.register_definition(window_id);
+        }
         for workspace in &window.tab_manager.workspaces {
-            structural.extend(workspace.workspace_id.clone());
-            if let Some(layout) = &workspace.layout {
-                collect(layout, &mut structural);
+            if let Some(workspace_id) = workspace.workspace_id.as_deref() {
+                domains.workspaces.register_definition(workspace_id);
             }
-            for record in workspace.surfaces.as_deref().unwrap_or_default() {
-                structural.push(record.surface_id.clone());
-                structural.push(record.pane_id.clone());
+            if let Some(layout) = workspace.layout.as_ref() {
+                collect_layout_definitions(layout, &mut domains);
             }
-        }
-        if let Some(dock) = &window.dock {
-            if let Some(layout) = &dock.layout {
-                collect(layout, &mut structural);
-            }
-            for record in &dock.surfaces {
-                structural.push(record.surface_id.clone());
-                structural.push(record.pane_id.clone());
+            for surface in workspace.surfaces.as_deref().unwrap_or_default() {
+                domains.surfaces.register_definition(&surface.surface_id);
             }
         }
-    }
-    let mapping: HashMap<String, String> = structural
-        .into_iter()
-        .filter(|id| Uuid::parse_str(id).is_err())
-        .map(|id| (id, Uuid::new_v4().to_string()))
-        .collect();
-    if mapping.is_empty() {
-        return;
-    }
-    const FREE_TEXT_KEYS: [&str; 8] = [
-        "title",
-        "custom_title",
-        "process_title",
-        "custom_description",
-        "name",
-        "command",
-        "cwd",
-        "body",
-    ];
-    fn remap(value: &mut serde_json::Value, mapping: &HashMap<String, String>, key: Option<&str>) {
-        match value {
-            serde_json::Value::String(text) => {
-                if key.is_some_and(|key| FREE_TEXT_KEYS.contains(&key)) {
-                    return;
-                }
-                if let Some(minted) = mapping.get(text.as_str()) {
-                    *text = minted.clone();
-                }
+        for group in window
+            .tab_manager
+            .workspace_groups
+            .as_deref()
+            .unwrap_or_default()
+        {
+            domains.groups.register_definition(&group.id);
+        }
+        if let Some(dock) = window.dock.as_ref() {
+            domains.workspaces.register_definition(&dock.workspace_id);
+            if let Some(layout) = dock.layout.as_ref() {
+                collect_layout_definitions(layout, &mut domains);
             }
-            serde_json::Value::Array(items) => {
-                for item in items {
-                    remap(item, mapping, key);
-                }
+            for surface in &dock.surfaces {
+                domains.surfaces.register_definition(&surface.surface_id);
             }
-            serde_json::Value::Object(object) => {
-                for (child_key, child) in object.iter_mut() {
-                    remap(child, mapping, Some(child_key));
-                }
-            }
-            _ => {}
         }
     }
-    let Ok(mut encoded) = serde_json::to_value(&*snapshot) else {
-        return;
-    };
-    remap(&mut encoded, &mapping, None);
-    if let Ok(reminted) = serde_json::from_value(encoded) {
-        *snapshot = reminted;
+    if !domains.has_replacements() {
+        return true;
     }
+
+    let mut candidate = snapshot.clone();
+    for window in &mut candidate.windows {
+        domains
+            .windows
+            .remap_optional_definition(&mut window.window_id);
+        for workspace in &mut window.tab_manager.workspaces {
+            domains
+                .workspaces
+                .remap_optional_definition(&mut workspace.workspace_id);
+            if let Some(layout) = workspace.layout.as_mut() {
+                remap_layout_definitions(layout, &domains);
+            }
+            for surface in workspace.surfaces.as_mut().into_iter().flatten() {
+                domains.surfaces.remap_definition(&mut surface.surface_id);
+            }
+        }
+        for group in window
+            .tab_manager
+            .workspace_groups
+            .as_mut()
+            .into_iter()
+            .flatten()
+        {
+            domains.groups.remap_definition(&mut group.id);
+        }
+        if let Some(dock) = window.dock.as_mut() {
+            domains.workspaces.remap_definition(&mut dock.workspace_id);
+            if let Some(layout) = dock.layout.as_mut() {
+                remap_layout_definitions(layout, &domains);
+            }
+            for surface in &mut dock.surfaces {
+                domains.surfaces.remap_definition(&mut surface.surface_id);
+            }
+        }
+    }
+
+    for window in &mut candidate.windows {
+        if !domains
+            .workspaces
+            .remap_optional_reference(&mut window.selected_workspace_id)
+        {
+            return false;
+        }
+        for workspace in &mut window.tab_manager.workspaces {
+            if !remap_workspace_references(workspace, &domains) {
+                return false;
+            }
+        }
+        for group in window
+            .tab_manager
+            .workspace_groups
+            .as_mut()
+            .into_iter()
+            .flatten()
+        {
+            if !domains
+                .workspaces
+                .remap_optional_reference(&mut group.anchor_workspace_id)
+            {
+                return false;
+            }
+        }
+        if let Some(dock) = window.dock.as_mut() {
+            if dock
+                .layout
+                .as_mut()
+                .is_some_and(|layout| !remap_layout_references(layout, &domains))
+                || !domains
+                    .surfaces
+                    .remap_optional_reference(&mut dock.focused_surface_id)
+            {
+                return false;
+            }
+            for surface in &mut dock.surfaces {
+                if !domains.panes.remap_reference(&mut surface.pane_id) {
+                    return false;
+                }
+            }
+        }
+    }
+
+    *snapshot = candidate;
+    true
 }
 
 fn default_workspace_directory() -> Option<String> {
@@ -908,7 +1182,7 @@ fn seed_initial_surface_record(workspace: &mut SessionWorkspaceSnapshot) {
     }]);
 }
 
-/// Mint a `workspace_id` for every workspace that lacks one. Canonical parity:
+/// Mint a `window_id` and `workspace_id` for every owner that lacks one. Canonical parity:
 /// the Swift restore mints a fresh UUID exactly once per workspace missing an id
 /// (`TabManager.swift:5960-5975`), and live `Workspace`s carry an identity from
 /// init. This stateful session layer is the sole owner of id synthesis — the
@@ -916,6 +1190,9 @@ fn seed_initial_surface_record(workspace: &mut SessionWorkspaceSnapshot) {
 /// (`sidebar_render`, the web sidebar) never re-mint, they skip id-less rows.
 fn ensure_workspace_ids(snapshot: &mut AppSessionSnapshot) {
     for window in &mut snapshot.windows {
+        if window.window_id.is_none() {
+            window.window_id = Some(Uuid::new_v4().to_string());
+        }
         for workspace in &mut window.tab_manager.workspaces {
             if workspace.workspace_id.is_none() {
                 workspace.workspace_id = Some(Uuid::new_v4().to_string());
@@ -942,19 +1219,42 @@ fn sync_window_selected_workspace_id(window: &mut SessionWindowSnapshot) {
 /// stateful desktop layer synthesizes them exactly once so downstream pure/UI
 /// consumers can treat pane identity as stable.
 fn ensure_pane_ids(snapshot: &mut AppSessionSnapshot) {
-    fn ensure_layout_pane_ids(layout: &mut SessionWorkspaceLayoutSnapshot) {
+    fn ensure_layout_pane_ids(
+        layout: &mut SessionWorkspaceLayoutSnapshot,
+        surfaces: &[cmux_core::session::SessionSurfaceSnapshot],
+    ) {
         match layout {
             SessionWorkspaceLayoutSnapshot::Pane(pane) => {
                 if pane.pane_id.is_none() {
-                    pane.pane_id = Some(Uuid::new_v4().to_string());
+                    let mut referenced_owner = None;
+                    let mut conflicting_owners = false;
+                    for panel_id in &pane.panel_ids {
+                        let Some(owner) = surfaces
+                            .iter()
+                            .find(|surface| surface.surface_id == *panel_id)
+                            .map(|surface| surface.pane_id.as_str())
+                        else {
+                            continue;
+                        };
+                        match referenced_owner {
+                            None => referenced_owner = Some(owner),
+                            Some(existing) if existing == owner => {}
+                            Some(_) => conflicting_owners = true,
+                        }
+                    }
+                    pane.pane_id = Some(
+                        referenced_owner
+                            .filter(|_| !conflicting_owners)
+                            .map_or_else(|| Uuid::new_v4().to_string(), str::to_string),
+                    );
                 }
             }
             SessionWorkspaceLayoutSnapshot::Split(split) => {
                 if split.split_id.is_none() {
                     split.split_id = Some(Uuid::new_v4().to_string());
                 }
-                ensure_layout_pane_ids(&mut split.first);
-                ensure_layout_pane_ids(&mut split.second);
+                ensure_layout_pane_ids(&mut split.first, surfaces);
+                ensure_layout_pane_ids(&mut split.second, surfaces);
             }
         }
     }
@@ -962,7 +1262,12 @@ fn ensure_pane_ids(snapshot: &mut AppSessionSnapshot) {
     for window in &mut snapshot.windows {
         for workspace in &mut window.tab_manager.workspaces {
             if let Some(layout) = workspace.layout.as_mut() {
-                ensure_layout_pane_ids(layout);
+                ensure_layout_pane_ids(layout, workspace.surfaces.as_deref().unwrap_or_default());
+            }
+        }
+        if let Some(dock) = window.dock.as_mut() {
+            if let Some(layout) = dock.layout.as_mut() {
+                ensure_layout_pane_ids(layout, &dock.surfaces);
             }
         }
     }
@@ -6719,16 +7024,24 @@ fn restore_previous_launch_transaction(
     let (reseed, snapshot) =
         transact_value_if_changed_snapshot(authority, publication, |candidate| {
             let Some(mut restored) = load_previous() else {
-                return Ok::<_, std::convert::Infallible>((None, false));
+                return Ok::<_, String>((None, false));
             };
             ensure_workspace_ids(&mut restored);
             ensure_pane_ids(&mut restored);
-            remint_noncanonical_identities(&mut restored);
+            if !remint_noncanonical_identities(&mut restored) {
+                return Err(
+                    "Previous session contains an identity reference without a definition"
+                        .to_string(),
+                );
+            }
             let reseed = next_panel_counter(&restored);
             *candidate = restored;
             Ok((Some(reseed), true))
         })
-        .map_err(collapse_infallible_publication_error)?;
+        .map_err(|error| match error {
+            PaneTopologyControlError::Publication(error)
+            | PaneTopologyControlError::Operation(error) => error,
+        })?;
     if let Some(reseed) = reseed {
         next_panel.store(reseed, Ordering::Relaxed);
     }
