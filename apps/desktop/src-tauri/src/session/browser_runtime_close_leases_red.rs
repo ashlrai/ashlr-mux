@@ -501,8 +501,12 @@ fn browser_runtime_lease_contract_is_present_in_production() {
     assert!(reservation_checks[0].0 < build);
     assert!(reservation_checks.last().unwrap().0 > build);
     assert!(
-        upsert[build..].contains(".close("),
-        "late rejection must close the built child"
+        upsert[build..].contains("cleanup_built_browser_child_after_failure("),
+        "late rejection must route the built child through owned cleanup"
+    );
+    assert!(
+        source_item(browser, "fn cleanup_built_browser_child_after_failure(").contains(".close("),
+        "owned cleanup must close the built child"
     );
 
     for mutation in [
