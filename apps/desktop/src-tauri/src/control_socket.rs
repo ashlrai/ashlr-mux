@@ -21009,6 +21009,9 @@ mod tests {
     #[path = "window_lifecycle_red.rs"]
     mod window_lifecycle_red;
 
+    #[path = "differential_remediation_red.rs"]
+    mod differential_remediation_red;
+
     #[path = "surface_action_exhaustive_red.rs"]
     mod surface_action_exhaustive_red;
 
