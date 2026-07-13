@@ -1739,11 +1739,14 @@ fn surface_create(
     {
         return error(snapshot, "internal_error", "Failed to create surface", None);
     }
-    // D7: canonical bonsplit transiently selects the created tab and then
-    // restores the previous selection when focus was not requested
-    // (preserveFocusWhenUnfocused; capture surface_create.terminal_happy /
-    // surface_list.rows_shape pin selected_in_pane=true on the prior tab).
-    if !super::bool_param(params, &["focus"]).unwrap_or(false) {
+    // Round 6 item 1 refines D7: canonical shouldFocusNewTab =
+    // focus ?? (bonsplitController.focusedPaneId == paneId)
+    // (Workspace.swift:7480) — the create keeps the new tab selected when the
+    // target pane is the bonsplit-focused pane; otherwise the transient
+    // selection reverts (the terminal_happy flip).
+    let keep_new_selected = super::bool_param(params, &["focus"])
+        .unwrap_or_else(|| workspace.focused_pane_id.as_deref() == Some(pane_id.as_str()));
+    if !keep_new_selected {
         if let (Some(previous), Some(layout)) =
             (inherit_source.as_deref(), workspace.layout.as_mut())
         {
@@ -1811,7 +1814,7 @@ fn surface_create(
             },
         );
     }
-    if super::bool_param(params, &["focus"]).unwrap_or(false) {
+    if keep_new_selected {
         let _ = model.focus_surface(&surface_id);
     }
     next = match model.to_app_session(&next) {
@@ -1843,7 +1846,7 @@ fn surface_create(
             kind: kind_name(&kind).into(),
         },
     };
-    let focus_requested = super::bool_param(params, &["focus"]).unwrap_or(false);
+    let focus_requested = keep_new_selected;
     let mut events = vec![owned_event(
         "surface.created",
         &scope.window_id,
@@ -3454,6 +3457,9 @@ fn surface_focus(
             }) {
                 window.tab_manager.selected_workspace_index = index.try_into().ok();
                 window.selected_workspace_id = Some(workspace_id.clone());
+                // Round 6 item 1: explicit focus records the bonsplit-focused
+                // pane, the gate for create-keeps-selection.
+                window.tab_manager.workspaces[index].focused_pane_id = Some(owner.pane_id.clone());
             }
         }
     }

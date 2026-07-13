@@ -706,6 +706,14 @@ pub struct SessionWorkspaceSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub focused_panel_id: Option<String>,
+    /// The bonsplit-focused pane (canonical `bonsplitController.focusedPaneId`):
+    /// None until an explicit focus lands in the workspace. Distinct from
+    /// `focused_panel_id` — it gates canonical's create-keeps-selection rule
+    /// (`shouldFocusNewTab = focus ?? (focusedPaneId == paneId)`,
+    /// Workspace.swift:7480 at pinned e1825d40d).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub focused_pane_id: Option<String>,
     /// Authoritative, ordered-by-pane surface records.  Old snapshots omit
     /// this field and are migrated from the layout/parallel metadata at load.
     #[serde(default, skip_serializing_if = "Option::is_none")]
