@@ -1027,6 +1027,88 @@ fn set_published_selection(
     }
 }
 
+fn clear_published_selection(
+    workspace: &mut cmux_core::session::SessionWorkspaceSnapshot,
+    pane_id: &str,
+) {
+    if let Some(rows) = &mut workspace.published_pane_selections {
+        rows.retain(|row| row.pane_id != pane_id);
+    }
+}
+
+fn reconcile_closed_published_selection(
+    snapshot: &mut AppSessionSnapshot,
+    owner_ids: (&str, &str),
+    pane_id: &str,
+    is_dock: bool,
+    surviving_surface_ids: &[String],
+    selected_surface_id: Option<&str>,
+    publish_selection: bool,
+) -> Option<String> {
+    let (window_id, workspace_id) = owner_ids;
+    let window = snapshot
+        .windows
+        .iter_mut()
+        .find(|window| window.window_id.as_deref() == Some(window_id))?;
+    let publication_workspace_index = if is_dock {
+        window
+            .tab_manager
+            .workspaces
+            .iter()
+            .position(|workspace| published_selection(workspace, pane_id).is_some())
+            .or_else(|| {
+                window
+                    .selected_workspace_id
+                    .as_deref()
+                    .and_then(|selected| {
+                        window.tab_manager.workspaces.iter().position(|workspace| {
+                            workspace.workspace_id.as_deref() == Some(selected)
+                        })
+                    })
+            })
+            .or_else(|| {
+                window
+                    .tab_manager
+                    .selected_workspace_index
+                    .and_then(|index| usize::try_from(index).ok())
+                    .filter(|index| *index < window.tab_manager.workspaces.len())
+            })
+            .or_else(|| (!window.tab_manager.workspaces.is_empty()).then_some(0))
+    } else {
+        window
+            .tab_manager
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.workspace_id.as_deref() == Some(workspace_id))
+    };
+    let pointer = publication_workspace_index
+        .and_then(|index| published_selection(&window.tab_manager.workspaces[index], pane_id))
+        .filter(|pointer| surviving_surface_ids.contains(pointer));
+
+    if is_dock {
+        for workspace in &mut window.tab_manager.workspaces {
+            clear_published_selection(workspace, pane_id);
+        }
+    } else if let Some(index) = publication_workspace_index {
+        clear_published_selection(&mut window.tab_manager.workspaces[index], pane_id);
+    }
+    if let Some(index) = publication_workspace_index {
+        let replacement = if publish_selection {
+            selected_surface_id
+        } else {
+            pointer.as_deref()
+        };
+        if let Some(replacement) = replacement {
+            set_published_selection(
+                &mut window.tab_manager.workspaces[index],
+                pane_id,
+                replacement,
+            );
+        }
+    }
+    pointer
+}
+
 /// The canonical bonsplit selection pair: surface.selected (with
 /// previous_surface_id) followed by surface.focused, origin
 /// "bonsplit_selection" (live capture surface_create.terminal_happy /
@@ -3348,9 +3430,22 @@ fn surface_close(
             }
         }
     }
-    let previous_selection = model
-        .pane(&owner.pane_id)
-        .map(|pane| pane.selected_surface_id.clone());
+    let pane_before_close = model.pane(&owner.pane_id).unwrap();
+    let selection_before_close = pane_before_close.selected_surface_id.clone();
+    let closed_preceded_selection = pane_before_close
+        .surface_ids
+        .iter()
+        .position(|id| id == &surface_id)
+        .zip(
+            pane_before_close
+                .surface_ids
+                .iter()
+                .position(|id| id == &selection_before_close),
+        )
+        .is_some_and(|(closed, selected)| closed < selected);
+    let closed_was_focused = model
+        .focused_surface(&owner.workspace_id)
+        .is_some_and(|focused| focused == surface_id);
     if let Err(problem) = model.close_surface(&surface_id, CloseIntent::Explicit) {
         return if problem.to_string().contains("last surface") {
             error(
@@ -3402,10 +3497,19 @@ fn surface_close(
             "surface_id": surface_id,
         }),
     )];
-    let new_selection = model
+    let (surviving_surface_ids, new_selection) = model
         .pane(&owner.pane_id)
         .filter(|pane| !pane.surface_ids.is_empty())
-        .map(|pane| pane.selected_surface_id.clone());
+        .map(|pane| {
+            (
+                pane.surface_ids.clone(),
+                Some(pane.selected_surface_id.clone()),
+            )
+        })
+        .unwrap_or_default();
+    let publish_selection = new_selection.as_ref().is_some_and(|selected| {
+        selection_before_close != *selected || (closed_preceded_selection && !closed_was_focused)
+    });
     // Round 7: the reselection publish reads the publisher pointer AFTER the
     // close mutation (publishCmuxFocusedSelection,
     // CmuxLifecycleEventPublishing.swift:168) — and surface.closed's
@@ -3414,15 +3518,17 @@ fn surface_close(
     // is therefore the nearest SURVIVING published selection (capture
     // surface_close.happy frame 2), and the round-5 no-op guard applies to
     // the pointer, not the raw pre-close selection.
-    let pointer = snapshot
-        .windows
-        .iter()
-        .flat_map(|window| &window.tab_manager.workspaces)
-        .find(|candidate| candidate.workspace_id.as_deref() == Some(workspace_id.as_str()))
-        .and_then(|candidate| published_selection(candidate, &owner.pane_id))
-        .filter(|pointer| pointer != &surface_id);
-    if let (Some(previous), Some(selected)) = (previous_selection, new_selection) {
-        if previous != selected && pointer.as_deref() != Some(selected.as_str()) {
+    let pointer = reconcile_closed_published_selection(
+        &mut next,
+        (&window_id, &workspace_id),
+        &owner.pane_id,
+        is_dock,
+        &surviving_surface_ids,
+        new_selection.as_deref(),
+        publish_selection,
+    );
+    if let Some(selected) = new_selection {
+        if publish_selection && pointer.as_deref() != Some(selected.as_str()) {
             let selected_kind = model
                 .surface(&selected)
                 .map(|surface| kind_name(&surface.kind))
@@ -3436,14 +3542,6 @@ fn surface_close(
                 selected_kind,
                 true,
             ));
-            if let Some(workspace) = next
-                .windows
-                .iter_mut()
-                .flat_map(|window| &mut window.tab_manager.workspaces)
-                .find(|candidate| candidate.workspace_id.as_deref() == Some(workspace_id.as_str()))
-            {
-                set_published_selection(workspace, &owner.pane_id, &selected);
-            }
         }
     }
     ok_transition(
