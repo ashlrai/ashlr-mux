@@ -493,10 +493,25 @@ impl SurfaceLifecycleModel {
         }
         self.reconciled_remote_generation.remove(surface_id);
         let pane = self.panes.get_mut(&owner.pane_id).unwrap();
+        // Canonical bonsplit reselects the closed tab's SUCCESSOR — the tab
+        // that slides into its index — falling back to the new last tab
+        // (differential capture surface_close.happy: the new selection sits
+        // at the closed tab's former index_in_pane).
+        let closed_index = pane.surface_ids.iter().position(|id| id == surface_id);
         pane.surface_ids.retain(|id| id != surface_id);
         if pane.selected_surface_id == surface_id {
-            pane.selected_surface_id = pane.surface_ids.first().cloned().unwrap_or_default();
+            pane.selected_surface_id = closed_index
+                .and_then(|index| {
+                    pane.surface_ids
+                        .get(index)
+                        .or_else(|| pane.surface_ids.last())
+                })
+                .cloned()
+                .unwrap_or_default();
         }
+        let pane_selection_fallback = (pane.selected_surface_id != surface_id
+            && !pane.selected_surface_id.is_empty())
+        .then(|| pane.selected_surface_id.clone());
         if pane.surface_ids.is_empty() {
             self.collapsed_panes.insert(owner.pane_id.clone());
         }
@@ -508,15 +523,18 @@ impl SurfaceLifecycleModel {
             // The removed record is returned to the caller, but it is no longer
             // a live focused surface.
             self.focused_surfaces.remove(&owner.workspace_id);
-            if let Some(next) = self
-                .pane_order
-                .iter()
-                .filter_map(|id| self.panes.get(id))
-                .filter(|p| p.workspace_id == owner.workspace_id)
-                .flat_map(|p| p.surface_ids.iter())
-                .next()
-                .cloned()
-            {
+            // Focus follows the same reselection choice as the pane
+            // (capture: the surface.focused fallback target equals the new
+            // pane selection), else the first surviving workspace surface.
+            if let Some(next) = pane_selection_fallback.or_else(|| {
+                self.pane_order
+                    .iter()
+                    .filter_map(|id| self.panes.get(id))
+                    .filter(|p| p.workspace_id == owner.workspace_id)
+                    .flat_map(|p| p.surface_ids.iter())
+                    .next()
+                    .cloned()
+            }) {
                 self.focused_surfaces
                     .insert(owner.workspace_id, next.clone());
                 if let Some(row) = self.surfaces.get_mut(&next) {

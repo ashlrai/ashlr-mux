@@ -4079,12 +4079,12 @@ const LIFECYCLE_ID_REF_FIELDS: [(&str, &str, &str); 10] = [
     ("created_tab_id", "created_tab_ref", "surface"),
 ];
 
-/// R5 (round-3 capture adjudication): a successful surface.close unregisters
-/// BOTH the closed surface's ref AND its pane's ref — canonical mints one
-/// extra pane ref right after surface_close.happy even when the pane
-/// survives, consistently across all three canonical datasets. Respawn
-/// forgets NOTHING: the canonical respawn echo reuses the surface's
-/// pre-existing ref.
+/// R5 (round-5 adjudication, reverting round 3's pane half): a successful
+/// surface.close unregisters the closed SURFACE ref always, and its pane's
+/// ref only when the pane left the tree — pane:2 survives across all three
+/// canonical datasets after a surface close on that pane. Respawn forgets
+/// NOTHING: the canonical respawn echo reuses the surface's pre-existing
+/// ref.
 fn forget_recreated_lifecycle_handles(
     app: &AppHandle,
     method: &str,
@@ -4112,7 +4112,14 @@ fn forget_recreated_lifecycle_handles(
     let mut registry = state.inner.lock().expect("handle registry mutex poisoned");
     registry.forget("surface", surface_id);
     if let Some(pane_id) = pane_id {
-        registry.forget("pane", &pane_id);
+        let pane_survives = cmux_core::surface_lifecycle::SurfaceLifecycleModel::from_app_session(
+            &transition.snapshot,
+        )
+        .ok()
+        .is_some_and(|model| model.pane(&pane_id).is_some());
+        if !pane_survives {
+            registry.forget("pane", &pane_id);
+        }
     }
 }
 
@@ -4220,6 +4227,10 @@ fn resolve_request_handle_refs(app: &AppHandle, params: &mut serde_json::Map<Str
         ("surface_id", "surface"),
         ("terminal_id", "surface"),
         ("tab_id", "surface"),
+        // Round 5 item 6: anchor refs resolve like every other surface
+        // selector before the uuid-counting anchor validation.
+        ("before_surface_id", "surface"),
+        ("after_surface_id", "surface"),
         ("pane_id", "pane"),
     ] {
         let Some(reference) = params.get(key).and_then(Value::as_str) else {

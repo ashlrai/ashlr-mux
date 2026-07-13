@@ -1977,10 +1977,24 @@ fn action_target(
         "Tab not found",
         Some(json!({"surface_id":surface_id,"tab_id":surface_id})),
     ))?;
-    // R6a: canonical resolves an explicit tab target in its OWNER workspace
-    // (global locateSurface) even when routing resolved another workspace —
-    // capture cli.tab_action_pin succeeds with OK tab=tab:N workspace:2.
+    // Round 5 item 2 (pinned Swift governs): an EXPLICIT workspace_id takes
+    // precedence and the target must live in that workspace
+    // (controlTabActionResolveWorkspace, TerminalController+
+    // ControlSystemContext2.swift:288-296; panels guard :55-57). Owner
+    // resolution applies only when workspace_id is absent — the
+    // capture-pinned cli.tab_action_pin path.
     let _ = workspace_id;
+    if params
+        .get("workspace_id")
+        .and_then(Value::as_str)
+        .is_some_and(|explicit| owner.workspace_id != explicit)
+    {
+        return Err((
+            "not_found",
+            "Tab not found",
+            Some(json!({"surface_id":surface_id,"tab_id":surface_id})),
+        ));
+    }
     Ok((surface_id, owner))
 }
 
@@ -3290,8 +3304,6 @@ fn surface_close(
     let previous_selection = model
         .pane(&owner.pane_id)
         .map(|pane| pane.selected_surface_id.clone());
-    let workspace_focus_was_on_closed =
-        model.focused_surface(&owner.workspace_id) == Some(surface_id.as_str());
     if let Err(problem) = model.close_surface(&surface_id, CloseIntent::Explicit) {
         return if problem.to_string().contains("last surface") {
             error(
@@ -3343,40 +3355,31 @@ fn surface_close(
             "surface_id": surface_id,
         }),
     )];
-    // R3: canonical also reselects when the CLOSED surface held focus (the
-    // focus-fallback pair, capture surface_close.happy). Align the pane
-    // selection with the fallback focus target before comparing.
-    if workspace_focus_was_on_closed {
-        if let Some(fallback) = model
-            .focused_surface(&owner.workspace_id)
-            .map(str::to_owned)
-        {
-            let _ = model.focus_surface(&fallback);
-        }
-    }
     let new_selection = model
         .pane(&owner.pane_id)
         .filter(|pane| !pane.surface_ids.is_empty())
         .map(|pane| pane.selected_surface_id.clone());
-    // Round 3 (capture-adjudicated): canonical bonsplit emits the reselection
-    // pair on EVERY close that leaves the pane populated — even when the
-    // closed tab was neither selected nor focused (live surface_close.happy:
-    // closed + selected + focused; the equal-target case is sanctioned until
-    // canonical data says otherwise).
+    // Round 5 item 4: canonical publishCmuxFocusedSelection guards
+    // previousSelectedSurfaceId != surfaceId
+    // (CmuxLifecycleEventPublishing.swift:171) — the pair fires only when
+    // the pane selection actually moved (to the closed tab's successor per
+    // the core reselection rule).
     if let (Some(previous), Some(selected)) = (previous_selection, new_selection) {
-        let selected_kind = model
-            .surface(&selected)
-            .map(|surface| kind_name(&surface.kind))
-            .unwrap_or("terminal");
-        events.extend(selection_events(
-            &window_id,
-            &workspace_id,
-            &owner.pane_id,
-            &selected,
-            &previous,
-            selected_kind,
-            true,
-        ));
+        if previous != selected {
+            let selected_kind = model
+                .surface(&selected)
+                .map(|surface| kind_name(&surface.kind))
+                .unwrap_or("terminal");
+            events.extend(selection_events(
+                &window_id,
+                &workspace_id,
+                &owner.pane_id,
+                &selected,
+                &previous,
+                selected_kind,
+                true,
+            ));
+        }
     }
     ok_transition(
         next,
@@ -3417,6 +3420,22 @@ fn surface_focus(
             Some(json!({"surface_id":surface_id})),
         );
     };
+    // Round 5 item 2: an explicit workspace_id takes precedence and fails
+    // closed on mismatch (resolveSurfaceWorkspace, TerminalController+
+    // ControlSurfaceContext.swift:298-315; dock mismatch :286-292); owner
+    // resolution applies only when workspace_id is absent.
+    if params
+        .get("workspace_id")
+        .and_then(Value::as_str)
+        .is_some_and(|explicit| owner.workspace_id != explicit)
+    {
+        return error(
+            snapshot,
+            "not_found",
+            "Surface not found",
+            Some(json!({"surface_id":surface_id})),
+        );
+    }
     let (window_id, workspace_id) = public_owner_ids(&model, &owner);
     let is_dock = model
         .pane(&owner.pane_id)
@@ -3771,7 +3790,10 @@ fn pane_resize(
                 snapshot,
                 "invalid_state",
                 "No split ancestor for absolute pane resize",
-                None,
+                Some(json!({
+                    "pane_id": pane_id,
+                    "absolute_axis": params.get("absolute_axis").cloned().unwrap_or(Value::Null),
+                })),
             );
         }
         Err(session_ops::PaneResizeError::NoOrientationSplitAncestor) => {
@@ -3783,7 +3805,10 @@ fn pane_resize(
                 snapshot,
                 "invalid_state",
                 &format!("No {orientation} split ancestor for pane"),
-                None,
+                Some(json!({
+                    "pane_id": pane_id,
+                    "direction": params.get("direction").cloned().unwrap_or(Value::Null),
+                })),
             );
         }
         Err(session_ops::PaneResizeError::NoAdjacentBorder) => {
@@ -3795,16 +3820,20 @@ fn pane_resize(
                 snapshot,
                 "invalid_state",
                 &format!("Pane has no adjacent border in direction {direction}"),
-                None,
+                Some(json!({"pane_id": pane_id, "direction": direction})),
             );
         }
         Err(session_ops::PaneResizeError::MissingSplitIdentity) => {
+            // Canonical setDividerFailed carries the split's uuid
+            // (Pane.swift:473-477); this port's only reachable divider
+            // failure is a split WITHOUT identity, so the key is explicit
+            // null.
             return error(
                 snapshot,
                 "internal_error",
                 "Failed to set split divider position",
-                None,
-            )
+                Some(json!({"split_id": Value::Null})),
+            );
         }
     };
     // Canonical relative responses echo direction+amount and absolute
