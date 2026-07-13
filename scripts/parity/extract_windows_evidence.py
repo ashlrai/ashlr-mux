@@ -24,7 +24,7 @@ CLASSIFY = Path("crates/cmux-cli/src/classify.rs")
 FORWARD = Path("crates/cmux-cli/src/command_forward.rs")
 DISPATCH = Path("crates/cmux-cli/src/dispatch.rs")
 DEFAULT_OUTPUT = Path("docs/parity/source/windows_evidence.json")
-PINNED_WINDOWS_COMMIT = "05ddcd13d45a3c3d4744b00eb0554a0202786332"
+PINNED_WINDOWS_COMMIT = "3222d6d7b96e033c997f93f9a14117f7d562d95c"
 
 
 def line_number(text: str, offset: int) -> int:
@@ -258,11 +258,16 @@ def extract_lifecycle_seam_routes(text: str) -> dict[str, dict]:
         if "=>" not in arm:
             continue
         lhs, rhs = arm.split("=>", 1)
-        if "PaneSurfaceLifecycle" not in rhs:
+        rhs_variant = rhs.strip().rstrip(",").rsplit("::", 1)[-1]
+        if rhs_variant == "Legacy" or not rhs_variant.isidentifier():
             continue
+        handler = {
+            "PaneSurfaceLifecycle": "pane_surface_lifecycle::dispatch_lifecycle_request",
+            "WindowLifecycle": "window_lifecycle::dispatch_window_lifecycle_request",
+        }.get(rhs_variant, f"lifecycle_seam::{rhs_variant}")
         for method in strings_in_pattern(lhs):
             seam[method] = {
-                "handler": "pane_surface_lifecycle::dispatch_lifecycle_request",
+                "handler": handler,
                 "route_source": loc(CONTROL, text, offset),
                 "explicit_not_supported": False,
                 "unsupported_message": None,
