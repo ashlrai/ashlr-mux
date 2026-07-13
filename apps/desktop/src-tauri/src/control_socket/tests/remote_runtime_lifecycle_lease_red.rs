@@ -420,6 +420,83 @@ fn unknown_command_outcome_keeps_one_owner_for_reconcile_then_compensation() {
 }
 
 #[test]
+fn publishing_claim_renews_the_lease_before_snapshot_commit() {
+    let mut registry = RemoteRuntimeLeaseRegistry::default();
+    let id = registry.reserve(
+        RemoteRuntimeLeaseScope {
+            endpoint: "ssh://host-a".into(),
+            session: "tmux-a".into(),
+        },
+        RemoteRuntimeSourceWitness {
+            window_id: WINDOW.into(),
+            workspace_id: WORKSPACE.into(),
+            pane_id: PANE.into(),
+            surface_id: SOURCE.into(),
+            surface_generation: 1,
+            remote_token: "%source".into(),
+            move_generation: 1,
+            restore_epoch: 0,
+        },
+        RESERVED.into(),
+        RESERVED_PANE.into(),
+        RemoteTmuxTarget::Window,
+    );
+    registry.record_command_outcome(
+        id,
+        RemoteRuntimeCommandOutcome::Succeeded,
+        Some("@42".into()),
+    );
+    registry.leases.get_mut(&id).unwrap().expires_at = Instant::now() + Duration::from_secs(1);
+    let original_deadline = registry.leases[&id].expires_at;
+    let lease = registry.leases[&id].clone();
+
+    assert_eq!(
+        registry.claim_callback(
+            id,
+            &lease.scope,
+            &lease.source,
+            &lease.reserved_surface_id,
+            &lease.reserved_pane_id,
+        ),
+        RemoteRuntimeCallbackClaim::Publish
+    );
+    assert!(
+        registry.leases[&id].expires_at >= original_deadline + Duration::from_secs(20),
+        "the publishing claim needs a fresh deadline before the original watchdog can expire it"
+    );
+}
+
+#[test]
+fn successful_command_with_unparseable_output_reconciles_authoritative_topology() {
+    let before = vec![RemoteTmuxTopologyEntry {
+        window_id: "@1".into(),
+        pane_id: "%1".into(),
+    }];
+    let after = vec![
+        before[0].clone(),
+        RemoteTmuxTopologyEntry {
+            window_id: "@42".into(),
+            pane_id: "%34".into(),
+        },
+    ];
+    let (window, pane) = resolve_remote_tmux_create_observation(
+        RemoteTmuxTarget::Window,
+        "successful-but-unparseable-output",
+        &before,
+        || Ok(after),
+    )
+    .expect("authoritative topology should recover the created runtime identity");
+    assert_eq!(
+        window,
+        Some(RemoteTmuxObservation {
+            window_token: "@42".into(),
+            pane_token: "%34".into(),
+        })
+    );
+    assert_eq!(pane, None);
+}
+
+#[test]
 fn stale_callbacks_are_fenced_by_source_kind_token_move_and_restore_epoch() {
     let mut coordinator = LeaseCoordinator::default();
     let id = coordinator.reserve(
