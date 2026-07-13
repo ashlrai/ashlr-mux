@@ -25,8 +25,10 @@ impl FakeNavigationKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FakeHandoffState {
     NavigateInFlight { callback_observed: bool },
-    CallbackResponsible,
+    CallbackResponsible { lease_id: u64, expires_at: u64 },
 }
+
+const FAKE_HANDOFF_LEASE_TICKS: u64 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FakeReservationOwner {
@@ -59,6 +61,31 @@ struct FakeProgrammaticNavigationCoordinator {
     lock_order: Mutex<Vec<&'static str>>,
     registry_locks_held: AtomicUsize,
     reentrant_mutation_rejections: AtomicUsize,
+    now: AtomicUsize,
+    next_lease_id: AtomicUsize,
+}
+
+struct FakeEarlyPublicationCleanup {
+    coordinator: Arc<FakeProgrammaticNavigationCoordinator>,
+    key: FakeNavigationKey,
+}
+
+impl Drop for FakeEarlyPublicationCleanup {
+    fn drop(&mut self) {
+        let mut handoffs = self.coordinator.handoffs.lock().unwrap();
+        if matches!(
+            handoffs.get(&self.key),
+            Some(FakeHandoffState::NavigateInFlight { .. })
+        ) {
+            handoffs.remove(&self.key);
+        }
+        let mut reservations = self.coordinator.reservations.lock().unwrap();
+        if reservations.get(&self.key.panel_id)
+            == Some(&FakeReservationOwner::Mutation(self.key.runtime_id))
+        {
+            reservations.remove(&self.key.panel_id);
+        }
+    }
 }
 
 impl FakeProgrammaticNavigationCoordinator {
@@ -102,9 +129,11 @@ impl FakeProgrammaticNavigationCoordinator {
         let mut reservations = self.reservations.lock().unwrap();
         self.note_lock("webviews");
         let webviews = self.webviews.lock().unwrap();
-        let expected_owner = handoffs
-            .contains_key(key)
-            .then_some(FakeReservationOwner::Handoff(key.runtime_id));
+        let expected_owner = matches!(
+            handoffs.get(key),
+            Some(FakeHandoffState::CallbackResponsible { .. })
+        )
+        .then_some(FakeReservationOwner::Handoff(key.runtime_id));
         if webviews.get(&key.panel_id).copied() != Some(key.runtime_id)
             || reservations.get(&key.panel_id).copied() != expected_owner
         {
@@ -192,17 +221,69 @@ impl FakeProgrammaticNavigationCoordinator {
             FakeHandoffState::NavigateInFlight {
                 callback_observed: false,
             } => {
-                handoffs.insert(key.clone(), FakeHandoffState::CallbackResponsible);
+                let lease_id = self.next_lease_id.fetch_add(1, Ordering::SeqCst) as u64 + 1;
+                let expires_at = self.now.load(Ordering::SeqCst) as u64 + FAKE_HANDOFF_LEASE_TICKS;
+                handoffs.insert(
+                    key.clone(),
+                    FakeHandoffState::CallbackResponsible {
+                        lease_id,
+                        expires_at,
+                    },
+                );
                 while_handoff_locked();
                 self.transfer_mutation_to_handoff_while_locked(key);
                 self.leave_lock();
             }
-            FakeHandoffState::CallbackResponsible => {
+            FakeHandoffState::CallbackResponsible { .. } => {
                 self.leave_lock();
                 return Err("programmatic navigation already delegated".to_string());
             }
         }
         Ok(())
+    }
+
+    fn delegated_lease(&self, key: &FakeNavigationKey) -> Option<(u64, u64)> {
+        match self.handoffs.lock().unwrap().get(key).copied() {
+            Some(FakeHandoffState::CallbackResponsible {
+                lease_id,
+                expires_at,
+            }) => Some((lease_id, expires_at)),
+            _ => None,
+        }
+    }
+
+    fn set_now(&self, now: u64) {
+        self.now.store(now as usize, Ordering::SeqCst);
+    }
+
+    fn expire_delegated_handoff(&self, key: &FakeNavigationKey, lease_id: u64) -> bool {
+        let now = self.now.load(Ordering::SeqCst) as u64;
+        let mut handoffs = self.handoffs.lock().unwrap();
+        if !matches!(
+            handoffs.get(key),
+            Some(FakeHandoffState::CallbackResponsible {
+                lease_id: current_lease_id,
+                expires_at,
+            }) if *current_lease_id == lease_id && *expires_at <= now
+        ) {
+            return false;
+        }
+
+        let mut reservations = self.reservations.lock().unwrap();
+        if reservations.get(&key.panel_id) != Some(&FakeReservationOwner::Handoff(key.runtime_id)) {
+            return false;
+        }
+        handoffs.remove(key);
+        reservations.remove(&key.panel_id);
+        true
+    }
+
+    fn panic_during_early_publication(self: &Arc<Self>, key: &FakeNavigationKey) -> ! {
+        let _cleanup = FakeEarlyPublicationCleanup {
+            coordinator: Arc::clone(self),
+            key: key.clone(),
+        };
+        panic!("injected early publication panic");
     }
 
     fn release_mutation_while_handoff_locked(&self, key: &FakeNavigationKey) {
@@ -606,6 +687,241 @@ fn handoff_uses_fixed_lock_order_and_emit_is_mutex_free() {
 }
 
 #[test]
+fn queued_navigate_with_later_load_failure_or_no_callback_expires_exact_handoff() {
+    let coordinator = Arc::new(FakeProgrammaticNavigationCoordinator::default());
+    let key = FakeNavigationKey::new("panel-a", 15, "https://missing-callback.example/path");
+    coordinator
+        .webviews
+        .lock()
+        .unwrap()
+        .insert(key.panel_id.clone(), key.runtime_id);
+    coordinator.begin(&key);
+    // Success acknowledges only that the UI-loop navigate message was queued. A later
+    // load failure can still produce no exact native callback.
+    coordinator
+        .complete(&key, FakeNavigateOutcome::Success, || {})
+        .unwrap();
+    let (lease_id, expires_at) = coordinator
+        .delegated_lease(&key)
+        .expect("late success owns a bounded callback lease");
+
+    coordinator.set_now(expires_at - 1);
+    assert!(!coordinator.expire_delegated_handoff(&key, lease_id));
+    assert!(coordinator.try_detach_or_replace(&key).is_err());
+
+    coordinator.set_now(expires_at);
+    assert!(coordinator.expire_delegated_handoff(&key, lease_id));
+    assert!(coordinator.handoffs.lock().unwrap().is_empty());
+    assert!(coordinator.reservations.lock().unwrap().is_empty());
+    coordinator
+        .try_detach_or_replace(&key)
+        .expect("expiry releases detach and replacement");
+
+    coordinator
+        .webviews
+        .lock()
+        .unwrap()
+        .insert(key.panel_id.clone(), key.runtime_id);
+    assert_eq!(coordinator.callback(&key), FakeCallbackOutcome::Published);
+    coordinator.assert_exactly_once(&key);
+}
+
+#[test]
+fn mismatched_or_stale_callbacks_cannot_extend_a_delegated_lease() {
+    let coordinator = Arc::new(FakeProgrammaticNavigationCoordinator::default());
+    let key = FakeNavigationKey::new("panel-a", 16, "https://lease.example/right");
+    coordinator
+        .webviews
+        .lock()
+        .unwrap()
+        .insert(key.panel_id.clone(), key.runtime_id);
+    coordinator.begin(&key);
+    coordinator
+        .complete(&key, FakeNavigateOutcome::Success, || {})
+        .unwrap();
+    let lease = coordinator.delegated_lease(&key).unwrap();
+
+    assert_eq!(
+        coordinator.callback(&FakeNavigationKey::new(
+            "panel-a",
+            15,
+            "https://lease.example/right"
+        )),
+        FakeCallbackOutcome::Ignored
+    );
+    assert_eq!(
+        coordinator.callback(&FakeNavigationKey::new(
+            "panel-a",
+            16,
+            "https://lease.example/wrong"
+        )),
+        FakeCallbackOutcome::Ignored
+    );
+    assert_eq!(coordinator.delegated_lease(&key), Some(lease));
+
+    coordinator.set_now(lease.1);
+    assert!(coordinator.expire_delegated_handoff(&key, lease.0));
+    assert!(coordinator.handoffs.lock().unwrap().is_empty());
+    assert!(coordinator.reservations.lock().unwrap().is_empty());
+}
+
+#[test]
+fn stale_expiry_cannot_release_a_newer_runtime_or_handoff_generation() {
+    let coordinator = Arc::new(FakeProgrammaticNavigationCoordinator::default());
+    let old = FakeNavigationKey::new("panel-a", 17, "https://generation.example/old");
+    coordinator
+        .webviews
+        .lock()
+        .unwrap()
+        .insert(old.panel_id.clone(), old.runtime_id);
+    coordinator.begin(&old);
+    coordinator
+        .complete(&old, FakeNavigateOutcome::Success, || {})
+        .unwrap();
+    let old_lease = coordinator.delegated_lease(&old).unwrap();
+    coordinator.set_now(old_lease.1);
+    assert!(coordinator.expire_delegated_handoff(&old, old_lease.0));
+
+    let replacement =
+        FakeNavigationKey::new("panel-a", 18, "https://generation.example/replacement");
+    coordinator
+        .webviews
+        .lock()
+        .unwrap()
+        .insert(replacement.panel_id.clone(), replacement.runtime_id);
+    coordinator.begin(&replacement);
+    assert!(!coordinator.expire_delegated_handoff(&old, old_lease.0));
+    assert_eq!(
+        coordinator
+            .reservations
+            .lock()
+            .unwrap()
+            .get("panel-a")
+            .copied(),
+        Some(FakeReservationOwner::Mutation(replacement.runtime_id))
+    );
+    coordinator
+        .complete(&replacement, FakeNavigateOutcome::Success, || {})
+        .unwrap();
+    let replacement_lease = coordinator.delegated_lease(&replacement).unwrap();
+    assert_ne!(old_lease.0, replacement_lease.0);
+
+    assert!(!coordinator.expire_delegated_handoff(&old, old_lease.0));
+    assert!(!coordinator.expire_delegated_handoff(&replacement, old_lease.0));
+    assert_eq!(
+        coordinator.delegated_lease(&replacement),
+        Some(replacement_lease)
+    );
+    assert_eq!(
+        coordinator
+            .reservations
+            .lock()
+            .unwrap()
+            .get("panel-a")
+            .copied(),
+        Some(FakeReservationOwner::Handoff(replacement.runtime_id))
+    );
+}
+
+#[test]
+fn callback_and_expiry_race_has_one_publication_owner_and_no_emit_gap() {
+    let coordinator = Arc::new(FakeProgrammaticNavigationCoordinator::default());
+    let key = FakeNavigationKey::new("panel-a", 19, "https://expiry-race.example");
+    coordinator
+        .webviews
+        .lock()
+        .unwrap()
+        .insert(key.panel_id.clone(), key.runtime_id);
+    coordinator.begin(&key);
+    coordinator
+        .complete(&key, FakeNavigateOutcome::Success, || {})
+        .unwrap();
+    let (lease_id, expires_at) = coordinator.delegated_lease(&key).unwrap();
+    coordinator.set_now(expires_at);
+
+    let (start_tx, start_rx) = mpsc::channel();
+    let callback_coordinator = Arc::clone(&coordinator);
+    let callback_key = key.clone();
+    let callback = thread::spawn(move || {
+        start_rx.recv().unwrap();
+        callback_coordinator.callback(&callback_key)
+    });
+    let expiry_coordinator = Arc::clone(&coordinator);
+    let expiry_key = key.clone();
+    let expiry = thread::spawn(move || {
+        start_tx.send(()).unwrap();
+        expiry_coordinator.expire_delegated_handoff(&expiry_key, lease_id)
+    });
+
+    let callback_outcome = callback.join().unwrap();
+    let _expiry_won = expiry.join().unwrap();
+    assert_eq!(callback_outcome, FakeCallbackOutcome::Published);
+    coordinator.assert_exactly_once(&key);
+    assert!(coordinator.handoffs.lock().unwrap().is_empty());
+    assert!(coordinator.reservations.lock().unwrap().is_empty());
+    assert_eq!(
+        coordinator
+            .reentrant_mutation_rejections
+            .load(Ordering::SeqCst),
+        1,
+        "the winning callback must retain a reservation through emit"
+    );
+}
+
+#[test]
+fn exact_callback_consumes_lease_idempotently_without_a_tombstone() {
+    let coordinator = Arc::new(FakeProgrammaticNavigationCoordinator::default());
+    let key = FakeNavigationKey::new("panel-a", 20, "https://lease-consume.example");
+    coordinator
+        .webviews
+        .lock()
+        .unwrap()
+        .insert(key.panel_id.clone(), key.runtime_id);
+    coordinator.begin(&key);
+    coordinator
+        .complete(&key, FakeNavigateOutcome::Success, || {})
+        .unwrap();
+    let (lease_id, expires_at) = coordinator.delegated_lease(&key).unwrap();
+
+    assert_eq!(coordinator.callback(&key), FakeCallbackOutcome::Published);
+    coordinator.set_now(expires_at);
+    assert!(!coordinator.expire_delegated_handoff(&key, lease_id));
+    assert!(!coordinator.expire_delegated_handoff(&key, lease_id));
+    assert!(coordinator.handoffs.lock().unwrap().is_empty());
+    assert!(coordinator.reservations.lock().unwrap().is_empty());
+
+    assert_eq!(coordinator.callback(&key), FakeCallbackOutcome::Published);
+    coordinator.assert_publication_count(&key, 2);
+}
+
+#[test]
+fn panic_before_early_publication_cleanup_releases_handoff_and_reservation() {
+    let coordinator = Arc::new(FakeProgrammaticNavigationCoordinator::default());
+    let key = FakeNavigationKey::new("panel-a", 21, "https://publication-panic.example");
+    coordinator
+        .webviews
+        .lock()
+        .unwrap()
+        .insert(key.panel_id.clone(), key.runtime_id);
+    coordinator.begin(&key);
+    assert_eq!(
+        coordinator.callback(&key),
+        FakeCallbackOutcome::DeferredToCommand
+    );
+
+    let unwind = std::panic::catch_unwind({
+        let coordinator = Arc::clone(&coordinator);
+        let key = key.clone();
+        move || coordinator.panic_during_early_publication(&key)
+    });
+    assert!(unwind.is_err());
+    assert!(coordinator.handoffs.lock().unwrap().is_empty());
+    assert!(coordinator.reservations.lock().unwrap().is_empty());
+    assert!(coordinator.records.lock().unwrap().is_empty());
+    assert!(coordinator.events.lock().unwrap().is_empty());
+}
+
+#[test]
 fn production_has_an_exact_programmatic_navigation_handoff() {
     let browser = include_str!("../browser.rs");
     for required in [
@@ -755,6 +1071,69 @@ fn production_late_delegation_keeps_detach_and_replacement_excluded() {
             || callback_responsible.contains("transfer")
             || !callback_responsible.contains("reserve_browser_navigation_callback("),
         "late callback must atomically adopt the existing handoff reservation"
+    );
+}
+
+#[test]
+fn production_callback_responsibility_is_a_bounded_exact_expiry_lease() {
+    let browser = include_str!("../browser.rs");
+    let phase = source_item(browser, "enum BrowserProgrammaticNavigationPhase");
+    let handoff = source_item(browser, "struct BrowserProgrammaticNavigationHandoff");
+    assert!(
+        (phase.contains("lease_id") || handoff.contains("lease_id"))
+            && (phase.contains("expires_at") || handoff.contains("expires_at")),
+        "CallbackResponsible must own a generation-keyed bounded lease"
+    );
+
+    let expiry = source_item(
+        browser,
+        "fn expire_browser_programmatic_navigation_handoff(",
+    );
+    for exact in [
+        "panel_id",
+        "runtime_id",
+        "url",
+        "lease_id",
+        "expires_at",
+        "programmatic_navigation_handoffs",
+        "reserved_panel_ids",
+        ".remove(",
+    ] {
+        assert!(
+            expiry.contains(exact),
+            "bounded expiry must be exact and release both owners: {exact}"
+        );
+    }
+
+    let complete = source_item(browser, "fn complete_browser_programmatic_navigation(");
+    assert!(
+        complete.contains("expire_browser_programmatic_navigation_handoff")
+            || complete.contains("schedule_browser_programmatic_navigation_handoff_expiry"),
+        "late callback responsibility must schedule deterministic bounded recovery"
+    );
+}
+
+#[test]
+fn production_installs_early_cleanup_before_any_publication_work() {
+    let browser = include_str!("../browser.rs");
+    let complete = source_item(browser, "fn complete_browser_programmatic_navigation(");
+    let early_start = complete
+        .find("callback_observed: true")
+        .expect("early-observed completion branch");
+    let late_start = complete[early_start..]
+        .find("callback_observed: false")
+        .map(|offset| early_start + offset)
+        .expect("late completion branch");
+    let early = &complete[early_start..late_start];
+    let cleanup = early
+        .find("BrowserProgrammaticNavigationCleanup")
+        .expect("early publication must first install unwind cleanup ownership");
+    let publish = early
+        .find("publish_browser_programmatic_navigation")
+        .expect("early publication helper");
+    assert!(
+        cleanup < publish,
+        "cleanup ownership must exist before fallible or panicking publication work"
     );
 }
 
