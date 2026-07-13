@@ -225,6 +225,57 @@ impl ControlHandleRegistry {
     }
 }
 
+/// D3: canonical registers the bootstrap window/workspace/pane/surface in
+/// the handle registry before the first socket mint, so fixture refs start at
+/// :2 per kind (live capture: workspace:2/pane:2 for the fixture workspace,
+/// pane:3/surface:4 for the first split). Walk order: window, then per
+/// workspace: workspace id, panes in layout order, surfaces in layout order.
+fn bootstrap_registry_seeds(snapshot: &AppSessionSnapshot) -> Vec<(&'static str, String)> {
+    fn walk_layout(
+        layout: &cmux_core::session::SessionWorkspaceLayoutSnapshot,
+        seeds: &mut Vec<(&'static str, String)>,
+    ) {
+        match layout {
+            cmux_core::session::SessionWorkspaceLayoutSnapshot::Pane(pane) => {
+                if let Some(id) = &pane.pane_id {
+                    seeds.push(("pane", id.clone()));
+                }
+                for panel in &pane.panel_ids {
+                    seeds.push(("surface", panel.clone()));
+                }
+            }
+            cmux_core::session::SessionWorkspaceLayoutSnapshot::Split(split) => {
+                walk_layout(&split.first, seeds);
+                walk_layout(&split.second, seeds);
+            }
+        }
+    }
+    let mut seeds = Vec::new();
+    for window in &snapshot.windows {
+        if let Some(id) = &window.window_id {
+            seeds.push(("window", id.clone()));
+        }
+        for workspace in &window.tab_manager.workspaces {
+            if let Some(id) = &workspace.workspace_id {
+                seeds.push(("workspace", id.clone()));
+            }
+            if let Some(layout) = &workspace.layout {
+                walk_layout(layout, &mut seeds);
+            }
+        }
+    }
+    seeds
+}
+
+/// Seed the handle registry with the bootstrap session entities (D3). Runs in
+/// app setup after the session bootstrap and before the control listener
+/// starts.
+pub(crate) fn seed_control_handle_registry(app: &AppHandle) {
+    for (kind, id) in bootstrap_registry_seeds(&snapshot(app)) {
+        control_handle_ref(app, kind, &id);
+    }
+}
+
 fn control_handle_ref(app: &AppHandle, kind: &'static str, id: &str) -> String {
     let state = app.state::<ControlHandleRegistryState>();
     let reference = state

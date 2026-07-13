@@ -599,3 +599,37 @@ fn lifecycle_command_commits_do_not_emit_derived_session_model_events() {
         "the v2 lifecycle commit path must not emit derived session.model events"
     );
 }
+
+// ---------------------------------------------------------------------------
+// D3 — handle registry seeded with the bootstrap entities
+// ---------------------------------------------------------------------------
+
+#[test]
+fn bootstrap_registry_seeds_walk_window_workspace_pane_surface() {
+    // Capture: the fixture workspace minted workspace:2/pane:2 and the first
+    // split pane:3/surface:4 — the bootstrap window/workspace/pane/surface
+    // must already occupy :1 of each kind before the first socket mint.
+    let seeds = bootstrap_registry_seeds(&test_snapshot());
+    assert_eq!(
+        seeds,
+        vec![
+            ("window", "window-1".to_string()),
+            ("workspace", "workspace-1".to_string()),
+            ("pane", "pane-1".to_string()),
+            ("surface", "surface-1".to_string()),
+        ]
+    );
+    // Feeding the seeds into a registry makes the next mints start at :2.
+    let mut registry = ControlHandleRegistry::default();
+    for (kind, id) in &seeds {
+        registry.mint(kind, id);
+    }
+    assert_eq!(registry.mint("workspace", "fixture-ws"), "workspace:2");
+    assert_eq!(registry.mint("pane", "fixture-pane"), "pane:2");
+    assert_eq!(registry.mint("surface", "fixture-surface"), "surface:2");
+    assert_eq!(
+        registry.mint("surface", "surface-1"),
+        "surface:1",
+        "re-minting a seeded id is stable"
+    );
+}
