@@ -21156,4 +21156,7 @@ mod tests {
 
     #[path = "surface_action_adversarial_red.rs"]
     mod surface_action_adversarial_red;
+
+    #[path = "remote_runtime_lifecycle_lease_red.rs"]
+    mod remote_runtime_lifecycle_lease_red;
 }

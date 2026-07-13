@@ -134,6 +134,10 @@ mod restore_previous_launch_red;
 mod restore_identity_graph_red;
 
 #[cfg(test)]
+#[path = "session/remote_runtime_restore_red.rs"]
+mod remote_runtime_restore_red;
+
+#[cfg(test)]
 #[path = "session/next_panel_allocation_fence_red.rs"]
 mod next_panel_allocation_fence_red;
 
