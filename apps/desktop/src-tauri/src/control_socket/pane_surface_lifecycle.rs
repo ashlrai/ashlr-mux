@@ -3348,9 +3348,6 @@ fn surface_close(
             }
         }
     }
-    let previous_selection = model
-        .pane(&owner.pane_id)
-        .map(|pane| pane.selected_surface_id.clone());
     if let Err(problem) = model.close_surface(&surface_id, CloseIntent::Explicit) {
         return if problem.to_string().contains("last surface") {
             error(
@@ -3421,8 +3418,8 @@ fn surface_close(
         .find(|candidate| candidate.workspace_id.as_deref() == Some(workspace_id.as_str()))
         .and_then(|candidate| published_selection(candidate, &owner.pane_id))
         .filter(|pointer| pointer != &surface_id);
-    if let (Some(previous), Some(selected)) = (previous_selection, new_selection) {
-        if previous != selected && pointer.as_deref() != Some(selected.as_str()) {
+    if let Some(selected) = new_selection {
+        if pointer.as_deref() != Some(selected.as_str()) {
             let selected_kind = model
                 .surface(&selected)
                 .map(|surface| kind_name(&surface.kind))

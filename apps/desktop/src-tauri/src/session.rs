@@ -777,11 +777,11 @@ fn initial_snapshot(first_panel_id: &str) -> AppSessionSnapshot {
 /// V1 (differential remediation): a pre-remediation persisted snapshot
 /// resurrects the literal "main" window id and "surface-N" panel ids at
 /// restore. Re-mint every non-UUID window/panel/pane/split id with a fresh
-/// UUIDv4 and remap ALL intra-snapshot references consistently (layout
-/// panel_ids/selected/focused/zoomed, surface records, every panel_* keyed
-/// list, resume bindings, pending pwds, dock rows) via a generic exact-match
-/// string walk over the encoded snapshot. Free-text fields are excluded so a
-/// title that happens to equal an old id is never rewritten.
+/// UUIDv4 and remap all intra-snapshot identity references consistently
+/// (layout panel ids, selected/focused/zoomed ids, surface records, every
+/// panel-keyed list, resume bindings, pending pwds, and dock rows). Restrict
+/// the encoded-snapshot walk to identity-bearing keys so user-controlled
+/// strings that happen to equal an old id are never rewritten.
 fn remint_noncanonical_identities(snapshot: &mut AppSessionSnapshot) {
     use std::collections::HashMap;
     fn collect(layout: &SessionWorkspaceLayoutSnapshot, ids: &mut Vec<String>) {
@@ -828,20 +828,26 @@ fn remint_noncanonical_identities(snapshot: &mut AppSessionSnapshot) {
     if mapping.is_empty() {
         return;
     }
-    const FREE_TEXT_KEYS: [&str; 8] = [
-        "title",
-        "custom_title",
-        "process_title",
-        "custom_description",
-        "name",
-        "command",
-        "cwd",
-        "body",
+    const IDENTITY_REFERENCE_KEYS: [&str; 14] = [
+        "window_id",
+        "selected_workspace_id",
+        "workspace_id",
+        "anchor_workspace_id",
+        "pane_id",
+        "panel_id",
+        "panel_ids",
+        "selected_panel_id",
+        "split_id",
+        "zoomed_panel_id",
+        "focused_panel_id",
+        "focused_pane_id",
+        "surface_id",
+        "focused_surface_id",
     ];
     fn remap(value: &mut serde_json::Value, mapping: &HashMap<String, String>, key: Option<&str>) {
         match value {
             serde_json::Value::String(text) => {
-                if key.is_some_and(|key| FREE_TEXT_KEYS.contains(&key)) {
+                if !key.is_some_and(|key| IDENTITY_REFERENCE_KEYS.contains(&key)) {
                     return;
                 }
                 if let Some(minted) = mapping.get(text.as_str()) {

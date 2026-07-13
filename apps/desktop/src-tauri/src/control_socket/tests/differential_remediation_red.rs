@@ -744,12 +744,17 @@ fn surface_create_inserts_next_to_the_selected_tab() {
 
 #[test]
 fn surface_close_of_focused_unselected_surface_suppresses_the_pair() {
-    // Round 5 item 4: the Swift guard suppresses the pair when the pane
-    // selection did not move (publishCmuxFocusedSelection,
-    // CmuxLifecycleEventPublishing.swift:171), even though focus fell back
-    // off the closed surface.
+    // The pointer guard suppresses the pair when the surviving selection was
+    // already published, even though focus falls back off the closed surface.
     let mut snapshot = mixed_pane_snapshot();
-    snapshot.windows[0].tab_manager.workspaces[0].focused_panel_id = Some("surface-a".into());
+    let workspace = &mut snapshot.windows[0].tab_manager.workspaces[0];
+    workspace.focused_panel_id = Some("surface-a".into());
+    workspace.published_pane_selections = Some(vec![
+        cmux_core::session::SessionPanePublishedSelectionSnapshot {
+            pane_id: "pane-1".into(),
+            panel_id: "surface-b".into(),
+        },
+    ]);
     let closed = transition(
         &snapshot,
         "surface.close",
@@ -940,9 +945,17 @@ fn closing_the_selected_tab_reselects_its_successor() {
     // the publisher pointer is empty and previous_surface_id is null (the
     // pointer never reports a dead surface).
     assert_eq!(closed.events[1].payload["previous_surface_id"], json!(null));
-    // Closing an unselected trailing tab is a no-op for selection.
+    // Closing an unselected trailing tab is a no-op when the surviving
+    // selection already matches the publisher pointer.
+    let mut no_op_snapshot = snapshot.clone();
+    no_op_snapshot.windows[0].tab_manager.workspaces[0].published_pane_selections = Some(vec![
+        cmux_core::session::SessionPanePublishedSelectionSnapshot {
+            pane_id: "pane-1".into(),
+            panel_id: "surface-b".into(),
+        },
+    ]);
     let last = transition(
-        &snapshot,
+        &no_op_snapshot,
         "surface.close",
         json!({"surface_id": "surface-c"}),
     );
