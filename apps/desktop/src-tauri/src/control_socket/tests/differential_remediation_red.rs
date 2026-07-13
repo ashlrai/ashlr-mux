@@ -541,11 +541,11 @@ fn surface_create_with_focus_emits_selection_once() {
         json!({"type": "terminal", "focus": true}),
     );
     let names: Vec<_> = created.events.iter().map(|event| event.name).collect();
-    assert_eq!(
-        names,
-        ["surface.created", "surface.selected", "surface.focused"],
-        "focused create keeps the new selection (no restore flip)"
-    );
+    // Round 7: a born-selected tab never goes through a selection TRANSITION,
+    // so nothing is published (publishCmuxFocusedSelection is only reached
+    // from applyTabSelectionNow; the close.happy capture's surviving
+    // previous_surface_id proves the pointer never advanced).
+    assert_eq!(names, ["surface.created"]);
 }
 
 #[test]
@@ -575,7 +575,9 @@ fn surface_close_emits_canonical_payload_and_reselection() {
     );
     assert_eq!(events[1].0, "surface.selected");
     assert_eq!(events[1].1["surface_id"], json!("surface-a"));
-    assert_eq!(events[1].1["previous_surface_id"], json!("surface-b"));
+    // Round 7: nothing was published before the close in this fixture, so
+    // the pointer-backed previous is null (never the dead surface).
+    assert_eq!(events[1].1["previous_surface_id"], json!(null));
     assert_eq!(events[1].1["origin"], json!("bonsplit_selection"));
     assert_eq!(events[2].0, "surface.focused");
     assert_eq!(events[2].1["surface_id"], json!("surface-a"));
@@ -909,10 +911,10 @@ fn closing_the_selected_tab_reselects_its_successor() {
         json!("surface-c"),
         "the successor (tab sliding into the closed index) wins"
     );
-    assert_eq!(
-        closed.events[1].payload["previous_surface_id"],
-        json!("surface-b")
-    );
+    // Round 7: no selection was ever PUBLISHED in this synthetic fixture, so
+    // the publisher pointer is empty and previous_surface_id is null (the
+    // pointer never reports a dead surface).
+    assert_eq!(closed.events[1].payload["previous_surface_id"], json!(null));
     // Closing an unselected trailing tab is a no-op for selection.
     let last = transition(
         &snapshot,
@@ -1049,11 +1051,8 @@ fn create_after_explicit_focus_keeps_the_new_tab_selected() {
         .unwrap()
         .to_owned();
     let names: Vec<_> = created.events.iter().map(|event| event.name).collect();
-    assert_eq!(
-        names,
-        ["surface.created", "surface.selected", "surface.focused"],
-        "keep-selected create emits the pair once, no revert"
-    );
+    // Round 7: born-selected keep creates publish no selection transition.
+    assert_eq!(names, ["surface.created"]);
     let list = transition(&created.snapshot, "surface.list", json!({}));
     let rows = ok_value(&list)["surfaces"].as_array().unwrap().clone();
     let row = rows
@@ -1062,17 +1061,17 @@ fn create_after_explicit_focus_keeps_the_new_tab_selected() {
         .unwrap();
     assert_eq!(row["selected_in_pane"], json!(true));
     assert_eq!(row["focused"], json!(true));
-    // Closing it then emits the reselection pair (the round-6 delta-1 shape).
+    // Closing it in this 2-tab pane reselects the pointer target itself
+    // (successor fallback = surface-b == the pointer), so the canonical
+    // pointer guard suppresses the pair (round 7; the 3-tab capture shape is
+    // pinned by close_pair_previous_is_the_nearest_surviving_published_selection).
     let closed = transition(
         &created.snapshot,
         "surface.close",
         json!({"surface_id": created_id}),
     );
     let names: Vec<_> = closed.events.iter().map(|event| event.name).collect();
-    assert_eq!(
-        names,
-        ["surface.closed", "surface.selected", "surface.focused"]
-    );
+    assert_eq!(names, ["surface.closed"]);
 }
 
 #[test]
@@ -1132,5 +1131,70 @@ fn unrendered_entities_burn_ref_numbers_via_the_refresh_walk() {
         registry.mint("pane", "later-rendered-pane"),
         "pane:3",
         "later renders skip the burned number"
+    );
+}
+
+#[test]
+fn close_pair_previous_is_the_nearest_surviving_published_selection() {
+    // Round 7: the reselection publish reads the publisher pointer AFTER the
+    // close mutation (publishCmuxFocusedSelection,
+    // CmuxLifecycleEventPublishing.swift:168) — surface.closed's clearSurface
+    // (:30-35, invoked at :153) has already purged entries pointing at the
+    // dead surface, and born-selected tabs never advanced the pointer. So
+    // previous_surface_id is the explicitly-focused SURVIVOR (capture
+    // surface_close.happy frame 2: surface:15), never the just-closed id.
+    let mut snapshot = mixed_pane_snapshot();
+    {
+        let workspace = &mut snapshot.windows[0].tab_manager.workspaces[0];
+        let SessionWorkspaceLayoutSnapshot::Pane(pane) =
+            workspace.layout.as_mut().expect("pane layout")
+        else {
+            unreachable!();
+        };
+        pane.panel_ids = vec!["surface-a".into(), "surface-b".into(), "surface-c".into()];
+    }
+    let mut encoded = serde_json::to_value(snapshot).expect("encode");
+    encoded["windows"][0]["tab_manager"]["workspaces"][0]["surfaces"] = json!([
+        {"surface_id": "surface-a", "pane_id": "pane-1", "generation": 1, "kind": {"type": "terminal"}},
+        {"surface_id": "surface-b", "pane_id": "pane-1", "generation": 1, "kind": {"type": "terminal"}},
+        {"surface_id": "surface-c", "pane_id": "pane-1", "generation": 1, "kind": {"type": "terminal"}}
+    ]);
+    let snapshot: AppSessionSnapshot = serde_json::from_value(encoded).expect("decode");
+
+    // Explicit focus advances the pointer to surface-b...
+    let focused = transition(
+        &snapshot,
+        "surface.focus",
+        json!({"surface_id": "surface-b"}),
+    );
+    // ...the keep-selected create is born selected (no transition publish;
+    // pointer stays on surface-b)...
+    let created = transition(
+        &focused.snapshot,
+        "surface.create",
+        json!({"type": "terminal"}),
+    );
+    let created_id = ok_value(&created)["surface_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // ...and closing it reselects the successor (surface-c: the tab sliding
+    // into the closed index) with previous = the SURVIVING pointer.
+    let closed = transition(
+        &created.snapshot,
+        "surface.close",
+        json!({"surface_id": created_id}),
+    );
+    let _ = ok_value(&closed);
+    let names: Vec<_> = closed.events.iter().map(|event| event.name).collect();
+    assert_eq!(
+        names,
+        ["surface.closed", "surface.selected", "surface.focused"]
+    );
+    assert_eq!(closed.events[1].payload["surface_id"], json!("surface-c"));
+    assert_eq!(
+        closed.events[1].payload["previous_surface_id"],
+        json!("surface-b"),
+        "previous is the surviving published selection, never the dead surface"
     );
 }

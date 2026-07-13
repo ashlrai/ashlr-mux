@@ -990,6 +990,43 @@ fn owned_event(
     }
 }
 
+/// Round 7 — the publisher's per-pane selection pointer (canonical
+/// CmuxSelectionEventState.selectedSurfaceByWorkspacePane,
+/// CmuxLifecycleEventPublishing.swift:7): advanced only by published
+/// selection TRANSITIONS, purged of dead surfaces on close (clearSurface,
+/// :30-35). Born-selected tabs never publish, so the pointer can lag the
+/// pane's live selection.
+fn published_selection(
+    workspace: &cmux_core::session::SessionWorkspaceSnapshot,
+    pane_id: &str,
+) -> Option<String> {
+    workspace
+        .published_pane_selections
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .find(|row| row.pane_id == pane_id)
+        .map(|row| row.panel_id.clone())
+}
+
+fn set_published_selection(
+    workspace: &mut cmux_core::session::SessionWorkspaceSnapshot,
+    pane_id: &str,
+    panel_id: &str,
+) {
+    let rows = workspace
+        .published_pane_selections
+        .get_or_insert_with(Vec::new);
+    if let Some(row) = rows.iter_mut().find(|row| row.pane_id == pane_id) {
+        row.panel_id = panel_id.to_owned();
+    } else {
+        rows.push(cmux_core::session::SessionPanePublishedSelectionSnapshot {
+            pane_id: pane_id.to_owned(),
+            panel_id: panel_id.to_owned(),
+        });
+    }
+}
+
 /// The canonical bonsplit selection pair: surface.selected (with
 /// previous_surface_id) followed by surface.focused, origin
 /// "bonsplit_selection" (live capture surface_create.terminal_happy /
@@ -1000,7 +1037,7 @@ fn selection_events(
     workspace_id: &str,
     pane_id: &str,
     surface_id: &str,
-    previous_surface_id: &str,
+    previous_surface_id: Option<&str>,
     kind: &str,
     focused: bool,
 ) -> [LifecycleEvent; 2] {
@@ -1859,35 +1896,42 @@ fn surface_create(
     // focus request) restores the previous selection, emitting the pair twice
     // (capture surface_create.terminal_happy: created -> selected(new) ->
     // focused(new) -> selected(previous) -> focused(previous)).
-    if let Some(previous) = inherit_source.as_deref().filter(|prev| *prev != surface_id) {
-        let previous_kind = next.windows[scope.window_index].tab_manager.workspaces
-            [scope.workspace_index]
-            .surfaces
-            .as_deref()
-            .unwrap_or_default()
-            .iter()
-            .find(|record| record.surface_id == previous)
-            .map(|record| kind_name(&record.kind))
-            .unwrap_or("terminal");
-        events.extend(selection_events(
-            &scope.window_id,
-            &scope.workspace_id,
-            &pane_id,
-            &surface_id,
-            previous,
-            kind_name(&kind),
-            true,
-        ));
-        if !focus_requested {
+    if !keep_new_selected {
+        if let Some(previous) = inherit_source.as_deref().filter(|prev| *prev != surface_id) {
+            let previous_kind = next.windows[scope.window_index].tab_manager.workspaces
+                [scope.workspace_index]
+                .surfaces
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .find(|record| record.surface_id == previous)
+                .map(|record| kind_name(&record.kind))
+                .unwrap_or("terminal");
+            events.extend(selection_events(
+                &scope.window_id,
+                &scope.workspace_id,
+                &pane_id,
+                &surface_id,
+                Some(previous),
+                kind_name(&kind),
+                true,
+            ));
             events.extend(selection_events(
                 &scope.window_id,
                 &scope.workspace_id,
                 &pane_id,
                 previous,
-                &surface_id,
+                Some(&surface_id),
                 previous_kind,
                 true,
             ));
+            // The flip's final publish leaves the pointer on the restored tab
+            // (round 7: pointer = last PUBLISHED selection).
+            set_published_selection(
+                &mut next.windows[scope.window_index].tab_manager.workspaces[scope.workspace_index],
+                &pane_id,
+                previous,
+            );
         }
     }
     ok_transition(
@@ -3344,7 +3388,7 @@ fn surface_close(
     // Capture surface_close.happy: surface.closed carries
     // {kind, origin: tab_close, pane_id, surface_id}; when the pane's
     // selection moved, the bonsplit selection pair follows.
-    let next = model.to_app_session(snapshot).unwrap();
+    let mut next = model.to_app_session(snapshot).unwrap();
     let mut events = vec![owned_event(
         "surface.closed",
         &window_id,
@@ -3362,13 +3406,23 @@ fn surface_close(
         .pane(&owner.pane_id)
         .filter(|pane| !pane.surface_ids.is_empty())
         .map(|pane| pane.selected_surface_id.clone());
-    // Round 5 item 4: canonical publishCmuxFocusedSelection guards
-    // previousSelectedSurfaceId != surfaceId
-    // (CmuxLifecycleEventPublishing.swift:171) — the pair fires only when
-    // the pane selection actually moved (to the closed tab's successor per
-    // the core reselection rule).
+    // Round 7: the reselection publish reads the publisher pointer AFTER the
+    // close mutation (publishCmuxFocusedSelection,
+    // CmuxLifecycleEventPublishing.swift:168) — and surface.closed's
+    // clearSurface (:30-35, invoked from publishCmuxSurfaceClosed :153) has
+    // already purged entries pointing at the dead surface. previous_surface_id
+    // is therefore the nearest SURVIVING published selection (capture
+    // surface_close.happy frame 2), and the round-5 no-op guard applies to
+    // the pointer, not the raw pre-close selection.
+    let pointer = snapshot
+        .windows
+        .iter()
+        .flat_map(|window| &window.tab_manager.workspaces)
+        .find(|candidate| candidate.workspace_id.as_deref() == Some(workspace_id.as_str()))
+        .and_then(|candidate| published_selection(candidate, &owner.pane_id))
+        .filter(|pointer| pointer != &surface_id);
     if let (Some(previous), Some(selected)) = (previous_selection, new_selection) {
-        if previous != selected {
+        if previous != selected && pointer.as_deref() != Some(selected.as_str()) {
             let selected_kind = model
                 .surface(&selected)
                 .map(|surface| kind_name(&surface.kind))
@@ -3378,10 +3432,18 @@ fn surface_close(
                 &workspace_id,
                 &owner.pane_id,
                 &selected,
-                &previous,
+                pointer.as_deref(),
                 selected_kind,
                 true,
             ));
+            if let Some(workspace) = next
+                .windows
+                .iter_mut()
+                .flat_map(|window| &mut window.tab_manager.workspaces)
+                .find(|candidate| candidate.workspace_id.as_deref() == Some(workspace_id.as_str()))
+            {
+                set_published_selection(workspace, &owner.pane_id, &selected);
+            }
         }
     }
     ok_transition(
@@ -3460,6 +3522,14 @@ fn surface_focus(
                 // Round 6 item 1: explicit focus records the bonsplit-focused
                 // pane, the gate for create-keeps-selection.
                 window.tab_manager.workspaces[index].focused_pane_id = Some(owner.pane_id.clone());
+                // Round 7: focus goes through applyTabSelectionNow, a
+                // published selection transition, so the publisher pointer
+                // advances (CmuxLifecycleEventPublishing.swift:166-183).
+                set_published_selection(
+                    &mut window.tab_manager.workspaces[index],
+                    &owner.pane_id,
+                    surface_id,
+                );
             }
         }
     }

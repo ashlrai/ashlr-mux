@@ -2,6 +2,7 @@
 // Do not edit by hand. Run `bun run generate` to refresh.
 import type { SessionCanvasPaneSnapshot } from "./SessionCanvasPaneSnapshot";
 import type { SessionGitBranchSnapshot } from "./SessionGitBranchSnapshot";
+import type { SessionPanePublishedSelectionSnapshot } from "./SessionPanePublishedSelectionSnapshot";
 import type { SessionPanelGitBranchSnapshot } from "./SessionPanelGitBranchSnapshot";
 import type { SessionPanelListeningPortsSnapshot } from "./SessionPanelListeningPortsSnapshot";
 import type { SessionPanelPinSnapshot } from "./SessionPanelPinSnapshot";
@@ -82,6 +83,11 @@ pending_remote_pwds?: Array<SessionPendingRemotePwdSnapshot>, pending_surface_pw
  * in `surface.list` terminal rows as `resume_binding`.
  */
 surface_resume_bindings?: Array<SessionSurfaceResumeBindingRecordSnapshot>,
+/**
+ * Publisher selection pointers keyed by `pane_id` (see
+ * `SessionPanePublishedSelectionSnapshot`).
+ */
+published_pane_selections?: Array<SessionPanePublishedSelectionSnapshot>,
 /**
  * Workspace-level git branch fallback used only when no panel reports a
  * branch. Mirrors canonical `Workspace.gitBranch` as consumed by the
