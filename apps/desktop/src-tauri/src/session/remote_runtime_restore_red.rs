@@ -67,3 +67,55 @@ fn previous_launch_restore_drops_nonrestorable_remote_mirrors() {
         "remote runtime mirrors require fresh authoritative observation after restore"
     );
 }
+
+#[test]
+fn previous_launch_restore_preserves_nonmirror_remote_terminal_metadata() {
+    let current = initial_snapshot("surface-1");
+    let mut previous = initial_snapshot("surface-9");
+    let workspace = &mut previous.windows[0].tab_manager.workspaces[0];
+    let SessionWorkspaceLayoutSnapshot::Pane(pane) = workspace.layout.as_ref().unwrap() else {
+        panic!("single-pane fixture")
+    };
+    workspace.surfaces = Some(vec![SessionSurfaceSnapshot {
+        surface_id: "surface-9".into(),
+        pane_id: pane.pane_id.clone().unwrap(),
+        generation: 9,
+        kind: SessionSurfaceKindSnapshot::RemoteTerminal {
+            remote_session_id: Some("opaque-remote-context".into()),
+            remote_context: Some(serde_json::json!({
+                "kind": "cloud",
+                "opaque": "surface-9"
+            })),
+            arrival_generation: Some(9),
+        },
+        metadata: SessionSurfaceMetadataSnapshot::default(),
+        terminal_startup: None,
+    }]);
+    let authority = GatedSnapshot::new(current);
+    let next_panel = AtomicU64::new(2);
+    let restored = restore_previous_launch_transaction(
+        &authority,
+        &next_panel,
+        &mut RecordingPublication,
+        || Some(previous),
+    )
+    .unwrap();
+
+    let restored_surface = restored.windows[0].tab_manager.workspaces[0]
+        .surfaces
+        .as_deref()
+        .and_then(|surfaces| surfaces.first())
+        .expect("typed remote terminal record survives restore");
+    let SessionSurfaceKindSnapshot::RemoteTerminal {
+        remote_session_id,
+        remote_context,
+        arrival_generation,
+    } = &restored_surface.kind
+    else {
+        panic!("non-mirror remote terminal metadata was replaced by a scaffold")
+    };
+    assert_eq!(remote_session_id.as_deref(), Some("opaque-remote-context"));
+    assert_eq!(remote_context.as_ref().unwrap()["kind"], "cloud");
+    assert_eq!(remote_context.as_ref().unwrap()["opaque"], "surface-9");
+    assert_eq!(*arrival_generation, Some(9));
+}
