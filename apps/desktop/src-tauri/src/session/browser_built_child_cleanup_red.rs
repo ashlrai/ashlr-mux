@@ -257,7 +257,7 @@ fn production_routes_every_post_build_failure_through_owned_cleanup() {
         "primary",
         "cleanup",
         ".close(",
-        "webviews",
+        "pending_cleanup_children",
         ".insert(",
         "mutation_reservation",
     ] {
@@ -269,6 +269,10 @@ fn production_routes_every_post_build_failure_through_owned_cleanup() {
     assert!(
         cleanup.find(".close(").unwrap() < cleanup.find(".insert(").unwrap(),
         "only a child whose cleanup close failed is registered"
+    );
+    assert!(
+        !cleanup.contains("webviews.insert"),
+        "a failed-cleanup child must never become authoritative"
     );
 }
 
