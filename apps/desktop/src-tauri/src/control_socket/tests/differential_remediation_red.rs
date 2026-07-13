@@ -1074,3 +1074,63 @@ fn create_after_explicit_focus_keeps_the_new_tab_selected() {
         ["surface.closed", "surface.selected", "surface.focused"]
     );
 }
+
+#[test]
+fn every_dispatch_refreshes_known_refs_before_resolution() {
+    // Round 6 item 2: canonical's dispatch preamble mints refs for EVERY live
+    // window/workspace/pane/surface/group on every control dispatch
+    // (v2RefreshKnownRefs, TerminalController.swift:3561-3586 at pinned
+    // e1825d40d). That is what burns pane refs for entities that are never
+    // rendered (the last-surface workspace's pane becomes pane:10 at its
+    // close dispatch; the respawn workspace's pane then mints pane:11).
+    let source = include_str!("../../control_socket.rs");
+    let start = source
+        .find("fn handle_control_request(")
+        .expect("dispatch present");
+    let body = &source[start..start + 3_000];
+    let refresh = body
+        .find("refresh_known_handle_refs(")
+        .expect("dispatch preamble refresh wired");
+    let resolve = body
+        .find("resolve_request_handle_refs(")
+        .expect("ref resolution present");
+    assert!(
+        refresh < resolve,
+        "the known-ref refresh precedes handle-ref resolution (canonical preamble order)"
+    );
+}
+
+#[test]
+fn unrendered_entities_burn_ref_numbers_via_the_refresh_walk() {
+    // Simulate the burned mint: a workspace created between two dispatches
+    // occupies the next pane number even though no response ever renders it.
+    let mut registry = ControlHandleRegistry::default();
+    let base = test_snapshot();
+    for (kind, id) in bootstrap_registry_seeds(&base) {
+        registry.mint(kind, &id);
+    }
+    // A second workspace appears (never rendered anywhere)...
+    let mut grown = base.clone();
+    let mut ghost = grown.windows[0].tab_manager.workspaces[0].clone();
+    ghost.workspace_id = Some("ghost-ws".into());
+    let SessionWorkspaceLayoutSnapshot::Pane(pane) = ghost.layout.as_mut().unwrap() else {
+        unreachable!();
+    };
+    pane.pane_id = Some("ghost-pane".into());
+    pane.panel_ids = vec!["ghost-surface".into()];
+    grown.windows[0].tab_manager.workspaces.push(ghost);
+    // ...and the next dispatch's refresh mints it.
+    for (kind, id) in bootstrap_registry_seeds(&grown) {
+        registry.mint(kind, &id);
+    }
+    assert_eq!(
+        registry.mint("pane", "ghost-pane"),
+        "pane:2",
+        "burned at refresh"
+    );
+    assert_eq!(
+        registry.mint("pane", "later-rendered-pane"),
+        "pane:3",
+        "later renders skip the burned number"
+    );
+}
