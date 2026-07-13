@@ -131,6 +131,10 @@ mod diff_durable_publication_red;
 mod restore_previous_launch_red;
 
 #[cfg(test)]
+#[path = "session/restore_previous_additive_red.rs"]
+mod restore_previous_additive_red;
+
+#[cfg(test)]
 #[path = "session/restore_identity_graph_red.rs"]
 mod restore_identity_graph_red;
 

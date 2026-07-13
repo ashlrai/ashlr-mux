@@ -26,6 +26,10 @@ mod pane_surface_lifecycle;
 mod window_lifecycle;
 
 #[cfg(test)]
+#[path = "control_socket/restore_previous_additive_red.rs"]
+mod restore_previous_additive_red;
+
+#[cfg(test)]
 use crate::browser::strict_browser_runtime_teardown_transaction;
 use crate::browser::{
     browser_add_init_script_for_control, browser_attach_webview_for_control,
