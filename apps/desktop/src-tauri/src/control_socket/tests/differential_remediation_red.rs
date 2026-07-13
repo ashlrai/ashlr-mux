@@ -401,3 +401,54 @@ fn surface_create_with_focus_selects_the_new_surface() {
     assert_eq!(row["selected_in_pane"], json!(true));
     assert_eq!(row["focused"], json!(true));
 }
+
+// ---------------------------------------------------------------------------
+// D8a — events.stream default subscribes at latest (no replay)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn events_stream_default_subscribes_at_latest_without_replay() {
+    // Capture: canonical ack has resume.after_seq null with
+    // requested_after_seq == latest_seq and replay_count 0 when the caller
+    // omits after_seq; Windows replayed the whole session from seq 0.
+    let retained = vec![
+        json!({"seq": 1, "name": "surface.created", "category": "surface"}),
+        json!({"seq": 2, "name": "surface.closed", "category": "surface"}),
+    ];
+    let (ack, events, _) = events_parts_from_retained(
+        "boot".into(),
+        3,
+        retained.clone(),
+        None,
+        100,
+        false,
+        Vec::new(),
+        Vec::new(),
+    );
+    assert_eq!(
+        ack["resume"]["after_seq"],
+        json!(null),
+        "echo the raw param"
+    );
+    assert_eq!(ack["resume"]["requested_after_seq"], json!(2));
+    assert_eq!(ack["resume"]["latest_seq"], json!(2));
+    assert_eq!(ack["resume"]["gap"], json!(false));
+    assert_eq!(ack["replay_count"], json!(0));
+    assert!(events.is_empty(), "no default replay");
+
+    // An explicit after_seq still replays from that point.
+    let (ack, events, _) = events_parts_from_retained(
+        "boot".into(),
+        3,
+        retained,
+        Some(0),
+        100,
+        false,
+        Vec::new(),
+        Vec::new(),
+    );
+    assert_eq!(ack["resume"]["after_seq"], json!(0));
+    assert_eq!(ack["resume"]["requested_after_seq"], json!(0));
+    assert_eq!(ack["replay_count"], json!(2));
+    assert_eq!(events.len(), 2);
+}
