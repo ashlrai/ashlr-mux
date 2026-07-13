@@ -192,6 +192,7 @@ mod tests {
             layout_mode: None,
             zoomed_panel_id: None,
             focused_panel_id: Some("surface-1".to_owned()),
+            focused_pane_id: None,
             panel_titles: None,
             panel_pins: None,
             panel_unreads: None,

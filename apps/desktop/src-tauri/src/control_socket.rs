@@ -271,6 +271,16 @@ fn bootstrap_registry_seeds(snapshot: &AppSessionSnapshot) -> Vec<(&'static str,
                 walk_layout(layout, &mut seeds);
             }
         }
+        // Canonical mints group refs after the window's workspaces
+        // (v2RefreshKnownRefs, TerminalController.swift:3580-3584).
+        for group in window
+            .tab_manager
+            .workspace_groups
+            .as_deref()
+            .unwrap_or_default()
+        {
+            seeds.push(("workspace_group", group.id.clone()));
+        }
     }
     seeds
 }
@@ -279,7 +289,17 @@ fn bootstrap_registry_seeds(snapshot: &AppSessionSnapshot) -> Vec<(&'static str,
 /// app setup after the session bootstrap and before the control listener
 /// starts.
 pub(crate) fn seed_control_handle_registry(app: &AppHandle) {
-    for (kind, id) in bootstrap_registry_seeds(&snapshot(app)) {
+    refresh_known_handle_refs(app, &snapshot(app));
+}
+
+/// Round 6 item 2 — the twin of canonical `v2RefreshKnownRefs`
+/// (TerminalController.swift:3561-3586 at pinned e1825d40d): every control
+/// dispatch mints refs for EVERY live window/workspace/pane/surface (and
+/// workspace group) in creation order, so entities created between dispatches
+/// occupy their ref number even when no response ever renders them (the
+/// differential's burned pane:10).
+fn refresh_known_handle_refs(app: &AppHandle, snapshot: &AppSessionSnapshot) {
+    for (kind, id) in bootstrap_registry_seeds(snapshot) {
         control_handle_ref(app, kind, &id);
     }
 }
@@ -1254,6 +1274,10 @@ fn handle_control_request(app: &AppHandle, mut request: ControlRequest) -> Contr
             }
         }
     };
+    // Canonical dispatch preamble: refresh known refs BEFORE handle-ref
+    // resolution and routing (v2RefreshKnownRefs via controlResolveOnMain /
+    // the main-lane preamble).
+    refresh_known_handle_refs(app, &snapshot(app));
     if request.method.starts_with("workspace.") && request.params.contains_key("window") {
         return ControlCallResult::Err {
             code: "invalid_params".to_string(),

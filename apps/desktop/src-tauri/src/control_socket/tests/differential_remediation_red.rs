@@ -1010,3 +1010,127 @@ fn anchor_params_participate_in_handle_ref_resolution() {
     assert!(body.contains("(\"before_surface_id\", \"surface\")"));
     assert!(body.contains("(\"after_surface_id\", \"surface\")"));
 }
+
+#[test]
+fn create_after_explicit_focus_keeps_the_new_tab_selected() {
+    // Round 6 item 1: shouldFocusNewTab = focus ?? (focusedPaneId == paneId)
+    // (Workspace.swift:7480). After an explicit surface.focus lands in the
+    // pane, a create WITHOUT a focus param keeps the new tab selected and
+    // focused (canonical close.happy rows: the setup-created tab was
+    // selected, so its close reselects the successor). Without prior focus
+    // (bonsplit focusedPaneId unset) the create still reverts — the
+    // terminal_happy flip both platforms already share.
+    let snapshot = mixed_pane_snapshot(); // a, b(selected+focused); no focused_pane_id
+                                          // No prior explicit focus: revert (5-event flip) and prior tab stays selected.
+    let reverted = transition(&snapshot, "surface.create", json!({"type": "terminal"}));
+    assert_eq!(
+        reverted.events.len(),
+        5,
+        "unfocused pane keeps the revert flip"
+    );
+
+    // Explicit focus first: the create keeps the new tab selected.
+    let focused = transition(
+        &snapshot,
+        "surface.focus",
+        json!({"surface_id": "surface-b"}),
+    );
+    let after_focus = focused.snapshot.clone();
+    assert_eq!(
+        after_focus.windows[0].tab_manager.workspaces[0]
+            .focused_pane_id
+            .as_deref(),
+        Some("pane-1"),
+        "surface.focus records the bonsplit-focused pane"
+    );
+    let created = transition(&after_focus, "surface.create", json!({"type": "terminal"}));
+    let created_id = ok_value(&created)["surface_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let names: Vec<_> = created.events.iter().map(|event| event.name).collect();
+    assert_eq!(
+        names,
+        ["surface.created", "surface.selected", "surface.focused"],
+        "keep-selected create emits the pair once, no revert"
+    );
+    let list = transition(&created.snapshot, "surface.list", json!({}));
+    let rows = ok_value(&list)["surfaces"].as_array().unwrap().clone();
+    let row = rows
+        .iter()
+        .find(|row| row["id"] == json!(created_id))
+        .unwrap();
+    assert_eq!(row["selected_in_pane"], json!(true));
+    assert_eq!(row["focused"], json!(true));
+    // Closing it then emits the reselection pair (the round-6 delta-1 shape).
+    let closed = transition(
+        &created.snapshot,
+        "surface.close",
+        json!({"surface_id": created_id}),
+    );
+    let names: Vec<_> = closed.events.iter().map(|event| event.name).collect();
+    assert_eq!(
+        names,
+        ["surface.closed", "surface.selected", "surface.focused"]
+    );
+}
+
+#[test]
+fn every_dispatch_refreshes_known_refs_before_resolution() {
+    // Round 6 item 2: canonical's dispatch preamble mints refs for EVERY live
+    // window/workspace/pane/surface/group on every control dispatch
+    // (v2RefreshKnownRefs, TerminalController.swift:3561-3586 at pinned
+    // e1825d40d). That is what burns pane refs for entities that are never
+    // rendered (the last-surface workspace's pane becomes pane:10 at its
+    // close dispatch; the respawn workspace's pane then mints pane:11).
+    let source = include_str!("../../control_socket.rs");
+    let start = source
+        .find("fn handle_control_request(")
+        .expect("dispatch present");
+    let body = &source[start..start + 3_000];
+    let refresh = body
+        .find("refresh_known_handle_refs(")
+        .expect("dispatch preamble refresh wired");
+    let resolve = body
+        .find("resolve_request_handle_refs(")
+        .expect("ref resolution present");
+    assert!(
+        refresh < resolve,
+        "the known-ref refresh precedes handle-ref resolution (canonical preamble order)"
+    );
+}
+
+#[test]
+fn unrendered_entities_burn_ref_numbers_via_the_refresh_walk() {
+    // Simulate the burned mint: a workspace created between two dispatches
+    // occupies the next pane number even though no response ever renders it.
+    let mut registry = ControlHandleRegistry::default();
+    let base = test_snapshot();
+    for (kind, id) in bootstrap_registry_seeds(&base) {
+        registry.mint(kind, &id);
+    }
+    // A second workspace appears (never rendered anywhere)...
+    let mut grown = base.clone();
+    let mut ghost = grown.windows[0].tab_manager.workspaces[0].clone();
+    ghost.workspace_id = Some("ghost-ws".into());
+    let SessionWorkspaceLayoutSnapshot::Pane(pane) = ghost.layout.as_mut().unwrap() else {
+        unreachable!();
+    };
+    pane.pane_id = Some("ghost-pane".into());
+    pane.panel_ids = vec!["ghost-surface".into()];
+    grown.windows[0].tab_manager.workspaces.push(ghost);
+    // ...and the next dispatch's refresh mints it.
+    for (kind, id) in bootstrap_registry_seeds(&grown) {
+        registry.mint(kind, &id);
+    }
+    assert_eq!(
+        registry.mint("pane", "ghost-pane"),
+        "pane:2",
+        "burned at refresh"
+    );
+    assert_eq!(
+        registry.mint("pane", "later-rendered-pane"),
+        "pane:3",
+        "later renders skip the burned number"
+    );
+}
