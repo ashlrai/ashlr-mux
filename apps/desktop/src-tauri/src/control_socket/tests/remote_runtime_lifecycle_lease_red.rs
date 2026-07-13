@@ -672,10 +672,30 @@ fn expired_await_command_lease_rejects_late_success_without_resurrection() {
         Some("@42".into()),
     ));
     assert_eq!(
+        registry.leases[&id].remote_target_token.as_deref(),
+        Some("@42"),
+        "late success cannot publish, but its exact token must replace ambiguous cleanup inference"
+    );
+    assert_eq!(
         registry.leases[&id].disposition,
         RemoteRuntimeLeaseDisposition::Compensate,
         "a late command result cannot retake ownership from watchdog compensation"
     );
+}
+
+#[test]
+fn spawn_failure_is_definitive_but_wait_failure_retains_unknown_ownership() {
+    assert_eq!(
+        remote_runtime_process_error_outcome(false),
+        RemoteRuntimeCommandOutcome::Failed
+    );
+    assert_eq!(
+        remote_runtime_process_error_outcome(true),
+        RemoteRuntimeCommandOutcome::Unknown
+    );
+    let production = include_str!("../../control_socket.rs");
+    assert!(production.contains(".spawn()"));
+    assert!(production.contains(".wait_with_output()"));
 }
 
 #[test]
