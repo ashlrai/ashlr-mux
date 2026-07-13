@@ -5,12 +5,16 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug)]
 struct FakeBuiltChild {
     generation: u64,
-    close_failure: Option<String>,
+    close_failures: Vec<String>,
 }
 
 impl FakeBuiltChild {
     fn close(&mut self) -> Result<(), String> {
-        self.close_failure.take().map_or(Ok(()), Err)
+        if self.close_failures.is_empty() {
+            Ok(())
+        } else {
+            Err(self.close_failures.remove(0))
+        }
     }
 }
 
@@ -57,16 +61,34 @@ impl FakeBrowserBuildRegistry {
         primary.to_string()
     }
 
-    fn compensate_borrowed_build(&mut self, panel_id: &str) -> u64 {
+    fn compensate_borrowed_build(
+        &mut self,
+        panel_id: &str,
+        prior_generation: u64,
+    ) -> Result<u64, String> {
         assert!(self.reserved_panel_ids.contains(panel_id));
-        let generation = self
+        let mut child = self
             .children
-            .get(panel_id)
-            .expect("failed-close child remains owned for compensation")
-            .generation;
-        self.ownership_events.push(format!("reuse:{panel_id}"));
+            .remove(panel_id)
+            .expect("failed-close child remains owned for compensation");
+        self.ownership_events
+            .push(format!("retry-close:{panel_id}"));
+        if let Err(error) = child.close() {
+            self.children.insert(panel_id.to_string(), child);
+            self.ownership_events.push(format!("retain:{panel_id}"));
+            return Err(error);
+        }
+        self.ownership_events
+            .push(format!("rebuild-prior:{panel_id}:{prior_generation}"));
+        self.children.insert(
+            panel_id.to_string(),
+            FakeBuiltChild {
+                generation: prior_generation,
+                close_failures: Vec::new(),
+            },
+        );
         self.release(panel_id);
-        generation
+        Ok(prior_generation)
     }
 
     fn release(&mut self, panel_id: &str) {
@@ -88,7 +110,7 @@ fn failed_cleanup_registers_the_built_child_before_owned_reservation_release() {
         "panel-owned",
         FakeBuiltChild {
             generation: 41,
-            close_failure: Some("close-41".into()),
+            close_failures: vec!["close-41".into()],
         },
         "visibility-41",
         FakeReservationOwnership::Owned,
@@ -110,7 +132,7 @@ fn failed_cleanup_registers_the_built_child_before_owned_reservation_release() {
 }
 
 #[test]
-fn borrowed_reservation_stays_owned_until_add_init_compensation_reuses_child() {
+fn add_init_compensation_closes_new_script_child_before_rebuilding_prior_scripts() {
     let mut registry = FakeBrowserBuildRegistry::default();
     registry.reserve("panel-borrowed");
 
@@ -118,7 +140,7 @@ fn borrowed_reservation_stays_owned_until_add_init_compensation_reuses_child() {
         "panel-borrowed",
         FakeBuiltChild {
             generation: 73,
-            close_failure: Some("close-73".into()),
+            close_failures: vec!["close-73".into()],
         },
         "zoom-73",
         FakeReservationOwnership::Borrowed,
@@ -128,15 +150,58 @@ fn borrowed_reservation_stays_owned_until_add_init_compensation_reuses_child() {
     assert!(error.contains("close-73"));
     assert!(registry.reserved_panel_ids.contains("panel-borrowed"));
     assert_eq!(registry.children["panel-borrowed"].generation, 73);
-    assert_eq!(registry.compensate_borrowed_build("panel-borrowed"), 73);
+    assert_eq!(
+        registry.compensate_borrowed_build("panel-borrowed", 72),
+        Ok(72)
+    );
+    assert_eq!(registry.children["panel-borrowed"].generation, 72);
     assert_eq!(
         registry.ownership_events,
         [
             "reserve:panel-borrowed",
             "close:panel-borrowed",
             "register:panel-borrowed",
-            "reuse:panel-borrowed",
+            "retry-close:panel-borrowed",
+            "rebuild-prior:panel-borrowed:72",
             "release:panel-borrowed",
+        ]
+    );
+}
+
+#[test]
+fn add_init_compensation_retains_new_script_child_when_retry_close_fails() {
+    let mut registry = FakeBrowserBuildRegistry::default();
+    registry.reserve("panel-borrowed");
+
+    let primary = registry.settle_failed_build(
+        "panel-borrowed",
+        FakeBuiltChild {
+            generation: 73,
+            close_failures: vec!["first-close-73".into(), "retry-close-73".into()],
+        },
+        "zoom-73",
+        FakeReservationOwnership::Borrowed,
+    );
+    let restore = registry
+        .compensate_borrowed_build("panel-borrowed", 72)
+        .unwrap_err();
+
+    assert!(primary.contains("first-close-73"));
+    assert_eq!(restore, "retry-close-73");
+    assert_eq!(registry.children["panel-borrowed"].generation, 73);
+    assert!(registry.reserved_panel_ids.contains("panel-borrowed"));
+    assert!(!registry
+        .ownership_events
+        .iter()
+        .any(|event| event.starts_with("rebuild-prior:")));
+    assert_eq!(
+        registry.ownership_events,
+        [
+            "reserve:panel-borrowed",
+            "close:panel-borrowed",
+            "register:panel-borrowed",
+            "retry-close:panel-borrowed",
+            "retain:panel-borrowed",
         ]
     );
 }
@@ -150,7 +215,7 @@ fn successful_cleanup_releases_owned_reservation_without_registering_a_child() {
         "panel-clean",
         FakeBuiltChild {
             generation: 9,
-            close_failure: None,
+            close_failures: Vec::new(),
         },
         "visibility-9",
         FakeReservationOwnership::Owned,
@@ -204,6 +269,45 @@ fn production_routes_every_post_build_failure_through_owned_cleanup() {
     assert!(
         cleanup.find(".close(").unwrap() < cleanup.find(".insert(").unwrap(),
         "only a child whose cleanup close failed is registered"
+    );
+}
+
+#[test]
+fn production_add_init_compensation_disposes_tracked_new_script_child_before_restore() {
+    let browser = include_str!("../browser.rs");
+    let add_init = source_item(
+        browser,
+        "pub(crate) fn browser_add_init_script_for_control(",
+    );
+    let cleanup_call = add_init
+        .find("cleanup_tracked_browser_child_for_compensation(")
+        .expect("add-init compensation must dispose a tracked new-script child");
+    let restore_call = add_init[cleanup_call..]
+        .find("upsert_browser_webview(")
+        .expect("prior-script runtime rebuild")
+        + cleanup_call;
+    assert!(
+        cleanup_call < restore_call,
+        "tracked new-script child must close before prior-script rebuild"
+    );
+
+    let cleanup = source_item(
+        browser,
+        "fn cleanup_tracked_browser_child_for_compensation(",
+    );
+    for required in [".remove(", ".close(", ".insert(", "cleanup"] {
+        assert!(
+            cleanup.contains(required),
+            "add-init compensation cleanup is missing: {required}"
+        );
+    }
+    assert!(
+        cleanup.find(".remove(").unwrap() < cleanup.find(".close(").unwrap(),
+        "compensation owns the tracked handle before closing outside the registry lock"
+    );
+    assert!(
+        cleanup.find(".close(").unwrap() < cleanup.find(".insert(").unwrap(),
+        "only retry-close failure may retain the new-script child"
     );
 }
 
