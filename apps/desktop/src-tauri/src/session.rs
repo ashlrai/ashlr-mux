@@ -169,6 +169,10 @@ mod browser_pending_cleanup_leases_red;
 #[path = "session/browser_navigation_callback_fence_red.rs"]
 mod browser_navigation_callback_fence_red;
 
+#[cfg(test)]
+#[path = "session/browser_programmatic_navigation_handoff_red.rs"]
+mod browser_programmatic_navigation_handoff_red;
+
 impl Default for SessionState {
     fn default() -> Self {
         let snapshot = initial_snapshot(FIRST_PANEL_ID);
