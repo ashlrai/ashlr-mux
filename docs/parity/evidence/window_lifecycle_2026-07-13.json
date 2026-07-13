@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "batch": "window-lifecycle-family",
+  "canonical_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+  "contract": "docs/parity/contracts/window_lifecycle.json",
+  "integration": {
+    "backend_lane": ["8acd6223c", "4dbc86003", "f31179594", "d688aae6b", "6e2b6f81c", "7d9d2e578"],
+    "cli_lane": ["0004a97a1", "10db332ca", "2cb3f7097", "e723a3aba"],
+    "merges": ["ab7418e83", "94099b2d1", "3d7558253"],
+    "scope": "v2 window.create/close/focus + surface.refresh + surface.resume.set/get/clear; v1 line-protocol new_window/focus_window/close_window; cli new-window/focus-window/close-window/window/surface-resume; product.window_lifecycle"
+  },
+  "independent_verification": {
+    "round_1": {
+      "result": "pass_model_layer",
+      "adversarial_probes": "12 of 12 passed",
+      "gaps_found": 8,
+      "rulings": {
+        "resume_command_empty_branch": "verified canonically unreachable (dead behind order-3 trim)",
+        "label_id_shape_validation": "preserves observable routing parity today; UUID-remediation revisit list filed",
+        "window_help_route": "initial ruling OVERTURNED by root against pinned cmux.swift:3208-3217 - help gate throws unknownCommandError exit 2, never reaches socket"
+      }
+    },
+    "follow_up_fixes": {
+      "G1_quit_confirmation": "app.confirmQuit setting (canonical key/default) + native dialog with verbatim canonical copy; AppTerminate reachable (d688aae6b)",
+      "G2_active_window_pointer": "ControlActiveWindowState: executor SetActiveWindow arm + webview key transitions, stored-pointer-wins in both handlers; chained adversarial probe green (6e2b6f81c)",
+      "G3_notification_clearing": "ClearWindowNotifications effect, canonical scope/order, not on vetoed path (7d9d2e578)",
+      "G6_help_gate": "canonical exit-2 unknownCommandError with verbatim suggestion algorithm (2cb3f7097)",
+      "suggestion_pool": "dedicated canonical 158-name pool; ai-accounts and layout known-command help regressions fixed (e723a3aba)"
+    },
+    "round_2": {
+      "result": "pass",
+      "notes": "all four follow-up items verified against pinned Swift; suite counts confirmed; suggestion-pool gap found in round 2 was fixed in e723a3aba with red tests reproducing the verifier's observations"
+    }
+  },
+  "gates": {
+    "desktop_lib_tests": "824 passed, 0 failed, 1 ignored (unrelated live-opencode diagnostic); 75 window_lifecycle-filter tests",
+    "cmux_cli_tests": "381 passed across 10 suites incl. 35 real-executable named-pipe window-family tests",
+    "bootstrap_crates_plus_diff": "1160 passed, 0 failed",
+    "clippy_ci_gate": "clean (-D warnings, six CI-gated crates)",
+    "cargo_check_workspace": "clean",
+    "fmt": "clean",
+    "core_types_drift": "clean",
+    "web": "1253 passed, 0 failed",
+    "desktop_test_matrix": "PASS (unit, contract, integration, e2e)",
+    "desktop_contracts_check": "PASS"
+  },
+  "recorded_deferrals": [
+    "G4: SurfaceResumeApprovalStore state machine (approval_policy/record-id null; canonical's own test path is promptless) - blocks live agent-hook auto-resume flows only",
+    "G5: closed-window history / per-window geometry persistence / remote-tmux detach executors are pinned-effect no-ops until those subsystems exist on the port",
+    "G7: garbage window_id text yields not_found instead of invalid_params while window ids are labels; revisit list filed for the UUID identity remediation (docs/parity/differential/REMEDIATION.md divergence 1)",
+    "G8: v1 focus_window does not explicitly repoint when OS focus fails (edge)",
+    "dirtyOnly quit-confirmation mode degrades to always until dirty-workspace tracking exists",
+    "bare ai-accounts / layout commands (without --help) remain at the porting frontier (not_yet_ported); only help/classification/suggestion surfaces are canonical"
+  ],
+  "promotion_status": "all 13 entries remain implemented_unverified pending the window-family live differential; verifier judgment: 12 promotable once differential passes (window.focus and surface.resume.set with recorded platform-equivalence caveats); product.window_lifecycle blocked by G4/G5 aggregate"
+}
