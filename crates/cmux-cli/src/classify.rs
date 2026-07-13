@@ -293,15 +293,20 @@ fn command_has_usage_entry(command: &str) -> bool {
     SUBCOMMAND_USAGE_COMMANDS.contains(&command)
 }
 
-/// The authoritative top-level command names (verbatim from
-/// `cmux.swift` `topLevelCommandNames`, 156 entries). `pub(crate)` so the
-/// dispatch layer's `unknownCommandError` "Did you mean" suggestions
-/// (CMUXCLI+CommandSuggestions.swift) rank against the same set — the table
-/// itself is parity-frozen and MUST NOT change here.
-pub(crate) const TOP_LEVEL_COMMAND_NAMES: &[&str] = &[
+/// The authoritative top-level command names for ROUTING (path-open
+/// exclusion). Canonical base: `topLevelCommandNames`
+/// (CLI/CMUXCLI+CommandSuggestions.swift:53-213 at e1825d40d, 158 names —
+/// `__internal_flags` dispatch cmux.swift:3574, `ai-accounts` dispatch
+/// cmux.swift:4168) plus 24 port-side command spellings added by later
+/// Windows batches. NOTE: the `unknownCommandError` suggestion pool is NOT
+/// this table — it is the canonical-only `SUGGESTION_COMMAND_NAMES` in
+/// `dispatch.rs`; the two lists have deliberately diverged.
+const TOP_LEVEL_COMMAND_NAMES: &[&str] = &[
     "__codex-teams-watch",
+    "__internal_flags",
     "__tmux-compat",
     "agent-hibernation",
+    "ai-accounts",
     "auth",
     "bind-key",
     "break-pane",
@@ -488,6 +493,7 @@ pub(crate) const TOP_LEVEL_COMMAND_NAMES: &[&str] = &[
 const SUBCOMMAND_USAGE_COMMANDS: &[&str] = &[
     "remotes",
     "remote",
+    "ai-accounts",
     "ping",
     "capabilities",
     "canvas",
@@ -546,6 +552,7 @@ const SUBCOMMAND_USAGE_COMMANDS: &[&str] = &[
     "new-workspace",
     "list-workspaces",
     "workspace",
+    "layout",
     "workspace-group",
     "ssh",
     "ssh-tmux",
