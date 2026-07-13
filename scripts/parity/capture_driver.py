@@ -80,6 +80,37 @@ class ManifestError(ValueError):
     """The manifest is structurally invalid."""
 
 
+#: Settle config keys (root-sanctioned bounded settle semantics for reads that
+#: race asynchronous UI teardown; see canonical run 29252718573 zombie rows).
+SETTLE_KEYS = ("until_absent", "until_present", "stable", "timeout_s", "poll_interval_s")
+SETTLE_DEFAULT_TIMEOUT_S = 10.0
+SETTLE_DEFAULT_POLL_INTERVAL_S = 0.5
+
+
+def _validate_settle(settle: Any, where: str) -> None:
+    if not isinstance(settle, dict):
+        raise ManifestError(f"{where}: 'settle' must be an object")
+    unknown = [key for key in settle if key not in SETTLE_KEYS]
+    if unknown:
+        raise ManifestError(f"{where}: unknown settle keys {unknown} (expected {SETTLE_KEYS})")
+    for key in ("until_absent", "until_present"):
+        if key in settle and (
+            not isinstance(settle[key], list)
+            or not settle[key]
+            or not all(isinstance(item, str) and item for item in settle[key])
+        ):
+            raise ManifestError(f"{where}: settle '{key}' must be a non-empty list of strings")
+    if "stable" in settle and settle["stable"] is not True:
+        raise ManifestError(f"{where}: settle 'stable' must be true when present")
+    if not any(key in settle for key in ("until_absent", "until_present", "stable")):
+        raise ManifestError(
+            f"{where}: settle requires at least one predicate (until_absent/until_present/stable)"
+        )
+    for key in ("timeout_s", "poll_interval_s"):
+        if key in settle and (not isinstance(settle[key], (int, float)) or settle[key] <= 0):
+            raise ManifestError(f"{where}: settle '{key}' must be a positive number")
+
+
 def _validate_op(op: Any, where: str) -> dict[str, Any]:
     if not isinstance(op, dict):
         raise ManifestError(f"{where}: op must be an object, got {type(op).__name__}")
@@ -92,6 +123,10 @@ def _validate_op(op: Any, where: str) -> dict[str, Any]:
         params = op.get("params", {})
         if not isinstance(params, dict):
             raise ManifestError(f"{where}: v2 op 'params' must be an object")
+        if "settle" in op:
+            _validate_settle(op["settle"], where)
+    elif "settle" in op:
+        raise ManifestError(f"{where}: 'settle' is only supported on v2 ops")
     elif kind == "v1":
         if not isinstance(op.get("command"), str) or not op["command"]:
             raise ManifestError(f"{where}: v1 op requires a non-empty string 'command'")
@@ -374,6 +409,18 @@ class TimingSymbolizer:
     the ack's replay/`after_seq`/`latest_seq`/`resume` counters — those are
     real backend divergences and are never normalized here.
 
+    Root ruling addendum (2026-07-13): the ack's ABSOLUTE sequence counters
+    (``resume.latest_seq``/``next_seq``/``requested_after_seq``) and each
+    frame's ``seq`` are sanctioned for offset-from-subscription symbolization
+    (``<seq+N>`` relative to the ack's ``latest_seq``): they encode
+    boot-history cardinality (canonical emits more app-launch events than the
+    port's bootstrap), not contract behavior. Relative ordering stays fully
+    strict — a skipped or reordered seq still deltas. ``after_seq``,
+    ``oldest_seq``, ``gap``, and ``replay_count`` stay RAW: they pin the
+    replay-default contract and eviction anchor. Boot-emission CONTENT parity
+    is deliberately out of this family's scope (future boot/persistence
+    family case).
+
     Application is idempotent (already-symbolized values pass through), so the
     comparator can re-apply it at load time to archived captures produced
     before this normalization existed; the frozen canonical NDJSON is never
@@ -390,11 +437,30 @@ class TimingSymbolizer:
     def __init__(self) -> None:
         self._ts_table: dict[str, str] = {}
         self._id_table: dict[str, str] = {}
+        self._seq_base: int | None = None
+
+    #: Absolute counters rebased to the subscription point (ack latest_seq).
+    _REBASED_RESUME_KEYS = ("latest_seq", "next_seq", "requested_after_seq")
+
+    @staticmethod
+    def _subscription_base(events: Any) -> int | None:
+        """The ack frame's latest_seq — the subscription point this lane's
+        absolute counters are rebased against. None when no numeric ack is
+        found (already-symbolized or ack-less lanes stay untouched)."""
+        if not isinstance(events, list):
+            return None
+        for frame in events:
+            if isinstance(frame, dict) and frame.get("protocol") == "cmux-events":
+                latest = (frame.get("resume") or {}).get("latest_seq")
+                if isinstance(latest, int):
+                    return latest
+        return None
 
     def apply(self, events: Any) -> Any:
         """Symbolize the events lane; None (lane not captured) passes through."""
         if events is None:
             return None
+        self._seq_base = self._subscription_base(events)
         return self._walk(events)
 
     def _walk(self, value: Any) -> Any:
@@ -419,6 +485,10 @@ class TimingSymbolizer:
                     self._id_table[value] = f"<event-id-{len(self._id_table) + 1}>"
                 return self._id_table[value]
             return value
+        if (
+            key in self._REBASED_RESUME_KEYS or key == "seq"
+        ) and isinstance(value, int) and self._seq_base is not None:
+            return f"<seq{value - self._seq_base:+d}>"
         return self._walk(value)
 
 
@@ -695,6 +765,29 @@ def _authenticate(connection: Connection, password: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def evaluate_settle(
+    settle: dict[str, Any], response: Any, previous_response: Any
+) -> bool:
+    """Whether one poll satisfies the settle predicates (all specified must hold).
+
+    - ``until_absent``: none of the (placeholder-resolved) needle strings occur
+      anywhere in the serialized reply;
+    - ``until_present``: all needles occur;
+    - ``stable``: the parsed reply equals the previous poll's parsed reply
+      (needs at least two polls).
+    """
+    serialized = json.dumps(response, sort_keys=True)
+    for needle in settle.get("until_absent", []):
+        if needle in serialized:
+            return False
+    for needle in settle.get("until_present", []):
+        if needle not in serialized:
+            return False
+    if settle.get("stable") and (previous_response is None or response != previous_response):
+        return False
+    return True
+
+
 class Driver:
     #: Consecutive timed-out ops (empty v2/v1 replies or CLI timeouts) after
     #: which the backend is declared unresponsive and every further op fails
@@ -757,7 +850,7 @@ class Driver:
         finally:
             connection.close()
 
-    def _run_v2(self, op: dict[str, Any]) -> dict[str, Any]:
+    def _v2_once(self, op: dict[str, Any]) -> dict[str, Any]:
         self._check_responsive()
         raw = self._request(build_v2_request(op["method"], op.get("params", {})), until_eof=False)
         if raw == "":
@@ -774,6 +867,38 @@ class Driver:
             "result": result,
             "error": decoded["error"],
         }
+
+    def _run_v2(self, op: dict[str, Any]) -> dict[str, Any]:
+        settle = op.get("settle")
+        if not settle:
+            return self._v2_once(op)
+        # Root-sanctioned bounded settle: re-poll the same read until the
+        # predicates hold or the bounded timeout elapses. The FINAL snapshot is
+        # compared strictly; only the settle parameters and the satisfied flag
+        # are recorded (poll counts/elapsed are timing noise). A timeout is
+        # visible as satisfied:false — its own failure, never a silent pass.
+        timeout_s = float(settle.get("timeout_s", SETTLE_DEFAULT_TIMEOUT_S))
+        poll_interval_s = float(settle.get("poll_interval_s", SETTLE_DEFAULT_POLL_INTERVAL_S))
+        deadline = time.monotonic() + timeout_s
+        previous_response: Any = None
+        result = self._v2_once(op)
+        satisfied = evaluate_settle(settle, result["response"], previous_response)
+        while not satisfied and time.monotonic() < deadline:
+            time.sleep(poll_interval_s)
+            previous_response = result["response"]
+            result = self._v2_once(op)
+            satisfied = evaluate_settle(settle, result["response"], previous_response)
+        result["settle"] = {
+            "predicate": {
+                key: settle[key]
+                for key in ("until_absent", "until_present", "stable")
+                if key in settle
+            },
+            "timeout_s": timeout_s,
+            "poll_interval_s": poll_interval_s,
+            "satisfied": satisfied,
+        }
+        return result
 
     def _run_v1(self, op: dict[str, Any]) -> dict[str, Any]:
         self._check_responsive()

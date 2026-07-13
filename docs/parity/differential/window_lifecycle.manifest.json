@@ -8,7 +8,8 @@
     "surface.resume set cases pass explicit cwd=/tmp/parity-cwd and source so binding payloads stay platform-neutral; resume_binding.updated_at is a wall-clock stamp (run-scoped timing nondeterminism, same class as the sanctioned events timing normalization) and is approved per case by JSON pointer.",
     "cli window displays stdout and display-not-found stderr embed physical display names (platform hardware) and are approved by pointer; exit codes stay strict.",
     "NOT ENCODED (with reason): surface.refresh dock branch (canonical fixture pins 'Dock placement is disabled' - no public op constructs a Dock); window.close notification-clear side effects (no public read exposes notification state); closed-window history recording/suppression (no public read); window geometry/cascade/styleMask defaults (not socket-observable); real key-window OS foregrounding and window.keyed/unkeyed on true key transfer (platform_equivalent per contract; captured only incidentally in events lanes); blocking resume-approval alert variants (canonical bypasses under test harnesses; only promptless paths encoded); remote-tmux window-close detach (no remote fixture); window.display happy move (needs a real display name; only error paths + listing encoded); snapshot-not-saved-during-termination adversarial (cannot deterministically order termination vs close; the persistence case forces a save via a scratch window close instead).",
-    "INCIDENT (canonical run 29248166966): a surface.resume.set with source 'process-detected' (rewritten to 'manual') raised the BLOCKING resume-approval NSAlert on the canonical main actor (the XCTest bypass does not apply under CMUX_UI_TEST_MODE) and wedged every subsequent main-actor socket op (empty v2 replies, CLI timeouts) - the 13 PlaceholderErrors in that run were all downstream of this single wedge, not placeholder-shape bugs. REMOVED surface_resume.process_detected_rewritten_manual (the process-detected->manual rewrite quirk is not headlessly pinnable without the approval prompt) and surface_resume.auto_resume_agent_hook_honored (agent-hook + auto_resume:true is the auto-restore proposal path, the same blocking-prompt risk); the cli-source forced-false case remains (promptless CLI path). These join the approval-alert items in the not-encodable list."
+    "INCIDENT (canonical run 29248166966): a surface.resume.set with source 'process-detected' (rewritten to 'manual') raised the BLOCKING resume-approval NSAlert on the canonical main actor (the XCTest bypass does not apply under CMUX_UI_TEST_MODE) and wedged every subsequent main-actor socket op (empty v2 replies, CLI timeouts) - the 13 PlaceholderErrors in that run were all downstream of this single wedge, not placeholder-shape bugs. REMOVED surface_resume.process_detected_rewritten_manual (the process-detected->manual rewrite quirk is not headlessly pinnable without the approval prompt) and surface_resume.auto_resume_agent_hook_honored (agent-hook + auto_resume:true is the auto-restore proposal path, the same blocking-prompt risk); the cli-source forced-false case remains (promptless CLI path). These join the approval-alert items in the not-encodable list.",
+    "SETTLE (root-sanctioned, 2026-07-13): window.list probes that race canonical's asynchronous close teardown carry bounded settle predicates (until_absent of the just-closed window id, 10s timeout, 0.5s poll; the finale uses stable-mode since the last-window outcome is itself the pin). The settled snapshot is compared strictly and the recorded settle block includes satisfied:true/false, so a platform that never removes the row surfaces as a satisfied:false delta, never a silent pass. Every case that cleanup-closes a window also settles the close out of window.list before the case ends, so teardown zombies cannot leak into later cases' probes. The partial-67 canonical archive predates settle semantics and records zombie rows in these probes; the FINAL canonical capture for this family re-captures with settle."
   ],
   "session_setup": [
     {
@@ -79,6 +80,18 @@
             "params": {
               "window_id": "${action.result.window_id}"
             }
+          },
+          {
+            "op": "v2",
+            "method": "window.list",
+            "params": {},
+            "settle": {
+              "until_absent": [
+                "${action.result.window_id}"
+              ],
+              "timeout_s": 10,
+              "poll_interval_s": 0.5
+            }
           }
         ]
       }
@@ -107,6 +120,18 @@
             "params": {
               "window_id": "${action.result.window_id}"
             }
+          },
+          {
+            "op": "v2",
+            "method": "window.list",
+            "params": {},
+            "settle": {
+              "until_absent": [
+                "${action.result.window_id}"
+              ],
+              "timeout_s": 10,
+              "poll_interval_s": 0.5
+            }
           }
         ]
       }
@@ -133,7 +158,14 @@
           {
             "op": "v2",
             "method": "window.list",
-            "params": {}
+            "params": {},
+            "settle": {
+              "until_absent": [
+                "${setup.0.result.window_id}"
+              ],
+              "timeout_s": 10,
+              "poll_interval_s": 0.5
+            }
           }
         ],
         "state": [
@@ -167,6 +199,22 @@
         "params": {
           "window_id": "${setup.0.result.window_id}"
         }
+      },
+      "probes": {
+        "state": [
+          {
+            "op": "v2",
+            "method": "window.list",
+            "params": {},
+            "settle": {
+              "until_absent": [
+                "${setup.0.result.window_id}"
+              ],
+              "timeout_s": 10,
+              "poll_interval_s": 0.5
+            }
+          }
+        ]
       }
     },
     {
@@ -246,6 +294,18 @@
             "params": {
               "window_id": "${setup.0.result.window_id}"
             }
+          },
+          {
+            "op": "v2",
+            "method": "window.list",
+            "params": {},
+            "settle": {
+              "until_absent": [
+                "${setup.0.result.window_id}"
+              ],
+              "timeout_s": 10,
+              "poll_interval_s": 0.5
+            }
           }
         ]
       }
@@ -285,6 +345,18 @@
             "method": "window.close",
             "params": {
               "window_id": "${setup.0.result.window_id}"
+            }
+          },
+          {
+            "op": "v2",
+            "method": "window.list",
+            "params": {},
+            "settle": {
+              "until_absent": [
+                "${setup.0.result.window_id}"
+              ],
+              "timeout_s": 10,
+              "poll_interval_s": 0.5
             }
           }
         ]
@@ -730,6 +802,18 @@
             "params": {
               "window_id": "${setup.0.result.window_id}"
             }
+          },
+          {
+            "op": "v2",
+            "method": "window.list",
+            "params": {},
+            "settle": {
+              "until_absent": [
+                "${setup.0.result.window_id}"
+              ],
+              "timeout_s": 10,
+              "poll_interval_s": 0.5
+            }
           }
         ]
       }
@@ -758,6 +842,18 @@
             "method": "window.close",
             "params": {
               "window_id": "${setup.0.result.window_id}"
+            }
+          },
+          {
+            "op": "v2",
+            "method": "window.list",
+            "params": {},
+            "settle": {
+              "until_absent": [
+                "${setup.0.result.window_id}"
+              ],
+              "timeout_s": 10,
+              "poll_interval_s": 0.5
             }
           }
         ]
@@ -809,6 +905,22 @@
           "close-window",
           "--window",
           "${setup.0.result.window_id}"
+        ]
+      },
+      "probes": {
+        "state": [
+          {
+            "op": "v2",
+            "method": "window.list",
+            "params": {},
+            "settle": {
+              "until_absent": [
+                "${setup.0.result.window_id}"
+              ],
+              "timeout_s": 10,
+              "poll_interval_s": 0.5
+            }
+          }
         ]
       }
     },
@@ -1365,7 +1477,12 @@
           {
             "op": "v2",
             "method": "window.list",
-            "params": {}
+            "params": {},
+            "settle": {
+              "stable": true,
+              "timeout_s": 10,
+              "poll_interval_s": 0.5
+            }
           }
         ]
       }

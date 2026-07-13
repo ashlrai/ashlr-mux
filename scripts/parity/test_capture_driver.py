@@ -277,7 +277,12 @@ class TimingSymbolizerTests(unittest.TestCase):
     def test_strict_fields_untouched(self):
         out = TimingSymbolizer().apply(self.frames())
         self.assertEqual(out[0]["replay_count"], 3)
-        self.assertEqual(out[0]["resume"], {"after_seq": 0, "latest_seq": 14, "next_seq": 15})
+        # after_seq stays raw (pins the replay-default contract); the absolute
+        # latest/next counters rebase per the 2026-07-13 root ruling addendum.
+        self.assertEqual(
+            out[0]["resume"],
+            {"after_seq": 0, "latest_seq": "<seq+0>", "next_seq": "<seq+1>"},
+        )
         self.assertEqual(out[1]["name"], "pane.created")
         self.assertEqual(out[1]["payload"], {"origin": "terminal_split"})
         self.assertEqual(out[0]["boot_id"], self.BOOT)  # uuid pass owns boot_id
@@ -296,6 +301,60 @@ class TimingSymbolizerTests(unittest.TestCase):
 
     def test_none_lane_passes_through(self):
         self.assertIsNone(TimingSymbolizer().apply(None))
+
+
+class SeqRebaseTests(unittest.TestCase):
+    """Sanctioned offset-from-subscription symbolization of absolute seq counters."""
+
+    def lane(self, base, extra_resume=None):
+        resume = {"after_seq": None, "gap": False, "latest_seq": base,
+                  "next_seq": base + 1, "oldest_seq": 1, "requested_after_seq": base}
+        resume.update(extra_resume or {})
+        return [
+            {"boot_id": "<uuid-1>", "protocol": "cmux-events", "replay_count": 0, "resume": resume},
+            {"boot_id": "<uuid-1>", "id": "<uuid-1>-31", "name": "pane.created",
+             "occurred_at": "2026-07-13T09:00:00Z", "seq": base + 1},
+            {"boot_id": "<uuid-1>", "id": "<uuid-1>-32", "name": "surface.created",
+             "occurred_at": "2026-07-13T09:00:01Z", "seq": base + 2},
+        ]
+
+    def test_counters_rebase_to_subscription_point_across_boot_cardinality(self):
+        canonical = TimingSymbolizer().apply(self.lane(30))
+        windows = TimingSymbolizer().apply(self.lane(16))
+        for out in (canonical, windows):
+            self.assertEqual(out[0]["resume"]["latest_seq"], "<seq+0>")
+            self.assertEqual(out[0]["resume"]["next_seq"], "<seq+1>")
+            self.assertEqual(out[0]["resume"]["requested_after_seq"], "<seq+0>")
+            self.assertEqual(out[1]["seq"], "<seq+1>")
+            self.assertEqual(out[2]["seq"], "<seq+2>")
+        self.assertEqual(canonical, windows)
+
+    def test_after_oldest_gap_and_replay_count_stay_raw(self):
+        out = TimingSymbolizer().apply(self.lane(30))
+        self.assertIsNone(out[0]["resume"]["after_seq"])
+        self.assertEqual(out[0]["resume"]["oldest_seq"], 1)
+        self.assertIs(out[0]["resume"]["gap"], False)
+        self.assertEqual(out[0]["replay_count"], 0)
+
+    def test_relative_ordering_stays_strict(self):
+        skipped = self.lane(30)
+        skipped[2]["seq"] = 33  # a gap: 31 then 33
+        normal = TimingSymbolizer().apply(self.lane(30))
+        gapped = TimingSymbolizer().apply(skipped)
+        self.assertEqual(normal[2]["seq"], "<seq+2>")
+        self.assertEqual(gapped[2]["seq"], "<seq+3>")
+        self.assertNotEqual(normal[2]["seq"], gapped[2]["seq"])
+
+    def test_no_ack_lane_leaves_counters_raw(self):
+        lane = [{"name": "pane.created", "seq": 31,
+                 "occurred_at": "2026-07-13T09:00:00Z", "id": "<uuid-1>-31"}]
+        out = TimingSymbolizer().apply(lane)
+        self.assertEqual(out[0]["seq"], 31)
+
+    def test_idempotent_after_rebase(self):
+        once = TimingSymbolizer().apply(self.lane(30))
+        again = TimingSymbolizer().apply(once)
+        self.assertEqual(once, again)
 
 
 class UuidRenumbererTests(unittest.TestCase):
@@ -559,6 +618,117 @@ class DriverHardeningTests(unittest.TestCase):
             record = json.loads(line)
             self.assertIn("session_setup[0] failed", record["capture_error"])
             self.assertEqual(sorted(record["observation"]), sorted(OBSERVATION_KEYS))
+
+
+class SettleTests(unittest.TestCase):
+    """Root-sanctioned bounded settle semantics for reads racing async teardown."""
+
+    def test_validation_accepts_predicates_and_rejects_garbage(self):
+        ok = {
+            "id": "a",
+            "action": {"op": "v2", "method": "window.list", "params": {},
+                       "settle": {"until_absent": ["x"], "timeout_s": 5}},
+        }
+        parse_manifest({"family": "f", "cases": [ok]})
+        for bad_settle, why in [
+            ({}, "requires at least one predicate"),
+            ({"until_absent": []}, "non-empty list"),
+            ({"stable": False}, "must be true"),
+            ({"until_present": ["x"], "timeout_s": 0}, "positive number"),
+            ({"until_absent": ["x"], "bogus": 1}, "unknown settle keys"),
+        ]:
+            case = {"id": "a", "action": {"op": "v2", "method": "m", "params": {}, "settle": bad_settle}}
+            with self.assertRaisesRegex(ManifestError, why):
+                parse_manifest({"family": "f", "cases": [case]})
+        with self.assertRaisesRegex(ManifestError, "only supported on v2"):
+            parse_manifest({"family": "f", "cases": [
+                {"id": "a", "action": {"op": "cli", "argv": ["x"], "settle": {"stable": True}}}
+            ]})
+
+    def test_evaluate_settle_predicates(self):
+        from capture_driver import evaluate_settle
+
+        response = {"ok": True, "result": {"windows": [{"id": "keep-1"}, {"id": "zombie-2"}]}}
+        self.assertFalse(evaluate_settle({"until_absent": ["zombie-2"]}, response, None))
+        self.assertTrue(evaluate_settle({"until_absent": ["gone-3"]}, response, None))
+        self.assertTrue(evaluate_settle({"until_present": ["keep-1", "zombie-2"]}, response, None))
+        self.assertFalse(evaluate_settle({"until_present": ["keep-1", "gone-3"]}, response, None))
+        # stable: needs a previous identical poll.
+        self.assertFalse(evaluate_settle({"stable": True}, response, None))
+        self.assertFalse(evaluate_settle({"stable": True}, response, {"ok": True, "result": {}}))
+        self.assertTrue(evaluate_settle({"stable": True}, response, dict(response)))
+        # Combined: every specified predicate must hold.
+        self.assertFalse(
+            evaluate_settle({"until_absent": ["zombie-2"], "stable": True}, response, dict(response))
+        )
+
+    class ScriptedDriver:
+        """Driver with _v2_once replaced by a scripted reply sequence."""
+
+        def __init__(self, replies):
+            from capture_driver import Driver
+
+            self.driver = Driver(
+                socket_address="/tmp/unused.sock", cli_path=None, password=None,
+                restart_cmd=None, op_timeout=1.0,
+            )
+            self.calls = 0
+            replies = list(replies)
+
+            def scripted(_op):
+                reply = replies[min(self.calls, len(replies) - 1)]
+                self.calls += 1
+                return {"kind": "v2", "method": "window.list", "ok": True,
+                        "response": reply, "result": reply.get("result"), "error": None}
+
+            self.driver._v2_once = scripted
+
+    def test_settle_polls_until_predicate_holds_and_records_parameters(self):
+        zombie = {"ok": True, "result": {"windows": [{"id": "dead-window"}]}}
+        clean = {"ok": True, "result": {"windows": []}}
+        scripted = self.ScriptedDriver([zombie, zombie, clean])
+        result = scripted.driver.run_op({
+            "op": "v2", "method": "window.list", "params": {},
+            "settle": {"until_absent": ["dead-window"], "timeout_s": 5, "poll_interval_s": 0.01},
+        })
+        self.assertEqual(scripted.calls, 3)
+        self.assertEqual(result["response"], clean)
+        self.assertEqual(result["settle"], {
+            "predicate": {"until_absent": ["dead-window"]},
+            "timeout_s": 5.0,
+            "poll_interval_s": 0.01,
+            "satisfied": True,
+        })
+
+    def test_settle_stable_mode_requires_two_identical_polls(self):
+        a = {"ok": True, "result": {"n": 1}}
+        b = {"ok": True, "result": {"n": 2}}
+        scripted = self.ScriptedDriver([a, b, b])
+        result = scripted.driver.run_op({
+            "op": "v2", "method": "window.list", "params": {},
+            "settle": {"stable": True, "timeout_s": 5, "poll_interval_s": 0.01},
+        })
+        self.assertEqual(scripted.calls, 3)
+        self.assertTrue(result["settle"]["satisfied"])
+        self.assertEqual(result["response"], b)
+
+    def test_settle_timeout_records_satisfied_false_with_last_snapshot(self):
+        zombie = {"ok": True, "result": {"windows": [{"id": "dead-window"}]}}
+        scripted = self.ScriptedDriver([zombie])
+        result = scripted.driver.run_op({
+            "op": "v2", "method": "window.list", "params": {},
+            "settle": {"until_absent": ["dead-window"], "timeout_s": 0.05, "poll_interval_s": 0.01},
+        })
+        self.assertFalse(result["settle"]["satisfied"])
+        self.assertEqual(result["response"], zombie)
+        self.assertGreaterEqual(scripted.calls, 2)
+
+    def test_unsettled_v2_op_records_no_settle_key(self):
+        clean = {"ok": True, "result": {}}
+        scripted = self.ScriptedDriver([clean])
+        result = scripted.driver.run_op({"op": "v2", "method": "window.list", "params": {}})
+        self.assertNotIn("settle", result)
+        self.assertEqual(scripted.calls, 1)
 
 
 class MiscTests(unittest.TestCase):

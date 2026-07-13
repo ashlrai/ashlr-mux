@@ -89,6 +89,42 @@ class StaticReferenceLintTests(unittest.TestCase):
         self.assertIn("unknown section", findings[0])
 
 
+class SettlePlaceholderLintTests(unittest.TestCase):
+    def test_settle_needle_placeholders_are_linted(self):
+        m = manifest(
+            cases=[
+                {
+                    "id": "a",
+                    "setup": [v2("window.create")],
+                    "action": {
+                        "op": "v2", "method": "window.list", "params": {},
+                        "settle": {"until_absent": ["${setup.7.result.window_id}"]},
+                    },
+                }
+            ]
+        )
+        findings = lint_static_references(m)
+        self.assertEqual(len(findings), 1)
+        self.assertIn("has not run yet", findings[0])
+
+    def test_settle_result_keys_checked_against_shapes(self):
+        m = manifest(
+            cases=[
+                {
+                    "id": "a",
+                    "setup": [v2("window.create")],
+                    "action": {
+                        "op": "v2", "method": "window.list", "params": {},
+                        "settle": {"until_absent": ["${setup.0.result.uuid}"]},
+                    },
+                }
+            ]
+        )
+        findings = lint_result_keys(m, {"window.create": {"window_id", "window_ref"}})
+        self.assertEqual(len(findings), 1)
+        self.assertIn("'uuid'", findings[0])
+
+
 class ResultKeyLintTests(unittest.TestCase):
     def capture_text(self):
         records = [
