@@ -23,6 +23,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 mod pane_surface_lifecycle;
+mod window_lifecycle;
 
 #[cfg(test)]
 use crate::browser::strict_browser_runtime_teardown_transaction;
@@ -1127,6 +1128,7 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ControlRequestRoute {
     PaneSurfaceLifecycle,
+    WindowLifecycle,
     Legacy,
 }
 
@@ -20609,6 +20611,9 @@ mod tests {
 
     #[path = "pane_surface_lifecycle_red.rs"]
     mod pane_surface_lifecycle_red;
+
+    #[path = "window_lifecycle_red.rs"]
+    mod window_lifecycle_red;
 
     #[path = "surface_action_exhaustive_red.rs"]
     mod surface_action_exhaustive_red;

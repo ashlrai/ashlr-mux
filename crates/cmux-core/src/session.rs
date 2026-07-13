@@ -369,6 +369,57 @@ pub struct SessionPanelRestorableAgentSnapshot {
     pub snapshot: SessionRestorableAgentSnapshot,
 }
 
+/// Canonical surface resume binding as stored by `surface.resume.set`
+/// (Workspace.setSurfaceResumeBinding, Workspace.swift:4719-4727) and rendered
+/// with explicit nulls by `surfaceResumeBindingPayload`
+/// (ControlCommandCoordinator+Surface3.swift:147-167).
+///
+/// No `Eq`: `updated_at` is a double epoch timestamp
+/// (Date().timeIntervalSince1970, TerminalController+ControlSurfaceContext4.swift:170-179).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionSurfaceResumeBindingSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub kind: Option<String>,
+    pub command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub checkpoint_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub environment: Option<std::collections::BTreeMap<String, String>>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub auto_resume: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub approval_policy: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub approval_record_id: Option<String>,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub updated_at: f64,
+}
+
+/// One `surface_id -> binding` row of the canonical per-workspace
+/// `surfaceResumeBindingsByPanelId` map, following the keyed-list persistence
+/// pattern of `SessionPanelRestorableAgentSnapshot`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionSurfaceResumeBindingRecordSnapshot {
+    pub surface_id: String,
+    pub binding: SessionSurfaceResumeBindingSnapshot,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SessionGitBranchSnapshot {
@@ -680,6 +731,14 @@ pub struct SessionWorkspaceSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub restorable_agent_snapshots: Option<Vec<SessionPanelRestorableAgentSnapshot>>,
+    /// Per-terminal-surface resume bindings keyed by `surface_id`, mirroring
+    /// canonical `Workspace.surfaceResumeBindingsByPanelId`
+    /// (Workspace.swift:4719-4738 at pinned e1825d40d). Bindings persist in
+    /// session snapshots (SessionPersistence.swift:1388-1413) and are rendered
+    /// in `surface.list` terminal rows as `resume_binding`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub surface_resume_bindings: Option<Vec<SessionSurfaceResumeBindingRecordSnapshot>>,
     /// Workspace-level git branch fallback used only when no panel reports a
     /// branch. Mirrors canonical `Workspace.gitBranch` as consumed by the
     /// sidebar badge projection.
