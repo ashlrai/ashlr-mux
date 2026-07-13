@@ -29,8 +29,10 @@ use crate::browser::{
     browser_clear_network_requests_for_control, browser_close_webview_strict_for_control,
     browser_eval_for_control, browser_has_webview_for_control,
     browser_network_requests_for_control, browser_webview_command_for_control,
-    strict_browser_runtime_teardown_transaction, BrowserNetworkRequestsQuery, BrowserWebviewState,
+    BrowserNetworkRequestsQuery, BrowserWebviewState,
 };
+#[cfg(test)]
+use crate::browser::strict_browser_runtime_teardown_transaction;
 use crate::diff::DiffState;
 use crate::dock::{
     publish_runtime_claim, rollback_runtime_claim, runtime_exists_for_control,
@@ -1890,6 +1892,7 @@ struct RemoteTmuxCreateSpec<'a> {
     working_directory: Option<&'a str>,
 }
 
+#[cfg(test)]
 fn remote_tmux_create_argv(spec: &RemoteTmuxCreateSpec<'_>) -> Result<Vec<String>, String> {
     remote_tmux_create_argv_with_split(spec, None)
 }
@@ -2077,14 +2080,17 @@ impl RemoteWindowDepartureRegistry {
         self.pending.get(key)
     }
 
+    #[cfg(test)]
     fn contains(&self, key: &str) -> bool {
         self.pending.contains_key(key)
     }
 
+    #[cfg(test)]
     fn len(&self) -> usize {
         self.pending.len()
     }
 
+    #[cfg(test)]
     fn is_empty(&self) -> bool {
         self.pending.is_empty()
     }

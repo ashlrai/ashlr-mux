@@ -488,6 +488,7 @@ pub fn browser_close_webview(
     finalize_or_restore_browser_panels(state.inner(), lease)
 }
 
+#[cfg(test)]
 pub(crate) fn strict_browser_runtime_teardown_transaction<T>(
     prepare: impl FnOnce() -> Result<T, String>,
     close: impl FnOnce(&T) -> Result<(), String>,

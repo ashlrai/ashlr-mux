@@ -2797,6 +2797,7 @@ fn apply_set_panel_pinned(snapshot: &mut AppSessionSnapshot, panel_id: &str, pin
 /// Set or clear the unread state for `panel_id` in the active workspace,
 /// stamping new unread markers for notification ordering. Returns whether
 /// unread metadata actually changed.
+#[cfg(test)]
 fn apply_set_panel_unread(snapshot: &mut AppSessionSnapshot, panel_id: &str, unread: bool) -> bool {
     apply_set_panel_unread_at(snapshot, panel_id, unread, current_unix_timestamp_seconds())
 }
@@ -2829,6 +2830,7 @@ fn apply_set_panel_listening_ports(
     set_workspace_panel_listening_ports(workspace, panel_id, ports)
 }
 
+#[cfg(test)]
 fn apply_set_panel_tty(
     snapshot: &mut AppSessionSnapshot,
     workspace_index: usize,
@@ -2861,6 +2863,7 @@ fn apply_set_panel_tty_at(
     set_workspace_panel_tty(workspace, panel_id, tty, updated_at)
 }
 
+#[cfg(test)]
 fn apply_set_panel_shell_activity(
     snapshot: &mut AppSessionSnapshot,
     workspace_index: usize,
@@ -2908,6 +2911,7 @@ fn apply_set_workspace_agent_listening_ports(
     set_workspace_agent_listening_ports(workspace, ports)
 }
 
+#[cfg(test)]
 fn apply_set_workspace_agent_pid(
     snapshot: &mut AppSessionSnapshot,
     workspace_index: usize,
@@ -3185,6 +3189,7 @@ fn current_unix_timestamp_seconds() -> i64 {
 
 /// Mark a workspace read/unread by updating its representative panel unread
 /// metadata, stamping new unread markers for notification ordering.
+#[cfg(test)]
 fn apply_set_workspace_unread(
     snapshot: &mut AppSessionSnapshot,
     index: i64,
