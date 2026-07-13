@@ -117,14 +117,183 @@ pub fn unknown_command_error(command: &str) -> CliError {
     CliError::with_exit_code(message, 2)
 }
 
+/// The canonical suggestion pool: `topLevelCommandNames` verbatim from
+/// `CLI/CMUXCLI+CommandSuggestions.swift:53-213` at pinned commit e1825d40d
+/// (158 names). This is deliberately NOT the classify routing table
+/// (`classify::TOP_LEVEL_COMMAND_NAMES`): the two lists serve different
+/// canonical roles and have diverged — the port routes 24 additional command
+/// spellings that canonical never suggests, so ranking suggestions against
+/// the routing table produced noncanonical "Did you mean" output.
+const SUGGESTION_COMMAND_NAMES: &[&str] = &[
+    "__codex-teams-watch",
+    "__internal_flags",
+    "__tmux-compat",
+    "agent-hibernation",
+    "ai-accounts",
+    "auth",
+    "bind-key",
+    "break-pane",
+    "browser",
+    "browser-back",
+    "browser-forward",
+    "browser-reload",
+    "browser-status",
+    "capabilities",
+    "capture-pane",
+    "claude-hook",
+    "claude-teams",
+    "clear-history",
+    "clear-log",
+    "clear-notifications",
+    "clear-progress",
+    "clear-status",
+    "close-surface",
+    "close-window",
+    "close-workspace",
+    "cloud",
+    "codex",
+    "codex-hook",
+    "codex-teams",
+    "config",
+    "copy-mode",
+    "current-window",
+    "current-workspace",
+    "debug-terminals",
+    "detach-tab",
+    "diff",
+    "disable-browser",
+    "dismiss-notification",
+    "display-message",
+    "docs",
+    "drag-surface-to-split",
+    "enable-browser",
+    "events",
+    "feedback",
+    "feed",
+    "feed-hook",
+    "find-window",
+    "focus-pane",
+    "focus-panel",
+    "focus-webview",
+    "focus-window",
+    "get-url",
+    "help",
+    "hooks",
+    "identify",
+    "is-webview-focused",
+    "join-pane",
+    "jump-to-unread",
+    "last-pane",
+    "last-window",
+    "list-buffers",
+    "list-log",
+    "list-notifications",
+    "list-pane-surfaces",
+    "list-panels",
+    "list-panes",
+    "list-status",
+    "list-windows",
+    "list-workspaces",
+    "log",
+    "login",
+    "logout",
+    "markdown",
+    "mark-notification-read",
+    "memory",
+    "mobile",
+    "move-surface",
+    "move-tab-to-new-workspace",
+    "move-workspace-to-window",
+    "navigate",
+    "new-pane",
+    "new-split",
+    "new-surface",
+    "new-window",
+    "new-workspace",
+    "next-window",
+    "notify",
+    "omc",
+    "omo",
+    "omx",
+    "open",
+    "open-browser",
+    "open-notification",
+    "paste-buffer",
+    "ping",
+    "pipe-pane",
+    "popup",
+    "previous-window",
+    "read-screen",
+    "refresh-surfaces",
+    "reload-config",
+    "remote-daemon-status",
+    "rename-tab",
+    "rename-window",
+    "rename-workspace",
+    "reorder-surface",
+    "reorder-workspace",
+    "reorder-workspaces",
+    "resize-pane",
+    "respawn-pane",
+    "restore-session",
+    "right-sidebar",
+    "rpc",
+    "select-workspace",
+    "send",
+    "send-key",
+    "send-key-panel",
+    "send-panel",
+    "set-app-focus",
+    "set-buffer",
+    "set-hook",
+    "set-progress",
+    "set-status",
+    "settings",
+    "setup-hooks",
+    "shortcuts",
+    "simulate-app-active",
+    "sidebar",
+    "sidebar-state",
+    "split-off",
+    "ssh",
+    "ssh-pty-attach",
+    "ssh-session-attach",
+    "ssh-session-cleanup",
+    "ssh-session-end",
+    "ssh-session-list",
+    "ssh-tmux",
+    "surface",
+    "surface-health",
+    "surface-resume",
+    "swap-pane",
+    "tab-action",
+    "themes",
+    "top",
+    "tree",
+    "trigger-flash",
+    "unbind-key",
+    "uninstall-hooks",
+    "version",
+    "vm",
+    "vm-pty-attach",
+    "vm-pty-connect",
+    "vm-ssh-attach",
+    "wait-for",
+    "welcome",
+    "workspace",
+    "workspace-action",
+    "workspace-group",
+];
+
 /// Swift `suggestedCommandName` (CMUXCLI+CommandSuggestions.swift:13-27): the
-/// best top-level command within edit distance 2 (skipping `__`-prefixed
-/// internals; the distance must be positive and smaller than the candidate's
-/// length). Ties break to the lexicographically smaller candidate.
+/// best candidate from the canonical suggestion pool within edit distance 2
+/// (skipping `__`-prefixed internals; the distance must be positive and
+/// smaller than the candidate's length). Ties break to the lexicographically
+/// smaller candidate.
 fn suggested_command_name(command: &str) -> Option<&'static str> {
     let mut best_name: Option<&'static str> = None;
     let mut best_distance = usize::MAX;
-    for candidate in crate::classify::TOP_LEVEL_COMMAND_NAMES {
+    for candidate in SUGGESTION_COMMAND_NAMES {
         if candidate.starts_with("__") {
             continue;
         }
@@ -214,6 +383,16 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
             "Usage: cmux respawn-pane [--workspace <id|ref|index>] [--surface <id|ref|index>] [--window <id|ref|index>] [--command <cmd> | <cmd>]\n\nSend a command (or default shell restart command) to a surface.\n\nFlags:\n  --workspace <id|ref|index>   Workspace context (default: $CMUX_WORKSPACE_ID)\n  --surface <id|ref|index>     Surface context (default: focused surface)\n  --window <id|ref|index>      Window context for workspace/surface refs and indexes\n  --command <cmd>        Command text (or pass trailing command text)",
         ),
         "list-windows" => Some("Usage:\n  cmux list-windows\n\nLists desktop windows."),
+        // Byte-exact canonical usage (subcommandUsage case at cmux.swift:15030
+        // → Self.aiAccountsUsage, CMUXCLI+Remotes.swift:9-32 at e1825d40d).
+        "ai-accounts" => Some(
+            "Usage: cmux ai-accounts <list|upload|remove> [options]\n\nUpload local AI credentials to your team's subrouter tenant and manage\nthe sanitized account records stored there.\n\n  cmux ai-accounts list [--team <id>] [--json]\n      List uploaded AI accounts for the selected or specified team.\n\n  cmux ai-accounts upload <claude|codex|anthropic-key|openai-key> [--label <s>] [--key <s>] [--team <id>] [--validate] [--json]\n      Upload credentials. Claude and Codex OAuth files are read by the\n      cmux app. API-key providers read ANTHROPIC_API_KEY / OPENAI_API_KEY\n      from your shell environment; --key overrides but exposes the\n      secret in shell history and process listings.\n\n  cmux ai-accounts remove <account-id> [--team <id>] [--json]\n      Delete an uploaded AI account.\n\nExamples:\n  cmux ai-accounts list\n  cmux ai-accounts upload claude --label work\n  ANTHROPIC_API_KEY=... cmux ai-accounts upload anthropic-key\n  cmux ai-accounts remove acct_123",
+        ),
+        // Byte-exact canonical usage (subcommandUsage case at cmux.swift:15806
+        // → layoutHelpText(), cmux_layout.swift:4-23 at e1825d40d).
+        "layout" => Some(
+            "Usage: cmux layout <subcommand> [flags]\n\nSave, list, export, open, and delete named workspace layouts.\n\nSubcommands:\n  save <name> [--workspace <ref>] [--overwrite] [--description <text>]\n  list [--json]\n  get <name>\n  open <name> [--cwd <dir>] [--focus <true|false>]\n  delete <name>\n\nExamples:\n  cmux layout save dev --overwrite\n  cmux layout list\n  cmux layout get dev\n  cmux layout open dev --cwd ~/projects/myapp",
+        ),
         // Byte-exact canonical usage (CLI/cmux.swift:15477-15510 at e1825d40d).
         "new-window" => Some(
             "Usage: cmux new-window\n\nCreate a new window.\n\nExample:\n  cmux new-window",
@@ -725,6 +904,58 @@ mod tests {
         assert_eq!(edit_distance("pingg", "ping"), 1);
         assert_eq!(edit_distance("", "ping"), 4);
         assert_eq!(edit_distance("ping", "ping"), 0);
+    }
+
+    #[test]
+    fn suggestion_pool_is_the_canonical_158_name_set() {
+        // CMUXCLI+CommandSuggestions.swift:53-213 at e1825d40d has exactly 158
+        // names; the routing table has diverged (port-side extras) and MUST
+        // NOT feed suggestions.
+        assert_eq!(SUGGESTION_COMMAND_NAMES.len(), 158);
+        // Canonical members present.
+        for canonical in [
+            "ai-accounts",
+            "__internal_flags",
+            "ping",
+            "window", /* absent! */
+        ] {
+            let expected = canonical != "window";
+            assert_eq!(
+                SUGGESTION_COMMAND_NAMES.contains(&canonical),
+                expected,
+                "{canonical}"
+            );
+        }
+        // Port routing extras that canonical never suggests.
+        for port_only in [
+            "report-pr",
+            "report-tty",
+            "close-workspaces",
+            "split-browser",
+        ] {
+            assert!(
+                !SUGGESTION_COMMAND_NAMES.contains(&port_only),
+                "{port_only} must not be suggested"
+            );
+        }
+        // `report-p` is distance ≤ 2 from the port extras but canonical
+        // suggests nothing; `ai-account` finds the canonical `ai-accounts`.
+        assert_eq!(suggested_command_name("report-p"), None);
+        assert_eq!(suggested_command_name("ai-account"), Some("ai-accounts"));
+        // `__`-prefixed internals are never suggested even though pooled.
+        assert_eq!(suggested_command_name("__internal_flag"), None);
+    }
+
+    #[test]
+    fn ai_accounts_and_layout_help_are_canonical() {
+        let ai = subcommand_help_text("ai-accounts");
+        assert!(ai.starts_with(
+            "cmux ai-accounts\n\nUsage: cmux ai-accounts <list|upload|remove> [options]\n"
+        ));
+        assert!(ai.ends_with("  cmux ai-accounts remove acct_123"));
+        let layout = subcommand_help_text("layout");
+        assert!(layout.starts_with("cmux layout\n\nUsage: cmux layout <subcommand> [flags]\n"));
+        assert!(layout.ends_with("  cmux layout open dev --cwd ~/projects/myapp"));
     }
 
     #[test]

@@ -964,6 +964,112 @@ fn window_help_is_the_canonical_unknown_command_error() {
 }
 
 #[test]
+fn ai_accounts_help_is_the_canonical_byte_frozen_usage() {
+    // Canonical: `ai-accounts` is dispatched (cmux.swift:4168) and has a
+    // subcommandUsage case (cmux.swift:15030 → Self.aiAccountsUsage,
+    // CMUXCLI+Remotes.swift:9-32). `cmux ai-accounts --help` prints the
+    // byte-frozen usage, exit 0.
+    let output = executable(None, &["ai-accounts", "--help"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        concat!(
+            "cmux ai-accounts\n\n",
+            "Usage: cmux ai-accounts <list|upload|remove> [options]\n",
+            "\n",
+            "Upload local AI credentials to your team's subrouter tenant and manage\n",
+            "the sanitized account records stored there.\n",
+            "\n",
+            "  cmux ai-accounts list [--team <id>] [--json]\n",
+            "      List uploaded AI accounts for the selected or specified team.\n",
+            "\n",
+            "  cmux ai-accounts upload <claude|codex|anthropic-key|openai-key> [--label <s>] [--key <s>] [--team <id>] [--validate] [--json]\n",
+            "      Upload credentials. Claude and Codex OAuth files are read by the\n",
+            "      cmux app. API-key providers read ANTHROPIC_API_KEY / OPENAI_API_KEY\n",
+            "      from your shell environment; --key overrides but exposes the\n",
+            "      secret in shell history and process listings.\n",
+            "\n",
+            "  cmux ai-accounts remove <account-id> [--team <id>] [--json]\n",
+            "      Delete an uploaded AI account.\n",
+            "\n",
+            "Examples:\n",
+            "  cmux ai-accounts list\n",
+            "  cmux ai-accounts upload claude --label work\n",
+            "  ANTHROPIC_API_KEY=... cmux ai-accounts upload anthropic-key\n",
+            "  cmux ai-accounts remove acct_123\n"
+        )
+    );
+}
+
+#[test]
+fn layout_help_is_the_canonical_byte_frozen_usage() {
+    // Canonical: `layout` is dispatched (cmux.swift:4389) and has a
+    // subcommandUsage case (cmux.swift:15806 → layoutHelpText(),
+    // cmux_layout.swift:4-23). Same regression class as ai-accounts, found by
+    // diffing the port usage table against the pinned subcommandUsage switch.
+    let output = executable(None, &["layout", "--help"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        concat!(
+            "cmux layout\n\n",
+            "Usage: cmux layout <subcommand> [flags]\n",
+            "\n",
+            "Save, list, export, open, and delete named workspace layouts.\n",
+            "\n",
+            "Subcommands:\n",
+            "  save <name> [--workspace <ref>] [--overwrite] [--description <text>]\n",
+            "  list [--json]\n",
+            "  get <name>\n",
+            "  open <name> [--cwd <dir>] [--focus <true|false>]\n",
+            "  delete <name>\n",
+            "\n",
+            "Examples:\n",
+            "  cmux layout save dev --overwrite\n",
+            "  cmux layout list\n",
+            "  cmux layout get dev\n",
+            "  cmux layout open dev --cwd ~/projects/myapp\n"
+        )
+    );
+}
+
+#[test]
+fn suggestions_come_from_the_canonical_pool_not_the_routing_table() {
+    // `report-p` is within edit distance 2 of the PORT-side routing names
+    // `report-pr`/`report-tty`, but those are absent from canonical
+    // topLevelCommandNames (CMUXCLI+CommandSuggestions.swift:53) — canonical
+    // suggests nothing.
+    let output = executable(None, &["report-p", "--help"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "Error: Unknown command 'report-p'. Run 'cmux --help' for the full command list.\n"
+    );
+
+    // `ai-account` → 'ai-accounts' (distance 1, in the canonical pool).
+    let output = executable(None, &["ai-account", "--help"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "Error: Unknown command 'ai-account'. Did you mean 'ai-accounts'? Run 'cmux --help' for the full command list.\n"
+    );
+}
+
+#[test]
 fn unknown_command_help_suggests_a_close_command_name() {
     // suggestedCommandName: best edit-distance ≤ 2 candidate from
     // topLevelCommandNames, skipping "__"-prefixed entries
