@@ -4079,16 +4079,19 @@ const LIFECYCLE_ID_REF_FIELDS: [(&str, &str, &str); 10] = [
     ("created_tab_id", "created_tab_ref", "surface"),
 ];
 
-/// R5: on a successful surface.close / surface.respawn, unregister the
-/// surface (and its pane: always for respawn, for close when the pane left
-/// the tree) so the response echo and every later render mint fresh refs.
+/// R5 (round-3 capture adjudication): a successful surface.close unregisters
+/// BOTH the closed surface's ref AND its pane's ref — canonical mints one
+/// extra pane ref right after surface_close.happy even when the pane
+/// survives, consistently across all three canonical datasets. Respawn
+/// forgets NOTHING: the canonical respawn echo reuses the surface's
+/// pre-existing ref.
 fn forget_recreated_lifecycle_handles(
     app: &AppHandle,
     method: &str,
     before: &AppSessionSnapshot,
     transition: &pane_surface_lifecycle::LifecycleTransition,
 ) {
-    if !matches!(method, "surface.close" | "surface.respawn") {
+    if method != "surface.close" {
         return;
     }
     let ControlCallResult::Ok(payload) = &transition.result else {
@@ -4109,15 +4112,7 @@ fn forget_recreated_lifecycle_handles(
     let mut registry = state.inner.lock().expect("handle registry mutex poisoned");
     registry.forget("surface", surface_id);
     if let Some(pane_id) = pane_id {
-        let pane_survives = method == "surface.close"
-            && cmux_core::surface_lifecycle::SurfaceLifecycleModel::from_app_session(
-                &transition.snapshot,
-            )
-            .ok()
-            .is_some_and(|model| model.pane(&pane_id).is_some());
-        if !pane_survives {
-            registry.forget("pane", &pane_id);
-        }
+        registry.forget("pane", &pane_id);
     }
 }
 

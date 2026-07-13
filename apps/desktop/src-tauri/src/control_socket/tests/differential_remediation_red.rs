@@ -811,9 +811,9 @@ fn registry_forget_mints_a_fresh_ref_on_rerender() {
 }
 
 #[test]
-fn lifecycle_wrapper_forgets_closed_and_respawned_handles_before_decoration() {
+fn lifecycle_wrapper_forgets_close_handles_before_decoration() {
     // Source oracle: the forget hook runs on the wrapper BEFORE the ref
-    // decoration pass for surface.close/surface.respawn.
+    // decoration pass for surface.close.
     let source = include_str!("../../control_socket.rs");
     let start = source
         .find("fn handle_pane_surface_lifecycle_request(")
@@ -826,6 +826,28 @@ fn lifecycle_wrapper_forgets_closed_and_respawned_handles_before_decoration() {
         .find("decorate_lifecycle_result_refs(")
         .expect("decoration present");
     assert!(forget < decorate, "forget must precede ref decoration");
+}
+
+#[test]
+fn forget_scope_is_close_only_with_surface_and_pane() {
+    // Round 3 item 2 (capture-adjudicated across all three canonical
+    // datasets): close forgets BOTH the surface AND the pane ref on EVERY
+    // close (canonical mints one extra pane ref right after
+    // surface_close.happy even when the pane survives); respawn forgets
+    // NOTHING (the respawn echo reuses the surface's pre-existing ref).
+    let source = include_str!("../../control_socket.rs");
+    let start = source
+        .find("fn forget_recreated_lifecycle_handles(")
+        .expect("forget helper present");
+    let body = &source[start..start + 2_500];
+    assert!(
+        !body.contains("surface.respawn"),
+        "respawn must not forget any handles"
+    );
+    assert!(
+        !body.contains("pane_survives"),
+        "the pane ref is forgotten on every close, surviving pane or not"
+    );
 }
 
 #[test]
