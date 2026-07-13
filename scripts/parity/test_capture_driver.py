@@ -503,6 +503,64 @@ class RunCaptureTests(unittest.TestCase):
         self.assertIsNone(good["capture_error"])
 
 
+class DriverHardeningTests(unittest.TestCase):
+    def make_driver(self):
+        from capture_driver import Driver
+
+        return Driver(
+            socket_address="/tmp/never-used.sock",
+            cli_path=None,
+            password=None,
+            restart_cmd=None,
+            op_timeout=0.1,
+        )
+
+    def test_breaker_trips_after_consecutive_timeouts(self):
+        from capture_driver import TransportError
+
+        driver = self.make_driver()
+        driver._consecutive_timeouts = driver.MAX_CONSECUTIVE_TIMEOUTS
+        with self.assertRaisesRegex(TransportError, "backend unresponsive"):
+            driver.run_op({"op": "v2", "method": "surface.list", "params": {}})
+        with self.assertRaisesRegex(TransportError, "backend unresponsive"):
+            driver.run_op({"op": "v1", "command": "ping"})
+
+    def test_breaker_resets_on_reply_and_restart(self):
+        driver = self.make_driver()
+        driver._consecutive_timeouts = 2
+        driver._record_reply()
+        self.assertEqual(driver._consecutive_timeouts, 0)
+        driver._record_timeout()
+        driver._record_timeout()
+        self.assertEqual(driver._consecutive_timeouts, 2)
+
+    def test_session_setup_failure_marks_every_case_and_writes_output(self):
+        from capture_driver import run_capture
+
+        class BoomDriver(RunCaptureTests.StubDriver):
+            def run_op(self, op):
+                raise RuntimeError("session boom")
+
+        payload = parse_manifest(
+            {
+                "family": "f",
+                "session_setup": [{"op": "v2", "method": "workspace.create", "params": {}}],
+                "cases": [
+                    {"id": "a", "action": {"op": "v2", "method": "m", "params": {}}},
+                    {"id": "b", "action": {"op": "v2", "method": "m", "params": {}}},
+                ],
+            }
+        )
+        lines: list[str] = []
+        failures = run_capture(payload, BoomDriver(), "canonical", lines)
+        self.assertEqual(failures, 2)
+        self.assertEqual(len(lines), 3)  # header + both cases
+        for line in lines[1:]:
+            record = json.loads(line)
+            self.assertIn("session_setup[0] failed", record["capture_error"])
+            self.assertEqual(sorted(record["observation"]), sorted(OBSERVATION_KEYS))
+
+
 class MiscTests(unittest.TestCase):
     def test_pipe_address_detection(self):
         self.assertTrue(is_windows_pipe_address("\\\\.\\pipe\\cmux"))

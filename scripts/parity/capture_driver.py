@@ -696,6 +696,13 @@ def _authenticate(connection: Connection, password: str) -> None:
 
 
 class Driver:
+    #: Consecutive timed-out ops (empty v2/v1 replies or CLI timeouts) after
+    #: which the backend is declared unresponsive and every further op fails
+    #: fast. A wedged main actor (see canonical run 29248166966: a blocking
+    #: modal froze every subsequent socket command) otherwise burns a full
+    #: op-timeout per remaining op and poisons the capture silently.
+    MAX_CONSECUTIVE_TIMEOUTS = 3
+
     def __init__(
         self,
         socket_address: str,
@@ -709,6 +716,21 @@ class Driver:
         self.password = password
         self.restart_cmd = restart_cmd
         self.op_timeout = op_timeout
+        self._consecutive_timeouts = 0
+
+    def _record_timeout(self) -> None:
+        self._consecutive_timeouts += 1
+
+    def _record_reply(self) -> None:
+        self._consecutive_timeouts = 0
+
+    def _check_responsive(self) -> None:
+        if self._consecutive_timeouts >= self.MAX_CONSECUTIVE_TIMEOUTS:
+            raise TransportError(
+                f"backend unresponsive: {self._consecutive_timeouts} consecutive op"
+                " timeouts (wedged main actor?); failing fast — restart the app or"
+                " investigate the last successful case"
+            )
 
     def run_op(self, op: dict[str, Any]) -> dict[str, Any]:
         kind = op["op"]
@@ -736,7 +758,12 @@ class Driver:
             connection.close()
 
     def _run_v2(self, op: dict[str, Any]) -> dict[str, Any]:
+        self._check_responsive()
         raw = self._request(build_v2_request(op["method"], op.get("params", {})), until_eof=False)
+        if raw == "":
+            self._record_timeout()
+        else:
+            self._record_reply()
         decoded = interpret_v2_response(raw)
         result = decoded["response"].get("result") if isinstance(decoded["response"], dict) else None
         return {
@@ -749,9 +776,14 @@ class Driver:
         }
 
     def _run_v1(self, op: dict[str, Any]) -> dict[str, Any]:
+        self._check_responsive()
         raw = self._request(
             build_v1_command_line(op["command"], op.get("args", [])), until_eof=True
         )
+        if raw == "":
+            self._record_timeout()
+        else:
+            self._record_reply()
         decoded = interpret_v1_response(raw)
         return {
             "kind": "v1",
@@ -778,13 +810,19 @@ class Driver:
         if self.password:
             env["CMUX_SOCKET_PASSWORD"] = self.password
         env.update(op.get("env", {}))
-        completed = subprocess.run(
-            [self.cli_path, *op["argv"]],
-            capture_output=True,
-            text=True,
-            timeout=self.op_timeout,
-            env=env,
-        )
+        self._check_responsive()
+        try:
+            completed = subprocess.run(
+                [self.cli_path, *op["argv"]],
+                capture_output=True,
+                text=True,
+                timeout=self.op_timeout,
+                env=env,
+            )
+        except subprocess.TimeoutExpired:
+            self._record_timeout()
+            raise
+        self._record_reply()
         return {
             "kind": "cli",
             "argv": op["argv"],
@@ -809,6 +847,8 @@ class Driver:
             raise TransportError(
                 f"restart command failed ({completed.returncode}): {completed.stderr.strip()}"
             )
+        # A relaunched app is a fresh backend: re-arm the responsiveness breaker.
+        self._record_reply()
         return {"kind": "restart", "exit_status": completed.returncode}
 
 
@@ -839,11 +879,37 @@ def run_capture(
     failures = 0
 
     session_results: list[dict[str, Any]] = []
-    for op in manifest.get("session_setup", []):
-        resolved = resolve_placeholders(op, {"session": session_results})
-        result = driver.run_op(resolved)
+    session_error: str | None = None
+    for index, op in enumerate(manifest.get("session_setup", [])):
+        try:
+            resolved = resolve_placeholders(op, {"session": session_results})
+            result = driver.run_op(resolved)
+        except Exception as error:  # noqa: BLE001 - evidence beats a traceback
+            # A dead session fixture dooms every case, but a partial capture
+            # file with explicit per-case errors is far better rerun evidence
+            # than an unhandled traceback and no output at all.
+            session_error = f"session_setup[{index}] failed: {type(error).__name__}: {error}"
+            break
         symbolizer.register(result)
         session_results.append(result)
+
+    if session_error is not None:
+        for case in manifest["cases"]:
+            observation = shape_observation({"kind": "none"}, {}, None)
+            output_lines.append(
+                json.dumps(
+                    {
+                        "type": "case",
+                        "id": case["id"],
+                        "platform": platform_label,
+                        "observation": observation,
+                        "approved_differences": case.get("approved_differences", []),
+                        "capture_error": session_error,
+                    },
+                    sort_keys=True,
+                )
+            )
+        return len(manifest["cases"])
 
     for case in manifest["cases"]:
         context: dict[str, Any] = {"session": session_results, "setup": [], "action": None}

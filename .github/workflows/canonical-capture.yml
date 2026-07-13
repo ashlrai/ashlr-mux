@@ -95,6 +95,9 @@ jobs:
           from capture_driver import parse_manifest
           manifest = parse_manifest(json.load(open('harness/$MANIFEST', encoding='utf-8')))
           print(f'manifest OK: {len(manifest[\"cases\"])} cases, family {manifest[\"family\"]}')"
+          # Static placeholder lint + response-shape lint against any archived
+          # captures: catches bad ${...} references before the 30-minute build.
+          PYTHONPATH=harness/scripts/parity python3 harness/scripts/parity/lint_manifest_placeholders.py             --manifest "harness/$MANIFEST"             --captures harness/docs/parity/differential/captures/*.ndjson
 
       - name: Checkout canonical repo (default ref)
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
