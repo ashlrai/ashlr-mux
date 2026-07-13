@@ -215,6 +215,14 @@ impl ControlHandleRegistry {
         format!("{kind}:{number}")
     }
 
+    /// R5 (differential remediation): canonical drops a closed/respawned
+    /// entity from its registry, so rendering it again re-mints a FRESH ref
+    /// (capture: close echo surface:17 for a surface previously :16; respawn
+    /// surface:21/pane:11). The counter never rewinds.
+    fn forget(&mut self, kind: &'static str, id: &str) {
+        self.refs.remove(&(kind, id.to_string()));
+    }
+
     fn resolve(&self, kind: &'static str, reference: &str) -> Option<String> {
         let number = one_based_ref_index(reference, kind)? as u64 + 1;
         self.refs
@@ -3423,6 +3431,9 @@ fn handle_pane_surface_lifecycle_request(
             active_window_id,
         },
     );
+    // R5: forget closed/respawned entities BEFORE decoration so the response
+    // echo mints fresh refs like canonical.
+    forget_recreated_lifecycle_handles(app, method, &current, &transition);
     if let Some(decorated) = decorate_lifecycle_result_refs(app, method, &mut transition.result) {
         for event in &mut transition.events {
             if let Some(result) = event.payload.get_mut("result") {
@@ -4067,6 +4078,48 @@ const LIFECYCLE_ID_REF_FIELDS: [(&str, &str, &str); 10] = [
     ("tab_id", "tab_ref", "surface"),
     ("created_tab_id", "created_tab_ref", "surface"),
 ];
+
+/// R5: on a successful surface.close / surface.respawn, unregister the
+/// surface (and its pane: always for respawn, for close when the pane left
+/// the tree) so the response echo and every later render mint fresh refs.
+fn forget_recreated_lifecycle_handles(
+    app: &AppHandle,
+    method: &str,
+    before: &AppSessionSnapshot,
+    transition: &pane_surface_lifecycle::LifecycleTransition,
+) {
+    if !matches!(method, "surface.close" | "surface.respawn") {
+        return;
+    }
+    let ControlCallResult::Ok(payload) = &transition.result else {
+        return;
+    };
+    let payload = Value::from(payload.clone());
+    let Some(surface_id) = payload.get("surface_id").and_then(Value::as_str) else {
+        return;
+    };
+    let pane_id = cmux_core::surface_lifecycle::SurfaceLifecycleModel::from_app_session(before)
+        .ok()
+        .and_then(|model| {
+            model
+                .owner_of_surface(surface_id)
+                .map(|owner| owner.pane_id.clone())
+        });
+    let state = app.state::<ControlHandleRegistryState>();
+    let mut registry = state.inner.lock().expect("handle registry mutex poisoned");
+    registry.forget("surface", surface_id);
+    if let Some(pane_id) = pane_id {
+        let pane_survives = method == "surface.close"
+            && cmux_core::surface_lifecycle::SurfaceLifecycleModel::from_app_session(
+                &transition.snapshot,
+            )
+            .ok()
+            .is_some_and(|model| model.pane(&pane_id).is_some());
+        if !pane_survives {
+            registry.forget("pane", &pane_id);
+        }
+    }
+}
 
 fn decorate_lifecycle_result_refs(
     app: &AppHandle,

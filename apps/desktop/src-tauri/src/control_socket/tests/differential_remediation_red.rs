@@ -789,3 +789,41 @@ fn surface_focus_selects_the_owner_workspace_globally() {
         Some("workspace-2")
     );
 }
+
+#[test]
+fn registry_forget_mints_a_fresh_ref_on_rerender() {
+    // R5: capture — the close echo renders surface:17 for a surface the
+    // registry previously knew as :16; forgetting never rewinds the counter.
+    let mut registry = ControlHandleRegistry::default();
+    assert_eq!(registry.mint("surface", "s-1"), "surface:1");
+    assert_eq!(registry.mint("surface", "s-2"), "surface:2");
+    registry.forget("surface", "s-1");
+    assert_eq!(
+        registry.mint("surface", "s-1"),
+        "surface:3",
+        "re-render after forget mints fresh"
+    );
+    assert_eq!(
+        registry.mint("surface", "s-2"),
+        "surface:2",
+        "others stable"
+    );
+}
+
+#[test]
+fn lifecycle_wrapper_forgets_closed_and_respawned_handles_before_decoration() {
+    // Source oracle: the forget hook runs on the wrapper BEFORE the ref
+    // decoration pass for surface.close/surface.respawn.
+    let source = include_str!("../../control_socket.rs");
+    let start = source
+        .find("fn handle_pane_surface_lifecycle_request(")
+        .expect("handler present");
+    let body = &source[start..start + 4_000];
+    let forget = body
+        .find("forget_recreated_lifecycle_handles(")
+        .expect("forget hook wired");
+    let decorate = body
+        .find("decorate_lifecycle_result_refs(")
+        .expect("decoration present");
+    assert!(forget < decorate, "forget must precede ref decoration");
+}
