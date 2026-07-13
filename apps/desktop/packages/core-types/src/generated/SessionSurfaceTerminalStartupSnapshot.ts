@@ -2,4 +2,4 @@
 // Do not edit by hand. Run `bun run generate` to refresh.
 import type { SessionRestorableAgentSnapshot } from "./SessionRestorableAgentSnapshot";
 
-export type SessionSurfaceTerminalStartupSnapshot = { command?: string, working_directory?: string, initial_input?: string, environment?: { [key in string]?: string }, tmux_start_command?: string, resume_binding?: SessionRestorableAgentSnapshot, };
+export type SessionSurfaceTerminalStartupSnapshot = { command?: string, working_directory?: string, initial_input?: string, environment?: { [key in string]?: string }, tmux_start_command?: string, remote_pty_session_id?: string, resume_binding?: SessionRestorableAgentSnapshot, };
