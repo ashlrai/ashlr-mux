@@ -31,12 +31,14 @@ pub mod settings;
 pub mod sigpipe;
 pub mod socket;
 pub mod ssh;
+pub mod surface_resume;
 pub mod tmux_compat;
 #[cfg(windows)]
 pub mod transport;
 pub mod vm_pty_connect;
 pub mod welcome;
 pub mod window_default_display;
+pub mod window_lifecycle;
 
 pub use classify::{classify_command, ClassifyEnv, PreSocketAction};
 pub use command_forward::{
@@ -51,3 +53,8 @@ pub use socket::{
     CONFLICTING_ENVIRONMENT_MESSAGE,
 };
 pub use ssh::{build_ssh_command_plan, SshCommandBuildOptions, SshCommandPlan, SSH_USAGE_TEXT};
+pub use surface_resume::{parse_surface_resume_command, SurfaceResumeAction, SurfaceResumePlan};
+pub use window_lifecycle::{
+    classify_window_handle, handles_match, int_from_any, is_uuid_handle,
+    window_lifecycle_command_for, WindowHandle, WindowLifecycleCommand,
+};
