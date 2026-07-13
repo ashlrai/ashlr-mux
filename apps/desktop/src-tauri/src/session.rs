@@ -776,371 +776,472 @@ fn initial_snapshot(first_panel_id: &str) -> AppSessionSnapshot {
     snapshot
 }
 
-/// Canonical Workspace init falls back to the user's home directory
-/// (FileManager.default.homeDirectoryForCurrentUser, Workspace.swift:2885-2891).
-/// Re-mint legacy structural identities without inspecting opaque strings.
-/// Definitions are collected before any mutation, references are then resolved
-/// against those definitions, and the candidate replaces `snapshot` only when
-/// every typed reference resolves. A stale/missing reference therefore cannot
-/// leave a partially migrated graph.
+/// Rebuild the persisted identity graph with canonical owner-local semantics.
+/// Opaque strings are never inspected. The candidate replaces `snapshot` only
+/// after validation and normalization complete, so a rejected graph cannot
+/// leak a partial migration.
 fn remint_noncanonical_identities(snapshot: &mut AppSessionSnapshot) -> bool {
     #[derive(Default)]
-    struct IdentityDomain {
-        replacements: HashMap<String, String>,
-        final_ids: HashSet<String>,
+    struct WorkspaceAliases {
+        surfaces: HashMap<String, String>,
+        panes: HashMap<String, String>,
+        surface_owners: HashMap<String, String>,
+        ordered_surfaces: Vec<String>,
     }
 
-    impl IdentityDomain {
-        fn register_definition(&mut self, id: &str) {
-            let final_id = if Uuid::parse_str(id).is_ok() {
-                id.to_string()
-            } else {
-                self.replacements
-                    .entry(id.to_string())
-                    .or_insert_with(|| Uuid::new_v4().to_string())
-                    .clone()
-            };
-            self.final_ids.insert(final_id);
-        }
-
-        fn remap_definition(&self, id: &mut String) {
-            if let Some(replacement) = self.replacements.get(id) {
-                *id = replacement.clone();
+    fn mint(used: &mut HashSet<String>) -> String {
+        loop {
+            let id = Uuid::new_v4().to_string();
+            if used.insert(id.clone()) {
+                return id;
             }
         }
+    }
 
-        fn remap_optional_definition(&self, id: &mut Option<String>) {
-            if let Some(id) = id {
-                self.remap_definition(id);
-            }
-        }
-
-        fn remap_reference(&self, id: &mut String) -> bool {
-            if let Some(replacement) = self.replacements.get(id) {
+    fn retain_mapped_rows<T>(
+        rows: &mut Option<Vec<T>>,
+        aliases: &HashMap<String, String>,
+        identity: fn(&mut T) -> &mut String,
+    ) {
+        if let Some(rows) = rows {
+            rows.retain_mut(|row| {
+                let id = identity(row);
+                let Some(replacement) = aliases.get(id) else {
+                    return false;
+                };
                 *id = replacement.clone();
                 true
-            } else {
-                self.final_ids.contains(id)
-            }
-        }
-
-        fn remap_optional_reference(&self, id: &mut Option<String>) -> bool {
-            id.as_mut().is_none_or(|id| self.remap_reference(id))
+            });
         }
     }
 
-    #[derive(Default)]
-    struct IdentityDomains {
-        windows: IdentityDomain,
-        workspaces: IdentityDomain,
-        groups: IdentityDomain,
-        panes: IdentityDomain,
-        splits: IdentityDomain,
-        surfaces: IdentityDomain,
-    }
-
-    impl IdentityDomains {
-        fn has_replacements(&self) -> bool {
-            [
-                &self.windows,
-                &self.workspaces,
-                &self.groups,
-                &self.panes,
-                &self.splits,
-                &self.surfaces,
-            ]
-            .into_iter()
-            .any(|domain| !domain.replacements.is_empty())
-        }
-    }
-
-    fn collect_layout_definitions(
-        layout: &SessionWorkspaceLayoutSnapshot,
-        domains: &mut IdentityDomains,
-    ) {
-        match layout {
-            SessionWorkspaceLayoutSnapshot::Pane(pane) => {
-                if let Some(pane_id) = pane.pane_id.as_deref() {
-                    domains.panes.register_definition(pane_id);
-                }
-                for panel_id in &pane.panel_ids {
-                    domains.surfaces.register_definition(panel_id);
-                }
-            }
-            SessionWorkspaceLayoutSnapshot::Split(split) => {
-                if let Some(split_id) = split.split_id.as_deref() {
-                    domains.splits.register_definition(split_id);
-                }
-                collect_layout_definitions(&split.first, domains);
-                collect_layout_definitions(&split.second, domains);
-            }
-        }
-    }
-
-    fn remap_layout_definitions(
-        layout: &mut SessionWorkspaceLayoutSnapshot,
-        domains: &IdentityDomains,
-    ) {
-        match layout {
-            SessionWorkspaceLayoutSnapshot::Pane(pane) => {
-                domains.panes.remap_optional_definition(&mut pane.pane_id);
-                for panel_id in &mut pane.panel_ids {
-                    domains.surfaces.remap_definition(panel_id);
-                }
-            }
-            SessionWorkspaceLayoutSnapshot::Split(split) => {
-                domains
-                    .splits
-                    .remap_optional_definition(&mut split.split_id);
-                remap_layout_definitions(&mut split.first, domains);
-                remap_layout_definitions(&mut split.second, domains);
-            }
-        }
-    }
-
-    fn remap_layout_references(
-        layout: &mut SessionWorkspaceLayoutSnapshot,
-        domains: &IdentityDomains,
-    ) -> bool {
-        match layout {
-            SessionWorkspaceLayoutSnapshot::Pane(pane) => domains
-                .surfaces
-                .remap_optional_reference(&mut pane.selected_panel_id),
-            SessionWorkspaceLayoutSnapshot::Split(split) => {
-                remap_layout_references(&mut split.first, domains)
-                    && remap_layout_references(&mut split.second, domains)
-            }
-        }
-    }
-
-    fn remap_workspace_references(
+    fn prune_surface_rows(
         workspace: &mut SessionWorkspaceSnapshot,
-        domains: &IdentityDomains,
-    ) -> bool {
-        fn remap_rows<T>(
-            rows: &mut Option<Vec<T>>,
-            domain: &IdentityDomain,
-            identity: fn(&mut T) -> &mut String,
-        ) -> bool {
-            rows.as_mut().is_none_or(|rows| {
-                rows.iter_mut()
-                    .all(|row| domain.remap_reference(identity(row)))
-            })
-        }
-
-        if workspace
-            .layout
-            .as_mut()
-            .is_some_and(|layout| !remap_layout_references(layout, domains))
-            || !domains
-                .surfaces
-                .remap_optional_reference(&mut workspace.zoomed_panel_id)
-            || !domains
-                .surfaces
-                .remap_optional_reference(&mut workspace.focused_panel_id)
-            || !domains
-                .panes
-                .remap_optional_reference(&mut workspace.focused_pane_id)
-            || !domains
-                .groups
-                .remap_optional_reference(&mut workspace.group_id)
-        {
-            return false;
-        }
-
-        if !remap_rows(&mut workspace.surfaces, &domains.panes, |surface| {
-            &mut surface.pane_id
-        }) || !remap_rows(
-            &mut workspace.pending_surface_pwds,
-            &domains.surfaces,
-            |pending| &mut pending.surface_id,
-        ) || !remap_rows(&mut workspace.panel_titles, &domains.surfaces, |row| {
+        aliases: &HashMap<String, String>,
+    ) {
+        retain_mapped_rows(&mut workspace.pending_surface_pwds, aliases, |row| {
+            &mut row.surface_id
+        });
+        retain_mapped_rows(&mut workspace.panel_titles, aliases, |row| {
             &mut row.panel_id
-        }) || !remap_rows(&mut workspace.panel_pins, &domains.surfaces, |row| {
+        });
+        retain_mapped_rows(&mut workspace.panel_pins, aliases, |row| &mut row.panel_id);
+        retain_mapped_rows(&mut workspace.panel_unreads, aliases, |row| {
             &mut row.panel_id
-        }) || !remap_rows(&mut workspace.panel_unreads, &domains.surfaces, |row| {
+        });
+        retain_mapped_rows(&mut workspace.restorable_agent_snapshots, aliases, |row| {
             &mut row.panel_id
-        }) || !remap_rows(
-            &mut workspace.restorable_agent_snapshots,
-            &domains.surfaces,
-            |row| &mut row.panel_id,
-        ) || !remap_rows(
-            &mut workspace.surface_resume_bindings,
-            &domains.surfaces,
-            |row| &mut row.surface_id,
-        ) {
-            return false;
-        }
-        for row in workspace
-            .published_pane_selections
-            .as_mut()
-            .into_iter()
-            .flatten()
-        {
-            if !domains.panes.remap_reference(&mut row.pane_id)
-                || !domains.surfaces.remap_reference(&mut row.panel_id)
-            {
-                return false;
-            }
-        }
-        if !remap_rows(
-            &mut workspace.panel_git_branches,
-            &domains.surfaces,
-            |row| &mut row.panel_id,
-        ) || !remap_rows(
-            &mut workspace.panel_pull_requests,
-            &domains.surfaces,
-            |row| &mut row.panel_id,
-        ) || !remap_rows(
-            &mut workspace.panel_listening_ports,
-            &domains.surfaces,
-            |row| &mut row.panel_id,
-        ) || !remap_rows(&mut workspace.panel_ttys, &domains.surfaces, |row| {
+        });
+        retain_mapped_rows(&mut workspace.surface_resume_bindings, aliases, |row| {
+            &mut row.surface_id
+        });
+        retain_mapped_rows(&mut workspace.panel_git_branches, aliases, |row| {
             &mut row.panel_id
-        }) || !remap_rows(
-            &mut workspace.panel_shell_activity,
-            &domains.surfaces,
-            |row| &mut row.panel_id,
-        ) || !remap_rows(
-            &mut workspace.panel_terminal_startups,
-            &domains.surfaces,
-            |row| &mut row.panel_id,
-        ) {
-            return false;
-        }
-        for canvas in workspace.canvas_panes.as_mut().into_iter().flatten() {
-            if !domains.surfaces.remap_reference(&mut canvas.panel_id)
-                || !canvas.panel_ids.as_mut().is_none_or(|panel_ids| {
-                    panel_ids
-                        .iter_mut()
-                        .all(|panel_id| domains.surfaces.remap_reference(panel_id))
-                })
-                || !domains
-                    .surfaces
-                    .remap_optional_reference(&mut canvas.selected_panel_id)
-            {
-                return false;
-            }
-        }
-        true
+        });
+        retain_mapped_rows(&mut workspace.panel_pull_requests, aliases, |row| {
+            &mut row.panel_id
+        });
+        retain_mapped_rows(&mut workspace.panel_listening_ports, aliases, |row| {
+            &mut row.panel_id
+        });
+        retain_mapped_rows(&mut workspace.panel_ttys, aliases, |row| &mut row.panel_id);
+        retain_mapped_rows(&mut workspace.panel_shell_activity, aliases, |row| {
+            &mut row.panel_id
+        });
+        retain_mapped_rows(&mut workspace.panel_terminal_startups, aliases, |row| {
+            &mut row.panel_id
+        });
     }
 
-    let mut domains = IdentityDomains::default();
+    fn stable_surface_id(old: &str, used: &mut HashSet<String>) -> String {
+        if Uuid::parse_str(old).is_ok() && used.insert(old.to_string()) {
+            old.to_string()
+        } else {
+            mint(used)
+        }
+    }
+
+    fn normalize_layout(
+        layout: SessionWorkspaceLayoutSnapshot,
+        authoritative: Option<&HashMap<String, cmux_core::session::SessionSurfaceSnapshot>>,
+        used_surfaces: &mut HashSet<String>,
+        used_panes: &mut HashSet<String>,
+        used_splits: &mut HashSet<String>,
+        aliases: &mut WorkspaceAliases,
+        created_surfaces: &mut Vec<cmux_core::session::SessionSurfaceSnapshot>,
+    ) -> Option<SessionWorkspaceLayoutSnapshot> {
+        match layout {
+            SessionWorkspaceLayoutSnapshot::Pane(mut pane) => {
+                let old_pane_id = pane.pane_id.clone();
+                let new_pane_id = mint(used_panes);
+                if let Some(old_pane_id) = old_pane_id {
+                    aliases
+                        .panes
+                        .entry(old_pane_id)
+                        .or_insert_with(|| new_pane_id.clone());
+                }
+
+                let selected = pane.selected_panel_id.take();
+                let mut local_aliases = HashMap::new();
+                let mut panel_ids = Vec::new();
+                for old_surface_id in std::mem::take(&mut pane.panel_ids) {
+                    let source = match authoritative {
+                        Some(authoritative) => {
+                            let Some(source) = authoritative.get(&old_surface_id) else {
+                                continue;
+                            };
+                            Some(source)
+                        }
+                        None => None,
+                    };
+                    let new_surface_id = stable_surface_id(&old_surface_id, used_surfaces);
+                    local_aliases
+                        .entry(old_surface_id.clone())
+                        .or_insert_with(|| new_surface_id.clone());
+                    aliases
+                        .surfaces
+                        .insert(old_surface_id, new_surface_id.clone());
+                    aliases
+                        .surface_owners
+                        .insert(new_surface_id.clone(), new_pane_id.clone());
+                    aliases.ordered_surfaces.push(new_surface_id.clone());
+                    panel_ids.push(new_surface_id.clone());
+
+                    if let Some(source) = source {
+                        let mut surface = source.clone();
+                        surface.surface_id = new_surface_id;
+                        surface.pane_id = new_pane_id.clone();
+                        created_surfaces.push(surface);
+                    }
+                }
+                if panel_ids.is_empty() {
+                    return None;
+                }
+                pane.pane_id = Some(new_pane_id);
+                pane.selected_panel_id = selected
+                    .as_ref()
+                    .and_then(|selected| local_aliases.get(selected).cloned())
+                    .or_else(|| panel_ids.first().cloned());
+                pane.panel_ids = panel_ids;
+                Some(SessionWorkspaceLayoutSnapshot::Pane(pane))
+            }
+            SessionWorkspaceLayoutSnapshot::Split(mut split) => {
+                let first = normalize_layout(
+                    *split.first,
+                    authoritative,
+                    used_surfaces,
+                    used_panes,
+                    used_splits,
+                    aliases,
+                    created_surfaces,
+                );
+                let second = normalize_layout(
+                    *split.second,
+                    authoritative,
+                    used_surfaces,
+                    used_panes,
+                    used_splits,
+                    aliases,
+                    created_surfaces,
+                );
+                match (first, second) {
+                    (Some(first), Some(second)) => {
+                        split.split_id = Some(mint(used_splits));
+                        split.first = Box::new(first);
+                        split.second = Box::new(second);
+                        Some(SessionWorkspaceLayoutSnapshot::Split(split))
+                    }
+                    (Some(layout), None) | (None, Some(layout)) => Some(layout),
+                    (None, None) => None,
+                }
+            }
+        }
+    }
+
+    fn normalize_workspace(
+        workspace: &mut SessionWorkspaceSnapshot,
+        group_aliases: &HashMap<String, String>,
+        used_workspaces: &mut HashSet<String>,
+        used_surfaces: &mut HashSet<String>,
+        used_panes: &mut HashSet<String>,
+        used_splits: &mut HashSet<String>,
+    ) -> (Option<String>, String) {
+        let old_workspace_id = workspace.workspace_id.clone();
+        let new_workspace_id = mint(used_workspaces);
+        workspace.workspace_id = Some(new_workspace_id.clone());
+
+        let original_surfaces = workspace.surfaces.take();
+        let authoritative = original_surfaces.as_ref().map(|surfaces| {
+            surfaces
+                .iter()
+                .map(|surface| (surface.surface_id.clone(), surface.clone()))
+                .collect::<HashMap<_, _>>()
+        });
+        let mut aliases = WorkspaceAliases::default();
+        let mut created_surfaces = Vec::new();
+        workspace.layout = workspace.layout.take().and_then(|layout| {
+            normalize_layout(
+                layout,
+                authoritative.as_ref(),
+                used_surfaces,
+                used_panes,
+                used_splits,
+                &mut aliases,
+                &mut created_surfaces,
+            )
+        });
+        workspace.surfaces = original_surfaces.map(|_| created_surfaces);
+
+        workspace.group_id = workspace
+            .group_id
+            .as_ref()
+            .and_then(|group_id| group_aliases.get(group_id).cloned());
+        workspace.zoomed_panel_id = workspace
+            .zoomed_panel_id
+            .as_ref()
+            .and_then(|panel_id| aliases.surfaces.get(panel_id).cloned());
+
+        let had_focus = workspace.focused_panel_id.is_some() || workspace.focused_pane_id.is_some();
+        let focused_panel = workspace
+            .focused_panel_id
+            .as_ref()
+            .and_then(|panel_id| aliases.surfaces.get(panel_id).cloned())
+            .or_else(|| {
+                if had_focus {
+                    aliases.ordered_surfaces.first().cloned()
+                } else {
+                    None
+                }
+            });
+        workspace.focused_pane_id = focused_panel
+            .as_ref()
+            .and_then(|panel_id| aliases.surface_owners.get(panel_id).cloned());
+        workspace.focused_panel_id = focused_panel;
+
+        prune_surface_rows(workspace, &aliases.surfaces);
+
+        if let Some(rows) = &mut workspace.published_pane_selections {
+            rows.retain_mut(|row| {
+                let Some(pane_id) = aliases.panes.get(&row.pane_id).cloned() else {
+                    return false;
+                };
+                let Some(panel_id) = aliases.surfaces.get(&row.panel_id).cloned() else {
+                    return false;
+                };
+                if aliases.surface_owners.get(&panel_id) != Some(&pane_id) {
+                    return false;
+                }
+                row.pane_id = pane_id;
+                row.panel_id = panel_id;
+                true
+            });
+        }
+
+        if let Some(canvas_panes) = &mut workspace.canvas_panes {
+            canvas_panes.retain_mut(|canvas| {
+                let old_panel_ids = canvas
+                    .panel_ids
+                    .take()
+                    .unwrap_or_else(|| vec![canvas.panel_id.clone()]);
+                let mut seen = HashSet::new();
+                let panel_ids = old_panel_ids
+                    .iter()
+                    .filter_map(|panel_id| aliases.surfaces.get(panel_id).cloned())
+                    .filter(|panel_id| seen.insert(panel_id.clone()))
+                    .collect::<Vec<_>>();
+                let Some(first) = panel_ids.first().cloned() else {
+                    return false;
+                };
+                let selected = canvas
+                    .selected_panel_id
+                    .as_ref()
+                    .and_then(|panel_id| aliases.surfaces.get(panel_id).cloned())
+                    .filter(|panel_id| panel_ids.contains(panel_id))
+                    .unwrap_or_else(|| first.clone());
+                canvas.panel_id = first;
+                canvas.panel_ids = Some(panel_ids);
+                canvas.selected_panel_id = Some(selected);
+                true
+            });
+        }
+
+        (old_workspace_id, new_workspace_id)
+    }
+
+    fn normalize_dock(
+        dock: &mut cmux_core::session::SessionDockSnapshot,
+        window_id: &str,
+        used_surfaces: &mut HashSet<String>,
+        used_panes: &mut HashSet<String>,
+        used_splits: &mut HashSet<String>,
+    ) {
+        let authoritative = dock
+            .surfaces
+            .iter()
+            .map(|surface| (surface.surface_id.clone(), surface.clone()))
+            .collect::<HashMap<_, _>>();
+        let focused = dock.focused_surface_id.take();
+        let mut aliases = WorkspaceAliases::default();
+        let mut created_surfaces = Vec::new();
+        dock.layout = dock.layout.take().and_then(|layout| {
+            normalize_layout(
+                layout,
+                Some(&authoritative),
+                used_surfaces,
+                used_panes,
+                used_splits,
+                &mut aliases,
+                &mut created_surfaces,
+            )
+        });
+        dock.surfaces = created_surfaces;
+        dock.focused_surface_id = focused
+            .as_ref()
+            .and_then(|surface_id| aliases.surfaces.get(surface_id).cloned())
+            .or_else(|| {
+                dock.surfaces
+                    .first()
+                    .map(|surface| surface.surface_id.clone())
+            });
+        dock.workspace_id = format!("dock:{window_id}");
+    }
+
     for window in &snapshot.windows {
-        if let Some(window_id) = window.window_id.as_deref() {
-            domains.windows.register_definition(window_id);
-        }
         for workspace in &window.tab_manager.workspaces {
-            if let Some(workspace_id) = workspace.workspace_id.as_deref() {
-                domains.workspaces.register_definition(workspace_id);
-            }
-            if let Some(layout) = workspace.layout.as_ref() {
-                collect_layout_definitions(layout, &mut domains);
-            }
-            for surface in workspace.surfaces.as_deref().unwrap_or_default() {
-                domains.surfaces.register_definition(&surface.surface_id);
-            }
-        }
-        for group in window
-            .tab_manager
-            .workspace_groups
-            .as_deref()
-            .unwrap_or_default()
-        {
-            domains.groups.register_definition(&group.id);
-        }
-        if let Some(dock) = window.dock.as_ref() {
-            domains.workspaces.register_definition(&dock.workspace_id);
-            if let Some(layout) = dock.layout.as_ref() {
-                collect_layout_definitions(layout, &mut domains);
-            }
-            for surface in &dock.surfaces {
-                domains.surfaces.register_definition(&surface.surface_id);
-            }
-        }
-    }
-    if !domains.has_replacements() {
-        return true;
-    }
-
-    let mut candidate = snapshot.clone();
-    for window in &mut candidate.windows {
-        domains
-            .windows
-            .remap_optional_definition(&mut window.window_id);
-        for workspace in &mut window.tab_manager.workspaces {
-            domains
-                .workspaces
-                .remap_optional_definition(&mut workspace.workspace_id);
-            if let Some(layout) = workspace.layout.as_mut() {
-                remap_layout_definitions(layout, &domains);
-            }
-            for surface in workspace.surfaces.as_mut().into_iter().flatten() {
-                domains.surfaces.remap_definition(&mut surface.surface_id);
-            }
-        }
-        for group in window
-            .tab_manager
-            .workspace_groups
-            .as_mut()
-            .into_iter()
-            .flatten()
-        {
-            domains.groups.remap_definition(&mut group.id);
-        }
-        if let Some(dock) = window.dock.as_mut() {
-            domains.workspaces.remap_definition(&mut dock.workspace_id);
-            if let Some(layout) = dock.layout.as_mut() {
-                remap_layout_definitions(layout, &domains);
-            }
-            for surface in &mut dock.surfaces {
-                domains.surfaces.remap_definition(&mut surface.surface_id);
-            }
-        }
-    }
-
-    for window in &mut candidate.windows {
-        if !domains
-            .workspaces
-            .remap_optional_reference(&mut window.selected_workspace_id)
-        {
-            return false;
-        }
-        for workspace in &mut window.tab_manager.workspaces {
-            if !remap_workspace_references(workspace, &domains) {
-                return false;
-            }
-        }
-        for group in window
-            .tab_manager
-            .workspace_groups
-            .as_mut()
-            .into_iter()
-            .flatten()
-        {
-            if !domains
-                .workspaces
-                .remap_optional_reference(&mut group.anchor_workspace_id)
-            {
-                return false;
-            }
-        }
-        if let Some(dock) = window.dock.as_mut() {
-            if dock
-                .layout
-                .as_mut()
-                .is_some_and(|layout| !remap_layout_references(layout, &domains))
-                || !domains
-                    .surfaces
-                    .remap_optional_reference(&mut dock.focused_surface_id)
-            {
-                return false;
-            }
-            for surface in &mut dock.surfaces {
-                if !domains.panes.remap_reference(&mut surface.pane_id) {
+            if let Some(surfaces) = workspace.surfaces.as_deref() {
+                let mut seen = HashSet::new();
+                if surfaces
+                    .iter()
+                    .any(|surface| !seen.insert(surface.surface_id.as_str()))
+                {
                     return false;
                 }
             }
+        }
+    }
+
+    let mut candidate = snapshot.clone();
+    let mut used_windows = HashSet::new();
+    let mut used_workspaces = HashSet::new();
+    let mut used_groups = candidate
+        .windows
+        .iter()
+        .flat_map(|window| {
+            window
+                .tab_manager
+                .workspace_groups
+                .as_deref()
+                .unwrap_or_default()
+        })
+        .filter(|group| Uuid::parse_str(&group.id).is_ok())
+        .map(|group| group.id.clone())
+        .collect::<HashSet<_>>();
+    let mut used_panes = HashSet::new();
+    let mut used_splits = HashSet::new();
+    let mut used_surfaces = HashSet::new();
+
+    for window in &mut candidate.windows {
+        let window_id = match window.window_id.as_deref() {
+            Some(id) if Uuid::parse_str(id).is_ok() && used_windows.insert(id.to_string()) => {
+                id.to_string()
+            }
+            _ => mint(&mut used_windows),
+        };
+        window.window_id = Some(window_id);
+    }
+
+    for window in &mut candidate.windows {
+        let old_selected_workspace = window.selected_workspace_id.clone();
+        let mut group_aliases = HashMap::new();
+        let mut seen_groups = HashSet::new();
+        let groups = window
+            .tab_manager
+            .workspace_groups
+            .take()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|mut group| {
+                if !seen_groups.insert(group.id.clone()) {
+                    return None;
+                }
+                let old_id = group.id.clone();
+                if Uuid::parse_str(&group.id).is_err() {
+                    group.id = mint(&mut used_groups);
+                }
+                group_aliases.insert(old_id, group.id.clone());
+                Some(group)
+            })
+            .collect::<Vec<_>>();
+        window.tab_manager.workspace_groups = (!groups.is_empty()).then_some(groups);
+
+        let mut workspace_aliases = HashMap::new();
+        for workspace in &mut window.tab_manager.workspaces {
+            let (old_id, new_id) = normalize_workspace(
+                workspace,
+                &group_aliases,
+                &mut used_workspaces,
+                &mut used_surfaces,
+                &mut used_panes,
+                &mut used_splits,
+            );
+            if let Some(old_id) = old_id {
+                workspace_aliases.entry(old_id).or_insert(new_id);
+            }
+        }
+
+        let selected_index = window
+            .tab_manager
+            .selected_workspace_index
+            .and_then(|index| usize::try_from(index).ok());
+        window.selected_workspace_id = selected_index
+            .and_then(|index| window.tab_manager.workspaces.get(index))
+            .and_then(|workspace| workspace.workspace_id.clone())
+            .or_else(|| {
+                old_selected_workspace
+                    .as_ref()
+                    .and_then(|workspace_id| workspace_aliases.get(workspace_id).cloned())
+            })
+            .or_else(|| {
+                window
+                    .tab_manager
+                    .workspaces
+                    .first()
+                    .and_then(|workspace| workspace.workspace_id.clone())
+            });
+
+        if let Some(groups) = &mut window.tab_manager.workspace_groups {
+            for group in groups {
+                let members = window
+                    .tab_manager
+                    .workspaces
+                    .iter()
+                    .filter(|workspace| workspace.group_id.as_deref() == Some(&group.id))
+                    .filter_map(|workspace| workspace.workspace_id.clone())
+                    .collect::<Vec<_>>();
+                group.anchor_workspace_id = group
+                    .anchor_member_index
+                    .and_then(|index| usize::try_from(index).ok())
+                    .and_then(|index| members.get(index).cloned())
+                    .or_else(|| {
+                        group
+                            .anchor_workspace_id
+                            .as_ref()
+                            .and_then(|workspace_id| workspace_aliases.get(workspace_id))
+                            .filter(|workspace_id| members.contains(workspace_id))
+                            .cloned()
+                    })
+                    .or_else(|| members.first().cloned());
+            }
+        }
+
+        if let Some(dock) = &mut window.dock {
+            normalize_dock(
+                dock,
+                window.window_id.as_deref().expect("normalized window id"),
+                &mut used_surfaces,
+                &mut used_panes,
+                &mut used_splits,
+            );
         }
     }
 

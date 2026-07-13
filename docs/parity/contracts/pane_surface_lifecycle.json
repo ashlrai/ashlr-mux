@@ -78,7 +78,7 @@
     ],
     "restore_reconciliation": [
       "Decode panes, ordered heterogeneous surfaces, selection/focus, metadata, and kind-specific state into the authoritative model before launching runtimes.",
-      "Recreate/attach runtimes against stable restored ids and lifecycle generations; do not mint replacement public ids on restore.",
+      "Reuse collision-free persisted window and surface ids; rebuild workspace, pane, and split ids; preserve group ids with remapped anchors; derive Dock ids from their owning windows and rebuild Dock pane ids.",
       "Preserve canonical persisted fields (directory/provenance, titles, pin/unread, terminal startup/resume, browser state) while treating runtime handles as transient/derived.",
       "Prune orphan metadata and pending reports whose owner lifecycle is definitively closed; transfer all surface metadata atomically on move/detach."
     ],
