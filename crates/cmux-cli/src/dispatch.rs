@@ -27,6 +27,7 @@ use crate::classify::PreSocketAction;
 use crate::command_forward::{control_command_for, ControlCommand};
 use crate::invocation::CliError;
 use crate::ssh::SSH_USAGE_TEXT;
+use crate::window_lifecycle::{window_lifecycle_command_for, WindowLifecycleCommand};
 
 /// How `main` should carry out a classified command. Pure data — the executor
 /// turns each variant into stdout/stderr + an exit code.
@@ -45,6 +46,12 @@ pub enum DispatchPlan {
     RunRpc,
     /// Run one mapped user-facing command through the v2 control socket.
     RunControl(ControlCommand),
+    /// Run a v1 window-lifecycle command (`new_window` / `focus_window` /
+    /// `close_window`), resolving `--window` refs/indexes client-side first.
+    RunWindowLifecycle(WindowLifecycleCommand),
+    /// Run a `surface resume` subcommand (v2 `surface.resume.*`), resolving the
+    /// raw target selectors and ambient env in the executor.
+    RunSurfaceResume(Vec<String>),
     /// Run the multi-call tmux compatibility shim.
     RunTmuxCompat(Vec<String>),
     /// Stream reconnectable event frames from the v2 control socket.
@@ -141,6 +148,22 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
             "Usage: cmux respawn-pane [--workspace <id|ref|index>] [--surface <id|ref|index>] [--window <id|ref|index>] [--command <cmd> | <cmd>]\n\nSend a command (or default shell restart command) to a surface.\n\nFlags:\n  --workspace <id|ref|index>   Workspace context (default: $CMUX_WORKSPACE_ID)\n  --surface <id|ref|index>     Surface context (default: focused surface)\n  --window <id|ref|index>      Window context for workspace/surface refs and indexes\n  --command <cmd>        Command text (or pass trailing command text)",
         ),
         "list-windows" => Some("Usage:\n  cmux list-windows\n\nLists desktop windows."),
+        // Byte-exact canonical usage (CLI/cmux.swift:15477-15510 at e1825d40d).
+        "new-window" => Some(
+            "Usage: cmux new-window\n\nCreate a new window.\n\nExample:\n  cmux new-window",
+        ),
+        "focus-window" => Some(
+            "Usage: cmux focus-window --window <id|ref|index>\n\nFocus (bring to front) the specified window.\n\nFlags:\n  --window <id|ref|index>   Window to focus (required)\n\nExample:\n  cmux focus-window --window 0\n  cmux focus-window --window window:1",
+        ),
+        "close-window" => Some(
+            "Usage: cmux close-window --window <id|ref|index>\n\nClose the specified window.\n\nFlags:\n  --window <id|ref|index>   Window to close (required)\n\nExample:\n  cmux close-window --window 0\n  cmux close-window --window window:1",
+        ),
+        // Byte-exact canonical usage (CLI/cmux.swift:16234-16262 at e1825d40d).
+        // Canonical maps BOTH "surface" and "surface-resume" to this text; the
+        // Windows port keeps its richer "surface" namespace summary above.
+        "surface-resume" => Some(
+            "Usage: cmux surface resume set [flags] -- <argv...>\n       cmux surface resume set [flags] --shell <command>\n       cmux surface resume show [--json] [flags]\n       cmux surface resume get [--json] [flags]\n       cmux surface resume clear [flags]\n\nAttach restart command metadata to a terminal surface.\nPublic CLI bindings are stored for inspection and manual restore.\n\nFlags:\n  --workspace <id|ref|index>   Workspace context (default: $CMUX_WORKSPACE_ID)\n  --surface <id|ref|index>     Surface context (default: $CMUX_SURFACE_ID)\n  --window <id|ref|index>      Window context for workspace and surface refs/indexes\n  --cwd <path>             Working directory for restore (default: $PWD)\n  --name <name>            Display name for the binding\n  --kind <kind>            Binding kind, for example agent or tmux\n  --checkpoint <id>        Provider checkpoint or session id\n  --checkpoint-id <id>     Same as --checkpoint and takes precedence\n  --source <source>        Binding source label\n\nExamples:\n  cmux surface resume set --kind tmux --shell \"tmux attach -t work\"\n  cmux surface resume set --kind opencode --checkpoint ses_123 -- opencode --session ses_123\n  cmux surface resume show --json",
+        ),
         "current-window" => Some(
             "Usage:\n  cmux current-window\n\nPrints the active desktop window ID.",
         ),
@@ -492,6 +515,21 @@ pub fn plan_with_args(action: &PreSocketAction, command: &str, args: &[String]) 
                     command: command.to_owned(),
                     args: args.to_vec(),
                 }
+            } else if let Some(lifecycle) = window_lifecycle_command_for(command, args) {
+                match lifecycle {
+                    Ok(lifecycle) => DispatchPlan::RunWindowLifecycle(lifecycle),
+                    Err(error) => DispatchPlan::Fail(error),
+                }
+            } else if command == "surface-resume" {
+                DispatchPlan::RunSurfaceResume(args.to_vec())
+            } else if command == "surface"
+                && args
+                    .first()
+                    .is_some_and(|argument| argument.to_lowercase() == "resume")
+            {
+                // Canonical `cmux surface resume …` routes into the same
+                // handler as `cmux surface-resume …` (CLI/cmux.swift:6546-6553).
+                DispatchPlan::RunSurfaceResume(args[1..].to_vec())
             } else if command == "config"
                 && args.first().is_some_and(|argument| {
                     matches!(
@@ -599,18 +637,86 @@ mod tests {
     fn unmapped_subcommand_help_prints_header_and_pointer() {
         let plan = plan(
             &PreSocketAction::SubcommandHelp {
-                command: "new-window".to_owned(),
+                command: "debug-terminals".to_owned(),
             },
-            "new-window",
+            "debug-terminals",
         );
         match plan {
             DispatchPlan::PrintLine(text) => {
-                assert!(text.starts_with("cmux new-window\n\n"), "got: {text:?}");
+                assert!(
+                    text.starts_with("cmux debug-terminals\n\n"),
+                    "got: {text:?}"
+                );
                 assert!(text.contains("run 'cmux help'"));
                 assert!(text.contains("not yet ported"));
             }
             other => panic!("expected PrintLine, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn window_lifecycle_commands_route_to_the_v1_executor() {
+        use crate::window_lifecycle::{WindowHandle, WindowLifecycleCommand};
+
+        assert_eq!(
+            plan(&PreSocketAction::NeedsSocket, "new-window"),
+            DispatchPlan::RunWindowLifecycle(WindowLifecycleCommand::NewWindow)
+        );
+        let args = vec!["--window".to_string(), "window:2".to_string()];
+        assert_eq!(
+            plan_with_args(&PreSocketAction::NeedsSocket, "focus-window", &args),
+            DispatchPlan::RunWindowLifecycle(WindowLifecycleCommand::FocusWindow(
+                WindowHandle::Ref("window:2".to_owned())
+            ))
+        );
+        match plan_with_args(&PreSocketAction::NeedsSocket, "close-window", &[]) {
+            DispatchPlan::Fail(error) => {
+                assert_eq!(error.message, "close-window requires --window");
+            }
+            other => panic!("expected Fail, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn surface_resume_spellings_route_to_the_resume_executor() {
+        let args = vec!["show".to_string(), "--json".to_string()];
+        assert_eq!(
+            plan_with_args(&PreSocketAction::NeedsSocket, "surface-resume", &args),
+            DispatchPlan::RunSurfaceResume(args.clone())
+        );
+        let namespaced = vec!["Resume".to_string(), "show".to_string()];
+        assert_eq!(
+            plan_with_args(&PreSocketAction::NeedsSocket, "surface", &namespaced),
+            DispatchPlan::RunSurfaceResume(vec!["show".to_string()])
+        );
+        // Other surface subcommands keep their existing v2 mapping.
+        match plan_with_args(
+            &PreSocketAction::NeedsSocket,
+            "surface",
+            &["list".to_string()],
+        ) {
+            DispatchPlan::RunControl(control) => assert_eq!(control.method, "surface.list"),
+            other => panic!("expected RunControl, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn window_lifecycle_help_texts_are_the_canonical_usage() {
+        let text = subcommand_help_text("new-window");
+        assert_eq!(
+            text,
+            "cmux new-window\n\nUsage: cmux new-window\n\nCreate a new window.\n\nExample:\n  cmux new-window"
+        );
+        assert!(subcommand_help_text("focus-window")
+            .contains("  --window <id|ref|index>   Window to focus (required)"));
+        assert!(subcommand_help_text("close-window")
+            .contains("  --window <id|ref|index>   Window to close (required)"));
+        let resume = subcommand_help_text("surface-resume");
+        assert!(resume.starts_with(
+            "cmux surface-resume\n\nUsage: cmux surface resume set [flags] -- <argv...>\n"
+        ));
+        assert!(resume
+            .contains("  --checkpoint-id <id>     Same as --checkpoint and takes precedence\n"));
     }
 
     #[test]
