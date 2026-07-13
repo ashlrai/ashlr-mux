@@ -708,6 +708,18 @@ fn published_rows(
         .collect()
 }
 
+fn published_rows_bytes(
+    snapshot: &AppSessionSnapshot,
+    window_index: usize,
+    workspace_index: usize,
+) -> Vec<u8> {
+    serde_json::to_vec(
+        &snapshot.windows[window_index].tab_manager.workspaces[workspace_index]
+            .published_pane_selections,
+    )
+    .expect("encode exact published rows")
+}
+
 fn lifecycle_event_names(transition: &LifecycleTransition) -> Vec<&'static str> {
     transition.events.iter().map(|event| event.name).collect()
 }
@@ -744,6 +756,59 @@ fn publication_matrix_snapshot(focused_surface_id: &str) -> AppSessionSnapshot {
         {"surface_id":"surface-other","pane_id":"pane-other","generation":1,"kind":{"type":"terminal"}}
     ]);
     serde_json::from_value(encoded).expect("decode publication matrix")
+}
+
+fn dock_publication_snapshot() -> (AppSessionSnapshot, String, String, String, String) {
+    let mut snapshot = test_snapshot();
+    snapshot.windows[0].window_id = Some("main".into());
+    let first = DockStore
+        .create(
+            &mut snapshot,
+            "main",
+            DockCreateRequest {
+                kind: DockSurfaceKind::Terminal,
+                focus: true,
+                ..DockCreateRequest::default()
+            },
+        )
+        .expect("seed first Dock surface");
+    let second = DockStore
+        .create(
+            &mut snapshot,
+            "main",
+            DockCreateRequest {
+                kind: DockSurfaceKind::Terminal,
+                pane_id: Some(first.pane_id),
+                focus: false,
+                ..DockCreateRequest::default()
+            },
+        )
+        .expect("seed second Dock surface");
+    let third = DockStore
+        .create(
+            &mut snapshot,
+            "main",
+            DockCreateRequest {
+                kind: DockSurfaceKind::Terminal,
+                pane_id: Some(first.pane_id),
+                focus: false,
+                ..DockCreateRequest::default()
+            },
+        )
+        .expect("seed third Dock surface");
+    snapshot = transition(
+        &snapshot,
+        "surface.focus",
+        json!({"surface_id": second.surface_id}),
+    )
+    .snapshot;
+    (
+        snapshot,
+        first.pane_id.to_string(),
+        first.surface_id.to_string(),
+        second.surface_id.to_string(),
+        third.surface_id.to_string(),
+    )
 }
 
 #[derive(Default)]
@@ -1082,6 +1147,289 @@ fn close_publication_exact_rows_are_isolated_from_another_window() {
         .events
         .iter()
         .all(|event| event.workspace_id.as_deref() == Some("workspace-1")));
+}
+
+#[test]
+fn close_publication_suppressed_workspace_close_only_clears_the_exact_closed_id() {
+    for (label, pointer, expected_rows) in [
+        (
+            "closed",
+            "surface-after",
+            vec![("pane-other", "surface-other")],
+        ),
+        (
+            "unrelated-unknown",
+            "surface-unknown",
+            vec![
+                ("pane-matrix", "surface-unknown"),
+                ("pane-other", "surface-other"),
+            ],
+        ),
+    ] {
+        let mut snapshot = publication_matrix_snapshot("surface-selected");
+        set_published_rows(
+            &mut snapshot,
+            0,
+            0,
+            &[("pane-matrix", pointer), ("pane-other", "surface-other")],
+        );
+        let before = published_rows_bytes(&snapshot, 0, 0);
+        let closed = transition(
+            &snapshot,
+            "surface.close",
+            json!({"surface_id":"surface-after"}),
+        );
+        assert_eq!(
+            lifecycle_event_names(&closed),
+            ["surface.closed"],
+            "{label}"
+        );
+        assert_eq!(
+            published_rows(&closed.snapshot, 0, 0),
+            expected_rows
+                .into_iter()
+                .map(|(pane, panel)| (pane.into(), panel.into()))
+                .collect::<Vec<_>>(),
+            "{label}"
+        );
+        if label == "unrelated-unknown" {
+            assert_eq!(
+                published_rows_bytes(&closed.snapshot, 0, 0),
+                before,
+                "suppression cannot rewrite an unrelated publisher row"
+            );
+        }
+    }
+}
+
+#[test]
+fn close_publication_published_workspace_close_preserves_unknown_previous_and_position() {
+    for (label, pointer, previous, expected_rows) in [
+        (
+            "closed",
+            "surface-before",
+            Value::Null,
+            vec![
+                ("pane-other", "surface-other"),
+                ("pane-matrix", "surface-selected"),
+            ],
+        ),
+        (
+            "unrelated-unknown",
+            "surface-unknown",
+            json!("surface-unknown"),
+            vec![
+                ("pane-matrix", "surface-selected"),
+                ("pane-other", "surface-other"),
+            ],
+        ),
+    ] {
+        let mut snapshot = publication_matrix_snapshot("surface-selected");
+        set_published_rows(
+            &mut snapshot,
+            0,
+            0,
+            &[("pane-matrix", pointer), ("pane-other", "surface-other")],
+        );
+        let closed = transition(
+            &snapshot,
+            "surface.close",
+            json!({"surface_id":"surface-before"}),
+        );
+        assert_eq!(
+            lifecycle_event_names(&closed),
+            ["surface.closed", "surface.selected", "surface.focused"],
+            "{label}"
+        );
+        assert_eq!(
+            closed.events[1].payload["previous_surface_id"], previous,
+            "{label}"
+        );
+        assert_eq!(
+            published_rows(&closed.snapshot, 0, 0),
+            expected_rows
+                .into_iter()
+                .map(|(pane, panel)| (pane.into(), panel.into()))
+                .collect::<Vec<_>>(),
+            "{label}"
+        );
+    }
+}
+
+#[test]
+fn close_publication_suppressed_dock_close_only_clears_the_exact_closed_id() {
+    for (label, unknown) in [("closed", false), ("unrelated-unknown", true)] {
+        let (mut snapshot, pane_id, _, selected_id, trailing_id) = dock_publication_snapshot();
+        let pointer = if unknown {
+            "surface-unknown".to_owned()
+        } else {
+            trailing_id.clone()
+        };
+        set_published_rows(
+            &mut snapshot,
+            0,
+            0,
+            &[(&pane_id, &pointer), ("pane-1", "surface-1")],
+        );
+        let before = published_rows_bytes(&snapshot, 0, 0);
+        let closed = transition(
+            &snapshot,
+            "surface.close",
+            json!({"surface_id":trailing_id}),
+        );
+        assert_eq!(
+            lifecycle_event_names(&closed),
+            ["surface.closed"],
+            "{label}"
+        );
+        assert_eq!(
+            closed.snapshot.windows[0]
+                .dock
+                .as_ref()
+                .and_then(|dock| dock.focused_surface_id.as_deref()),
+            Some(selected_id.as_str()),
+            "{label}"
+        );
+        if unknown {
+            assert_eq!(published_rows_bytes(&closed.snapshot, 0, 0), before);
+        } else {
+            assert_eq!(
+                published_rows(&closed.snapshot, 0, 0),
+                vec![("pane-1".into(), "surface-1".into())]
+            );
+        }
+    }
+}
+
+#[test]
+fn close_publication_published_dock_close_preserves_unknown_previous_and_backing_row() {
+    for (label, unknown) in [("closed", false), ("unrelated-unknown", true)] {
+        let (mut snapshot, pane_id, first_id, selected_id, _) = dock_publication_snapshot();
+        let pointer = if unknown {
+            "surface-unknown".to_owned()
+        } else {
+            first_id.clone()
+        };
+        set_published_rows(
+            &mut snapshot,
+            0,
+            0,
+            &[(&pane_id, &pointer), ("pane-1", "surface-1")],
+        );
+        let closed = transition(&snapshot, "surface.close", json!({"surface_id":first_id}));
+        assert_eq!(
+            lifecycle_event_names(&closed),
+            ["surface.closed", "surface.selected", "surface.focused"],
+            "{label}"
+        );
+        assert_eq!(
+            closed.events[1].payload["previous_surface_id"],
+            if unknown {
+                json!("surface-unknown")
+            } else {
+                Value::Null
+            },
+            "{label}"
+        );
+        assert_eq!(
+            published_rows(&closed.snapshot, 0, 0),
+            vec![
+                (pane_id, selected_id),
+                ("pane-1".into(), "surface-1".into()),
+            ],
+            "{label}"
+        );
+        assert!(closed.events.iter().all(|event| {
+            event.workspace_id.as_deref() == Some("main") && event.window_id.is_none()
+        }));
+    }
+}
+
+#[test]
+fn close_publication_dock_duplicate_pane_rows_selects_the_exact_closed_backing_owner() {
+    let mut snapshot = test_snapshot();
+    snapshot.windows[0].window_id = Some("main".into());
+    let mut second_workspace = snapshot.windows[0].tab_manager.workspaces[0].clone();
+    second_workspace.workspace_id = Some("workspace-2".into());
+    second_workspace.focused_panel_id = Some("surface-w2".into());
+    let SessionWorkspaceLayoutSnapshot::Pane(pane) = second_workspace.layout.as_mut().unwrap()
+    else {
+        unreachable!()
+    };
+    pane.pane_id = Some("pane-w2".into());
+    pane.panel_ids = vec!["surface-w2".into()];
+    pane.selected_panel_id = Some("surface-w2".into());
+    snapshot.windows[0]
+        .tab_manager
+        .workspaces
+        .push(second_workspace);
+    let first = DockStore
+        .create(
+            &mut snapshot,
+            "main",
+            DockCreateRequest {
+                kind: DockSurfaceKind::Terminal,
+                focus: true,
+                ..DockCreateRequest::default()
+            },
+        )
+        .expect("seed ambiguous Dock owner");
+    let second = DockStore
+        .create(
+            &mut snapshot,
+            "main",
+            DockCreateRequest {
+                kind: DockSurfaceKind::Terminal,
+                pane_id: Some(first.pane_id),
+                focus: false,
+                ..DockCreateRequest::default()
+            },
+        )
+        .expect("seed ambiguous Dock survivor");
+    snapshot = transition(
+        &snapshot,
+        "surface.focus",
+        json!({"surface_id":second.surface_id}),
+    )
+    .snapshot;
+    let pane_id = first.pane_id.to_string();
+    let first_id = first.surface_id.to_string();
+    let selected_id = second.surface_id.to_string();
+    set_published_rows(
+        &mut snapshot,
+        0,
+        0,
+        &[(&pane_id, "surface-unrelated"), ("pane-1", "surface-1")],
+    );
+    set_published_rows(
+        &mut snapshot,
+        0,
+        1,
+        &[
+            (&pane_id, &first_id),
+            ("pane-workspace-2", "surface-workspace-2"),
+        ],
+    );
+    let unrelated_backing_before = published_rows_bytes(&snapshot, 0, 0);
+
+    let closed = transition(&snapshot, "surface.close", json!({"surface_id":first_id}));
+    assert_eq!(
+        lifecycle_event_names(&closed),
+        ["surface.closed", "surface.selected", "surface.focused"]
+    );
+    assert_eq!(closed.events[1].payload["previous_surface_id"], Value::Null);
+    assert_eq!(
+        published_rows_bytes(&closed.snapshot, 0, 0),
+        unrelated_backing_before,
+        "the duplicate pane row in another workspace is byte-stable"
+    );
+    assert_eq!(
+        published_rows(&closed.snapshot, 0, 1),
+        vec![
+            (pane_id, selected_id),
+            ("pane-workspace-2".into(), "surface-workspace-2".into()),
+        ]
+    );
 }
 
 #[test]
