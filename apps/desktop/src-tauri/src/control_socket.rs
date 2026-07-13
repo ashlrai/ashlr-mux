@@ -3326,7 +3326,7 @@ fn handle_pane_surface_lifecycle_request(
             active_window_id,
         },
     );
-    if let Some(decorated) = decorate_lifecycle_result_refs(app, &mut transition.result) {
+    if let Some(decorated) = decorate_lifecycle_result_refs(app, method, &mut transition.result) {
         for event in &mut transition.events {
             if let Some(result) = event.payload.get_mut("result") {
                 *result = decorated.clone();
@@ -3621,20 +3621,42 @@ const LIFECYCLE_ID_REF_FIELDS: [(&str, &str, &str); 10] = [
 
 fn decorate_lifecycle_result_refs(
     app: &AppHandle,
+    method: &str,
     result: &mut ControlCallResult,
+) -> Option<Value> {
+    decorate_lifecycle_result_refs_with(method, result, &mut |kind, id| {
+        control_handle_ref(app, kind, id)
+    })
+}
+
+/// Canonical error payloads carry plain ids without refs, with two exceptions:
+/// the tab.action/surface.action Tab-not-found data
+/// (ControlCommandCoordinator+SystemTabAction.swift:39-48) and
+/// surface.report_pwd's not_found requested-identity block
+/// (ControlCommandCoordinator+Surface3.swift:240-251,365-375). Success
+/// payloads are always decorated.
+fn error_data_ref_decoration_is_canonical(method: &str, code: &str, message: &str) -> bool {
+    (matches!(method, "surface.action" | "tab.action") && message == "Tab not found")
+        || (method == "surface.report_pwd" && code == "not_found")
+}
+
+fn decorate_lifecycle_result_refs_with(
+    method: &str,
+    result: &mut ControlCallResult,
+    mint: &mut impl FnMut(&'static str, &str) -> String,
 ) -> Option<Value> {
     let success = matches!(result, ControlCallResult::Ok(_));
     let payload = match result {
         ControlCallResult::Ok(payload) => payload,
         ControlCallResult::Err {
-            data: Some(data), ..
-        } => data,
-        ControlCallResult::Err { data: None, .. } => return None,
+            code,
+            message,
+            data: Some(data),
+        } if error_data_ref_decoration_is_canonical(method, code, message) => data,
+        ControlCallResult::Err { .. } => return None,
     };
     let mut value = Value::from(payload.clone());
-    decorate_lifecycle_value_refs(&mut value, &mut |kind, id| {
-        control_handle_ref(app, kind, id)
-    });
+    decorate_lifecycle_value_refs(&mut value, mint);
     if let Ok(decorated) = JsonValue::try_from(value) {
         *payload = decorated;
     }
@@ -20452,6 +20474,104 @@ mod tests {
         assert_eq!(value["created_tab_ref"], "tab:2");
         assert_eq!(value["nullable"]["created_surface_ref"], Value::Null);
         assert_eq!(value["rows"][0]["ref"], "surface:3");
+    }
+
+    #[test]
+    fn lifecycle_error_ref_decoration_is_restricted_to_canonical_cases() {
+        // Canonical: only the tab.action/surface.action Tab-not-found error
+        // data carries refs (ControlCommandCoordinator+SystemTabAction.swift:39-48)
+        // and surface.report_pwd's not_found errors carry the ref-bearing
+        // requested-identity block
+        // (ControlCommandCoordinator+Surface3.swift:240-251,365-375); every
+        // other lifecycle error keeps plain ids in its data (e.g.
+        // surface.respawn, ControlCommandCoordinator+Surface.swift:449-473).
+        // Success payloads stay decorated.
+        let mut registry = ControlHandleRegistry::default();
+        let mut mint = |kind: &'static str, id: &str| registry.mint(kind, id);
+        let error = |code: &str, message: &str, data: Value| ControlCallResult::Err {
+            code: code.into(),
+            message: message.into(),
+            data: JsonValue::try_from(data).ok(),
+        };
+        let data_of = |result: &ControlCallResult| -> Value {
+            let ControlCallResult::Err {
+                data: Some(data), ..
+            } = result
+            else {
+                panic!("expected error data");
+            };
+            Value::from(data.clone())
+        };
+
+        let mut respawn_error = error(
+            "not_found",
+            "Surface not found for the given surface_id",
+            json!({"surface_id":"550e8400-e29b-41d4-a716-446655440000"}),
+        );
+        assert!(decorate_lifecycle_result_refs_with(
+            "surface.respawn",
+            &mut respawn_error,
+            &mut mint
+        )
+        .is_none());
+        assert!(
+            data_of(&respawn_error).get("surface_ref").is_none(),
+            "non-canonical error decoration for surface.respawn"
+        );
+
+        let mut close_error = error(
+            "not_found",
+            "Surface not found",
+            json!({"surface_id":"550e8400-e29b-41d4-a716-446655440000"}),
+        );
+        decorate_lifecycle_result_refs_with("surface.close", &mut close_error, &mut mint);
+        assert!(data_of(&close_error).get("surface_ref").is_none());
+
+        for method in ["tab.action", "surface.action"] {
+            let mut tab_not_found = error(
+                "not_found",
+                "Tab not found",
+                json!({
+                    "surface_id":"550e8400-e29b-41d4-a716-446655440000",
+                    "tab_id":"550e8400-e29b-41d4-a716-446655440000"
+                }),
+            );
+            decorate_lifecycle_result_refs_with(method, &mut tab_not_found, &mut mint);
+            let data = data_of(&tab_not_found);
+            assert!(data["surface_ref"].is_string(), "{method}");
+            assert!(data["tab_ref"].is_string(), "{method}");
+
+            let mut unknown_action = error(
+                "invalid_params",
+                "Unknown tab action",
+                json!({"action":"bogus","supported_actions":[]}),
+            );
+            decorate_lifecycle_result_refs_with(method, &mut unknown_action, &mut mint);
+            assert_eq!(
+                data_of(&unknown_action),
+                json!({"action":"bogus","supported_actions":[]}),
+                "{method}"
+            );
+        }
+
+        let mut report_error = error(
+            "not_found",
+            "Workspace not found",
+            json!({"workspace_id":"650e8400-e29b-41d4-a716-446655440000","surface_id":null}),
+        );
+        decorate_lifecycle_result_refs_with("surface.report_pwd", &mut report_error, &mut mint);
+        let data = data_of(&report_error);
+        assert!(data["workspace_ref"].is_string());
+        assert_eq!(data["surface_ref"], Value::Null);
+
+        let mut success = ControlCallResult::Ok(
+            JsonValue::try_from(json!({"surface_id":"550e8400-e29b-41d4-a716-446655440000"}))
+                .unwrap(),
+        );
+        let decorated =
+            decorate_lifecycle_result_refs_with("surface.respawn", &mut success, &mut mint)
+                .expect("success decoration returns the decorated payload");
+        assert!(decorated["surface_ref"].is_string());
     }
 
     #[path = "pane_surface_lifecycle_red.rs"]
