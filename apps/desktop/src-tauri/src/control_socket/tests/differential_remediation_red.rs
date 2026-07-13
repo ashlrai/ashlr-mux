@@ -452,3 +452,150 @@ fn events_stream_default_subscribes_at_latest_without_replay() {
     assert_eq!(ack["replay_count"], json!(2));
     assert_eq!(events.len(), 2);
 }
+
+// ---------------------------------------------------------------------------
+// D8b — canonical event emissions (capture frame lists are the oracle)
+// ---------------------------------------------------------------------------
+
+fn event_summary(event: &super::pane_surface_lifecycle::LifecycleEvent) -> (String, Value) {
+    (event.name.to_string(), event.payload.clone())
+}
+
+#[test]
+fn surface_create_without_focus_emits_the_canonical_selection_flip() {
+    // Capture surface_create.terminal_happy: created -> selected(new) ->
+    // focused(new) -> selected(previous) -> focused(previous), origin
+    // bonsplit_selection, all workspace.lifecycle with a NULL envelope
+    // window_id.
+    let snapshot = test_snapshot();
+    let created = transition(&snapshot, "surface.create", json!({"type": "terminal"}));
+    let new_id = ok_value(&created)["surface_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let events: Vec<_> = created.events.iter().map(event_summary).collect();
+    assert_eq!(events.len(), 5, "created + the transient selection flip");
+    assert_eq!(events[0].0, "surface.created");
+    assert_eq!(events[0].1["focused"], json!(false));
+    assert_eq!(events[1].0, "surface.selected");
+    assert_eq!(
+        events[1].1,
+        json!({
+            "focused": true,
+            "kind": "terminal",
+            "origin": "bonsplit_selection",
+            "pane_id": "pane-1",
+            "previous_surface_id": "surface-1",
+            "surface_id": new_id,
+        })
+    );
+    assert_eq!(events[2].0, "surface.focused");
+    assert_eq!(
+        events[2].1,
+        json!({
+            "kind": "terminal",
+            "origin": "bonsplit_selection",
+            "pane_id": "pane-1",
+            "surface_id": new_id,
+        })
+    );
+    assert_eq!(events[3].0, "surface.selected");
+    assert_eq!(events[3].1["surface_id"], json!("surface-1"));
+    assert_eq!(events[3].1["previous_surface_id"], json!(new_id));
+    assert_eq!(events[4].0, "surface.focused");
+    assert_eq!(events[4].1["surface_id"], json!("surface-1"));
+    for event in &created.events {
+        assert_eq!(event.source, "workspace.lifecycle");
+        assert_eq!(
+            event.window_id, None,
+            "canonical workspace.lifecycle envelopes carry window_id null"
+        );
+    }
+}
+
+#[test]
+fn surface_create_with_focus_emits_selection_once() {
+    let snapshot = test_snapshot();
+    let created = transition(
+        &snapshot,
+        "surface.create",
+        json!({"type": "terminal", "focus": true}),
+    );
+    let names: Vec<_> = created.events.iter().map(|event| event.name).collect();
+    assert_eq!(
+        names,
+        ["surface.created", "surface.selected", "surface.focused"],
+        "focused create keeps the new selection (no restore flip)"
+    );
+}
+
+#[test]
+fn surface_close_emits_canonical_payload_and_reselection() {
+    // Capture surface_close.happy: surface.closed carries
+    // {kind, origin: tab_close, pane_id, surface_id}, then the pane's new
+    // selection emits selected(previous_surface_id = prior selection) +
+    // focused.
+    let snapshot = mixed_pane_snapshot();
+    let closed = transition(
+        &snapshot,
+        "surface.close",
+        json!({"surface_id": "surface-b"}),
+    );
+    let _ = ok_value(&closed);
+    let events: Vec<_> = closed.events.iter().map(event_summary).collect();
+    assert_eq!(events.len(), 3);
+    assert_eq!(events[0].0, "surface.closed");
+    assert_eq!(
+        events[0].1,
+        json!({
+            "kind": "terminal",
+            "origin": "tab_close",
+            "pane_id": "pane-1",
+            "surface_id": "surface-b",
+        })
+    );
+    assert_eq!(events[1].0, "surface.selected");
+    assert_eq!(events[1].1["surface_id"], json!("surface-a"));
+    assert_eq!(events[1].1["previous_surface_id"], json!("surface-b"));
+    assert_eq!(events[1].1["origin"], json!("bonsplit_selection"));
+    assert_eq!(events[2].0, "surface.focused");
+    assert_eq!(events[2].1["surface_id"], json!("surface-a"));
+}
+
+/// One pane, two terminals, surface-b selected+focused.
+fn mixed_pane_snapshot() -> AppSessionSnapshot {
+    let mut snapshot = test_snapshot();
+    let workspace = &mut snapshot.windows[0].tab_manager.workspaces[0];
+    workspace.focused_panel_id = Some("surface-b".into());
+    let SessionWorkspaceLayoutSnapshot::Pane(pane) =
+        workspace.layout.as_mut().expect("pane layout")
+    else {
+        unreachable!();
+    };
+    pane.panel_ids = vec!["surface-a".into(), "surface-b".into()];
+    pane.selected_panel_id = Some("surface-b".into());
+    let mut encoded = serde_json::to_value(snapshot).expect("encode mixed pane");
+    encoded["windows"][0]["tab_manager"]["workspaces"][0]["surfaces"] = json!([
+        {"surface_id": "surface-a", "pane_id": "pane-1", "generation": 1,
+         "kind": {"type": "terminal"}},
+        {"surface_id": "surface-b", "pane_id": "pane-1", "generation": 1,
+         "kind": {"type": "terminal"}}
+    ]);
+    serde_json::from_value(encoded).expect("decode mixed pane")
+}
+
+#[test]
+fn lifecycle_command_commits_do_not_emit_derived_session_model_events() {
+    // Capture (all four events cases): the case action emits ONLY the
+    // workspace.lifecycle / socket.v2 frames — no session.changed and no
+    // derived pane.focused (source session.model) extras.
+    let source = include_str!("../../control_socket.rs");
+    let start = source
+        .find("fn handle_pane_surface_lifecycle_request(")
+        .expect("handler present");
+    let body = &source[start..start + 6_000];
+    assert!(
+        !body.contains("record_session_changed_event_suppressing"),
+        "the v2 lifecycle commit path must not emit derived session.model events"
+    );
+}

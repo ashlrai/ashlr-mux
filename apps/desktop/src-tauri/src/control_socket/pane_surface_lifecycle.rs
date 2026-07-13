@@ -969,6 +969,8 @@ fn owned_event(
     surface_id: Option<&str>,
     extra: Value,
 ) -> LifecycleEvent {
+    // Canonical workspace.lifecycle envelopes carry window_id null (live
+    // capture, every pane.created/surface.* frame).
     LifecycleEvent {
         name,
         category: if name.starts_with("pane.") {
@@ -977,12 +979,61 @@ fn owned_event(
             "surface"
         },
         source: "workspace.lifecycle",
-        window_id: Some(window_id.to_owned()),
+        window_id: {
+            let _ = window_id;
+            None
+        },
         workspace_id: Some(workspace_id.to_owned()),
         pane_id: pane_id.map(str::to_owned),
         surface_id: surface_id.map(str::to_owned),
         payload: extra,
     }
+}
+
+/// The canonical bonsplit selection pair: surface.selected (with
+/// previous_surface_id) followed by surface.focused, origin
+/// "bonsplit_selection" (live capture surface_create.terminal_happy /
+/// surface_close.happy frames).
+#[allow(clippy::too_many_arguments)]
+fn selection_events(
+    window_id: &str,
+    workspace_id: &str,
+    pane_id: &str,
+    surface_id: &str,
+    previous_surface_id: &str,
+    kind: &str,
+    focused: bool,
+) -> [LifecycleEvent; 2] {
+    [
+        owned_event(
+            "surface.selected",
+            window_id,
+            workspace_id,
+            Some(pane_id),
+            Some(surface_id),
+            json!({
+                "focused": focused,
+                "kind": kind,
+                "origin": "bonsplit_selection",
+                "pane_id": pane_id,
+                "previous_surface_id": previous_surface_id,
+                "surface_id": surface_id,
+            }),
+        ),
+        owned_event(
+            "surface.focused",
+            window_id,
+            workspace_id,
+            Some(pane_id),
+            Some(surface_id),
+            json!({
+                "kind": kind,
+                "origin": "bonsplit_selection",
+                "pane_id": pane_id,
+                "surface_id": surface_id,
+            }),
+        ),
+    ]
 }
 
 fn socket_completion_event(
@@ -1787,17 +1838,54 @@ fn surface_create(
             kind: kind_name(&kind).into(),
         },
     };
+    let focus_requested = super::bool_param(params, &["focus"]).unwrap_or(false);
+    let mut events = vec![owned_event(
+        "surface.created",
+        &scope.window_id,
+        &scope.workspace_id,
+        Some(&pane_id),
+        Some(&surface_id),
+        json!({"surface_id":surface_id,"pane_id":pane_id,"kind":kind_name(&kind),"origin":creation_origin(&kind, false),"focused":focus_requested}),
+    )];
+    // Canonical bonsplit transiently selects the created tab and (without a
+    // focus request) restores the previous selection, emitting the pair twice
+    // (capture surface_create.terminal_happy: created -> selected(new) ->
+    // focused(new) -> selected(previous) -> focused(previous)).
+    if let Some(previous) = inherit_source.as_deref().filter(|prev| *prev != surface_id) {
+        let previous_kind = next.windows[scope.window_index].tab_manager.workspaces
+            [scope.workspace_index]
+            .surfaces
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .find(|record| record.surface_id == previous)
+            .map(|record| kind_name(&record.kind))
+            .unwrap_or("terminal");
+        events.extend(selection_events(
+            &scope.window_id,
+            &scope.workspace_id,
+            &pane_id,
+            &surface_id,
+            previous,
+            kind_name(&kind),
+            true,
+        ));
+        if !focus_requested {
+            events.extend(selection_events(
+                &scope.window_id,
+                &scope.workspace_id,
+                &pane_id,
+                previous,
+                &surface_id,
+                previous_kind,
+                true,
+            ));
+        }
+    }
     ok_transition(
         next,
         json!({"window_id":scope.window_id,"workspace_id":scope.workspace_id,"pane_id":pane_id,"surface_id":surface_id,"type":kind_name(&kind)}),
-        vec![owned_event(
-            "surface.created",
-            &scope.window_id,
-            &scope.workspace_id,
-            Some(&pane_id),
-            Some(&surface_id),
-            json!({"surface_id":surface_id,"pane_id":pane_id,"kind":kind_name(&kind),"origin":creation_origin(&kind, false),"focused":params.get("focus").and_then(Value::as_bool).unwrap_or(false)}),
-        )],
+        events,
         vec![effect, LifecycleEffect::PersistSession],
     )
 }
@@ -3197,6 +3285,9 @@ fn surface_close(
             }
         }
     }
+    let previous_selection = model
+        .pane(&owner.pane_id)
+        .map(|pane| pane.selected_surface_id.clone());
     if let Err(problem) = model.close_surface(&surface_id, CloseIntent::Explicit) {
         return if problem.to_string().contains("last surface") {
             error(
@@ -3232,17 +3323,46 @@ fn surface_close(
         });
     }
     effects.push(LifecycleEffect::PersistSession);
+    // Capture surface_close.happy: surface.closed carries
+    // {kind, origin: tab_close, pane_id, surface_id}; when the pane's
+    // selection moved, the bonsplit selection pair follows.
+    let mut events = vec![owned_event(
+        "surface.closed",
+        &window_id,
+        &workspace_id,
+        Some(&owner.pane_id),
+        Some(&surface_id),
+        json!({
+            "kind": kind_name(&record.kind),
+            "origin": "tab_close",
+            "pane_id": owner.pane_id,
+            "surface_id": surface_id,
+        }),
+    )];
+    let new_selection = model
+        .pane(&owner.pane_id)
+        .map(|pane| pane.selected_surface_id.clone());
+    if let (Some(previous), Some(selected)) = (previous_selection, new_selection) {
+        if previous != selected {
+            let selected_kind = model
+                .surface(&selected)
+                .map(|surface| kind_name(&surface.kind))
+                .unwrap_or("terminal");
+            events.extend(selection_events(
+                &window_id,
+                &workspace_id,
+                &owner.pane_id,
+                &selected,
+                &previous,
+                selected_kind,
+                true,
+            ));
+        }
+    }
     ok_transition(
         next,
         json!({"window_id":window_id,"workspace_id":workspace_id,"surface_id":surface_id}),
-        vec![owned_event(
-            "surface.closed",
-            &window_id,
-            &workspace_id,
-            Some(&owner.pane_id),
-            Some(&surface_id),
-            json!({}),
-        )],
+        events,
         effects,
     )
 }
