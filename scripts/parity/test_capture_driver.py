@@ -255,14 +255,16 @@ class TimingSymbolizerTests(unittest.TestCase):
             },
         ]
 
-    def test_symbolizes_occurred_at_by_first_seen_order(self):
+    def test_symbolizes_occurred_at_per_occurrence(self):
         timing = TimingSymbolizer()
         out = timing.apply(self.frames())
         self.assertEqual(out[1]["occurred_at"], "<ts-1>")
-        # Same raw timestamp shares the symbol.
-        self.assertEqual(out[2]["occurred_at"], "<ts-1>")
+        # Per-occurrence: an identical raw timestamp still gets the next
+        # symbol — coincidental sub-millisecond equality between adjacent
+        # events is nondeterministic and deliberately not preserved.
+        self.assertEqual(out[2]["occurred_at"], "<ts-2>")
         out2 = timing.apply([{"occurred_at": "2026-07-13T09:09:31.000Z"}])
-        self.assertEqual(out2[0]["occurred_at"], "<ts-2>")
+        self.assertEqual(out2[0]["occurred_at"], "<ts-3>")
 
     def test_symbolizes_seq_derived_event_ids_raw_and_uuid_symbolized(self):
         timing = TimingSymbolizer()

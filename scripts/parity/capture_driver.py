@@ -435,7 +435,7 @@ class TimingSymbolizer:
     _EVENT_ID_SYMBOL_RE = re.compile(r"<event-id-\d+>$")
 
     def __init__(self) -> None:
-        self._ts_table: dict[str, str] = {}
+        self._ts_counter = 0
         self._id_table: dict[str, str] = {}
         self._seq_base: int | None = None
 
@@ -474,9 +474,14 @@ class TimingSymbolizer:
         if key == "occurred_at" and isinstance(value, str):
             if self._TS_SYMBOL_RE.fullmatch(value):
                 return value
-            if value not in self._ts_table:
-                self._ts_table[value] = f"<ts-{len(self._ts_table) + 1}>"
-            return self._ts_table[value]
+            # Per-OCCURRENCE, not per-value: whether two adjacent events share
+            # the same wall-clock millisecond is itself nondeterministic (a
+            # canonical run had surface.created/surface.selected coincide while
+            # the Windows run did not), so coincidental equality relations are
+            # deliberately not preserved — timestamps carry no contract meaning
+            # per the root ruling.
+            self._ts_counter += 1
+            return f"<ts-{self._ts_counter}>"
         if key == "id" and isinstance(value, str):
             if self._EVENT_ID_SYMBOL_RE.fullmatch(value):
                 return value
