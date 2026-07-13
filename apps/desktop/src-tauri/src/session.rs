@@ -774,6 +774,102 @@ fn initial_snapshot(first_panel_id: &str) -> AppSessionSnapshot {
 
 /// Canonical Workspace init falls back to the user's home directory
 /// (FileManager.default.homeDirectoryForCurrentUser, Workspace.swift:2885-2891).
+/// V1 (differential remediation): a pre-remediation persisted snapshot
+/// resurrects the literal "main" window id and "surface-N" panel ids at
+/// restore. Re-mint every non-UUID window/panel/pane/split id with a fresh
+/// UUIDv4 and remap ALL intra-snapshot references consistently (layout
+/// panel_ids/selected/focused/zoomed, surface records, every panel_* keyed
+/// list, resume bindings, pending pwds, dock rows) via a generic exact-match
+/// string walk over the encoded snapshot. Free-text fields are excluded so a
+/// title that happens to equal an old id is never rewritten.
+fn remint_noncanonical_identities(snapshot: &mut AppSessionSnapshot) {
+    use std::collections::HashMap;
+    fn collect(layout: &SessionWorkspaceLayoutSnapshot, ids: &mut Vec<String>) {
+        match layout {
+            SessionWorkspaceLayoutSnapshot::Pane(pane) => {
+                ids.extend(pane.pane_id.clone());
+                ids.extend(pane.panel_ids.iter().cloned());
+            }
+            SessionWorkspaceLayoutSnapshot::Split(split) => {
+                ids.extend(split.split_id.clone());
+                collect(&split.first, ids);
+                collect(&split.second, ids);
+            }
+        }
+    }
+    let mut structural = Vec::new();
+    for window in &snapshot.windows {
+        structural.extend(window.window_id.clone());
+        for workspace in &window.tab_manager.workspaces {
+            structural.extend(workspace.workspace_id.clone());
+            if let Some(layout) = &workspace.layout {
+                collect(layout, &mut structural);
+            }
+            for record in workspace.surfaces.as_deref().unwrap_or_default() {
+                structural.push(record.surface_id.clone());
+                structural.push(record.pane_id.clone());
+            }
+        }
+        if let Some(dock) = &window.dock {
+            if let Some(layout) = &dock.layout {
+                collect(layout, &mut structural);
+            }
+            for record in &dock.surfaces {
+                structural.push(record.surface_id.clone());
+                structural.push(record.pane_id.clone());
+            }
+        }
+    }
+    let mapping: HashMap<String, String> = structural
+        .into_iter()
+        .filter(|id| Uuid::parse_str(id).is_err())
+        .map(|id| (id, Uuid::new_v4().to_string()))
+        .collect();
+    if mapping.is_empty() {
+        return;
+    }
+    const FREE_TEXT_KEYS: [&str; 8] = [
+        "title",
+        "custom_title",
+        "process_title",
+        "custom_description",
+        "name",
+        "command",
+        "cwd",
+        "body",
+    ];
+    fn remap(value: &mut serde_json::Value, mapping: &HashMap<String, String>, key: Option<&str>) {
+        match value {
+            serde_json::Value::String(text) => {
+                if key.is_some_and(|key| FREE_TEXT_KEYS.contains(&key)) {
+                    return;
+                }
+                if let Some(minted) = mapping.get(text.as_str()) {
+                    *text = minted.clone();
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    remap(item, mapping, key);
+                }
+            }
+            serde_json::Value::Object(object) => {
+                for (child_key, child) in object.iter_mut() {
+                    remap(child, mapping, Some(child_key));
+                }
+            }
+            _ => {}
+        }
+    }
+    let Ok(mut encoded) = serde_json::to_value(&*snapshot) else {
+        return;
+    };
+    remap(&mut encoded, &mapping, None);
+    if let Ok(reminted) = serde_json::from_value(encoded) {
+        *snapshot = reminted;
+    }
+}
+
 fn default_workspace_directory() -> Option<String> {
     ["USERPROFILE", "HOME"]
         .iter()
@@ -5068,6 +5164,10 @@ fn transact_new_workspace_in_window(
             workspace.initial_terminal_command = None;
             workspace.initial_terminal_environment = None;
         }
+        // R1 (differential remediation): the workspace-birth initial surface
+        // must carry requested_working_directory like the create paths (D6);
+        // simple (layout-less) creations get their record seeded after the
+        // ids are minted below.
         if !focus {
             tabs.selected_workspace_index = previous_selected_id
                 .as_deref()
@@ -5083,6 +5183,13 @@ fn transact_new_workspace_in_window(
     };
     ensure_workspace_ids(&mut candidate);
     ensure_pane_ids(&mut candidate);
+    if let Some(workspace) = candidate
+        .windows
+        .get_mut(window_index)
+        .and_then(|window| window.tab_manager.workspaces.get_mut(created_index))
+    {
+        seed_initial_surface_record(workspace);
+    }
     let committed =
         publish_snapshot_transaction(authority, Some(&current), &candidate, publication)?;
     ids.commit(next_panel);
@@ -6616,6 +6723,7 @@ fn restore_previous_launch_transaction(
             };
             ensure_workspace_ids(&mut restored);
             ensure_pane_ids(&mut restored);
+            remint_noncanonical_identities(&mut restored);
             let reseed = next_panel_counter(&restored);
             *candidate = restored;
             Ok((Some(reseed), true))
@@ -9233,6 +9341,43 @@ mod tests {
     // The tab-manager workspace logic is unit-tested in `cmux_core::session_ops`;
     // these verify the desktop `apply_*` fns delegate to it against the first
     // window of a real `AppSessionSnapshot`.
+
+    #[test]
+    fn restore_remints_legacy_main_and_surface_n_identities_consistently() {
+        // V1: a pre-remediation persisted snapshot must not resurrect the
+        // literal "main"/"surface-N" ids; every non-UUID structural id is
+        // re-minted with intra-snapshot references remapped, and free text is
+        // untouched.
+        let mut legacy = initial_snapshot("surface-1");
+        legacy.windows[0].window_id = Some("main".to_string());
+        legacy.windows[0].tab_manager.workspaces[0].custom_title = Some("surface-1".to_string());
+        remint_noncanonical_identities(&mut legacy);
+        let restored = legacy;
+        // The restore transaction wires this in right after ensure_* minting.
+        let source = include_str!("session.rs");
+        let start = source
+            .find("fn restore_previous_launch_transaction(")
+            .expect("restore fn present");
+        assert!(
+            source[start..start + 1200].contains("remint_noncanonical_identities"),
+            "restore must re-mint legacy identities"
+        );
+        let window_id = restored.windows[0].window_id.clone().expect("window id");
+        assert!(Uuid::parse_str(&window_id).is_ok(), "{window_id}");
+        let workspace = &restored.windows[0].tab_manager.workspaces[0];
+        let SessionWorkspaceLayoutSnapshot::Pane(pane) = workspace.layout.as_ref().unwrap() else {
+            unreachable!();
+        };
+        let panel = pane.panel_ids[0].clone();
+        assert!(Uuid::parse_str(&panel).is_ok(), "{panel}");
+        // References remapped consistently.
+        assert_eq!(pane.selected_panel_id.as_deref(), Some(panel.as_str()));
+        assert_eq!(workspace.focused_panel_id.as_deref(), Some(panel.as_str()));
+        let records = workspace.surfaces.as_deref().expect("records");
+        assert_eq!(records[0].surface_id, panel);
+        // Free text equal to an old id is untouched.
+        assert_eq!(workspace.custom_title.as_deref(), Some("surface-1"));
+    }
 
     #[test]
     fn bootstrap_workspace_carries_default_directory_and_surface_startup() {
