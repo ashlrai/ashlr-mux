@@ -699,6 +699,50 @@ fn spawn_failure_is_definitive_but_wait_failure_retains_unknown_ownership() {
 }
 
 #[test]
+fn wait_failure_never_kills_an_unproven_topology_diff() {
+    let mut registry = RemoteRuntimeLeaseRegistry::default();
+    let id = registry.reserve(
+        RemoteRuntimeLeaseScope {
+            endpoint: "ssh://host-a".into(),
+            session: "tmux-a".into(),
+        },
+        RemoteRuntimeSourceWitness {
+            window_id: WINDOW.into(),
+            workspace_id: WORKSPACE.into(),
+            pane_id: PANE.into(),
+            surface_id: SOURCE.into(),
+            surface_generation: 1,
+            remote_token: "%source".into(),
+            move_generation: 1,
+            restore_epoch: 0,
+        },
+        RESERVED.into(),
+        RESERVED_PANE.into(),
+        RemoteTmuxTarget::Window,
+    );
+    registry.leases.get_mut(&id).unwrap().topology_before = Some(vec![RemoteTmuxTopologyEntry {
+        window_id: "@1".into(),
+        pane_id: "%1".into(),
+    }]);
+    registry.record_command_outcome(id, RemoteRuntimeCommandOutcome::Unknown, None);
+    let after = vec![
+        RemoteTmuxTopologyEntry {
+            window_id: "@1".into(),
+            pane_id: "%1".into(),
+        },
+        RemoteTmuxTopologyEntry {
+            window_id: "@42".into(),
+            pane_id: "%34".into(),
+        },
+    ];
+    assert_eq!(
+        remote_runtime_compensation_token(&registry.leases[&id], &after),
+        None,
+        "a wait failure cannot prove whether a concurrent external runtime owns the topology diff"
+    );
+}
+
+#[test]
 fn publishing_claim_is_not_interruptible_by_watchdog_compensation() {
     let mut registry = RemoteRuntimeLeaseRegistry::default();
     let id = registry.reserve(
