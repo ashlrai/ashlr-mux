@@ -573,6 +573,112 @@ fn unresolved_same_scope_create_blocks_a_second_ambiguous_baseline_owner() {
 }
 
 #[test]
+fn uninitialized_topology_baseline_can_never_select_a_compensation_target() {
+    let mut registry = RemoteRuntimeLeaseRegistry::default();
+    let id = registry.reserve(
+        RemoteRuntimeLeaseScope {
+            endpoint: "ssh://host-a".into(),
+            session: "tmux-a".into(),
+        },
+        RemoteRuntimeSourceWitness {
+            window_id: WINDOW.into(),
+            workspace_id: WORKSPACE.into(),
+            pane_id: PANE.into(),
+            surface_id: SOURCE.into(),
+            surface_generation: 1,
+            remote_token: "%source".into(),
+            move_generation: 1,
+            restore_epoch: 0,
+        },
+        RESERVED.into(),
+        RESERVED_PANE.into(),
+        RemoteTmuxTarget::Window,
+    );
+    let lease = registry.leases[&id].clone();
+    let unrelated_existing_runtime = vec![RemoteTmuxTopologyEntry {
+        window_id: "@1".into(),
+        pane_id: "%1".into(),
+    }];
+    assert_eq!(
+        remote_runtime_compensation_token(&lease, &unrelated_existing_runtime),
+        None,
+        "absence of a baseline is not evidence that every observed runtime was newly created"
+    );
+}
+
+#[test]
+fn baseline_completion_revalidates_source_witness_before_remote_mutation() {
+    let mut registry = RemoteRuntimeLeaseRegistry::default();
+    let id = registry.reserve(
+        RemoteRuntimeLeaseScope {
+            endpoint: "ssh://host-a".into(),
+            session: "tmux-a".into(),
+        },
+        RemoteRuntimeSourceWitness {
+            window_id: WINDOW.into(),
+            workspace_id: WORKSPACE.into(),
+            pane_id: PANE.into(),
+            surface_id: SOURCE.into(),
+            surface_generation: 1,
+            remote_token: "%source".into(),
+            move_generation: 1,
+            restore_epoch: 0,
+        },
+        RESERVED.into(),
+        RESERVED_PANE.into(),
+        RemoteTmuxTarget::Window,
+    );
+    let mut moved = remote_snapshot();
+    moved.windows[0].tab_manager.workspaces[0]
+        .surfaces
+        .as_mut()
+        .unwrap()[0]
+        .generation = 2;
+    assert!(validate_remote_runtime_mutation_fence(&mut registry, id, &moved).is_err());
+    assert!(
+        !registry.leases.contains_key(&id),
+        "a stale source must retire ownership before the mutating SSH command is issued"
+    );
+}
+
+#[test]
+fn expired_await_command_lease_rejects_late_success_without_resurrection() {
+    let mut registry = RemoteRuntimeLeaseRegistry::default();
+    let id = registry.reserve(
+        RemoteRuntimeLeaseScope {
+            endpoint: "ssh://host-a".into(),
+            session: "tmux-a".into(),
+        },
+        RemoteRuntimeSourceWitness {
+            window_id: WINDOW.into(),
+            workspace_id: WORKSPACE.into(),
+            pane_id: PANE.into(),
+            surface_id: SOURCE.into(),
+            surface_generation: 1,
+            remote_token: "%source".into(),
+            move_generation: 1,
+            restore_epoch: 0,
+        },
+        RESERVED.into(),
+        RESERVED_PANE.into(),
+        RemoteTmuxTarget::Window,
+    );
+    assert!(registry
+        .expire(id, Instant::now() + REMOTE_RUNTIME_LEASE_TTL)
+        .is_some());
+    assert!(!registry.record_command_outcome(
+        id,
+        RemoteRuntimeCommandOutcome::Succeeded,
+        Some("@42".into()),
+    ));
+    assert_eq!(
+        registry.leases[&id].disposition,
+        RemoteRuntimeLeaseDisposition::Compensate,
+        "a late command result cannot retake ownership from watchdog compensation"
+    );
+}
+
+#[test]
 fn stale_callbacks_are_fenced_by_source_kind_token_move_and_restore_epoch() {
     let mut coordinator = LeaseCoordinator::default();
     let id = coordinator.reserve(
