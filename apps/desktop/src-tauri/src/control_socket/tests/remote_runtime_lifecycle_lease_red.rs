@@ -497,6 +497,82 @@ fn successful_command_with_unparseable_output_reconciles_authoritative_topology(
 }
 
 #[test]
+fn definitive_remote_command_failure_retires_without_topology_compensation() {
+    let mut registry = RemoteRuntimeLeaseRegistry::default();
+    let id = registry.reserve(
+        RemoteRuntimeLeaseScope {
+            endpoint: "ssh://host-a".into(),
+            session: "tmux-a".into(),
+        },
+        RemoteRuntimeSourceWitness {
+            window_id: WINDOW.into(),
+            workspace_id: WORKSPACE.into(),
+            pane_id: PANE.into(),
+            surface_id: SOURCE.into(),
+            surface_generation: 1,
+            remote_token: "%source".into(),
+            move_generation: 1,
+            restore_epoch: 0,
+        },
+        RESERVED.into(),
+        RESERVED_PANE.into(),
+        RemoteTmuxTarget::Window,
+    );
+    registry.record_command_outcome(id, RemoteRuntimeCommandOutcome::Failed, None);
+    assert!(
+        !registry.leases.contains_key(&id),
+        "a definitive nonzero command exit must not retain a baseline that could kill an unrelated create"
+    );
+}
+
+#[test]
+fn unresolved_same_scope_create_blocks_a_second_ambiguous_baseline_owner() {
+    let state = RemoteRuntimeLeaseRegistryState::default();
+    let scope = RemoteRuntimeLeaseScope {
+        endpoint: "ssh://host-a".into(),
+        session: "tmux-a".into(),
+    };
+    let source = RemoteRuntimeSourceWitness {
+        window_id: WINDOW.into(),
+        workspace_id: WORKSPACE.into(),
+        pane_id: PANE.into(),
+        surface_id: SOURCE.into(),
+        surface_generation: 1,
+        remote_token: "%source".into(),
+        move_generation: 1,
+        restore_epoch: 0,
+    };
+    let first = reserve_remote_runtime_lease(
+        &state,
+        scope.clone(),
+        source.clone(),
+        RESERVED.into(),
+        RESERVED_PANE.into(),
+        RemoteTmuxTarget::Window,
+        Vec::new(),
+    )
+    .unwrap();
+    state.registry.lock().unwrap().record_command_outcome(
+        first,
+        RemoteRuntimeCommandOutcome::Unknown,
+        None,
+    );
+    assert!(
+        reserve_remote_runtime_lease(
+            &state,
+            scope,
+            source,
+            "40000000-0000-0000-0000-000000000006".into(),
+            "30000000-0000-0000-0000-000000000006".into(),
+            RemoteTmuxTarget::Window,
+            Vec::new(),
+        )
+        .is_err(),
+        "an unresolved create must remain the only topology-diff owner for its endpoint/session"
+    );
+}
+
+#[test]
 fn stale_callbacks_are_fenced_by_source_kind_token_move_and_restore_epoch() {
     let mut coordinator = LeaseCoordinator::default();
     let id = coordinator.reserve(
