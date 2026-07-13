@@ -242,6 +242,34 @@ def reference_index(root: Path, roots: Iterable[Path]) -> dict[str, tuple[list[d
     return index
 
 
+def extract_lifecycle_seam_routes(text: str) -> dict[str, dict]:
+    """Methods diverted before the legacy match by control_request_route_for_method.
+
+    handle_control_request routes these to
+    pane_surface_lifecycle::dispatch_lifecycle_request, so they never reach the
+    legacy `match request.method.as_str()` arms the main extractor parses.
+    """
+    try:
+        start, end = match_body_in_function(text, "control_request_route_for_method", "match method")
+    except ValueError:
+        return {}
+    seam: dict[str, dict] = {}
+    for arm, offset in indented_match_arms(text, start, end):
+        if "=>" not in arm:
+            continue
+        lhs, rhs = arm.split("=>", 1)
+        if "PaneSurfaceLifecycle" not in rhs:
+            continue
+        for method in strings_in_pattern(lhs):
+            seam[method] = {
+                "handler": "pane_surface_lifecycle::dispatch_lifecycle_request",
+                "route_source": loc(CONTROL, text, offset),
+                "explicit_not_supported": False,
+                "unsupported_message": None,
+            }
+    return seam
+
+
 def extract_routes(text: str) -> tuple[dict[str, dict], list[dict]]:
     start, end = match_body_in_function(text, "handle_control_request", "match request.method.as_str()")
     routes: dict[str, dict] = {}
@@ -269,6 +297,7 @@ def extract_routes(text: str) -> tuple[dict[str, dict], list[dict]]:
                 "explicit_not_supported": unsupported,
                 "source": loc(CONTROL, text, offset),
             })
+    routes.update(extract_lifecycle_seam_routes(text))
     return routes, guarded
 
 
