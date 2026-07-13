@@ -18,7 +18,14 @@ const NETWORK_BODY_CAPTURE_LIMIT_BYTES: usize = 4 * 1024;
 #[allow(dead_code)]
 const NETWORK_HTTP_HEAD_CAPTURE_LIMIT_BYTES: usize = 64 * 1024;
 const BROWSER_EVAL_TIMEOUT: Duration = Duration::from_secs(5);
-const BROWSER_RUNTIME_LOCK_ORDER: [&str; 5] = [
+const BROWSER_NAVIGATION_HANDOFF_LOCK_ORDER: [&str; 4] = [
+    "programmatic_navigation_handoffs",
+    "reserved_panel_ids",
+    "webviews",
+    "network_records",
+];
+const BROWSER_RUNTIME_LOCK_ORDER: [&str; 6] = [
+    "programmatic_navigation_handoffs",
     "reserved_panel_ids",
     "webviews",
     "pending_cleanup_children",
@@ -29,6 +36,7 @@ const BROWSER_RUNTIME_LOCK_ORDER: [&str; 5] = [
 pub(crate) type BrowserPendingCleanupId = u64;
 
 pub struct BrowserWebviewState {
+    programmatic_navigation_handoffs: Mutex<BTreeMap<String, BrowserProgrammaticNavigationHandoff>>,
     reserved_panel_ids: Mutex<BTreeSet<String>>,
     webviews: Mutex<HashMap<String, BrowserChild>>,
     pending_cleanup_children:
@@ -42,6 +50,7 @@ pub struct BrowserWebviewState {
 impl Default for BrowserWebviewState {
     fn default() -> Self {
         Self {
+            programmatic_navigation_handoffs: Mutex::new(BTreeMap::new()),
             reserved_panel_ids: Mutex::new(BTreeSet::new()),
             webviews: Mutex::new(HashMap::new()),
             pending_cleanup_children: Mutex::new(BTreeMap::new()),
@@ -51,6 +60,28 @@ impl Default for BrowserWebviewState {
             next_network_record_id: AtomicU64::new(1),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowserProgrammaticNavigationPhase {
+    NavigateInFlight { callback_observed: bool },
+    CallbackResponsible,
+    SuppressCallback,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BrowserProgrammaticNavigationHandoff {
+    panel_id: String,
+    runtime_id: BrowserPendingCleanupId,
+    url: String,
+    phase: BrowserProgrammaticNavigationPhase,
+}
+
+enum BrowserProgrammaticNavigationCallback<'a> {
+    DeferredToCommand,
+    Publish(BrowserNavigationCallbackReservation<'a>),
+    Suppressed,
+    Unmatched,
 }
 
 struct BrowserChild {
@@ -181,6 +212,252 @@ fn reserve_browser_navigation_callback(
     }))
 }
 
+fn begin_browser_programmatic_navigation(
+    state: &BrowserWebviewState,
+    mutation_reservation: &BrowserPanelMutationReservation<'_>,
+    panel_id: &str,
+    runtime_id: BrowserPendingCleanupId,
+    url: &str,
+) -> Result<BrowserProgrammaticNavigationHandoff, String> {
+    let _lock_order = BROWSER_NAVIGATION_HANDOFF_LOCK_ORDER;
+    let mut programmatic_navigation_handoffs = state
+        .programmatic_navigation_handoffs
+        .lock()
+        .map_err(|_| "browser programmatic navigation handoff lock poisoned".to_string())?;
+    let reserved_panel_ids = state
+        .reserved_panel_ids
+        .lock()
+        .map_err(|_| "browser reservation state lock poisoned".to_string())?;
+    if !mutation_reservation.active
+        || !std::ptr::eq(mutation_reservation.state, state)
+        || mutation_reservation.panel_id != panel_id
+        || !reserved_panel_ids.contains(panel_id)
+    {
+        return Err(format!(
+            "browser panel {panel_id} mutation ownership is unavailable for navigation"
+        ));
+    }
+    let webviews = state
+        .webviews
+        .lock()
+        .map_err(|_| "browser webview state lock poisoned".to_string())?;
+    if webviews
+        .get(panel_id)
+        .is_none_or(|child| child.runtime_id != runtime_id)
+    {
+        return Err(format!(
+            "browser runtime {panel_id}/{runtime_id} is unavailable for navigation"
+        ));
+    }
+    let handoff = BrowserProgrammaticNavigationHandoff {
+        panel_id: panel_id.to_string(),
+        runtime_id,
+        url: url.to_string(),
+        phase: BrowserProgrammaticNavigationPhase::NavigateInFlight {
+            callback_observed: false,
+        },
+    };
+    programmatic_navigation_handoffs.insert(panel_id.to_string(), handoff.clone());
+    Ok(handoff)
+}
+
+fn cancel_browser_programmatic_navigation(
+    state: &BrowserWebviewState,
+    handoff: &BrowserProgrammaticNavigationHandoff,
+) {
+    let mut programmatic_navigation_handoffs = state
+        .programmatic_navigation_handoffs
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(current) = programmatic_navigation_handoffs
+        .get_mut(&handoff.panel_id)
+        .filter(|current| current.runtime_id == handoff.runtime_id && current.url == handoff.url)
+    {
+        current.phase = BrowserProgrammaticNavigationPhase::SuppressCallback;
+    }
+}
+
+fn clear_browser_programmatic_navigation_handoff(
+    state: &BrowserWebviewState,
+    panel_id: &str,
+) -> Result<(), String> {
+    state
+        .programmatic_navigation_handoffs
+        .lock()
+        .map_err(|_| "browser programmatic navigation handoff lock poisoned".to_string())?
+        .remove(panel_id);
+    Ok(())
+}
+
+fn publish_browser_programmatic_navigation(
+    programmatic_navigation_handoffs: &mut BTreeMap<String, BrowserProgrammaticNavigationHandoff>,
+    state: &BrowserWebviewState,
+    mutation_reservation: &BrowserPanelMutationReservation<'_>,
+    handoff: &BrowserProgrammaticNavigationHandoff,
+) -> Result<BrowserNavigatedPayload, String> {
+    let reserved_panel_ids = state
+        .reserved_panel_ids
+        .lock()
+        .map_err(|_| "browser reservation state lock poisoned".to_string())?;
+    if !mutation_reservation.active
+        || !std::ptr::eq(mutation_reservation.state, state)
+        || mutation_reservation.panel_id != handoff.panel_id
+        || !reserved_panel_ids.contains(&handoff.panel_id)
+    {
+        return Err(format!(
+            "browser panel {} mutation ownership was lost during navigation",
+            handoff.panel_id
+        ));
+    }
+    let webviews = state
+        .webviews
+        .lock()
+        .map_err(|_| "browser webview state lock poisoned".to_string())?;
+    if webviews
+        .get(&handoff.panel_id)
+        .is_none_or(|child| child.runtime_id != handoff.runtime_id)
+    {
+        return Err(format!(
+            "browser runtime {}/{} was replaced during navigation",
+            handoff.panel_id, handoff.runtime_id
+        ));
+    }
+    let mut network_records = state
+        .network_records
+        .lock()
+        .map_err(|_| "browser network record state lock poisoned".to_string())?;
+    let records = network_records.entry(handoff.panel_id.clone()).or_default();
+    records.push(observed_navigation_record(
+        state,
+        &handoff.panel_id,
+        &handoff.url,
+    ));
+    if records.len() > NETWORK_RECORD_LIMIT_PER_PANEL {
+        records.drain(0..records.len() - NETWORK_RECORD_LIMIT_PER_PANEL);
+    }
+    programmatic_navigation_handoffs
+        .get_mut(&handoff.panel_id)
+        .expect("matching browser navigation handoff")
+        .phase = BrowserProgrammaticNavigationPhase::SuppressCallback;
+    Ok(BrowserNavigatedPayload {
+        panel_id: handoff.panel_id.clone(),
+        url: handoff.url.clone(),
+    })
+}
+
+fn complete_browser_programmatic_navigation(
+    app: &AppHandle,
+    state: &BrowserWebviewState,
+    mutation_reservation: &mut BrowserPanelMutationReservation<'_>,
+    handoff: &BrowserProgrammaticNavigationHandoff,
+) -> Result<(), String> {
+    let mut programmatic_navigation_handoffs = state
+        .programmatic_navigation_handoffs
+        .lock()
+        .map_err(|_| "browser programmatic navigation handoff lock poisoned".to_string())?;
+    let phase = programmatic_navigation_handoffs
+        .get(&handoff.panel_id)
+        .filter(|current| current.runtime_id == handoff.runtime_id && current.url == handoff.url)
+        .map(|current| current.phase)
+        .ok_or_else(|| {
+            format!(
+                "browser programmatic navigation handoff was lost for {}/{}",
+                handoff.panel_id, handoff.runtime_id
+            )
+        })?;
+
+    match phase {
+        BrowserProgrammaticNavigationPhase::NavigateInFlight {
+            callback_observed: true,
+        } => {
+            let payload = publish_browser_programmatic_navigation(
+                &mut programmatic_navigation_handoffs,
+                state,
+                mutation_reservation,
+                handoff,
+            )?;
+            mutation_reservation.release()?;
+            drop(programmatic_navigation_handoffs);
+            app.emit(BROWSER_NAVIGATED_EVENT, payload)
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        }
+        BrowserProgrammaticNavigationPhase::NavigateInFlight {
+            callback_observed: false,
+        } => {
+            let mut reserved_panel_ids = state
+                .reserved_panel_ids
+                .lock()
+                .map_err(|_| "browser reservation state lock poisoned".to_string())?;
+            if !mutation_reservation.active
+                || !std::ptr::eq(mutation_reservation.state, state)
+                || mutation_reservation.panel_id != handoff.panel_id
+                || !reserved_panel_ids.remove(&handoff.panel_id)
+            {
+                programmatic_navigation_handoffs.remove(&handoff.panel_id);
+                return Err(format!(
+                    "browser panel {} mutation ownership was lost during navigation delegation",
+                    handoff.panel_id
+                ));
+            }
+            mutation_reservation.disarm();
+            programmatic_navigation_handoffs
+                .get_mut(&handoff.panel_id)
+                .expect("matching browser navigation handoff")
+                .phase = BrowserProgrammaticNavigationPhase::CallbackResponsible;
+            Ok(())
+        }
+        BrowserProgrammaticNavigationPhase::CallbackResponsible
+        | BrowserProgrammaticNavigationPhase::SuppressCallback => Err(format!(
+            "browser programmatic navigation was already delegated for {}/{}",
+            handoff.panel_id, handoff.runtime_id
+        )),
+    }
+}
+
+fn observe_browser_programmatic_navigation_callback<'a>(
+    state: &'a BrowserWebviewState,
+    panel_id: &str,
+    runtime_id: BrowserPendingCleanupId,
+    url: &str,
+) -> Result<BrowserProgrammaticNavigationCallback<'a>, String> {
+    let mut programmatic_navigation_handoffs = state
+        .programmatic_navigation_handoffs
+        .lock()
+        .map_err(|_| "browser programmatic navigation handoff lock poisoned".to_string())?;
+    let Some(handoff) = programmatic_navigation_handoffs.get_mut(panel_id) else {
+        return Ok(BrowserProgrammaticNavigationCallback::Unmatched);
+    };
+    if handoff.runtime_id != runtime_id || handoff.url != url {
+        return Ok(BrowserProgrammaticNavigationCallback::Unmatched);
+    }
+    match handoff.phase {
+        BrowserProgrammaticNavigationPhase::NavigateInFlight {
+            ref mut callback_observed,
+        } => {
+            *callback_observed = true;
+            Ok(BrowserProgrammaticNavigationCallback::DeferredToCommand)
+        }
+        BrowserProgrammaticNavigationPhase::CallbackResponsible => {
+            let Some(callback_reservation) =
+                reserve_browser_navigation_callback(state, panel_id.to_string(), runtime_id)?
+            else {
+                return Ok(BrowserProgrammaticNavigationCallback::Unmatched);
+            };
+            programmatic_navigation_handoffs
+                .get_mut(panel_id)
+                .expect("matching browser navigation handoff")
+                .phase = BrowserProgrammaticNavigationPhase::SuppressCallback;
+            Ok(BrowserProgrammaticNavigationCallback::Publish(
+                callback_reservation,
+            ))
+        }
+        BrowserProgrammaticNavigationPhase::SuppressCallback => {
+            Ok(BrowserProgrammaticNavigationCallback::Suppressed)
+        }
+    }
+}
+
 fn cleanup_built_browser_child_after_failure(
     state: &BrowserWebviewState,
     panel_id: &str,
@@ -281,6 +558,10 @@ pub(crate) fn detach_browser_panels_for_control(
             (!panel_id.is_empty()).then(|| panel_id.to_string())
         })
         .collect::<BTreeSet<_>>();
+    let mut programmatic_navigation_handoffs = state
+        .programmatic_navigation_handoffs
+        .lock()
+        .map_err(|_| "browser programmatic navigation handoff lock poisoned".to_string())?;
     let mut reserved_panel_ids = state
         .reserved_panel_ids
         .lock()
@@ -309,6 +590,9 @@ pub(crate) fn detach_browser_panels_for_control(
     }
 
     reserved_panel_ids.extend(panel_ids.iter().cloned());
+    for panel_id in &panel_ids {
+        programmatic_navigation_handoffs.remove(panel_id);
+    }
     let entries = panel_ids
         .iter()
         .map(|panel_id| {
@@ -861,6 +1145,7 @@ pub(crate) fn browser_add_init_script_for_control(
         pending_cleanup_id: None,
         active: true,
     };
+    clear_browser_programmatic_navigation_handoff(state, panel_id)?;
     let (old_child, prior_scripts) = {
         let mut webviews = state
             .webviews
@@ -1089,6 +1374,7 @@ fn upsert_browser_webview<'a>(
             .as_mut()
             .expect("owned browser mutation reservation"),
     };
+    clear_browser_programmatic_navigation_handoff(state, &panel_id)?;
     let existing = {
         let guard = state
             .webviews
@@ -1096,6 +1382,7 @@ fn upsert_browser_webview<'a>(
             .map_err(|_| "browser webview state lock poisoned".to_string())?;
         guard.get(&panel_id).map(|child| {
             (
+                child.runtime_id,
                 child.webview.clone(),
                 child.label.clone(),
                 child.url.clone(),
@@ -1110,7 +1397,7 @@ fn upsert_browser_webview<'a>(
         .get(&panel_id)
         .cloned()
         .unwrap_or_default();
-    if let Some((webview, child_label, child_url, child_proxy_url)) = existing {
+    if let Some((runtime_id, webview, child_label, child_url, child_proxy_url)) = existing {
         if child_proxy_url != normalized_proxy_url {
             let mut webviews = state
                 .webviews
@@ -1120,7 +1407,6 @@ fn upsert_browser_webview<'a>(
             drop(webviews);
             webview.close().map_err(|error| error.to_string())?;
         } else {
-            let mut navigated = false;
             webview
                 .set_position(LogicalPosition::new(bounds.x, bounds.y))
                 .map_err(|error| error.to_string())?;
@@ -1128,40 +1414,68 @@ fn upsert_browser_webview<'a>(
                 .set_size(LogicalSize::new(bounds.width, bounds.height))
                 .map_err(|error| error.to_string())?;
             apply_visibility(&webview, visible)?;
-            if child_url != normalized_url {
-                webview
-                    .navigate(webview_url)
-                    .map_err(|error| error.to_string())?;
-                navigated = true;
-                if let Some(child) = state
-                    .webviews
-                    .lock()
-                    .map_err(|_| "browser webview state lock poisoned".to_string())?
-                    .get_mut(&panel_id)
-                {
-                    child.url = normalized_url.clone();
-                }
-            }
             if let Some(zoom) = zoom {
                 webview
                     .set_zoom(normalize_zoom(zoom))
                     .map_err(|error| error.to_string())?;
             }
-            if let Some(child) = state
+            let mut programmatic_navigation = None;
+            let should_navigate = child_url != normalized_url;
+            if should_navigate {
+                if owns_mutation_reservation {
+                    programmatic_navigation = Some(begin_browser_programmatic_navigation(
+                        state,
+                        mutation_reservation,
+                        &panel_id,
+                        runtime_id,
+                        webview_url.as_str(),
+                    )?);
+                }
+                if let Err(error) = webview.navigate(webview_url.clone()) {
+                    if let Some(handoff) = programmatic_navigation.as_ref() {
+                        cancel_browser_programmatic_navigation(state, handoff);
+                    }
+                    return Err(error.to_string());
+                }
+            }
+            let child_update = state
                 .webviews
                 .lock()
-                .map_err(|_| "browser webview state lock poisoned".to_string())?
-                .get_mut(&panel_id)
-            {
-                child.bounds = bounds.clone();
-                child.visible = visible;
-                child.zoom = zoom.or(child.zoom);
+                .map_err(|_| "browser webview state lock poisoned".to_string())
+                .and_then(|mut webviews| {
+                    webviews
+                        .get_mut(&panel_id)
+                        .filter(|child| child.runtime_id == runtime_id)
+                        .ok_or_else(|| {
+                            format!("browser runtime {panel_id}/{runtime_id} was replaced")
+                        })
+                        .map(|child| {
+                            if should_navigate {
+                                child.url = normalized_url.clone();
+                            }
+                            child.bounds = bounds.clone();
+                            child.visible = visible;
+                            child.zoom = zoom.or(child.zoom);
+                        })
+                });
+            if let Err(error) = child_update {
+                if let Some(handoff) = programmatic_navigation.as_ref() {
+                    cancel_browser_programmatic_navigation(state, handoff);
+                }
+                return Err(error);
             }
-            if owns_mutation_reservation {
+            if let Some(handoff) = programmatic_navigation.as_ref() {
+                if let Err(error) = complete_browser_programmatic_navigation(
+                    app,
+                    state,
+                    mutation_reservation,
+                    handoff,
+                ) {
+                    cancel_browser_programmatic_navigation(state, handoff);
+                    return Err(error);
+                }
+            } else if owns_mutation_reservation {
                 mutation_reservation.release()?;
-            }
-            if navigated && owns_mutation_reservation {
-                record_observed_navigation(state, &panel_id, &normalized_url)?;
             }
             return Ok(BrowserWebviewReply {
                 panel_id,
@@ -1181,12 +1495,28 @@ fn upsert_browser_webview<'a>(
     let mut builder = WebviewBuilder::new(label.clone(), WebviewUrl::External(webview_url))
         .on_navigation(move |url| {
             let browser_state = event_app.state::<BrowserWebviewState>();
-            let Ok(Some(callback_reservation)) = reserve_browser_navigation_callback(
+            let callback_reservation = match observe_browser_programmatic_navigation_callback(
                 browser_state.inner(),
-                event_panel_id.clone(),
+                &event_panel_id,
                 event_runtime_id,
-            ) else {
-                return true;
+                url.as_str(),
+            ) {
+                Ok(BrowserProgrammaticNavigationCallback::DeferredToCommand) => return true,
+                Ok(BrowserProgrammaticNavigationCallback::Suppressed) => return true,
+                Ok(BrowserProgrammaticNavigationCallback::Publish(callback_reservation)) => {
+                    callback_reservation
+                }
+                Ok(BrowserProgrammaticNavigationCallback::Unmatched) => {
+                    let Ok(Some(callback_reservation)) = reserve_browser_navigation_callback(
+                        browser_state.inner(),
+                        event_panel_id.clone(),
+                        event_runtime_id,
+                    ) else {
+                        return true;
+                    };
+                    callback_reservation
+                }
+                Err(_) => return true,
             };
             if record_observed_navigation_for_runtime(&callback_reservation, url.as_str()).is_err()
             {
@@ -1307,7 +1637,7 @@ fn upsert_browser_webview<'a>(
     drop(webviews);
     drop(reserved_panel_ids);
     if owns_mutation_reservation {
-        record_observed_navigation(state, &panel_id, &normalized_url)?;
+        record_observed_navigation(state, panel_id.as_str(), &normalized_url)?;
     }
 
     Ok(BrowserWebviewReply {
