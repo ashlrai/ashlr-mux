@@ -576,6 +576,69 @@ fn duplicate_arrival_consumes_only_the_exact_lease_once() {
 }
 
 #[test]
+fn runtime_identity_collision_on_another_remote_owner_does_not_consume_this_arrival() {
+    const FOREIGN_WINDOW: &str = "10000000-0000-0000-0000-000000000002";
+    const FOREIGN_WORKSPACE: &str = "20000000-0000-0000-0000-000000000002";
+    const FOREIGN_PANE: &str = "30000000-0000-0000-0000-000000000002";
+    const FOREIGN_SURFACE: &str = "40000000-0000-0000-0000-000000000005";
+
+    let mut snapshot = remote_snapshot();
+    let mut foreign = snapshot.windows[0].clone();
+    foreign.window_id = Some(FOREIGN_WINDOW.into());
+    foreign.selected_workspace_id = Some(FOREIGN_WORKSPACE.into());
+    let workspace = &mut foreign.tab_manager.workspaces[0];
+    workspace.workspace_id = Some(FOREIGN_WORKSPACE.into());
+    workspace.focused_panel_id = Some(FOREIGN_SURFACE.into());
+    let SessionWorkspaceLayoutSnapshot::Pane(pane) = workspace.layout.as_mut().unwrap() else {
+        panic!("single-pane fixture")
+    };
+    pane.pane_id = Some(FOREIGN_PANE.into());
+    pane.panel_ids = vec![FOREIGN_SURFACE.into()];
+    pane.selected_panel_id = Some(FOREIGN_SURFACE.into());
+    workspace.surfaces = Some(vec![SessionSurfaceSnapshot {
+        surface_id: FOREIGN_SURFACE.into(),
+        pane_id: FOREIGN_PANE.into(),
+        generation: 1,
+        kind: SessionSurfaceKindSnapshot::RemoteTerminal {
+            remote_session_id: Some("%same-runtime".into()),
+            remote_context: None,
+            arrival_generation: Some(1),
+        },
+        metadata: SessionSurfaceMetadataSnapshot::default(),
+        terminal_startup: None,
+    }]);
+    snapshot.windows.push(foreign);
+    let mut encoded = serde_json::to_value(snapshot).unwrap();
+    encoded["windows"][1]["tab_manager"]["workspaces"][0]["remote"]["destination"] =
+        json!("host-b");
+    let snapshot: AppSessionSnapshot = serde_json::from_value(encoded).unwrap();
+
+    let reconciled = reconcile_runtime_arrival(
+        &snapshot,
+        RuntimeArrival::remote_tab(
+            WINDOW,
+            WORKSPACE,
+            PANE,
+            RESERVED,
+            "%same-runtime",
+            1,
+            SOURCE,
+            false,
+        ),
+    )
+    .snapshot;
+    assert!(
+        reconciled.windows[0].tab_manager.workspaces[0]
+            .surfaces
+            .as_deref()
+            .unwrap()
+            .iter()
+            .any(|surface| surface.surface_id == RESERVED),
+        "an identical tmux token/generation owned by another remote host cannot consume this lease"
+    );
+}
+
+#[test]
 fn departure_registration_deduplicates_the_exact_generation() {
     let key = DepartureKey {
         endpoint: "ssh://host-a".into(),
