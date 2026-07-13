@@ -20332,12 +20332,14 @@ mod tests {
             dock_available: false,
             active_window_id: None,
         };
+        // Canonical surfacePanelType (ControlSurfaceContext2.swift:517-528):
+        // only the recognized tokens map to non-terminal kinds; unknown tokens
+        // such as projectSidebar/diff fall back to terminal (the previous
+        // assertions pinned noncanonical distinct kinds for those tokens).
         for (token, expected) in [
             ("markdown", "markdown"),
             ("filePreview", "filePreview"),
             ("rightSidebarTool", "rightSidebarTool"),
-            ("projectSidebar", "projectSidebar"),
-            ("diff", "diff"),
         ] {
             let snapshot = test_snapshot();
             let params = json!({"pane_id":"pane-1","type":token});
@@ -20355,6 +20357,24 @@ mod tests {
                 effect,
                 pane_surface_lifecycle::LifecycleEffect::UiSurfaceAttach { kind, .. }
                     if kind == expected
+            )));
+        }
+        for token in ["projectSidebar", "diff"] {
+            let snapshot = test_snapshot();
+            let params = json!({"pane_id":"pane-1","type":token});
+            let transition = pane_surface_lifecycle::dispatch_lifecycle_request(
+                &snapshot,
+                "surface.create",
+                params.as_object().unwrap(),
+                &context,
+            );
+            let ControlCallResult::Ok(value) = &transition.result else {
+                panic!("{token} failed")
+            };
+            assert_eq!(Value::from(value.clone())["type"], "terminal");
+            assert!(transition.effects.iter().any(|effect| matches!(
+                effect,
+                pane_surface_lifecycle::LifecycleEffect::TerminalCreate { .. }
             )));
         }
 

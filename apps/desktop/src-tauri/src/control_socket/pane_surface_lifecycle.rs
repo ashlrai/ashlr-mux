@@ -831,6 +831,12 @@ fn normalized_token(raw: &str) -> String {
     raw.replace(['-', '_', ' '], "").to_ascii_lowercase()
 }
 
+/// The twin of canonical `surfacePanelType(forRawToken:)`
+/// (TerminalController+ControlSurfaceContext2.swift:517-528): after
+/// v2NormalizedToken normalization only
+/// terminal/browser/markdown/filepreview/rightsidebartool/agentsession map to
+/// non-terminal kinds; every UNKNOWN token (including diff/file/projectsidebar)
+/// falls back to terminal.
 fn parse_kind(
     params: &Map<String, Value>,
 ) -> Result<SessionSurfaceKindSnapshot, (&'static str, &'static str, Option<Value>)> {
@@ -838,7 +844,7 @@ fn parse_kind(
         .get("type")
         .and_then(Value::as_str)
         .unwrap_or("terminal");
-    match raw.to_ascii_lowercase().replace(['-', '_'], "").as_str() {
+    match normalized_token(raw).as_str() {
         "browser" => Ok(SessionSurfaceKindSnapshot::Browser {
             url: params.get("url").and_then(Value::as_str).map(str::to_owned),
             profile: params
@@ -856,41 +862,45 @@ fn parse_kind(
             page_zoom: None,
         }),
         "agentsession" => {
+            // Canonical provider/renderer tokens normalize with
+            // v2NormalizedToken too (ControlSurfaceContext2.swift:296-320), so
+            // "claude-code" == "claudecode".
             let provider = params
                 .get("provider_id")
                 .or_else(|| params.get("provider"))
                 .and_then(Value::as_str)
                 .unwrap_or("codex");
-            if !matches!(
-                provider.to_ascii_lowercase().as_str(),
-                "codex" | "claude" | "claudecode" | "opencode"
-            ) {
-                return Err((
-                    "invalid_params",
-                    "Invalid provider (codex|claude|opencode)",
-                    Some(json!({"provider": provider})),
-                ));
-            }
-            let provider = if provider.eq_ignore_ascii_case("claudecode") {
-                "claude"
-            } else {
-                provider
+            let provider_id = match normalized_token(provider).as_str() {
+                "codex" => "codex",
+                "claude" | "claudecode" => "claude",
+                "opencode" => "opencode",
+                _ => {
+                    return Err((
+                        "invalid_params",
+                        "Invalid provider (codex|claude|opencode)",
+                        Some(json!({"provider": provider})),
+                    ))
+                }
             };
             let renderer = params
                 .get("renderer_kind")
                 .or_else(|| params.get("renderer"))
                 .and_then(Value::as_str)
                 .unwrap_or("react");
-            if !matches!(renderer.to_ascii_lowercase().as_str(), "react" | "solid") {
-                return Err((
-                    "invalid_params",
-                    "Invalid renderer (react|solid)",
-                    Some(json!({"renderer": renderer})),
-                ));
-            }
+            let renderer_kind = match normalized_token(renderer).as_str() {
+                "react" => "react",
+                "solid" => "solid",
+                _ => {
+                    return Err((
+                        "invalid_params",
+                        "Invalid renderer (react|solid)",
+                        Some(json!({"renderer": renderer})),
+                    ))
+                }
+            };
             Ok(SessionSurfaceKindSnapshot::AgentSession {
-                provider: Some(provider.to_ascii_lowercase()),
-                renderer: Some(renderer.to_ascii_lowercase()),
+                provider: Some(provider_id.to_owned()),
+                renderer: Some(renderer_kind.to_owned()),
                 working_directory: params
                     .get("working_directory")
                     .and_then(Value::as_str)
@@ -906,24 +916,13 @@ fn parse_kind(
                 .and_then(Value::as_str)
                 .map(str::to_owned),
         }),
-        "filepreview" | "file" => Ok(SessionSurfaceKindSnapshot::File {
+        "filepreview" => Ok(SessionSurfaceKindSnapshot::File {
             path: params
                 .get("path")
                 .and_then(Value::as_str)
                 .map(str::to_owned),
         }),
         "rightsidebartool" => Ok(SessionSurfaceKindSnapshot::RightSidebarTool),
-        "projectsidebar" => Ok(SessionSurfaceKindSnapshot::ProjectSidebar),
-        "diff" => Ok(SessionSurfaceKindSnapshot::Diff {
-            token: params
-                .get("token")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-            request_path: params
-                .get("request_path")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-        }),
         _ => Ok(SessionSurfaceKindSnapshot::Terminal),
     }
 }
@@ -1326,11 +1325,13 @@ fn parse_dock_kind(
         .get("type")
         .and_then(Value::as_str)
         .unwrap_or("terminal");
-    match raw.to_ascii_lowercase().replace(['-', '_'], "").as_str() {
-        "terminal" => Ok(DockSurfaceKind::Terminal),
+    // Canonical panelType tokens (ControlSurfaceContext2.swift:517-528) gate
+    // the Dock check: unknown tokens (diff/file/projectsidebar/...) normalize
+    // to terminal and are permitted; only the recognized non-terminal,
+    // non-browser kinds are rejected.
+    match normalized_token(raw).as_str() {
         "browser" => Ok(DockSurfaceKind::Browser),
-        "agentsession" | "markdown" | "filepreview" | "file" | "rightsidebartool"
-        | "projectsidebar" | "diff" => Err((
+        "agentsession" | "markdown" | "filepreview" | "rightsidebartool" => Err((
             "invalid_params",
             "Dock placement supports only terminal and browser surfaces",
             Some(json!({"type":raw})),

@@ -2267,3 +2267,101 @@ fn report_pwd_local_workspace_follows_canonical_resolution_and_identity_blocks()
         json!({"workspace_id": "missing-workspace", "surface_id": "surface-terminal"})
     );
 }
+
+#[test]
+fn surface_type_tokens_map_unknowns_to_terminal_after_normalization() {
+    // Canonical surfacePanelType
+    // (TerminalController+ControlSurfaceContext2.swift:517-528) recognizes only
+    // terminal/browser/markdown/filepreview/rightsidebartool/agentsession after
+    // v2NormalizedToken normalization (strip '-','_',' ' + lowercase,
+    // TerminalControllerV2ParamParsingSupport.swift:204-209); every other
+    // token — including diff/file/projectSidebar — maps to terminal.
+    for token in ["diff", "file", "projectSidebar", "project_sidebar", "bogus"] {
+        let created = transition(
+            &test_snapshot(),
+            "surface.create",
+            json!({"pane_id": "pane-1", "type": token}),
+        );
+        let value = ok_value(&created);
+        assert_eq!(value["type"], json!("terminal"), "{token}");
+        assert!(
+            created
+                .effects
+                .iter()
+                .any(|effect| matches!(effect, LifecycleEffect::TerminalCreate { .. })),
+            "{token}"
+        );
+    }
+    // Space-separated forms normalize into the canonical tokens.
+    let spaced = transition(
+        &test_snapshot(),
+        "surface.create",
+        json!({"pane_id": "pane-1", "type": "file preview"}),
+    );
+    assert_eq!(ok_value(&spaced)["type"], json!("filePreview"));
+
+    // Dock placement treats unknown tokens as terminal too (canonical
+    // panelType(forRawToken:) shared by the dock validation path).
+    let dock = main_transition(
+        &main_window_snapshot(),
+        "surface.create",
+        json!({"placement": "dock", "type": "diff"}),
+        true,
+        true,
+    );
+    assert_eq!(ok_value(&dock)["type"], json!("terminal"));
+}
+
+#[test]
+fn agent_session_provider_and_renderer_use_v2_normalized_tokens() {
+    // Canonical: TerminalController+ControlSurfaceContext2.swift:296-320 —
+    // provider/renderer tokens normalize with v2NormalizedToken (lowercase AND
+    // strip '-','_',' '), so \"claude-code\" == \"claudecode\" is a valid
+    // provider mapping to claude, and \"re_act\" is a valid renderer.
+    let created = transition(
+        &test_snapshot(),
+        "surface.create",
+        json!({
+            "pane_id": "pane-1",
+            "type": "agent-session",
+            "provider_id": "CLAUDE-CODE",
+            "renderer": "re_act"
+        }),
+    );
+    let value = ok_value(&created);
+    assert_eq!(value["type"], json!("agentSession"));
+    let created_id = value["surface_id"].as_str().unwrap();
+    let record = created.snapshot.windows[0].tab_manager.workspaces[0]
+        .surfaces
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .find(|record| record.surface_id == created_id)
+        .expect("created agent record")
+        .clone();
+    assert_eq!(
+        record.kind,
+        SessionSurfaceKindSnapshot::AgentSession {
+            provider: Some("claude".into()),
+            renderer: Some("react".into()),
+            working_directory: None,
+            session_id: None,
+            lifecycle: None,
+            restorable_agent: None,
+        }
+    );
+
+    let invalid = transition(
+        &test_snapshot(),
+        "surface.create",
+        json!({"pane_id": "pane-1", "type": "agentSession", "provider": "claude code x"}),
+    );
+    assert_eq!(
+        assert_error(
+            &invalid,
+            "invalid_params",
+            "Invalid provider (codex|claude|opencode)"
+        ),
+        json!({"provider": "claude code x"})
+    );
+}
