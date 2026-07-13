@@ -1010,3 +1010,67 @@ fn anchor_params_participate_in_handle_ref_resolution() {
     assert!(body.contains("(\"before_surface_id\", \"surface\")"));
     assert!(body.contains("(\"after_surface_id\", \"surface\")"));
 }
+
+#[test]
+fn create_after_explicit_focus_keeps_the_new_tab_selected() {
+    // Round 6 item 1: shouldFocusNewTab = focus ?? (focusedPaneId == paneId)
+    // (Workspace.swift:7480). After an explicit surface.focus lands in the
+    // pane, a create WITHOUT a focus param keeps the new tab selected and
+    // focused (canonical close.happy rows: the setup-created tab was
+    // selected, so its close reselects the successor). Without prior focus
+    // (bonsplit focusedPaneId unset) the create still reverts — the
+    // terminal_happy flip both platforms already share.
+    let snapshot = mixed_pane_snapshot(); // a, b(selected+focused); no focused_pane_id
+                                          // No prior explicit focus: revert (5-event flip) and prior tab stays selected.
+    let reverted = transition(&snapshot, "surface.create", json!({"type": "terminal"}));
+    assert_eq!(
+        reverted.events.len(),
+        5,
+        "unfocused pane keeps the revert flip"
+    );
+
+    // Explicit focus first: the create keeps the new tab selected.
+    let focused = transition(
+        &snapshot,
+        "surface.focus",
+        json!({"surface_id": "surface-b"}),
+    );
+    let after_focus = focused.snapshot.clone();
+    assert_eq!(
+        after_focus.windows[0].tab_manager.workspaces[0]
+            .focused_pane_id
+            .as_deref(),
+        Some("pane-1"),
+        "surface.focus records the bonsplit-focused pane"
+    );
+    let created = transition(&after_focus, "surface.create", json!({"type": "terminal"}));
+    let created_id = ok_value(&created)["surface_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let names: Vec<_> = created.events.iter().map(|event| event.name).collect();
+    assert_eq!(
+        names,
+        ["surface.created", "surface.selected", "surface.focused"],
+        "keep-selected create emits the pair once, no revert"
+    );
+    let list = transition(&created.snapshot, "surface.list", json!({}));
+    let rows = ok_value(&list)["surfaces"].as_array().unwrap().clone();
+    let row = rows
+        .iter()
+        .find(|row| row["id"] == json!(created_id))
+        .unwrap();
+    assert_eq!(row["selected_in_pane"], json!(true));
+    assert_eq!(row["focused"], json!(true));
+    // Closing it then emits the reselection pair (the round-6 delta-1 shape).
+    let closed = transition(
+        &created.snapshot,
+        "surface.close",
+        json!({"surface_id": created_id}),
+    );
+    let names: Vec<_> = closed.events.iter().map(|event| event.name).collect();
+    assert_eq!(
+        names,
+        ["surface.closed", "surface.selected", "surface.focused"]
+    );
+}
