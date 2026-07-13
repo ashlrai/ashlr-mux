@@ -7,9 +7,11 @@
 //! the CAPTURE is ground truth over any reading of the pinned Swift.
 
 use super::pane_surface_lifecycle::{
-    dispatch_lifecycle_request, LifecycleDispatchContext, LifecycleTransition,
+    commit_lifecycle_transition, dispatch_lifecycle_request, LifecycleDispatchContext,
+    LifecycleEffect, LifecycleEffectExecutor, LifecycleTransition,
 };
 use super::*;
+use crate::dock::{DockCreateRequest, DockStore, DockSurfaceKind};
 
 fn remediation_context() -> LifecycleDispatchContext {
     LifecycleDispatchContext {
@@ -583,6 +585,31 @@ fn surface_close_emits_canonical_payload_and_reselection() {
     assert_eq!(events[2].1["surface_id"], json!("surface-a"));
 }
 
+#[test]
+fn closing_an_unselected_surface_republishes_a_stale_pointer_selection() {
+    // Canonical's close-time guard compares the publisher pointer with the
+    // surviving selection, not the pre-close live selection. A born-selected
+    // surface can already be the live selection while the publisher pointer
+    // still trails it; closing a different tab must publish the surviving
+    // selection pair and advance that pointer.
+    let snapshot = mixed_pane_snapshot();
+    let closed = transition(
+        &snapshot,
+        "surface.close",
+        json!({"surface_id": "surface-a"}),
+    );
+    let _ = ok_value(&closed);
+    let events: Vec<_> = closed.events.iter().map(event_summary).collect();
+    assert_eq!(events.len(), 3);
+    assert_eq!(events[0].0, "surface.closed");
+    assert_eq!(events[0].1["surface_id"], json!("surface-a"));
+    assert_eq!(events[1].0, "surface.selected");
+    assert_eq!(events[1].1["surface_id"], json!("surface-b"));
+    assert_eq!(events[1].1["previous_surface_id"], json!(null));
+    assert_eq!(events[2].0, "surface.focused");
+    assert_eq!(events[2].1["surface_id"], json!("surface-b"));
+}
+
 /// One pane, two terminals, surface-b selected+focused.
 fn mixed_pane_snapshot() -> AppSessionSnapshot {
     let mut snapshot = test_snapshot();
@@ -603,6 +630,265 @@ fn mixed_pane_snapshot() -> AppSessionSnapshot {
          "kind": {"type": "terminal"}}
     ]);
     serde_json::from_value(encoded).expect("decode mixed pane")
+}
+
+fn set_published_pointer(
+    snapshot: &mut AppSessionSnapshot,
+    window_index: usize,
+    workspace_index: usize,
+    pane_id: &str,
+    panel_id: &str,
+) {
+    snapshot.windows[window_index].tab_manager.workspaces[workspace_index]
+        .published_pane_selections = Some(vec![
+        cmux_core::session::SessionPanePublishedSelectionSnapshot {
+            pane_id: pane_id.into(),
+            panel_id: panel_id.into(),
+        },
+    ]);
+}
+
+fn published_pointer<'a>(
+    snapshot: &'a AppSessionSnapshot,
+    window_index: usize,
+    workspace_index: usize,
+    pane_id: &str,
+) -> Option<&'a str> {
+    snapshot.windows[window_index].tab_manager.workspaces[workspace_index]
+        .published_pane_selections
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .find(|row| row.pane_id == pane_id)
+        .map(|row| row.panel_id.as_str())
+}
+
+fn split_close_snapshot() -> AppSessionSnapshot {
+    let snapshot = resizable_snapshot();
+    let mut encoded = serde_json::to_value(snapshot).expect("encode split close fixture");
+    encoded["windows"][0]["tab_manager"]["workspaces"][0]["surfaces"] = json!([
+        {"surface_id": "surface-left", "pane_id": "pane-left", "generation": 1,
+         "kind": {"type": "terminal"}},
+        {"surface_id": "surface-right", "pane_id": "pane-right", "generation": 1,
+         "kind": {"type": "terminal"}}
+    ]);
+    serde_json::from_value(encoded).expect("decode split close fixture")
+}
+
+#[derive(Default)]
+struct CloseCommitExecutor {
+    fail_commit: bool,
+    rollback_count: usize,
+}
+
+impl LifecycleEffectExecutor for CloseCommitExecutor {
+    type Error = String;
+
+    fn stage(&mut self, _effect: &LifecycleEffect) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn commit_staged(&mut self) -> Result<(), Self::Error> {
+        if self.fail_commit {
+            Err("injected close publication failure".into())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn rollback_staged(&mut self) -> Result<(), Self::Error> {
+        self.rollback_count += 1;
+        Ok(())
+    }
+
+    fn rollback_committed(&mut self) -> Result<(), Self::Error> {
+        self.rollback_count += 1;
+        Ok(())
+    }
+}
+
+fn commit_close(
+    mut snapshot: AppSessionSnapshot,
+    transition: LifecycleTransition,
+) -> AppSessionSnapshot {
+    commit_lifecycle_transition(
+        &mut snapshot,
+        transition,
+        &mut CloseCommitExecutor::default(),
+    )
+    .expect("close transition commits");
+    snapshot
+}
+
+#[test]
+fn close_publication_selected_sibling_orders_and_persists_the_survivor() {
+    let mut snapshot = mixed_pane_snapshot();
+    set_published_pointer(&mut snapshot, 0, 0, "pane-1", "surface-b");
+    let closed = transition(
+        &snapshot,
+        "surface.close",
+        json!({"surface_id": "surface-b"}),
+    );
+    let names: Vec<_> = closed.events.iter().map(|event| event.name).collect();
+    assert_eq!(
+        names,
+        ["surface.closed", "surface.selected", "surface.focused"]
+    );
+    assert_eq!(closed.events[1].payload["surface_id"], json!("surface-a"));
+    assert_eq!(
+        closed.events[1].payload["previous_surface_id"],
+        json!(null),
+        "surface.closed clears the dead publisher pointer before reselection"
+    );
+
+    let persisted = commit_close(snapshot, closed);
+    assert_eq!(
+        published_pointer(&persisted, 0, 0, "pane-1"),
+        Some("surface-a")
+    );
+}
+
+#[test]
+fn close_publication_unselected_sibling_persists_the_republished_survivor() {
+    let mut snapshot = mixed_pane_snapshot();
+    set_published_pointer(&mut snapshot, 0, 0, "pane-1", "surface-a");
+    let closed = transition(
+        &snapshot,
+        "surface.close",
+        json!({"surface_id": "surface-a"}),
+    );
+    let persisted = commit_close(snapshot, closed);
+    assert_eq!(
+        published_pointer(&persisted, 0, 0, "pane-1"),
+        Some("surface-b"),
+        "the dead pointer is replaced even when live selection did not move"
+    );
+}
+
+#[test]
+fn close_publication_collapsed_final_pane_prunes_its_dead_pointer() {
+    let mut snapshot = split_close_snapshot();
+    set_published_pointer(&mut snapshot, 0, 0, "pane-left", "surface-left");
+    let closed = transition(
+        &snapshot,
+        "surface.close",
+        json!({"surface_id": "surface-left"}),
+    );
+    let persisted = commit_close(snapshot, closed);
+    assert_eq!(published_pointer(&persisted, 0, 0, "pane-left"), None);
+    let SessionWorkspaceLayoutSnapshot::Pane(survivor) =
+        persisted.windows[0].tab_manager.workspaces[0]
+            .layout
+            .as_ref()
+            .expect("surviving layout")
+    else {
+        panic!("the empty split branch must collapse")
+    };
+    assert_eq!(survivor.pane_id.as_deref(), Some("pane-right"));
+}
+
+#[test]
+fn close_publication_final_dock_surface_prunes_its_dead_pointer() {
+    let mut snapshot = test_snapshot();
+    snapshot.windows[0].window_id = Some("main".into());
+    let created = DockStore
+        .create(
+            &mut snapshot,
+            "main",
+            DockCreateRequest {
+                kind: DockSurfaceKind::Terminal,
+                focus: true,
+                ..DockCreateRequest::default()
+            },
+        )
+        .expect("seed final Dock surface");
+    let pane_id = created.pane_id.to_string();
+    let surface_id = created.surface_id.to_string();
+    set_published_pointer(&mut snapshot, 0, 0, &pane_id, &surface_id);
+    let closed = transition(
+        &snapshot,
+        "surface.close",
+        json!({"surface_id": surface_id}),
+    );
+    let persisted = commit_close(snapshot, closed);
+    assert!(DockStore.list(&persisted, "main").is_empty());
+    assert_eq!(published_pointer(&persisted, 0, 0, &pane_id), None);
+}
+
+#[test]
+fn close_publication_prunes_only_the_owner_pane_across_windows() {
+    let mut snapshot = split_close_snapshot();
+    set_published_pointer(&mut snapshot, 0, 0, "pane-left", "surface-left");
+
+    let mut second = test_snapshot().windows.remove(0);
+    second.window_id = Some("window-2".into());
+    let other = &mut second.tab_manager.workspaces[0];
+    other.workspace_id = Some("workspace-2".into());
+    other.focused_panel_id = Some("surface-other".into());
+    let SessionWorkspaceLayoutSnapshot::Pane(pane) = other.layout.as_mut().unwrap() else {
+        unreachable!()
+    };
+    pane.pane_id = Some("pane-other".into());
+    pane.panel_ids = vec!["surface-other".into()];
+    pane.selected_panel_id = Some("surface-other".into());
+    other.published_pane_selections = Some(vec![
+        cmux_core::session::SessionPanePublishedSelectionSnapshot {
+            pane_id: "pane-other".into(),
+            panel_id: "surface-other".into(),
+        },
+    ]);
+    snapshot.windows.push(second);
+
+    let closed = transition(
+        &snapshot,
+        "surface.close",
+        json!({"surface_id": "surface-left"}),
+    );
+    let persisted = commit_close(snapshot, closed);
+    assert_eq!(published_pointer(&persisted, 0, 0, "pane-left"), None);
+    assert_eq!(
+        published_pointer(&persisted, 1, 0, "pane-other"),
+        Some("surface-other"),
+        "another window's publisher state is isolated"
+    );
+}
+
+#[test]
+fn close_publication_last_surface_noop_preserves_the_pointer() {
+    let mut snapshot = test_snapshot();
+    set_published_pointer(&mut snapshot, 0, 0, "pane-1", "surface-1");
+    let closed = transition(
+        &snapshot,
+        "surface.close",
+        json!({"surface_id": "surface-1"}),
+    );
+    assert_eq!(expect_error(&closed).0, "invalid_state");
+    assert!(!closed.changed);
+    assert!(closed.events.is_empty());
+    assert_eq!(closed.snapshot, snapshot);
+}
+
+#[test]
+fn close_publication_failed_commit_rolls_back_without_publishing_the_candidate() {
+    let mut snapshot = mixed_pane_snapshot();
+    set_published_pointer(&mut snapshot, 0, 0, "pane-1", "surface-b");
+    let before = snapshot.clone();
+    let closed = transition(
+        &snapshot,
+        "surface.close",
+        json!({"surface_id": "surface-b"}),
+    );
+    let mut executor = CloseCommitExecutor {
+        fail_commit: true,
+        ..Default::default()
+    };
+    let result = commit_lifecycle_transition(&mut snapshot, closed, &mut executor);
+    assert_eq!(result, Err("injected close publication failure".into()));
+    assert_eq!(executor.rollback_count, 1);
+    assert_eq!(
+        snapshot, before,
+        "failed publication cannot expose the candidate"
+    );
 }
 
 #[test]
