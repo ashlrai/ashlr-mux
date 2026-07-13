@@ -161,6 +161,10 @@ mod browser_runtime_close_leases_red;
 #[path = "session/browser_built_child_cleanup_red.rs"]
 mod browser_built_child_cleanup_red;
 
+#[cfg(test)]
+#[path = "session/browser_pending_cleanup_leases_red.rs"]
+mod browser_pending_cleanup_leases_red;
+
 impl Default for SessionState {
     fn default() -> Self {
         let snapshot = initial_snapshot(FIRST_PANEL_ID);
