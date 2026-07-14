@@ -72,6 +72,7 @@ struct RecordingEffects {
     fail_build: Option<String>,
     fail_show: Option<String>,
     fail_close: Option<String>,
+    fail_activate: bool,
 }
 
 impl RecordingEffects {
@@ -111,7 +112,11 @@ impl ManualRestoreEffects for RecordingEffects {
 
     fn activate(&mut self, window_id: &str) -> Result<(), String> {
         self.push(format!("activate:{window_id}"));
-        Ok(())
+        if self.fail_activate {
+            Err(format!("activation failed for {window_id}"))
+        } else {
+            Ok(())
+        }
     }
 
     fn record_window_created(&mut self, window: &SessionWindowSnapshot) {
@@ -145,6 +150,7 @@ fn harness(
             fail_build: None,
             fail_show: None,
             fail_close: None,
+            fail_activate: false,
         },
         ledger,
     )
@@ -219,6 +225,32 @@ fn product_restore_activates_only_the_first_restored_window_after_created_events
             format!("window.created:{second_id}"),
             format!("activate:{first_id}"),
         ]
+    );
+}
+
+#[test]
+fn product_activation_failure_does_not_fail_an_otherwise_completed_restore() {
+    let restored = window_fixture(0x45);
+    let restored_id = restored.window_id.clone().unwrap();
+    let previous = snapshot(vec![restored]);
+    let current = snapshot(vec![window_fixture(0x44)]);
+    let (authority, next_panel, mut publication, mut effects, ledger) = harness(current, None);
+    effects.fail_activate = true;
+
+    let outcome = restore_previous_launch_transaction_with_effects(
+        &authority,
+        &next_panel,
+        &mut publication,
+        &mut effects,
+        ManualRestoreRoute::Product,
+        || Some(previous),
+    )
+    .expect("canonical activation is best-effort");
+
+    assert!(outcome.restored);
+    assert_eq!(
+        ledger_entries(&ledger).last(),
+        Some(&format!("activate:{restored_id}"))
     );
 }
 
