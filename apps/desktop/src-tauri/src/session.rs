@@ -7607,7 +7607,73 @@ impl<T: SnapshotPublicationOperations> SnapshotPublicationOperations
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // Product activation is wired by the next RED/GREEN slice.
+enum ManualRestoreRoute {
+    Product,
+    Control,
+}
+
+#[allow(dead_code)] // The behavior-neutral seam is exercised by the next RED slice.
+trait ManualRestoreEffects {
+    fn build_hidden(&mut self, window: &SessionWindowSnapshot) -> Result<(), String>;
+    fn show_unfocused(&mut self, window_id: &str) -> Result<(), String>;
+    fn close(&mut self, window_id: &str) -> Result<(), String>;
+    fn activate(&mut self, window_id: &str) -> Result<(), String>;
+    fn record_window_created(&mut self, window: &SessionWindowSnapshot);
+}
+
+struct NoopManualRestoreEffects;
+
+impl ManualRestoreEffects for NoopManualRestoreEffects {
+    fn build_hidden(&mut self, _window: &SessionWindowSnapshot) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn show_unfocused(&mut self, _window_id: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn close(&mut self, _window_id: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn activate(&mut self, _window_id: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn record_window_created(&mut self, _window: &SessionWindowSnapshot) {}
+}
+
+fn restore_previous_launch_transaction_with_effects(
+    authority: &GatedSnapshot,
+    next_panel: &AtomicU64,
+    publication: &mut impl SnapshotPublicationOperations,
+    _effects: &mut impl ManualRestoreEffects,
+    _route: ManualRestoreRoute,
+    load_previous: impl FnOnce() -> Option<AppSessionSnapshot>,
+) -> Result<RestorePreviousLaunchOutcome, String> {
+    restore_previous_launch_transaction_inner(authority, next_panel, publication, load_previous)
+}
+
 fn restore_previous_launch_transaction(
+    authority: &GatedSnapshot,
+    next_panel: &AtomicU64,
+    publication: &mut impl SnapshotPublicationOperations,
+    load_previous: impl FnOnce() -> Option<AppSessionSnapshot>,
+) -> Result<RestorePreviousLaunchOutcome, String> {
+    let mut effects = NoopManualRestoreEffects;
+    restore_previous_launch_transaction_with_effects(
+        authority,
+        next_panel,
+        publication,
+        &mut effects,
+        ManualRestoreRoute::Control,
+        load_previous,
+    )
+}
+
+fn restore_previous_launch_transaction_inner(
     authority: &GatedSnapshot,
     next_panel: &AtomicU64,
     publication: &mut impl SnapshotPublicationOperations,

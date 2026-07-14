@@ -290,7 +290,7 @@ fn function_source<'a>(source: &'a str, signature: &str) -> &'a str {
 #[test]
 fn production_restore_has_injectable_transaction_and_fallible_routes() {
     let session = include_str!("../session.rs");
-    let transaction = function_source(session, "fn restore_previous_launch_transaction");
+    let transaction = function_source(session, "fn restore_previous_launch_transaction_inner");
     assert!(transaction.contains("SnapshotPublicationOperations"));
     assert!(transaction.contains("FnOnce() -> Option<AppSessionSnapshot>"));
     assert!(transaction.contains("next_panel: &AtomicU64"));
