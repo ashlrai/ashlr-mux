@@ -282,6 +282,7 @@ fn live_main_and_dock_identities_exclude_restored_collisions_coherently() {
         .workspace_id
         .clone()
         .expect("workspace id");
+    let live_pane_id = pane(&current.windows[0]).pane_id.clone().expect("pane id");
     let live_surface_id = surface_id(&current.windows[0]).to_string();
     let live_dock_surface_id = current.windows[0]
         .dock
@@ -294,12 +295,13 @@ fn live_main_and_dock_identities_exclude_restored_collisions_coherently() {
     restored.window_id = Some(live_window_id.clone());
     restored.tab_manager.workspaces[0].workspace_id = Some(live_workspace_id.clone());
     restored.selected_workspace_id = Some(live_workspace_id.clone());
-    let pane_id = pane(&restored).pane_id.clone().expect("pane id");
+    let pane_id = live_pane_id.clone();
     let Some(SessionWorkspaceLayoutSnapshot::Pane(layout)) =
         restored.tab_manager.workspaces[0].layout.as_mut()
     else {
         panic!("single pane")
     };
+    layout.pane_id = Some(live_pane_id.clone());
     layout.panel_ids = vec![live_surface_id.clone(), live_dock_surface_id.clone()];
     layout.selected_panel_id = Some(live_surface_id.clone());
     restored.tab_manager.workspaces[0].focused_panel_id = Some(live_dock_surface_id.clone());
@@ -333,7 +335,12 @@ fn live_main_and_dock_identities_exclude_restored_collisions_coherently() {
         restored.tab_manager.workspaces[0].workspace_id.as_deref(),
         Some(live_workspace_id.as_str())
     );
+    assert_eq!(
+        restored.selected_workspace_id,
+        restored.tab_manager.workspaces[0].workspace_id
+    );
     let layout = pane(restored);
+    assert_ne!(layout.pane_id.as_deref(), Some(live_pane_id.as_str()));
     assert!(layout
         .panel_ids
         .iter()
@@ -364,7 +371,7 @@ fn live_main_and_dock_identities_exclude_restored_collisions_coherently() {
 }
 
 #[test]
-fn uncollided_workspace_and_surface_stable_ids_are_adopted() {
+fn uncollided_window_workspace_and_surface_stable_ids_are_adopted() {
     let current = snapshot_fixture(0xc00, 1);
     let previous = snapshot_fixture(0xd00, 1);
     let persisted_window = previous.windows[0].window_id.clone();
@@ -377,7 +384,7 @@ fn uncollided_workspace_and_surface_stable_ids_are_adopted() {
     let committed = result.expect("valid previous snapshot");
     let restored = &committed.windows[1];
 
-    assert_ne!(restored.window_id, persisted_window);
+    assert_eq!(restored.window_id, persisted_window);
     assert_eq!(
         restored.tab_manager.workspaces[0].workspace_id,
         persisted_workspace
