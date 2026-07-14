@@ -553,7 +553,7 @@ fn restore_attempt(restored: AppSessionSnapshot) -> RestoreAttempt {
 fn restore_commits_atomically(restored: AppSessionSnapshot) -> Result<AppSessionSnapshot, String> {
     let attempt = restore_attempt(restored);
     let mut committed = attempt.result?;
-    if attempt.calls != ["persist", "baseline", "emit"] {
+    if attempt.calls != ["baseline", "emit"] {
         return Err(format!("publication calls were {:?}", attempt.calls));
     }
     if attempt.authority != committed {

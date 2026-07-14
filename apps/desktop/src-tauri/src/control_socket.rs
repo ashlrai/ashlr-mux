@@ -7475,7 +7475,18 @@ fn session_restore_previous_launch(app: &AppHandle) -> ControlCallResult {
 }
 
 fn session_restore_previous_result(outcome: &RestorePreviousLaunchOutcome) -> ControlCallResult {
-    workspace_current(&outcome.snapshot)
+    if outcome.restored {
+        ControlCallResult::Ok(
+            JsonValue::try_from(json!({ "restored": true }))
+                .expect("manual restore payload is valid JSON"),
+        )
+    } else {
+        ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "No previous session snapshot available".to_string(),
+            data: None,
+        }
+    }
 }
 
 fn workspace_close(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {

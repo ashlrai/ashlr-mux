@@ -7589,6 +7589,24 @@ pub(crate) struct RestorePreviousLaunchOutcome {
     pub(crate) restored: bool,
 }
 
+struct ManualRestorePublication<'a, T>(&'a mut T);
+
+impl<T: SnapshotPublicationOperations> SnapshotPublicationOperations
+    for ManualRestorePublication<'_, T>
+{
+    fn persist(&mut self, _candidate: &AppSessionSnapshot) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn update_event_baseline(&mut self, candidate: &AppSessionSnapshot) {
+        self.0.update_event_baseline(candidate);
+    }
+
+    fn emit(&mut self, candidate: &AppSessionSnapshot) -> Result<(), String> {
+        self.0.emit(candidate)
+    }
+}
+
 fn restore_previous_launch_transaction(
     authority: &GatedSnapshot,
     next_panel: &AtomicU64,
@@ -7596,8 +7614,9 @@ fn restore_previous_launch_transaction(
     load_previous: impl FnOnce() -> Option<AppSessionSnapshot>,
 ) -> Result<RestorePreviousLaunchOutcome, String> {
     let _restore_gate = authority.lock_gate();
+    let mut manual_publication = ManualRestorePublication(publication);
     let (reseed, snapshot) =
-        transact_value_if_changed_snapshot(authority, publication, |candidate| {
+        transact_value_if_changed_snapshot(authority, &mut manual_publication, |candidate| {
             let Some(previous) = load_previous() else {
                 return Ok::<_, String>((None, false));
             };
