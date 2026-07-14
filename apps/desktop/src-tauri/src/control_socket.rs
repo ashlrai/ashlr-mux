@@ -52,7 +52,7 @@ use crate::session::{
     clear_workspace_sidebar_status_for_control, close_panel_for_control,
     close_workspace_in_window_for_control, close_workspaces_for_control,
     commit_lifecycle_snapshot_for_control, commit_lifecycle_snapshot_for_control_if_current,
-    configure_workspace_remote_for_control, current_session_snapshot,
+    configure_workspace_remote_for_control, current_session_snapshot, default_workspace_directory,
     delete_workspace_group_for_control, equalize_dividers_for_control, focus_last_pane_for_control,
     focus_pane_for_control, move_panel_to_new_workspace_for_control, move_surface_for_control,
     move_workspace_to_window_for_control, new_browser_workspace_for_control,
@@ -9405,7 +9405,7 @@ fn workspace_group_create_cwd(
     }
 
     if let Some(explicit_cwd) = explicit_cwd {
-        return normalized(explicit_cwd);
+        return normalized(explicit_cwd).or_else(default_workspace_directory);
     }
     let first_child = child_ids.iter().find_map(|child_id| {
         tabs.workspaces.iter().find(|workspace| {
@@ -9461,9 +9461,36 @@ fn normalized_workspace_group_icon_symbol(raw: Option<&str>) -> Option<String> {
 }
 
 fn workspace_group_parameter_description(value: &Value) -> String {
-    match value {
-        Value::String(value) => value.clone(),
-        _ => value.to_string(),
+    fn nested(value: &Value) -> String {
+        match value {
+            Value::Null => "<null>".to_string(),
+            Value::Bool(value) => i32::from(*value).to_string(),
+            Value::Number(value) => value.to_string(),
+            Value::String(value) => serde_json::to_string(value).unwrap_or_default(),
+            Value::Array(values) => format!(
+                "[{}]",
+                values.iter().map(nested).collect::<Vec<_>>().join(", ")
+            ),
+            Value::Object(values) if values.is_empty() => "[:]".to_string(),
+            Value::Object(values) => format!(
+                "[{}]",
+                values
+                    .iter()
+                    .map(|(key, value)| format!(
+                        "{}: {}",
+                        serde_json::to_string(key).unwrap_or_default(),
+                        nested(value)
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        }
+    }
+
+    if let Value::String(value) = value {
+        value.clone()
+    } else {
+        nested(value)
     }
 }
 
@@ -22446,7 +22473,7 @@ mod tests {
                 &[second_id],
                 &HashSet::new(),
             ),
-            None
+            default_workspace_directory()
         );
     }
 
@@ -22483,6 +22510,19 @@ mod tests {
             let params = serde_json::Map::from_iter([("to_index".to_string(), value)]);
             assert_eq!(workspace_group_move_index_param(&params), expected);
         }
+    }
+
+    #[test]
+    fn workspace_group_parameter_errors_use_foundation_style_descriptions() {
+        assert_eq!(workspace_group_parameter_description(&json!("raw")), "raw");
+        assert_eq!(
+            workspace_group_parameter_description(&json!([1, "two", true])),
+            r#"[1, "two", 1]"#
+        );
+        assert_eq!(
+            workspace_group_parameter_description(&json!({"name": "build"})),
+            r#"["name": "build"]"#
+        );
     }
 
     #[test]

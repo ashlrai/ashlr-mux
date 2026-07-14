@@ -1416,7 +1416,7 @@ fn remint_noncanonical_identities(snapshot: &mut AppSessionSnapshot) -> bool {
     true
 }
 
-fn default_workspace_directory() -> Option<String> {
+pub(crate) fn default_workspace_directory() -> Option<String> {
     ["USERPROFILE", "HOME"]
         .iter()
         .find_map(|key| std::env::var(*key).ok())
