@@ -334,7 +334,7 @@ fn legacy_layout_only_nonterminal_workspace_is_not_a_crash_diagnostic() {
 }
 
 #[test]
-fn crash_pruning_repairs_group_anchor_identity_and_member_index() {
+fn crash_pruning_keeps_surviving_group_coherent_and_drops_orphan_metadata() {
     let current = snapshot_fixture(0x650, 1);
     let mut window = window_fixture(0x660);
     let mut crash = window.tab_manager.workspaces.remove(0);
@@ -342,7 +342,7 @@ fn crash_pruning_repairs_group_anchor_identity_and_member_index() {
     let mut anchored = window_fixture(0x661).tab_manager.workspaces.remove(0);
     let mut trailing = window_fixture(0x662).tab_manager.workspaces.remove(0);
     let group_id = id(0x1660);
-    for workspace in [&mut crash, &mut anchored, &mut trailing] {
+    for workspace in [&mut anchored, &mut trailing] {
         workspace.group_id = Some(group_id.clone());
     }
     let anchored_id = anchored
@@ -352,28 +352,42 @@ fn crash_pruning_repairs_group_anchor_identity_and_member_index() {
     window.tab_manager.workspaces = vec![crash, anchored, trailing];
     window.tab_manager.selected_workspace_index = Some(1);
     window.selected_workspace_id = Some(anchored_id.clone());
-    window.tab_manager.workspace_groups =
-        Some(vec![cmux_core::session::SessionWorkspaceGroupSnapshot {
+    window.tab_manager.workspace_groups = Some(vec![
+        cmux_core::session::SessionWorkspaceGroupSnapshot {
+            id: id(0x1661),
+            name: "orphan-group".to_string(),
+            is_collapsed: false,
+            anchor_workspace_id: None,
+            anchor_member_index: None,
+            is_pinned: None,
+            custom_color: None,
+            icon_symbol: None,
+        },
+        cmux_core::session::SessionWorkspaceGroupSnapshot {
             id: group_id,
             name: "restore-group".to_string(),
             is_collapsed: false,
             anchor_workspace_id: Some(anchored_id.clone()),
-            anchor_member_index: Some(1),
+            anchor_member_index: Some(0),
             is_pinned: None,
             custom_color: None,
             icon_symbol: None,
-        }]);
+        },
+    ]);
 
     let (result, _, _, _) = restore(current, Some(snapshot(vec![window])), 50);
     let committed = result.expect("mixed group remains restorable");
     let restored = &committed.windows[1];
-    let group = &restored
+    let groups = restored
         .tab_manager
         .workspace_groups
         .as_ref()
-        .expect("surviving group")[0];
+        .expect("surviving group");
+    let group = &groups[0];
 
     assert_eq!(restored.tab_manager.workspaces.len(), 2);
+    assert_eq!(groups.len(), 1);
+    assert_eq!(group.name, "restore-group");
     assert_eq!(
         group.anchor_workspace_id.as_deref(),
         Some(anchored_id.as_str())
