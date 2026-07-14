@@ -6247,6 +6247,180 @@ pub(crate) fn close_workspaces_for_control(
     snapshot
 }
 
+#[derive(Debug)]
+struct WorkspaceGroupDeleteArtifacts {
+    closed_browser_tabs: Vec<ClosedBrowserTabSnapshot>,
+    closed_workspaces: Vec<ClosedWorkspaceSnapshot>,
+    teardowns: Vec<WorkspaceCloseTeardownPlan>,
+    closed_count: usize,
+}
+
+fn apply_delete_workspace_group_candidate(
+    candidate: &mut AppSessionSnapshot,
+    window_index: usize,
+    group_id: &str,
+) -> (Option<WorkspaceGroupDeleteArtifacts>, bool) {
+    let Some(window) = candidate.windows.get(window_index) else {
+        return (None, false);
+    };
+    let group_exists = window
+        .tab_manager
+        .workspace_groups
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .any(|group| group.id == group_id);
+    if !group_exists {
+        return (None, false);
+    }
+    let member_indices = window
+        .tab_manager
+        .workspaces
+        .iter()
+        .enumerate()
+        .filter_map(|(index, workspace)| {
+            (workspace.group_id.as_deref() == Some(group_id)).then_some(index)
+        })
+        .collect::<Vec<_>>();
+    let closed_browser_tabs = member_indices
+        .iter()
+        .flat_map(|index| {
+            closed_browser_tabs_for_workspace(
+                &candidate.windows[window_index].tab_manager.workspaces[*index],
+            )
+        })
+        .collect::<Vec<_>>();
+    let closed_workspaces = member_indices
+        .iter()
+        .filter_map(|index| closed_workspace_snapshot(candidate, window_index, *index))
+        .collect::<Vec<_>>();
+    let teardowns = member_indices
+        .iter()
+        .filter_map(|index| {
+            let workspace = &candidate.windows[window_index].tab_manager.workspaces[*index];
+            workspace
+                .workspace_id
+                .as_deref()
+                .map(|workspace_id| workspace_close_teardown_plan(workspace_id, workspace))
+        })
+        .collect::<Vec<_>>();
+
+    if member_indices.len() == candidate.windows[window_index].tab_manager.workspaces.len() {
+        let panel_id = Uuid::new_v4().to_string();
+        let inherited_directory = member_indices
+            .first()
+            .and_then(|index| {
+                candidate.windows[window_index]
+                    .tab_manager
+                    .workspaces
+                    .get(*index)
+            })
+            .and_then(|workspace| workspace.current_directory.clone());
+        session_ops::new_workspace(&mut candidate.windows[window_index].tab_manager, &panel_id);
+        let replacement = candidate.windows[window_index]
+            .tab_manager
+            .workspaces
+            .last_mut()
+            .expect("new workspace exists");
+        replacement.current_directory = inherited_directory;
+        replacement.workspace_id = Some(Uuid::new_v4().to_string());
+        if let Some(SessionWorkspaceLayoutSnapshot::Pane(pane)) = replacement.layout.as_mut() {
+            pane.pane_id = Some(Uuid::new_v4().to_string());
+        }
+        seed_initial_surface_record(replacement);
+    }
+
+    let original_member_ids = member_indices
+        .iter()
+        .filter_map(|index| {
+            candidate.windows[window_index].tab_manager.workspaces[*index]
+                .workspace_id
+                .clone()
+        })
+        .collect::<HashSet<_>>();
+    let live_indices = candidate.windows[window_index]
+        .tab_manager
+        .workspaces
+        .iter()
+        .enumerate()
+        .filter_map(|(index, workspace)| {
+            workspace
+                .workspace_id
+                .as_ref()
+                .is_some_and(|id| original_member_ids.contains(id))
+                .then_some(index as i64)
+        })
+        .collect::<Vec<_>>();
+    let changed = session_ops::close_workspaces(
+        &mut candidate.windows[window_index].tab_manager,
+        &live_indices,
+    );
+    if changed {
+        sync_window_selected_workspace_id(&mut candidate.windows[window_index]);
+    }
+    (
+        Some(WorkspaceGroupDeleteArtifacts {
+            closed_browser_tabs,
+            closed_workspaces,
+            teardowns,
+            closed_count: member_indices.len(),
+        }),
+        changed,
+    )
+}
+
+/// Atomically remove every workspace owned by `group_id` in one window. When
+/// the group owns the window's final workspaces, seed one fresh terminal
+/// workspace in the same durable candidate before closing the group. Runtime
+/// teardown and close-history effects run only after persistence commits.
+pub(crate) fn delete_workspace_group_for_control(
+    app: &AppHandle,
+    state: &SessionState,
+    window_index: usize,
+    group_id: &str,
+) -> Result<Option<(AppSessionSnapshot, usize)>, String> {
+    let mut publication =
+        ProductionSnapshotPublicationOperations::new(app, state, DerivedEventPolicy::Record);
+    let result = transact_value_if_changed_snapshot_with_post_commit(
+        &state.snapshot,
+        &mut publication,
+        |candidate| {
+            Ok::<_, std::convert::Infallible>(apply_delete_workspace_group_candidate(
+                candidate,
+                window_index,
+                group_id,
+            ))
+        },
+        |artifacts, _committed| {
+            let Some(artifacts) = artifacts.as_mut() else {
+                return;
+            };
+            if !artifacts.closed_browser_tabs.is_empty() {
+                push_closed_browser_tabs(
+                    &mut state
+                        .closed_browser_tabs
+                        .lock()
+                        .expect("closed browser history mutex poisoned"),
+                    std::mem::take(&mut artifacts.closed_browser_tabs),
+                );
+            }
+            if !artifacts.closed_workspaces.is_empty() {
+                state
+                    .closed_workspaces
+                    .lock()
+                    .expect("closed workspace history mutex poisoned")
+                    .append(&mut artifacts.closed_workspaces);
+            }
+            for teardown in std::mem::take(&mut artifacts.teardowns) {
+                apply_workspace_close_teardown(app, state, &teardown);
+            }
+        },
+    )
+    .map_err(collapse_infallible_publication_error)?;
+    let (artifacts, snapshot) = result;
+    Ok(artifacts.map(|artifacts| (snapshot, artifacts.closed_count)))
+}
+
 #[derive(Debug, Default)]
 struct WorkspaceActionClosedArtifacts {
     browser_tabs: Vec<ClosedBrowserTabSnapshot>,
@@ -12252,6 +12426,105 @@ mod tests {
         let before = snapshot.clone();
         assert!(!apply_set_group_collapsed(&mut snapshot, "g", true));
         assert_eq!(snapshot, before);
+    }
+
+    #[test]
+    fn delete_workspace_group_candidate_closes_exact_members() {
+        let mut snapshot = initial_snapshot("surface-1");
+        apply_new_workspace(&mut snapshot, "surface-2", None, None, None, None);
+        apply_new_workspace(&mut snapshot, "surface-3", None, None, None, None);
+        let group_id = Uuid::new_v4().to_string();
+        let anchor_id = snapshot.windows[0].tab_manager.workspaces[0]
+            .workspace_id
+            .clone()
+            .expect("anchor id");
+        for workspace in &mut snapshot.windows[0].tab_manager.workspaces[..2] {
+            workspace.group_id = Some(group_id.clone());
+        }
+        snapshot.windows[0].tab_manager.workspace_groups =
+            Some(vec![cmux_core::session::SessionWorkspaceGroupSnapshot {
+                id: group_id.clone(),
+                name: "Group".to_string(),
+                anchor_workspace_id: Some(anchor_id),
+                ..Default::default()
+            }]);
+        let survivor_id = snapshot.windows[0].tab_manager.workspaces[2]
+            .workspace_id
+            .clone();
+
+        let (artifacts, changed) =
+            apply_delete_workspace_group_candidate(&mut snapshot, 0, &group_id);
+
+        let artifacts = artifacts.expect("group existed");
+        assert!(changed);
+        assert_eq!(artifacts.closed_count, 2);
+        assert_eq!(artifacts.closed_workspaces.len(), 2);
+        assert_eq!(snapshot.windows[0].tab_manager.workspaces.len(), 1);
+        assert_eq!(
+            snapshot.windows[0].tab_manager.workspaces[0].workspace_id,
+            survivor_id
+        );
+        assert!(snapshot.windows[0]
+            .tab_manager
+            .workspace_groups
+            .as_deref()
+            .unwrap_or_default()
+            .is_empty());
+    }
+
+    #[test]
+    fn delete_final_workspace_group_seeds_one_ungrouped_replacement() {
+        let mut snapshot = initial_snapshot("surface-1");
+        apply_new_workspace(&mut snapshot, "surface-2", None, None, None, None);
+        let group_id = Uuid::new_v4().to_string();
+        let anchor_id = snapshot.windows[0].tab_manager.workspaces[0]
+            .workspace_id
+            .clone()
+            .expect("anchor id");
+        snapshot.windows[0].tab_manager.workspaces[0].current_directory =
+            Some("C:/repo".to_string());
+        let removed_ids = snapshot.windows[0]
+            .tab_manager
+            .workspaces
+            .iter_mut()
+            .map(|workspace| {
+                workspace.group_id = Some(group_id.clone());
+                workspace.workspace_id.clone().expect("workspace id")
+            })
+            .collect::<HashSet<_>>();
+        snapshot.windows[0].tab_manager.workspace_groups =
+            Some(vec![cmux_core::session::SessionWorkspaceGroupSnapshot {
+                id: group_id.clone(),
+                name: "Only group".to_string(),
+                anchor_workspace_id: Some(anchor_id),
+                ..Default::default()
+            }]);
+
+        let (artifacts, changed) =
+            apply_delete_workspace_group_candidate(&mut snapshot, 0, &group_id);
+
+        let artifacts = artifacts.expect("group existed");
+        let tabs = &snapshot.windows[0].tab_manager;
+        assert!(changed);
+        assert_eq!(artifacts.closed_count, 2);
+        assert_eq!(tabs.workspaces.len(), 1);
+        assert_eq!(tabs.selected_workspace_index, Some(0));
+        assert_eq!(tabs.workspaces[0].group_id, None);
+        assert_eq!(
+            tabs.workspaces[0].current_directory.as_deref(),
+            Some("C:/repo")
+        );
+        assert!(!removed_ids.contains(
+            tabs.workspaces[0]
+                .workspace_id
+                .as_deref()
+                .expect("replacement id")
+        ));
+        assert!(tabs
+            .workspace_groups
+            .as_deref()
+            .unwrap_or_default()
+            .is_empty());
     }
 
     #[test]

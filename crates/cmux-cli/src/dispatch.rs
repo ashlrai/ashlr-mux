@@ -591,7 +591,7 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
             "Usage:\n  cmux sidebar [list|validate [name]|reload [name]|select <name>|open <name>]\n\nValidates and manages custom sidebars from ~/.config/cmux/sidebars through the desktop control socket.",
         ),
         "workspace-group" => Some(
-            "Usage:\n  cmux workspace group collapse GROUP_ID\n  cmux workspace group expand GROUP_ID\n\nCollapses or expands a workspace group.",
+            "Usage: cmux workspace-group <subcommand> [flags]\n\nManage collapsible workspace groups in the sidebar. Each group is\nowned by an \"anchor\" workspace; the group header IS the anchor's\nsidebar representation. Closing the anchor dissolves the group\nwhile preserving its other members as ungrouped workspaces.\n\nSubcommands:\n  list [--json]\n  create [--name <name>] [--cwd <path>] [--from <id>,<id>...]\n                            Defaults --from to the active sidebar\n                            selection / caller workspace when omitted.\n  ungroup <group>           Dissolve a group, preserving all members\n  delete <group>            Delete a group AND close every workspace\n                            inside it. Destructive. Use `ungroup` to\n                            keep the workspaces.\n  rename <group> --name <new>\n  collapse <group>\n  expand <group>\n  pin <group>\n  unpin <group>\n  add --group <group> --workspace <ws>\n  remove --workspace <ws>\n  set-anchor --group <group> --workspace <ws>\n  new-workspace <group> [--placement afterCurrent|top|end]\n                            Create a new workspace in the group.\n                            Placement resolves first from per-cwd\n                            cmux.json `newWorkspacePlacement`, then\n                            from the global default. The default is\n                            afterCurrent; without an active\n                            in-group reference it behaves like top.\n  set-color <group> [--hex #RRGGBB]\n  set-icon <group> [--symbol <sf-symbol>]\n  move <group> --to-index <n> | --before <group> | --after <group>\n  focus <group>             Focus the group's anchor workspace\n\n<group> accepts a UUID or a workspace_group:N ref printed by `list`.\n\nAll commands honor --json. Default keyboard shortcut for creating\na group from the sidebar multi-selection is Cmd+Shift+G; rebind\nvia Settings → Keyboard.",
         ),
         "ssh" => Some(SSH_USAGE_TEXT),
         "list-panes" => Some(
@@ -723,6 +723,14 @@ pub fn plan(action: &PreSocketAction, command: &str) -> DispatchPlan {
 /// Map a classified `action` (for `command` plus its command-specific args) to
 /// the executor's plan.
 pub fn plan_with_args(action: &PreSocketAction, command: &str, args: &[String]) -> DispatchPlan {
+    if command == "help"
+        && args
+            .first()
+            .is_some_and(|argument| argument.eq_ignore_ascii_case("workspace-group"))
+    {
+        return DispatchPlan::PrintLine(subcommand_help_text("workspace-group"));
+    }
+
     // Every no-socket action has a concrete executor. Socket-backed commands
     // without a typed mapping retain the explicit raw-RPC failure below.
     match action {

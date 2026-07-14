@@ -64,6 +64,116 @@ fn config_file_path() -> Result<PathBuf, String> {
     cmux_config::config_path().ok_or_else(|| "unable to determine config directory".to_owned())
 }
 
+fn normalized_workspace_group_cwd(value: &str) -> String {
+    let trimmed = value.trim();
+    let expanded = if let Some(suffix) = trimmed.strip_prefix('~') {
+        std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .map(|home| format!("{home}{suffix}"))
+            .unwrap_or_else(|_| trimmed.to_string())
+    } else {
+        trimmed.to_string()
+    };
+    let normalized = expanded.replace('\\', "/");
+    if normalized.len() > 3 {
+        normalized.trim_end_matches('/').to_string()
+    } else {
+        normalized
+    }
+}
+
+fn workspace_group_glob_matches(pattern: &str, candidate: &str) -> bool {
+    let pattern = pattern.to_ascii_lowercase().into_bytes();
+    let candidate = candidate.to_ascii_lowercase().into_bytes();
+    let (mut pattern_index, mut candidate_index) = (0usize, 0usize);
+    let (mut star_pattern, mut star_candidate) = (None, 0usize);
+    while candidate_index < candidate.len() {
+        if pattern_index < pattern.len()
+            && (pattern[pattern_index] == b'?'
+                || pattern[pattern_index] == candidate[candidate_index])
+        {
+            pattern_index += 1;
+            candidate_index += 1;
+        } else if pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
+            star_pattern = Some(pattern_index);
+            star_candidate = candidate_index;
+            pattern_index += 1;
+        } else if let Some(star) = star_pattern {
+            pattern_index = star + 1;
+            star_candidate += 1;
+            candidate_index = star_candidate;
+        } else {
+            return false;
+        }
+    }
+    while pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
+        pattern_index += 1;
+    }
+    pattern_index == pattern.len()
+}
+
+fn workspace_group_cwd_matches(pattern: &str, cwd: &str) -> bool {
+    if pattern.contains('*') || pattern.contains('?') {
+        return workspace_group_glob_matches(pattern, cwd);
+    }
+    if cwd.eq_ignore_ascii_case(pattern) {
+        return true;
+    }
+    let prefix = format!("{}/", pattern.trim_end_matches('/'));
+    cwd.get(..prefix.len())
+        .is_some_and(|value| value.eq_ignore_ascii_case(&prefix))
+}
+
+pub(crate) fn workspace_group_new_workspace_placement(
+    app: &AppHandle,
+    cwd: Option<&str>,
+) -> cmux_config::NewWorkspacePlacement {
+    let state = app.state::<ConfigState>();
+    let raw = {
+        let mut cache = state.raw.lock().expect("config raw mutex poisoned");
+        match cache.clone() {
+            Some(raw) => raw,
+            None => {
+                let raw = config_file_path()
+                    .and_then(|path| load_raw_config(&path))
+                    .unwrap_or_else(|_| Value::Object(serde_json::Map::new()));
+                *cache = Some(raw.clone());
+                raw
+            }
+        }
+    };
+    workspace_group_new_workspace_placement_from_raw(&raw, cwd)
+}
+
+fn workspace_group_new_workspace_placement_from_raw(
+    raw: &Value,
+    cwd: Option<&str>,
+) -> cmux_config::NewWorkspacePlacement {
+    let Some(groups) = decode_settings_config(raw)
+        .ok()
+        .and_then(|config| config.workspace_groups)
+    else {
+        return cmux_config::NewWorkspacePlacement::AfterCurrent;
+    };
+    let Some(cwd) = cwd
+        .map(normalized_workspace_group_cwd)
+        .filter(|cwd| !cwd.is_empty())
+    else {
+        return groups.new_workspace_placement;
+    };
+    groups
+        .by_cwd
+        .iter()
+        .filter_map(|(key, entry)| {
+            let normalized_key = normalized_workspace_group_cwd(key);
+            workspace_group_cwd_matches(&normalized_key, &cwd)
+                .then_some((normalized_key.len(), entry.new_workspace_placement))
+        })
+        .max_by_key(|(score, _)| *score)
+        .and_then(|(_, placement)| placement)
+        .unwrap_or(groups.new_workspace_placement)
+}
+
 /// Read the raw JSON document from `path`, defaulting a missing file to `{}`.
 fn load_raw_config(path: &Path) -> Result<Value, String> {
     if !path.exists() {
@@ -610,6 +720,58 @@ mod tests {
         assert!(config.diff_viewer.is_some());
         assert!(config.workspace_colors.is_some());
         assert!(config.sidebar_appearance.is_some());
+    }
+
+    #[test]
+    fn workspace_group_placement_uses_longest_cwd_match_then_global_default() {
+        let raw = json!({
+            "workspaceGroups": {
+                "newWorkspacePlacement": "end",
+                "byCwd": {
+                    "C:/repos": {"newWorkspacePlacement": "top"},
+                    "C:/repos/cmux": {"newWorkspacePlacement": "afterCurrent"}
+                }
+            }
+        });
+
+        assert_eq!(
+            workspace_group_new_workspace_placement_from_raw(&raw, Some("c:\\REPOS\\cmux\\apps")),
+            cmux_config::NewWorkspacePlacement::AfterCurrent
+        );
+        assert_eq!(
+            workspace_group_new_workspace_placement_from_raw(&raw, Some("C:/repos/other")),
+            cmux_config::NewWorkspacePlacement::Top
+        );
+        assert_eq!(
+            workspace_group_new_workspace_placement_from_raw(&raw, Some("C:/elsewhere")),
+            cmux_config::NewWorkspacePlacement::End
+        );
+        assert_eq!(
+            workspace_group_new_workspace_placement_from_raw(&raw, None),
+            cmux_config::NewWorkspacePlacement::End
+        );
+    }
+
+    #[test]
+    fn workspace_group_placement_supports_globs_without_prefix_bleed() {
+        let raw = json!({
+            "workspaceGroups": {
+                "newWorkspacePlacement": "afterCurrent",
+                "byCwd": {
+                    "C:/work/*/cmux": {"newWorkspacePlacement": "top"},
+                    "C:/repo": {"newWorkspacePlacement": "end"}
+                }
+            }
+        });
+
+        assert_eq!(
+            workspace_group_new_workspace_placement_from_raw(&raw, Some("C:/work/team/cmux")),
+            cmux_config::NewWorkspacePlacement::Top
+        );
+        assert_eq!(
+            workspace_group_new_workspace_placement_from_raw(&raw, Some("C:/repository")),
+            cmux_config::NewWorkspacePlacement::AfterCurrent
+        );
     }
 
     #[test]

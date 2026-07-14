@@ -57,26 +57,28 @@ impl ControlCommand {
     }
 
     pub fn with_window_id(mut self, window_id: Option<&str>) -> Self {
-        if !matches!(
-            self.method.as_str(),
-            "surface.read_text"
-                | "surface.clear_history"
-                | "surface.trigger_flash"
-                | "notification.clear"
-                | "notification.create"
-                | "window.current"
-                | "window.display"
-                | "right_sidebar"
-                | "workspace.list"
-                | "workspace.current"
-                | "workspace.create"
-                | "workspace.close"
-                | "workspace.select"
-                | "workspace.rename"
-                | "workspace.action"
-                | "tab.action"
-                | "surface.respawn"
-        ) {
+        if !self.method.starts_with("workspace.group.")
+            && !matches!(
+                self.method.as_str(),
+                "surface.read_text"
+                    | "surface.clear_history"
+                    | "surface.trigger_flash"
+                    | "notification.clear"
+                    | "notification.create"
+                    | "window.current"
+                    | "window.display"
+                    | "right_sidebar"
+                    | "workspace.list"
+                    | "workspace.current"
+                    | "workspace.create"
+                    | "workspace.close"
+                    | "workspace.select"
+                    | "workspace.rename"
+                    | "workspace.action"
+                    | "tab.action"
+                    | "surface.respawn"
+            )
+        {
             return self;
         }
         let Some(window_id) = window_id.map(str::trim) else {
@@ -512,6 +514,7 @@ pub fn control_command_for(
             "workspace.action",
             workspace_action_params(args)?,
         )),
+        "workspace-group" => Some(workspace_group_subcommand(args)?),
         "respawn-pane" => Some(ControlCommand::new(
             "surface.respawn",
             respawn_pane_params(args)?,
@@ -779,24 +782,201 @@ fn workspace_subcommand(args: &[String]) -> Result<Option<ControlCommand>, CliEr
 
 fn workspace_group_subcommand(args: &[String]) -> Result<ControlCommand, CliError> {
     let Some((subcommand, rest)) = split_subcommand(args) else {
-        return Err(CliError::new("workspace group requires a subcommand"));
+        return Err(CliError::new(
+            "workspace-group requires a subcommand. Try: list, create, ungroup, delete, rename, collapse, expand, pin, unpin, add, remove, set-anchor, new-workspace, set-color, set-icon, move, focus",
+        ));
     };
-    let mapped = match subcommand.as_str() {
-        "collapse" => ControlCommand::new(
-            "workspace.group.set_collapsed",
-            workspace_group_collapsed_params(rest, true)?,
-        ),
-        "expand" => ControlCommand::new(
-            "workspace.group.set_collapsed",
-            workspace_group_collapsed_params(rest, false)?,
-        ),
+    let parsed = ParsedArgs::parse(rest)?;
+    let mut params = serde_json::Map::new();
+    apply_window_scope_selector(&parsed, &mut params);
+
+    let method = match subcommand.as_str() {
+        "list" => "workspace.group.list",
+        "create" => {
+            let name = parsed
+                .value(&["--name"])
+                .cloned()
+                .or_else(|| parsed.first_positional().map(str::to_owned))
+                .unwrap_or_default();
+            params.insert("name".into(), serde_json::json!(name));
+            if let Some(cwd) = parsed.value(&["--cwd"]) {
+                params.insert(
+                    "cwd".into(),
+                    serde_json::json!(resolve_workspace_group_path(cwd)),
+                );
+            }
+            if let Some(from) = parsed.value(&["--from"]) {
+                // Swift String.split omits empty subsequences before trimming.
+                let child_workspace_ids: Vec<String> = from
+                    .split(',')
+                    .filter(|part| !part.is_empty())
+                    .map(|part| part.trim().to_owned())
+                    .collect();
+                params.insert(
+                    "child_workspace_ids".into(),
+                    serde_json::json!(child_workspace_ids),
+                );
+            }
+            "workspace.group.create"
+        }
+        "ungroup" | "delete" | "collapse" | "expand" | "pin" | "unpin" | "focus" => {
+            params.insert(
+                "group_id".into(),
+                serde_json::json!(workspace_group_id(&parsed, &subcommand)?),
+            );
+            match subcommand.as_str() {
+                "ungroup" => "workspace.group.ungroup",
+                "delete" => "workspace.group.delete",
+                "collapse" => "workspace.group.collapse",
+                "expand" => "workspace.group.expand",
+                "pin" => "workspace.group.pin",
+                "unpin" => "workspace.group.unpin",
+                "focus" => "workspace.group.focus",
+                _ => unreachable!(),
+            }
+        }
+        "rename" => {
+            let group_id = workspace_group_id(&parsed, &subcommand)?;
+            let name = parsed.value(&["--name"]).cloned().or_else(|| {
+                parsed
+                    .positionals
+                    .iter()
+                    .find(|candidate| candidate.as_str() != group_id)
+                    .cloned()
+            });
+            let name = name.ok_or_else(|| CliError::new("rename requires --name <name>"))?;
+            params.insert("group_id".into(), serde_json::json!(group_id));
+            params.insert("name".into(), serde_json::json!(name));
+            "workspace.group.rename"
+        }
+        "add" => {
+            let Some(group_id) = parsed.value(&["--group"]) else {
+                return Err(CliError::new("add requires --group <id> --workspace <id>"));
+            };
+            let Some(workspace_id) = parsed.value(&["--workspace"]) else {
+                return Err(CliError::new("add requires --group <id> --workspace <id>"));
+            };
+            params.insert("group_id".into(), serde_json::json!(group_id));
+            params.insert("workspace_id".into(), serde_json::json!(workspace_id));
+            "workspace.group.add"
+        }
+        "remove" => {
+            let workspace_id = parsed
+                .value(&["--workspace"])
+                .cloned()
+                .or_else(|| parsed.first_positional().map(str::to_owned))
+                .ok_or_else(|| CliError::new("remove requires --workspace <id>"))?;
+            params.insert("workspace_id".into(), serde_json::json!(workspace_id));
+            "workspace.group.remove"
+        }
+        "set-anchor" => {
+            let Some(group_id) = parsed.value(&["--group"]) else {
+                return Err(CliError::new(
+                    "set-anchor requires --group <id> --workspace <id>",
+                ));
+            };
+            let Some(workspace_id) = parsed.value(&["--workspace"]) else {
+                return Err(CliError::new(
+                    "set-anchor requires --group <id> --workspace <id>",
+                ));
+            };
+            params.insert("group_id".into(), serde_json::json!(group_id));
+            params.insert("workspace_id".into(), serde_json::json!(workspace_id));
+            "workspace.group.set_anchor"
+        }
+        "new-workspace" => {
+            params.insert(
+                "group_id".into(),
+                serde_json::json!(workspace_group_id(&parsed, &subcommand)?),
+            );
+            if let Some(placement) = parsed.value(&["--placement"]) {
+                params.insert("placement".into(), serde_json::json!(placement));
+            }
+            "workspace.group.new_workspace"
+        }
+        "set-color" => {
+            params.insert(
+                "group_id".into(),
+                serde_json::json!(workspace_group_id(&parsed, &subcommand)?),
+            );
+            params.insert(
+                "hex".into(),
+                serde_json::json!(parsed.value(&["--hex"]).cloned().unwrap_or_default()),
+            );
+            "workspace.group.set_color"
+        }
+        "set-icon" => {
+            params.insert(
+                "group_id".into(),
+                serde_json::json!(workspace_group_id(&parsed, &subcommand)?),
+            );
+            params.insert(
+                "symbol".into(),
+                serde_json::json!(parsed.value(&["--symbol"]).cloned().unwrap_or_default()),
+            );
+            "workspace.group.set_icon"
+        }
+        "move" => {
+            params.insert(
+                "group_id".into(),
+                serde_json::json!(workspace_group_id(&parsed, &subcommand)?),
+            );
+            if let Some(to_index) = parsed.value(&["--to-index"]) {
+                let to_index = to_index
+                    .parse::<i64>()
+                    .map_err(|_| CliError::new("move --to-index must be an integer"))?;
+                params.insert("to_index".into(), serde_json::json!(to_index));
+            } else if let Some(before) = parsed.value(&["--before"]) {
+                params.insert("before_group_id".into(), serde_json::json!(before));
+            } else if let Some(after) = parsed.value(&["--after"]) {
+                params.insert("after_group_id".into(), serde_json::json!(after));
+            } else {
+                return Err(CliError::new(
+                    "move requires --to-index <n>, --before <group>, or --after <group>",
+                ));
+            }
+            "workspace.group.move"
+        }
         _ => {
             return Err(CliError::new(format!(
-                "unknown workspace group command: {subcommand}"
+                "Unknown workspace-group subcommand: {subcommand}"
             )))
         }
     };
-    Ok(mapped)
+    Ok(ControlCommand::new(
+        method,
+        serde_json::Value::Object(params),
+    ))
+}
+
+fn workspace_group_id(parsed: &ParsedArgs, subcommand: &str) -> Result<String, CliError> {
+    parsed
+        .value(&["--group"])
+        .cloned()
+        .or_else(|| parsed.first_positional().map(str::to_owned))
+        .ok_or_else(|| {
+            CliError::new(format!(
+                "workspace-group {subcommand} requires a group id or --group <id>"
+            ))
+        })
+}
+
+fn resolve_workspace_group_path(raw: &str) -> String {
+    let expanded = if raw == "~" || raw.starts_with("~/") || raw.starts_with("~\\") {
+        std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(PathBuf::from)
+            .map(|home| home.join(raw.trim_start_matches('~').trim_start_matches(['/', '\\'])))
+            .unwrap_or_else(|| PathBuf::from(raw))
+    } else {
+        PathBuf::from(raw)
+    };
+    let resolved = if expanded.is_absolute() {
+        expanded
+    } else {
+        std::env::current_dir().unwrap_or_default().join(expanded)
+    };
+    resolved.to_string_lossy().into_owned()
 }
 
 fn surface_subcommand(args: &[String]) -> Result<Option<ControlCommand>, CliError> {
@@ -2498,22 +2678,6 @@ fn workspace_list_log_params(args: &[String]) -> Result<serde_json::Value, CliEr
             .map_err(|_| CliError::new("list-log --limit requires a positive integer"))?;
         params.insert("limit".to_string(), serde_json::json!(limit));
     }
-    Ok(serde_json::Value::Object(params))
-}
-
-fn workspace_group_collapsed_params(
-    args: &[String],
-    collapsed: bool,
-) -> Result<serde_json::Value, CliError> {
-    let parsed = ParsedArgs::parse(args)?;
-    let group_id = parsed
-        .value(&["--group", "--group-id", "--id"])
-        .cloned()
-        .or_else(|| parsed.positionals.first().cloned())
-        .ok_or_else(|| CliError::new("workspace group command requires a group id"))?;
-    let mut params = serde_json::Map::new();
-    params.insert("group_id".to_string(), serde_json::json!(group_id));
-    params.insert("collapsed".to_string(), serde_json::json!(collapsed));
     Ok(serde_json::Value::Object(params))
 }
 
@@ -4536,6 +4700,7 @@ fn takes_value(arg: &str) -> bool {
             | "--group-id"
             | "--group-placement"
             | "--group-reference"
+            | "--hex"
             | "--height"
             | "--href"
             | "--id"
@@ -4568,6 +4733,7 @@ fn takes_value(arg: &str) -> bool {
             | "--panel"
             | "--panel-id"
             | "--path"
+            | "--placement"
             | "--pid"
             | "--property"
             | "--process-id"
@@ -4584,6 +4750,7 @@ fn takes_value(arg: &str) -> bool {
             | "--surface"
             | "--surface-id"
             | "--surface-ref"
+            | "--symbol"
             | "--status"
             | "--title"
             | "--timeout"
@@ -5997,15 +6164,11 @@ mod tests {
     #[test]
     fn maps_workspace_group_collapse_commands() {
         let collapse = mapped("workspace", &["group", "collapse", "group-1"]);
-        assert_eq!(collapse.method, "workspace.group.set_collapsed");
-        assert_eq!(
-            collapse.params,
-            serde_json::json!({"group_id": "group-1", "collapsed": true})
-        );
-        assert_eq!(
-            mapped("workspace", &["group", "expand", "--group", "group-1"]).params,
-            serde_json::json!({"group_id": "group-1", "collapsed": false})
-        );
+        assert_eq!(collapse.method, "workspace.group.collapse");
+        assert_eq!(collapse.params, serde_json::json!({"group_id": "group-1"}));
+        let expand = mapped("workspace", &["group", "expand", "--group", "group-1"]);
+        assert_eq!(expand.method, "workspace.group.expand");
+        assert_eq!(expand.params, serde_json::json!({"group_id": "group-1"}));
     }
 
     #[test]
