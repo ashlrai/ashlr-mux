@@ -6263,17 +6263,18 @@ fn apply_delete_workspace_group_candidate(
     let Some(window) = candidate.windows.get(window_index) else {
         return (None, false);
     };
-    let group_exists = window
+    let group = window
         .tab_manager
         .workspace_groups
         .as_deref()
         .unwrap_or_default()
         .iter()
-        .any(|group| group.id == group_id);
-    if !group_exists {
+        .find(|group| group.id == group_id);
+    let Some(group) = group else {
         return (None, false);
-    }
-    let member_indices = window
+    };
+    let anchor_workspace_id = group.anchor_workspace_id.clone();
+    let tab_order_member_indices = window
         .tab_manager
         .workspaces
         .iter()
@@ -6282,6 +6283,22 @@ fn apply_delete_workspace_group_candidate(
             (workspace.group_id.as_deref() == Some(group_id)).then_some(index)
         })
         .collect::<Vec<_>>();
+    let mut member_indices = tab_order_member_indices
+        .iter()
+        .copied()
+        .filter(|index| {
+            window.tab_manager.workspaces[*index]
+                .workspace_id
+                .as_deref()
+                != anchor_workspace_id.as_deref()
+        })
+        .collect::<Vec<_>>();
+    member_indices.extend(tab_order_member_indices.iter().copied().filter(|index| {
+        window.tab_manager.workspaces[*index]
+            .workspace_id
+            .as_deref()
+            == anchor_workspace_id.as_deref()
+    }));
     let closed_browser_tabs = member_indices
         .iter()
         .flat_map(|index| {
@@ -6305,10 +6322,19 @@ fn apply_delete_workspace_group_candidate(
         })
         .collect::<Vec<_>>();
 
-    if member_indices.len() == candidate.windows[window_index].tab_manager.workspaces.len() {
+    if !member_indices.is_empty()
+        && member_indices.len() == candidate.windows[window_index].tab_manager.workspaces.len()
+    {
         let panel_id = Uuid::new_v4().to_string();
-        let inherited_directory = member_indices
-            .first()
+        let inherited_directory = tab_order_member_indices
+            .iter()
+            .find(|index| {
+                candidate.windows[window_index].tab_manager.workspaces[**index]
+                    .workspace_id
+                    .as_deref()
+                    == anchor_workspace_id.as_deref()
+            })
+            .or_else(|| tab_order_member_indices.first())
             .and_then(|index| {
                 candidate.windows[window_index]
                     .tab_manager
@@ -6351,10 +6377,22 @@ fn apply_delete_workspace_group_candidate(
                 .then_some(index as i64)
         })
         .collect::<Vec<_>>();
-    let changed = session_ops::close_workspaces(
+    let mut changed = session_ops::close_workspaces(
         &mut candidate.windows[window_index].tab_manager,
         &live_indices,
     );
+    let tabs = &mut candidate.windows[window_index].tab_manager;
+    for workspace in &mut tabs.workspaces {
+        if workspace.group_id.as_deref() == Some(group_id) {
+            workspace.group_id = None;
+            changed = true;
+        }
+    }
+    if let Some(groups) = tabs.workspace_groups.as_mut() {
+        let before = groups.len();
+        groups.retain(|group| group.id != group_id);
+        changed |= groups.len() != before;
+    }
     if changed {
         sync_window_selected_workspace_id(&mut candidate.windows[window_index]);
     }
@@ -12445,7 +12483,7 @@ mod tests {
             Some(vec![cmux_core::session::SessionWorkspaceGroupSnapshot {
                 id: group_id.clone(),
                 name: "Group".to_string(),
-                anchor_workspace_id: Some(anchor_id),
+                anchor_workspace_id: Some(anchor_id.clone()),
                 ..Default::default()
             }]);
         let survivor_id = snapshot.windows[0].tab_manager.workspaces[2]
@@ -12459,6 +12497,13 @@ mod tests {
         assert!(changed);
         assert_eq!(artifacts.closed_count, 2);
         assert_eq!(artifacts.closed_workspaces.len(), 2);
+        assert_eq!(
+            artifacts
+                .closed_workspaces
+                .last()
+                .and_then(|closed| closed.workspace.workspace_id.as_deref()),
+            Some(anchor_id.as_str())
+        );
         assert_eq!(snapshot.windows[0].tab_manager.workspaces.len(), 1);
         assert_eq!(
             snapshot.windows[0].tab_manager.workspaces[0].workspace_id,
@@ -12521,6 +12566,39 @@ mod tests {
                 .expect("replacement id")
         ));
         assert!(tabs
+            .workspace_groups
+            .as_deref()
+            .unwrap_or_default()
+            .is_empty());
+    }
+
+    #[test]
+    fn delete_memberless_workspace_group_removes_the_persisted_record() {
+        let mut snapshot = initial_snapshot("surface-1");
+        let original_workspace_id = snapshot.windows[0].tab_manager.workspaces[0]
+            .workspace_id
+            .clone();
+        let group_id = Uuid::new_v4().to_string();
+        snapshot.windows[0].tab_manager.workspace_groups =
+            Some(vec![cmux_core::session::SessionWorkspaceGroupSnapshot {
+                id: group_id.clone(),
+                name: "Orphan".to_string(),
+                anchor_workspace_id: Some(Uuid::new_v4().to_string()),
+                ..Default::default()
+            }]);
+
+        let (artifacts, changed) =
+            apply_delete_workspace_group_candidate(&mut snapshot, 0, &group_id);
+
+        assert!(changed);
+        assert_eq!(artifacts.expect("group existed").closed_count, 0);
+        assert_eq!(snapshot.windows[0].tab_manager.workspaces.len(), 1);
+        assert_eq!(
+            snapshot.windows[0].tab_manager.workspaces[0].workspace_id,
+            original_workspace_id
+        );
+        assert!(snapshot.windows[0]
+            .tab_manager
             .workspace_groups
             .as_deref()
             .unwrap_or_default()

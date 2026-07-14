@@ -12,7 +12,7 @@
 //! module caches the last raw tree in-process purely so repeated saves preserve
 //! unknown nested keys without re-reading between every toggle.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
@@ -74,7 +74,28 @@ fn normalized_workspace_group_cwd(value: &str) -> String {
     } else {
         trimmed.to_string()
     };
-    let normalized = expanded.replace('\\', "/");
+    let slash_normalized = expanded.replace('\\', "/");
+    let normalized = if slash_normalized.contains('*') || slash_normalized.contains('?') {
+        slash_normalized
+    } else {
+        let path = PathBuf::from(&slash_normalized);
+        let absolute = if path.is_absolute() {
+            path
+        } else {
+            std::env::current_dir().unwrap_or_default().join(path)
+        };
+        let mut lexical = PathBuf::new();
+        for component in absolute.components() {
+            match component {
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    lexical.pop();
+                }
+                other => lexical.push(other.as_os_str()),
+            }
+        }
+        lexical.to_string_lossy().replace('\\', "/")
+    };
     if normalized.len() > 3 {
         normalized.trim_end_matches('/').to_string()
     } else {
@@ -127,6 +148,7 @@ fn workspace_group_cwd_matches(pattern: &str, cwd: &str) -> bool {
 pub(crate) fn workspace_group_new_workspace_placement(
     app: &AppHandle,
     cwd: Option<&str>,
+    local_config_cwd: Option<&str>,
 ) -> cmux_config::NewWorkspacePlacement {
     let state = app.state::<ConfigState>();
     let raw = {
@@ -142,36 +164,90 @@ pub(crate) fn workspace_group_new_workspace_placement(
             }
         }
     };
-    workspace_group_new_workspace_placement_from_raw(&raw, cwd)
+    let local_raw = local_config_cwd
+        .and_then(workspace_group_local_config_path)
+        .and_then(|path| load_raw_config(&path).ok());
+    workspace_group_new_workspace_placement_from_layers(&raw, local_raw.as_ref(), cwd)
 }
 
-fn workspace_group_new_workspace_placement_from_raw(
-    raw: &Value,
+fn workspace_group_local_config_path(cwd: &str) -> Option<PathBuf> {
+    let mut directory = PathBuf::from(cwd);
+    if directory.is_file() {
+        directory.pop();
+    }
+    loop {
+        let candidate = directory.join(".cmux").join("cmux.json");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        if !directory.pop() {
+            return None;
+        }
+    }
+}
+
+fn workspace_group_placement_value(
+    value: Option<&Value>,
+) -> Option<cmux_config::NewWorkspacePlacement> {
+    match value?.as_str()?.trim().to_ascii_lowercase().as_str() {
+        "aftercurrent" | "after-current" | "after_current" => {
+            Some(cmux_config::NewWorkspacePlacement::AfterCurrent)
+        }
+        "top" => Some(cmux_config::NewWorkspacePlacement::Top),
+        "end" => Some(cmux_config::NewWorkspacePlacement::End),
+        _ => None,
+    }
+}
+
+fn workspace_groups_section(raw: &Value) -> Option<&serde_json::Map<String, Value>> {
+    raw.get("workspaceGroups")
+        .or_else(|| raw.get("workspace_groups"))
+        .and_then(Value::as_object)
+}
+
+fn workspace_group_new_workspace_placement_from_layers(
+    global_raw: &Value,
+    local_raw: Option<&Value>,
     cwd: Option<&str>,
 ) -> cmux_config::NewWorkspacePlacement {
-    let Some(groups) = decode_settings_config(raw)
-        .ok()
-        .and_then(|config| config.workspace_groups)
-    else {
-        return cmux_config::NewWorkspacePlacement::AfterCurrent;
-    };
+    let global_groups = workspace_groups_section(global_raw);
+    let fallback = workspace_group_placement_value(
+        global_groups.and_then(|groups| groups.get("newWorkspacePlacement")),
+    )
+    .unwrap_or(cmux_config::NewWorkspacePlacement::AfterCurrent);
     let Some(cwd) = cwd
         .map(normalized_workspace_group_cwd)
         .filter(|cwd| !cwd.is_empty())
     else {
-        return groups.new_workspace_placement;
+        return fallback;
     };
-    groups
-        .by_cwd
+    let mut entries = serde_json::Map::new();
+    for raw in [Some(global_raw), local_raw].into_iter().flatten() {
+        let Some(by_cwd) = workspace_groups_section(raw)
+            .and_then(|groups| groups.get("byCwd").or_else(|| groups.get("by_cwd")))
+            .and_then(Value::as_object)
+        else {
+            continue;
+        };
+        for (key, entry) in by_cwd {
+            entries.insert(normalized_workspace_group_cwd(key), entry.clone());
+        }
+    }
+    entries
         .iter()
-        .filter_map(|(key, entry)| {
-            let normalized_key = normalized_workspace_group_cwd(key);
-            workspace_group_cwd_matches(&normalized_key, &cwd)
-                .then_some((normalized_key.len(), entry.new_workspace_placement))
+        .filter_map(|(normalized_key, entry)| {
+            workspace_group_cwd_matches(normalized_key, &cwd).then_some((
+                normalized_key.len(),
+                workspace_group_placement_value(
+                    entry
+                        .as_object()
+                        .and_then(|entry| entry.get("newWorkspacePlacement")),
+                ),
+            ))
         })
         .max_by_key(|(score, _)| *score)
         .and_then(|(_, placement)| placement)
-        .unwrap_or(groups.new_workspace_placement)
+        .unwrap_or(fallback)
 }
 
 /// Read the raw JSON document from `path`, defaulting a missing file to `{}`.
@@ -735,19 +811,23 @@ mod tests {
         });
 
         assert_eq!(
-            workspace_group_new_workspace_placement_from_raw(&raw, Some("c:\\REPOS\\cmux\\apps")),
+            workspace_group_new_workspace_placement_from_layers(
+                &raw,
+                None,
+                Some("c:\\REPOS\\cmux\\apps")
+            ),
             cmux_config::NewWorkspacePlacement::AfterCurrent
         );
         assert_eq!(
-            workspace_group_new_workspace_placement_from_raw(&raw, Some("C:/repos/other")),
+            workspace_group_new_workspace_placement_from_layers(&raw, None, Some("C:/repos/other")),
             cmux_config::NewWorkspacePlacement::Top
         );
         assert_eq!(
-            workspace_group_new_workspace_placement_from_raw(&raw, Some("C:/elsewhere")),
+            workspace_group_new_workspace_placement_from_layers(&raw, None, Some("C:/elsewhere")),
             cmux_config::NewWorkspacePlacement::End
         );
         assert_eq!(
-            workspace_group_new_workspace_placement_from_raw(&raw, None),
+            workspace_group_new_workspace_placement_from_layers(&raw, None, None),
             cmux_config::NewWorkspacePlacement::End
         );
     }
@@ -765,12 +845,51 @@ mod tests {
         });
 
         assert_eq!(
-            workspace_group_new_workspace_placement_from_raw(&raw, Some("C:/work/team/cmux")),
+            workspace_group_new_workspace_placement_from_layers(
+                &raw,
+                None,
+                Some("C:/work/team/cmux")
+            ),
             cmux_config::NewWorkspacePlacement::Top
         );
         assert_eq!(
-            workspace_group_new_workspace_placement_from_raw(&raw, Some("C:/repository")),
+            workspace_group_new_workspace_placement_from_layers(&raw, None, Some("C:/repository")),
             cmux_config::NewWorkspacePlacement::AfterCurrent
+        );
+    }
+
+    #[test]
+    fn workspace_group_placement_layers_local_entries_and_ignores_invalid_values() {
+        let global = json!({
+            "workspaceGroups": {
+                "newWorkspacePlacement": "end",
+                "byCwd": {
+                    "C:/repo": {"newWorkspacePlacement": "top"},
+                    "C:/broken": {"newWorkspacePlacement": "sideways"}
+                }
+            }
+        });
+        let local = json!({
+            "workspaceGroups": {"byCwd": {
+                "C:/repo": {"newWorkspacePlacement": "AFTER_CURRENT"}
+            }}
+        });
+
+        assert_eq!(
+            workspace_group_new_workspace_placement_from_layers(
+                &global,
+                Some(&local),
+                Some("C:/repo/./child/../app"),
+            ),
+            cmux_config::NewWorkspacePlacement::AfterCurrent
+        );
+        assert_eq!(
+            workspace_group_new_workspace_placement_from_layers(
+                &global,
+                None,
+                Some("C:/broken/app"),
+            ),
+            cmux_config::NewWorkspacePlacement::End
         );
     }
 

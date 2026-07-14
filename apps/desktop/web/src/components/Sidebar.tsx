@@ -755,6 +755,7 @@ export function Sidebar({
   openPortLinksInCmuxBrowser = false,
 }: SidebarProps): React.JSX.Element {
   const {
+    snapshot,
     workspaces,
     workspaceGroups,
     selectedWorkspaceIndex,
@@ -894,6 +895,18 @@ export function Sidebar({
     EMPTY_SELECTION,
   );
   const [anchorIndex, setAnchorIndex] = useState<number | undefined>(undefined);
+
+  const selectionWindowId = snapshot?.windows[0]?.window_id;
+  useEffect(() => {
+    void host
+      .invoke("sidebar_selection_update", {
+        windowId: selectionWindowId ?? null,
+        workspaceIds: [...multiSelection],
+      })
+      .catch((error) => {
+        console.error("sidebar selection mirror failed", error);
+      });
+  }, [multiSelection, selectionWindowId]);
 
   const liveIds = liveWorkspaceIdKeys(workspaces);
   const selectedId = workspaceIdKey(

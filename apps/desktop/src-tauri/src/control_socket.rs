@@ -193,6 +193,38 @@ pub struct ControlEventState {
 }
 
 #[derive(Default)]
+pub struct SidebarSelectionState {
+    by_window: Mutex<HashMap<String, Vec<String>>>,
+}
+
+impl SidebarSelectionState {
+    fn update(&self, window_id: Option<&str>, workspace_ids: Vec<String>) {
+        self.by_window
+            .lock()
+            .expect("sidebar selection mutex poisoned")
+            .insert(window_id.unwrap_or_default().to_string(), workspace_ids);
+    }
+
+    fn selected_for_window(&self, window_id: Option<&str>) -> Vec<String> {
+        self.by_window
+            .lock()
+            .expect("sidebar selection mutex poisoned")
+            .get(window_id.unwrap_or_default())
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
+#[tauri::command]
+pub fn sidebar_selection_update(
+    state: State<'_, SidebarSelectionState>,
+    window_id: Option<String>,
+    workspace_ids: Vec<String>,
+) {
+    state.update(window_id.as_deref(), workspace_ids);
+}
+
+#[derive(Default)]
 pub struct ControlHandleRegistryState {
     inner: Mutex<ControlHandleRegistry>,
 }
@@ -9351,6 +9383,51 @@ fn workspace_group_payload_with(
     })
 }
 
+fn workspace_group_create_cwd(
+    tabs: &cmux_core::session::SessionTabManagerSnapshot,
+    explicit_cwd: Option<String>,
+    child_ids: &[Uuid],
+    other_anchor_ids: &HashSet<Uuid>,
+) -> Option<String> {
+    explicit_cwd.or_else(|| {
+        child_ids
+            .iter()
+            .find_map(|child_id| {
+                tabs.workspaces.iter().find(|workspace| {
+                    workspace
+                        .workspace_id
+                        .as_deref()
+                        .and_then(|id| Uuid::parse_str(id).ok())
+                        == Some(*child_id)
+                        && workspace.is_pinned != Some(true)
+                        && !other_anchor_ids.contains(child_id)
+                })
+            })
+            .and_then(|workspace| workspace.current_directory.clone())
+    })
+}
+
+fn parse_workspace_group_placement(
+    raw: Option<&str>,
+) -> Option<session_ops::WorkspaceGroupPlacement> {
+    match raw?.trim().to_ascii_lowercase().as_str() {
+        "aftercurrent" | "after-current" | "after_current" => {
+            Some(session_ops::WorkspaceGroupPlacement::AfterCurrent)
+        }
+        "top" => Some(session_ops::WorkspaceGroupPlacement::Top),
+        "end" => Some(session_ops::WorkspaceGroupPlacement::End),
+        _ => None,
+    }
+}
+
+const SF_SYMBOL_NAMES: &str = include_str!("sf_symbols_v7.txt");
+
+fn normalized_workspace_group_icon_symbol(raw: Option<&str>) -> Option<String> {
+    let symbol = raw?.trim();
+    (!symbol.is_empty() && SF_SYMBOL_NAMES.lines().any(|candidate| candidate == symbol))
+        .then(|| symbol.to_string())
+}
+
 fn workspace_group_list(
     app: &AppHandle,
     current: &AppSessionSnapshot,
@@ -9379,6 +9456,11 @@ enum WorkspaceGroupTransactionError {
     Mutation(cmux_core::session_ops::WorkspaceGroupMutationError),
     Publication(String),
 }
+
+type WorkspaceGroupMutationResult =
+    Result<(Value, bool), cmux_core::session_ops::WorkspaceGroupMutationError>;
+type WorkspaceGroupMutation =
+    dyn FnOnce(&mut cmux_core::session::SessionTabManagerSnapshot) -> WorkspaceGroupMutationResult;
 
 fn workspace_group_transaction(
     app: &AppHandle,
@@ -9445,12 +9527,9 @@ fn workspace_group_control(
             Some(json!({"group_id": id})),
         )
     };
-    let transaction = |mutation: Box<
-        dyn FnOnce(
-            &mut cmux_core::session::SessionTabManagerSnapshot,
-        )
-            -> Result<(Value, bool), cmux_core::session_ops::WorkspaceGroupMutationError>,
-    >| workspace_group_transaction(app, window_index, mutation);
+    let transaction = |mutation: Box<WorkspaceGroupMutation>| {
+        workspace_group_transaction(app, window_index, mutation)
+    };
     match method {
         "workspace.group.create" => {
             let explicit_children = match params.get("child_workspace_ids") {
@@ -9473,19 +9552,31 @@ fn workspace_group_control(
                 }
             };
             let raw_children = explicit_children.clone().unwrap_or_else(|| {
+                let window = &current.windows[window_index];
+                let selected = app
+                    .state::<SidebarSelectionState>()
+                    .selected_for_window(window.window_id.as_deref())
+                    .into_iter()
+                    .collect::<HashSet<_>>();
+                let sidebar_children = window
+                    .tab_manager
+                    .workspaces
+                    .iter()
+                    .filter_map(|workspace| workspace.workspace_id.as_ref())
+                    .filter(|workspace_id| selected.contains(*workspace_id))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if !sidebar_children.is_empty() {
+                    return sidebar_children;
+                }
                 string_param(params, &["workspace_id"])
                     .into_iter()
                     .chain(
-                        current.windows[window_index]
+                        window
                             .tab_manager
                             .selected_workspace_index
                             .and_then(|index| usize::try_from(index).ok())
-                            .and_then(|index| {
-                                current.windows[window_index]
-                                    .tab_manager
-                                    .workspaces
-                                    .get(index)
-                            })
+                            .and_then(|index| window.tab_manager.workspaces.get(index))
                             .and_then(|workspace| workspace.workspace_id.clone()),
                     )
                     .take(1)
@@ -9569,22 +9660,12 @@ fn workspace_group_control(
                 );
             }
             let name = raw_string_param(params, &["name"]).unwrap_or_default();
-            let cwd = raw_string_param(params, &["cwd"])
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-                .or_else(|| {
-                    current.windows[window_index]
-                        .tab_manager
-                        .selected_workspace_index
-                        .and_then(|index| usize::try_from(index).ok())
-                        .and_then(|index| {
-                            current.windows[window_index]
-                                .tab_manager
-                                .workspaces
-                                .get(index)
-                        })
-                        .and_then(|workspace| workspace.current_directory.clone())
-                });
+            let cwd = workspace_group_create_cwd(
+                &current.windows[window_index].tab_manager,
+                raw_string_param(params, &["cwd"]),
+                &child_ids,
+                &other_anchors,
+            );
             let new_group_id = Uuid::new_v4();
             let anchor_workspace_id = Uuid::new_v4();
             let panel_id = Uuid::new_v4().to_string();
@@ -9619,6 +9700,17 @@ fn workspace_group_control(
                     anchor_workspace_id,
                     &child_ids,
                 )?;
+                if let Some(anchor) = tabs.workspaces.iter_mut().find(|workspace| {
+                    workspace
+                        .workspace_id
+                        .as_deref()
+                        .and_then(|id| Uuid::parse_str(id).ok())
+                        == Some(anchor_workspace_id)
+                }) {
+                    anchor.process_title = group.name.clone();
+                    anchor.custom_title = Some(group.name.clone());
+                    anchor.custom_title_source = Some("user".to_string());
+                }
                 Ok::<_, cmux_core::session_ops::WorkspaceGroupMutationError>((group, true))
             });
             let (_group, committed) = match result {
@@ -9765,24 +9857,18 @@ fn workspace_group_control(
             let (Some(group_id), Some(workspace_id)) = (group_id(), workspace_id()) else {
                 return invalid_params("Missing group_id or workspace_id");
             };
-            let placement = match raw_string_param(params, &["placement"])
+            let placement_raw = raw_string_param(params, &["placement"]);
+            let placement = parse_workspace_group_placement(placement_raw.as_deref());
+            if placement_raw
                 .as_deref()
-                .map(str::trim)
+                .is_some_and(|raw| !raw.trim().is_empty() && placement.is_none())
             {
-                None | Some("") => None,
-                Some("afterCurrent" | "after-current" | "after_current") => {
-                    Some(session_ops::WorkspaceGroupPlacement::AfterCurrent)
-                }
-                Some("top") => Some(session_ops::WorkspaceGroupPlacement::Top),
-                Some("end") => Some(session_ops::WorkspaceGroupPlacement::End),
-                Some(raw) => {
-                    return workspace_group_error(
-                        "invalid_params",
-                        "Invalid placement",
-                        Some(json!({"placement": raw})),
-                    )
-                }
-            };
+                return workspace_group_error(
+                    "invalid_params",
+                    "Invalid placement",
+                    Some(json!({"placement": placement_raw})),
+                );
+            }
             let reference_present = params
                 .get("reference_workspace_id")
                 .is_some_and(|value| !value.is_null());
@@ -9893,19 +9979,17 @@ fn workspace_group_control(
                 return not_found_group(group_id);
             }
             let explicit = raw_string_param(params, &["placement"]);
-            let placement = match explicit.as_deref().map(str::trim) {
-                None | Some("") => None,
-                Some("afterCurrent") => Some("afterCurrent"),
-                Some("top") => Some("top"),
-                Some("end") => Some("end"),
-                Some(raw) => {
-                    return workspace_group_error(
-                        "invalid_params",
-                        "placement must be one of: afterCurrent, top, end",
-                        Some(json!({"placement": raw})),
-                    )
-                }
-            };
+            let placement = parse_workspace_group_placement(explicit.as_deref());
+            if explicit
+                .as_deref()
+                .is_some_and(|raw| !raw.trim().is_empty() && placement.is_none())
+            {
+                return workspace_group_error(
+                    "invalid_params",
+                    "placement must be one of: afterCurrent, top, end",
+                    Some(json!({"placement": explicit})),
+                );
+            }
             let group = current.windows[window_index]
                 .tab_manager
                 .workspace_groups
@@ -9923,28 +10007,44 @@ fn workspace_group_control(
                     .find(|workspace| workspace.workspace_id.as_deref() == Some(anchor))
                     .and_then(|workspace| workspace.current_directory.as_deref())
             });
-            let effective = placement.unwrap_or_else(|| {
-                match crate::config::workspace_group_new_workspace_placement(app, cwd) {
-                    cmux_config::NewWorkspacePlacement::AfterCurrent => "afterCurrent",
-                    cmux_config::NewWorkspacePlacement::Top => "top",
-                    cmux_config::NewWorkspacePlacement::End => "end",
-                }
-            });
-            let selected_reference = current.windows[window_index]
+            let local_config_cwd = current.windows[window_index]
                 .tab_manager
                 .selected_workspace_index
                 .and_then(|index| usize::try_from(index).ok())
-                .filter(|index| {
-                    current.windows[window_index].tab_manager.workspaces[*index]
-                        .group_id
-                        .as_deref()
-                        == Some(group_id.to_string().as_str())
-                });
+                .and_then(|index| {
+                    current.windows[window_index]
+                        .tab_manager
+                        .workspaces
+                        .get(index)
+                })
+                .and_then(|workspace| workspace.current_directory.as_deref());
+            let effective = placement.unwrap_or_else(|| {
+                match crate::config::workspace_group_new_workspace_placement(
+                    app,
+                    cwd,
+                    local_config_cwd,
+                ) {
+                    cmux_config::NewWorkspacePlacement::AfterCurrent => {
+                        session_ops::WorkspaceGroupPlacement::AfterCurrent
+                    }
+                    cmux_config::NewWorkspacePlacement::Top => {
+                        session_ops::WorkspaceGroupPlacement::Top
+                    }
+                    cmux_config::NewWorkspacePlacement::End => {
+                        session_ops::WorkspaceGroupPlacement::End
+                    }
+                }
+            });
+            let effective = match effective {
+                session_ops::WorkspaceGroupPlacement::AfterCurrent => "afterCurrent",
+                session_ops::WorkspaceGroupPlacement::Top => "top",
+                session_ops::WorkspaceGroupPlacement::End => "end",
+            };
             let insert_index = workspace_group_insert_index(
                 &current.windows[window_index].tab_manager,
                 &group_id.to_string(),
                 effective,
-                selected_reference,
+                None,
             );
             let state = app.state::<SessionState>();
             match new_workspace_in_window_for_control(
@@ -10009,15 +10109,20 @@ fn workspace_group_control(
                     }
                 }
             } else {
-                let value = raw_string_param(params, &["symbol"])
-                    .map(|value| value.trim().to_string())
-                    .filter(|value| !value.is_empty());
-                let response = value.clone();
+                let raw_symbol = raw_string_param(params, &["symbol"]);
+                let value = normalized_workspace_group_icon_symbol(raw_symbol.as_deref());
                 match transaction(Box::new(move |tabs| {
                     session_ops::set_workspace_group_icon_snapshot(tabs, group_id, value).map(
                         |changed| {
+                            let stored = tabs
+                                .workspace_groups
+                                .as_deref()
+                                .unwrap_or_default()
+                                .iter()
+                                .find(|group| group.id == group_id.to_string())
+                                .and_then(|group| group.icon_symbol.clone());
                             (
-                                json!({"group_id": group_id, "icon_symbol": response}),
+                                json!({"group_id": group_id, "icon_symbol": stored}),
                                 changed,
                             )
                         },
@@ -22137,6 +22242,71 @@ mod tests {
             workspace_group_insert_index(tabs, "group-a", "afterCurrent", Some(0)),
             Some(1)
         );
+    }
+
+    #[test]
+    fn workspace_group_create_cwd_prefers_explicit_then_first_eligible_child() {
+        let mut snapshot = test_snapshot();
+        let first_id = Uuid::new_v4();
+        let second_id = Uuid::new_v4();
+        let anchor_id = Uuid::new_v4();
+        let first = &mut snapshot.windows[0].tab_manager.workspaces[0];
+        first.workspace_id = Some(first_id.to_string());
+        first.current_directory = Some("C:/first".to_string());
+        first.is_pinned = Some(true);
+        let mut second = first.clone();
+        second.workspace_id = Some(second_id.to_string());
+        second.current_directory = Some("C:/second".to_string());
+        second.is_pinned = None;
+        snapshot.windows[0].tab_manager.workspaces.push(second);
+
+        assert_eq!(
+            workspace_group_create_cwd(
+                &snapshot.windows[0].tab_manager,
+                None,
+                &[first_id, second_id],
+                &HashSet::new(),
+            )
+            .as_deref(),
+            Some("C:/second")
+        );
+        assert_eq!(
+            workspace_group_create_cwd(
+                &snapshot.windows[0].tab_manager,
+                Some("  explicit  ".to_string()),
+                &[second_id],
+                &HashSet::from([anchor_id]),
+            )
+            .as_deref(),
+            Some("  explicit  ")
+        );
+        assert_eq!(
+            workspace_group_create_cwd(
+                &snapshot.windows[0].tab_manager,
+                None,
+                &[second_id],
+                &HashSet::from([second_id]),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn workspace_group_icon_normalization_uses_the_frozen_host_catalog() {
+        assert_eq!(
+            normalized_workspace_group_icon_symbol(Some("  folder.fill  ")).as_deref(),
+            Some("folder.fill")
+        );
+        assert_eq!(
+            normalized_workspace_group_icon_symbol(Some("server.rack")).as_deref(),
+            Some("server.rack")
+        );
+        assert_eq!(
+            normalized_workspace_group_icon_symbol(Some("not.an.sf.symbol")),
+            None
+        );
+        assert_eq!(normalized_workspace_group_icon_symbol(Some("  ")), None);
+        assert_eq!(normalized_workspace_group_icon_symbol(None), None);
     }
 
     #[test]

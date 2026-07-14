@@ -110,15 +110,17 @@ impl ControlCommand {
         let Some(surface_id) = surface_id.map(str::trim) else {
             return self;
         };
-        if !matches!(
-            self.method.as_str(),
-            "workspace.list"
-                | "workspace.current"
-                | "workspace.create"
-                | "workspace.rename"
-                | "tab.action"
-                | "surface.respawn"
-        ) {
+        if !self.method.starts_with("workspace.group.")
+            && !matches!(
+                self.method.as_str(),
+                "workspace.list"
+                    | "workspace.current"
+                    | "workspace.create"
+                    | "workspace.rename"
+                    | "tab.action"
+                    | "surface.respawn"
+            )
+        {
             return self;
         }
         let Some(params) = self.params.as_object_mut() else {
@@ -158,100 +160,101 @@ impl ControlCommand {
 }
 
 fn workspace_scoped_method(method: &str) -> bool {
-    matches!(
-        method,
-        "workspace.current"
-            | "workspace.list"
-            | "workspace.create"
-            | "workspace.close"
-            | "workspace.rename"
-            | "workspace.action"
-            | "workspace.equalize_splits"
-            | "workspace.set_description"
-            | "workspace.reset_color"
-            | "workspace.set_progress"
-            | "workspace.clear_progress"
-            | "workspace.set_status"
-            | "workspace.clear_status"
-            | "workspace.list_status"
-            | "workspace.set_agent_pid"
-            | "workspace.clear_agent_pid"
-            | "workspace.report_pr"
-            | "workspace.report_review"
-            | "workspace.clear_pr"
-            | "workspace.report_meta"
-            | "workspace.clear_meta"
-            | "workspace.list_meta"
-            | "workspace.report_meta_block"
-            | "workspace.clear_meta_block"
-            | "workspace.list_meta_blocks"
-            | "workspace.reset_sidebar"
-            | "workspace.log"
-            | "workspace.clear_log"
-            | "workspace.list_log"
-            | "workspace.sidebar_state"
-            | "workspace.set_unread"
-            | "workspace.set_pinned"
-            | "pane.focus"
-            | "pane.list"
-            | "pane.surfaces"
-            | "surface.list"
-            | "surface.split"
-            | "surface.new_terminal_tab"
-            | "surface.new_tab"
-            | "surface.split_browser"
-            | "surface.close"
-            | "surface.set_type"
-            | "surface.set_kind"
-            | "surface.rename"
-            | "surface.set_title"
-            | "surface.set_pinned"
-            | "surface.set_unread"
-            | "surface.report_ports"
-            | "surface.set_ports"
-            | "report_ports"
-            | "surface.report_tty"
-            | "report_tty"
-            | "surface.report_shell_state"
-            | "report_shell_state"
-            | "surface.clear_ports"
-            | "clear_ports"
-            | "surface.ports_kick"
-            | "ports_kick"
-            | "surface.focus"
-            | "surface.health"
-            | "surface.read_text"
-            | "surface.clear_history"
-            | "surface.trigger_flash"
-            | "notification.clear"
-            | "notification.create"
-            | "right_sidebar"
-            | "debug.terminals"
-            | "surface.send_text"
-            | "surface.send_key"
-            | "surface.open_browser"
-            | "surface.open_markdown"
-            | "surface.open_file"
-            | "surface.open_diff"
-            | "surface.next"
-            | "surface.previous"
-            | "surface.toggle_split_zoom"
-            | "browser.back"
-            | "browser.forward"
-            | "browser.reload"
-            | "browser.url.get"
-            | "browser.focus_webview"
-            | "browser.is_webview_focused"
-            | "browser.clear_history"
-            | "browser.toggle_omnibar"
-            | "browser.toggle_focus_mode"
-            | "tab.action"
-            | "surface.respawn"
-            | "browser.toggle_developer_tools"
-            | "browser.show_developer_tools"
-            | "browser.network.requests"
-            | "browser.set_zoom"
-    )
+    method.starts_with("workspace.group.")
+        || matches!(
+            method,
+            "workspace.current"
+                | "workspace.list"
+                | "workspace.create"
+                | "workspace.close"
+                | "workspace.rename"
+                | "workspace.action"
+                | "workspace.equalize_splits"
+                | "workspace.set_description"
+                | "workspace.reset_color"
+                | "workspace.set_progress"
+                | "workspace.clear_progress"
+                | "workspace.set_status"
+                | "workspace.clear_status"
+                | "workspace.list_status"
+                | "workspace.set_agent_pid"
+                | "workspace.clear_agent_pid"
+                | "workspace.report_pr"
+                | "workspace.report_review"
+                | "workspace.clear_pr"
+                | "workspace.report_meta"
+                | "workspace.clear_meta"
+                | "workspace.list_meta"
+                | "workspace.report_meta_block"
+                | "workspace.clear_meta_block"
+                | "workspace.list_meta_blocks"
+                | "workspace.reset_sidebar"
+                | "workspace.log"
+                | "workspace.clear_log"
+                | "workspace.list_log"
+                | "workspace.sidebar_state"
+                | "workspace.set_unread"
+                | "workspace.set_pinned"
+                | "pane.focus"
+                | "pane.list"
+                | "pane.surfaces"
+                | "surface.list"
+                | "surface.split"
+                | "surface.new_terminal_tab"
+                | "surface.new_tab"
+                | "surface.split_browser"
+                | "surface.close"
+                | "surface.set_type"
+                | "surface.set_kind"
+                | "surface.rename"
+                | "surface.set_title"
+                | "surface.set_pinned"
+                | "surface.set_unread"
+                | "surface.report_ports"
+                | "surface.set_ports"
+                | "report_ports"
+                | "surface.report_tty"
+                | "report_tty"
+                | "surface.report_shell_state"
+                | "report_shell_state"
+                | "surface.clear_ports"
+                | "clear_ports"
+                | "surface.ports_kick"
+                | "ports_kick"
+                | "surface.focus"
+                | "surface.health"
+                | "surface.read_text"
+                | "surface.clear_history"
+                | "surface.trigger_flash"
+                | "notification.clear"
+                | "notification.create"
+                | "right_sidebar"
+                | "debug.terminals"
+                | "surface.send_text"
+                | "surface.send_key"
+                | "surface.open_browser"
+                | "surface.open_markdown"
+                | "surface.open_file"
+                | "surface.open_diff"
+                | "surface.next"
+                | "surface.previous"
+                | "surface.toggle_split_zoom"
+                | "browser.back"
+                | "browser.forward"
+                | "browser.reload"
+                | "browser.url.get"
+                | "browser.focus_webview"
+                | "browser.is_webview_focused"
+                | "browser.clear_history"
+                | "browser.toggle_omnibar"
+                | "browser.toggle_focus_mode"
+                | "tab.action"
+                | "surface.respawn"
+                | "browser.toggle_developer_tools"
+                | "browser.show_developer_tools"
+                | "browser.network.requests"
+                | "browser.set_zoom"
+        )
 }
 
 pub fn control_command_for(
@@ -4858,6 +4861,22 @@ mod tests {
         assert_eq!(
             command.params,
             serde_json::json!({"workspace_id":"workspace-2"})
+        );
+    }
+
+    #[test]
+    fn workspace_group_commands_carry_canonical_caller_context() {
+        let command = mapped("workspace-group", &["create", "Build"])
+            .with_ambient_surface_id(Some("surface:2"))
+            .with_ambient_workspace_id(Some("workspace:2"));
+        assert_eq!(command.method, "workspace.group.create");
+        assert_eq!(
+            command.params,
+            serde_json::json!({
+                "name":"Build",
+                "surface_id":"surface:2",
+                "workspace_id":"workspace:2"
+            })
         );
     }
 

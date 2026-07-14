@@ -292,6 +292,7 @@ pub fn run() {
         .manage(config::ConfigState::default())
         .manage(control_socket::ControlSocketState::default())
         .manage(control_socket::ControlEventState::default())
+        .manage(control_socket::SidebarSelectionState::default())
         .manage(control_socket::ControlHandleRegistryState::default())
         .manage(control_socket::ControlActiveWindowState::default())
         .manage(control_socket::RemoteWindowDepartureRegistryState::default())
@@ -451,6 +452,7 @@ pub fn run() {
             command_palette::command_palette_search,
             control_socket::control_socket_status,
             control_socket::restart_control_socket_listener,
+            control_socket::sidebar_selection_update,
             control_socket::custom_sidebar_action_invoke,
             right_sidebar::right_sidebar_update_state,
             right_sidebar::right_sidebar_beta_settings,

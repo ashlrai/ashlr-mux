@@ -174,6 +174,8 @@ fn dispatch(
                         .as_deref()
                         .is_some_and(|window| !window.trim().is_empty()),
                 )
+            } else if control.method.starts_with("workspace.group.") {
+                run_workspace_group_command(options, &control.method, &control.params)
             } else if matches!(command, "tab-action" | "respawn-pane") {
                 run_lifecycle_command(options, &control.method, &control.params)
             } else {
@@ -762,6 +764,38 @@ fn run_control_command(
         println!("{}", serde_json::to_string(&result).unwrap_or_default());
     } else {
         println!("{}", format_control_result(method, &result));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn run_workspace_group_command(
+    _options: &GlobalOptions,
+    _method: &str,
+    _params: &serde_json::Value,
+) -> Result<(), CliError> {
+    Err(CliError::new(
+        "socket commands are only supported on Windows in this build",
+    ))
+}
+
+#[cfg(windows)]
+fn run_workspace_group_command(
+    options: &GlobalOptions,
+    method: &str,
+    params: &serde_json::Value,
+) -> Result<(), CliError> {
+    let result = call_control_command(options, method, params)?;
+    let id_format = options.id_format.as_deref().unwrap_or("refs");
+    if options.json_output {
+        let mut formatted = result;
+        filter_id_format(&mut formatted, id_format);
+        println!("{}", serde_json::to_string(&formatted).unwrap_or_default());
+    } else {
+        println!(
+            "{}",
+            format_workspace_group_text(method, &result, id_format)
+        );
     }
     Ok(())
 }
@@ -2369,6 +2403,85 @@ fn format_workspace_entries(result: &serde_json::Value) -> String {
     format_workspace_entries_with_mode(result, "refs")
 }
 
+fn format_workspace_group_text(
+    method: &str,
+    result: &serde_json::Value,
+    id_format: &str,
+) -> String {
+    match method {
+        "workspace.group.list" => {
+            let groups = result
+                .get("groups")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            if groups.is_empty() {
+                return "No groups".to_string();
+            }
+            groups
+                .iter()
+                .map(|group| {
+                    let handle = format_id_pair(
+                        group.get("id").and_then(serde_json::Value::as_str),
+                        group.get("ref").and_then(serde_json::Value::as_str),
+                        id_format,
+                    )
+                    .unwrap_or_else(|| "unknown".to_string());
+                    let name = group
+                        .get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default();
+                    let count = group
+                        .get("member_count")
+                        .and_then(serde_json::Value::as_i64)
+                        .unwrap_or_default();
+                    let pinned = if group.get("is_pinned").and_then(serde_json::Value::as_bool)
+                        == Some(true)
+                    {
+                        " [pinned]"
+                    } else {
+                        ""
+                    };
+                    let collapsed = if group
+                        .get("is_collapsed")
+                        .and_then(serde_json::Value::as_bool)
+                        == Some(true)
+                    {
+                        " [collapsed]"
+                    } else {
+                        ""
+                    };
+                    format!("{handle}  {name}  ({count} members){pinned}{collapsed}")
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        "workspace.group.create" => result
+            .get("group")
+            .and_then(|group| {
+                format_id_pair(
+                    group.get("id").and_then(serde_json::Value::as_str),
+                    group.get("ref").and_then(serde_json::Value::as_str),
+                    id_format,
+                )
+            })
+            .map(|handle| format!("OK {handle}"))
+            .unwrap_or_else(|| "OK".to_string()),
+        "workspace.group.new_workspace" => format_id_pair(
+            result
+                .get("workspace_id")
+                .and_then(serde_json::Value::as_str),
+            result
+                .get("workspace_ref")
+                .and_then(serde_json::Value::as_str),
+            id_format,
+        )
+        .map(|handle| format!("OK {handle}"))
+        .unwrap_or_else(|| "OK".to_string()),
+        _ => "OK".to_string(),
+    }
+}
+
 fn format_workspace_entries_with_mode(result: &serde_json::Value, id_format: &str) -> String {
     let Some(workspaces) = result
         .get("workspaces")
@@ -2849,6 +2962,54 @@ mod control_result_tests {
         assert_eq!(
             uuids,
             serde_json::json!({"workspace_id":"uuid","workspace":{"surface_id":"surface-uuid"}})
+        );
+    }
+
+    #[test]
+    fn workspace_group_results_use_canonical_text_and_id_modes() {
+        let list = serde_json::json!({"groups":[{
+            "id":"group-uuid","ref":"workspace_group:1","name":"Build",
+            "member_count":2,"is_pinned":true,"is_collapsed":true
+        }]});
+        assert_eq!(
+            format_workspace_group_text("workspace.group.list", &list, "refs"),
+            "workspace_group:1  Build  (2 members) [pinned] [collapsed]"
+        );
+        assert_eq!(
+            format_workspace_group_text("workspace.group.list", &list, "uuids"),
+            "group-uuid  Build  (2 members) [pinned] [collapsed]"
+        );
+        assert_eq!(
+            format_workspace_group_text(
+                "workspace.group.create",
+                &serde_json::json!({"group":{"id":"group-uuid","ref":"workspace_group:1"}}),
+                "refs",
+            ),
+            "OK workspace_group:1"
+        );
+        assert_eq!(
+            format_workspace_group_text(
+                "workspace.group.new_workspace",
+                &serde_json::json!({"workspace_id":"workspace-uuid","workspace_ref":"workspace:2"}),
+                "refs",
+            ),
+            "OK workspace:2"
+        );
+        assert_eq!(
+            format_workspace_group_text(
+                "workspace.group.rename",
+                &serde_json::json!({"group_id":"group-uuid"}),
+                "refs",
+            ),
+            "OK"
+        );
+        assert_eq!(
+            format_workspace_group_text(
+                "workspace.group.list",
+                &serde_json::json!({"groups":[]}),
+                "refs",
+            ),
+            "No groups"
         );
     }
 
