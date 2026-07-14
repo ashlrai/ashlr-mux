@@ -43,6 +43,17 @@ class WindowsEvidenceTests(unittest.TestCase):
         self.assertEqual(panes["control_methods"], ["pane.list"])
         self.assertIn("browser.viewport.set", self.data["explicit_unsupported_methods"])
 
+    def test_window_lifecycle_cli_uses_its_typed_executor(self) -> None:
+        rows = {row["command"]: row for row in self.data["cli_commands"]}
+        for command in ("new-window", "focus-window", "close-window"):
+            with self.subTest(command=command):
+                self.assertEqual(rows[command]["executor"], "window_lifecycle")
+                self.assertEqual(rows[command]["dispatch_outcome"], "special_executor")
+                self.assertNotEqual(
+                    rows[command]["dispatch_outcome"],
+                    "explicit_socket_command_not_ported",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
