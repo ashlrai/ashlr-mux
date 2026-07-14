@@ -24,7 +24,7 @@ CLASSIFY = Path("crates/cmux-cli/src/classify.rs")
 FORWARD = Path("crates/cmux-cli/src/command_forward.rs")
 DISPATCH = Path("crates/cmux-cli/src/dispatch.rs")
 DEFAULT_OUTPUT = Path("docs/parity/source/windows_evidence.json")
-PINNED_WINDOWS_COMMIT = "3222d6d7b96e033c997f93f9a14117f7d562d95c"
+PINNED_WINDOWS_COMMIT = "408951f0adc174929f927714dc0dc520ef1528b1"
 
 
 def line_number(text: str, offset: int) -> int:
@@ -367,6 +367,8 @@ SPECIAL_EXECUTORS = {
     "rpc": "raw_rpc", "__tmux-compat": "tmux_compat", "events": "event_stream",
     "ssh": "ssh", "feed-hook": "feed_hook", "feed": "feed", "hooks": "hooks",
     "setup-hooks": "hooks", "uninstall-hooks": "hooks",
+    "new-window": "window_lifecycle", "focus-window": "window_lifecycle",
+    "close-window": "window_lifecycle",
 }
 
 
