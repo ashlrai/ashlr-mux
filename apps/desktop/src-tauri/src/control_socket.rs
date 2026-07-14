@@ -1268,8 +1268,19 @@ impl cmux_ipc::ControlRequestHandler for DesktopControlHandler {
     }
 }
 
+struct DeferredRemoteWorkspaceRenameFlush<'a>(&'a SessionState);
+
+impl Drop for DeferredRemoteWorkspaceRenameFlush<'_> {
+    fn drop(&mut self) {
+        self.0.flush_deferred_remote_workspace_renames();
+    }
+}
+
 fn handle_control_request(app: &AppHandle, mut request: ControlRequest) -> ControlCallResult {
     let session_state = app.state::<SessionState>();
+    // Declared before the guard so reverse drop order releases the request-wide
+    // mutation gate before any deferred SSH process is created.
+    let _remote_workspace_rename_flush = DeferredRemoteWorkspaceRenameFlush(session_state.inner());
     let _control_guard = match session_state.lock_control_mutation() {
         Ok(guard) => guard,
         Err(message) => {

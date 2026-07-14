@@ -226,3 +226,25 @@ fn remote_rename_is_best_effort_after_local_commit() {
     );
     assert_eq!(*authority.lock().unwrap(), committed);
 }
+
+#[test]
+fn production_remote_rename_queue_does_not_dispatch_until_explicit_flush() {
+    let controller = Arc::new(FailingRemoteRenameController::default());
+    let mut state = SessionState::default();
+    state.remote_workspace_rename_controller = controller.clone();
+    let request = RemoteWorkspaceRenameRequest {
+        workspace_id: SECOND.into(),
+        destination: "example.invalid".into(),
+        port: None,
+        identity_file: None,
+        ssh_options: Vec::new(),
+        session: Some("remote-session".into()),
+        title: "Renamed".into(),
+    };
+
+    state.defer_remote_workspace_rename(request);
+    assert_eq!(*controller.calls.lock().unwrap(), 0);
+
+    state.flush_deferred_remote_workspace_renames();
+    assert_eq!(*controller.calls.lock().unwrap(), 1);
+}

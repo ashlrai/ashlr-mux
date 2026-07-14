@@ -64,6 +64,7 @@ pub struct SessionState {
     remote_configs: Mutex<HashMap<String, WorkspaceRemoteControlConfig>>,
     workspace_focus_history: Mutex<HashMap<String, WorkspaceFocusHistory>>,
     remote_workspace_rename_controller: Arc<dyn RemoteWorkspaceRenameController>,
+    deferred_remote_workspace_renames: Mutex<Vec<RemoteWorkspaceRenameRequest>>,
 }
 
 #[cfg(test)]
@@ -202,6 +203,7 @@ impl Default for SessionState {
             remote_configs: Mutex::new(HashMap::new()),
             workspace_focus_history: Mutex::new(workspace_focus_history),
             remote_workspace_rename_controller: Arc::new(SshRemoteWorkspaceRenameController),
+            deferred_remote_workspace_renames: Mutex::new(Vec::new()),
         }
     }
 }
@@ -211,6 +213,28 @@ impl SessionState {
         &self,
     ) -> Result<parking_lot::ReentrantMutexGuard<'_, ()>, String> {
         Ok(self.snapshot.lock_gate())
+    }
+
+    fn defer_remote_workspace_rename(&self, request: RemoteWorkspaceRenameRequest) {
+        self.deferred_remote_workspace_renames
+            .lock()
+            .expect("deferred remote workspace rename mutex poisoned")
+            .push(request);
+    }
+
+    pub(crate) fn flush_deferred_remote_workspace_renames(&self) {
+        let requests = std::mem::take(
+            &mut *self
+                .deferred_remote_workspace_renames
+                .lock()
+                .expect("deferred remote workspace rename mutex poisoned"),
+        );
+        for request in requests {
+            let _ = dispatch_remote_workspace_rename(
+                self.remote_workspace_rename_controller.as_ref(),
+                &request,
+            );
+        }
     }
 
     #[cfg(test)]
@@ -6316,6 +6340,7 @@ fn transact_workspace_action_mutation(
     .map(|snapshot| (WorkspaceActionClosedArtifacts::default(), snapshot))
 }
 
+#[cfg(test)]
 fn transact_workspace_action_and_propagate_remote(
     authority: &GatedSnapshot,
     publication: &mut impl SnapshotPublicationOperations,
@@ -6369,12 +6394,10 @@ pub(crate) fn apply_workspace_action_for_control_with_post_commit(
     let mut notification_post_commit = Some(notification_post_commit);
     let mut publication =
         ProductionSnapshotPublicationOperations::new(app, state, DerivedEventPolicy::Record);
-    let (_, snapshot) = transact_workspace_action_and_propagate_remote(
+    let (_, snapshot) = transact_workspace_action_mutation(
         &state.snapshot,
         &mut publication,
         mutation,
-        state.remote_workspace_rename_controller.as_ref(),
-        remote_request.as_ref(),
         |artifacts, _| {
             let browser_tabs = std::mem::take(&mut artifacts.browser_tabs);
             if !browser_tabs.is_empty() {
@@ -6408,6 +6431,9 @@ pub(crate) fn apply_workspace_action_for_control_with_post_commit(
     if let Some(post_commit) = notification_post_commit.take() {
         post_commit();
     }
+    if let Some(request) = remote_request {
+        state.defer_remote_workspace_rename(request);
+    }
     Ok(snapshot)
 }
 
@@ -6440,12 +6466,6 @@ pub(crate) fn rename_workspace_in_window_for_control(
         };
         remote_workspace_rename_request(state, workspace, title)
     };
-    if let Some(request) = remote_request.as_ref() {
-        dispatch_remote_workspace_rename(
-            state.remote_workspace_rename_controller.as_ref(),
-            request,
-        )?;
-    }
     let (resolution, snapshot) = {
         let mut guard = state
             .snapshot
@@ -6463,6 +6483,9 @@ pub(crate) fn rename_workspace_in_window_for_control(
     }
     if resolution == WorkspaceRenameResolution::ResolvedChanged {
         notify_session_changed(app, &snapshot);
+        if let Some(request) = remote_request {
+            state.defer_remote_workspace_rename(request);
+        }
     }
     Ok(Some((snapshot, resolution)))
 }
