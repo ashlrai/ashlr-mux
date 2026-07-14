@@ -1,10 +1,9 @@
-//! Additive manual-session restore product contract.
+//! Production-connected RED contract for canonical additive manual restore.
 //!
-//! Frozen canonical `e1825d40` creates bounded new windows without replacing
-//! live windows. Windows `118fdc4e` still replaces the authoritative snapshot
-//! and has no batch webview effect seam. These tests stay executable against
-//! that rejected base so every failure describes an observable missing
-//! behavior rather than an implementation-shape requirement.
+//! These tests intentionally stop at the existing snapshot transaction seam.
+//! Socket replies, real WebView effects, file-path immutability, lifecycle
+//! event ordering, and product activation require a neutral production seam
+//! before they can be tested without simulating the behavior under test.
 
 use super::*;
 
@@ -58,38 +57,36 @@ fn snapshot_fixture(seed: u128, count: usize) -> AppSessionSnapshot {
     )
 }
 
+fn crash_directory(seed: u128) -> String {
+    let home = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\Users\\cmux".to_string());
+    PathBuf::from(home)
+        .join(".local")
+        .join("state")
+        .join("cmux")
+        .join("crash")
+        .join(format!("report-{seed:x}"))
+        .to_string_lossy()
+        .into_owned()
+}
+
 fn crash_diagnostic_window(seed: u128) -> SessionWindowSnapshot {
     let mut window = window_fixture(seed);
-    let home = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\Users\\cmux".to_string());
-    window.tab_manager.workspaces[0].current_directory = Some(
-        PathBuf::from(home)
-            .join(".local")
-            .join("state")
-            .join("cmux")
-            .join("crash")
-            .join(format!("report-{seed:x}"))
-            .to_string_lossy()
-            .into_owned(),
-    );
+    window.tab_manager.workspaces[0].current_directory = Some(crash_directory(seed));
     window
 }
 
-fn pane_id(window: &SessionWindowSnapshot) -> &str {
+fn pane(window: &SessionWindowSnapshot) -> &cmux_core::session::SessionPaneLayoutSnapshot {
     let Some(SessionWorkspaceLayoutSnapshot::Pane(pane)) =
         window.tab_manager.workspaces[0].layout.as_ref()
     else {
         panic!("single-pane fixture")
     };
-    pane.pane_id.as_deref().expect("pane id")
+    pane
 }
 
 fn surface_id(window: &SessionWindowSnapshot) -> &str {
-    let Some(SessionWorkspaceLayoutSnapshot::Pane(pane)) =
-        window.tab_manager.workspaces[0].layout.as_ref()
-    else {
-        panic!("single-pane fixture")
-    };
-    pane.panel_ids
+    pane(window)
+        .panel_ids
         .first()
         .map(String::as_str)
         .expect("surface id")
@@ -125,7 +122,7 @@ fn dock_fixture(seed: u128) -> cmux_core::session::SessionDockSnapshot {
             surface_id: surface_id.clone(),
             pane_id,
             generation: 1,
-            kind: cmux_core::session::SessionSurfaceKindSnapshot::Terminal,
+            kind: SessionSurfaceKindSnapshot::Terminal,
             metadata: Default::default(),
             terminal_startup: None,
         }],
@@ -139,15 +136,13 @@ struct RecordingPublication {
     persisted: Vec<AppSessionSnapshot>,
     baseline: Option<AppSessionSnapshot>,
     emitted: Vec<AppSessionSnapshot>,
-    persist_error: Option<String>,
-    emit_error: Option<String>,
 }
 
 impl SnapshotPublicationOperations for RecordingPublication {
     fn persist(&mut self, candidate: &AppSessionSnapshot) -> Result<(), String> {
         self.calls.push("persist");
         self.persisted.push(candidate.clone());
-        self.persist_error.take().map_or(Ok(()), Err)
+        Ok(())
     }
 
     fn update_event_baseline(&mut self, candidate: &AppSessionSnapshot) {
@@ -158,34 +153,41 @@ impl SnapshotPublicationOperations for RecordingPublication {
     fn emit(&mut self, candidate: &AppSessionSnapshot) -> Result<(), String> {
         self.calls.push("emit");
         self.emitted.push(candidate.clone());
-        self.emit_error.take().map_or(Ok(()), Err)
+        Ok(())
     }
 }
 
-fn restore_with_current_production(
+fn restore(
     current: AppSessionSnapshot,
     previous: Option<AppSessionSnapshot>,
     next_panel_value: u64,
-    publication: &mut RecordingPublication,
-) -> (Result<AppSessionSnapshot, String>, AppSessionSnapshot, u64) {
+) -> (
+    Result<AppSessionSnapshot, String>,
+    AppSessionSnapshot,
+    u64,
+    RecordingPublication,
+) {
     let authority = GatedSnapshot::new(current);
     let next_panel = AtomicU64::new(next_panel_value);
+    let mut publication = RecordingPublication::default();
     let result =
-        restore_previous_launch_transaction(&authority, &next_panel, publication, || previous);
+        restore_previous_launch_transaction(&authority, &next_panel, &mut publication, || previous);
     let authoritative = authority.lock().unwrap().clone();
-    (result, authoritative, next_panel.load(Ordering::Relaxed))
+    (
+        result,
+        authoritative,
+        next_panel.load(Ordering::Relaxed),
+        publication,
+    )
 }
 
 #[test]
-fn additive_restore_retains_live_windows_and_appends_previous_in_order() {
+fn additive_restore_keeps_live_windows_byte_stable_and_appends_in_order() {
     let current = snapshot_fixture(0x100, 2);
     let previous = snapshot_fixture(0x200, 2);
     let live = current.windows.clone();
-    let restored = previous.windows.clone();
-    let mut publication = RecordingPublication::default();
 
-    let (result, authoritative, _) =
-        restore_with_current_production(current, Some(previous), 50, &mut publication);
+    let (result, authoritative, _, _) = restore(current, Some(previous), 50);
     let committed = result.expect("valid previous snapshot");
 
     assert_eq!(committed, authoritative);
@@ -194,89 +196,93 @@ fn additive_restore_retains_live_windows_and_appends_previous_in_order() {
     assert_eq!(
         committed.windows[2..]
             .iter()
-            .map(|window| window.window_id.as_deref())
+            .map(|window| window.tab_manager.workspaces[0].process_title.as_str())
             .collect::<Vec<_>>(),
-        restored
-            .iter()
-            .map(|window| window.window_id.as_deref())
-            .collect::<Vec<_>>()
+        ["window-200", "window-201"]
     );
 }
 
 #[test]
-fn restore_prunes_to_twelve_windows_and_never_restores_persisted_docks() {
+fn crash_pruning_precedes_the_twelve_restored_window_cap() {
     let current = snapshot_fixture(0x300, 1);
-    let mut previous = snapshot_fixture(0x400, MAX_RESTORED_WINDOWS + 2);
-    for (index, window) in previous.windows.iter_mut().enumerate() {
-        window.dock = Some(dock_fixture(0x800 + index as u128));
-    }
-    let expected_ids = previous.windows[..MAX_RESTORED_WINDOWS]
-        .iter()
-        .map(|window| window.window_id.clone())
+    let mut previous_windows = (0..15)
+        .map(|offset| window_fixture(0x400 + offset))
         .collect::<Vec<_>>();
-    let mut publication = RecordingPublication::default();
+    previous_windows[1] = crash_diagnostic_window(0x401);
+    previous_windows[6] = crash_diagnostic_window(0x406);
+    let expected = previous_windows
+        .iter()
+        .filter(|window| {
+            !window.tab_manager.workspaces[0]
+                .current_directory
+                .as_deref()
+                .is_some_and(|path| path.contains("\\cmux\\crash\\"))
+        })
+        .take(MAX_RESTORED_WINDOWS)
+        .map(|window| window.tab_manager.workspaces[0].process_title.clone())
+        .collect::<Vec<_>>();
 
-    let (result, _, _) =
-        restore_with_current_production(current, Some(previous), 50, &mut publication);
-    let committed = result.expect("valid previous snapshot");
+    let (result, _, _, _) = restore(current, Some(snapshot(previous_windows)), 50);
+    let committed = result.expect("restorable previous snapshot");
 
     assert_eq!(committed.windows.len(), 1 + MAX_RESTORED_WINDOWS);
     assert_eq!(
         committed.windows[1..]
             .iter()
-            .map(|window| window.window_id.clone())
+            .map(|window| window.tab_manager.workspaces[0].process_title.clone())
             .collect::<Vec<_>>(),
-        expected_ids
+        expected
     );
-    assert!(committed.windows[1..]
+}
+
+#[test]
+fn crash_pruning_removes_only_diagnostic_workspaces_and_repairs_selection() {
+    let current = snapshot_fixture(0x500, 1);
+    let mut mixed = window_fixture(0x600);
+    let mut crash_workspace = mixed.tab_manager.workspaces[0].clone();
+    crash_workspace.current_directory = Some(crash_directory(0x600));
+    let survivor = window_fixture(0x601).tab_manager.workspaces.remove(0);
+    let survivor_id = survivor.workspace_id.clone();
+    mixed.tab_manager.workspaces = vec![crash_workspace, survivor];
+    mixed.tab_manager.selected_workspace_index = Some(0);
+    mixed.selected_workspace_id = mixed.tab_manager.workspaces[0].workspace_id.clone();
+
+    let (result, _, _, _) = restore(current, Some(snapshot(vec![mixed])), 50);
+    let committed = result.expect("mixed window remains restorable");
+    let restored = &committed.windows[1];
+
+    assert_eq!(restored.tab_manager.workspaces.len(), 1);
+    assert_eq!(restored.tab_manager.selected_workspace_index, Some(0));
+    assert_eq!(restored.selected_workspace_id, survivor_id);
+}
+
+#[test]
+fn restore_strips_persisted_docks_and_caps_only_restored_windows() {
+    let current = snapshot_fixture(0x700, 2);
+    let mut previous = snapshot_fixture(0x800, MAX_RESTORED_WINDOWS + 2);
+    for (index, window) in previous.windows.iter_mut().enumerate() {
+        window.dock = Some(dock_fixture(0x900 + index as u128));
+    }
+
+    let (result, _, _, _) = restore(current, Some(previous), 50);
+    let committed = result.expect("valid previous snapshot");
+
+    assert_eq!(committed.windows.len(), 2 + MAX_RESTORED_WINDOWS);
+    assert!(committed.windows[2..]
         .iter()
         .all(|window| window.dock.is_none()));
 }
 
 #[test]
-fn crash_diagnostic_windows_are_pruned_before_the_window_limit() {
-    let current = snapshot_fixture(0x450, 1);
-    let live_window_id = current.windows[0].window_id.clone();
-    let normal = window_fixture(0x452);
-    let normal_window_id = normal.window_id.clone();
-    let previous = snapshot(vec![crash_diagnostic_window(0x451), normal]);
-    let mut publication = RecordingPublication::default();
-
-    let (result, _, _) =
-        restore_with_current_production(current, Some(previous), 50, &mut publication);
-    let committed = result.expect("one restorable window remains");
-
-    assert_eq!(
-        committed
-            .windows
-            .iter()
-            .map(|window| window.window_id.clone())
-            .collect::<Vec<_>>(),
-        [live_window_id, normal_window_id]
-    );
-}
-
-#[test]
-fn fully_pruned_crash_snapshot_is_a_no_snapshot_noop() {
-    let current = snapshot_fixture(0x460, 1);
-    let previous = snapshot(vec![crash_diagnostic_window(0x461)]);
-    let mut publication = RecordingPublication::default();
-
-    let (result, authoritative, next_panel) =
-        restore_with_current_production(current.clone(), Some(previous), 50, &mut publication);
-
-    assert!(result.expect("no-snapshot outcome") == current);
-    assert!(authoritative == current);
-    assert_eq!(next_panel, 50);
-    assert!(publication.calls.is_empty());
-}
-
-#[test]
-fn live_window_main_surface_and_dock_identities_exclude_restored_collisions() {
-    let mut current = snapshot_fixture(0x500, 1);
-    let colliding_window_id = current.windows[0].window_id.clone().expect("window id");
+fn live_main_and_dock_identities_exclude_restored_collisions_coherently() {
+    let mut current = snapshot_fixture(0xa00, 1);
+    current.windows[0].dock = Some(dock_fixture(0xa01));
+    let live_window_id = current.windows[0].window_id.clone().expect("window id");
+    let live_workspace_id = current.windows[0].tab_manager.workspaces[0]
+        .workspace_id
+        .clone()
+        .expect("workspace id");
     let live_surface_id = surface_id(&current.windows[0]).to_string();
-    current.windows[0].dock = Some(dock_fixture(0x501));
     let live_dock_surface_id = current.windows[0]
         .dock
         .as_ref()
@@ -284,284 +290,144 @@ fn live_window_main_surface_and_dock_identities_exclude_restored_collisions() {
         .map(|surface| surface.surface_id.clone())
         .expect("dock surface");
 
-    let mut restored_window = window_fixture(0x600);
-    restored_window.window_id = Some(colliding_window_id.clone());
-    let Some(SessionWorkspaceLayoutSnapshot::Pane(pane)) =
-        restored_window.tab_manager.workspaces[0].layout.as_mut()
+    let mut restored = window_fixture(0xb00);
+    restored.window_id = Some(live_window_id.clone());
+    restored.tab_manager.workspaces[0].workspace_id = Some(live_workspace_id.clone());
+    restored.selected_workspace_id = Some(live_workspace_id.clone());
+    let pane_id = pane(&restored).pane_id.clone().expect("pane id");
+    let Some(SessionWorkspaceLayoutSnapshot::Pane(layout)) =
+        restored.tab_manager.workspaces[0].layout.as_mut()
     else {
-        panic!("single-pane fixture")
+        panic!("single pane")
     };
-    pane.panel_ids = vec![live_surface_id.clone(), live_dock_surface_id.clone()];
-    pane.selected_panel_id = Some(live_surface_id.clone());
-    restored_window.tab_manager.workspaces[0].surfaces = None;
-    let previous = snapshot(vec![restored_window]);
-    let live_window = current.windows[0].clone();
-    let mut publication = RecordingPublication::default();
+    layout.panel_ids = vec![live_surface_id.clone(), live_dock_surface_id.clone()];
+    layout.selected_panel_id = Some(live_surface_id.clone());
+    restored.tab_manager.workspaces[0].focused_panel_id = Some(live_dock_surface_id.clone());
+    restored.tab_manager.workspaces[0].surfaces = Some(vec![
+        cmux_core::session::SessionSurfaceSnapshot {
+            surface_id: live_surface_id.clone(),
+            pane_id: pane_id.clone(),
+            generation: 1,
+            kind: SessionSurfaceKindSnapshot::Terminal,
+            metadata: Default::default(),
+            terminal_startup: None,
+        },
+        cmux_core::session::SessionSurfaceSnapshot {
+            surface_id: live_dock_surface_id.clone(),
+            pane_id,
+            generation: 1,
+            kind: SessionSurfaceKindSnapshot::Terminal,
+            metadata: Default::default(),
+            terminal_startup: None,
+        },
+    ]);
 
-    let (result, _, _) =
-        restore_with_current_production(current, Some(previous), 50, &mut publication);
-    let committed = result.expect("valid previous snapshot");
+    let live = current.windows[0].clone();
+    let (result, _, _, _) = restore(current, Some(snapshot(vec![restored])), 50);
+    let committed = result.expect("collisions are reminted");
 
-    assert_eq!(committed.windows.len(), 2);
-    assert_eq!(committed.windows[0], live_window);
+    assert_eq!(committed.windows[0], live);
     let restored = &committed.windows[1];
+    assert_ne!(restored.window_id.as_deref(), Some(live_window_id.as_str()));
     assert_ne!(
-        restored.window_id.as_deref(),
-        Some(colliding_window_id.as_str())
+        restored.tab_manager.workspaces[0].workspace_id.as_deref(),
+        Some(live_workspace_id.as_str())
     );
-    let restored_surface_ids = match restored.tab_manager.workspaces[0].layout.as_ref() {
-        Some(SessionWorkspaceLayoutSnapshot::Pane(pane)) => pane.panel_ids.as_slice(),
-        _ => panic!("restored pane"),
-    };
-    assert!(!restored_surface_ids.contains(&live_surface_id));
-    assert!(!restored_surface_ids.contains(&live_dock_surface_id));
-}
-
-#[test]
-fn guardrail_existing_normalizer_keeps_domain_specific_identity_semantics() {
-    let mut restored = snapshot_fixture(0x700, 1);
-    let old_window_id = restored.windows[0].window_id.clone();
-    let old_workspace_id = restored.windows[0].tab_manager.workspaces[0]
-        .workspace_id
-        .clone();
-    let old_pane_id = pane_id(&restored.windows[0]).to_string();
-    let old_surface_id = surface_id(&restored.windows[0]).to_string();
-
-    assert!(remint_noncanonical_identities(&mut restored));
-
-    assert_eq!(restored.windows[0].window_id, old_window_id);
-    assert_ne!(
-        restored.windows[0].tab_manager.workspaces[0].workspace_id,
-        old_workspace_id
-    );
-    assert_ne!(pane_id(&restored.windows[0]), old_pane_id);
-    assert_eq!(surface_id(&restored.windows[0]), old_surface_id);
-}
-
-#[test]
-fn restore_returns_aliases_that_remap_closed_workspace_history() {
-    let current = snapshot_fixture(0x800, 1);
-    let old_window_id = current.windows[0].window_id.clone();
-    let previous = snapshot_fixture(0x800, 1);
-    let old_workspace_id = previous.windows[0].tab_manager.workspaces[0]
-        .workspace_id
-        .clone();
-    let history = Mutex::new(vec![ClosedWorkspaceSnapshot {
-        window_id: old_window_id.clone(),
-        workspace: previous.windows[0].tab_manager.workspaces[0].clone(),
-        original_index: 0,
-    }]);
-    let mut publication = RecordingPublication::default();
-
-    let (result, _, _) =
-        restore_with_current_production(current, Some(previous), 50, &mut publication);
-    result.expect("valid previous snapshot");
-    let history = history.lock().unwrap();
-
-    assert_ne!(history[0].window_id, old_window_id);
-    assert_ne!(history[0].workspace.workspace_id, old_workspace_id);
-}
-
-#[test]
-fn additive_restore_never_regresses_the_live_panel_allocator() {
-    let current = initial_snapshot("surface-80");
-    let previous = snapshot_fixture(0x900, 1);
-    let mut publication = RecordingPublication::default();
-
-    let (result, _, next_panel) =
-        restore_with_current_production(current, Some(previous), 81, &mut publication);
-    result.expect("valid previous snapshot");
-
-    assert!(next_panel >= 81, "allocator regressed to {next_panel}");
-}
-
-#[test]
-fn wrong_schema_and_empty_previous_are_no_snapshot_noops() {
-    let current = snapshot_fixture(0xa00, 1);
-    let mut wrong_schema = snapshot_fixture(0xb00, 1);
-    wrong_schema.version = SESSION_SNAPSHOT_SCHEMA_VERSION + 1;
-    let empty = snapshot(Vec::new());
-
-    for (name, previous) in [("wrong-schema", wrong_schema), ("empty", empty)] {
-        let mut publication = RecordingPublication::default();
-        let (result, authoritative, next_panel) =
-            restore_with_current_production(current.clone(), Some(previous), 70, &mut publication);
-
-        assert!(
-            result.expect(name) == current,
-            "{name}: returned state changed"
-        );
-        assert!(authoritative == current, "{name}: authority changed");
-        assert_eq!(next_panel, 70, "{name}");
-        assert!(publication.calls.is_empty(), "{name}");
-    }
-}
-
-#[test]
-fn guardrail_missing_previous_keeps_every_authority_unchanged() {
-    let current = snapshot_fixture(0xc00, 1);
-    let mut publication = RecordingPublication::default();
-
-    let (result, authoritative, next_panel) =
-        restore_with_current_production(current.clone(), None, 70, &mut publication);
-
-    assert_eq!(result.unwrap(), current);
-    assert!(
-        authoritative == current,
-        "failed publication changed authority"
-    );
-    assert_eq!(next_panel, 70);
-    assert!(publication.calls.is_empty());
-}
-
-#[test]
-fn manual_restore_does_not_rewrite_current_or_previous_files() {
-    let current = snapshot_fixture(0xd00, 1);
-    let previous = snapshot_fixture(0xe00, 1);
-    let mut publication = RecordingPublication::default();
-
-    let (result, _, _) =
-        restore_with_current_production(current, Some(previous), 70, &mut publication);
-    result.expect("valid previous snapshot");
-
-    assert!(publication.persisted.is_empty());
-    assert_eq!(publication.calls, ["baseline", "emit"]);
-}
-
-#[test]
-fn publication_failure_rolls_back_authority_baseline_events_and_counter() {
-    let current = snapshot_fixture(0xf00, 1);
-    let previous = snapshot_fixture(0x1000, 1);
-    let mut publication = RecordingPublication {
-        emit_error: Some("injected emit failure".to_string()),
-        ..Default::default()
-    };
-
-    let (result, authoritative, next_panel) =
-        restore_with_current_production(current.clone(), Some(previous), 70, &mut publication);
-
-    assert_eq!(result, Err("injected emit failure".to_string()));
-    assert!(
-        authoritative == current,
-        "failed publication changed authority"
-    );
-    assert_eq!(next_panel, 70);
-    assert!(publication.baseline.is_none());
-    assert!(publication.emitted.is_empty());
-}
-
-#[derive(Clone, Copy)]
-enum InjectedWindowFault {
-    BuildSecond,
-    ShowSecond,
-}
-
-#[derive(Default)]
-struct RecordingWindowEffects {
-    calls: Vec<String>,
-    fault: Option<InjectedWindowFault>,
-}
-
-fn exercise_current_restore_with_window_probe(
-    current: AppSessionSnapshot,
-    previous: AppSessionSnapshot,
-    publication: &mut RecordingPublication,
-    effects: &mut RecordingWindowEffects,
-) -> (Result<AppSessionSnapshot, String>, AppSessionSnapshot, u64) {
-    let observed_before = effects.calls.len();
-    let requested_fault = effects.fault;
-    let result = restore_with_current_production(current, Some(previous), 70, publication);
-    assert_eq!(effects.calls.len(), observed_before);
-    let _ = requested_fault;
-    result
-}
-
-#[test]
-fn batch_builds_all_windows_hidden_then_shows_in_order_without_focus() {
-    let current = snapshot_fixture(0x1100, 1);
-    let previous = snapshot_fixture(0x1200, 2);
-    let restored_ids = previous
-        .windows
+    let layout = pane(restored);
+    assert!(layout
+        .panel_ids
         .iter()
-        .map(|window| window.window_id.clone().expect("window id"))
-        .collect::<Vec<_>>();
-    let mut publication = RecordingPublication::default();
-    let mut effects = RecordingWindowEffects::default();
-
-    let (result, _, _) = exercise_current_restore_with_window_probe(
-        current,
-        previous,
-        &mut publication,
-        &mut effects,
+        .all(|id| id != &live_surface_id && id != &live_dock_surface_id));
+    assert!(layout
+        .selected_panel_id
+        .as_ref()
+        .is_some_and(|selected| layout.panel_ids.contains(selected)));
+    let surfaces = restored.tab_manager.workspaces[0]
+        .surfaces
+        .as_ref()
+        .expect("surface records");
+    assert_eq!(
+        surfaces
+            .iter()
+            .map(|surface| surface.surface_id.clone())
+            .collect::<Vec<_>>(),
+        layout.panel_ids
     );
+    assert!(surfaces.iter().all(|surface| {
+        layout.pane_id.as_ref() == Some(&surface.pane_id)
+            && ![&live_surface_id, &live_dock_surface_id].contains(&&surface.surface_id)
+    }));
+    assert!(restored.tab_manager.workspaces[0]
+        .focused_panel_id
+        .as_ref()
+        .is_some_and(|focused| layout.panel_ids.contains(focused)));
+}
+
+#[test]
+fn uncollided_workspace_and_surface_stable_ids_are_adopted() {
+    let current = snapshot_fixture(0xc00, 1);
+    let previous = snapshot_fixture(0xd00, 1);
+    let persisted_window = previous.windows[0].window_id.clone();
+    let persisted_workspace = previous.windows[0].tab_manager.workspaces[0]
+        .workspace_id
+        .clone();
+    let persisted_surface = surface_id(&previous.windows[0]).to_string();
+
+    let (result, _, _, _) = restore(current, Some(previous), 50);
+    let committed = result.expect("valid previous snapshot");
+    let restored = &committed.windows[1];
+
+    assert_ne!(restored.window_id, persisted_window);
+    assert_eq!(
+        restored.tab_manager.workspaces[0].workspace_id,
+        persisted_workspace
+    );
+    assert_eq!(surface_id(restored), persisted_surface);
+}
+
+#[test]
+fn restored_legacy_surface_counter_cannot_regress_the_live_allocator() {
+    let current = initial_snapshot("surface-80");
+    let mut previous = snapshot_fixture(0xe00, 1);
+    let old = surface_id(&previous.windows[0]).to_string();
+    let workspace = &mut previous.windows[0].tab_manager.workspaces[0];
+    let Some(SessionWorkspaceLayoutSnapshot::Pane(layout)) = workspace.layout.as_mut() else {
+        panic!("single pane")
+    };
+    layout.panel_ids = vec!["surface-250".to_string()];
+    layout.selected_panel_id = Some("surface-250".to_string());
+    if let Some(surfaces) = &mut workspace.surfaces {
+        surfaces[0].surface_id = "surface-250".to_string();
+    }
+    assert_ne!(old, "surface-250");
+
+    let (result, _, next_panel, _) = restore(current, Some(previous), 81);
     result.expect("valid previous snapshot");
 
-    assert_eq!(
-        effects.calls,
-        [
-            format!("build-hidden:{}", restored_ids[0]),
-            format!("build-hidden:{}", restored_ids[1]),
-            format!("show-unfocused:{}", restored_ids[0]),
-            format!("show-unfocused:{}", restored_ids[1]),
-        ]
-    );
+    assert!(next_panel >= 251, "allocator regressed to {next_panel}");
 }
 
 #[test]
-fn batch_build_or_show_failure_closes_staged_windows_and_leaks_nothing() {
-    for fault in [
-        InjectedWindowFault::BuildSecond,
-        InjectedWindowFault::ShowSecond,
-    ] {
-        let current = snapshot_fixture(0x1300, 1);
-        let previous = snapshot_fixture(0x1400, 2);
-        let mut publication = RecordingPublication::default();
-        let mut effects = RecordingWindowEffects {
-            calls: Vec::new(),
-            fault: Some(fault),
-        };
+fn missing_wrong_schema_empty_and_all_crash_previous_are_exact_noops() {
+    let current = snapshot_fixture(0xf00, 1);
+    let mut wrong_schema = snapshot_fixture(0x1000, 1);
+    wrong_schema.version = SESSION_SNAPSHOT_SCHEMA_VERSION + 1;
+    let cases = [
+        ("missing", None),
+        ("wrong-schema", Some(wrong_schema)),
+        ("empty", Some(snapshot(Vec::new()))),
+        (
+            "all-crash",
+            Some(snapshot(vec![crash_diagnostic_window(0x1100)])),
+        ),
+    ];
 
-        let (result, authoritative, next_panel) = exercise_current_restore_with_window_probe(
-            current.clone(),
-            previous,
-            &mut publication,
-            &mut effects,
-        );
-
-        assert!(result.is_err());
-        assert_eq!(authoritative, current);
-        assert_eq!(next_panel, 70);
-        assert!(publication.calls.is_empty());
-        assert!(effects.calls.iter().any(|call| call.starts_with("close:")));
-    }
-}
-
-#[test]
-fn product_activates_first_restored_window_but_control_never_activates() {
-    for should_activate in [false, true] {
-        let current = snapshot_fixture(0x1500, 1);
-        let previous = snapshot_fixture(0x1600, 2);
-        let first_restored = previous.windows[0].window_id.clone().expect("window id");
-        let mut publication = RecordingPublication::default();
-        let mut effects = RecordingWindowEffects::default();
-
-        let (result, _, _) = exercise_current_restore_with_window_probe(
-            current,
-            previous,
-            &mut publication,
-            &mut effects,
-        );
-        result.expect("valid previous snapshot");
-
-        let focus_calls = effects
-            .calls
-            .iter()
-            .filter(|call| call.starts_with("focus:"))
-            .cloned()
-            .collect::<Vec<_>>();
-        let expected = should_activate
-            .then(|| vec![format!("focus:{first_restored}")])
-            .unwrap_or_default();
-        assert_eq!(focus_calls, expected, "should_activate={should_activate}");
+    for (name, previous) in cases {
+        let (result, authoritative, next_panel, publication) =
+            restore(current.clone(), previous, 70);
+        assert_eq!(result.expect(name), current, "{name}: returned snapshot");
+        assert_eq!(authoritative, current, "{name}: authority");
+        assert_eq!(next_panel, 70, "{name}: allocator");
+        assert!(publication.calls.is_empty(), "{name}: publication");
     }
 }
