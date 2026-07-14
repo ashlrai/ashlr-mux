@@ -7224,6 +7224,33 @@ fn has_rows<T>(rows: Option<&Vec<T>>) -> bool {
     rows.is_some_and(|rows| !rows.is_empty())
 }
 
+fn legacy_layout_has_nonterminal_state(layout: &SessionWorkspaceLayoutSnapshot) -> bool {
+    match layout {
+        SessionWorkspaceLayoutSnapshot::Pane(pane) => {
+            pane.surface_kind
+                .as_deref()
+                .is_some_and(|kind| kind != "terminal")
+                || nonblank(pane.markdown_file_path.as_deref())
+                || nonblank(pane.file_path.as_deref())
+                || nonblank(pane.diff_viewer_token.as_deref())
+                || nonblank(pane.diff_viewer_request_path.as_deref())
+                || nonblank(pane.browser_url.as_deref())
+                || nonblank(pane.browser_proxy_url.as_deref())
+                || has_rows(pane.browser_back_history.as_ref())
+                || has_rows(pane.browser_forward_history.as_ref())
+                || pane.browser_omnibar_visible.is_some()
+                || pane.browser_focus_mode_active.is_some()
+                || pane.browser_developer_tools_visible.is_some()
+                || nonblank(pane.browser_developer_tools_panel.as_deref())
+                || pane.browser_page_zoom.is_some()
+        }
+        SessionWorkspaceLayoutSnapshot::Split(split) => {
+            legacy_layout_has_nonterminal_state(&split.first)
+                || legacy_layout_has_nonterminal_state(&split.second)
+        }
+    }
+}
+
 fn workspace_has_restorable_user_state(workspace: &SessionWorkspaceSnapshot) -> bool {
     if nonblank(workspace.custom_title.as_deref())
         || nonblank(workspace.custom_description.as_deref())
@@ -7243,6 +7270,11 @@ fn workspace_has_restorable_user_state(workspace: &SessionWorkspaceSnapshot) -> 
         || workspace.remote.is_some()
         || workspace.sidebar_progress.is_some()
         || workspace.git_branch.is_some()
+        || nonblank(workspace.layout_mode.as_deref())
+        || workspace
+            .layout
+            .as_ref()
+            .is_some_and(legacy_layout_has_nonterminal_state)
         || has_rows(workspace.panel_titles.as_ref())
         || has_rows(workspace.panel_pins.as_ref())
         || has_rows(workspace.panel_unreads.as_ref())
@@ -7250,6 +7282,8 @@ fn workspace_has_restorable_user_state(workspace: &SessionWorkspaceSnapshot) -> 
         || has_rows(workspace.surface_resume_bindings.as_ref())
         || has_rows(workspace.panel_git_branches.as_ref())
         || has_rows(workspace.panel_pull_requests.as_ref())
+        || has_rows(workspace.panel_listening_ports.as_ref())
+        || has_rows(workspace.panel_terminal_startups.as_ref())
         || has_rows(workspace.sidebar_status_entries.as_ref())
         || has_rows(workspace.sidebar_metadata_entries.as_ref())
         || has_rows(workspace.sidebar_metadata_blocks.as_ref())
@@ -7372,6 +7406,49 @@ fn is_crash_diagnostic_workspace(
             .all(|path| is_crash_storage_path(path, roots))
 }
 
+fn prune_workspace_groups(
+    groups: Option<Vec<cmux_core::session::SessionWorkspaceGroupSnapshot>>,
+    original_workspaces: &[SessionWorkspaceSnapshot],
+    kept_workspaces: &[SessionWorkspaceSnapshot],
+) -> Option<Vec<cmux_core::session::SessionWorkspaceGroupSnapshot>> {
+    let groups = groups?;
+    let pruned = groups
+        .into_iter()
+        .filter_map(|mut group| {
+            let original_members = original_workspaces
+                .iter()
+                .filter(|workspace| workspace.group_id.as_deref() == Some(&group.id))
+                .collect::<Vec<_>>();
+            let kept_members = kept_workspaces
+                .iter()
+                .filter(|workspace| workspace.group_id.as_deref() == Some(&group.id))
+                .collect::<Vec<_>>();
+            if kept_members.is_empty() {
+                return None;
+            }
+            let original_anchor = group.anchor_workspace_id.clone().or_else(|| {
+                group
+                    .anchor_member_index
+                    .and_then(|index| usize::try_from(index).ok())
+                    .and_then(|index| original_members.get(index))
+                    .and_then(|workspace| workspace.workspace_id.clone())
+            });
+            let anchor_index = original_anchor
+                .as_ref()
+                .and_then(|anchor| {
+                    kept_members
+                        .iter()
+                        .position(|workspace| workspace.workspace_id.as_ref() == Some(anchor))
+                })
+                .unwrap_or(0);
+            group.anchor_member_index = Some(anchor_index as i64);
+            group.anchor_workspace_id = kept_members[anchor_index].workspace_id.clone();
+            Some(group)
+        })
+        .collect::<Vec<_>>();
+    (!pruned.is_empty()).then_some(pruned)
+}
+
 fn prune_crash_diagnostic_workspaces(snapshot: &mut AppSessionSnapshot) {
     let roots = crash_storage_roots()
         .iter()
@@ -7385,8 +7462,10 @@ fn prune_crash_diagnostic_workspaces(snapshot: &mut AppSessionSnapshot) {
             .tab_manager
             .selected_workspace_index
             .and_then(|index| usize::try_from(index).ok());
-        let kept = std::mem::take(&mut window.tab_manager.workspaces)
-            .into_iter()
+        let original_workspaces = std::mem::take(&mut window.tab_manager.workspaces);
+        let kept = original_workspaces
+            .iter()
+            .cloned()
             .enumerate()
             .filter(|(_, workspace)| !is_crash_diagnostic_workspace(workspace, &roots))
             .collect::<Vec<_>>();
@@ -7405,6 +7484,11 @@ fn prune_crash_diagnostic_workspaces(snapshot: &mut AppSessionSnapshot) {
         window.tab_manager.selected_workspace_index = selected_index.map(|index| index as i64);
         window.selected_workspace_id = selected_index
             .and_then(|index| window.tab_manager.workspaces[index].workspace_id.clone());
+        window.tab_manager.workspace_groups = prune_workspace_groups(
+            window.tab_manager.workspace_groups.take(),
+            &original_workspaces,
+            &window.tab_manager.workspaces,
+        );
         true
     });
 }
