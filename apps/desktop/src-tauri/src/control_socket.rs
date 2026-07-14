@@ -6311,33 +6311,35 @@ fn record_event(
 pub(crate) fn publish_notification_removal_effects(
     app: &AppHandle,
     effects: &crate::notifications::NotificationMutationEffects,
-    lifecycle_name: &str,
+    lifecycle_name: &'static str,
     workspace_id: Option<&str>,
 ) {
     crate::notifications::clear_native_notifications(effects);
     if effects.cleared.is_empty() {
         return;
     }
+    for event in notification_removal_lifecycle_events(effects, lifecycle_name, workspace_id) {
+        record_event(
+            app,
+            event.name,
+            event.category,
+            event.source,
+            event.window_id,
+            event.workspace_id,
+            None,
+            event.surface_id,
+            event.payload,
+        );
+    }
     let ids = effects
         .cleared
         .iter()
         .map(|notification| notification.id.clone())
         .collect::<Vec<_>>();
-    let payload = json!({
+    let dismissed_payload = json!({
         "ids": ids,
         "unread_count": effects.center.unread_count,
     });
-    record_event(
-        app,
-        lifecycle_name,
-        "notification",
-        "notification.store",
-        None,
-        workspace_id.map(str::to_owned),
-        None,
-        None,
-        payload.clone(),
-    );
     record_event(
         app,
         "notification.dismissed",
@@ -6347,8 +6349,51 @@ pub(crate) fn publish_notification_removal_effects(
         workspace_id.map(str::to_owned),
         None,
         None,
-        payload,
+        dismissed_payload,
     );
+}
+
+fn notification_removal_lifecycle_events(
+    effects: &crate::notifications::NotificationMutationEffects,
+    lifecycle_name: &'static str,
+    workspace_id: Option<&str>,
+) -> Vec<DerivedEventSpec> {
+    if lifecycle_name == "notification.read" {
+        return effects
+            .cleared
+            .iter()
+            .map(|notification| DerivedEventSpec {
+                name: lifecycle_name,
+                category: "notification",
+                source: "notification.store",
+                window_id: None,
+                workspace_id: Some(notification.tab_id.clone()),
+                surface_id: notification.surface_id.clone(),
+                payload: json!({
+                    "notification_ids": [notification.id.clone()],
+                    "count": 1,
+                }),
+            })
+            .collect();
+    }
+
+    let notification_ids = effects
+        .cleared
+        .iter()
+        .map(|notification| notification.id.clone())
+        .collect::<Vec<_>>();
+    vec![DerivedEventSpec {
+        name: lifecycle_name,
+        category: "notification",
+        source: "notification.store",
+        window_id: None,
+        workspace_id: workspace_id.map(str::to_owned),
+        surface_id: None,
+        payload: json!({
+            "count": notification_ids.len(),
+            "notification_ids": notification_ids,
+        }),
+    }]
 }
 
 fn append_event_to_disk(event: &Value) {

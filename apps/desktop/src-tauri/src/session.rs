@@ -5917,11 +5917,9 @@ fn remote_workspace_rename_intent(
     workspace: &SessionWorkspaceSnapshot,
     title: &str,
 ) -> Option<(String, String)> {
-    if !workspace
-        .remote
-        .as_ref()
-        .is_some_and(|remote| remote.enabled && remote.transport.as_deref() == Some("tmux"))
-    {
+    if !workspace.remote.as_ref().is_some_and(|remote| {
+        remote.enabled && remote.connected && remote.transport.as_deref() == Some("tmux")
+    }) {
         return None;
     }
     let title = title.trim();
@@ -11142,6 +11140,13 @@ mod tests {
             "ordinary SSH workspaces are not remote tmux mirrors"
         );
         workspace.remote.as_mut().unwrap().transport = Some("tmux".to_string());
+        workspace.remote.as_mut().unwrap().connected = false;
+        assert_eq!(
+            remote_workspace_rename_intent(&workspace, "Build"),
+            None,
+            "disconnected tmux mirrors cannot receive control-mode renames"
+        );
+        workspace.remote.as_mut().unwrap().connected = true;
         workspace.remote.as_mut().unwrap().enabled = false;
         assert_eq!(remote_workspace_rename_intent(&workspace, "Build"), None);
     }

@@ -17,6 +17,54 @@ const WORKSPACES: [&str; 5] = [
     "20000000-0000-4000-8000-000000000005",
 ];
 
+#[test]
+fn notification_removal_lifecycle_events_match_canonical_read_and_clear_shapes() {
+    let row = |id: &str, surface_id: &str| cmux_core::notifications::TerminalNotification {
+        id: id.into(),
+        tab_id: WORKSPACES[0].into(),
+        surface_id: Some(surface_id.into()),
+        panel_id: Some(surface_id.into()),
+        title: "Done".into(),
+        subtitle: "Agent".into(),
+        body: "Finished".into(),
+        created_at: 1,
+        is_read: true,
+        pane_flash: false,
+        click_action: None,
+    };
+    let effects = crate::notifications::NotificationMutationEffects {
+        center: crate::notifications::NotificationCenterReply {
+            notifications: Vec::new(),
+            unread_count: 0,
+            total_count: 2,
+        },
+        cleared: vec![row("n-1", "surface-1"), row("n-2", "surface-2")],
+    };
+
+    let read =
+        notification_removal_lifecycle_events(&effects, "notification.read", Some(WORKSPACES[0]));
+    assert_eq!(read.len(), 2);
+    assert_eq!(read[0].workspace_id.as_deref(), Some(WORKSPACES[0]));
+    assert_eq!(read[0].surface_id.as_deref(), Some("surface-1"));
+    assert_eq!(
+        read[0].payload,
+        json!({"notification_ids":["n-1"],"count":1})
+    );
+    assert_eq!(read[1].surface_id.as_deref(), Some("surface-2"));
+
+    let cleared = notification_removal_lifecycle_events(
+        &effects,
+        "notification.cleared",
+        Some(WORKSPACES[0]),
+    );
+    assert_eq!(cleared.len(), 1);
+    assert_eq!(cleared[0].surface_id, None);
+    assert_eq!(
+        cleared[0].payload,
+        json!({"notification_ids":["n-1","n-2"],"count":2})
+    );
+}
+
 fn action_snapshot() -> AppSessionSnapshot {
     let mut snapshot = test_snapshot();
     let window = &mut snapshot.windows[0];
