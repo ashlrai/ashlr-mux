@@ -148,23 +148,40 @@ pub(crate) fn current_app_language() -> String {
 /// `colors` map and file-defined overrides are exposed through the shared
 /// `cmux-workspaces` palette resolver.
 pub(crate) fn current_workspace_palette_snapshot() -> cmux_workspaces::PaletteStoreSnapshot {
-    let configured = config_file_path()
-        .and_then(|path| load_raw_config(&path))
-        .and_then(|raw| decode_settings_config(&raw))
+    let Ok(raw) = config_file_path().and_then(|path| load_raw_config(&path)) else {
+        return Default::default();
+    };
+    let Some(configured) = decode_settings_config(&raw)
         .ok()
         .and_then(|config| config.workspace_colors)
-        .unwrap_or_default();
-    let mut colors = configured.colors;
-    for (name, hex) in configured.palette_overrides {
-        colors.insert(name, hex);
+    else {
+        return Default::default();
+    };
+    workspace_palette_snapshot_from_config(&raw, configured)
+}
+
+fn workspace_palette_snapshot_from_config(
+    raw: &Value,
+    configured: WorkspaceColorsConfig,
+) -> cmux_workspaces::PaletteStoreSnapshot {
+    let Some(section) = raw.get("workspaceColors").and_then(Value::as_object) else {
+        return Default::default();
+    };
+    if section.contains_key("colors") {
+        return cmux_workspaces::PaletteStoreSnapshot {
+            stored: Some(configured.colors.into_iter().collect()),
+            ..Default::default()
+        };
     }
-    let mut stored = colors.into_iter().collect::<Vec<_>>();
-    for (index, hex) in configured.custom_colors.into_iter().enumerate() {
-        stored.push((format!("Custom {}", index + 1), hex));
-    }
+    let overrides_present = section.contains_key("paletteOverrides");
+    let custom_present = section.contains_key("customColors");
     cmux_workspaces::PaletteStoreSnapshot {
-        stored: Some(stored),
-        ..Default::default()
+        stored: None,
+        legacy_overrides_present: overrides_present,
+        legacy_overrides: overrides_present
+            .then(|| configured.palette_overrides.into_iter().collect()),
+        legacy_custom_present: custom_present,
+        legacy_custom_colors: custom_present.then_some(configured.custom_colors),
     }
 }
 
@@ -593,6 +610,58 @@ mod tests {
         assert!(config.diff_viewer.is_some());
         assert!(config.workspace_colors.is_some());
         assert!(config.sidebar_appearance.is_some());
+    }
+
+    #[test]
+    fn workspace_palette_uses_colors_as_primary_and_legacy_only_when_absent() {
+        let primary_raw = json!({
+            "workspaceColors": {
+                "colors": {"Blue":"#010203"},
+                "paletteOverrides": {"Blue":"#AABBCC"},
+                "customColors": ["#112233"]
+            }
+        });
+        let primary_config = decode_settings_config(&primary_raw)
+            .unwrap()
+            .workspace_colors
+            .unwrap();
+        let primary = workspace_palette_snapshot_from_config(&primary_raw, primary_config);
+        assert_eq!(
+            cmux_workspaces::palette(&primary)
+                .into_iter()
+                .map(|entry| (entry.name, entry.hex))
+                .collect::<Vec<_>>(),
+            [("Blue".to_string(), "#010203".to_string())]
+        );
+
+        let legacy_raw = json!({
+            "workspaceColors": {
+                "paletteOverrides": {"Blue":"#010203", "Unknown":"#AABBCC"},
+                "customColors": ["#112233", "#112233", "bad"]
+            }
+        });
+        let legacy_config = decode_settings_config(&legacy_raw)
+            .unwrap()
+            .workspace_colors
+            .unwrap();
+        let legacy = workspace_palette_snapshot_from_config(&legacy_raw, legacy_config);
+        let entries = cmux_workspaces::palette(&legacy);
+        assert_eq!(
+            entries
+                .iter()
+                .find(|entry| entry.name == "Blue")
+                .unwrap()
+                .hex,
+            "#010203"
+        );
+        assert!(entries.iter().all(|entry| entry.name != "Unknown"));
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| entry.name.starts_with("Custom"))
+                .count(),
+            1
+        );
     }
 
     #[test]

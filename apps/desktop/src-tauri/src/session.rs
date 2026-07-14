@@ -326,6 +326,22 @@ fn publish_snapshot_transaction(
     candidate: &AppSessionSnapshot,
     operations: &mut impl SnapshotPublicationOperations,
 ) -> Result<AppSessionSnapshot, String> {
+    publish_snapshot_transaction_with_post_commit(
+        authority,
+        expected,
+        candidate,
+        operations,
+        |_| {},
+    )
+}
+
+fn publish_snapshot_transaction_with_post_commit(
+    authority: &GatedSnapshot,
+    expected: Option<&AppSessionSnapshot>,
+    candidate: &AppSessionSnapshot,
+    operations: &mut impl SnapshotPublicationOperations,
+    post_commit: impl FnOnce(&AppSessionSnapshot),
+) -> Result<AppSessionSnapshot, String> {
     let _publication_gate = authority.lock_gate();
     let mut guard = authority
         .lock()
@@ -337,6 +353,7 @@ fn publish_snapshot_transaction(
     *guard = candidate.clone();
     let committed = guard.clone();
     drop(guard);
+    post_commit(&committed);
     operations.update_event_baseline(&committed);
     operations.emit(&committed)?;
     Ok(committed)
@@ -408,6 +425,15 @@ fn transact_value_if_changed_snapshot<R, E>(
     operations: &mut impl SnapshotPublicationOperations,
     mutation: impl FnOnce(&mut AppSessionSnapshot) -> Result<(R, bool), E>,
 ) -> Result<(R, AppSessionSnapshot), PaneTopologyControlError<E>> {
+    transact_value_if_changed_snapshot_with_post_commit(authority, operations, mutation, |_, _| {})
+}
+
+fn transact_value_if_changed_snapshot_with_post_commit<R, E>(
+    authority: &GatedSnapshot,
+    operations: &mut impl SnapshotPublicationOperations,
+    mutation: impl FnOnce(&mut AppSessionSnapshot) -> Result<(R, bool), E>,
+    post_commit: impl FnOnce(&mut R, &AppSessionSnapshot),
+) -> Result<(R, AppSessionSnapshot), PaneTopologyControlError<E>> {
     let _transaction_gate = authority.lock_gate();
     let current = authority
         .lock()
@@ -416,12 +442,19 @@ fn transact_value_if_changed_snapshot<R, E>(
         })?
         .clone();
     let mut candidate = current.clone();
-    let (value, changed) = mutation(&mut candidate).map_err(PaneTopologyControlError::Operation)?;
+    let (mut value, changed) =
+        mutation(&mut candidate).map_err(PaneTopologyControlError::Operation)?;
     if !changed {
         return Ok((value, current));
     }
-    let committed = publish_snapshot_transaction(authority, Some(&current), &candidate, operations)
-        .map_err(PaneTopologyControlError::Publication)?;
+    let committed = publish_snapshot_transaction_with_post_commit(
+        authority,
+        Some(&current),
+        &candidate,
+        operations,
+        |committed| post_commit(&mut value, committed),
+    )
+    .map_err(PaneTopologyControlError::Publication)?;
     Ok((value, committed))
 }
 
@@ -701,6 +734,7 @@ fn dispatch_remote_workspace_rename(
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct WorkspaceCloseTeardownPlan {
     workspace_id: String,
+    panel_ids: Vec<String>,
     clear_notifications: bool,
     clear_metadata: bool,
     clear_focus_history: bool,
@@ -709,14 +743,37 @@ struct WorkspaceCloseTeardownPlan {
 
 fn workspace_close_teardown_plan(
     workspace_id: &str,
-    has_remote: bool,
+    workspace: &SessionWorkspaceSnapshot,
 ) -> WorkspaceCloseTeardownPlan {
+    fn collect_panel_ids(layout: &SessionWorkspaceLayoutSnapshot, panel_ids: &mut Vec<String>) {
+        match layout {
+            SessionWorkspaceLayoutSnapshot::Pane(pane) => {
+                panel_ids.extend(pane.panel_ids.iter().cloned());
+            }
+            SessionWorkspaceLayoutSnapshot::Split(split) => {
+                collect_panel_ids(&split.first, panel_ids);
+                collect_panel_ids(&split.second, panel_ids);
+            }
+        }
+    }
+    let mut panel_ids = Vec::new();
+    if let Some(layout) = workspace.layout.as_ref() {
+        collect_panel_ids(layout, &mut panel_ids);
+    }
+    if let Some(surfaces) = workspace.surfaces.as_ref() {
+        for surface in surfaces {
+            if !panel_ids.contains(&surface.surface_id) {
+                panel_ids.push(surface.surface_id.clone());
+            }
+        }
+    }
     WorkspaceCloseTeardownPlan {
         workspace_id: workspace_id.to_string(),
+        panel_ids,
         clear_notifications: true,
         clear_metadata: true,
         clear_focus_history: true,
-        stop_remote: has_remote,
+        stop_remote: workspace.remote.is_some(),
     }
 }
 
@@ -725,6 +782,32 @@ fn apply_workspace_close_teardown(
     state: &SessionState,
     teardown: &WorkspaceCloseTeardownPlan,
 ) {
+    if let Some(terminals) = app.try_state::<crate::terminal::TerminalState>() {
+        for panel_id in &teardown.panel_ids {
+            for terminal_id in
+                crate::terminal::terminal_ids_for_panel_for_control(terminals.inner(), panel_id)
+            {
+                let _ = crate::terminal::terminal_shutdown_id_preserving_authority_for_control(
+                    terminals.inner(),
+                    terminal_id,
+                );
+                let _ =
+                    crate::terminal::terminal_remove_id_for_control(terminals.inner(), terminal_id);
+            }
+        }
+    }
+    if let Some(browsers) = app.try_state::<crate::browser::BrowserWebviewState>() {
+        for panel_id in &teardown.panel_ids {
+            if crate::browser::browser_has_webview_for_control(browsers.inner(), panel_id)
+                .unwrap_or(false)
+            {
+                let _ = crate::browser::browser_close_webview_strict_for_control(
+                    browsers.inner(),
+                    panel_id,
+                );
+            }
+        }
+    }
     if teardown.clear_notifications {
         if let Some(notifications) =
             app.try_state::<crate::notifications::NotificationCommandState>()
@@ -5810,10 +5893,14 @@ fn remote_workspace_rename_intent(
     {
         return None;
     }
+    let title = title.trim();
+    if title.is_empty() {
+        return None;
+    }
     workspace
         .workspace_id
         .clone()
-        .map(|workspace_id| (workspace_id, title.trim().to_string()))
+        .map(|workspace_id| (workspace_id, title.to_string()))
 }
 
 fn remote_workspace_rename_request(
@@ -5990,9 +6077,10 @@ pub(crate) fn close_workspace_in_window_for_control(
             .workspaces
             .get(workspace_index)
             .and_then(|workspace| {
-                workspace.workspace_id.as_deref().map(|workspace_id| {
-                    workspace_close_teardown_plan(workspace_id, workspace.remote.is_some())
-                })
+                workspace
+                    .workspace_id
+                    .as_deref()
+                    .map(|workspace_id| workspace_close_teardown_plan(workspace_id, workspace))
             });
         let window = guard.windows.get_mut(window_index)?;
         let changed = session_ops::close_workspace(&mut window.tab_manager, workspace_index as i64);
@@ -6061,9 +6149,9 @@ pub(crate) fn close_workspaces_for_control(
                     workspace_id.clone(),
                     closed_browser_tabs_for_workspace(workspace),
                     closed_workspace_snapshot(&guard, 0, *index as usize),
-                    workspace_id.as_deref().map(|workspace_id| {
-                        workspace_close_teardown_plan(workspace_id, workspace.remote.is_some())
-                    }),
+                    workspace_id
+                        .as_deref()
+                        .map(|workspace_id| workspace_close_teardown_plan(workspace_id, workspace)),
                 ))
             })
             .collect();
@@ -6141,6 +6229,7 @@ fn transact_workspace_action_mutation(
     authority: &GatedSnapshot,
     publication: &mut impl SnapshotPublicationOperations,
     mutation: &crate::workspace_action::WorkspaceActionMutation,
+    post_commit: impl FnOnce(&mut WorkspaceActionClosedArtifacts, &AppSessionSnapshot),
 ) -> Result<(WorkspaceActionClosedArtifacts, AppSessionSnapshot), String> {
     use crate::workspace_action::WorkspaceActionMutation;
 
@@ -6149,60 +6238,65 @@ fn transact_workspace_action_mutation(
         workspace_indices,
     } = mutation
     {
-        return match transact_value_if_changed_snapshot(authority, publication, |candidate| {
-            let candidates = workspace_indices
-                .iter()
-                .filter_map(|index| {
-                    let workspace = candidate
-                        .windows
-                        .get(*window_index)?
-                        .tab_manager
-                        .workspaces
-                        .get(*index)?;
-                    let workspace_id = workspace.workspace_id.clone();
-                    Some((
-                        workspace_id.clone(),
-                        closed_browser_tabs_for_workspace(workspace),
-                        closed_workspace_snapshot(candidate, *window_index, *index),
-                        workspace_id.as_deref().map(|workspace_id| {
-                            workspace_close_teardown_plan(workspace_id, workspace.remote.is_some())
-                        }),
-                    ))
-                })
-                .collect::<Vec<_>>();
-            let changed =
-                crate::workspace_action::apply_workspace_action_mutation(candidate, mutation);
-            let remaining_ids = candidate
-                .windows
-                .get(*window_index)
-                .into_iter()
-                .flat_map(|window| window.tab_manager.workspaces.iter())
-                .filter_map(|workspace| workspace.workspace_id.clone())
-                .collect::<HashSet<_>>();
-            let closed = candidates
-                .into_iter()
-                .filter(|(workspace_id, _, _, _)| {
-                    workspace_id
-                        .as_ref()
-                        .is_none_or(|id| !remaining_ids.contains(id))
-                })
-                .collect::<Vec<_>>();
-            let artifacts = WorkspaceActionClosedArtifacts {
-                browser_tabs: closed
+        return match transact_value_if_changed_snapshot_with_post_commit(
+            authority,
+            publication,
+            |candidate| {
+                let candidates = workspace_indices
                     .iter()
-                    .flat_map(|(_, tabs, _, _)| tabs.clone())
-                    .collect(),
-                workspaces: closed
-                    .iter()
-                    .filter_map(|(_, _, workspace, _)| workspace.clone())
-                    .collect(),
-                teardowns: closed
+                    .filter_map(|index| {
+                        let workspace = candidate
+                            .windows
+                            .get(*window_index)?
+                            .tab_manager
+                            .workspaces
+                            .get(*index)?;
+                        let workspace_id = workspace.workspace_id.clone();
+                        Some((
+                            workspace_id.clone(),
+                            closed_browser_tabs_for_workspace(workspace),
+                            closed_workspace_snapshot(candidate, *window_index, *index),
+                            workspace_id.as_deref().map(|workspace_id| {
+                                workspace_close_teardown_plan(workspace_id, workspace)
+                            }),
+                        ))
+                    })
+                    .collect::<Vec<_>>();
+                let changed =
+                    crate::workspace_action::apply_workspace_action_mutation(candidate, mutation);
+                let remaining_ids = candidate
+                    .windows
+                    .get(*window_index)
                     .into_iter()
-                    .filter_map(|(_, _, _, teardown)| teardown)
-                    .collect(),
-            };
-            Ok::<_, std::convert::Infallible>((artifacts, changed))
-        }) {
+                    .flat_map(|window| window.tab_manager.workspaces.iter())
+                    .filter_map(|workspace| workspace.workspace_id.clone())
+                    .collect::<HashSet<_>>();
+                let closed = candidates
+                    .into_iter()
+                    .filter(|(workspace_id, _, _, _)| {
+                        workspace_id
+                            .as_ref()
+                            .is_none_or(|id| !remaining_ids.contains(id))
+                    })
+                    .collect::<Vec<_>>();
+                let artifacts = WorkspaceActionClosedArtifacts {
+                    browser_tabs: closed
+                        .iter()
+                        .flat_map(|(_, tabs, _, _)| tabs.clone())
+                        .collect(),
+                    workspaces: closed
+                        .iter()
+                        .filter_map(|(_, _, workspace, _)| workspace.clone())
+                        .collect(),
+                    teardowns: closed
+                        .into_iter()
+                        .filter_map(|(_, _, _, teardown)| teardown)
+                        .collect(),
+                };
+                Ok::<_, std::convert::Infallible>((artifacts, changed))
+            },
+            post_commit,
+        ) {
             Ok(value) => Ok(value),
             Err(PaneTopologyControlError::Publication(message)) => Err(message),
             Err(PaneTopologyControlError::Operation(error)) => match error {},
@@ -6215,11 +6309,26 @@ fn transact_workspace_action_mutation(
     .map(|snapshot| (WorkspaceActionClosedArtifacts::default(), snapshot))
 }
 
+fn transact_workspace_action_and_propagate_remote(
+    authority: &GatedSnapshot,
+    publication: &mut impl SnapshotPublicationOperations,
+    mutation: &crate::workspace_action::WorkspaceActionMutation,
+    remote_controller: &dyn RemoteWorkspaceRenameController,
+    remote_request: Option<&RemoteWorkspaceRenameRequest>,
+    post_commit: impl FnOnce(&mut WorkspaceActionClosedArtifacts, &AppSessionSnapshot),
+) -> Result<(WorkspaceActionClosedArtifacts, AppSessionSnapshot), String> {
+    let result = transact_workspace_action_mutation(authority, publication, mutation, post_commit)?;
+    if let Some(request) = remote_request {
+        let _ = dispatch_remote_workspace_rename(remote_controller, request);
+    }
+    Ok(result)
+}
+
 /// Apply one planned `workspace.action` mutation through the durable snapshot
-/// transaction seam. Socket completion is recorded by the control layer, so
-/// derived control events are suppressed while the normal Tauri session/window
-/// publications still occur. Close histories and runtime teardowns run only
-/// after the candidate snapshot has persisted and committed.
+/// transaction seam. Socket completion is recorded separately by the control
+/// layer; canonical derived close/reorder lifecycle events and normal Tauri
+/// session/window publications remain enabled. Close histories and runtime
+/// teardowns run after persistence and authority commit but before publication.
 pub(crate) fn apply_workspace_action_for_control(
     app: &AppHandle,
     state: &SessionState,
@@ -6227,7 +6336,7 @@ pub(crate) fn apply_workspace_action_for_control(
 ) -> Result<AppSessionSnapshot, String> {
     use crate::workspace_action::WorkspaceActionMutation;
 
-    if let WorkspaceActionMutation::Rename {
+    let remote_request = if let WorkspaceActionMutation::Rename {
         window_index,
         workspace_index,
         title,
@@ -6244,37 +6353,43 @@ pub(crate) fn apply_workspace_action_for_control(
                 .and_then(|window| window.tab_manager.workspaces.get(*workspace_index))
                 .and_then(|workspace| remote_workspace_rename_request(state, workspace, title))
         };
-        if let Some(request) = remote_request.as_ref() {
-            dispatch_remote_workspace_rename(
-                state.remote_workspace_rename_controller.as_ref(),
-                request,
-            )?;
-        }
-    }
+        remote_request
+    } else {
+        None
+    };
 
     let mut publication =
-        ProductionSnapshotPublicationOperations::new(app, state, DerivedEventPolicy::Suppress);
-    let (artifacts, snapshot) =
-        transact_workspace_action_mutation(&state.snapshot, &mut publication, mutation)?;
-    if !artifacts.browser_tabs.is_empty() {
-        push_closed_browser_tabs(
-            &mut state
-                .closed_browser_tabs
-                .lock()
-                .expect("closed browser history mutex poisoned"),
-            artifacts.browser_tabs,
-        );
-    }
-    if !artifacts.workspaces.is_empty() {
-        state
-            .closed_workspaces
-            .lock()
-            .expect("closed workspace history mutex poisoned")
-            .extend(artifacts.workspaces);
-    }
-    for teardown in artifacts.teardowns {
-        apply_workspace_close_teardown(app, state, &teardown);
-    }
+        ProductionSnapshotPublicationOperations::new(app, state, DerivedEventPolicy::Record);
+    let (_, snapshot) = transact_workspace_action_and_propagate_remote(
+        &state.snapshot,
+        &mut publication,
+        mutation,
+        state.remote_workspace_rename_controller.as_ref(),
+        remote_request.as_ref(),
+        |artifacts, _| {
+            let browser_tabs = std::mem::take(&mut artifacts.browser_tabs);
+            if !browser_tabs.is_empty() {
+                push_closed_browser_tabs(
+                    &mut state
+                        .closed_browser_tabs
+                        .lock()
+                        .expect("closed browser history mutex poisoned"),
+                    browser_tabs,
+                );
+            }
+            let workspaces = std::mem::take(&mut artifacts.workspaces);
+            if !workspaces.is_empty() {
+                state
+                    .closed_workspaces
+                    .lock()
+                    .expect("closed workspace history mutex poisoned")
+                    .extend(workspaces);
+            }
+            for teardown in std::mem::take(&mut artifacts.teardowns) {
+                apply_workspace_close_teardown(app, state, &teardown);
+            }
+        },
+    )?;
     Ok(snapshot)
 }
 
@@ -10970,6 +11085,7 @@ mod tests {
             remote_workspace_rename_intent(&workspace, "  Build  "),
             Some(("workspace-remote".to_string(), "Build".to_string()))
         );
+        assert_eq!(remote_workspace_rename_intent(&workspace, "  \r\n "), None);
         workspace.remote.as_mut().unwrap().enabled = false;
         assert_eq!(remote_workspace_rename_intent(&workspace, "Build"), None);
     }
@@ -11067,10 +11183,33 @@ mod tests {
     #[test]
     fn close_teardown_plan_covers_workspace_owned_state() {
         let workspace_id = "workspace-a";
+        let mut workspace = initial_snapshot("surface-1").windows[0]
+            .tab_manager
+            .workspaces[0]
+            .clone();
+        workspace.remote = Some(SessionWorkspaceRemoteSnapshot {
+            enabled: true,
+            state: "connected".to_string(),
+            connected: true,
+            transport: Some("tmux".to_string()),
+            destination: Some("remote".to_string()),
+            port: None,
+            local_proxy_port: None,
+            persistent_daemon_slot: None,
+            has_ssh_options: false,
+            detail: None,
+            daemon: None,
+            proxy: None,
+            detected_ports: Vec::new(),
+            forwarded_ports: Vec::new(),
+            conflicted_ports: Vec::new(),
+            active_terminal_sessions: Some(1),
+        });
         assert_eq!(
-            workspace_close_teardown_plan(workspace_id, true),
+            workspace_close_teardown_plan(workspace_id, &workspace),
             WorkspaceCloseTeardownPlan {
                 workspace_id: workspace_id.to_string(),
+                panel_ids: vec!["surface-1".to_string()],
                 clear_notifications: true,
                 clear_metadata: true,
                 clear_focus_history: true,

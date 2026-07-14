@@ -349,7 +349,7 @@ fn action_specific_required_values_have_canonical_errors() {
 }
 
 #[test]
-fn direct_v2_description_preserves_edge_whitespace_after_line_ending_normalization() {
+fn direct_v2_description_trims_edges_and_normalizes_line_endings() {
     let snapshot = action_snapshot();
     let planned = plan(
         &snapshot,
@@ -359,7 +359,7 @@ fn direct_v2_description_preserves_edge_whitespace_after_line_ending_normalizati
             "description":"  first\r\nsecond  "
         }),
     );
-    assert_eq!(ok_value(&planned)["description"], "  first\nsecond  ");
+    assert_eq!(ok_value(&planned)["description"], "first\nsecond");
     let mut mutated = snapshot;
     assert!(apply_workspace_action_mutation(
         &mut mutated,
@@ -369,16 +369,48 @@ fn direct_v2_description_preserves_edge_whitespace_after_line_ending_normalizati
         mutated.windows[0].tab_manager.workspaces[2]
             .custom_description
             .as_deref(),
-        Some("  first\nsecond  ")
+        Some("first\nsecond")
     );
 }
 
 #[test]
+fn unread_actions_update_the_notification_mutation_and_visible_session_projection() {
+    let mut snapshot = action_snapshot();
+    let unread = plan(
+        &snapshot,
+        json!({"action":"mark_unread", "workspace_id":WORKSPACES[2]}),
+    );
+    assert!(apply_workspace_action_mutation(
+        &mut snapshot,
+        &unread.mutation
+    ));
+    assert!(snapshot.windows[0].tab_manager.workspaces[2]
+        .panel_unreads
+        .as_ref()
+        .is_some_and(|rows| rows.iter().any(|row| row.is_unread)));
+
+    let read = plan(
+        &snapshot,
+        json!({"action":"mark_read", "workspace_id":WORKSPACES[2]}),
+    );
+    assert!(apply_workspace_action_mutation(
+        &mut snapshot,
+        &read.mutation
+    ));
+    assert!(snapshot.windows[0].tab_manager.workspaces[2]
+        .panel_unreads
+        .is_none());
+}
+
+#[test]
 fn successful_action_completion_has_exact_socket_v2_event_payload() {
-    let request = params(json!({"action":"pin", "workspace_id":WORKSPACES[2]}));
+    let request = params(json!({
+        "action":"pin", "workspace_id":"workspace:3", "window_id":"window:1"
+    }));
+    let resolved = params(json!({"action":"pin", "workspace_id":WORKSPACES[2]}));
     let planned = plan_workspace_action(
         &action_snapshot(),
-        &request,
+        &resolved,
         &PaletteStoreSnapshot::default(),
     );
     let result = ok_value(&planned);

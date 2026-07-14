@@ -1296,6 +1296,8 @@ fn handle_control_request(app: &AppHandle, mut request: ControlRequest) -> Contr
             .ok(),
         };
     }
+    let workspace_action_event_params =
+        (request.method == "workspace.action").then(|| request.params.clone());
     // pane.create's split source honors ONLY a raw-UUID surface_id (canonical
     // ControlCommandCoordinator+Pane.swift:300); routing still resolves refs.
     // Preserve the pre-resolution value on a reserved key (stripped first so a
@@ -1315,7 +1317,13 @@ fn handle_control_request(app: &AppHandle, mut request: ControlRequest) -> Contr
             return handle_pane_surface_lifecycle_request(app, &request.method, &request.params);
         }
         ControlRequestRoute::WorkspaceAction => {
-            return handle_workspace_action_request(app, &request.params);
+            return handle_workspace_action_request(
+                app,
+                &request.params,
+                workspace_action_event_params
+                    .as_ref()
+                    .expect("workspace.action event params were captured"),
+            );
         }
         ControlRequestRoute::WindowLifecycle => {
             return handle_window_lifecycle_request(app, &request.method, request.params);
@@ -4380,6 +4388,7 @@ fn handle_pane_surface_lifecycle_request(
 fn handle_workspace_action_request(
     app: &AppHandle,
     params: &serde_json::Map<String, Value>,
+    event_params: &serde_json::Map<String, Value>,
 ) -> ControlCallResult {
     let current = snapshot(app);
     let palette = crate::config::current_workspace_palette_snapshot();
@@ -4403,7 +4412,16 @@ fn handle_workspace_action_request(
         crate::workspace_action::WorkspaceActionMutation::MarkUnread {
             workspace_id,
             unread,
+            ..
         } => {
+            let session = app.state::<SessionState>();
+            if let Err(message) = apply_workspace_action_for_control(app, &session, &mutation) {
+                return ControlCallResult::Err {
+                    code: "internal".to_string(),
+                    message,
+                    data: None,
+                };
+            }
             let state = app.state::<crate::notifications::NotificationCommandState>();
             if let Err(message) =
                 crate::notifications::notification_set_workspace_unread_for_control(
@@ -4443,7 +4461,7 @@ fn handle_workspace_action_request(
             .map(|window_id| json!(control_handle_ref(app, "window", window_id)))
             .unwrap_or(Value::Null);
     }
-    let completion = crate::workspace_action::workspace_action_completion(params, &payload);
+    let completion = crate::workspace_action::workspace_action_completion(event_params, &payload);
     record_event(
         app,
         "workspace.action",

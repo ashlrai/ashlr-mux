@@ -39,11 +39,11 @@ impl ControlCommand {
         if params.contains_key("suppress_ambient_workspace") {
             return self;
         }
-        if workspace_id.is_empty()
-            && matches!(self.method.as_str(), "tab.action" | "surface.respawn")
-        {
-            params.remove("resolve_current_workspace");
-            params.insert("suppress_ambient_workspace".into(), serde_json::json!(true));
+        if workspace_id.is_empty() {
+            if matches!(self.method.as_str(), "tab.action" | "surface.respawn") {
+                params.remove("resolve_current_workspace");
+                params.insert("suppress_ambient_workspace".into(), serde_json::json!(true));
+            }
             return self;
         }
         if ["workspace_id", "workspace_ref", "workspace_index"]

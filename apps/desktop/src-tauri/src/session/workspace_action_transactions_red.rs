@@ -1,5 +1,7 @@
 use super::*;
 use crate::workspace_action::WorkspaceActionMutation;
+use std::cell::Cell;
+use std::rc::Rc;
 
 const WINDOW: &str = "10000000-0000-4000-8000-000000000001";
 const FIRST: &str = "20000000-0000-4000-8000-000000000001";
@@ -29,6 +31,7 @@ fn snapshot() -> AppSessionSnapshot {
 #[derive(Default)]
 struct PublicationOracle {
     fail_persist: bool,
+    require_post_commit: Option<Rc<Cell<bool>>>,
     calls: Vec<&'static str>,
 }
 
@@ -47,6 +50,12 @@ impl SnapshotPublicationOperations for PublicationOracle {
     }
 
     fn emit(&mut self, _candidate: &AppSessionSnapshot) -> Result<(), String> {
+        if let Some(required) = &self.require_post_commit {
+            assert!(
+                required.get(),
+                "post-commit effects must precede publication"
+            );
+        }
         self.calls.push("emit");
         Ok(())
     }
@@ -63,7 +72,8 @@ fn metadata_action_persists_before_commit_and_publication() {
     };
 
     let (artifacts, committed) =
-        transact_workspace_action_mutation(&authority, &mut publication, &mutation).unwrap();
+        transact_workspace_action_mutation(&authority, &mut publication, &mutation, |_, _| {})
+            .unwrap();
     assert!(artifacts.browser_tabs.is_empty());
     assert!(artifacts.workspaces.is_empty());
     assert!(artifacts.teardowns.is_empty());
@@ -91,7 +101,8 @@ fn persistence_failure_rolls_back_authority_and_exposes_no_close_effects() {
     };
 
     assert_eq!(
-        transact_workspace_action_mutation(&authority, &mut publication, &mutation).unwrap_err(),
+        transact_workspace_action_mutation(&authority, &mut publication, &mutation, |_, _| {},)
+            .unwrap_err(),
         "snapshot write failed"
     );
     assert_eq!(publication.calls, ["persist"]);
@@ -101,14 +112,34 @@ fn persistence_failure_rolls_back_authority_and_exposes_no_close_effects() {
 #[test]
 fn close_transaction_returns_post_commit_history_and_teardown_effects() {
     let authority = GatedSnapshot::new(snapshot());
-    let mut publication = PublicationOracle::default();
+    let post_commit = Rc::new(Cell::new(false));
+    let mut publication = PublicationOracle {
+        require_post_commit: Some(post_commit.clone()),
+        ..Default::default()
+    };
     let mutation = WorkspaceActionMutation::Close {
         window_index: 0,
         workspace_indices: vec![0],
     };
 
-    let (artifacts, committed) =
-        transact_workspace_action_mutation(&authority, &mut publication, &mutation).unwrap();
+    let (artifacts, committed) = transact_workspace_action_mutation(
+        &authority,
+        &mut publication,
+        &mutation,
+        |artifacts, committed| {
+            assert_eq!(committed.windows[0].tab_manager.workspaces.len(), 1);
+            assert_eq!(
+                authority.lock().unwrap().windows[0]
+                    .tab_manager
+                    .workspaces
+                    .len(),
+                1
+            );
+            assert_eq!(artifacts.workspaces.len(), 1);
+            post_commit.set(true);
+        },
+    )
+    .unwrap();
     assert_eq!(publication.calls, ["persist", "baseline", "emit"]);
     assert_eq!(committed.windows[0].tab_manager.workspaces.len(), 1);
     assert_eq!(
@@ -137,8 +168,61 @@ fn no_op_action_skips_persistence_and_publication() {
     };
 
     let (_, committed) =
-        transact_workspace_action_mutation(&authority, &mut publication, &mutation).unwrap();
+        transact_workspace_action_mutation(&authority, &mut publication, &mutation, |_, _| {})
+            .unwrap();
     assert!(publication.calls.is_empty());
     assert_eq!(committed, initial);
     assert_eq!(*authority.lock().unwrap(), initial);
+}
+
+#[derive(Default)]
+struct FailingRemoteRenameController {
+    calls: Mutex<usize>,
+}
+
+impl RemoteWorkspaceRenameController for FailingRemoteRenameController {
+    fn rename(&self, _request: &RemoteWorkspaceRenameRequest) -> Result<(), String> {
+        *self.calls.lock().unwrap() += 1;
+        Err("remote rejected rename".into())
+    }
+}
+
+#[test]
+fn remote_rename_is_best_effort_after_local_commit() {
+    let authority = GatedSnapshot::new(snapshot());
+    let mut publication = PublicationOracle::default();
+    let controller = FailingRemoteRenameController::default();
+    let mutation = WorkspaceActionMutation::Rename {
+        window_index: 0,
+        workspace_index: 1,
+        title: "Renamed".into(),
+    };
+    let request = RemoteWorkspaceRenameRequest {
+        workspace_id: SECOND.into(),
+        destination: "example.invalid".into(),
+        port: None,
+        identity_file: None,
+        ssh_options: Vec::new(),
+        session: Some("remote-session".into()),
+        title: "Renamed".into(),
+    };
+
+    let (_, committed) = transact_workspace_action_and_propagate_remote(
+        &authority,
+        &mut publication,
+        &mutation,
+        &controller,
+        Some(&request),
+        |_, _| {},
+    )
+    .expect("remote failure must not reverse a committed local rename");
+    assert_eq!(publication.calls, ["persist", "baseline", "emit"]);
+    assert_eq!(*controller.calls.lock().unwrap(), 1);
+    assert_eq!(
+        committed.windows[0].tab_manager.workspaces[1]
+            .custom_title
+            .as_deref(),
+        Some("Renamed")
+    );
+    assert_eq!(*authority.lock().unwrap(), committed);
 }

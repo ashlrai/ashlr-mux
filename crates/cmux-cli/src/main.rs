@@ -135,9 +135,6 @@ fn dispatch(
             } else {
                 std::env::var(CMUX_SURFACE_ID_ENV).ok()
             };
-            let had_command_window_scope = ["window_id", "window_ref", "window_index"]
-                .iter()
-                .any(|key| control.params.get(*key).is_some());
             let control = control.with_window_id(options.window_id.as_deref());
             let has_window_scope = ["window_id", "window_ref", "window_index"]
                 .iter()
@@ -175,8 +172,7 @@ fn dispatch(
                     options
                         .window_id
                         .as_deref()
-                        .is_some_and(|window| !window.trim().is_empty())
-                        && !had_command_window_scope,
+                        .is_some_and(|window| !window.trim().is_empty()),
                 )
             } else if matches!(command, "tab-action" | "respawn-pane") {
                 run_lifecycle_command(options, &control.method, &control.params)

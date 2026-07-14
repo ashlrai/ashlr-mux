@@ -58,6 +58,8 @@ pub(crate) enum WorkspaceActionMutation {
         workspace_indices: Vec<usize>,
     },
     MarkUnread {
+        window_index: usize,
+        workspace_index: usize,
         workspace_id: String,
         unread: bool,
     },
@@ -199,14 +201,6 @@ fn required_string(params: &Map<String, Value>, key: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn required_preserved_string(params: &Map<String, Value>, key: &str) -> Option<String> {
-    params
-        .get(key)
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .map(str::to_owned)
-}
-
 fn workspace_display_name(workspace: &SessionWorkspaceSnapshot) -> String {
     workspace
         .custom_title
@@ -233,7 +227,7 @@ pub(crate) fn apply_workspace_action_mutation(
     mutation: &WorkspaceActionMutation,
 ) -> bool {
     let changed = match mutation {
-        WorkspaceActionMutation::None | WorkspaceActionMutation::MarkUnread { .. } => false,
+        WorkspaceActionMutation::None => false,
         WorkspaceActionMutation::SetPinned {
             window_index,
             workspace_index,
@@ -329,6 +323,22 @@ pub(crate) fn apply_workspace_action_mutation(
                     color.as_deref(),
                 )
             }),
+        WorkspaceActionMutation::MarkUnread {
+            window_index,
+            workspace_index,
+            unread,
+            ..
+        } => snapshot
+            .windows
+            .get_mut(*window_index)
+            .is_some_and(|window| {
+                session_ops::set_workspace_unread(
+                    &mut window.tab_manager,
+                    *workspace_index as i64,
+                    None,
+                    *unread,
+                )
+            }),
     };
     if changed {
         let window_index = match mutation {
@@ -338,8 +348,9 @@ pub(crate) fn apply_workspace_action_mutation(
             | WorkspaceActionMutation::Reorder { window_index, .. }
             | WorkspaceActionMutation::MoveTop { window_index, .. }
             | WorkspaceActionMutation::Close { window_index, .. }
+            | WorkspaceActionMutation::MarkUnread { window_index, .. }
             | WorkspaceActionMutation::SetColor { window_index, .. } => Some(*window_index),
-            WorkspaceActionMutation::None | WorkspaceActionMutation::MarkUnread { .. } => None,
+            WorkspaceActionMutation::None => None,
         };
         if let Some(window) = window_index.and_then(|index| snapshot.windows.get_mut(index)) {
             sync_selected_workspace_id(window);
@@ -409,7 +420,7 @@ pub(crate) fn plan_workspace_action_with_active_window(
         "set_description" => WorkspaceActionMutation::SetDescription {
             window_index,
             workspace_index,
-            description: match required_preserved_string(params, "description") {
+            description: match required_string(params, "description") {
                 Some(description) => description,
                 None => return error("invalid_params", "Missing or invalid description", None),
             },
@@ -457,10 +468,14 @@ pub(crate) fn plan_workspace_action_with_active_window(
             }
         }
         "mark_read" => WorkspaceActionMutation::MarkUnread {
+            window_index,
+            workspace_index,
             workspace_id: workspace_id.clone(),
             unread: false,
         },
         "mark_unread" => WorkspaceActionMutation::MarkUnread {
+            window_index,
+            workspace_index,
             workspace_id: workspace_id.clone(),
             unread: true,
         },

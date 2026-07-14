@@ -9,6 +9,7 @@ use cmux_ipc::{control_pipe_path, serve_named_pipe, ControlCallResult, JsonValue
 use serde_json::{json, Value};
 
 const WINDOW_ID: &str = "11111111-1111-4111-8111-111111111111";
+const OTHER_WINDOW_ID: &str = "33333333-3333-4333-8333-333333333333";
 const WORKSPACE_ID: &str = "22222222-2222-4222-8222-222222222222";
 
 type CapturedRequest = (String, serde_json::Map<String, Value>);
@@ -47,6 +48,10 @@ fn spawn_server(tag: &str, result: ControlCallResult) -> (String, mpsc::Receiver
 }
 
 fn executable(pipe: Option<&str>, args: &[&str]) -> Output {
+    executable_with_env(pipe, args, &[])
+}
+
+fn executable_with_env(pipe: Option<&str>, args: &[&str], env: &[(&str, &str)]) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_cmux"));
     command.args(args);
     command
@@ -60,6 +65,9 @@ fn executable(pipe: Option<&str>, args: &[&str]) -> Output {
         command.env("CMUX_SOCKET_PATH", pipe);
     } else {
         command.env("CMUX_SOCKET_PATH", r"\\.\pipe\cmux-must-not-connect");
+    }
+    for (key, value) in env {
+        command.env(key, value);
     }
     command.output().unwrap()
 }
@@ -341,6 +349,57 @@ fn global_window_prefocuses_but_per_command_window_only_scopes() {
         scoped_rx.try_recv().is_err(),
         "per-command scope must not focus"
     );
+
+    let (mixed_pipe, mixed_rx) = spawn_server(
+        "mixed-window",
+        ok(json!({
+            "action":"pin", "workspace_id":WORKSPACE_ID,
+            "workspace_ref":"workspace:1", "window_id":OTHER_WINDOW_ID,
+            "window_ref":"window:2", "pinned":true
+        })),
+    );
+    let mixed = executable(
+        Some(&mixed_pipe),
+        &[
+            "--window",
+            WINDOW_ID,
+            "workspace-action",
+            "pin",
+            "--workspace",
+            WORKSPACE_ID,
+            "--window",
+            OTHER_WINDOW_ID,
+        ],
+    );
+    assert!(mixed.status.success(), "{mixed:?}");
+    let (method, params) = mixed_rx.recv().unwrap();
+    assert_eq!(method, "window.focus");
+    assert_eq!(params["window_id"], WINDOW_ID);
+    let (method, params) = mixed_rx.recv().unwrap();
+    assert_eq!(method, "workspace.action");
+    assert_eq!(params["window_id"], OTHER_WINDOW_ID);
+}
+
+#[test]
+fn empty_ambient_workspace_falls_back_to_the_selected_workspace() {
+    let response = ok(json!({
+        "action":"pin", "workspace_id":WORKSPACE_ID,
+        "workspace_ref":"workspace:1", "window_id":WINDOW_ID,
+        "window_ref":"window:1", "pinned":true
+    }));
+    let (pipe, requests) = spawn_server("empty-ambient-workspace", response);
+    let output = executable_with_env(
+        Some(&pipe),
+        &["workspace-action", "pin"],
+        &[("CMUX_WORKSPACE_ID", "")],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let (method, params) = requests.recv().unwrap();
+    assert_eq!(method, "workspace.current");
+    assert!(params.get("workspace_id").is_none());
+    let (method, params) = requests.recv().unwrap();
+    assert_eq!(method, "workspace.action");
+    assert_eq!(params["workspace_id"], WORKSPACE_ID);
 }
 
 #[test]
