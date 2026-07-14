@@ -21963,4 +21963,7 @@ mod tests {
 
     #[path = "remote_runtime_lifecycle_lease_red.rs"]
     mod remote_runtime_lifecycle_lease_red;
+
+    #[path = "manual_restore_effects_red.rs"]
+    mod manual_restore_effects_red;
 }

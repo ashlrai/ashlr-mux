@@ -175,6 +175,24 @@ fn persistence_failure_preserves_every_authority_and_counter() {
     assert_eq!(next_panel.load(Ordering::Relaxed), 27);
 }
 
+#[test]
+fn manual_restore_never_invokes_snapshot_persistence() {
+    let current = initial_snapshot("surface-1");
+    let previous = restored_without_stable_ids();
+    let authority = GatedSnapshot::new(current.clone());
+    let next_panel = AtomicU64::new(2);
+    let mut publication = RecordingPublication::new(&authority, &current, &next_panel);
+
+    let outcome =
+        restore_previous_launch_transaction(&authority, &next_panel, &mut publication, || {
+            Some(previous)
+        })
+        .expect("valid previous snapshot restores");
+
+    assert!(outcome.restored);
+    assert_eq!(publication.calls, ["authority", "baseline", "emit"]);
+}
+
 struct BlockingEmitPublication {
     emitted: std::sync::mpsc::Sender<()>,
     resume: std::sync::mpsc::Receiver<()>,
