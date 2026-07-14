@@ -101,10 +101,13 @@ fn previous_launch_restore_preserves_nonmirror_remote_terminal_metadata() {
     )
     .unwrap();
 
-    let restored_surface = restored.windows[0].tab_manager.workspaces[0]
-        .surfaces
-        .as_deref()
-        .and_then(|surfaces| surfaces.first())
+    let restored_surface = restored
+        .windows
+        .iter()
+        .skip(1)
+        .flat_map(|window| &window.tab_manager.workspaces)
+        .flat_map(|workspace| workspace.surfaces.as_deref().unwrap_or_default())
+        .next()
         .expect("typed remote terminal record survives restore");
     let SessionSurfaceKindSnapshot::RemoteTerminal {
         remote_session_id,

@@ -551,7 +551,7 @@ fn restore_attempt(restored: AppSessionSnapshot) -> RestoreAttempt {
 
 fn restore_commits_atomically(restored: AppSessionSnapshot) -> Result<AppSessionSnapshot, String> {
     let attempt = restore_attempt(restored);
-    let committed = attempt.result?;
+    let mut committed = attempt.result?;
     if attempt.calls != ["persist", "baseline", "emit"] {
         return Err(format!("publication calls were {:?}", attempt.calls));
     }
@@ -565,6 +565,11 @@ fn restore_commits_atomically(restored: AppSessionSnapshot) -> Result<AppSession
             attempt.next_panel
         ));
     }
+    let live_window_count = attempt.current.windows.len();
+    if committed.windows.get(..live_window_count) != Some(attempt.current.windows.as_slice()) {
+        return Err("additive restore changed the live window prefix".into());
+    }
+    committed.windows.drain(..live_window_count);
     Ok(committed)
 }
 
@@ -1018,10 +1023,7 @@ fn every_typed_reference_uses_its_canonical_fallback_or_pruning_rule() {
                 snapshot.windows[0].dock.as_mut().unwrap().workspace_id =
                     format!("dock:{}", id(WINDOW_B));
             },
-            |snapshot| {
-                snapshot.windows[0].dock.as_ref().unwrap().workspace_id
-                    == format!("dock:{}", snapshot.windows[0].window_id.as_deref().unwrap())
-            },
+            |snapshot| snapshot.windows[0].dock.is_none(),
         ),
         (
             "dock.layout.selected_panel_id",
@@ -1033,33 +1035,14 @@ fn every_typed_reference_uses_its_canonical_fallback_or_pruning_rule() {
                 };
                 pane.selected_panel_id = Some(id(SURFACE_A1));
             },
-            |snapshot| {
-                let SessionWorkspaceLayoutSnapshot::Pane(pane) = snapshot.windows[0]
-                    .dock
-                    .as_ref()
-                    .unwrap()
-                    .layout
-                    .as_ref()
-                    .unwrap()
-                else {
-                    return false;
-                };
-                pane.selected_panel_id.as_ref() == pane.panel_ids.first()
-            },
+            |snapshot| snapshot.windows[0].dock.is_none(),
         ),
         (
             "dock.surface.pane_id",
             |snapshot| {
                 snapshot.windows[0].dock.as_mut().unwrap().surfaces[0].pane_id = id(PANE_A1);
             },
-            |snapshot| {
-                let dock = snapshot.windows[0].dock.as_ref().unwrap();
-                let SessionWorkspaceLayoutSnapshot::Pane(pane) = dock.layout.as_ref().unwrap()
-                else {
-                    return false;
-                };
-                dock.surfaces[0].pane_id == pane.pane_id.as_deref().unwrap()
-            },
+            |snapshot| snapshot.windows[0].dock.is_none(),
         ),
         (
             "dock.focused_surface_id",
@@ -1070,11 +1053,7 @@ fn every_typed_reference_uses_its_canonical_fallback_or_pruning_rule() {
                     .unwrap()
                     .focused_surface_id = Some(id(SURFACE_A1));
             },
-            |snapshot| {
-                let dock = snapshot.windows[0].dock.as_ref().unwrap();
-                dock.focused_surface_id.as_ref()
-                    == dock.surfaces.first().map(|surface| &surface.surface_id)
-            },
+            |snapshot| snapshot.windows[0].dock.is_none(),
         ),
     ];
 

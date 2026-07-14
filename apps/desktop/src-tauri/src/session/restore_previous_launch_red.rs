@@ -195,6 +195,7 @@ impl SnapshotPublicationOperations for BlockingEmitPublication {
 #[test]
 fn restored_authority_and_counter_are_atomic_to_concurrent_allocators() {
     let current = initial_snapshot("surface-1");
+    let live_window = current.windows[0].clone();
     let restored = restored_without_stable_ids();
     let authority = GatedSnapshot::new(current);
     let next_panel = AtomicU64::new(2);
@@ -231,12 +232,13 @@ fn restored_authority_and_counter_are_atomic_to_concurrent_allocators() {
         resume_tx.send(()).unwrap();
         let committed = restore.join().unwrap();
         allocator.join().unwrap();
-        // V1 (differential remediation): restore re-mints legacy surface-N
-        // ids to UUIDs, so the reseeded counter is the UUID-world floor (1);
-        // the pinned property is the ATOMICITY of reseed-vs-allocator, which
-        // is unchanged.
-        assert_eq!(allocated_rx.recv().unwrap(), 1);
-        assert_eq!(next_panel.load(Ordering::Relaxed), 2);
+        // Additive manual restore keeps the live window, appends the restored
+        // surface-9 window, and publishes the counter floor before another
+        // allocator can enter the shared mutation gate.
+        assert_eq!(allocated_rx.recv().unwrap(), 10);
+        assert_eq!(next_panel.load(Ordering::Relaxed), 11);
+        assert_eq!(committed.windows.len(), 2);
+        assert_eq!(committed.windows[0], live_window);
         assert_eq!(*authority.lock().unwrap(), committed);
     });
 }
@@ -271,15 +273,14 @@ fn production_restore_has_injectable_transaction_and_fallible_routes() {
     assert!(transaction.contains("FnOnce() -> Option<AppSessionSnapshot>"));
     assert!(transaction.contains("next_panel: &AtomicU64"));
     assert!(transaction.contains("transact_value_if_changed_snapshot("));
-    assert!(transaction.contains("ensure_workspace_ids("));
-    assert!(transaction.contains("ensure_pane_ids("));
-    assert!(transaction.contains("next_panel_counter("));
+    assert!(transaction.contains("prepare_additive_restore("));
+    assert!(transaction.contains("candidate.windows.extend("));
     assert!(transaction.contains("load_previous"));
     assert!(transaction.contains("authority.lock_gate()"));
     let publish = transaction
         .find("transact_value_if_changed_snapshot(")
         .unwrap();
-    let reseed = transaction.find("next_panel.store(").unwrap();
+    let reseed = transaction.find("next_panel.fetch_max(").unwrap();
     assert!(publish < reseed);
 
     let helper = function_source(
