@@ -80,8 +80,8 @@ use crate::session::{
     toggle_browser_focus_mode_for_control, toggle_browser_omnibar_for_control,
     toggle_split_zoom_for_control, BrowserPanelCreateError, MoveWorkspaceToWindowControlError,
     PaneFocusControlError, PaneLastControlError, PaneResizeControlError, PaneResizeControlIntent,
-    PaneTopologyControlError, ReorderWorkspacesManyControlError, SessionState,
-    SurfacePositionControlError, TerminalPanelCreateError, WorkspaceLastControlError,
+    PaneTopologyControlError, ReorderWorkspacesManyControlError, RestorePreviousLaunchOutcome,
+    SessionState, SurfacePositionControlError, TerminalPanelCreateError, WorkspaceLastControlError,
     WorkspaceRemoteControlConfig, WorkspaceRenameResolution, WorkspaceSelectControlError,
 };
 use crate::terminal::{
@@ -7465,13 +7465,17 @@ fn session_restore_previous_launch(app: &AppHandle) -> ControlCallResult {
     );
     let state = app.state::<SessionState>();
     match restore_previous_launch_for_control(app, &state) {
-        Ok(snapshot) => workspace_current(&snapshot),
+        Ok(outcome) => session_restore_previous_result(&outcome),
         Err(message) => ControlCallResult::Err {
             code: "internal".to_string(),
             message,
             data: None,
         },
     }
+}
+
+fn session_restore_previous_result(outcome: &RestorePreviousLaunchOutcome) -> ControlCallResult {
+    workspace_current(&outcome.snapshot)
 }
 
 fn workspace_close(app: &AppHandle, params: &serde_json::Map<String, Value>) -> ControlCallResult {

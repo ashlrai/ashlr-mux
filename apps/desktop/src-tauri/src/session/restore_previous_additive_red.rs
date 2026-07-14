@@ -182,7 +182,8 @@ fn restore(
     let next_panel = AtomicU64::new(next_panel_value);
     let mut publication = RecordingPublication::default();
     let result =
-        restore_previous_launch_transaction(&authority, &next_panel, &mut publication, || previous);
+        restore_previous_launch_transaction(&authority, &next_panel, &mut publication, || previous)
+            .map(|outcome| outcome.snapshot);
     let authoritative = authority.lock().unwrap().clone();
     (
         result,

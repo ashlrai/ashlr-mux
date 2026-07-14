@@ -7583,12 +7583,18 @@ fn prepare_additive_restore(
     Ok(Some((restored, raw_reseed)))
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RestorePreviousLaunchOutcome {
+    pub(crate) snapshot: AppSessionSnapshot,
+    pub(crate) restored: bool,
+}
+
 fn restore_previous_launch_transaction(
     authority: &GatedSnapshot,
     next_panel: &AtomicU64,
     publication: &mut impl SnapshotPublicationOperations,
     load_previous: impl FnOnce() -> Option<AppSessionSnapshot>,
-) -> Result<AppSessionSnapshot, String> {
+) -> Result<RestorePreviousLaunchOutcome, String> {
     let _restore_gate = authority.lock_gate();
     let (reseed, snapshot) =
         transact_value_if_changed_snapshot(authority, publication, |candidate| {
@@ -7605,16 +7611,17 @@ fn restore_previous_launch_transaction(
             PaneTopologyControlError::Publication(error)
             | PaneTopologyControlError::Operation(error) => error,
         })?;
+    let restored = reseed.is_some();
     if let Some(reseed) = reseed {
         next_panel.fetch_max(reseed, Ordering::Relaxed);
     }
-    Ok(snapshot)
+    Ok(RestorePreviousLaunchOutcome { snapshot, restored })
 }
 
 pub(crate) fn restore_previous_launch_for_control(
     app: &AppHandle,
     state: &SessionState,
-) -> Result<AppSessionSnapshot, String> {
+) -> Result<RestorePreviousLaunchOutcome, String> {
     let mut publication =
         ProductionSnapshotPublicationOperations::with_deferred_next_panel_reseed(app, state);
     restore_previous_launch_transaction(
@@ -7637,7 +7644,7 @@ pub fn session_restore_previous_launch(
     app: AppHandle,
     state: State<'_, SessionState>,
 ) -> Result<AppSessionSnapshot, String> {
-    restore_previous_launch_for_control(&app, &state)
+    restore_previous_launch_for_control(&app, &state).map(|outcome| outcome.snapshot)
 }
 
 /// Set the OSC/process title of the workspace owning `panel_id`, fed by a

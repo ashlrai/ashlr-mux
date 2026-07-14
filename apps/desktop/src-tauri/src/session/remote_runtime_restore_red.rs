@@ -48,7 +48,8 @@ fn previous_launch_restore_drops_nonrestorable_remote_mirrors() {
         &mut RecordingPublication,
         || Some(previous),
     )
-    .unwrap();
+    .unwrap()
+    .snapshot;
 
     let remote_mirrors = restored
         .windows
@@ -99,7 +100,8 @@ fn previous_launch_restore_preserves_nonmirror_remote_terminal_metadata() {
         &mut RecordingPublication,
         || Some(previous),
     )
-    .unwrap();
+    .unwrap()
+    .snapshot;
 
     let restored_surface = restored
         .windows

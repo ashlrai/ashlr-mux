@@ -538,7 +538,8 @@ fn restore_attempt(restored: AppSessionSnapshot) -> RestoreAttempt {
     let result =
         restore_previous_launch_transaction(&authority, &next_panel, &mut publication, || {
             Some(restored)
-        });
+        })
+        .map(|outcome| outcome.snapshot);
     let authoritative_snapshot = authority.lock().unwrap().clone();
     RestoreAttempt {
         result,

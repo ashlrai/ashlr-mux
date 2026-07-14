@@ -110,9 +110,11 @@ fn missing_and_corrupt_previous_are_exact_current_noops() {
         let authority = GatedSnapshot::new(current.clone());
         let next_panel = AtomicU64::new(40);
         let mut publication = RecordingPublication::new(&authority, &current, &next_panel);
-        let returned =
-            restore_transaction_red(&authority, &next_panel, &mut publication, || None).unwrap();
-        assert_eq!(returned, current, "{unavailable}");
+        let outcome =
+            restore_previous_launch_transaction(&authority, &next_panel, &mut publication, || None)
+                .unwrap();
+        assert!(!outcome.restored, "{unavailable}");
+        assert_eq!(outcome.snapshot, current, "{unavailable}");
         assert_eq!(*authority.lock().unwrap(), current, "{unavailable}");
         assert!(publication.calls.is_empty(), "{unavailable}");
         assert_eq!(publication.baseline, current, "{unavailable}");
@@ -230,7 +232,9 @@ fn restored_authority_and_counter_are_atomic_to_concurrent_allocators() {
         );
 
         resume_tx.send(()).unwrap();
-        let committed = restore.join().unwrap();
+        let outcome = restore.join().unwrap();
+        assert!(outcome.restored);
+        let committed = outcome.snapshot;
         allocator.join().unwrap();
         // Additive manual restore keeps the live window, appends the restored
         // surface-9 window, and publishes the counter floor before another
@@ -287,7 +291,7 @@ fn production_restore_has_injectable_transaction_and_fallible_routes() {
         session,
         "pub(crate) fn restore_previous_launch_for_control(",
     );
-    assert!(helper.contains("Result<AppSessionSnapshot, String>"));
+    assert!(helper.contains("Result<RestorePreviousLaunchOutcome, String>"));
     assert!(helper.contains("restore_previous_launch_transaction("));
     assert!(helper.contains("load_snapshot_file("));
     assert!(!helper.contains("snapshot.lock()"));
