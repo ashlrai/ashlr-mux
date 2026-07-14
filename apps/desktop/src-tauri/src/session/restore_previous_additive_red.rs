@@ -268,6 +268,120 @@ fn crash_pruning_removes_only_diagnostic_workspaces_and_repairs_selection() {
 }
 
 #[test]
+fn crash_pruning_preserves_persisted_user_state_omitted_from_surface_records() {
+    let current = snapshot_fixture(0x620, 1);
+    let mut listening = crash_diagnostic_window(0x630);
+    let listening_panel = surface_id(&listening).to_string();
+    listening.tab_manager.workspaces[0].panel_listening_ports =
+        Some(vec![SessionPanelListeningPortsSnapshot {
+            panel_id: listening_panel,
+            ports: vec![8080],
+        }]);
+
+    let mut canvas = crash_diagnostic_window(0x631);
+    canvas.tab_manager.workspaces[0].layout_mode = Some("canvas".to_string());
+
+    let mut startup = crash_diagnostic_window(0x632);
+    let startup_panel = surface_id(&startup).to_string();
+    startup.tab_manager.workspaces[0].panel_terminal_startups =
+        Some(vec![SessionPanelTerminalStartupSnapshot {
+            panel_id: startup_panel,
+            initial_terminal_command: Some("echo preserved".to_string()),
+            initial_terminal_input: None,
+            initial_terminal_environment: None,
+        }]);
+
+    let (result, _, _, _) = restore(
+        current,
+        Some(snapshot(vec![listening, canvas, startup])),
+        50,
+    );
+    let committed = result.expect("user-bearing crash-path workspaces remain restorable");
+
+    assert_eq!(
+        committed.windows[1..]
+            .iter()
+            .map(|window| window.tab_manager.workspaces[0].process_title.as_str())
+            .collect::<Vec<_>>(),
+        ["window-630", "window-631", "window-632"]
+    );
+}
+
+#[test]
+fn legacy_layout_only_nonterminal_workspace_is_not_a_crash_diagnostic() {
+    let current = snapshot_fixture(0x640, 1);
+    let mut browser = crash_diagnostic_window(0x641);
+    let workspace = &mut browser.tab_manager.workspaces[0];
+    workspace.surfaces = None;
+    let Some(SessionWorkspaceLayoutSnapshot::Pane(pane)) = workspace.layout.as_mut() else {
+        panic!("single pane")
+    };
+    pane.surface_kind = Some("browser".to_string());
+    pane.browser_url = Some("https://example.com/preserved".to_string());
+
+    let (result, _, _, _) = restore(current, Some(snapshot(vec![browser])), 50);
+    let committed = result.expect("legacy browser workspace remains restorable");
+    let restored = &committed.windows[1].tab_manager.workspaces[0];
+
+    let Some(SessionWorkspaceLayoutSnapshot::Pane(pane)) = restored.layout.as_ref() else {
+        panic!("restored browser pane")
+    };
+    assert_eq!(pane.surface_kind.as_deref(), Some("browser"));
+    assert_eq!(
+        pane.browser_url.as_deref(),
+        Some("https://example.com/preserved")
+    );
+}
+
+#[test]
+fn crash_pruning_repairs_group_anchor_identity_and_member_index() {
+    let current = snapshot_fixture(0x650, 1);
+    let mut window = window_fixture(0x660);
+    let mut crash = window.tab_manager.workspaces.remove(0);
+    mark_workspace_crash(&mut crash, 0x660);
+    let mut anchored = window_fixture(0x661).tab_manager.workspaces.remove(0);
+    let mut trailing = window_fixture(0x662).tab_manager.workspaces.remove(0);
+    let group_id = id(0x1660);
+    for workspace in [&mut crash, &mut anchored, &mut trailing] {
+        workspace.group_id = Some(group_id.clone());
+    }
+    let anchored_id = anchored
+        .workspace_id
+        .clone()
+        .expect("anchored workspace id");
+    window.tab_manager.workspaces = vec![crash, anchored, trailing];
+    window.tab_manager.selected_workspace_index = Some(1);
+    window.selected_workspace_id = Some(anchored_id.clone());
+    window.tab_manager.workspace_groups =
+        Some(vec![cmux_core::session::SessionWorkspaceGroupSnapshot {
+            id: group_id,
+            name: "restore-group".to_string(),
+            is_collapsed: false,
+            anchor_workspace_id: Some(anchored_id.clone()),
+            anchor_member_index: Some(1),
+            is_pinned: None,
+            custom_color: None,
+            icon_symbol: None,
+        }]);
+
+    let (result, _, _, _) = restore(current, Some(snapshot(vec![window])), 50);
+    let committed = result.expect("mixed group remains restorable");
+    let restored = &committed.windows[1];
+    let group = &restored
+        .tab_manager
+        .workspace_groups
+        .as_ref()
+        .expect("surviving group")[0];
+
+    assert_eq!(restored.tab_manager.workspaces.len(), 2);
+    assert_eq!(
+        group.anchor_workspace_id.as_deref(),
+        Some(anchored_id.as_str())
+    );
+    assert_eq!(group.anchor_member_index, Some(0));
+}
+
+#[test]
 fn restore_strips_persisted_docks_and_caps_only_restored_windows() {
     let current = snapshot_fixture(0x700, 2);
     let mut previous = snapshot_fixture(0x800, MAX_RESTORED_WINDOWS + 2);
