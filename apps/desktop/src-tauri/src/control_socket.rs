@@ -43,10 +43,11 @@ use crate::dock::{
 use crate::remote_proxy as proxy_runtime;
 use crate::session::{
     append_workspace_sidebar_log_for_control, apply_workspace_action_for_control,
-    break_pane_for_control, browser_go_back_for_control, browser_go_forward_for_control,
-    clear_browser_history_for_control, clear_workspace_agent_pid_for_control,
-    clear_workspace_panel_pull_request_for_control, clear_workspace_remote_for_control,
-    clear_workspace_sidebar_log_for_control, clear_workspace_sidebar_metadata_block_for_control,
+    apply_workspace_action_for_control_with_post_commit, break_pane_for_control,
+    browser_go_back_for_control, browser_go_forward_for_control, clear_browser_history_for_control,
+    clear_workspace_agent_pid_for_control, clear_workspace_panel_pull_request_for_control,
+    clear_workspace_remote_for_control, clear_workspace_sidebar_log_for_control,
+    clear_workspace_sidebar_metadata_block_for_control,
     clear_workspace_sidebar_metadata_for_control, clear_workspace_sidebar_progress_for_control,
     clear_workspace_sidebar_status_for_control, close_panel_for_control,
     close_workspace_in_window_for_control, close_workspaces_for_control,
@@ -4415,26 +4416,47 @@ fn handle_workspace_action_request(
             ..
         } => {
             let session = app.state::<SessionState>();
-            if let Err(message) = apply_workspace_action_for_control(app, &session, &mutation) {
+            let notifications = app.state::<crate::notifications::NotificationCommandState>();
+            let mut effects = None;
+            let transaction =
+                crate::notifications::with_notification_store(notifications.inner(), |store| {
+                    apply_workspace_action_for_control_with_post_commit(
+                        app,
+                        &session,
+                        &mutation,
+                        || {
+                            effects = Some(crate::notifications::set_workspace_unread_in_store(
+                                store,
+                                workspace_id,
+                                *unread,
+                            ));
+                        },
+                    )
+                });
+            let transaction = match transaction {
+                Ok(transaction) => transaction,
+                Err(message) => {
+                    return ControlCallResult::Err {
+                        code: "notification_store_failed".to_string(),
+                        message,
+                        data: None,
+                    };
+                }
+            };
+            if let Err(message) = transaction {
                 return ControlCallResult::Err {
                     code: "internal".to_string(),
                     message,
                     data: None,
                 };
             }
-            let state = app.state::<crate::notifications::NotificationCommandState>();
-            if let Err(message) =
-                crate::notifications::notification_set_workspace_unread_for_control(
-                    state.inner(),
-                    workspace_id,
-                    *unread,
-                )
-            {
-                return ControlCallResult::Err {
-                    code: "notification_store_failed".to_string(),
-                    message,
-                    data: None,
-                };
+            if let Some(effects) = effects {
+                publish_notification_removal_effects(
+                    app,
+                    &effects,
+                    "notification.read",
+                    Some(workspace_id),
+                );
             }
         }
         crate::workspace_action::WorkspaceActionMutation::None => {}
@@ -6273,6 +6295,49 @@ fn record_event(
         let _ = app.emit(CONTROL_EVENTS_CHANGED_EVENT, event.clone());
         append_event_to_disk(&event);
     }
+}
+
+pub(crate) fn publish_notification_removal_effects(
+    app: &AppHandle,
+    effects: &crate::notifications::NotificationMutationEffects,
+    lifecycle_name: &str,
+    workspace_id: Option<&str>,
+) {
+    crate::notifications::clear_native_notifications(effects);
+    if effects.cleared.is_empty() {
+        return;
+    }
+    let ids = effects
+        .cleared
+        .iter()
+        .map(|notification| notification.id.clone())
+        .collect::<Vec<_>>();
+    let payload = json!({
+        "ids": ids,
+        "unread_count": effects.center.unread_count,
+    });
+    record_event(
+        app,
+        lifecycle_name,
+        "notification",
+        "notification.store",
+        None,
+        workspace_id.map(str::to_owned),
+        None,
+        None,
+        payload.clone(),
+    );
+    record_event(
+        app,
+        "notification.dismissed",
+        "notification",
+        "notification.store",
+        None,
+        workspace_id.map(str::to_owned),
+        None,
+        None,
+        payload,
+    );
 }
 
 fn append_event_to_disk(event: &Value) {

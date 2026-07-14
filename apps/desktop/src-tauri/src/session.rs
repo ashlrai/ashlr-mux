@@ -14,7 +14,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LockResult, Mutex, MutexGuard, PoisonError};
 
@@ -713,14 +713,14 @@ impl RemoteWorkspaceRenameController for SshRemoteWorkspaceRenameController {
         if let Some(session) = request.session.as_deref() {
             command.args(["-t", session]);
         }
-        let status = command
+        command
             .arg(&request.title)
-            .status()
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
             .map_err(|error| format!("failed to launch remote tmux rename: {error}"))?;
-        status
-            .success()
-            .then_some(())
-            .ok_or_else(|| format!("remote tmux rename exited with {status}"))
+        Ok(())
     }
 }
 
@@ -812,10 +812,17 @@ fn apply_workspace_close_teardown(
         if let Some(notifications) =
             app.try_state::<crate::notifications::NotificationCommandState>()
         {
-            let _ = crate::notifications::notification_clear_for_control(
+            if let Ok(effects) = crate::notifications::notification_clear_workspace_for_control(
                 notifications.inner(),
-                Some(&teardown.workspace_id),
-            );
+                &teardown.workspace_id,
+            ) {
+                crate::control_socket::publish_notification_removal_effects(
+                    app,
+                    &effects,
+                    "notification.cleared",
+                    Some(&teardown.workspace_id),
+                );
+            }
         }
     }
     if teardown.clear_focus_history {
@@ -5889,7 +5896,7 @@ fn remote_workspace_rename_intent(
     if !workspace
         .remote
         .as_ref()
-        .is_some_and(|remote| remote.enabled)
+        .is_some_and(|remote| remote.enabled && remote.transport.as_deref() == Some("tmux"))
     {
         return None;
     }
@@ -5915,7 +5922,7 @@ fn remote_workspace_rename_request(
         .expect("remote config mutex poisoned")
         .get(&workspace_id)
         .cloned()?;
-    (config.transport == "ssh").then(|| RemoteWorkspaceRenameRequest {
+    (config.transport == "ssh").then_some(RemoteWorkspaceRenameRequest {
         workspace_id,
         destination: config.destination,
         port: config.port,
@@ -6329,10 +6336,11 @@ fn transact_workspace_action_and_propagate_remote(
 /// layer; canonical derived close/reorder lifecycle events and normal Tauri
 /// session/window publications remain enabled. Close histories and runtime
 /// teardowns run after persistence and authority commit but before publication.
-pub(crate) fn apply_workspace_action_for_control(
+pub(crate) fn apply_workspace_action_for_control_with_post_commit(
     app: &AppHandle,
     state: &SessionState,
     mutation: &crate::workspace_action::WorkspaceActionMutation,
+    notification_post_commit: impl FnOnce(),
 ) -> Result<AppSessionSnapshot, String> {
     use crate::workspace_action::WorkspaceActionMutation;
 
@@ -6358,6 +6366,7 @@ pub(crate) fn apply_workspace_action_for_control(
         None
     };
 
+    let mut notification_post_commit = Some(notification_post_commit);
     let mut publication =
         ProductionSnapshotPublicationOperations::new(app, state, DerivedEventPolicy::Record);
     let (_, snapshot) = transact_workspace_action_and_propagate_remote(
@@ -6388,9 +6397,26 @@ pub(crate) fn apply_workspace_action_for_control(
             for teardown in std::mem::take(&mut artifacts.teardowns) {
                 apply_workspace_close_teardown(app, state, &teardown);
             }
+            if let Some(post_commit) = notification_post_commit.take() {
+                post_commit();
+            }
         },
     )?;
+    // A no-op session projection may still correspond to unread notification
+    // rows that need clearing. There was no publication in that case, so apply
+    // the already-infallible store mutation now.
+    if let Some(post_commit) = notification_post_commit.take() {
+        post_commit();
+    }
     Ok(snapshot)
+}
+
+pub(crate) fn apply_workspace_action_for_control(
+    app: &AppHandle,
+    state: &SessionState,
+    mutation: &crate::workspace_action::WorkspaceActionMutation,
+) -> Result<AppSessionSnapshot, String> {
+    apply_workspace_action_for_control_with_post_commit(app, state, mutation, || {})
 }
 
 pub(crate) fn rename_workspace_in_window_for_control(
@@ -11086,6 +11112,13 @@ mod tests {
             Some(("workspace-remote".to_string(), "Build".to_string()))
         );
         assert_eq!(remote_workspace_rename_intent(&workspace, "  \r\n "), None);
+        workspace.remote.as_mut().unwrap().transport = Some("ssh".to_string());
+        assert_eq!(
+            remote_workspace_rename_intent(&workspace, "Build"),
+            None,
+            "ordinary SSH workspaces are not remote tmux mirrors"
+        );
+        workspace.remote.as_mut().unwrap().transport = Some("tmux".to_string());
         workspace.remote.as_mut().unwrap().enabled = false;
         assert_eq!(remote_workspace_rename_intent(&workspace, "Build"), None);
     }

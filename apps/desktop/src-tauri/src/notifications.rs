@@ -13,6 +13,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(windows)]
+use std::collections::BTreeSet;
+
 use cmux_core::notifications::{
     NotificationStore, TerminalNotification, TerminalNotificationPolicyEffects,
 };
@@ -93,6 +96,12 @@ pub struct NotificationCenterReply {
     pub notifications: Vec<NotificationCenterItemView>,
     pub unread_count: usize,
     pub total_count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct NotificationMutationEffects {
+    pub center: NotificationCenterReply,
+    pub cleared: Vec<TerminalNotification>,
 }
 
 #[derive(Debug, Clone)]
@@ -182,7 +191,7 @@ fn waiting_input_notification(
     }
 }
 
-fn with_notification_store<R>(
+pub(crate) fn with_notification_store<R>(
     state: &NotificationCommandState,
     action: impl FnOnce(&mut NotificationStore) -> R,
 ) -> Result<R, String> {
@@ -252,20 +261,80 @@ pub(crate) fn notification_mark_read_for_control(
     })
 }
 
-pub(crate) fn notification_set_workspace_unread_for_control(
-    state: &NotificationCommandState,
+pub(crate) fn set_workspace_unread_in_store(
+    store: &mut NotificationStore,
     workspace_id: &str,
     unread: bool,
-) -> Result<NotificationCenterReply, String> {
+) -> NotificationMutationEffects {
+    let cleared = if unread {
+        Vec::new()
+    } else {
+        store
+            .notifications()
+            .iter()
+            .filter(|notification| notification.tab_id == workspace_id && !notification.is_read)
+            .cloned()
+            .collect()
+    };
+    if unread {
+        store.mark_unread_for_tab(workspace_id);
+    } else {
+        store.mark_read_for_tab(workspace_id);
+    }
+    NotificationMutationEffects {
+        center: notification_center_reply(store),
+        cleared,
+    }
+}
+
+pub(crate) fn notification_clear_workspace_for_control(
+    state: &NotificationCommandState,
+    workspace_id: &str,
+) -> Result<NotificationMutationEffects, String> {
     with_notification_store(state, |store| {
-        if unread {
-            store.mark_unread_for_tab(workspace_id);
-        } else {
-            store.mark_read_for_tab(workspace_id);
+        let cleared = store
+            .notifications()
+            .iter()
+            .filter(|notification| notification.tab_id == workspace_id)
+            .cloned()
+            .collect();
+        store.clear_for_tab(workspace_id);
+        NotificationMutationEffects {
+            center: notification_center_reply(store),
+            cleared,
         }
-        notification_center_reply(store)
     })
 }
+
+pub(crate) fn clear_native_notifications(effects: &NotificationMutationEffects) {
+    clear_native_notification_rows(&effects.cleared);
+}
+
+#[cfg(windows)]
+fn clear_native_notification_rows(notifications: &[TerminalNotification]) {
+    let keys = notifications
+        .iter()
+        .map(cmux_notify::supersede_key)
+        .map(|key| (key.tag, key.group))
+        .collect::<BTreeSet<_>>();
+    if keys.is_empty() {
+        return;
+    }
+    let _ = thread::Builder::new()
+        .name("cmux-notification-clear".to_owned())
+        .spawn(move || {
+            let delivery = WindowsToastDelivery::new(NotificationAppIdentity::new(
+                "Cmuxterm.Cmux.Dev",
+                ACTIVATION_SCHEME,
+            ));
+            for (tag, group) in keys {
+                let _ = delivery.clear(&tag, &group);
+            }
+        });
+}
+
+#[cfg(not(windows))]
+fn clear_native_notification_rows(_notifications: &[TerminalNotification]) {}
 
 pub(crate) fn notification_clear_for_control(
     state: &NotificationCommandState,
@@ -831,19 +900,63 @@ mod tests {
     #[test]
     fn workspace_action_unread_wrapper_uses_notification_store_manual_state() {
         let state = NotificationCommandState::default();
-        notification_set_workspace_unread_for_control(&state, "workspace-1", true)
-            .expect("mark unread");
+        with_notification_store(&state, |store| {
+            store.record(notification("unread-1", false), false);
+            store.record(notification("already-read", true), false);
+        })
+        .expect("seed");
+        with_notification_store(&state, |store| {
+            set_workspace_unread_in_store(store, "workspace-1", true)
+        })
+        .expect("mark unread");
         assert!(
             with_notification_store(&state, |store| store.has_manual_unread("workspace-1"))
                 .unwrap()
         );
 
-        notification_set_workspace_unread_for_control(&state, "workspace-1", false)
-            .expect("mark read");
+        let effects = with_notification_store(&state, |store| {
+            set_workspace_unread_in_store(store, "workspace-1", false)
+        })
+        .expect("mark read");
+        assert_eq!(
+            effects
+                .cleared
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            ["unread-1"],
+            "native/event dismissal effects retain the exact unread rows"
+        );
         assert!(
             !with_notification_store(&state, |store| store.has_manual_unread("workspace-1"))
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn workspace_close_clear_retains_exact_rows_for_native_and_event_effects() {
+        let state = NotificationCommandState::default();
+        with_notification_store(&state, |store| {
+            store.record(notification("closed-unread", false), false);
+            store.record(notification("closed-read", true), false);
+            let mut unrelated = notification("unrelated", false);
+            unrelated.tab_id = "workspace-2".to_owned();
+            store.record(unrelated, false);
+        })
+        .expect("seed");
+
+        let effects = notification_clear_workspace_for_control(&state, "workspace-1")
+            .expect("clear closed workspace notifications");
+
+        let mut cleared = effects
+            .cleared
+            .iter()
+            .map(|row| row.id.as_str())
+            .collect::<Vec<_>>();
+        cleared.sort_unstable();
+        assert_eq!(cleared, ["closed-read", "closed-unread"]);
+        assert_eq!(effects.center.total_count, 1);
+        assert_eq!(effects.center.notifications[0].id, "unrelated");
     }
 
     fn request(command: &str) -> NotificationCommandRequest {
