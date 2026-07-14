@@ -622,10 +622,16 @@ fn production_helpers_window_commands_and_socket_use_fallible_compensating_paths
     assert!(new.contains("create_window_for_label("));
     let create = function_source(window, "fn create_window_for_label(");
     assert!(create.contains("register_window_for_control("));
-    assert!(create.contains("set_visible(false)") || create.contains("visible = false"));
+    assert!(create.contains("build_hidden_window("));
     assert!(create.contains("show("));
     assert!(create.contains("close("));
-    assert!(create.find("build(").unwrap() < create.find("register_window_for_control(").unwrap());
+    let build = function_source(window, "fn build_hidden_window(");
+    assert!(build.contains("visible = false"));
+    assert!(build.contains("build()"));
+    assert!(
+        create.find("build_hidden_window(").unwrap()
+            < create.find("register_window_for_control(").unwrap()
+    );
     assert!(create.find("register_window_for_control(").unwrap() < create.rfind("show(").unwrap());
 
     let close = function_source(window, "pub fn window_close(");

@@ -3962,7 +3962,7 @@ impl<'a> ProductionSnapshotPublicationOperations<'a> {
         Self {
             app,
             state,
-            derived_events: DerivedEventPolicy::Record,
+            derived_events: DerivedEventPolicy::Suppress,
             reseed_next_panel: false,
         }
     }
@@ -3980,8 +3980,13 @@ impl SnapshotPublicationOperations for ProductionSnapshotPublicationOperations<'
                 .fetch_max(next_panel_counter(candidate), Ordering::Relaxed);
         }
         record_workspace_focus_history(self.state, candidate);
-        if matches!(self.derived_events, DerivedEventPolicy::Record) {
-            crate::control_socket::record_session_changed_event(self.app, candidate);
+        match self.derived_events {
+            DerivedEventPolicy::Record => {
+                crate::control_socket::record_session_changed_event(self.app, candidate)
+            }
+            DerivedEventPolicy::Suppress => {
+                crate::control_socket::replace_session_event_baseline(self.app, candidate)
+            }
         }
     }
 
@@ -7612,13 +7617,11 @@ impl<T: SnapshotPublicationOperations> SnapshotPublicationOperations
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // Product activation is wired by the next RED/GREEN slice.
 enum ManualRestoreRoute {
     Product,
     Control,
 }
 
-#[allow(dead_code)] // The behavior-neutral seam is exercised by the next RED slice.
 trait ManualRestoreEffects {
     fn build_hidden(&mut self, window: &SessionWindowSnapshot) -> Result<(), String>;
     fn show_unfocused(&mut self, window_id: &str) -> Result<(), String>;
@@ -7627,8 +7630,10 @@ trait ManualRestoreEffects {
     fn record_window_created(&mut self, window: &SessionWindowSnapshot);
 }
 
+#[cfg(test)]
 struct NoopManualRestoreEffects;
 
+#[cfg(test)]
 impl ManualRestoreEffects for NoopManualRestoreEffects {
     fn build_hidden(&mut self, _window: &SessionWindowSnapshot) -> Result<(), String> {
         Ok(())
@@ -7653,13 +7658,98 @@ fn restore_previous_launch_transaction_with_effects(
     authority: &GatedSnapshot,
     next_panel: &AtomicU64,
     publication: &mut impl SnapshotPublicationOperations,
-    _effects: &mut impl ManualRestoreEffects,
-    _route: ManualRestoreRoute,
+    effects: &mut impl ManualRestoreEffects,
+    route: ManualRestoreRoute,
     load_previous: impl FnOnce() -> Option<AppSessionSnapshot>,
 ) -> Result<RestorePreviousLaunchOutcome, String> {
-    restore_previous_launch_transaction_inner(authority, next_panel, publication, load_previous)
+    let _restore_gate = authority.lock_gate();
+    let current = authority
+        .lock()
+        .map_err(|_| "Session state is unavailable".to_string())?
+        .clone();
+    let Some(previous) = load_previous() else {
+        return Ok(RestorePreviousLaunchOutcome {
+            snapshot: current,
+            restored: false,
+        });
+    };
+    let Some((restored, reseed)) = prepare_additive_restore(&current, previous)? else {
+        return Ok(RestorePreviousLaunchOutcome {
+            snapshot: current,
+            restored: false,
+        });
+    };
+
+    let mut built_window_ids = Vec::with_capacity(restored.len());
+    for window in &restored {
+        let window_id = window
+            .window_id
+            .as_deref()
+            .ok_or_else(|| "Restored window is missing its stable identity".to_string())?;
+        if let Err(error) = effects.build_hidden(window) {
+            return Err(compensate_manual_restore(effects, &built_window_ids, error));
+        }
+        built_window_ids.push(window_id.to_string());
+        if let Err(error) = effects.show_unfocused(window_id) {
+            return Err(compensate_manual_restore(effects, &built_window_ids, error));
+        }
+    }
+
+    let mut candidate = current.clone();
+    candidate.windows.extend(restored.iter().cloned());
+    let publish_result = {
+        let mut manual_publication = ManualRestorePublication(publication);
+        publish_snapshot_transaction(
+            authority,
+            Some(&current),
+            &candidate,
+            &mut manual_publication,
+        )
+    };
+    let snapshot = match publish_result {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            if let Ok(mut guard) = authority.lock() {
+                *guard = current.clone();
+            }
+            publication.update_event_baseline(&current);
+            return Err(compensate_manual_restore(effects, &built_window_ids, error));
+        }
+    };
+
+    next_panel.fetch_max(reseed, Ordering::Relaxed);
+    for window in &restored {
+        effects.record_window_created(window);
+    }
+    if route == ManualRestoreRoute::Product {
+        if let Some(window_id) = built_window_ids.first() {
+            effects.activate(window_id)?;
+        }
+    }
+    Ok(RestorePreviousLaunchOutcome {
+        snapshot,
+        restored: true,
+    })
 }
 
+fn compensate_manual_restore(
+    effects: &mut impl ManualRestoreEffects,
+    built_window_ids: &[String],
+    primary: String,
+) -> String {
+    let failures = built_window_ids
+        .iter()
+        .rev()
+        .filter_map(|window_id| effects.close(window_id).err())
+        .collect::<Vec<_>>();
+    if failures.is_empty() {
+        primary
+    } else {
+        format!("{primary}; compensation failed: {}", failures.join("; "))
+    }
+}
+
+#[cfg(test)]
 fn restore_previous_launch_transaction(
     authority: &GatedSnapshot,
     next_panel: &AtomicU64,
@@ -7677,51 +7767,62 @@ fn restore_previous_launch_transaction(
     )
 }
 
-fn restore_previous_launch_transaction_inner(
-    authority: &GatedSnapshot,
-    next_panel: &AtomicU64,
-    publication: &mut impl SnapshotPublicationOperations,
-    load_previous: impl FnOnce() -> Option<AppSessionSnapshot>,
-) -> Result<RestorePreviousLaunchOutcome, String> {
-    let _restore_gate = authority.lock_gate();
-    let mut manual_publication = ManualRestorePublication(publication);
-    let (reseed, snapshot) =
-        transact_value_if_changed_snapshot(authority, &mut manual_publication, |candidate| {
-            let Some(previous) = load_previous() else {
-                return Ok::<_, String>((None, false));
-            };
-            let Some((restored, reseed)) = prepare_additive_restore(candidate, previous)? else {
-                return Ok((None, false));
-            };
-            candidate.windows.extend(restored);
-            Ok((Some(reseed), true))
-        })
-        .map_err(|error| match error {
-            PaneTopologyControlError::Publication(error)
-            | PaneTopologyControlError::Operation(error) => error,
-        })?;
-    let restored = reseed.is_some();
-    if let Some(reseed) = reseed {
-        next_panel.fetch_max(reseed, Ordering::Relaxed);
+struct ProductionManualRestoreEffects<'a> {
+    app: &'a AppHandle,
+}
+
+impl ManualRestoreEffects for ProductionManualRestoreEffects<'_> {
+    fn build_hidden(&mut self, window: &SessionWindowSnapshot) -> Result<(), String> {
+        let window_id = window
+            .window_id
+            .as_deref()
+            .ok_or_else(|| "Restored window is missing its stable identity".to_string())?;
+        crate::window::build_hidden_restored_window(self.app, window_id)
     }
-    Ok(RestorePreviousLaunchOutcome { snapshot, restored })
+
+    fn show_unfocused(&mut self, window_id: &str) -> Result<(), String> {
+        crate::window::show_restored_window_unfocused(self.app, window_id)
+    }
+
+    fn close(&mut self, window_id: &str) -> Result<(), String> {
+        crate::window::close_restored_window(self.app, window_id)
+    }
+
+    fn activate(&mut self, window_id: &str) -> Result<(), String> {
+        crate::window::activate_restored_window(self.app, window_id)
+    }
+
+    fn record_window_created(&mut self, window: &SessionWindowSnapshot) {
+        crate::control_socket::record_manual_restore_window_created(self.app, window);
+    }
+}
+
+fn restore_previous_launch_for_route(
+    app: &AppHandle,
+    state: &SessionState,
+    route: ManualRestoreRoute,
+) -> Result<RestorePreviousLaunchOutcome, String> {
+    let mut publication =
+        ProductionSnapshotPublicationOperations::with_deferred_next_panel_reseed(app, state);
+    let mut effects = ProductionManualRestoreEffects { app };
+    restore_previous_launch_transaction_with_effects(
+        &state.snapshot,
+        &state.next_panel,
+        &mut publication,
+        &mut effects,
+        route,
+        || {
+            session_snapshot_paths(app)
+                .and_then(|(_current, previous)| load_snapshot_file(&previous))
+        },
+    )
 }
 
 pub(crate) fn restore_previous_launch_for_control(
     app: &AppHandle,
     state: &SessionState,
 ) -> Result<RestorePreviousLaunchOutcome, String> {
-    let mut publication =
-        ProductionSnapshotPublicationOperations::with_deferred_next_panel_reseed(app, state);
-    restore_previous_launch_transaction(
-        &state.snapshot,
-        &state.next_panel,
-        &mut publication,
-        || {
-            session_snapshot_paths(app)
-                .and_then(|(_current, previous)| load_snapshot_file(&previous))
-        },
-    )
+    restore_previous_launch_for_route(app, state, ManualRestoreRoute::Control)
 }
 
 /// Restore the previous launch's persisted session snapshot if one exists.
@@ -7733,7 +7834,8 @@ pub fn session_restore_previous_launch(
     app: AppHandle,
     state: State<'_, SessionState>,
 ) -> Result<AppSessionSnapshot, String> {
-    restore_previous_launch_for_control(&app, &state).map(|outcome| outcome.snapshot)
+    restore_previous_launch_for_route(&app, &state, ManualRestoreRoute::Product)
+        .map(|outcome| outcome.snapshot)
 }
 
 /// Set the OSC/process title of the workspace owning `panel_id`, fed by a

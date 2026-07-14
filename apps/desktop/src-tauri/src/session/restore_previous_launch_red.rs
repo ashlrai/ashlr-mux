@@ -290,18 +290,19 @@ fn function_source<'a>(source: &'a str, signature: &str) -> &'a str {
 #[test]
 fn production_restore_has_injectable_transaction_and_fallible_routes() {
     let session = include_str!("../session.rs");
-    let transaction = function_source(session, "fn restore_previous_launch_transaction_inner");
+    let transaction = function_source(
+        session,
+        "fn restore_previous_launch_transaction_with_effects",
+    );
     assert!(transaction.contains("SnapshotPublicationOperations"));
     assert!(transaction.contains("FnOnce() -> Option<AppSessionSnapshot>"));
     assert!(transaction.contains("next_panel: &AtomicU64"));
-    assert!(transaction.contains("transact_value_if_changed_snapshot("));
+    assert!(transaction.contains("publish_snapshot_transaction("));
     assert!(transaction.contains("prepare_additive_restore("));
     assert!(transaction.contains("candidate.windows.extend("));
     assert!(transaction.contains("load_previous"));
     assert!(transaction.contains("authority.lock_gate()"));
-    let publish = transaction
-        .find("transact_value_if_changed_snapshot(")
-        .unwrap();
+    let publish = transaction.find("publish_snapshot_transaction(").unwrap();
     let reseed = transaction.find("next_panel.fetch_max(").unwrap();
     assert!(publish < reseed);
 
@@ -310,14 +311,14 @@ fn production_restore_has_injectable_transaction_and_fallible_routes() {
         "pub(crate) fn restore_previous_launch_for_control(",
     );
     assert!(helper.contains("Result<RestorePreviousLaunchOutcome, String>"));
-    assert!(helper.contains("restore_previous_launch_transaction("));
-    assert!(helper.contains("load_snapshot_file("));
+    assert!(helper.contains("restore_previous_launch_for_route("));
     assert!(!helper.contains("snapshot.lock()"));
     assert!(!helper.contains("notify_session_changed("));
 
     let command = function_source(session, "pub fn session_restore_previous_launch(");
     assert!(command.contains("Result<AppSessionSnapshot, String>"));
-    assert!(command.contains("restore_previous_launch_for_control("));
+    assert!(command.contains("restore_previous_launch_for_route("));
+    assert!(command.contains("ManualRestoreRoute::Product"));
     assert!(!command.contains("unwrap(") && !command.contains("expect("));
     assert!(!command.contains("snapshot.lock()"));
     assert!(!command.contains("notify_session_changed("));

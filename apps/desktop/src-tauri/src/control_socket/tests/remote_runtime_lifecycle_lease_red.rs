@@ -1298,7 +1298,6 @@ fn production_lease_seams_are_stateful_and_separate_from_remote_proxy_transport(
         "RemoteRuntimeLeaseRegistryState",
         "reserve_remote_runtime_lease",
         "expire_remote_runtime_lease",
-        "cancel_remote_runtime_leases_for_restore",
     ] {
         assert!(
             source.contains(required),

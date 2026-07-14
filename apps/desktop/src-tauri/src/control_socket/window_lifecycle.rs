@@ -272,7 +272,7 @@ fn is_terminal_kind(kind: &SessionSurfaceKindSnapshot) -> bool {
 /// isKeyWindow, isMainWindow, origin}. Headless model: `is_key` is derived
 /// from the injected active-window pointer; `isMainWindow` mirrors it (real
 /// NSWindow key/main split is a platform_equivalent).
-fn window_lifecycle_event(
+pub(super) fn window_lifecycle_event(
     name: &'static str,
     origin: &'static str,
     window: &SessionWindowSnapshot,

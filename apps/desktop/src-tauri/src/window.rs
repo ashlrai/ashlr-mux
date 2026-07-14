@@ -408,16 +408,7 @@ fn create_window_for_label(
     title: Option<&str>,
     focused: bool,
 ) -> Result<(), String> {
-    let mut config = cloned_main_window_config(app, label.to_owned())?;
-    config.visible = false;
-    let new_window = tauri::WebviewWindowBuilder::from_config(app, &config)
-        .map_err(|error| error.to_string())?
-        .focused(focused)
-        .build()
-        .map_err(|error| error.to_string())?;
-    if let Err(error) = apply_default_display(&new_window) {
-        eprintln!("[window] failed to apply default display: {error}");
-    }
+    let new_window = build_hidden_window(app, label, focused)?;
     if let Some(title) = title {
         let _ = new_window.set_title(title);
     }
@@ -447,6 +438,53 @@ fn create_window_for_label(
     }
     let _ = emit_window_state(&new_window);
     Ok(())
+}
+
+fn build_hidden_window(
+    app: &AppHandle,
+    label: &str,
+    focused: bool,
+) -> Result<WebviewWindow, String> {
+    let mut config = cloned_main_window_config(app, label.to_owned())?;
+    config.visible = false;
+    let new_window = tauri::WebviewWindowBuilder::from_config(app, &config)
+        .map_err(|error| error.to_string())?
+        .focused(focused)
+        .build()
+        .map_err(|error| error.to_string())?;
+    if let Err(error) = apply_default_display(&new_window) {
+        eprintln!("[window] failed to apply default display: {error}");
+    }
+    Ok(new_window)
+}
+
+pub(crate) fn build_hidden_restored_window(app: &AppHandle, label: &str) -> Result<(), String> {
+    let window = build_hidden_window(app, label, false)?;
+    install_window_state_listener(&window);
+    Ok(())
+}
+
+fn restored_window(app: &AppHandle, label: &str) -> Result<WebviewWindow, String> {
+    app.get_webview_window(label)
+        .ok_or_else(|| format!("Restored window {label} is unavailable"))
+}
+
+pub(crate) fn show_restored_window_unfocused(app: &AppHandle, label: &str) -> Result<(), String> {
+    restored_window(app, label)?
+        .show()
+        .map_err(|error| error.to_string())
+}
+
+pub(crate) fn close_restored_window(app: &AppHandle, label: &str) -> Result<(), String> {
+    restored_window(app, label)?
+        .close()
+        .map_err(|error| error.to_string())
+}
+
+pub(crate) fn activate_restored_window(app: &AppHandle, label: &str) -> Result<(), String> {
+    restored_window(app, label)?
+        .set_focus()
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

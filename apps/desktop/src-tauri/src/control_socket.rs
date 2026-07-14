@@ -12,7 +12,7 @@ use base64::Engine as _;
 use cmux_core::session::{
     AppSessionSnapshot, SessionPaneLayoutSnapshot, SessionPanelShellActivityStateSnapshot,
     SessionPullRequestStatusSnapshot, SessionSplitOrientation, SessionSurfaceKindSnapshot,
-    SessionWorkspaceLayoutSnapshot, SessionWorkspaceSnapshot,
+    SessionWindowSnapshot, SessionWorkspaceLayoutSnapshot, SessionWorkspaceSnapshot,
 };
 use cmux_core::session_ops;
 use cmux_ipc::{ControlCallResult, ControlRequest, ControlStream, JsonValue};
@@ -2206,11 +2206,6 @@ impl RemoteRuntimeLeaseRegistry {
         lease.disposition = RemoteRuntimeLeaseDisposition::CleanupRetry;
         Some(attempts)
     }
-
-    fn cancel_for_restore(&mut self) {
-        self.restore_epoch = self.restore_epoch.saturating_add(1);
-        self.leases.clear();
-    }
 }
 
 fn reserve_remote_runtime_lease(
@@ -2245,12 +2240,6 @@ fn reserve_remote_runtime_lease(
             }
             Ok(id)
         })
-}
-
-fn cancel_remote_runtime_leases_for_restore(state: &RemoteRuntimeLeaseRegistryState) {
-    if let Ok(mut registry) = state.registry.lock() {
-        registry.cancel_for_restore();
-    }
 }
 
 fn expire_remote_runtime_lease(app: &AppHandle, id: u64) {
@@ -5086,6 +5075,44 @@ pub(crate) fn record_session_changed_event(app: &AppHandle, snapshot: &AppSessio
     record_session_changed_event_suppressing(app, snapshot, &HashSet::new());
 }
 
+pub(crate) fn replace_session_event_baseline(app: &AppHandle, snapshot: &AppSessionSnapshot) {
+    let Some(state) = app.try_state::<ControlEventState>() else {
+        return;
+    };
+    state
+        .inner
+        .lock()
+        .expect("control event log mutex poisoned")
+        .last_session_summaries = session_event_summaries(snapshot);
+}
+
+pub(crate) fn record_manual_restore_window_created(
+    app: &AppHandle,
+    window: &SessionWindowSnapshot,
+) {
+    let Some(window_id) = window.window_id.as_deref() else {
+        return;
+    };
+    let event = window_lifecycle::window_lifecycle_event(
+        "window.created",
+        "create",
+        window,
+        window_id,
+        false,
+    );
+    record_event(
+        app,
+        event.name,
+        event.category,
+        event.source,
+        event.window_id,
+        event.workspace_id,
+        event.pane_id,
+        event.surface_id,
+        event.payload,
+    );
+}
+
 fn record_session_changed_event_suppressing(
     app: &AppHandle,
     snapshot: &AppSessionSnapshot,
@@ -7460,9 +7487,6 @@ fn notification_open_selected(
 }
 
 fn session_restore_previous_launch(app: &AppHandle) -> ControlCallResult {
-    cancel_remote_runtime_leases_for_restore(
-        app.state::<RemoteRuntimeLeaseRegistryState>().inner(),
-    );
     let state = app.state::<SessionState>();
     match restore_previous_launch_for_control(app, &state) {
         Ok(outcome) => session_restore_previous_result(&outcome),
