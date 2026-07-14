@@ -22216,6 +22216,9 @@ mod tests {
     #[path = "workspace_action_red.rs"]
     mod workspace_action_red;
 
+    #[path = "workspace_group_red.rs"]
+    mod workspace_group_red;
+
     #[path = "dock_api_adversarial_red.rs"]
     mod dock_api_adversarial_red;
 
