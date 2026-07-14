@@ -252,6 +252,21 @@ pub(crate) fn notification_mark_read_for_control(
     })
 }
 
+pub(crate) fn notification_set_workspace_unread_for_control(
+    state: &NotificationCommandState,
+    workspace_id: &str,
+    unread: bool,
+) -> Result<NotificationCenterReply, String> {
+    with_notification_store(state, |store| {
+        if unread {
+            store.mark_unread_for_tab(workspace_id);
+        } else {
+            store.mark_read_for_tab(workspace_id);
+        }
+        notification_center_reply(store)
+    })
+}
+
 pub(crate) fn notification_clear_for_control(
     state: &NotificationCommandState,
     workspace_id: Option<&str>,
@@ -811,6 +826,24 @@ mod tests {
         })
         .expect("read");
         assert_eq!(remaining, ["n-keep"], "only unrelated workspaces survive");
+    }
+
+    #[test]
+    fn workspace_action_unread_wrapper_uses_notification_store_manual_state() {
+        let state = NotificationCommandState::default();
+        notification_set_workspace_unread_for_control(&state, "workspace-1", true)
+            .expect("mark unread");
+        assert!(
+            with_notification_store(&state, |store| store.has_manual_unread("workspace-1"))
+                .unwrap()
+        );
+
+        notification_set_workspace_unread_for_control(&state, "workspace-1", false)
+            .expect("mark read");
+        assert!(
+            !with_notification_store(&state, |store| store.has_manual_unread("workspace-1"))
+                .unwrap()
+        );
     }
 
     fn request(command: &str) -> NotificationCommandRequest {

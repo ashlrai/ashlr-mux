@@ -42,11 +42,11 @@ use crate::dock::{
 };
 use crate::remote_proxy as proxy_runtime;
 use crate::session::{
-    append_workspace_sidebar_log_for_control, break_pane_for_control, browser_go_back_for_control,
-    browser_go_forward_for_control, clear_browser_history_for_control,
-    clear_workspace_agent_pid_for_control, clear_workspace_panel_pull_request_for_control,
-    clear_workspace_remote_for_control, clear_workspace_sidebar_log_for_control,
-    clear_workspace_sidebar_metadata_block_for_control,
+    append_workspace_sidebar_log_for_control, apply_workspace_action_for_control,
+    break_pane_for_control, browser_go_back_for_control, browser_go_forward_for_control,
+    clear_browser_history_for_control, clear_workspace_agent_pid_for_control,
+    clear_workspace_panel_pull_request_for_control, clear_workspace_remote_for_control,
+    clear_workspace_sidebar_log_for_control, clear_workspace_sidebar_metadata_block_for_control,
     clear_workspace_sidebar_metadata_for_control, clear_workspace_sidebar_progress_for_control,
     clear_workspace_sidebar_status_for_control, close_panel_for_control,
     close_workspace_in_window_for_control, close_workspaces_for_control,
@@ -1006,6 +1006,7 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "session.restore_previous_launch",
     "workspace.restore_previous_launch",
     "workspace.close",
+    "workspace.action",
     "workspace.reopen_closed",
     "workspace.close_many",
     "workspace.close_workspaces",
@@ -1216,6 +1217,7 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ControlRequestRoute {
     PaneSurfaceLifecycle,
+    WorkspaceAction,
     WindowLifecycle,
     Legacy,
 }
@@ -1226,6 +1228,7 @@ fn control_request_route_for_method(method: &str) -> ControlRequestRoute {
         | "surface.create" | "surface.current" | "surface.list" | "surface.report_pwd"
         | "surface.respawn" | "surface.close" | "surface.focus" | "surface.move"
         | "surface.split" => ControlRequestRoute::PaneSurfaceLifecycle,
+        "workspace.action" => ControlRequestRoute::WorkspaceAction,
         "window.create"
         | "window.close"
         | "window.focus"
@@ -1310,6 +1313,9 @@ fn handle_control_request(app: &AppHandle, mut request: ControlRequest) -> Contr
     match control_request_route_for_method(&request.method) {
         ControlRequestRoute::PaneSurfaceLifecycle => {
             return handle_pane_surface_lifecycle_request(app, &request.method, &request.params);
+        }
+        ControlRequestRoute::WorkspaceAction => {
+            return handle_workspace_action_request(app, &request.params);
         }
         ControlRequestRoute::WindowLifecycle => {
             return handle_window_lifecycle_request(app, &request.method, request.params);
@@ -4369,6 +4375,87 @@ fn handle_pane_surface_lifecycle_request(
         executor.flush_deferred_remote_departures();
     }
     result
+}
+
+fn handle_workspace_action_request(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let current = snapshot(app);
+    let palette = crate::config::current_workspace_palette_snapshot();
+    let active_window_id = control_active_window_id(app);
+    let crate::workspace_action::WorkspaceActionPlan {
+        result,
+        mutation,
+        window_index,
+        workspace_id,
+    } = crate::workspace_action::plan_workspace_action_with_active_window(
+        &current,
+        params,
+        &palette,
+        active_window_id.as_deref(),
+    );
+    let ControlCallResult::Ok(raw_payload) = result else {
+        return result;
+    };
+
+    match &mutation {
+        crate::workspace_action::WorkspaceActionMutation::MarkUnread {
+            workspace_id,
+            unread,
+        } => {
+            let state = app.state::<crate::notifications::NotificationCommandState>();
+            if let Err(message) =
+                crate::notifications::notification_set_workspace_unread_for_control(
+                    state.inner(),
+                    workspace_id,
+                    *unread,
+                )
+            {
+                return ControlCallResult::Err {
+                    code: "notification_store_failed".to_string(),
+                    message,
+                    data: None,
+                };
+            }
+        }
+        crate::workspace_action::WorkspaceActionMutation::None => {}
+        _ => {
+            let state = app.state::<SessionState>();
+            if let Err(message) = apply_workspace_action_for_control(app, &state, &mutation) {
+                return ControlCallResult::Err {
+                    code: "internal".to_string(),
+                    message,
+                    data: None,
+                };
+            }
+        }
+    }
+
+    let mut payload = Value::from(raw_payload);
+    if let (Some(window_index), Some(workspace_id)) = (window_index, workspace_id.as_deref()) {
+        payload["workspace_ref"] = json!(control_handle_ref(app, "workspace", workspace_id));
+        let window_id = current
+            .windows
+            .get(window_index)
+            .and_then(|window| window.window_id.as_deref());
+        payload["window_ref"] = window_id
+            .map(|window_id| json!(control_handle_ref(app, "window", window_id)))
+            .unwrap_or(Value::Null);
+    }
+    let completion = crate::workspace_action::workspace_action_completion(params, &payload);
+    record_event(
+        app,
+        "workspace.action",
+        "workspace",
+        "socket.v2",
+        completion.window_id,
+        completion.workspace_id,
+        None,
+        None,
+        completion.payload,
+    );
+    ok(payload)
 }
 
 /// Canonical quit-confirmation mode key: `app.confirmQuit`, default `always`

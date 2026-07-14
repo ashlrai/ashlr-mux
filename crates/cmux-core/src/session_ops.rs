@@ -45,11 +45,12 @@ pub fn read_surface_lifecycle(
 use cmux_browser_history::{NavigationAvailability, SessionHistoryURLSanitizer};
 use cmux_workspaces::{
     assign_group, clamped_reorder_index, clamped_top_level_reorder_index, insertion_index,
-    is_workspace_group_anchor, normalize_workspace_group_contiguity,
-    normalize_workspace_group_runs_preserving_order, sidebar_top_level_workspace_ids,
-    sync_workspace_groups_order_to_anchor_order, NewWorkspacePlacement, WorkspaceBatchReorderError,
-    WorkspaceGroup, WorkspaceOrderSnapshot, WorkspaceReorderPlanItem, WorkspaceReorderPlanner,
-    WorkspaceRow,
+    is_workspace_group_anchor, move_workspace_group_members_after_anchors,
+    normalize_workspace_group_contiguity, normalize_workspace_group_runs_preserving_order,
+    sidebar_top_level_pinned_workspace_ids, sidebar_top_level_workspace_ids,
+    sync_workspace_groups_order_to_anchor_order, top_level_workspace_ids, NewWorkspacePlacement,
+    WorkspaceBatchReorderError, WorkspaceGroup, WorkspaceOrderSnapshot, WorkspaceReorderPlanItem,
+    WorkspaceReorderPlanner, WorkspaceRow,
 };
 use uuid::Uuid;
 
@@ -2851,6 +2852,26 @@ pub fn reset_workspace_color(tabs: &mut SessionTabManagerSnapshot, index: i64) -
     true
 }
 
+/// Set or clear a normalized custom workspace color. Validation and named-palette
+/// resolution belong to the caller; this is the authoritative persisted model
+/// write shared by the socket and desktop lanes.
+pub fn set_workspace_color(
+    tabs: &mut SessionTabManagerSnapshot,
+    index: i64,
+    color: Option<&str>,
+) -> bool {
+    if index < 0 || index as usize >= tabs.workspaces.len() {
+        return false;
+    }
+    let workspace = &mut tabs.workspaces[index as usize];
+    let next = color.map(str::to_owned);
+    if workspace.custom_color == next {
+        return false;
+    }
+    workspace.custom_color = next;
+    true
+}
+
 fn normalized_panel_title(title: &str) -> Option<String> {
     let trimmed = title.trim();
     if trimmed.is_empty() {
@@ -3666,6 +3687,80 @@ fn normalize_workspace_groups_in_snapshot(tabs: &mut SessionTabManagerSnapshot) 
 /// canonical drag is single-row, so it is intentionally not part of this op.
 pub fn reorder_workspaces(tabs: &mut SessionTabManagerSnapshot, index: i64, to_index: i64) -> bool {
     reorder_workspaces_with_mode(tabs, index, to_index, false)
+}
+
+/// Move one workspace to the top of its current pin tier, matching canonical
+/// `WorkspaceReorderCoordinator.moveTabToTop`. Group members hoist their whole
+/// top-level group row, and index-based selection is remapped to keep following
+/// the same workspace identity.
+pub fn move_workspace_to_top(tabs: &mut SessionTabManagerSnapshot, index: i64) -> bool {
+    if index < 0 || index as usize >= tabs.workspaces.len() || tabs.workspaces.len() <= 1 {
+        return false;
+    }
+    let (rows, groups) = workspace_mirror(tabs);
+    let original_row_ids: Vec<Uuid> = rows.iter().map(|row| row.id).collect();
+    let selected_id = rows[index as usize].id;
+
+    let (final_rows, final_groups) = if groups.is_empty() {
+        let mut reordered = rows;
+        let selected = reordered.remove(index as usize);
+        let destination = if selected.is_pinned {
+            0
+        } else {
+            reordered.iter().take_while(|row| row.is_pinned).count()
+        };
+        reordered.insert(destination, selected);
+        (reordered, groups)
+    } else {
+        let hoisted = move_workspace_group_members_after_anchors(&rows, &groups, &[selected_id]);
+        let top_level = sidebar_top_level_workspace_ids(&hoisted, &groups, None);
+        let Some(selected_row) = hoisted.iter().find(|row| row.id == selected_id) else {
+            return false;
+        };
+        let selected_top_level =
+            top_level_workspace_ids(std::slice::from_ref(selected_row), &groups);
+        let selected_set: HashSet<Uuid> = selected_top_level.iter().copied().collect();
+        let pinned_set: HashSet<Uuid> = sidebar_top_level_pinned_workspace_ids(&hoisted, &groups)
+            .into_iter()
+            .collect();
+        let mut desired = Vec::with_capacity(top_level.len());
+        desired.extend(
+            selected_top_level
+                .iter()
+                .filter(|id| pinned_set.contains(id))
+                .copied(),
+        );
+        desired.extend(
+            top_level
+                .iter()
+                .filter(|id| pinned_set.contains(id) && !selected_set.contains(id))
+                .copied(),
+        );
+        desired.extend(
+            selected_top_level
+                .iter()
+                .filter(|id| !pinned_set.contains(id))
+                .copied(),
+        );
+        desired.extend(
+            top_level
+                .iter()
+                .filter(|id| !pinned_set.contains(id) && !selected_set.contains(id))
+                .copied(),
+        );
+        let final_rows =
+            normalize_workspace_group_runs_preserving_order(&hoisted, &groups, &desired);
+        let final_groups = sync_workspace_groups_order_to_anchor_order(&final_rows, &groups);
+        (final_rows, final_groups)
+    };
+
+    let final_row_ids: Vec<Uuid> = final_rows.iter().map(|row| row.id).collect();
+    if final_row_ids == original_row_ids {
+        return false;
+    }
+    let final_group_ids: Vec<Uuid> = final_groups.iter().map(|group| group.id).collect();
+    write_back_reordered(tabs, &original_row_ids, &final_row_ids, &final_group_ids);
+    true
 }
 
 /// Atomically reorder a requested leading subset within pinned and unpinned

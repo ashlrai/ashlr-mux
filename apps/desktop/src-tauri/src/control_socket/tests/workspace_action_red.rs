@@ -2,7 +2,8 @@
 
 use super::*;
 use crate::workspace_action::{
-    apply_workspace_action_mutation, plan_workspace_action, WorkspaceActionMutation,
+    apply_workspace_action_mutation, plan_workspace_action,
+    plan_workspace_action_with_active_window, workspace_action_completion, WorkspaceActionMutation,
     SUPPORTED_WORKSPACE_ACTIONS,
 };
 use cmux_workspaces::PaletteStoreSnapshot;
@@ -120,6 +121,39 @@ fn validation_and_unknown_action_contract_are_exact() {
             error_parts(&missing_target).1
         ),
         ("not_found", "Workspace not found")
+    );
+}
+
+#[test]
+fn selectorless_routing_prefers_active_window_and_malformed_workspace_falls_back_to_selection() {
+    let mut snapshot = action_snapshot();
+    let mut second = snapshot.windows[0].clone();
+    second.window_id = Some("10000000-0000-4000-8000-000000000002".into());
+    for (index, workspace) in second.tab_manager.workspaces.iter_mut().enumerate() {
+        workspace.workspace_id = Some(format!("30000000-0000-4000-8000-{index:012}"));
+    }
+    second.selected_workspace_id = second.tab_manager.workspaces[2].workspace_id.clone();
+    snapshot.windows.push(second);
+
+    let planned = plan_workspace_action_with_active_window(
+        &snapshot,
+        &params(json!({"action":"pin", "workspace_id":"not-a-uuid"})),
+        &PaletteStoreSnapshot::default(),
+        Some("10000000-0000-4000-8000-000000000002"),
+    );
+    assert_eq!(planned.window_index, Some(1));
+    assert_eq!(
+        planned.workspace_id.as_deref(),
+        Some("30000000-0000-4000-8000-000000000002")
+    );
+
+    let invalid_window = plan(&snapshot, json!({"action":"pin", "window_id":"not-a-uuid"}));
+    assert_eq!(
+        (
+            error_parts(&invalid_window).0,
+            error_parts(&invalid_window).1
+        ),
+        ("unavailable", "TabManager not available")
     );
 }
 
@@ -312,4 +346,46 @@ fn action_specific_required_values_have_canonical_errors() {
             );
         }
     }
+}
+
+#[test]
+fn direct_v2_description_preserves_edge_whitespace_after_line_ending_normalization() {
+    let snapshot = action_snapshot();
+    let planned = plan(
+        &snapshot,
+        json!({
+            "action":"set-description",
+            "workspace_id":WORKSPACES[2],
+            "description":"  first\r\nsecond  "
+        }),
+    );
+    assert_eq!(ok_value(&planned)["description"], "  first\nsecond  ");
+    let mut mutated = snapshot;
+    assert!(apply_workspace_action_mutation(
+        &mut mutated,
+        &planned.mutation
+    ));
+    assert_eq!(
+        mutated.windows[0].tab_manager.workspaces[2]
+            .custom_description
+            .as_deref(),
+        Some("  first\nsecond  ")
+    );
+}
+
+#[test]
+fn successful_action_completion_has_exact_socket_v2_event_payload() {
+    let request = params(json!({"action":"pin", "workspace_id":WORKSPACES[2]}));
+    let planned = plan_workspace_action(
+        &action_snapshot(),
+        &request,
+        &PaletteStoreSnapshot::default(),
+    );
+    let result = ok_value(&planned);
+    let completion = workspace_action_completion(&request, &result);
+    assert_eq!(completion.window_id.as_deref(), Some(WINDOW));
+    assert_eq!(completion.workspace_id.as_deref(), Some(WORKSPACES[2]));
+    assert_eq!(completion.payload["method"], "workspace.action");
+    assert_eq!(completion.payload["params"], json!(request));
+    assert_eq!(completion.payload["result"], result);
 }

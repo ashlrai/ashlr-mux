@@ -65,7 +65,11 @@ fn executable(pipe: Option<&str>, args: &[&str]) -> Output {
 }
 
 fn assert_failure(output: Output, expected_stderr: &str) {
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "unexpected process result: {output:?}"
+    );
     assert!(output.stdout.is_empty());
     assert_eq!(String::from_utf8(output.stderr).unwrap(), expected_stderr);
 }
@@ -111,17 +115,20 @@ fn workspace_action_infers_only_the_value_owned_by_the_selected_action() {
     let cases = [
         (
             vec!["rename", " build ", " logs "],
-            json!({"action":"rename", "title":"build   logs"}),
+            json!({"action":"rename", "title":"build   logs", "resolve_current_workspace":true}),
         ),
         (
             vec!["set-color", " #c0392b "],
-            json!({"action":"set_color", "color":"#c0392b"}),
+            json!({"action":"set_color", "color":"#c0392b", "resolve_current_workspace":true}),
         ),
         (
             vec!["set-description", " first ", " second "],
-            json!({"action":"set_description", "description":"first   second"}),
+            json!({"action":"set_description", "description":"first   second", "resolve_current_workspace":true}),
         ),
-        (vec!["pin", "ignored", "text"], json!({"action":"pin"})),
+        (
+            vec!["pin", "ignored", "text"],
+            json!({"action":"pin", "resolve_current_workspace":true}),
+        ),
     ];
 
     for (arguments, expected) in cases {
@@ -157,7 +164,9 @@ fn workspace_action_parser_has_exact_canonical_local_errors() {
             "Error: workspace-action set-description requires --description <text> (or trailing text)\n",
         ),
     ] {
-        assert_failure(executable(None, &arguments), message);
+        let mut command_args = vec!["workspace-action"];
+        command_args.extend(arguments);
+        assert_failure(executable(None, &command_args), message);
     }
 }
 
@@ -201,12 +210,149 @@ fn workspace_action_process_sends_one_typed_request_and_formats_canonical_summar
 }
 
 #[test]
+fn workspace_action_output_matches_clear_color_and_id_format_contracts() {
+    let payload = json!({
+        "action": "clear_color",
+        "workspace_id": WORKSPACE_ID,
+        "workspace_ref": "workspace:3",
+        "window_id": WINDOW_ID,
+        "window_ref": "window:2",
+        "color": null,
+    });
+
+    let (plain_pipe, _plain_rx) = spawn_server("clear-color-plain", ok(payload.clone()));
+    let plain = executable(
+        Some(&plain_pipe),
+        &[
+            "workspace-action",
+            "clear-color",
+            "--workspace",
+            WORKSPACE_ID,
+        ],
+    );
+    assert!(plain.status.success(), "{plain:?}");
+    assert_eq!(
+        String::from_utf8(plain.stdout).unwrap(),
+        "OK action=clear_color workspace=workspace:3 window=window:2\n"
+    );
+
+    let (uuid_pipe, _uuid_rx) = spawn_server("clear-color-uuids", ok(payload.clone()));
+    let uuid = executable(
+        Some(&uuid_pipe),
+        &[
+            "--id-format",
+            "uuids",
+            "workspace-action",
+            "clear-color",
+            "--workspace",
+            WORKSPACE_ID,
+        ],
+    );
+    assert!(uuid.status.success(), "{uuid:?}");
+    assert_eq!(
+        String::from_utf8(uuid.stdout).unwrap(),
+        format!("OK action=clear_color workspace={WORKSPACE_ID} window={WINDOW_ID}\n")
+    );
+
+    for (tag, id_format, expected) in [
+        (
+            "json-refs",
+            "refs",
+            json!({
+                "action":"clear_color", "workspace_ref":"workspace:3",
+                "window_ref":"window:2", "color":null
+            }),
+        ),
+        (
+            "json-uuids",
+            "uuids",
+            json!({
+                "action":"clear_color", "workspace_id":WORKSPACE_ID,
+                "window_id":WINDOW_ID, "color":null
+            }),
+        ),
+    ] {
+        let (pipe, _request_rx) = spawn_server(tag, ok(payload.clone()));
+        let output = executable(
+            Some(&pipe),
+            &[
+                "--json",
+                "--id-format",
+                id_format,
+                "workspace-action",
+                "clear-color",
+                "--workspace",
+                WORKSPACE_ID,
+            ],
+        );
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn global_window_prefocuses_but_per_command_window_only_scopes() {
+    let response = ok(json!({
+        "action":"pin",
+        "workspace_id":WORKSPACE_ID,
+        "workspace_ref":"workspace:1",
+        "window_id":WINDOW_ID,
+        "window_ref":"window:1",
+        "pinned":true,
+    }));
+    let (global_pipe, global_rx) = spawn_server("global-window", response.clone());
+    let global = executable(
+        Some(&global_pipe),
+        &[
+            "--window",
+            WINDOW_ID,
+            "workspace-action",
+            "pin",
+            "--workspace",
+            WORKSPACE_ID,
+        ],
+    );
+    assert!(global.status.success(), "{global:?}");
+    assert_eq!(global_rx.recv().unwrap().0, "window.focus");
+    let (method, params) = global_rx.recv().unwrap();
+    assert_eq!(method, "workspace.action");
+    assert_eq!(params["window_id"], WINDOW_ID);
+
+    let (scoped_pipe, scoped_rx) = spawn_server("scoped-window", response);
+    let scoped = executable(
+        Some(&scoped_pipe),
+        &[
+            "workspace-action",
+            "pin",
+            "--workspace",
+            WORKSPACE_ID,
+            "--window",
+            WINDOW_ID,
+        ],
+    );
+    assert!(scoped.status.success(), "{scoped:?}");
+    let (method, params) = scoped_rx.recv().unwrap();
+    assert_eq!(method, "workspace.action");
+    assert_eq!(params["window_id"], WINDOW_ID);
+    assert!(
+        scoped_rx.try_recv().is_err(),
+        "per-command scope must not focus"
+    );
+}
+
+#[test]
 fn workspace_action_help_is_complete_in_both_help_forms() {
     let direct = executable(None, &["workspace-action", "--help"]);
     let nested = executable(None, &["help", "workspace-action"]);
     assert!(direct.status.success());
     assert!(nested.status.success());
-    assert_eq!(direct.stdout, nested.stdout);
+    assert_eq!(
+        String::from_utf8(nested.stdout).unwrap(),
+        "Usage: cmux <path>|<command> [options]\n"
+    );
     let text = String::from_utf8(direct.stdout).unwrap();
     for required in [
         "Usage: cmux workspace-action --action <name> [flags]",

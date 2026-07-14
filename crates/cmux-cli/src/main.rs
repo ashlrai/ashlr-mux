@@ -135,6 +135,9 @@ fn dispatch(
             } else {
                 std::env::var(CMUX_SURFACE_ID_ENV).ok()
             };
+            let had_command_window_scope = ["window_id", "window_ref", "window_index"]
+                .iter()
+                .any(|key| control.params.get(*key).is_some());
             let control = control.with_window_id(options.window_id.as_deref());
             let has_window_scope = ["window_id", "window_ref", "window_index"]
                 .iter()
@@ -164,6 +167,17 @@ fn dispatch(
                     | "rename-window"
             ) {
                 run_legacy_workspace_command(options, command, &control.method, &control.params)
+            } else if command == "workspace-action" {
+                run_workspace_action_command(
+                    options,
+                    &control.method,
+                    &control.params,
+                    options
+                        .window_id
+                        .as_deref()
+                        .is_some_and(|window| !window.trim().is_empty())
+                        && !had_command_window_scope,
+                )
             } else if matches!(command, "tab-action" | "respawn-pane") {
                 run_lifecycle_command(options, &control.method, &control.params)
             } else {
@@ -802,6 +816,54 @@ fn run_lifecycle_command(
         println!(
             "{}",
             format_lifecycle_text(method, &result, id_format, requested_action)
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn run_workspace_action_command(
+    _options: &GlobalOptions,
+    _method: &str,
+    _params: &serde_json::Value,
+    _focus_global_window: bool,
+) -> Result<(), CliError> {
+    Err(CliError::new(
+        "socket commands are only supported on Windows in this build",
+    ))
+}
+
+#[cfg(windows)]
+fn run_workspace_action_command(
+    options: &GlobalOptions,
+    method: &str,
+    params: &serde_json::Value,
+    focus_global_window: bool,
+) -> Result<(), CliError> {
+    if focus_global_window {
+        if let Some(window) = options.window_id.as_deref() {
+            if let Some(window_id) = normalize_window_selector(options, window)? {
+                call_control_command(
+                    options,
+                    "window.focus",
+                    &serde_json::json!({"window_id":window_id}),
+                )?;
+            }
+        }
+    }
+    let mut request = params.clone();
+    normalize_workspace_params(options, method, &mut request)?;
+    let result = call_control_command(options, method, &request)?;
+    let id_format = options.id_format.as_deref().unwrap_or("refs");
+    if options.json_output {
+        let mut formatted = result;
+        filter_id_format(&mut formatted, id_format);
+        println!("{}", serde_json::to_string(&formatted).unwrap_or_default());
+    } else {
+        let requested_action = request.get("action").and_then(serde_json::Value::as_str);
+        println!(
+            "{}",
+            format_workspace_action_text(&result, id_format, requested_action)
         );
     }
     Ok(())
@@ -1538,6 +1600,7 @@ fn normalize_workspace_params(
         "workspace.close"
             | "workspace.select"
             | "workspace.rename"
+            | "workspace.action"
             | "tab.action"
             | "surface.respawn"
     ) {
@@ -2216,6 +2279,48 @@ fn format_lifecycle_text(
         "created_workspace_ref",
         id_format,
     );
+    format!("OK {}", fields.join(" "))
+}
+
+fn format_workspace_action_text(
+    result: &serde_json::Value,
+    id_format: &str,
+    requested_action: Option<&str>,
+) -> String {
+    let mut fields = vec![format!(
+        "action={}",
+        requested_action
+            .or_else(|| result.get("action").and_then(serde_json::Value::as_str))
+            .unwrap_or_default()
+    )];
+    push_lifecycle_id_field(
+        &mut fields,
+        result,
+        "workspace",
+        "workspace_id",
+        "workspace_ref",
+        id_format,
+    );
+    push_lifecycle_id_field(
+        &mut fields,
+        result,
+        "window",
+        "window_id",
+        "window_ref",
+        id_format,
+    );
+    for key in ["closed", "index"] {
+        if let Some(value) = result.get(key) {
+            let rendered = value
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| value.to_string());
+            fields.push(format!("{key}={rendered}"));
+        }
+    }
+    if let Some(color) = result.get("color").and_then(serde_json::Value::as_str) {
+        fields.push(format!("color={color}"));
+    }
     format!("OK {}", fields.join(" "))
 }
 

@@ -73,6 +73,7 @@ impl ControlCommand {
                 | "workspace.close"
                 | "workspace.select"
                 | "workspace.rename"
+                | "workspace.action"
                 | "tab.action"
                 | "surface.respawn"
         ) {
@@ -162,6 +163,7 @@ fn workspace_scoped_method(method: &str) -> bool {
             | "workspace.create"
             | "workspace.close"
             | "workspace.rename"
+            | "workspace.action"
             | "workspace.equalize_splits"
             | "workspace.set_description"
             | "workspace.reset_color"
@@ -506,6 +508,10 @@ pub fn control_command_for(
             surface_title_params(args)?,
         )),
         "tab-action" => Some(ControlCommand::new("tab.action", tab_action_params(args)?)),
+        "workspace-action" => Some(ControlCommand::new(
+            "workspace.action",
+            workspace_action_params(args)?,
+        )),
         "respawn-pane" => Some(ControlCommand::new(
             "surface.respawn",
             respawn_pane_params(args)?,
@@ -2658,6 +2664,70 @@ fn tab_action_params(args: &[String]) -> Result<serde_json::Value, CliError> {
         "focus".into(),
         serde_json::json!(parse_optional_bool(focus.as_deref(), "--focus")?.unwrap_or(false)),
     );
+    Ok(serde_json::Value::Object(params))
+}
+
+fn workspace_action_params(args: &[String]) -> Result<serde_json::Value, CliError> {
+    let (workspace, rem0) = parse_frozen_option(args, "--workspace");
+    let (action_option, rem1) = parse_frozen_option(&rem0, "--action");
+    let (title_option, rem2) = parse_frozen_option(&rem1, "--title");
+    let (color_option, rem3) = parse_frozen_option(&rem2, "--color");
+    let (description_option, rem4) = parse_frozen_option(&rem3, "--description");
+    let (window, mut positional) = parse_frozen_option(&rem4, "--window");
+    let action_raw = if let Some(action) = action_option {
+        action
+    } else if positional.is_empty() {
+        return Err(CliError::new("workspace-action requires --action <name>"));
+    } else {
+        positional.remove(0)
+    };
+    if let Some(unknown) = positional.iter().find(|value| value.starts_with("--")) {
+        return Err(CliError::new(format!(
+            "workspace-action: unknown flag '{unknown}'"
+        )));
+    }
+    let action = normalize_action_name(&action_raw);
+    let inferred_raw = positional.join(" ");
+    let inferred = inferred_raw.trim();
+    let title = title_option
+        .map(|value| value.trim().to_owned())
+        .or_else(|| (action == "rename" && !inferred.is_empty()).then(|| inferred.to_owned()));
+    if action == "rename" && title.as_deref().is_none_or(str::is_empty) {
+        return Err(CliError::new(
+            "workspace-action rename requires --title <text> (or a trailing title)",
+        ));
+    }
+    let color = color_option
+        .map(|value| value.trim().to_owned())
+        .or_else(|| (action == "set_color" && !inferred.is_empty()).then(|| inferred.to_owned()));
+    if action == "set_color" && color.as_deref().is_none_or(str::is_empty) {
+        return Err(CliError::new(
+            "workspace-action set-color requires --color <name|#hex> (or a trailing color)",
+        ));
+    }
+    let description = description_option
+        .map(|value| value.trim().to_owned())
+        .or_else(|| {
+            (action == "set_description" && !inferred.is_empty())
+                .then(|| inferred_raw.trim().to_owned())
+        });
+    if action == "set_description" && description.as_deref().is_none_or(str::is_empty) {
+        return Err(CliError::new(
+            "workspace-action set-description requires --description <text> (or trailing text)",
+        ));
+    }
+
+    let mut params = lifecycle_scope_values(workspace.as_deref(), window.as_deref())?;
+    params.insert("action".into(), serde_json::json!(action));
+    if let Some(title) = title.filter(|value| !value.is_empty()) {
+        params.insert("title".into(), serde_json::json!(title));
+    }
+    if let Some(color) = color.filter(|value| !value.is_empty()) {
+        params.insert("color".into(), serde_json::json!(color));
+    }
+    if let Some(description) = description.filter(|value| !value.is_empty()) {
+        params.insert("description".into(), serde_json::json!(description));
+    }
     Ok(serde_json::Value::Object(params))
 }
 

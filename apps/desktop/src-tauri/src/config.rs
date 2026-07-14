@@ -143,6 +143,31 @@ pub(crate) fn current_app_language() -> String {
         .unwrap_or(default_language)
 }
 
+/// Best-effort effective workspace color palette for control-socket actions.
+/// The config schema materializes the canonical defaults; named colors in the
+/// `colors` map and file-defined overrides are exposed through the shared
+/// `cmux-workspaces` palette resolver.
+pub(crate) fn current_workspace_palette_snapshot() -> cmux_workspaces::PaletteStoreSnapshot {
+    let configured = config_file_path()
+        .and_then(|path| load_raw_config(&path))
+        .and_then(|raw| decode_settings_config(&raw))
+        .ok()
+        .and_then(|config| config.workspace_colors)
+        .unwrap_or_default();
+    let mut colors = configured.colors;
+    for (name, hex) in configured.palette_overrides {
+        colors.insert(name, hex);
+    }
+    let mut stored = colors.into_iter().collect::<Vec<_>>();
+    for (index, hex) in configured.custom_colors.into_iter().enumerate() {
+        stored.push((format!("Custom {}", index + 1), hex));
+    }
+    cmux_workspaces::PaletteStoreSnapshot {
+        stored: Some(stored),
+        ..Default::default()
+    }
+}
+
 /// Best-effort current markdown viewer defaults from `cmux.json`.
 pub(crate) fn current_markdown_config() -> MarkdownConfig {
     let default_config = MarkdownConfig::default();

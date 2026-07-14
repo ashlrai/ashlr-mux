@@ -111,6 +111,10 @@ mod sidebar_metadata_red;
 mod public_control_metadata_red;
 
 #[cfg(test)]
+#[path = "session/workspace_action_transactions_red.rs"]
+mod workspace_action_transactions_red;
+
+#[cfg(test)]
 #[path = "session/runtime_model_facts_red.rs"]
 mod runtime_model_facts_red;
 
@@ -6124,6 +6128,154 @@ pub(crate) fn close_workspaces_for_control(
         notify_session_changed(app, &snapshot);
     }
     snapshot
+}
+
+#[derive(Debug, Default)]
+struct WorkspaceActionClosedArtifacts {
+    browser_tabs: Vec<ClosedBrowserTabSnapshot>,
+    workspaces: Vec<ClosedWorkspaceSnapshot>,
+    teardowns: Vec<WorkspaceCloseTeardownPlan>,
+}
+
+fn transact_workspace_action_mutation(
+    authority: &GatedSnapshot,
+    publication: &mut impl SnapshotPublicationOperations,
+    mutation: &crate::workspace_action::WorkspaceActionMutation,
+) -> Result<(WorkspaceActionClosedArtifacts, AppSessionSnapshot), String> {
+    use crate::workspace_action::WorkspaceActionMutation;
+
+    if let WorkspaceActionMutation::Close {
+        window_index,
+        workspace_indices,
+    } = mutation
+    {
+        return match transact_value_if_changed_snapshot(authority, publication, |candidate| {
+            let candidates = workspace_indices
+                .iter()
+                .filter_map(|index| {
+                    let workspace = candidate
+                        .windows
+                        .get(*window_index)?
+                        .tab_manager
+                        .workspaces
+                        .get(*index)?;
+                    let workspace_id = workspace.workspace_id.clone();
+                    Some((
+                        workspace_id.clone(),
+                        closed_browser_tabs_for_workspace(workspace),
+                        closed_workspace_snapshot(candidate, *window_index, *index),
+                        workspace_id.as_deref().map(|workspace_id| {
+                            workspace_close_teardown_plan(workspace_id, workspace.remote.is_some())
+                        }),
+                    ))
+                })
+                .collect::<Vec<_>>();
+            let changed =
+                crate::workspace_action::apply_workspace_action_mutation(candidate, mutation);
+            let remaining_ids = candidate
+                .windows
+                .get(*window_index)
+                .into_iter()
+                .flat_map(|window| window.tab_manager.workspaces.iter())
+                .filter_map(|workspace| workspace.workspace_id.clone())
+                .collect::<HashSet<_>>();
+            let closed = candidates
+                .into_iter()
+                .filter(|(workspace_id, _, _, _)| {
+                    workspace_id
+                        .as_ref()
+                        .is_none_or(|id| !remaining_ids.contains(id))
+                })
+                .collect::<Vec<_>>();
+            let artifacts = WorkspaceActionClosedArtifacts {
+                browser_tabs: closed
+                    .iter()
+                    .flat_map(|(_, tabs, _, _)| tabs.clone())
+                    .collect(),
+                workspaces: closed
+                    .iter()
+                    .filter_map(|(_, _, workspace, _)| workspace.clone())
+                    .collect(),
+                teardowns: closed
+                    .into_iter()
+                    .filter_map(|(_, _, _, teardown)| teardown)
+                    .collect(),
+            };
+            Ok::<_, std::convert::Infallible>((artifacts, changed))
+        }) {
+            Ok(value) => Ok(value),
+            Err(PaneTopologyControlError::Publication(message)) => Err(message),
+            Err(PaneTopologyControlError::Operation(error)) => match error {},
+        };
+    }
+
+    transact_snapshot_if_changed(authority, publication, |candidate| {
+        crate::workspace_action::apply_workspace_action_mutation(candidate, mutation)
+    })
+    .map(|snapshot| (WorkspaceActionClosedArtifacts::default(), snapshot))
+}
+
+/// Apply one planned `workspace.action` mutation through the durable snapshot
+/// transaction seam. Socket completion is recorded by the control layer, so
+/// derived control events are suppressed while the normal Tauri session/window
+/// publications still occur. Close histories and runtime teardowns run only
+/// after the candidate snapshot has persisted and committed.
+pub(crate) fn apply_workspace_action_for_control(
+    app: &AppHandle,
+    state: &SessionState,
+    mutation: &crate::workspace_action::WorkspaceActionMutation,
+) -> Result<AppSessionSnapshot, String> {
+    use crate::workspace_action::WorkspaceActionMutation;
+
+    if let WorkspaceActionMutation::Rename {
+        window_index,
+        workspace_index,
+        title,
+    } = mutation
+    {
+        let remote_request = {
+            let guard = state
+                .snapshot
+                .lock()
+                .map_err(|_| "Session state is unavailable".to_string())?;
+            guard
+                .windows
+                .get(*window_index)
+                .and_then(|window| window.tab_manager.workspaces.get(*workspace_index))
+                .and_then(|workspace| remote_workspace_rename_request(state, workspace, title))
+        };
+        if let Some(request) = remote_request.as_ref() {
+            dispatch_remote_workspace_rename(
+                state.remote_workspace_rename_controller.as_ref(),
+                request,
+            )?;
+        }
+    }
+
+    let mut publication =
+        ProductionSnapshotPublicationOperations::new(app, state, DerivedEventPolicy::Suppress);
+    let (artifacts, snapshot) =
+        transact_workspace_action_mutation(&state.snapshot, &mut publication, mutation)?;
+    if !artifacts.browser_tabs.is_empty() {
+        push_closed_browser_tabs(
+            &mut state
+                .closed_browser_tabs
+                .lock()
+                .expect("closed browser history mutex poisoned"),
+            artifacts.browser_tabs,
+        );
+    }
+    if !artifacts.workspaces.is_empty() {
+        state
+            .closed_workspaces
+            .lock()
+            .expect("closed workspace history mutex poisoned")
+            .extend(artifacts.workspaces);
+    }
+    for teardown in artifacts.teardowns {
+        apply_workspace_close_teardown(app, state, &teardown);
+    }
+    Ok(snapshot)
 }
 
 pub(crate) fn rename_workspace_in_window_for_control(

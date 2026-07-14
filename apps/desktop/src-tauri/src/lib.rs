@@ -35,6 +35,7 @@ mod ui_test_hooks;
 mod updater_status;
 mod window;
 mod window_title;
+mod workspace_action;
 mod workspace_pull_requests;
 
 use std::{
