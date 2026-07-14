@@ -317,10 +317,15 @@ def extract_cli_mappings(text: str) -> dict[str, dict]:
         if not commands:
             continue
         targets = sorted(set(re.findall(r'ControlCommand::new\s*\(\s*"([^"]+)"', rhs)))
-        helper_match = re.search(r"=>\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\(", arm)
-        helper = None if targets else (helper_match.group(1) if helper_match else None)
-        if helper in {"Some", "Ok", "Err"}:
-            helper = None
+        helper_calls = re.findall(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\(", rhs)
+        helper = None if targets else next(
+            (
+                call
+                for call in helper_calls
+                if call not in {"Some", "Ok", "Err", "new", "json"}
+            ),
+            None,
+        )
         kind = "direct_control" if targets else ("helper_dispatch" if helper else "conditional")
         for command in commands:
             result[command] = {
@@ -460,7 +465,8 @@ def build(root: Path) -> dict:
     helps = extract_help(dispatch_text)
     cli_references = reference_index(root, [Path("crates/cmux-cli")])
     cli_rows = []
-    for command in sorted(top):
+    reachable_commands = sorted(set(top) | set(mappings) | set(SPECIAL_EXECUTORS))
+    for command in reachable_commands:
         impl_refs, test_refs = cli_references.get(command, ([], []))
         mapping = mappings.get(command)
         if command in LOCAL_NAMED:
@@ -495,7 +501,7 @@ def build(root: Path) -> dict:
             "help_usage_summary": helps.get(command, {}).get("usage_summary"),
             "help_aliases": helps.get(command, {}).get("aliases_in_same_arm", []),
             "source_locations": {
-                "top_level_classification": top[command],
+                "top_level_classification": top.get(command),
                 "help_classification": usage.get(command),
                 "control_mapping": mapping["source"] if mapping else None,
                 "concrete_help": helps.get(command, {}).get("source"),
@@ -522,7 +528,7 @@ def build(root: Path) -> dict:
             "routed_not_advertised_count": sum(row["routed"] and not row["advertised"] for row in method_rows),
             "explicit_not_supported_method_count": len(direct_unsupported),
             "guarded_not_supported_path_count": sum(row["explicit_not_supported"] for row in guarded),
-            "top_level_cli_count": len(top),
+            "top_level_cli_count": len(cli_rows),
             "cli_direct_control_mapped_count": sum(row["control_mapping_kind"] == "direct_control" for row in cli_rows),
             "cli_any_control_mapping_count": sum(row["control_mapping_kind"] is not None for row in cli_rows),
             "cli_concrete_help_count": sum(row["has_concrete_help"] for row in cli_rows),

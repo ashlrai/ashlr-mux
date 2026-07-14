@@ -6734,7 +6734,7 @@
         "windows_evidence": {
           "classification": "needs_socket",
           "command": "drag-surface-to-split",
-          "control_mapping_kind": "conditional",
+          "control_mapping_kind": "helper_dispatch",
           "control_methods": [],
           "dispatch_outcome": "control_mapping",
           "executor": null,
@@ -6745,7 +6745,7 @@
           "mapping_aliases": [
             "split-off"
           ],
-          "mapping_helper": null,
+          "mapping_helper": "split_off_params",
           "source_locations": {
             "concrete_help": {
               "line": 479,
@@ -20510,7 +20510,7 @@
         "windows_evidence": {
           "classification": "needs_socket",
           "command": "sidebar",
-          "control_mapping_kind": "conditional",
+          "control_mapping_kind": "helper_dispatch",
           "control_methods": [],
           "dispatch_outcome": "control_mapping",
           "executor": null,
@@ -20519,7 +20519,7 @@
           "help_aliases": [],
           "help_usage_summary": "cmux sidebar [list|validate [name]|reload [name]|select <name>|open <name>]",
           "mapping_aliases": [],
-          "mapping_helper": null,
+          "mapping_helper": "sidebar_command",
           "source_locations": {
             "concrete_help": {
               "line": 587,
@@ -20999,7 +20999,7 @@
         "windows_evidence": {
           "classification": "needs_socket",
           "command": "split-off",
-          "control_mapping_kind": "conditional",
+          "control_mapping_kind": "helper_dispatch",
           "control_methods": [],
           "dispatch_outcome": "control_mapping",
           "executor": null,
@@ -21010,7 +21010,7 @@
           "mapping_aliases": [
             "drag-surface-to-split"
           ],
-          "mapping_helper": null,
+          "mapping_helper": "split_off_params",
           "source_locations": {
             "concrete_help": {
               "line": 476,
@@ -24538,14 +24538,123 @@
         ],
         "subcommands": [],
         "visibility": "public",
-        "windows_evidence": null
+        "windows_evidence": {
+          "classification": "hybrid_local_and_socket",
+          "command": "window",
+          "control_mapping_kind": "helper_dispatch",
+          "control_methods": [],
+          "dispatch_outcome": "control_mapping",
+          "executor": null,
+          "has_concrete_help": false,
+          "has_help_classification": false,
+          "help_aliases": [],
+          "help_usage_summary": null,
+          "mapping_aliases": [],
+          "mapping_helper": "window_command",
+          "source_locations": {
+            "concrete_help": null,
+            "control_mapping": {
+              "line": 287,
+              "path": "crates/cmux-cli/src/command_forward.rs"
+            },
+            "help_classification": null,
+            "implementation_references": [
+              {
+                "line": 147,
+                "path": "crates/cmux-cli/src/classify.rs"
+              },
+              {
+                "line": 287,
+                "path": "crates/cmux-cli/src/command_forward.rs"
+              },
+              {
+                "line": 148,
+                "path": "crates/cmux-cli/src/window_lifecycle.rs"
+              }
+            ],
+            "test_references": [
+              {
+                "line": 4652,
+                "path": "crates/cmux-cli/src/command_forward.rs"
+              },
+              {
+                "line": 4656,
+                "path": "crates/cmux-cli/src/command_forward.rs"
+              },
+              {
+                "line": 4663,
+                "path": "crates/cmux-cli/src/command_forward.rs"
+              },
+              {
+                "line": 4667,
+                "path": "crates/cmux-cli/src/command_forward.rs"
+              },
+              {
+                "line": 258,
+                "path": "crates/cmux-cli/src/window_lifecycle.rs"
+              }
+            ],
+            "top_level_classification": null
+          },
+          "top_level_known": true,
+          "verification_claim": "unverified; classification/mapping/help presence is not behavioral parity proof"
+        }
       },
       "name": "window",
       "priority": 0,
       "rationale": null,
-      "status": "missing",
+      "status": "implemented_unverified",
       "user_approval": null,
-      "windows_sources": []
+      "windows_sources": [
+        {
+          "commit": null,
+          "line": 147,
+          "path": "crates/cmux-cli/src/classify.rs",
+          "symbol": null
+        },
+        {
+          "commit": null,
+          "line": 287,
+          "path": "crates/cmux-cli/src/command_forward.rs",
+          "symbol": null
+        },
+        {
+          "commit": null,
+          "line": 4652,
+          "path": "crates/cmux-cli/src/command_forward.rs",
+          "symbol": null
+        },
+        {
+          "commit": null,
+          "line": 4656,
+          "path": "crates/cmux-cli/src/command_forward.rs",
+          "symbol": null
+        },
+        {
+          "commit": null,
+          "line": 4663,
+          "path": "crates/cmux-cli/src/command_forward.rs",
+          "symbol": null
+        },
+        {
+          "commit": null,
+          "line": 4667,
+          "path": "crates/cmux-cli/src/command_forward.rs",
+          "symbol": null
+        },
+        {
+          "commit": null,
+          "line": 148,
+          "path": "crates/cmux-cli/src/window_lifecycle.rs",
+          "symbol": null
+        },
+        {
+          "commit": null,
+          "line": 258,
+          "path": "crates/cmux-cli/src/window_lifecycle.rs",
+          "symbol": null
+        }
+      ]
     },
     {
       "acceptance_tests": [
@@ -60333,8 +60442,8 @@
         "missing": 1
       },
       "window": {
-        "implemented_unverified": 12,
-        "missing": 2
+        "implemented_unverified": 13,
+        "missing": 1
       },
       "workspace": {
         "implemented_unverified": 29,
@@ -60348,8 +60457,8 @@
       "v2_method": 293
     },
     "by_status": {
-      "implemented_unverified": 252,
-      "missing": 234
+      "implemented_unverified": 253,
+      "missing": 233
     },
     "canonical_targets": {
       "debug_only_v2_methods": 42,

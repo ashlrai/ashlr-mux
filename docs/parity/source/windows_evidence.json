@@ -19,9 +19,9 @@
     "routed_not_advertised_count": 41,
     "explicit_not_supported_method_count": 12,
     "guarded_not_supported_path_count": 1,
-    "top_level_cli_count": 182,
-    "cli_direct_control_mapped_count": 101,
-    "cli_any_control_mapping_count": 107,
+    "top_level_cli_count": 191,
+    "cli_direct_control_mapped_count": 109,
+    "cli_any_control_mapping_count": 116,
     "cli_concrete_help_count": 119,
     "cli_explicit_socket_not_ported_count": 56
   },
@@ -14123,6 +14123,78 @@
       "verification_claim": "unverified; classification/mapping/help presence is not behavioral parity proof"
     },
     {
+      "command": "clear_agent_pid",
+      "top_level_known": true,
+      "classification": "needs_socket",
+      "executor": null,
+      "dispatch_outcome": "control_mapping",
+      "control_mapping_kind": "direct_control",
+      "control_methods": [
+        "workspace.clear_agent_pid"
+      ],
+      "mapping_helper": null,
+      "mapping_aliases": [
+        "clear-agent-pid"
+      ],
+      "has_help_classification": false,
+      "has_concrete_help": false,
+      "help_usage_summary": null,
+      "help_aliases": [],
+      "source_locations": {
+        "top_level_classification": null,
+        "help_classification": null,
+        "control_mapping": {
+          "path": "crates/cmux-cli/src/command_forward.rs",
+          "line": 436
+        },
+        "concrete_help": null,
+        "implementation_references": [
+          {
+            "path": "crates/cmux-cli/src/command_forward.rs",
+            "line": 436
+          }
+        ],
+        "test_references": []
+      },
+      "verification_claim": "unverified; classification/mapping/help presence is not behavioral parity proof"
+    },
+    {
+      "command": "clear_pr",
+      "top_level_known": true,
+      "classification": "needs_socket",
+      "executor": null,
+      "dispatch_outcome": "control_mapping",
+      "control_mapping_kind": "direct_control",
+      "control_methods": [
+        "workspace.clear_pr"
+      ],
+      "mapping_helper": null,
+      "mapping_aliases": [
+        "clear-pr"
+      ],
+      "has_help_classification": false,
+      "has_concrete_help": false,
+      "help_usage_summary": null,
+      "help_aliases": [],
+      "source_locations": {
+        "top_level_classification": null,
+        "help_classification": null,
+        "control_mapping": {
+          "path": "crates/cmux-cli/src/command_forward.rs",
+          "line": 448
+        },
+        "concrete_help": null,
+        "implementation_references": [
+          {
+            "path": "crates/cmux-cli/src/command_forward.rs",
+            "line": 448
+          }
+        ],
+        "test_references": []
+      },
+      "verification_claim": "unverified; classification/mapping/help presence is not behavioral parity proof"
+    },
+    {
       "command": "close-surface",
       "top_level_known": true,
       "classification": "needs_socket",
@@ -15208,9 +15280,9 @@
       "classification": "needs_socket",
       "executor": null,
       "dispatch_outcome": "control_mapping",
-      "control_mapping_kind": "conditional",
+      "control_mapping_kind": "helper_dispatch",
       "control_methods": [],
-      "mapping_helper": null,
+      "mapping_helper": "split_off_params",
       "mapping_aliases": [
         "split-off"
       ],
@@ -19023,6 +19095,58 @@
       "verification_claim": "unverified; classification/mapping/help presence is not behavioral parity proof"
     },
     {
+      "command": "reload",
+      "top_level_known": true,
+      "classification": "needs_socket",
+      "executor": null,
+      "dispatch_outcome": "control_mapping",
+      "control_mapping_kind": "direct_control",
+      "control_methods": [
+        "config.reload"
+      ],
+      "mapping_helper": null,
+      "mapping_aliases": [
+        "config"
+      ],
+      "has_help_classification": false,
+      "has_concrete_help": false,
+      "help_usage_summary": null,
+      "help_aliases": [],
+      "source_locations": {
+        "top_level_classification": null,
+        "help_classification": null,
+        "control_mapping": {
+          "path": "crates/cmux-cli/src/command_forward.rs",
+          "line": 263
+        },
+        "concrete_help": null,
+        "implementation_references": [
+          {
+            "path": "crates/cmux-cli/src/command_forward.rs",
+            "line": 266
+          },
+          {
+            "path": "crates/cmux-cli/src/command_forward.rs",
+            "line": 938
+          },
+          {
+            "path": "crates/cmux-cli/src/command_forward.rs",
+            "line": 1090
+          },
+          {
+            "path": "crates/cmux-cli/src/command_forward.rs",
+            "line": 1179
+          },
+          {
+            "path": "crates/cmux-cli/src/config.rs",
+            "line": 268
+          }
+        ],
+        "test_references": []
+      },
+      "verification_claim": "unverified; classification/mapping/help presence is not behavioral parity proof"
+    },
+    {
       "command": "reload-config",
       "top_level_known": true,
       "classification": "needs_socket",
@@ -19891,6 +20015,166 @@
           {
             "path": "crates/cmux-cli/src/classify.rs",
             "line": 632
+          },
+          {
+            "path": "crates/cmux-cli/src/command_forward.rs",
+            "line": 496
+          },
+          {
+            "path": "crates/cmux-cli/src/command_forward.rs",
+            "line": 828
+          }
+        ],
+        "test_references": []
+      },
+      "verification_claim": "unverified; classification/mapping/help presence is not behavioral parity proof"
+    },
+    {
+      "command": "report_pr",
+      "top_level_known": true,
+      "classification": "needs_socket",
+      "executor": null,
+      "dispatch_outcome": "control_mapping",
+      "control_mapping_kind": "direct_control",
+      "control_methods": [
+        "workspace.report_pr"
+      ],
+      "mapping_helper": null,
+      "mapping_aliases": [
+        "report-pr"
+      ],
+      "has_help_classification": false,
+      "has_concrete_help": false,
+      "help_usage_summary": null,
+      "help_aliases": [],
+      "source_locations": {
+        "top_level_classification": null,
+        "help_classification": null,
+        "control_mapping": {
+          "path": "crates/cmux-cli/src/command_forward.rs",
+          "line": 440
+        },
+        "concrete_help": null,
+        "implementation_references": [
+          {
+            "path": "crates/cmux-cli/src/command_forward.rs",
+            "line": 440
+          }
+        ],
+        "test_references": []
+      },
+      "verification_claim": "unverified; classification/mapping/help presence is not behavioral parity proof"
+    },
+    {
+      "command": "report_review",
+      "top_level_known": true,
+      "classification": "needs_socket",
+      "executor": null,
+      "dispatch_outcome": "control_mapping",
+      "control_mapping_kind": "direct_control",
+      "control_methods": [
+        "workspace.report_review"
+      ],
+      "mapping_helper": null,
+      "mapping_aliases": [
+        "report-review"
+      ],
+      "has_help_classification": false,
+      "has_concrete_help": false,
+      "help_usage_summary": null,
+      "help_aliases": [],
+      "source_locations": {
+        "top_level_classification": null,
+        "help_classification": null,
+        "control_mapping": {
+          "path": "crates/cmux-cli/src/command_forward.rs",
+          "line": 444
+        },
+        "concrete_help": null,
+        "implementation_references": [
+          {
+            "path": "crates/cmux-cli/src/command_forward.rs",
+            "line": 444
+          }
+        ],
+        "test_references": []
+      },
+      "verification_claim": "unverified; classification/mapping/help presence is not behavioral parity proof"
+    },
+    {
+      "command": "report_shell_state",
+      "top_level_known": true,
+      "classification": "needs_socket",
+      "executor": null,
+      "dispatch_outcome": "control_mapping",
+      "control_mapping_kind": "direct_control",
+      "control_methods": [
+        "surface.report_shell_state"
+      ],
+      "mapping_helper": null,
+      "mapping_aliases": [
+        "report-shell-state"
+      ],
+      "has_help_classification": false,
+      "has_concrete_help": false,
+      "help_usage_summary": null,
+      "help_aliases": [],
+      "source_locations": {
+        "top_level_classification": null,
+        "help_classification": null,
+        "control_mapping": {
+          "path": "crates/cmux-cli/src/command_forward.rs",
+          "line": 500
+        },
+        "concrete_help": null,
+        "implementation_references": [
+          {
+            "path": "crates/cmux-cli/src/command_forward.rs",
+            "line": 212
+          },
+          {
+            "path": "crates/cmux-cli/src/command_forward.rs",
+            "line": 500
+          },
+          {
+            "path": "crates/cmux-cli/src/command_forward.rs",
+            "line": 831
+          }
+        ],
+        "test_references": []
+      },
+      "verification_claim": "unverified; classification/mapping/help presence is not behavioral parity proof"
+    },
+    {
+      "command": "report_tty",
+      "top_level_known": true,
+      "classification": "needs_socket",
+      "executor": null,
+      "dispatch_outcome": "control_mapping",
+      "control_mapping_kind": "direct_control",
+      "control_methods": [
+        "surface.report_tty"
+      ],
+      "mapping_helper": null,
+      "mapping_aliases": [
+        "report-tty"
+      ],
+      "has_help_classification": false,
+      "has_concrete_help": false,
+      "help_usage_summary": null,
+      "help_aliases": [],
+      "source_locations": {
+        "top_level_classification": null,
+        "help_classification": null,
+        "control_mapping": {
+          "path": "crates/cmux-cli/src/command_forward.rs",
+          "line": 496
+        },
+        "concrete_help": null,
+        "implementation_references": [
+          {
+            "path": "crates/cmux-cli/src/command_forward.rs",
+            "line": 210
           },
           {
             "path": "crates/cmux-cli/src/command_forward.rs",
@@ -21020,6 +21304,42 @@
       "verification_claim": "unverified; classification/mapping/help presence is not behavioral parity proof"
     },
     {
+      "command": "set_agent_pid",
+      "top_level_known": true,
+      "classification": "needs_socket",
+      "executor": null,
+      "dispatch_outcome": "control_mapping",
+      "control_mapping_kind": "direct_control",
+      "control_methods": [
+        "workspace.set_agent_pid"
+      ],
+      "mapping_helper": null,
+      "mapping_aliases": [
+        "set-agent-pid"
+      ],
+      "has_help_classification": false,
+      "has_concrete_help": false,
+      "help_usage_summary": null,
+      "help_aliases": [],
+      "source_locations": {
+        "top_level_classification": null,
+        "help_classification": null,
+        "control_mapping": {
+          "path": "crates/cmux-cli/src/command_forward.rs",
+          "line": 432
+        },
+        "concrete_help": null,
+        "implementation_references": [
+          {
+            "path": "crates/cmux-cli/src/command_forward.rs",
+            "line": 432
+          }
+        ],
+        "test_references": []
+      },
+      "verification_claim": "unverified; classification/mapping/help presence is not behavioral parity proof"
+    },
+    {
       "command": "settings",
       "top_level_known": true,
       "classification": "hybrid_local_and_socket",
@@ -21172,9 +21492,9 @@
       "classification": "needs_socket",
       "executor": null,
       "dispatch_outcome": "control_mapping",
-      "control_mapping_kind": "conditional",
+      "control_mapping_kind": "helper_dispatch",
       "control_methods": [],
-      "mapping_helper": null,
+      "mapping_helper": "sidebar_command",
       "mapping_aliases": [],
       "has_help_classification": true,
       "has_concrete_help": true,
@@ -21437,9 +21757,9 @@
       "classification": "needs_socket",
       "executor": null,
       "dispatch_outcome": "control_mapping",
-      "control_mapping_kind": "conditional",
+      "control_mapping_kind": "helper_dispatch",
       "control_methods": [],
-      "mapping_helper": null,
+      "mapping_helper": "split_off_params",
       "mapping_aliases": [
         "drag-surface-to-split"
       ],
@@ -22672,6 +22992,67 @@
           }
         ],
         "test_references": []
+      },
+      "verification_claim": "unverified; classification/mapping/help presence is not behavioral parity proof"
+    },
+    {
+      "command": "window",
+      "top_level_known": true,
+      "classification": "hybrid_local_and_socket",
+      "executor": null,
+      "dispatch_outcome": "control_mapping",
+      "control_mapping_kind": "helper_dispatch",
+      "control_methods": [],
+      "mapping_helper": "window_command",
+      "mapping_aliases": [],
+      "has_help_classification": false,
+      "has_concrete_help": false,
+      "help_usage_summary": null,
+      "help_aliases": [],
+      "source_locations": {
+        "top_level_classification": null,
+        "help_classification": null,
+        "control_mapping": {
+          "path": "crates/cmux-cli/src/command_forward.rs",
+          "line": 287
+        },
+        "concrete_help": null,
+        "implementation_references": [
+          {
+            "path": "crates/cmux-cli/src/classify.rs",
+            "line": 147
+          },
+          {
+            "path": "crates/cmux-cli/src/command_forward.rs",
+            "line": 287
+          },
+          {
+            "path": "crates/cmux-cli/src/window_lifecycle.rs",
+            "line": 148
+          }
+        ],
+        "test_references": [
+          {
+            "path": "crates/cmux-cli/src/command_forward.rs",
+            "line": 4652
+          },
+          {
+            "path": "crates/cmux-cli/src/command_forward.rs",
+            "line": 4656
+          },
+          {
+            "path": "crates/cmux-cli/src/command_forward.rs",
+            "line": 4663
+          },
+          {
+            "path": "crates/cmux-cli/src/command_forward.rs",
+            "line": 4667
+          },
+          {
+            "path": "crates/cmux-cli/src/window_lifecycle.rs",
+            "line": 258
+          }
+        ]
       },
       "verification_claim": "unverified; classification/mapping/help presence is not behavioral parity proof"
     },
