@@ -2421,7 +2421,7 @@ fn format_workspace_group_text(
             groups
                 .iter()
                 .map(|group| {
-                    let handle = format_id_pair(
+                    let handle = workspace_group_text_handle(
                         group.get("id").and_then(serde_json::Value::as_str),
                         group.get("ref").and_then(serde_json::Value::as_str),
                         id_format,
@@ -2459,7 +2459,7 @@ fn format_workspace_group_text(
         "workspace.group.create" => result
             .get("group")
             .and_then(|group| {
-                format_id_pair(
+                workspace_group_text_handle(
                     group.get("id").and_then(serde_json::Value::as_str),
                     group.get("ref").and_then(serde_json::Value::as_str),
                     id_format,
@@ -2467,18 +2467,27 @@ fn format_workspace_group_text(
             })
             .map(|handle| format!("OK {handle}"))
             .unwrap_or_else(|| "OK".to_string()),
-        "workspace.group.new_workspace" => format_id_pair(
-            result
-                .get("workspace_id")
-                .and_then(serde_json::Value::as_str),
-            result
-                .get("workspace_ref")
-                .and_then(serde_json::Value::as_str),
-            id_format,
-        )
-        .map(|handle| format!("OK {handle}"))
-        .unwrap_or_else(|| "OK".to_string()),
+        "workspace.group.new_workspace" => result
+            .get("workspace_ref")
+            .and_then(serde_json::Value::as_str)
+            .map(|reference| format!("OK {reference}"))
+            .unwrap_or_else(|| "OK".to_string()),
         _ => "OK".to_string(),
+    }
+}
+
+fn workspace_group_text_handle(
+    id: Option<&str>,
+    reference: Option<&str>,
+    id_format: &str,
+) -> Option<String> {
+    match id_format {
+        "uuids" => id.or(reference).map(str::to_owned),
+        "both" => match (reference, id) {
+            (Some(reference), Some(id)) => Some(format!("{reference} {id}")),
+            _ => reference.or(id).map(str::to_owned),
+        },
+        _ => reference.or(id).map(str::to_owned),
     }
 }
 
@@ -2980,6 +2989,10 @@ mod control_result_tests {
             "group-uuid  Build  (2 members) [pinned] [collapsed]"
         );
         assert_eq!(
+            format_workspace_group_text("workspace.group.list", &list, "both"),
+            "workspace_group:1 group-uuid  Build  (2 members) [pinned] [collapsed]"
+        );
+        assert_eq!(
             format_workspace_group_text(
                 "workspace.group.create",
                 &serde_json::json!({"group":{"id":"group-uuid","ref":"workspace_group:1"}}),
@@ -2991,7 +3004,7 @@ mod control_result_tests {
             format_workspace_group_text(
                 "workspace.group.new_workspace",
                 &serde_json::json!({"workspace_id":"workspace-uuid","workspace_ref":"workspace:2"}),
-                "refs",
+                "uuids",
             ),
             "OK workspace:2"
         );

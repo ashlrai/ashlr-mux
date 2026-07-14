@@ -176,9 +176,13 @@ fn workspace_group_local_config_path(cwd: &str) -> Option<PathBuf> {
         directory.pop();
     }
     loop {
-        let candidate = directory.join(".cmux").join("cmux.json");
-        if candidate.is_file() {
-            return Some(candidate);
+        for candidate in [
+            directory.join(".cmux").join("cmux.json"),
+            directory.join("cmux.json"),
+        ] {
+            if candidate.is_file() {
+                return Some(candidate);
+            }
         }
         if !directory.pop() {
             return None;
@@ -890,6 +894,29 @@ mod tests {
                 Some("C:/broken/app"),
             ),
             cmux_config::NewWorkspacePlacement::End
+        );
+    }
+
+    #[test]
+    fn workspace_group_local_config_prefers_dot_cmux_then_plain_root() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let nested = temp.path().join("src").join("feature");
+        std::fs::create_dir_all(&nested).expect("nested directory");
+        let plain = temp.path().join("cmux.json");
+        std::fs::write(&plain, "{}").expect("plain config");
+
+        assert_eq!(
+            workspace_group_local_config_path(nested.to_str().unwrap()),
+            Some(plain)
+        );
+
+        let dot_cmux = temp.path().join(".cmux");
+        std::fs::create_dir_all(&dot_cmux).expect("dot cmux directory");
+        let preferred = dot_cmux.join("cmux.json");
+        std::fs::write(&preferred, "{}").expect("dot cmux config");
+        assert_eq!(
+            workspace_group_local_config_path(nested.to_str().unwrap()),
+            Some(preferred)
         );
     }
 

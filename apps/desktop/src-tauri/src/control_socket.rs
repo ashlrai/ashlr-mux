@@ -9389,22 +9389,43 @@ fn workspace_group_create_cwd(
     child_ids: &[Uuid],
     other_anchor_ids: &HashSet<Uuid>,
 ) -> Option<String> {
-    explicit_cwd.or_else(|| {
-        child_ids
-            .iter()
-            .find_map(|child_id| {
-                tabs.workspaces.iter().find(|workspace| {
-                    workspace
-                        .workspace_id
-                        .as_deref()
-                        .and_then(|id| Uuid::parse_str(id).ok())
-                        == Some(*child_id)
-                        && workspace.is_pinned != Some(true)
-                        && !other_anchor_ids.contains(child_id)
-                })
-            })
-            .and_then(|workspace| workspace.current_directory.clone())
-    })
+    fn normalized(cwd: String) -> Option<String> {
+        let trimmed = cwd.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        if trimmed.starts_with("file://") {
+            if let Ok(url) = url::Url::parse(trimmed) {
+                if let Ok(path) = url.to_file_path() {
+                    return Some(path.to_string_lossy().into_owned());
+                }
+            }
+        }
+        Some(trimmed.to_string())
+    }
+
+    if let Some(explicit_cwd) = explicit_cwd {
+        return normalized(explicit_cwd);
+    }
+    let first_child = child_ids.iter().find_map(|child_id| {
+        tabs.workspaces.iter().find(|workspace| {
+            workspace
+                .workspace_id
+                .as_deref()
+                .and_then(|id| Uuid::parse_str(id).ok())
+                == Some(*child_id)
+                && workspace.is_pinned != Some(true)
+                && !other_anchor_ids.contains(child_id)
+        })
+    });
+    if let Some(child_cwd) = first_child.and_then(|workspace| workspace.current_directory.clone()) {
+        return normalized(child_cwd);
+    }
+    tabs.selected_workspace_index
+        .and_then(|index| usize::try_from(index).ok())
+        .and_then(|index| tabs.workspaces.get(index))
+        .and_then(|workspace| workspace.current_directory.clone())
+        .and_then(normalized)
 }
 
 fn parse_workspace_group_placement(
@@ -9420,12 +9441,131 @@ fn parse_workspace_group_placement(
     }
 }
 
+fn workspace_group_move_index_param(params: &serde_json::Map<String, Value>) -> Option<i64> {
+    match params.get("to_index")? {
+        Value::Number(number) => number
+            .as_i64()
+            .or_else(|| number.as_f64().map(|value| value as i64)),
+        Value::Bool(value) => Some(i64::from(*value)),
+        Value::String(raw) => raw.parse::<i64>().ok(),
+        _ => None,
+    }
+}
+
 const SF_SYMBOL_NAMES: &str = include_str!("sf_symbols_v7.txt");
 
 fn normalized_workspace_group_icon_symbol(raw: Option<&str>) -> Option<String> {
     let symbol = raw?.trim();
     (!symbol.is_empty() && SF_SYMBOL_NAMES.lines().any(|candidate| candidate == symbol))
         .then(|| symbol.to_string())
+}
+
+fn workspace_group_parameter_description(value: &Value) -> String {
+    match value {
+        Value::String(value) => value.clone(),
+        _ => value.to_string(),
+    }
+}
+
+fn workspace_group_uuid_param(params: &serde_json::Map<String, Value>, key: &str) -> Option<Uuid> {
+    params
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .and_then(|value| Uuid::parse_str(value).ok())
+}
+
+fn workspace_group_preflight(
+    app: &AppHandle,
+    method: &str,
+    params: &serde_json::Map<String, Value>,
+) -> Option<ControlCallResult> {
+    if method == "workspace.group.create" {
+        match params.get("child_workspace_ids") {
+            None | Some(Value::Null) => return None,
+            Some(Value::Array(values)) if values.iter().all(Value::is_string) => {
+                let unresolved = values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .filter(|value| {
+                        Uuid::parse_str(value).is_err()
+                            && resolve_control_handle_ref(app, "workspace", value).is_none()
+                    })
+                    .map(str::to_string)
+                    .collect::<Vec<_>>();
+                if unresolved.is_empty() {
+                    return None;
+                }
+                return Some(workspace_group_error(
+                    "invalid_params",
+                    &format!(
+                        "Unresolved child workspace handles: {}",
+                        unresolved.join(", ")
+                    ),
+                    Some(json!({"unresolved": unresolved})),
+                ));
+            }
+            Some(value) => {
+                return Some(workspace_group_error(
+                    "invalid_params",
+                    "child_workspace_ids must be an array of workspace handles",
+                    Some(json!({
+                        "child_workspace_ids": workspace_group_parameter_description(value)
+                    })),
+                ));
+            }
+        }
+    }
+
+    let group_id = workspace_group_uuid_param(params, "group_id");
+    let workspace_id = workspace_group_uuid_param(params, "workspace_id");
+    let error = match method {
+        "workspace.group.list" => None,
+        "workspace.group.rename"
+            if group_id.is_none() || string_param(params, &["name"]).is_none() =>
+        {
+            Some("Missing group_id or name")
+        }
+        "workspace.group.add" | "workspace.group.set_anchor"
+            if group_id.is_none() || workspace_id.is_none() =>
+        {
+            Some("Missing group_id or workspace_id")
+        }
+        "workspace.group.remove" if workspace_id.is_none() => {
+            Some("Missing or invalid workspace_id")
+        }
+        _ if method != "workspace.group.create" && group_id.is_none() => {
+            Some("Missing or invalid group_id")
+        }
+        _ => None,
+    };
+    if let Some(message) = error {
+        return Some(invalid_params(message));
+    }
+
+    if method == "workspace.group.add" {
+        let placement = raw_string_param(params, &["placement"]);
+        if placement.as_deref().is_some_and(|raw| {
+            !raw.trim().is_empty() && parse_workspace_group_placement(Some(raw)).is_none()
+        }) {
+            return Some(workspace_group_error(
+                "invalid_params",
+                "Invalid placement",
+                Some(json!({"placement": placement})),
+            ));
+        }
+        if params
+            .get("reference_workspace_id")
+            .is_some_and(|value| !value.is_null())
+            && workspace_group_uuid_param(params, "reference_workspace_id").is_none()
+        {
+            return Some(invalid_params("Missing or invalid reference_workspace_id"));
+        }
+    }
+    None
 }
 
 fn workspace_group_list(
@@ -9493,6 +9633,9 @@ fn workspace_group_control(
     method: &str,
     params: &serde_json::Map<String, Value>,
 ) -> ControlCallResult {
+    if let Some(error) = workspace_group_preflight(app, method, params) {
+        return error;
+    }
     let current = snapshot(app);
     if method == "workspace.group.list" {
         return workspace_group_list(app, &current, params);
@@ -9501,14 +9644,7 @@ fn workspace_group_control(
         return workspace_group_error("unavailable", "TabManager not available", None);
     };
 
-    let parse_uuid = |key: &str| {
-        params
-            .get(key)
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .and_then(|value| Uuid::parse_str(value).ok())
-    };
+    let parse_uuid = |key: &str| workspace_group_uuid_param(params, key);
     let group_id = || parse_uuid("group_id");
     let workspace_id = || parse_uuid("workspace_id");
     let group_exists = |id: Uuid| {
@@ -9547,7 +9683,9 @@ fn workspace_group_control(
                     return workspace_group_error(
                         "invalid_params",
                         "child_workspace_ids must be an array of workspace handles",
-                        Some(json!({"child_workspace_ids": value.to_string()})),
+                        Some(json!({
+                            "child_workspace_ids": workspace_group_parameter_description(value)
+                        })),
                     )
                 }
             };
@@ -9708,8 +9846,8 @@ fn workspace_group_control(
                         == Some(anchor_workspace_id)
                 }) {
                     anchor.process_title = group.name.clone();
-                    anchor.custom_title = Some(group.name.clone());
-                    anchor.custom_title_source = Some("user".to_string());
+                    anchor.custom_title = None;
+                    anchor.custom_title_source = None;
                 }
                 Ok::<_, cmux_core::session_ops::WorkspaceGroupMutationError>((group, true))
             });
@@ -9984,10 +10122,11 @@ fn workspace_group_control(
                 .as_deref()
                 .is_some_and(|raw| !raw.trim().is_empty() && placement.is_none())
             {
+                let raw = explicit.as_deref().map(str::trim).unwrap_or_default();
                 return workspace_group_error(
                     "invalid_params",
                     "placement must be one of: afterCurrent, top, end",
-                    Some(json!({"placement": explicit})),
+                    Some(json!({"placement": raw})),
                 );
             }
             let group = current.windows[window_index]
@@ -10157,7 +10296,7 @@ fn workspace_group_control(
                     Some(json!({"group_id": group_id})),
                 );
             };
-            let target = if let Some(index) = i64_param(params, &["to_index"]) {
+            let target = if let Some(index) = workspace_group_move_index_param(params) {
                 Some(index)
             } else if let Some(before) = parse_uuid("before_group_id") {
                 groups
@@ -22278,7 +22417,17 @@ mod tests {
                 &HashSet::from([anchor_id]),
             )
             .as_deref(),
-            Some("  explicit  ")
+            Some("explicit")
+        );
+        assert_eq!(
+            workspace_group_create_cwd(
+                &snapshot.windows[0].tab_manager,
+                Some(" file:///C:/repo/worktree ".to_string()),
+                &[second_id],
+                &HashSet::new(),
+            )
+            .as_deref(),
+            Some(r"C:\repo\worktree")
         );
         assert_eq!(
             workspace_group_create_cwd(
@@ -22286,6 +22435,16 @@ mod tests {
                 None,
                 &[second_id],
                 &HashSet::from([second_id]),
+            )
+            .as_deref(),
+            Some("C:/first")
+        );
+        assert_eq!(
+            workspace_group_create_cwd(
+                &snapshot.windows[0].tab_manager,
+                Some("   ".to_string()),
+                &[second_id],
+                &HashSet::new(),
             ),
             None
         );
@@ -22307,6 +22466,23 @@ mod tests {
         );
         assert_eq!(normalized_workspace_group_icon_symbol(Some("  ")), None);
         assert_eq!(normalized_workspace_group_icon_symbol(None), None);
+    }
+
+    #[test]
+    fn workspace_group_move_index_matches_canonical_number_coercion() {
+        for (value, expected) in [
+            (json!(1.9), Some(1)),
+            (json!(-2.9), Some(-2)),
+            (json!(true), Some(1)),
+            (json!(false), Some(0)),
+            (json!("42"), Some(42)),
+            (json!(" 42 "), None),
+            (json!(1e30), Some(i64::MAX)),
+            (json!(-1e30), Some(i64::MIN)),
+        ] {
+            let params = serde_json::Map::from_iter([("to_index".to_string(), value)]);
+            assert_eq!(workspace_group_move_index_param(&params), expected);
+        }
     }
 
     #[test]
