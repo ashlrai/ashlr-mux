@@ -131,6 +131,10 @@ mod diff_durable_publication_red;
 mod restore_previous_launch_red;
 
 #[cfg(test)]
+#[path = "session/manual_restore_runtime_effects_red.rs"]
+mod manual_restore_runtime_effects_red;
+
+#[cfg(test)]
 #[path = "session/restore_previous_additive_red.rs"]
 mod restore_previous_additive_red;
 
