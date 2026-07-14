@@ -7723,7 +7723,7 @@ fn restore_previous_launch_transaction_with_effects(
     }
     if route == ManualRestoreRoute::Product {
         if let Some(window_id) = built_window_ids.first() {
-            effects.activate(window_id)?;
+            let _ = effects.activate(window_id);
         }
     }
     Ok(RestorePreviousLaunchOutcome {
