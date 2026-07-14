@@ -21987,6 +21987,9 @@ mod tests {
     #[path = "surface_action_exhaustive_red.rs"]
     mod surface_action_exhaustive_red;
 
+    #[path = "workspace_action_red.rs"]
+    mod workspace_action_red;
+
     #[path = "dock_api_adversarial_red.rs"]
     mod dock_api_adversarial_red;
 
