@@ -54,6 +54,14 @@ class WindowsEvidenceTests(unittest.TestCase):
                     "explicit_socket_command_not_ported",
                 )
 
+    def test_reachable_window_namespace_mapping_is_cataloged(self) -> None:
+        rows = {row["command"]: row for row in self.data["cli_commands"]}
+        window = rows["window"]
+        self.assertTrue(window["top_level_known"])
+        self.assertEqual(window["dispatch_outcome"], "control_mapping")
+        self.assertEqual(window["control_mapping_kind"], "helper_dispatch")
+        self.assertEqual(window["mapping_helper"], "window_command")
+
 
 if __name__ == "__main__":
     unittest.main()
