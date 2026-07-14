@@ -7469,6 +7469,10 @@ fn prune_crash_diagnostic_workspaces(snapshot: &mut AppSessionSnapshot) {
             .enumerate()
             .filter(|(_, workspace)| !is_crash_diagnostic_workspace(workspace, &roots))
             .collect::<Vec<_>>();
+        if kept.len() == original_workspaces.len() {
+            window.tab_manager.workspaces = original_workspaces;
+            return true;
+        }
         if kept.is_empty() {
             return false;
         }
