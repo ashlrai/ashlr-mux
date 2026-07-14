@@ -24,7 +24,7 @@ CLASSIFY = Path("crates/cmux-cli/src/classify.rs")
 FORWARD = Path("crates/cmux-cli/src/command_forward.rs")
 DISPATCH = Path("crates/cmux-cli/src/dispatch.rs")
 DEFAULT_OUTPUT = Path("docs/parity/source/windows_evidence.json")
-PINNED_WINDOWS_COMMIT = "be0f7f0099cd4490f29baa1114b9b28710c820c5"
+PINNED_WINDOWS_COMMIT = "73dacea41d6a38f75db36d696825aef7547838ce"
 
 
 def line_number(text: str, offset: int) -> int:
@@ -194,7 +194,12 @@ def indented_match_arms(text: str, body_start: int, body_end: int, indent: int =
         absolute = body_start + match.start()
         line = text[absolute : text.find("\n", absolute) if "\n" in text[absolute:] else body_end]
         stripped = line.strip()
-        if stripped.startswith('"') or stripped.startswith("method if ") or stripped.startswith("_ =>"):
+        if (
+            stripped.startswith('"')
+            or stripped.startswith("method @")
+            or stripped.startswith("method if ")
+            or stripped.startswith("_ =>")
+        ):
             candidates.append(absolute)
     arms: list[tuple[str, int]] = []
     for index, start in enumerate(candidates):

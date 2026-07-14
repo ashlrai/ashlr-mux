@@ -62,6 +62,23 @@ class WindowsEvidenceTests(unittest.TestCase):
         self.assertEqual(window["control_mapping_kind"], "helper_dispatch")
         self.assertEqual(window["mapping_helper"], "window_command")
 
+    def test_bound_workspace_group_match_arm_is_cataloged_as_routed(self) -> None:
+        methods = {
+            row["method"]: row for row in self.data["control_socket_methods"]
+        }
+        workspace_group = {
+            method: row
+            for method, row in methods.items()
+            if method.startswith("workspace.group.")
+            and method != "workspace.group.set_collapsed"
+        }
+        self.assertEqual(len(workspace_group), 17)
+        self.assertTrue(all(row["advertised"] for row in workspace_group.values()))
+        self.assertTrue(all(row["routed"] for row in workspace_group.values()))
+        self.assertTrue(
+            all(row["handler"] == "workspace_group_control" for row in workspace_group.values())
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
