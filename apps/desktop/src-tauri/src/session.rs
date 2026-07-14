@@ -3962,6 +3962,15 @@ impl<'a> ProductionSnapshotPublicationOperations<'a> {
         Self {
             app,
             state,
+            derived_events: DerivedEventPolicy::Record,
+            reseed_next_panel: false,
+        }
+    }
+
+    fn for_manual_restore(app: &'a AppHandle, state: &'a SessionState) -> Self {
+        Self {
+            app,
+            state,
             derived_events: DerivedEventPolicy::Suppress,
             reseed_next_panel: false,
         }
@@ -7802,8 +7811,7 @@ fn restore_previous_launch_for_route(
     state: &SessionState,
     route: ManualRestoreRoute,
 ) -> Result<RestorePreviousLaunchOutcome, String> {
-    let mut publication =
-        ProductionSnapshotPublicationOperations::with_deferred_next_panel_reseed(app, state);
+    let mut publication = ProductionSnapshotPublicationOperations::for_manual_restore(app, state);
     let mut effects = ProductionManualRestoreEffects { app };
     restore_previous_launch_transaction_with_effects(
         &state.snapshot,

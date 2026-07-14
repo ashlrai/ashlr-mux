@@ -49,6 +49,7 @@ fn ledger_entries(ledger: &Arc<StdMutex<Vec<String>>>) -> Vec<String> {
 struct OrderedPublication {
     ledger: Arc<StdMutex<Vec<String>>>,
     emit_error: Option<String>,
+    baseline: AppSessionSnapshot,
 }
 
 impl SnapshotPublicationOperations for OrderedPublication {
@@ -57,8 +58,9 @@ impl SnapshotPublicationOperations for OrderedPublication {
         Ok(())
     }
 
-    fn update_event_baseline(&mut self, _candidate: &AppSessionSnapshot) {
+    fn update_event_baseline(&mut self, candidate: &AppSessionSnapshot) {
         self.ledger.lock().unwrap().push("baseline".into());
+        self.baseline = candidate.clone();
     }
 
     fn emit(&mut self, _candidate: &AppSessionSnapshot) -> Result<(), String> {
@@ -139,11 +141,12 @@ fn harness(
 ) {
     let ledger = Arc::new(StdMutex::new(Vec::new()));
     (
-        GatedSnapshot::new(current),
+        GatedSnapshot::new(current.clone()),
         AtomicU64::new(2),
         OrderedPublication {
             ledger: Arc::clone(&ledger),
             emit_error,
+            baseline: current,
         },
         RecordingEffects {
             ledger: Arc::clone(&ledger),
@@ -278,6 +281,7 @@ fn second_build_failure_closes_the_first_window_and_preserves_all_authority() {
         Err(format!("build failed for {second_id}"))
     );
     assert_eq!(*authority.lock().unwrap(), current);
+    assert_eq!(publication.baseline, current);
     assert_eq!(next_panel.load(Ordering::Relaxed), 2);
     assert_eq!(
         ledger_entries(&ledger),
@@ -345,6 +349,7 @@ fn publication_failure_rolls_back_model_and_runtime_and_reports_cleanup_failure(
         format!("publication failed; compensation failed: close failed for {first_id}")
     );
     assert_eq!(*authority.lock().unwrap(), current);
+    assert_eq!(publication.baseline, current);
     assert_eq!(next_panel.load(Ordering::Relaxed), 2);
     let entries = ledger_entries(&ledger);
     assert_eq!(entries[entries.len() - 2], format!("close:{second_id}"));
