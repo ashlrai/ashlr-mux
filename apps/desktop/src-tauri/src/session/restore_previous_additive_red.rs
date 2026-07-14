@@ -71,8 +71,19 @@ fn crash_directory(seed: u128) -> String {
 
 fn crash_diagnostic_window(seed: u128) -> SessionWindowSnapshot {
     let mut window = window_fixture(seed);
-    window.tab_manager.workspaces[0].current_directory = Some(crash_directory(seed));
+    mark_workspace_crash(&mut window.tab_manager.workspaces[0], seed);
     window
+}
+
+fn mark_workspace_crash(workspace: &mut SessionWorkspaceSnapshot, seed: u128) {
+    let directory = crash_directory(seed);
+    workspace.current_directory = Some(directory.clone());
+    for surface in workspace.surfaces.as_mut().into_iter().flatten() {
+        surface.metadata.reported_directory = Some(directory.clone());
+        if let Some(startup) = &mut surface.terminal_startup {
+            startup.working_directory = Some(directory.clone());
+        }
+    }
 }
 
 fn pane(window: &SessionWindowSnapshot) -> &cmux_core::session::SessionPaneLayoutSnapshot {
@@ -240,7 +251,7 @@ fn crash_pruning_removes_only_diagnostic_workspaces_and_repairs_selection() {
     let current = snapshot_fixture(0x500, 1);
     let mut mixed = window_fixture(0x600);
     let mut crash_workspace = mixed.tab_manager.workspaces[0].clone();
-    crash_workspace.current_directory = Some(crash_directory(0x600));
+    mark_workspace_crash(&mut crash_workspace, 0x600);
     let survivor = window_fixture(0x601).tab_manager.workspaces.remove(0);
     let survivor_id = survivor.workspace_id.clone();
     mixed.tab_manager.workspaces = vec![crash_workspace, survivor];
