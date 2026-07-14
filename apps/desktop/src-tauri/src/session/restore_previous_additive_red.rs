@@ -396,6 +396,46 @@ fn crash_pruning_keeps_surviving_group_coherent_and_drops_orphan_metadata() {
 }
 
 #[test]
+fn no_crash_pruning_preserves_group_member_index_precedence_for_restore() {
+    let current = snapshot_fixture(0x670, 1);
+    let mut window = window_fixture(0x680);
+    let mut first = window.tab_manager.workspaces.remove(0);
+    let mut second = window_fixture(0x681).tab_manager.workspaces.remove(0);
+    let group_id = id(0x1680);
+    first.group_id = Some(group_id.clone());
+    second.group_id = Some(group_id.clone());
+    let first_id = first.workspace_id.clone().expect("first workspace id");
+    let second_id = second.workspace_id.clone().expect("second workspace id");
+    window.tab_manager.workspaces = vec![first, second];
+    window.tab_manager.workspace_groups =
+        Some(vec![cmux_core::session::SessionWorkspaceGroupSnapshot {
+            id: group_id,
+            name: "index-precedence".to_string(),
+            is_collapsed: false,
+            anchor_workspace_id: Some(first_id),
+            anchor_member_index: Some(1),
+            is_pinned: None,
+            custom_color: None,
+            icon_symbol: None,
+        }]);
+
+    let (result, _, _, _) = restore(current, Some(snapshot(vec![window])), 50);
+    let committed = result.expect("valid grouped window remains restorable");
+    let restored = &committed.windows[1];
+    let group = &restored
+        .tab_manager
+        .workspace_groups
+        .as_ref()
+        .expect("restored group")[0];
+
+    assert_eq!(group.anchor_member_index, Some(1));
+    assert_eq!(
+        group.anchor_workspace_id.as_deref(),
+        Some(second_id.as_str())
+    );
+}
+
+#[test]
 fn restore_strips_persisted_docks_and_caps_only_restored_windows() {
     let current = snapshot_fixture(0x700, 2);
     let mut previous = snapshot_fixture(0x800, MAX_RESTORED_WINDOWS + 2);
