@@ -23516,4 +23516,7 @@ mod tests {
 
     #[path = "manual_restore_effects_red.rs"]
     mod manual_restore_effects_red;
+
+    #[path = "terminal_create_input_red.rs"]
+    mod terminal_create_input_red;
 }
