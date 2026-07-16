@@ -51,6 +51,30 @@ class CanonicalV2ExtractorTests(unittest.TestCase):
                 "mobileHostHandleRPC",
             )
 
+    def test_authorization_policy_is_not_dispatch_or_implementation_authority(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "canonical_v2.json"
+            subprocess.run(
+                [sys.executable, str(EXTRACTOR), "--output", str(output)],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            document = json.loads(output.read_text(encoding="utf-8"))
+
+        methods = {entry["method"]: entry for entry in document["methods"]}
+        for method in MOBILE_RPC_RELEASE_METHODS:
+            for field in ("dispatch_locations", "implementation_locations"):
+                symbols = {
+                    location.get("symbol") for location in methods[method][field]
+                }
+                self.assertNotIn(
+                    "ticketAuthorizationError",
+                    symbols,
+                    f"{method} falsely treats authorization policy as {field}",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
