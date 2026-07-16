@@ -323,4 +323,16 @@ mod tests {
 
         assert_eq!(row.line_length(), Column(10));
     }
+
+    #[test]
+    fn styled_blank_cells_are_preserved_when_row_shrinks() {
+        let mut row = Row::<Cell>::new(3);
+        row[Column(1)].flags.insert(Flags::BLINK);
+        row[Column(2)].flags.insert(Flags::OVERLINE);
+
+        let wrapped = row.shrink(1).expect("styled blank cells must be reflowed");
+
+        assert!(wrapped[0].flags.contains(Flags::BLINK));
+        assert!(wrapped[1].flags.contains(Flags::OVERLINE));
+    }
 }

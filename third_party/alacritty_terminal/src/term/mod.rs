@@ -2521,25 +2521,27 @@ mod tests {
 
     #[test]
     fn sgr_blink_and_overline_are_retained_and_cancelled() {
-        let size = TermSize::new(8, 2);
+        let size = TermSize::new(10, 2);
         let mut term = Term::new(Config::default(), &size, VoidListener);
         let mut processor: ansi::Processor = ansi::Processor::new();
 
         processor.advance(
             &mut term,
-            b"\x1b[5mA\x1b[25mB\x1b[53mC\x1b[55mD\x1b[5;53mE\x1b[0mF\x1b[4:2mG",
+            b"\x1b[5mA\x1b[25mB\x1b[6mC\x1b[25mD\x1b[53mE\x1b[55mF\x1b[5;53mG\x1b[0mH\x1b[4:2mI",
         );
 
         let bits = |column| u32::from(term.grid()[Line(0)][Column(column)].flags.bits());
         assert_ne!(bits(0) & (1 << 15), 0, "SGR 5 must retain blink");
         assert_eq!(bits(1) & (1 << 15), 0, "SGR 25 must cancel blink");
-        assert_ne!(bits(2) & (1 << 16), 0, "SGR 53 must retain overline");
-        assert_eq!(bits(3) & (1 << 16), 0, "SGR 55 must cancel overline");
-        assert_ne!(bits(4) & (1 << 15), 0, "combined style must retain blink");
-        assert_ne!(bits(4) & (1 << 16), 0, "combined style must retain overline");
-        assert_eq!(bits(5) & ((1 << 15) | (1 << 16)), 0, "SGR 0 must reset both");
+        assert_ne!(bits(2) & (1 << 15), 0, "SGR 6 must retain fast blink");
+        assert_eq!(bits(3) & (1 << 15), 0, "SGR 25 must cancel fast blink");
+        assert_ne!(bits(4) & (1 << 16), 0, "SGR 53 must retain overline");
+        assert_eq!(bits(5) & (1 << 16), 0, "SGR 55 must cancel overline");
+        assert_ne!(bits(6) & (1 << 15), 0, "combined style must retain blink");
+        assert_ne!(bits(6) & (1 << 16), 0, "combined style must retain overline");
+        assert_eq!(bits(7) & ((1 << 15) | (1 << 16)), 0, "SGR 0 must reset both");
         assert!(
-            term.grid()[Line(0)][Column(6)]
+            term.grid()[Line(0)][Column(8)]
                 .flags
                 .contains(Flags::DOUBLE_UNDERLINE),
             "SGR 4:2 must retain double underline",
