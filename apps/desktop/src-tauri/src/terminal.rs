@@ -5817,8 +5817,17 @@ mod tests {
         let events = vec![super::TerminalMaterializationEvent::Input(
             b"remote".to_vec(),
         )];
+        let oversized = vec![super::TerminalMaterializationEvent::Input(vec![
+            b'x';
+            TERMINAL_PENDING_INPUT_LIMIT
+                + 1
+        ])];
         assert_eq!(
             super::request_live_terminal_input(&state, "remote", events.clone()),
+            super::TerminalMaterializationDemand::SurfaceUnavailable
+        );
+        assert_eq!(
+            super::request_live_terminal_input(&state, "remote", oversized.clone()),
             super::TerminalMaterializationDemand::SurfaceUnavailable
         );
 
@@ -5834,7 +5843,42 @@ mod tests {
             super::request_live_terminal_input(&state, "remote", events.clone()),
             super::TerminalMaterializationDemand::Live(events)
         );
+        assert_eq!(
+            super::request_live_terminal_input(&state, "remote", oversized.clone()),
+            super::TerminalMaterializationDemand::Live(oversized)
+        );
         assert!(state.runtime_registry().materializations.is_empty());
+    }
+
+    #[test]
+    fn oversized_live_only_input_preserves_process_exit_classification() {
+        let state = TerminalState::default();
+        state.runtime_registry().sessions.insert(
+            7,
+            test_session(
+                test_process(true),
+                test_transport(CapturingWriter(Arc::new(Mutex::new(Vec::new())))),
+                "remote",
+            ),
+        );
+        let events = vec![super::TerminalMaterializationEvent::Input(vec![
+            b'x';
+            TERMINAL_PENDING_INPUT_LIMIT
+                + 1
+        ])];
+        let demand = super::request_live_terminal_input(&state, "remote", events);
+        let super::TerminalMaterializationDemand::Live(events) = demand else {
+            panic!("exited live runtime must classify through its process state");
+        };
+        assert_eq!(
+            super::terminal_apply_materialization_events_with(
+                &state,
+                "remote",
+                events,
+                |_id, _bytes, _titles| Ok(()),
+            ),
+            TerminalInputOutcome::ProcessExited
+        );
     }
 
     #[test]

@@ -705,6 +705,28 @@ mod tests {
     }
 
     #[test]
+    fn create_response_validates_terminal_aliases_after_routing() {
+        assert_eq!(
+            terminal_create_response_terminal_id(&params(json!({"surface_id":"bad"}))),
+            Err(error("invalid_params", "Missing or invalid terminal_id"))
+        );
+        assert_eq!(
+            terminal_create_response_terminal_id(&params(json!({
+                "surface_id": SURFACE,
+                "terminal_id": OTHER_SURFACE,
+            }))),
+            Err(error("invalid_params", "Conflicting terminal identifiers"))
+        );
+        assert_eq!(
+            terminal_create_response_terminal_id(&params(json!({
+                "surface_id": SURFACE,
+                "terminal_id": SURFACE,
+            }))),
+            Ok(Some(SURFACE.into()))
+        );
+    }
+
+    #[test]
     fn routing_precedence_covers_explicit_window_group_workspace_terminal_pane_and_active() {
         let snapshot = snapshot();
         let cases = [
