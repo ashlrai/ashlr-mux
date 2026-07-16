@@ -1611,6 +1611,64 @@ mod tests {
         wait: Result<Option<u32>, String>,
     }
 
+    struct BlockingResizeProcess {
+        entered: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+    }
+
+    impl TerminalProcess for BlockingResizeProcess {
+        fn kill(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn resize(&mut self, _size: ConPtySize) -> Result<(), String> {
+            self.entered.send(()).unwrap();
+            self.release.recv().unwrap();
+            Ok(())
+        }
+
+        fn try_wait(&mut self) -> Result<Option<u32>, String> {
+            Ok(None)
+        }
+    }
+
+    struct BlockingKillProcess {
+        entered: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+    }
+
+    impl TerminalProcess for BlockingKillProcess {
+        fn kill(&mut self) -> Result<(), String> {
+            self.entered.send(()).unwrap();
+            self.release.recv().unwrap();
+            Ok(())
+        }
+
+        fn resize(&mut self, _size: ConPtySize) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn try_wait(&mut self) -> Result<Option<u32>, String> {
+            Ok(None)
+        }
+    }
+
+    struct FailingKillProcess;
+
+    impl TerminalProcess for FailingKillProcess {
+        fn kill(&mut self) -> Result<(), String> {
+            Err("injected kill failure".to_string())
+        }
+
+        fn resize(&mut self, _size: ConPtySize) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn try_wait(&mut self) -> Result<Option<u32>, String> {
+            Ok(None)
+        }
+    }
+
     impl TerminalProcess for TestProcess {
         fn kill(&mut self) -> Result<(), String> {
             Ok(())
@@ -1810,6 +1868,303 @@ mod tests {
             None,
             "control staging, including TerminalReplace, must create a distinct session"
         );
+    }
+
+    #[test]
+    fn open_identity_reservation_fences_reuse_and_rolls_back_exactly() {
+        let state = TerminalState::default();
+        let reservation =
+            match super::reserve_terminal_open_for_control(&state, Some("  panel-a  "), false)
+                .expect("reserve a new terminal identity")
+            {
+                super::TerminalOpenReservation::Reserved(reservation) => reservation,
+                super::TerminalOpenReservation::Existing(_) => {
+                    panic!("unexpected existing runtime")
+                }
+            };
+
+        {
+            let registry = state.registry.lock().unwrap();
+            assert!(registry.reserved_session_ids.contains(&reservation.id));
+            assert!(registry.reserved_panel_ids.contains("panel-a"));
+            assert!(registry.sessions.is_empty());
+        }
+        assert!(super::reserve_terminal_open_for_control(&state, Some("panel-a"), true).is_err());
+
+        super::rollback_terminal_open_reservation_for_control(&state, reservation)
+            .expect("roll back exact reservation");
+        let registry = state.registry.lock().unwrap();
+        assert!(registry.reserved_session_ids.is_empty());
+        assert!(registry.reserved_panel_ids.is_empty());
+        assert!(registry.sessions.is_empty());
+    }
+
+    #[test]
+    fn ui_open_reuses_published_runtime_while_control_open_reserves_a_distinct_identity() {
+        let state = TerminalState::default();
+        state
+            .next_id
+            .store(42, std::sync::atomic::Ordering::Relaxed);
+        state.registry.lock().unwrap().sessions.insert(
+            41,
+            test_session(test_process(false), test_transport(io::sink()), "panel-a"),
+        );
+
+        assert!(matches!(
+            super::reserve_terminal_open_for_control(&state, Some("panel-a"), true).unwrap(),
+            super::TerminalOpenReservation::Existing(41)
+        ));
+        let replacement =
+            match super::reserve_terminal_open_for_control(&state, Some("panel-a"), false).unwrap()
+            {
+                super::TerminalOpenReservation::Reserved(reservation) => reservation,
+                super::TerminalOpenReservation::Existing(_) => {
+                    panic!("control open reused runtime")
+                }
+            };
+        assert_eq!(replacement.id, 42);
+        assert_eq!(replacement.panel_id.as_deref(), Some("panel-a"));
+        assert!(state.registry.lock().unwrap().sessions.contains_key(&41));
+        super::rollback_terminal_open_reservation_for_control(&state, replacement).unwrap();
+    }
+
+    #[test]
+    fn open_publication_is_atomic_with_releasing_the_exact_reservation() {
+        let state = TerminalState::default();
+        let reservation =
+            match super::reserve_terminal_open_for_control(&state, Some("panel-a"), false).unwrap()
+            {
+                super::TerminalOpenReservation::Reserved(reservation) => reservation,
+                super::TerminalOpenReservation::Existing(_) => {
+                    panic!("unexpected existing runtime")
+                }
+            };
+        let id = reservation.id;
+        let session = test_session(test_process(false), test_transport(io::sink()), "panel-a");
+
+        assert_eq!(
+            super::publish_terminal_open_reservation(&state, &reservation, session),
+            Ok(id)
+        );
+        let registry = state.registry.lock().unwrap();
+        assert!(registry.sessions.contains_key(&id));
+        assert!(!registry.reserved_session_ids.contains(&id));
+        assert!(!registry.reserved_panel_ids.contains("panel-a"));
+    }
+
+    #[test]
+    fn startup_input_runs_while_the_reserved_registry_remains_available() {
+        let state = Arc::new(TerminalState::default());
+        let reservation =
+            match super::reserve_terminal_open_for_control(&state, Some("startup-panel"), false)
+                .unwrap()
+            {
+                super::TerminalOpenReservation::Reserved(reservation) => reservation,
+                super::TerminalOpenReservation::Existing(_) => {
+                    panic!("unexpected existing runtime")
+                }
+            };
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let startup = std::thread::spawn(move || {
+            let mut writer = BlockingWriter {
+                entered: entered_tx,
+                release: release_rx,
+                captured: Arc::new(Mutex::new(Vec::new())),
+                block_once: true,
+            };
+            super::write_terminal_initial_input(&mut writer, Some("startup"))
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("startup writer reached blocking I/O");
+        let registry_available = state.registry.try_lock().is_ok();
+        release_tx.send(()).unwrap();
+        startup.join().unwrap().unwrap();
+        assert!(registry_available, "startup I/O held the global registry");
+        super::rollback_terminal_open_reservation_for_control(&state, reservation).unwrap();
+    }
+
+    #[test]
+    fn resize_and_shutdown_process_io_do_not_hold_the_global_registry() {
+        let resize_state = Arc::new(TerminalState::default());
+        let (resize_entered_tx, resize_entered_rx) = mpsc::channel();
+        let (resize_release_tx, resize_release_rx) = mpsc::channel();
+        resize_state.registry.lock().unwrap().sessions.insert(
+            1,
+            test_session(
+                Arc::new(Mutex::new(Box::new(BlockingResizeProcess {
+                    entered: resize_entered_tx,
+                    release: resize_release_rx,
+                }))),
+                test_transport(io::sink()),
+                "resize-panel",
+            ),
+        );
+        let resize_worker_state = resize_state.clone();
+        let resize_worker = std::thread::spawn(move || {
+            super::terminal_resize_id_for_control(&resize_worker_state, 1, 100, 30)
+        });
+        resize_entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("resize reached process I/O");
+        let resize_registry_available = resize_state.registry.try_lock().is_ok();
+        resize_release_tx.send(()).unwrap();
+        resize_worker.join().unwrap().unwrap();
+        assert!(resize_registry_available, "resize held the global registry");
+
+        let shutdown_state = Arc::new(TerminalState::default());
+        let (kill_entered_tx, kill_entered_rx) = mpsc::channel();
+        let (kill_release_tx, kill_release_rx) = mpsc::channel();
+        shutdown_state.registry.lock().unwrap().sessions.insert(
+            2,
+            test_session(
+                Arc::new(Mutex::new(Box::new(BlockingKillProcess {
+                    entered: kill_entered_tx,
+                    release: kill_release_rx,
+                }))),
+                test_transport(io::sink()),
+                "kill-panel",
+            ),
+        );
+        let kill_worker_state = shutdown_state.clone();
+        let kill_worker = std::thread::spawn(move || {
+            super::terminal_shutdown_id_preserving_authority_for_control(&kill_worker_state, 2)
+        });
+        kill_entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("kill reached process I/O");
+        let kill_registry_available = shutdown_state.registry.try_lock().is_ok();
+        kill_release_tx.send(()).unwrap();
+        kill_worker.join().unwrap().unwrap();
+        assert!(kill_registry_available, "shutdown held the global registry");
+    }
+
+    #[test]
+    fn finalization_kills_without_registry_lock_and_retains_failed_authority() {
+        let state = Arc::new(TerminalState::default());
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        {
+            let mut registry = state.registry.lock().unwrap();
+            registry.sessions.insert(
+                7,
+                test_session(
+                    Arc::new(Mutex::new(Box::new(BlockingKillProcess {
+                        entered: entered_tx,
+                        release: release_rx,
+                    }))),
+                    test_transport(io::sink()),
+                    "ok-panel",
+                ),
+            );
+            registry.sessions.insert(
+                8,
+                test_session(
+                    Arc::new(Mutex::new(Box::new(FailingKillProcess))),
+                    test_transport(io::sink()),
+                    "retry-panel",
+                ),
+            );
+        }
+        let panels = ["ok-panel".to_string(), "retry-panel".to_string()]
+            .into_iter()
+            .collect();
+        let lease = super::detach_terminal_panels_for_control(&state, &panels).unwrap();
+        let worker_state = state.clone();
+        let worker = std::thread::spawn(move || {
+            super::finalize_terminal_panels_for_control(&worker_state, lease)
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("finalize reached process kill");
+        let registry_available = state.registry.try_lock().is_ok();
+        release_tx.send(()).unwrap();
+        let failure = worker.join().unwrap().expect_err("one kill must fail");
+        assert!(registry_available, "finalize held the global registry");
+
+        {
+            let registry = state.registry.lock().unwrap();
+            assert!(!registry.reserved_session_ids.contains(&7));
+            assert!(!registry.reserved_panel_ids.contains("ok-panel"));
+            assert!(registry.reserved_session_ids.contains(&8));
+            assert!(registry.reserved_panel_ids.contains("retry-panel"));
+            assert!(registry.sessions.is_empty());
+        }
+        super::rollback_terminal_panels_for_control(&state, failure.retry)
+            .unwrap_or_else(|error| panic!("retry rollback failed: {}", error.message));
+        assert_eq!(
+            super::terminal_ids_for_panel_for_control(&state, "retry-panel"),
+            vec![8]
+        );
+        assert!(super::terminal_ids_for_panel_for_control(&state, "ok-panel").is_empty());
+    }
+
+    #[test]
+    fn rollback_collision_is_all_or_nothing_and_preserves_the_lease() {
+        let state = TerminalState::default();
+        {
+            let mut registry = state.registry.lock().unwrap();
+            registry.sessions.insert(
+                10,
+                test_session(test_process(false), test_transport(io::sink()), "panel-a"),
+            );
+            registry.sessions.insert(
+                11,
+                test_session(test_process(false), test_transport(io::sink()), "panel-b"),
+            );
+        }
+        let panels = ["panel-a".to_string(), "panel-b".to_string()]
+            .into_iter()
+            .collect();
+        let lease = super::detach_terminal_panels_for_control(&state, &panels).unwrap();
+        state.registry.lock().unwrap().sessions.insert(
+            10,
+            test_session(test_process(false), test_transport(io::sink()), "intruder"),
+        );
+
+        let collision = super::rollback_terminal_panels_for_control(&state, lease)
+            .expect_err("collision must preserve the entire lease");
+        {
+            let registry = state.registry.lock().unwrap();
+            assert_eq!(registry.sessions.len(), 1);
+            assert!(registry.sessions.contains_key(&10));
+            assert!(!registry.sessions.contains_key(&11));
+            assert!(registry.reserved_session_ids.contains(&10));
+            assert!(registry.reserved_session_ids.contains(&11));
+        }
+        state.registry.lock().unwrap().sessions.remove(&10);
+        super::rollback_terminal_panels_for_control(&state, collision.lease)
+            .unwrap_or_else(|error| panic!("rollback after collision failed: {}", error.message));
+        assert_eq!(
+            super::terminal_ids_for_panel_for_control(&state, "panel-a"),
+            vec![10]
+        );
+        assert_eq!(
+            super::terminal_ids_for_panel_for_control(&state, "panel-b"),
+            vec![11]
+        );
+    }
+
+    #[test]
+    fn poisoned_registry_returns_lifecycle_errors_without_panicking() {
+        let state = Arc::new(TerminalState::default());
+        let poison_state = state.clone();
+        assert!(std::thread::spawn(move || {
+            let _guard = poison_state.registry.lock().unwrap();
+            panic!("poison terminal registry for lifecycle contract");
+        })
+        .join()
+        .is_err());
+
+        assert!(super::reserve_terminal_open_for_control(&state, Some("panel"), false).is_err());
+        assert!(super::detach_terminal_panels_for_control(
+            &state,
+            &["panel".to_string()].into_iter().collect(),
+        )
+        .is_err());
+        assert!(super::terminal_resize_id_for_control(&state, 1, 80, 24).is_err());
+        assert!(super::terminal_shutdown_id_preserving_authority_for_control(&state, 1).is_err());
     }
 
     #[test]
