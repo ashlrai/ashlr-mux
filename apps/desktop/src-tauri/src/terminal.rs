@@ -3060,7 +3060,7 @@ mod tests {
         let state = Arc::new(TerminalState::default());
         let barrier = Arc::new(Barrier::new(3));
         let mut workers = Vec::new();
-        for byte in [b'a', b'b'] {
+        for byte in *b"ab" {
             let state = state.clone();
             let barrier = barrier.clone();
             workers.push(std::thread::spawn(move || {
