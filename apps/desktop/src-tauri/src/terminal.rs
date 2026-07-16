@@ -1122,8 +1122,8 @@ impl TerminalMaterializationFlushGuard<'_> {
         }
     }
 
-    fn abort(&mut self) -> bool {
-        let (mut registry, _) = terminal_registry_for_exact_cleanup(self.state);
+    fn abort(&mut self) -> (bool, bool) {
+        let (mut registry, registry_was_poisoned) = terminal_registry_for_exact_cleanup(self.state);
         let abortable = registry
             .materializations
             .get(&self.lease.panel_id)
@@ -1132,7 +1132,7 @@ impl TerminalMaterializationFlushGuard<'_> {
             registry.materializations.remove(&self.lease.panel_id);
             self.finished = true;
         }
-        abortable
+        (abortable, registry_was_poisoned)
     }
 }
 
@@ -1301,12 +1301,17 @@ where
             }
         };
         if let Err(error) = applied {
-            if flush.abort() {
+            let (aborted, registry_was_poisoned) = flush.abort();
+            if aborted {
                 flush
                     .pump_activation
                     .advance(TerminalPumpReadiness::ConsumerReady);
             }
-            return Err(error);
+            return Err(if registry_was_poisoned {
+                format!("{error}; terminal runtime registry mutex poisoned")
+            } else {
+                error
+            });
         }
         if flush.try_finish()? {
             flush
