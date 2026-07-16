@@ -110,6 +110,8 @@ fn agent_hibernation_contract_lifecycle_parsing_keys_and_idle_authority_are_exac
     assert!(!is_allowed_lifecycle_key("manual"));
     assert!(!is_allowed_lifecycle_key("manual:build"));
     assert!(!is_allowed_lifecycle_key("unknown-agent"));
+    assert!(!is_allowed_lifecycle_key(" codex"));
+    assert!(!is_allowed_lifecycle_key("codex "));
     assert!(is_manual_lifecycle_key("manual"));
     assert!(is_manual_lifecycle_key("manual:build"));
     assert!(!is_manual_lifecycle_key("manualish"));
@@ -165,6 +167,37 @@ fn agent_hibernation_contract_live_policy_tracks_activity_input_and_lifecycle_ac
     assert_eq!(
         policy.lifecycle(&panel, AgentLifecycleState::Unknown),
         AgentLifecycleState::Unknown
+    );
+}
+
+#[test]
+fn agent_hibernation_contract_manual_lifecycle_never_aggregates_or_acknowledges_input() {
+    let panel = key("workspace", "panel");
+    let mut policy = AgentHibernationPolicy::default();
+
+    policy.record_terminal_input(panel.clone(), 20.0);
+    policy.record_lifecycle(
+        panel.clone(),
+        "manual:build",
+        AgentLifecycleState::Running,
+        21.0,
+    );
+    assert!(policy.has_unconfirmed_terminal_input(&panel));
+    assert_eq!(
+        policy.lifecycle(&panel, AgentLifecycleState::Idle),
+        AgentLifecycleState::Idle
+    );
+
+    policy.record_lifecycle(
+        panel.clone(),
+        "local-agent",
+        AgentLifecycleState::NeedsInput,
+        22.0,
+    );
+    assert!(!policy.has_unconfirmed_terminal_input(&panel));
+    assert_eq!(
+        policy.lifecycle(&panel, AgentLifecycleState::Idle),
+        AgentLifecycleState::NeedsInput
     );
 }
 
@@ -225,6 +258,10 @@ fn agent_hibernation_contract_fingerprints_include_sorted_process_identity_and_t
     assert_eq!(
         first,
         process_fallback_fingerprint("opencode", "same-session", [3, 7])
+    );
+    assert_eq!(
+        first,
+        process_fallback_fingerprint("opencode", "same-session", [3, 3, 7])
     );
     assert_ne!(
         first,
@@ -389,6 +426,7 @@ fn agent_hibernation_contract_visible_split_canvas_and_zoom_protection_is_layout
         workspace_id: Some("split-workspace".into()),
         process_title: "split".into(),
         layout: Some(split),
+        focused_panel_id: Some("split-a1".into()),
         ..Default::default()
     };
     let hidden_workspace = SessionWorkspaceSnapshot {
@@ -439,6 +477,7 @@ fn agent_hibernation_contract_visible_split_canvas_and_zoom_protection_is_layout
         BTreeSet::from([
             "canvas-a2".to_owned(),
             "canvas-b".to_owned(),
+            "split-a1".to_owned(),
             "split-a2".to_owned(),
             "split-b1".to_owned(),
         ])
@@ -558,6 +597,14 @@ fn agent_hibernation_contract_invalid_dormancy_sanitizes_agent_authority_but_pre
             },
         )],
     };
+    snapshot.windows[0].tab_manager.workspaces[0]
+        .surfaces
+        .as_mut()
+        .unwrap()[0]
+        .terminal_startup
+        .as_mut()
+        .unwrap()
+        .remote_pty_session_id = Some("stale-remote-pty".into());
 
     assert_eq!(sanitize_invalid_hibernation(&mut snapshot), vec!["invalid"]);
     let workspace = &snapshot.windows[0].tab_manager.workspaces[0];
@@ -572,6 +619,7 @@ fn agent_hibernation_contract_invalid_dormancy_sanitizes_agent_authority_but_pre
     assert!(invalid_startup.command.is_none());
     assert!(invalid_startup.initial_input.is_none());
     assert!(invalid_startup.tmux_start_command.is_none());
+    assert!(invalid_startup.remote_pty_session_id.is_none());
     assert_eq!(invalid.scrollback.as_deref(), Some("preserved scrollback"));
 
     let valid = surfaces
@@ -635,4 +683,76 @@ fn agent_hibernation_contract_blank_resume_authority_is_never_treated_as_valid_d
         .unwrap()
         .hibernation
         .is_none());
+}
+
+#[test]
+fn agent_hibernation_contract_dormancy_requires_matching_indexed_resume_authority() {
+    let mut snapshot = AppSessionSnapshot {
+        version: 1,
+        created_at: 0,
+        windows: vec![window(
+            "window",
+            SessionWorkspaceSnapshot {
+                workspace_id: Some("workspace".into()),
+                process_title: "shell".into(),
+                surfaces: Some(vec![
+                    dormant_surface(
+                        "missing",
+                        agent("codex", "missing-session", Some("resume missing")),
+                    ),
+                    dormant_surface(
+                        "blank",
+                        agent("codex", "blank-session", Some("resume blank")),
+                    ),
+                    dormant_surface(
+                        "different",
+                        agent("codex", "different-session", Some("resume expected")),
+                    ),
+                ]),
+                restorable_agent_snapshots: Some(vec![
+                    SessionPanelRestorableAgentSnapshot {
+                        panel_id: "blank".into(),
+                        snapshot: agent("codex", "blank-session", Some("  ")),
+                    },
+                    SessionPanelRestorableAgentSnapshot {
+                        panel_id: "different".into(),
+                        snapshot: agent(
+                            "codex",
+                            "different-session",
+                            Some("resume something-else"),
+                        ),
+                    },
+                ]),
+                surface_resume_bindings: Some(vec![
+                    resume_binding("missing", "manual", "codex", "missing-session"),
+                    resume_binding("missing", "agent-hook", "codex", "missing-session"),
+                    resume_binding("blank", "agent-hook", "codex", "blank-session"),
+                    resume_binding("different", "agent-hook", "codex", "different-session"),
+                ]),
+                ..Default::default()
+            },
+        )],
+    };
+
+    assert_eq!(
+        sanitize_invalid_hibernation(&mut snapshot),
+        vec!["blank", "different", "missing"]
+    );
+    let workspace = &snapshot.windows[0].tab_manager.workspaces[0];
+    assert!(workspace
+        .surfaces
+        .as_ref()
+        .unwrap()
+        .iter()
+        .all(|surface| surface
+            .terminal_startup
+            .as_ref()
+            .unwrap()
+            .hibernation
+            .is_none()));
+    assert!(workspace.restorable_agent_snapshots.is_none());
+    let bindings = workspace.surface_resume_bindings.as_ref().unwrap();
+    assert_eq!(bindings.len(), 1);
+    assert_eq!(bindings[0].surface_id, "missing");
+    assert_eq!(bindings[0].binding.source.as_deref(), Some("manual"));
 }
