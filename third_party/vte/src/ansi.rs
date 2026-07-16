@@ -1156,6 +1156,8 @@ pub enum Attr {
     BlinkSlow,
     /// Blink cursor fast.
     BlinkFast,
+    /// Draw a line above the text.
+    Overline,
     /// Invert colors.
     Reverse,
     /// Do not display characters.
@@ -1172,6 +1174,8 @@ pub enum Attr {
     CancelUnderline,
     /// Cancel blink.
     CancelBlink,
+    /// Cancel overline.
+    CancelOverline,
     /// Cancel inversion.
     CancelReverse,
     /// Cancel text hiding.
@@ -1882,6 +1886,8 @@ fn attrs_from_sgr_parameters<H: Handler>(handler: &mut H, params: &mut ParamsIte
             },
             [48, params @ ..] => handle_colon_rgb(params).map(Attr::Background),
             [49] => Some(Attr::Background(Color::Named(NamedColor::Background))),
+            [53] => Some(Attr::Overline),
+            [55] => Some(Attr::CancelOverline),
             [58] => {
                 let mut iter = params.map(|param| param[0]);
                 parse_sgr_color(&mut iter).map(|color| Attr::UnderlineColor(Some(color)))

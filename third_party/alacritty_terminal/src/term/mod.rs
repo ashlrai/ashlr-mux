@@ -1920,13 +1920,14 @@ impl<T: EventListener> Handler for Term<T> {
                 cursor.template.flags.insert(Flags::DASHED_UNDERLINE);
             },
             Attr::CancelUnderline => cursor.template.flags.remove(Flags::ALL_UNDERLINES),
+            Attr::BlinkSlow | Attr::BlinkFast => cursor.template.flags.insert(Flags::BLINK),
+            Attr::CancelBlink => cursor.template.flags.remove(Flags::BLINK),
             Attr::Hidden => cursor.template.flags.insert(Flags::HIDDEN),
             Attr::CancelHidden => cursor.template.flags.remove(Flags::HIDDEN),
             Attr::Strike => cursor.template.flags.insert(Flags::STRIKEOUT),
             Attr::CancelStrike => cursor.template.flags.remove(Flags::STRIKEOUT),
-            _ => {
-                debug!("Term got unhandled attr: {attr:?}");
-            },
+            Attr::Overline => cursor.template.flags.insert(Flags::OVERLINE),
+            Attr::CancelOverline => cursor.template.flags.remove(Flags::OVERLINE),
         }
     }
 
@@ -2520,7 +2521,7 @@ mod tests {
 
     #[test]
     fn sgr_blink_and_overline_are_retained_and_cancelled() {
-        let size = TermSize::new(2, 8);
+        let size = TermSize::new(8, 2);
         let mut term = Term::new(Config::default(), &size, VoidListener);
         let mut processor: ansi::Processor = ansi::Processor::new();
 
