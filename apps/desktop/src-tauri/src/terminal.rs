@@ -288,6 +288,11 @@ struct TerminalPumpActivation {
     sender: Mutex<Option<mpsc::Sender<()>>>,
 }
 
+enum TerminalPumpReadiness {
+    Published,
+    ConsumerReady,
+}
+
 impl TerminalPumpActivation {
     fn pending() -> (Arc<Self>, mpsc::Receiver<()>) {
         let (sender, receiver) = mpsc::channel();
@@ -306,7 +311,10 @@ impl TerminalPumpActivation {
         })
     }
 
-    fn activate(&self) {
+    fn advance(&self, readiness: TerminalPumpReadiness) {
+        if matches!(readiness, TerminalPumpReadiness::Published) {
+            return;
+        }
         let sender = self
             .sender
             .lock()
@@ -468,6 +476,15 @@ impl TerminalState {
         self.registry
             .lock()
             .map_err(|_| "terminal runtime registry mutex poisoned".to_string())
+    }
+}
+
+fn terminal_registry_for_exact_cleanup(
+    state: &TerminalState,
+) -> (MutexGuard<'_, TerminalRuntimeRegistry>, bool) {
+    match state.registry.lock() {
+        Ok(registry) => (registry, false),
+        Err(error) => (error.into_inner(), true),
     }
 }
 
@@ -905,7 +922,7 @@ fn rollback_terminal_open_reservation_for_control(
     state: &TerminalState,
     reservation: TerminalOpenIdentityReservation,
 ) -> Result<(), String> {
-    let mut registry = state.try_runtime_registry()?;
+    let (mut registry, registry_was_poisoned) = terminal_registry_for_exact_cleanup(state);
     if !registry.reserved_session_ids.contains(&reservation.id)
         || reservation
             .panel_id
@@ -921,7 +938,11 @@ fn rollback_terminal_open_reservation_for_control(
     if let Some(panel_id) = reservation.panel_id {
         registry.reserved_panel_ids.remove(&panel_id);
     }
-    Ok(())
+    if registry_was_poisoned {
+        Err("terminal runtime registry mutex poisoned".to_string())
+    } else {
+        Ok(())
+    }
 }
 
 fn publish_terminal_open_reservation(
@@ -1080,9 +1101,7 @@ fn terminal_open_with_policy(
     };
     match publish_terminal_open_reservation(state, guard.reservation(), session) {
         Ok(id) => {
-            if !reuse_existing {
-                pump_activation.activate();
-            }
+            pump_activation.advance(TerminalPumpReadiness::Published);
             guard.disarm();
             Ok(id)
         }
@@ -1244,10 +1263,7 @@ fn release_terminal_session_transfer(
     transfer: TerminalSessionTransfer,
     remove: bool,
 ) -> Result<(), String> {
-    let (mut registry, registry_was_poisoned) = match state.registry.lock() {
-        Ok(registry) => (registry, false),
-        Err(error) => (error.into_inner(), true),
-    };
+    let (mut registry, registry_was_poisoned) = terminal_registry_for_exact_cleanup(state);
     if !terminal_session_transfer_is_owned(&registry, &transfer) {
         return Err("terminal session transfer ownership lost".to_string());
     }
@@ -1321,7 +1337,7 @@ fn terminal_write_id_for_control(
             operation,
         )
     };
-    activation.activate();
+    activation.advance(TerminalPumpReadiness::ConsumerReady);
     accepted_terminal_input(send_terminal_input(process, input, data))
 }
 
@@ -1383,7 +1399,7 @@ pub(crate) fn terminal_send_panel_bytes_for_control(
     let Some((process, input, activation, _operation)) = handles else {
         return TerminalInputOutcome::SurfaceUnavailable;
     };
-    activation.activate();
+    activation.advance(TerminalPumpReadiness::ConsumerReady);
     send_terminal_input(process, input, data)
 }
 
@@ -1627,7 +1643,7 @@ fn terminal_resize_id_for_control(
             operation,
         )
     };
-    activation.activate();
+    activation.advance(TerminalPumpReadiness::ConsumerReady);
     process
         .lock()
         .map_err(|_| "terminal process mutex poisoned".to_string())?
