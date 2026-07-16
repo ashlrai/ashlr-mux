@@ -2,6 +2,7 @@
 #[link(name = "cmux_test_manifest", kind = "static")]
 extern "C" {}
 
+mod agent_hibernation;
 #[cfg(test)]
 mod agent_hibernation_contract_tests;
 mod agent_session;
