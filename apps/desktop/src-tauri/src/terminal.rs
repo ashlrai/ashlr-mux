@@ -3191,6 +3191,96 @@ mod tests {
     }
 
     #[test]
+    fn cold_materialization_redesign_cancel_rejects_fenced_starting() {
+        let state = TerminalState::default();
+        let spec = redesign_spec("C:/repo");
+        let first = super::TerminalMaterializationEvent::Input(b"first".to_vec());
+        let stale = redesign_start(&state, "panel-cancel-fenced-start", &spec, first.clone());
+        let panels = ["panel-cancel-fenced-start".to_string()]
+            .into_iter()
+            .collect();
+        let lifecycle = super::detach_terminal_panels_for_control(&state, &panels).unwrap();
+
+        assert!(super::cancel_terminal_materialization(&state, &stale)
+            .unwrap()
+            .is_none());
+        super::rollback_terminal_panels_for_control(&state, lifecycle)
+            .map_err(|error| error.message)
+            .unwrap();
+        let retry =
+            super::retry_terminal_materialization_start(&state, "panel-cancel-fenced-start", &spec)
+                .unwrap()
+                .expect("rollback must retain the FIFO under fresh start authority");
+        assert_eq!(
+            super::cancel_terminal_materialization(&state, &retry).unwrap(),
+            Some(vec![first])
+        );
+    }
+
+    #[test]
+    fn cold_materialization_redesign_cancel_rejects_published() {
+        let state = TerminalState::default();
+        let spec = redesign_spec("C:/repo");
+        let first = super::TerminalMaterializationEvent::Input(b"first".to_vec());
+        let lease = redesign_start(&state, "panel-cancel-published", &spec, first.clone());
+        super::publish_terminal_materialization_runtime(
+            &state,
+            &lease,
+            81,
+            test_session(
+                test_process(false),
+                test_transport(CapturingWriter(Arc::new(Mutex::new(Vec::new())))),
+                "panel-cancel-published",
+            ),
+        )
+        .unwrap();
+
+        assert!(super::cancel_terminal_materialization(&state, &lease)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            super::drain_terminal_materialization_event(&state, &lease).unwrap(),
+            Some(first)
+        );
+    }
+
+    #[test]
+    fn cold_materialization_redesign_cancel_rejects_fenced_published() {
+        let state = TerminalState::default();
+        let spec = redesign_spec("C:/repo");
+        let first = super::TerminalMaterializationEvent::Input(b"first".to_vec());
+        let lease = redesign_start(
+            &state,
+            "panel-cancel-fenced-published",
+            &spec,
+            first.clone(),
+        );
+        super::publish_terminal_materialization_runtime(
+            &state,
+            &lease,
+            82,
+            test_session(
+                test_process(false),
+                test_transport(CapturingWriter(Arc::new(Mutex::new(Vec::new())))),
+                "panel-cancel-fenced-published",
+            ),
+        )
+        .unwrap();
+        let transfer = super::begin_terminal_session_transfer(&state, 82)
+            .unwrap()
+            .unwrap();
+
+        assert!(super::cancel_terminal_materialization(&state, &lease)
+            .unwrap()
+            .is_none());
+        super::release_terminal_session_transfer(&state, transfer, false).unwrap();
+        assert_eq!(
+            super::drain_terminal_materialization_event(&state, &lease).unwrap(),
+            Some(first)
+        );
+    }
+
+    #[test]
     fn cold_materialization_redesign_detached_published_fence_is_append_only() {
         let state = TerminalState::default();
         let spec = redesign_spec("C:/repo");
