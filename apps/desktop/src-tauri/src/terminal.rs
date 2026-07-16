@@ -1637,6 +1637,23 @@ mod tests {
         writes: usize,
     }
 
+    struct PanicWriter {
+        entered: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+    }
+
+    impl Write for PanicWriter {
+        fn write(&mut self, _bytes: &[u8]) -> io::Result<usize> {
+            self.entered.send(()).unwrap();
+            self.release.recv().unwrap();
+            panic!("injected active-writer panic");
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
     impl Write for PartialQueuedFailureOnce {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
             self.writes += 1;
@@ -1859,6 +1876,47 @@ mod tests {
         let pending = input.pending.lock().unwrap();
         assert_eq!(pending.bytes, 0);
         assert!(pending.entries.is_empty());
+    }
+
+    #[test]
+    fn writer_panic_releases_owner_and_rejects_new_input_without_queueing() {
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let input = test_transport(PanicWriter {
+            entered: entered_tx,
+            release: release_rx,
+        });
+        let process = test_process(false);
+
+        let owner_input = input.clone();
+        let owner_process = process.clone();
+        let owner =
+            std::thread::spawn(move || send_terminal_input(owner_process, owner_input, b"first"));
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(
+            send_terminal_input(process.clone(), input.clone(), b"second"),
+            TerminalInputOutcome::Queued
+        );
+        release_tx.send(()).unwrap();
+        assert!(owner.join().is_err());
+        let bytes_before = input.pending.lock().unwrap().bytes;
+
+        assert_eq!(
+            send_terminal_input(process, input.clone(), b"third"),
+            TerminalInputOutcome::SurfaceUnavailable
+        );
+        assert_eq!(input.pending.lock().unwrap().bytes, bytes_before);
+    }
+
+    #[test]
+    fn empty_compatibility_writes_succeed_before_target_resolution() {
+        let state = TerminalState::default();
+
+        assert_eq!(
+            super::terminal_write_id_for_control(&state, 404, b""),
+            Ok(())
+        );
+        assert_eq!(super::terminal_write_panel(&state, "missing", ""), Ok(()));
     }
 
     #[test]
