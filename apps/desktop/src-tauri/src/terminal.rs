@@ -2619,9 +2619,10 @@ fn base64_encode(input: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::io::{self, Write};
+    use std::io::{self, Read, Write};
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     use std::sync::{mpsc, Arc, Barrier, Mutex, Weak};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use super::{
         base64_encode, default_shell_command, descendant_pid_set, ports_for_pid_set,
@@ -2661,6 +2662,57 @@ mod tests {
     struct BlockingKillProcess {
         entered: mpsc::Sender<()>,
         release: mpsc::Receiver<()>,
+    }
+
+    struct LockCheckingProcess {
+        state: Weak<TerminalState>,
+        kills: Arc<AtomicUsize>,
+    }
+
+    impl TerminalProcess for LockCheckingProcess {
+        fn kill(&mut self) -> Result<(), String> {
+            let state = self.state.upgrade().expect("test terminal state");
+            assert!(
+                state.registry.try_lock().is_ok(),
+                "kill ran under registry lock"
+            );
+            self.kills.fetch_add(1, AtomicOrdering::SeqCst);
+            Ok(())
+        }
+
+        fn resize(&mut self, _size: ConPtySize) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn try_wait(&mut self) -> Result<Option<u32>, String> {
+            let state = self.state.upgrade().expect("test terminal state");
+            assert!(
+                state.registry.try_lock().is_ok(),
+                "process check ran under registry lock"
+            );
+            Ok(None)
+        }
+    }
+
+    struct LockCheckingWriter {
+        state: Weak<TerminalState>,
+        captured: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl Write for LockCheckingWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            let state = self.state.upgrade().expect("test terminal state");
+            assert!(
+                state.registry.try_lock().is_ok(),
+                "PTY write ran under registry lock"
+            );
+            self.captured.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     impl TerminalProcess for BlockingKillProcess {
@@ -2905,6 +2957,21 @@ mod tests {
             panel_id: Some(panel_id.to_string()),
             root_pid: None,
         }
+    }
+
+    fn pending_test_session(
+        process: Arc<Mutex<Box<dyn TerminalProcess>>>,
+        input: Arc<TerminalInputTransport>,
+        panel_id: &str,
+    ) -> (TerminalSession, Arc<super::TerminalPumpActivation>) {
+        let mut session = test_session(process, input, panel_id);
+        let (activation, _ready) = super::TerminalPumpActivation::pending();
+        session.pump_activation = activation.clone();
+        (session, activation)
+    }
+
+    fn pump_is_pending(activation: &super::TerminalPumpActivation) -> bool {
+        activation.sender.lock().unwrap().is_some()
     }
 
     fn redesign_spec(cwd: &str) -> super::TerminalMaterializationSpec {
@@ -3444,6 +3511,436 @@ mod tests {
             super::TerminalMaterializationDemand::SurfaceUnavailable
         );
         super::rollback_terminal_open_reservation_for_control(&reserved, reservation).unwrap();
+    }
+
+    #[test]
+    fn conpty_materialization_rechecks_lifecycle_and_retries_spawn_failure() {
+        let state = Arc::new(TerminalState::default());
+        let spec = redesign_spec("C:/repo");
+        let first = redesign_start(
+            &state,
+            "panel-recheck",
+            &spec,
+            super::TerminalMaterializationEvent::Input(b"retained".to_vec()),
+        );
+        let panels = ["panel-recheck".to_string()].into_iter().collect();
+        let lifecycle = super::detach_terminal_panels_for_control(&state, &panels).unwrap();
+        let spawned = Arc::new(AtomicUsize::new(0));
+        let spawn_counter = spawned.clone();
+        let error = super::fulfill_terminal_materialization_with(
+            &state,
+            first,
+            ConPtySize::new(80, 24),
+            move |_, _, _, _| {
+                spawn_counter.fetch_add(1, AtomicOrdering::SeqCst);
+                panic!("a fenced start must not invoke the external factory")
+            },
+            |_, _, _| Ok(()),
+        )
+        .unwrap_err();
+        assert!(error.contains("ownership"));
+        assert_eq!(spawned.load(AtomicOrdering::SeqCst), 0);
+
+        super::rollback_terminal_panels_for_control(&state, lifecycle)
+            .map_err(|error| error.message)
+            .unwrap();
+        let retry = super::retry_terminal_materialization_start(&state, "panel-recheck", &spec)
+            .unwrap()
+            .expect("rollback exposes a fresh start owner");
+        let failed_generation = retry.generation();
+        let error = super::fulfill_terminal_materialization_with(
+            &state,
+            retry,
+            ConPtySize::new(80, 24),
+            |_, _, _, _| Err("injected ConPTY spawn failure".to_string()),
+            |_, _, _| Ok(()),
+        )
+        .unwrap_err();
+        assert!(error.contains("injected ConPTY spawn failure"));
+        let retry = super::retry_terminal_materialization_start(&state, "panel-recheck", &spec)
+            .unwrap()
+            .expect("spawn failure retains the FIFO for retry");
+        assert_ne!(retry.generation(), failed_generation);
+        assert_eq!(
+            super::cancel_terminal_materialization(&state, &retry).unwrap(),
+            Some(vec![super::TerminalMaterializationEvent::Input(
+                b"retained".to_vec()
+            )])
+        );
+    }
+
+    #[test]
+    fn conpty_materialization_publication_loss_kills_exact_runtime_and_retains_fifo() {
+        let state = Arc::new(TerminalState::default());
+        let spec = redesign_spec("C:/repo");
+        let first = super::TerminalMaterializationEvent::Input(b"first".to_vec());
+        let second = super::TerminalMaterializationEvent::ProcessOutput(b"second".to_vec());
+        let lease = redesign_start(&state, "panel-stale-publish", &spec, first.clone());
+        let lifecycle = Arc::new(Mutex::new(None));
+        let saved_lifecycle = lifecycle.clone();
+        let spawn_state = state.clone();
+        let kills = Arc::new(AtomicUsize::new(0));
+        let process_kills = kills.clone();
+        let error = super::fulfill_terminal_materialization_with(
+            &state,
+            lease,
+            ConPtySize::new(80, 24),
+            move |_, panel_id, _, _| {
+                assert!(
+                    spawn_state.registry.try_lock().is_ok(),
+                    "factory ran under registry lock"
+                );
+                let panels = [panel_id.to_string()].into_iter().collect();
+                *saved_lifecycle.lock().unwrap() =
+                    Some(super::detach_terminal_panels_for_control(&spawn_state, &panels).unwrap());
+                Ok(test_session(
+                    Arc::new(Mutex::new(Box::new(LockCheckingProcess {
+                        state: Arc::downgrade(&spawn_state),
+                        kills: process_kills,
+                    }))),
+                    test_transport(CapturingWriter(Arc::new(Mutex::new(Vec::new())))),
+                    panel_id,
+                ))
+            },
+            |_, _, _| panic!("stale publication must not drain its FIFO"),
+        )
+        .unwrap_err();
+        assert!(error.contains("publication"));
+        assert_eq!(kills.load(AtomicOrdering::SeqCst), 1);
+        assert_eq!(
+            super::request_terminal_materialization(
+                &state,
+                "panel-stale-publish",
+                &spec,
+                vec![second.clone()],
+            ),
+            super::TerminalMaterializationDemand::Queued
+        );
+        super::rollback_terminal_panels_for_control(
+            &state,
+            lifecycle.lock().unwrap().take().unwrap(),
+        )
+        .map_err(|error| error.message)
+        .unwrap();
+        let retry =
+            super::retry_terminal_materialization_start(&state, "panel-stale-publish", &spec)
+                .unwrap()
+                .expect("publication loss retains a retryable FIFO");
+        assert_eq!(
+            super::cancel_terminal_materialization(&state, &retry).unwrap(),
+            Some(vec![first, second])
+        );
+    }
+
+    #[test]
+    fn conpty_materialization_flushes_fifo_parser_and_concurrent_append_before_activation() {
+        let state = Arc::new(TerminalState::default());
+        let spec = redesign_spec("C:/repo");
+        let lease = redesign_start(
+            &state,
+            "panel-fifo",
+            &spec,
+            super::TerminalMaterializationEvent::Input(b"one".to_vec()),
+        );
+        assert_eq!(
+            super::request_terminal_materialization(
+                &state,
+                "panel-fifo",
+                &spec,
+                vec![super::TerminalMaterializationEvent::ProcessOutput(
+                    b"\x1b]2;cold-title\x07visible".to_vec(),
+                )],
+            ),
+            super::TerminalMaterializationDemand::Queued
+        );
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let process_kills = Arc::new(AtomicUsize::new(0));
+        let activation = Arc::new(Mutex::new(None));
+        let spawn_activation = activation.clone();
+        let spawn_state = state.clone();
+        let writer_bytes = captured.clone();
+        let output_state = state.clone();
+        let output_spec = spec.clone();
+        let id = super::fulfill_terminal_materialization_with(
+            &state,
+            lease,
+            ConPtySize::new(80, 24),
+            move |_, panel_id, _, _| {
+                assert!(spawn_state.registry.try_lock().is_ok());
+                let (session, pending) = pending_test_session(
+                    Arc::new(Mutex::new(Box::new(LockCheckingProcess {
+                        state: Arc::downgrade(&spawn_state),
+                        kills: process_kills,
+                    }))),
+                    test_transport(LockCheckingWriter {
+                        state: Arc::downgrade(&spawn_state),
+                        captured: writer_bytes,
+                    }),
+                    panel_id,
+                );
+                *spawn_activation.lock().unwrap() = Some(pending);
+                Ok(session)
+            },
+            move |id, bytes, titles| {
+                assert!(output_state.registry.try_lock().is_ok());
+                let (grid, pending) = {
+                    let registry = output_state.runtime_registry();
+                    let session = registry.sessions.get(&id).unwrap();
+                    (session.grid.clone(), session.pump_activation.clone())
+                };
+                assert!(pump_is_pending(&pending));
+                assert!(terminal_text(&grid.lock().unwrap(), false, None).contains("visible"));
+                assert_eq!(bytes, b"\x1b]2;cold-title\x07visible");
+                assert_eq!(titles, ["cold-title".to_string()]);
+                assert_eq!(
+                    super::request_terminal_materialization(
+                        &output_state,
+                        "panel-fifo",
+                        &output_spec,
+                        vec![super::TerminalMaterializationEvent::Input(
+                            b"three".to_vec()
+                        )],
+                    ),
+                    super::TerminalMaterializationDemand::Queued
+                );
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(&*captured.lock().unwrap(), b"onethree");
+        assert!(!pump_is_pending(
+            activation.lock().unwrap().as_ref().unwrap()
+        ));
+        assert_eq!(
+            super::request_terminal_materialization(
+                &state,
+                "panel-fifo",
+                &spec,
+                vec![super::TerminalMaterializationEvent::Input(b"live".to_vec())],
+            ),
+            super::TerminalMaterializationDemand::Live(vec![
+                super::TerminalMaterializationEvent::Input(b"live".to_vec())
+            ])
+        );
+        assert!(state.runtime_registry().sessions.contains_key(&id));
+    }
+
+    #[test]
+    fn conpty_materialization_lifecycle_waits_and_rollback_resumes_without_spawn() {
+        let state = Arc::new(TerminalState::default());
+        let spec = redesign_spec("C:/repo");
+        let lease = redesign_start(
+            &state,
+            "panel-fenced-flush",
+            &spec,
+            super::TerminalMaterializationEvent::ProcessOutput(b"claimed".to_vec()),
+        );
+        assert_eq!(
+            super::request_terminal_materialization(
+                &state,
+                "panel-fenced-flush",
+                &spec,
+                vec![super::TerminalMaterializationEvent::Input(
+                    b"retained".to_vec()
+                )],
+            ),
+            super::TerminalMaterializationDemand::Queued
+        );
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let fulfill_state = state.clone();
+        let fulfill_captured = captured.clone();
+        let fulfill = std::thread::spawn(move || {
+            super::fulfill_terminal_materialization_with(
+                &fulfill_state,
+                lease,
+                ConPtySize::new(80, 24),
+                move |_, panel_id, _, _| {
+                    Ok(test_session(
+                        test_process(false),
+                        test_transport(CapturingWriter(fulfill_captured)),
+                        panel_id,
+                    ))
+                },
+                move |_, _, _| {
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    Ok(())
+                },
+            )
+        });
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+
+        let detach_state = state.clone();
+        let (detached_tx, detached_rx) = mpsc::channel();
+        let detach = std::thread::spawn(move || {
+            let panels = ["panel-fenced-flush".to_string()].into_iter().collect();
+            let result = super::detach_terminal_panels_for_control(&detach_state, &panels);
+            detached_tx.send(()).unwrap();
+            result
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if state
+                .runtime_registry()
+                .reserved_panel_ids
+                .contains("panel-fenced-flush")
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "lifecycle fence was not established"
+            );
+            std::thread::yield_now();
+        }
+        assert!(
+            detached_rx.try_recv().is_err(),
+            "lifecycle must wait for claimed apply"
+        );
+        release_tx.send(()).unwrap();
+        assert!(fulfill.join().unwrap().is_err());
+        detached_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let lifecycle = detach.join().unwrap().unwrap();
+        assert!(
+            captured.lock().unwrap().is_empty(),
+            "fence prevented the next FIFO pop"
+        );
+        super::rollback_terminal_panels_for_control(&state, lifecycle)
+            .map_err(|error| error.message)
+            .unwrap();
+        let resume =
+            super::retry_terminal_materialization_flush(&state, "panel-fenced-flush", &spec)
+                .unwrap()
+                .expect("rollback exposes the published FIFO for resumption");
+        super::fulfill_terminal_materialization_with(
+            &state,
+            resume,
+            ConPtySize::new(80, 24),
+            |_, _, _, _| panic!("published resume must not spawn a second ConPTY"),
+            |_, _, _| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(&*captured.lock().unwrap(), b"retained");
+    }
+
+    #[test]
+    fn conpty_materialization_apply_failure_discards_batch_without_stranding_runtime() {
+        let state = Arc::new(TerminalState::default());
+        let spec = redesign_spec("C:/repo");
+        let lease = redesign_start(
+            &state,
+            "panel-apply-failure",
+            &spec,
+            super::TerminalMaterializationEvent::ProcessOutput(b"fails".to_vec()),
+        );
+        assert_eq!(
+            super::request_terminal_materialization(
+                &state,
+                "panel-apply-failure",
+                &spec,
+                vec![super::TerminalMaterializationEvent::Input(
+                    b"discarded".to_vec()
+                )],
+            ),
+            super::TerminalMaterializationDemand::Queued
+        );
+        let activation = Arc::new(Mutex::new(None));
+        let saved_activation = activation.clone();
+        let error = super::fulfill_terminal_materialization_with(
+            &state,
+            lease,
+            ConPtySize::new(80, 24),
+            move |_, panel_id, _, _| {
+                let (session, pending) = pending_test_session(
+                    test_process(false),
+                    test_transport(CapturingWriter(Arc::new(Mutex::new(Vec::new())))),
+                    panel_id,
+                );
+                *saved_activation.lock().unwrap() = Some(pending);
+                Ok(session)
+            },
+            |_, _, _| Err("injected output apply failure".to_string()),
+        )
+        .unwrap_err();
+        assert!(error.contains("injected output apply failure"));
+        assert!(!pump_is_pending(
+            activation.lock().unwrap().as_ref().unwrap()
+        ));
+        assert_eq!(
+            super::request_terminal_materialization(
+                &state,
+                "panel-apply-failure",
+                &spec,
+                vec![super::TerminalMaterializationEvent::Input(
+                    b"later".to_vec()
+                )],
+            ),
+            super::TerminalMaterializationDemand::Live(vec![
+                super::TerminalMaterializationEvent::Input(b"later".to_vec())
+            ])
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn conpty_materialization_real_round_trip_owns_process_and_spec() {
+        let directory = std::env::temp_dir().join(format!(
+            "cmux-conpty-materialization-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let expected_cwd = directory.to_string_lossy().to_string();
+        let command = "$line=[Console]::In.ReadLine(); Write-Output ('CMUX-OWNED|' + $env:CMUX_OWNED_TEST + '|' + (Get-Location).Path + '|' + $line); Start-Sleep -Seconds 30";
+        let spec = super::TerminalMaterializationSpec::new(
+            Some(expected_cwd.clone()),
+            Some(command.to_string()),
+            b"initial-payload\r\n".to_vec(),
+            BTreeMap::from([("CMUX_OWNED_TEST".to_string(), "environment-ok".to_string())]),
+        );
+        let components =
+            super::spawn_terminal_process_components(&spec, ConPtySize::new(100, 30)).unwrap();
+        assert!(components.root_pid.is_some_and(|pid| pid > 0));
+        let mut process = components.process;
+        let mut reader = components.reader;
+        let (output_tx, output_rx) = mpsc::channel();
+        let reader_thread = std::thread::spawn(move || {
+            let mut chunk = [0_u8; 4096];
+            loop {
+                match reader.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => output_tx.send(chunk[..read].to_vec()).unwrap(),
+                }
+            }
+        });
+        let marker = format!("CMUX-OWNED|environment-ok|{}|initial-payload", expected_cwd);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut output = Vec::new();
+        while !String::from_utf8_lossy(&output).contains(&marker) {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "ConPTY marker missing: {}",
+                String::from_utf8_lossy(&output)
+            );
+            output.extend(output_rx.recv_timeout(remaining).unwrap());
+        }
+        process.kill().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if process.try_wait().unwrap().is_some() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "owned ConPTY did not exit after kill"
+            );
+            std::thread::yield_now();
+        }
+        reader_thread.join().unwrap();
+        std::fs::remove_dir(&directory).unwrap();
     }
 
     #[test]
