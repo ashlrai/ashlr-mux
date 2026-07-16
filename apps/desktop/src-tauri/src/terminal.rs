@@ -1122,8 +1122,8 @@ impl TerminalMaterializationFlushGuard<'_> {
         }
     }
 
-    fn abort(&mut self) -> Result<bool, String> {
-        let mut registry = self.state.try_runtime_registry()?;
+    fn abort(&mut self) -> bool {
+        let (mut registry, _) = terminal_registry_for_exact_cleanup(self.state);
         let abortable = registry
             .materializations
             .get(&self.lease.panel_id)
@@ -1132,7 +1132,7 @@ impl TerminalMaterializationFlushGuard<'_> {
             registry.materializations.remove(&self.lease.panel_id);
             self.finished = true;
         }
-        Ok(abortable)
+        abortable
     }
 }
 
@@ -1301,16 +1301,12 @@ where
             }
         };
         if let Err(error) = applied {
-            let abort = flush.abort();
-            if abort.as_ref().is_ok_and(|aborted| *aborted) {
+            if flush.abort() {
                 flush
                     .pump_activation
                     .advance(TerminalPumpReadiness::ConsumerReady);
             }
-            return Err(match abort {
-                Ok(_) => error,
-                Err(abort) => format!("{error}; materialization abort failed: {abort}"),
-            });
+            return Err(error);
         }
         if flush.try_finish()? {
             flush
