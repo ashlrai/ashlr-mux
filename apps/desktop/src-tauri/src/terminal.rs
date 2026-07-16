@@ -14,7 +14,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard};
 
 use cmux_terminal::conpty::{ConPty, ConPtyCommand, ConPtySize};
 use cmux_terminal::engine::{GridSize, TerminalGrid};
@@ -211,11 +211,120 @@ impl TerminalPendingInput {
     }
 }
 
+struct TerminalOperationState {
+    accepting: bool,
+    active: usize,
+}
+
+impl Default for TerminalOperationState {
+    fn default() -> Self {
+        Self {
+            accepting: true,
+            active: 0,
+        }
+    }
+}
+
+#[derive(Default)]
+struct TerminalOperationGate {
+    state: Mutex<TerminalOperationState>,
+    drained: Condvar,
+}
+
+impl TerminalOperationGate {
+    fn claim(self: &Arc<Self>) -> Option<TerminalOperationLease> {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if !state.accepting {
+            return None;
+        }
+        state.active += 1;
+        Some(TerminalOperationLease { gate: self.clone() })
+    }
+
+    fn begin_transfer(&self) {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .accepting = false;
+    }
+
+    fn wait_for_drain(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        while state.active != 0 {
+            state = self
+                .drained
+                .wait(state)
+                .unwrap_or_else(|error| error.into_inner());
+        }
+    }
+
+    fn reopen(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        debug_assert_eq!(state.active, 0);
+        state.accepting = true;
+    }
+}
+
+struct TerminalOperationLease {
+    gate: Arc<TerminalOperationGate>,
+}
+
+impl Drop for TerminalOperationLease {
+    fn drop(&mut self) {
+        let mut state = self
+            .gate
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        debug_assert!(state.active > 0);
+        state.active -= 1;
+        if state.active == 0 {
+            self.gate.drained.notify_all();
+        }
+    }
+}
+
+struct TerminalPumpActivation {
+    sender: Mutex<Option<mpsc::Sender<()>>>,
+}
+
+impl TerminalPumpActivation {
+    fn pending() -> (Arc<Self>, mpsc::Receiver<()>) {
+        let (sender, receiver) = mpsc::channel();
+        (
+            Arc::new(Self {
+                sender: Mutex::new(Some(sender)),
+            }),
+            receiver,
+        )
+    }
+
+    #[cfg(test)]
+    fn active() -> Arc<Self> {
+        Arc::new(Self {
+            sender: Mutex::new(None),
+        })
+    }
+
+    fn activate(&self) {
+        let sender = self
+            .sender
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        if let Some(sender) = sender {
+            let _ = sender.send(());
+        }
+    }
+}
+
 /// One live shell: its PTY (kept for resize/kill) plus the single input writer.
 struct TerminalSession {
     pty: Arc<Mutex<Box<dyn TerminalProcess>>>,
     input: Arc<TerminalInputTransport>,
     grid: Arc<Mutex<TerminalGrid>>,
+    operations: Arc<TerminalOperationGate>,
+    pump_activation: Arc<TerminalPumpActivation>,
     panel_id: Option<String>,
     root_pid: Option<u32>,
 }
@@ -366,6 +475,7 @@ impl TerminalState {
 pub(crate) struct TerminalPanelRuntimeLease {
     panel_ids: BTreeSet<String>,
     sessions: BTreeMap<u32, TerminalSession>,
+    completed_session_ids: BTreeSet<u32>,
 }
 
 #[allow(dead_code)]
@@ -417,6 +527,15 @@ pub(crate) fn detach_terminal_panels_for_control(
         return Err(format!("terminal session {id} is already reserved"));
     }
 
+    for id in &session_ids {
+        registry
+            .sessions
+            .get(id)
+            .expect("prechecked terminal session")
+            .operations
+            .begin_transfer();
+    }
+
     let mut sessions = BTreeMap::new();
     for id in &session_ids {
         sessions.insert(
@@ -431,9 +550,14 @@ pub(crate) fn detach_terminal_panels_for_control(
         .reserved_panel_ids
         .extend(panel_ids.iter().cloned());
     registry.reserved_session_ids.extend(session_ids);
+    drop(registry);
+    for session in sessions.values() {
+        session.operations.wait_for_drain();
+    }
     Ok(TerminalPanelRuntimeLease {
         panel_ids,
         sessions,
+        completed_session_ids: BTreeSet::new(),
     })
 }
 
@@ -453,6 +577,7 @@ pub(crate) fn rollback_terminal_panels_for_control(
         || lease
             .sessions
             .keys()
+            .chain(lease.completed_session_ids.iter())
             .any(|id| !registry.reserved_session_ids.contains(id));
     let collision = lease
         .sessions
@@ -472,7 +597,11 @@ pub(crate) fn rollback_terminal_panels_for_control(
     }
 
     for (id, session) in lease.sessions {
+        session.operations.reopen();
         registry.sessions.insert(id, session);
+        registry.reserved_session_ids.remove(&id);
+    }
+    for id in lease.completed_session_ids {
         registry.reserved_session_ids.remove(&id);
     }
     for panel_id in lease.panel_ids {
@@ -502,6 +631,7 @@ pub(crate) fn finalize_terminal_panels_for_control(
         || lease
             .sessions
             .keys()
+            .chain(lease.completed_session_ids.iter())
             .any(|id| !guard.reserved_session_ids.contains(id));
     drop(guard);
     if ownership_lost {
@@ -514,10 +644,10 @@ pub(crate) fn finalize_terminal_panels_for_control(
     let TerminalPanelRuntimeLease {
         panel_ids,
         sessions,
+        mut completed_session_ids,
     } = lease;
     let mut failures = Vec::new();
     let mut retry_sessions = BTreeMap::new();
-    let mut completed_ids = Vec::new();
     for (id, session) in sessions {
         let kill = session
             .pty
@@ -525,7 +655,9 @@ pub(crate) fn finalize_terminal_panels_for_control(
             .map_err(|_| "terminal process mutex poisoned".to_string())
             .and_then(|mut process| process.kill());
         match kill {
-            Ok(()) => completed_ids.push(id),
+            Ok(()) => {
+                completed_session_ids.insert(id);
+            }
             Err(error) => {
                 failures.push(format!("terminal runtime {id} kill failed: {error}"));
                 retry_sessions.insert(id, session);
@@ -546,11 +678,12 @@ pub(crate) fn finalize_terminal_panels_for_control(
                 retry: TerminalPanelRuntimeLease {
                     panel_ids,
                     sessions: retry_sessions,
+                    completed_session_ids,
                 },
             });
         }
     };
-    for id in completed_ids {
+    for id in completed_session_ids {
         registry.reserved_session_ids.remove(&id);
     }
     for panel_id in panel_ids {
@@ -567,6 +700,7 @@ pub(crate) fn finalize_terminal_panels_for_control(
             retry: TerminalPanelRuntimeLease {
                 panel_ids: retry_panel_ids,
                 sessions: retry_sessions,
+                completed_session_ids: BTreeSet::new(),
             },
         })
     }
@@ -688,11 +822,24 @@ fn reusable_panel_session_id<'a>(
 struct TerminalOpenIdentityReservation {
     id: u32,
     panel_id: Option<String>,
+    fenced_operations: Vec<Arc<TerminalOperationGate>>,
 }
 
 enum TerminalOpenReservation {
     Existing(u32),
     Reserved(TerminalOpenIdentityReservation),
+}
+
+fn terminal_panel_operation_gates(
+    registry: &TerminalRuntimeRegistry,
+    panel_id: &str,
+) -> Vec<Arc<TerminalOperationGate>> {
+    registry
+        .sessions
+        .values()
+        .filter(|session| session.panel_id.as_deref() == Some(panel_id))
+        .map(|session| session.operations.clone())
+        .collect()
 }
 
 fn reserve_terminal_open_for_control(
@@ -730,12 +877,27 @@ fn reserve_terminal_open_for_control(
             break candidate;
         }
     };
+    let fenced_operations = panel_id
+        .as_ref()
+        .map(|panel_id| terminal_panel_operation_gates(&registry, panel_id))
+        .unwrap_or_default();
+    for operations in &fenced_operations {
+        operations.begin_transfer();
+    }
     registry.reserved_session_ids.insert(id);
     if let Some(panel_id) = panel_id.as_ref() {
         registry.reserved_panel_ids.insert(panel_id.clone());
     }
+    drop(registry);
+    for operations in &fenced_operations {
+        operations.wait_for_drain();
+    }
     Ok(TerminalOpenReservation::Reserved(
-        TerminalOpenIdentityReservation { id, panel_id },
+        TerminalOpenIdentityReservation {
+            id,
+            panel_id,
+            fenced_operations,
+        },
     ))
 }
 
@@ -751,6 +913,9 @@ fn rollback_terminal_open_reservation_for_control(
             .is_some_and(|panel_id| !registry.reserved_panel_ids.contains(panel_id))
     {
         return Err("terminal open reservation lost".to_string());
+    }
+    for operations in &reservation.fenced_operations {
+        operations.reopen();
     }
     registry.reserved_session_ids.remove(&reservation.id);
     if let Some(panel_id) = reservation.panel_id {
@@ -780,6 +945,9 @@ fn publish_terminal_open_reservation(
         return Err(("terminal open reservation lost".to_string(), session));
     }
 
+    for operations in &reservation.fenced_operations {
+        operations.reopen();
+    }
     registry.reserved_session_ids.remove(&reservation.id);
     if let Some(panel_id) = reservation.panel_id.as_ref() {
         registry.reserved_panel_ids.remove(panel_id);
@@ -867,7 +1035,7 @@ fn terminal_open_with_policy(
     let size = ConPtySize::new(cols.unwrap_or(80).max(1), rows.unwrap_or(24).max(1));
     let command = default_shell_command(cwd, initial_command, environment);
 
-    let session = (|| -> Result<TerminalSession, String> {
+    let session = (|| -> Result<(TerminalSession, Arc<TerminalPumpActivation>), String> {
         let pty = ConPty::spawn(&command, size).map_err(|error| error.to_string())?;
         // Reader and writer are independent handles onto the ConPTY master.
         let reader = pty.reader().map_err(|error| error.to_string())?;
@@ -882,26 +1050,39 @@ fn terminal_open_with_policy(
         let pump_app = app.clone();
         let pump_panel_id = panel_id.clone();
         let pump_grid = grid.clone();
+        let (pump_activation, pump_ready) = TerminalPumpActivation::pending();
         std::thread::Builder::new()
             .name(format!("cmux-terminal-pump-{id}"))
-            .spawn(move || pump_reader(pump_app, id, pump_panel_id, pump_grid, reader))
+            .spawn(move || {
+                if pump_ready.recv().is_ok() {
+                    pump_reader(pump_app, id, pump_panel_id, pump_grid, reader);
+                }
+            })
             .map_err(|error| error.to_string())?;
 
-        Ok(TerminalSession {
-            pty: Arc::new(Mutex::new(Box::new(pty))),
-            input: Arc::new(TerminalInputTransport::new(writer)),
-            grid,
-            panel_id,
-            root_pid,
-        })
+        Ok((
+            TerminalSession {
+                pty: Arc::new(Mutex::new(Box::new(pty))),
+                input: Arc::new(TerminalInputTransport::new(writer)),
+                grid,
+                operations: Arc::new(TerminalOperationGate::default()),
+                pump_activation: pump_activation.clone(),
+                panel_id,
+                root_pid,
+            },
+            pump_activation,
+        ))
     })();
 
-    let session = match session {
+    let (session, pump_activation) = match session {
         Ok(session) => session,
         Err(error) => return Err(guard.rollback(error)),
     };
     match publish_terminal_open_reservation(state, guard.reservation(), session) {
         Ok(id) => {
+            if !reuse_existing {
+                pump_activation.activate();
+            }
             guard.disarm();
             Ok(id)
         }
@@ -952,20 +1133,40 @@ pub(crate) fn terminal_ids_for_panel_for_control(
     )
 }
 
+fn ensure_terminal_session_available(
+    registry: &TerminalRuntimeRegistry,
+    id: u32,
+    session: &TerminalSession,
+) -> Result<(), String> {
+    if registry.reserved_session_ids.contains(&id) {
+        return Err(format!("terminal session {id} is reserved"));
+    }
+    if let Some(panel_id) = session
+        .panel_id
+        .as_ref()
+        .filter(|panel_id| registry.reserved_panel_ids.contains(*panel_id))
+    {
+        return Err(format!("terminal panel {panel_id} is reserved"));
+    }
+    Ok(())
+}
+
 pub(crate) fn terminal_shutdown_id_preserving_authority_for_control(
     state: &TerminalState,
     id: u32,
 ) -> Result<(), String> {
-    let process = {
+    let (process, _operation) = {
         let registry = state.try_runtime_registry()?;
-        if registry.reserved_session_ids.contains(&id) {
-            return Err(format!("terminal session {id} is reserved"));
-        }
-        registry
+        let session = registry
             .sessions
             .get(&id)
-            .map(|session| session.pty.clone())
-            .ok_or_else(|| format!("terminal runtime {id} is unavailable"))?
+            .ok_or_else(|| format!("terminal runtime {id} is unavailable"))?;
+        ensure_terminal_session_available(&registry, id, session)?;
+        let operation = session
+            .operations
+            .claim()
+            .ok_or_else(|| format!("terminal session {id} is reserved"))?;
+        (session.pty.clone(), operation)
     };
     let result = process
         .lock()
@@ -974,13 +1175,114 @@ pub(crate) fn terminal_shutdown_id_preserving_authority_for_control(
     result
 }
 
-pub(crate) fn terminal_remove_id_for_control(state: &TerminalState, id: u32) -> Result<(), String> {
-    let mut registry = state.try_runtime_registry()?;
-    if registry.reserved_session_ids.contains(&id) {
-        return Err(format!("terminal session {id} is reserved"));
+struct TerminalSessionTransfer {
+    id: u32,
+    panel_id: Option<String>,
+    operations: Arc<TerminalOperationGate>,
+    fenced_operations: Vec<Arc<TerminalOperationGate>>,
+    process: Arc<Mutex<Box<dyn TerminalProcess>>>,
+}
+
+fn begin_terminal_session_transfer(
+    state: &TerminalState,
+    id: u32,
+) -> Result<Option<TerminalSessionTransfer>, String> {
+    let transfer = {
+        let mut registry = state.try_runtime_registry()?;
+        if registry.reserved_session_ids.contains(&id) {
+            return Err(format!("terminal session {id} is reserved"));
+        }
+        let Some(session) = registry.sessions.get(&id) else {
+            return Ok(None);
+        };
+        ensure_terminal_session_available(&registry, id, session)?;
+        let panel_id = session.panel_id.clone();
+        let operations = session.operations.clone();
+        let fenced_operations = match panel_id.as_ref() {
+            Some(panel_id) => terminal_panel_operation_gates(&registry, panel_id),
+            None => vec![operations.clone()],
+        };
+        let transfer = TerminalSessionTransfer {
+            id,
+            panel_id,
+            operations,
+            fenced_operations,
+            process: session.pty.clone(),
+        };
+        for operations in &transfer.fenced_operations {
+            operations.begin_transfer();
+        }
+        registry.reserved_session_ids.insert(id);
+        if let Some(panel_id) = transfer.panel_id.as_ref() {
+            registry.reserved_panel_ids.insert(panel_id.clone());
+        }
+        transfer
+    };
+    for operations in &transfer.fenced_operations {
+        operations.wait_for_drain();
     }
-    registry.sessions.remove(&id);
-    Ok(())
+    Ok(Some(transfer))
+}
+
+fn terminal_session_transfer_is_owned(
+    registry: &TerminalRuntimeRegistry,
+    transfer: &TerminalSessionTransfer,
+) -> bool {
+    registry.reserved_session_ids.contains(&transfer.id)
+        && transfer
+            .panel_id
+            .as_ref()
+            .is_none_or(|panel_id| registry.reserved_panel_ids.contains(panel_id))
+        && registry.sessions.get(&transfer.id).is_some_and(|session| {
+            Arc::ptr_eq(&session.operations, &transfer.operations)
+                && session.panel_id == transfer.panel_id
+        })
+}
+
+fn release_terminal_session_transfer(
+    state: &TerminalState,
+    transfer: TerminalSessionTransfer,
+    remove: bool,
+) -> Result<(), String> {
+    let (mut registry, registry_was_poisoned) = match state.registry.lock() {
+        Ok(registry) => (registry, false),
+        Err(error) => (error.into_inner(), true),
+    };
+    if !terminal_session_transfer_is_owned(&registry, &transfer) {
+        return Err("terminal session transfer ownership lost".to_string());
+    }
+    let removed = if remove {
+        let removed = registry.sessions.remove(&transfer.id);
+        for operations in &transfer.fenced_operations {
+            if !Arc::ptr_eq(operations, &transfer.operations) {
+                operations.reopen();
+            }
+        }
+        removed
+    } else {
+        for operations in &transfer.fenced_operations {
+            operations.reopen();
+        }
+        None
+    };
+    registry.reserved_session_ids.remove(&transfer.id);
+    if let Some(panel_id) = transfer.panel_id {
+        registry.reserved_panel_ids.remove(&panel_id);
+    }
+    drop(registry);
+    drop(removed);
+    if registry_was_poisoned {
+        Err("terminal runtime registry mutex poisoned".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+pub(crate) fn terminal_remove_id_for_control(state: &TerminalState, id: u32) -> Result<(), String> {
+    let Some(transfer) = begin_terminal_session_transfer(state, id)? else {
+        return Ok(());
+    };
+    release_terminal_session_transfer(state, transfer, true)
 }
 
 /// Write keystrokes (xterm `onData`) into a session's shell.
@@ -1001,17 +1303,25 @@ fn terminal_write_id_for_control(
     if data.is_empty() {
         return Ok(());
     }
-    let (process, input) = {
+    let (process, input, activation, _operation) = {
         let registry = state.try_runtime_registry()?;
-        if registry.reserved_session_ids.contains(&id) {
-            return Err(format!("terminal session {id} is reserved"));
-        }
         let session = registry
             .sessions
             .get(&id)
             .ok_or_else(|| format!("unknown terminal session {id}"))?;
-        (session.pty.clone(), session.input.clone())
+        ensure_terminal_session_available(&registry, id, session)?;
+        let operation = session
+            .operations
+            .claim()
+            .ok_or_else(|| format!("terminal session {id} is reserved"))?;
+        (
+            session.pty.clone(),
+            session.input.clone(),
+            session.pump_activation.clone(),
+            operation,
+        )
     };
+    activation.activate();
     accepted_terminal_input(send_terminal_input(process, input, data))
 }
 
@@ -1053,14 +1363,27 @@ pub(crate) fn terminal_send_panel_bytes_for_control(
     let handles = match state.try_runtime_registry() {
         Ok(registry) if !registry.reserved_panel_ids.contains(normalized_panel_id) => registry
             .sessions
-            .values()
-            .find(|session| session.panel_id.as_deref() == Some(normalized_panel_id))
-            .map(|session| (session.pty.clone(), session.input.clone())),
+            .iter()
+            .find(|(_, session)| session.panel_id.as_deref() == Some(normalized_panel_id))
+            .and_then(|(id, session)| {
+                ensure_terminal_session_available(&registry, *id, session)
+                    .ok()
+                    .and_then(|_| session.operations.claim())
+                    .map(|operation| {
+                        (
+                            session.pty.clone(),
+                            session.input.clone(),
+                            session.pump_activation.clone(),
+                            operation,
+                        )
+                    })
+            }),
         _ => return TerminalInputOutcome::SurfaceUnavailable,
     };
-    let Some((process, input)) = handles else {
+    let Some((process, input, activation, _operation)) = handles else {
         return TerminalInputOutcome::SurfaceUnavailable;
     };
+    activation.activate();
     send_terminal_input(process, input, data)
 }
 
@@ -1286,17 +1609,25 @@ fn terminal_resize_id_for_control(
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    let (process, grid) = {
+    let (process, grid, activation, _operation) = {
         let registry = state.try_runtime_registry()?;
-        if registry.reserved_session_ids.contains(&id) {
-            return Err(format!("terminal session {id} is reserved"));
-        }
-        registry
+        let session = registry
             .sessions
             .get(&id)
-            .map(|session| (session.pty.clone(), session.grid.clone()))
-            .ok_or_else(|| format!("unknown terminal session {id}"))?
+            .ok_or_else(|| format!("unknown terminal session {id}"))?;
+        ensure_terminal_session_available(&registry, id, session)?;
+        let operation = session
+            .operations
+            .claim()
+            .ok_or_else(|| format!("terminal session {id} is reserved"))?;
+        (
+            session.pty.clone(),
+            session.grid.clone(),
+            session.pump_activation.clone(),
+            operation,
+        )
     };
+    activation.activate();
     process
         .lock()
         .map_err(|_| "terminal process mutex poisoned".to_string())?
@@ -1311,19 +1642,24 @@ fn terminal_resize_id_for_control(
 /// severed output pipe and exits on its own.
 #[tauri::command]
 pub fn terminal_close(state: State<'_, TerminalState>, id: u32) -> Result<(), String> {
-    let removed = {
-        let mut registry = state.try_runtime_registry()?;
-        if registry.reserved_session_ids.contains(&id) {
-            return Err(format!("terminal session {id} is reserved"));
-        }
-        registry.sessions.remove(&id)
+    terminal_close_id_for_control(state.inner(), id)
+}
+
+fn terminal_close_id_for_control(state: &TerminalState, id: u32) -> Result<(), String> {
+    let Some(transfer) = begin_terminal_session_transfer(state, id)? else {
+        return Ok(());
     };
-    if let Some(session) = removed {
-        if let Ok(mut process) = session.pty.lock() {
-            let _ = process.kill();
-        }
+    let kill = match transfer.process.lock() {
+        Ok(mut process) => process.kill(),
+        Err(_) => Err("terminal process mutex poisoned".to_string()),
+    };
+    if let Err(error) = kill {
+        return match release_terminal_session_transfer(state, transfer, false) {
+            Ok(()) => Err(error),
+            Err(rollback) => Err(format!("{error}; {rollback}")),
+        };
     }
-    Ok(())
+    release_terminal_session_transfer(state, transfer, true)
 }
 
 /// Scan the process tree rooted at a live terminal and update the owning
@@ -2077,6 +2413,8 @@ mod tests {
             pty: process,
             input,
             grid: Arc::new(Mutex::new(TerminalGrid::new(GridSize::new(80, 24)))),
+            operations: Arc::new(super::TerminalOperationGate::default()),
+            pump_activation: super::TerminalPumpActivation::active(),
             panel_id: Some(panel_id.to_string()),
             root_pid: None,
         }
@@ -2423,6 +2761,7 @@ mod tests {
     #[test]
     fn control_panel_reservation_fences_every_id_based_mutation_of_the_old_runtime() {
         let state = TerminalState::default();
+        let captured = Arc::new(Mutex::new(Vec::new()));
         state
             .next_id
             .store(42, std::sync::atomic::Ordering::Relaxed);
@@ -2430,7 +2769,7 @@ mod tests {
             41,
             test_session(
                 test_process(false),
-                test_transport(CapturingWriter(Arc::new(Mutex::new(Vec::new())))),
+                test_transport(CapturingWriter(captured.clone())),
                 "panel-a",
             ),
         );
@@ -2451,6 +2790,11 @@ mod tests {
         assert!(state.registry.lock().unwrap().sessions.contains_key(&41));
 
         super::rollback_terminal_open_reservation_for_control(&state, replacement).unwrap();
+        super::terminal_write_id_for_control(&state, 41, b"reopened").unwrap();
+        assert_eq!(&*captured.lock().unwrap(), b"reopened");
+        let registry = state.registry.lock().unwrap();
+        assert!(registry.reserved_session_ids.is_empty());
+        assert!(registry.reserved_panel_ids.is_empty());
     }
 
     #[test]
@@ -2645,7 +2989,13 @@ mod tests {
             ),
         );
         assert!(super::terminal_close_id_for_control(&failing, 12).is_err());
-        assert!(failing.registry.lock().unwrap().sessions.contains_key(&12));
+        super::terminal_write_id_for_control(&failing, 12, b"still-owned").unwrap();
+        {
+            let registry = failing.registry.lock().unwrap();
+            assert!(registry.sessions.contains_key(&12));
+            assert!(registry.reserved_session_ids.is_empty());
+            assert!(registry.reserved_panel_ids.is_empty());
+        }
 
         let poisoned = TerminalState::default();
         let process = test_process(false);
@@ -2664,7 +3014,32 @@ mod tests {
         .join()
         .is_err());
         assert!(super::terminal_close_id_for_control(&poisoned, 13).is_err());
-        assert!(poisoned.registry.lock().unwrap().sessions.contains_key(&13));
+        let registry = poisoned.registry.lock().unwrap();
+        assert!(registry.sessions.contains_key(&13));
+        assert!(registry.reserved_session_ids.is_empty());
+        assert!(registry.reserved_panel_ids.is_empty());
+    }
+
+    #[test]
+    fn close_completes_exact_cleanup_after_post_kill_registry_poison() {
+        let state = Arc::new(TerminalState::default());
+        state.registry.lock().unwrap().sessions.insert(
+            14,
+            test_session(
+                Arc::new(Mutex::new(Box::new(PoisonRegistryDuringKillProcess {
+                    state: Arc::downgrade(&state),
+                }))),
+                test_transport(io::sink()),
+                "poison-during-close",
+            ),
+        );
+
+        assert!(super::terminal_close_id_for_control(&state, 14).is_err());
+        state.registry.clear_poison();
+        let registry = state.registry.lock().unwrap();
+        assert!(!registry.sessions.contains_key(&14));
+        assert!(registry.reserved_session_ids.is_empty());
+        assert!(registry.reserved_panel_ids.is_empty());
     }
 
     #[test]
