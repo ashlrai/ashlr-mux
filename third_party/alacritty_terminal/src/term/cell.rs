@@ -232,6 +232,8 @@ impl GridCell for Cell {
             && !self.flags.intersects(
                 Flags::INVERSE
                     | Flags::ALL_UNDERLINES
+                    | Flags::BLINK
+                    | Flags::OVERLINE
                     | Flags::STRIKEOUT
                     | Flags::WRAPLINE
                     | Flags::WIDE_CHAR_SPACER
