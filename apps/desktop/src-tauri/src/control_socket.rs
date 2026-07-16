@@ -89,7 +89,7 @@ use crate::session::{
     WorkspaceRemoteControlConfig, WorkspaceRenameResolution, WorkspaceSelectControlError,
 };
 use crate::terminal::{
-    materialize_terminal_for_input, request_terminal_materialization,
+    materialize_terminal_for_input, request_live_terminal_input, request_terminal_materialization,
     scan_listening_ports_for_root_pid, scan_panel_listening_ports,
     terminal_apply_materialization_events_for_control, terminal_clear_history_panel,
     terminal_grid_size_for_panel, terminal_ids_for_panel_for_control, terminal_open_for_control,
@@ -1336,12 +1336,20 @@ impl Drop for DeferredRemoteWorkspaceRenameFlush<'_> {
     }
 }
 
+fn run_after_control_mutation_gate<T>(
+    guard: parking_lot::ReentrantMutexGuard<'_, ()>,
+    operation: impl FnOnce() -> T,
+) -> T {
+    drop(guard);
+    operation()
+}
+
 fn handle_control_request(app: &AppHandle, mut request: ControlRequest) -> ControlCallResult {
     let session_state = app.state::<SessionState>();
     // Declared before the guard so reverse drop order releases the request-wide
     // mutation gate before any deferred SSH process is created.
     let _remote_workspace_rename_flush = DeferredRemoteWorkspaceRenameFlush(session_state.inner());
-    let _control_guard = match session_state.lock_control_mutation() {
+    let control_guard = match session_state.lock_control_mutation() {
         Ok(guard) => guard,
         Err(message) => {
             return ControlCallResult::Err {
@@ -1384,6 +1392,18 @@ fn handle_control_request(app: &AppHandle, mut request: ControlRequest) -> Contr
             .params
             .insert("__pane_create_raw_surface_id".into(), raw);
     }
+    if matches!(
+        request.method.as_str(),
+        "terminal.input" | "mobile.terminal.input"
+    ) {
+        let prepared = match prepare_terminal_input_control(app, &request.method, &request.params) {
+            Ok(prepared) => prepared,
+            Err(error) => return error,
+        };
+        return run_after_control_mutation_gate(control_guard, || {
+            finish_terminal_input_control(app, prepared)
+        });
+    }
     match control_request_route_for_method(&request.method) {
         ControlRequestRoute::PaneSurfaceLifecycle => {
             return handle_pane_surface_lifecycle_request(app, &request.method, &request.params);
@@ -1403,11 +1423,8 @@ fn handle_control_request(app: &AppHandle, mut request: ControlRequest) -> Contr
         ControlRequestRoute::Legacy => {}
     }
     match request.method.as_str() {
-        "terminal.create"
-        | "mobile.terminal.create"
-        | "terminal.input"
-        | "mobile.terminal.input" => {
-            terminal_create_input_control(app, &request.method, &request.params)
+        "terminal.create" | "mobile.terminal.create" => {
+            terminal_create_control(app, &request.method, &request.params)
         }
         "ping" | "system.ping" => ok(json!("pong")),
         "system.identify" => ok(json!({
@@ -10488,27 +10505,30 @@ const TERMINAL_SURFACE_UNAVAILABLE_MESSAGE: &str =
 const TERMINAL_PROCESS_EXITED_MESSAGE: &str =
     "The terminal session has ended; reopen it or create a new terminal session.";
 
-fn terminal_create_input_control(
+fn terminal_request_plan(
+    app: &AppHandle,
+    method: &str,
+    params: &serde_json::Map<String, Value>,
+) -> Result<TerminalRequestPlan, ControlCallResult> {
+    let current = snapshot(app);
+    let active_window_id = control_active_window_id(app);
+    plan_terminal_request_with_active_window(&current, method, params, active_window_id.as_deref())
+        .map_err(|error| ControlCallResult::Err {
+            code: error.code.to_string(),
+            message: error.message.to_string(),
+            data: None,
+        })
+}
+
+fn terminal_create_control(
     app: &AppHandle,
     method: &str,
     params: &serde_json::Map<String, Value>,
 ) -> ControlCallResult {
     let before = snapshot(app);
-    let active_window_id = control_active_window_id(app);
-    let plan = match plan_terminal_request_with_active_window(
-        &before,
-        method,
-        params,
-        active_window_id.as_deref(),
-    ) {
+    let plan = match terminal_request_plan(app, method, params) {
         Ok(plan) => plan,
-        Err(error) => {
-            return ControlCallResult::Err {
-                code: error.code.to_string(),
-                message: error.message.to_string(),
-                data: None,
-            }
-        }
+        Err(error) => return error,
     };
 
     match plan {
@@ -10516,6 +10536,8 @@ fn terminal_create_input_control(
             window_index,
             workspace_index,
             pane_id,
+            requested_workspace_id,
+            requested_terminal_id,
         } => {
             let workspace_id = before.windows[window_index].tab_manager.workspaces[workspace_index]
                 .workspace_id
@@ -10560,91 +10582,136 @@ fn terminal_create_input_control(
                 app,
                 &snapshot(app),
                 window_index,
-                workspace_id.as_deref(),
+                requested_workspace_id.as_deref(),
+                requested_terminal_id.as_deref(),
                 created_terminal_id,
             )
         }
-        TerminalRequestPlan::Input {
-            window_index,
-            workspace_index,
-            surface_id,
-            events,
-        } => {
-            let workspace = &before.windows[window_index].tab_manager.workspaces[workspace_index];
-            let Some(spec) = terminal_materialization_spec(workspace, &surface_id) else {
-                return ControlCallResult::Err {
-                    code: "not_found".into(),
-                    message: "Terminal surface not found".into(),
-                    data: None,
-                };
-            };
-            let state = app.state::<TerminalState>();
-            let outcome = match request_terminal_materialization(
-                state.inner(),
-                &surface_id,
-                &spec,
-                events,
-            ) {
-                TerminalMaterializationDemand::Noop => TerminalInputOutcome::Sent,
-                TerminalMaterializationDemand::Live(events) => {
-                    terminal_apply_materialization_events_for_control(
-                        app,
-                        state.inner(),
-                        &surface_id,
-                        events,
-                    )
-                }
-                TerminalMaterializationDemand::Queued => TerminalInputOutcome::Queued,
-                TerminalMaterializationDemand::Start(lease) => {
-                    let app = app.clone();
-                    let logging_surface_id = surface_id.clone();
-                    tauri::async_runtime::spawn_blocking(move || {
-                        let state = app.state::<TerminalState>();
-                        if let Err(error) =
-                            materialize_terminal_for_input(&app, state.inner(), lease, None, None)
-                        {
-                            eprintln!(
-                                "[terminal] failed to materialize input target {logging_surface_id}: {error}"
-                            );
-                        }
-                    });
-                    TerminalInputOutcome::Queued
-                }
-                TerminalMaterializationDemand::InputQueueFull => {
-                    TerminalInputOutcome::InputQueueFull
-                }
-                TerminalMaterializationDemand::SurfaceUnavailable => {
-                    TerminalInputOutcome::SurfaceUnavailable
-                }
-            };
-            let queued = match outcome {
-                TerminalInputOutcome::Sent => false,
-                TerminalInputOutcome::Queued => true,
-                failure => return terminal_input_failure(&surface_id, failure),
-            };
-            ok(json!({
-                "workspace_id": workspace.workspace_id,
-                "surface_id": surface_id,
-                "queued": queued,
-            }))
-        }
+        TerminalRequestPlan::Input { .. } => unreachable!("input is dispatched after gate release"),
     }
 }
 
-fn terminal_materialization_spec(
+struct PreparedTerminalInput {
+    workspace_id: Option<String>,
+    surface_id: String,
+    demand: TerminalMaterializationDemand,
+}
+
+enum TerminalInputTarget {
+    Local(TerminalMaterializationSpec),
+    Remote,
+}
+
+fn prepare_terminal_input_control(
+    app: &AppHandle,
+    method: &str,
+    params: &serde_json::Map<String, Value>,
+) -> Result<PreparedTerminalInput, ControlCallResult> {
+    let current = snapshot(app);
+    let plan = terminal_request_plan(app, method, params)?;
+    let TerminalRequestPlan::Input {
+        window_index,
+        workspace_index,
+        surface_id,
+        events,
+    } = plan
+    else {
+        unreachable!("create is dispatched while the control gate is held")
+    };
+    let workspace = &current.windows[window_index].tab_manager.workspaces[workspace_index];
+    let Some(target) = terminal_input_target(workspace, &surface_id) else {
+        return Err(ControlCallResult::Err {
+            code: "not_found".into(),
+            message: "Terminal surface not found".into(),
+            data: None,
+        });
+    };
+    let state = app.state::<TerminalState>();
+    let demand = match target {
+        TerminalInputTarget::Local(spec) => {
+            request_terminal_materialization(state.inner(), &surface_id, &spec, events)
+        }
+        TerminalInputTarget::Remote => {
+            request_live_terminal_input(state.inner(), &surface_id, events)
+        }
+    };
+    Ok(PreparedTerminalInput {
+        workspace_id: workspace.workspace_id.clone(),
+        surface_id,
+        demand,
+    })
+}
+
+fn finish_terminal_input_control(
+    app: &AppHandle,
+    prepared: PreparedTerminalInput,
+) -> ControlCallResult {
+    let PreparedTerminalInput {
+        workspace_id,
+        surface_id,
+        demand,
+    } = prepared;
+    let state = app.state::<TerminalState>();
+    let outcome = match demand {
+        TerminalMaterializationDemand::Noop => TerminalInputOutcome::Sent,
+        TerminalMaterializationDemand::Live(events) => {
+            terminal_apply_materialization_events_for_control(
+                app,
+                state.inner(),
+                &surface_id,
+                events,
+            )
+        }
+        TerminalMaterializationDemand::Queued => TerminalInputOutcome::Queued,
+        TerminalMaterializationDemand::Start(lease) => {
+            let app = app.clone();
+            let logging_surface_id = surface_id.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let state = app.state::<TerminalState>();
+                if let Err(error) =
+                    materialize_terminal_for_input(&app, state.inner(), lease, None, None)
+                {
+                    eprintln!(
+                        "[terminal] failed to materialize input target {logging_surface_id}: {error}"
+                    );
+                }
+            });
+            TerminalInputOutcome::Queued
+        }
+        TerminalMaterializationDemand::InputQueueFull => TerminalInputOutcome::InputQueueFull,
+        TerminalMaterializationDemand::SurfaceUnavailable => {
+            TerminalInputOutcome::SurfaceUnavailable
+        }
+    };
+    let queued = match outcome {
+        TerminalInputOutcome::Sent => false,
+        TerminalInputOutcome::Queued => true,
+        failure => return terminal_input_failure(&surface_id, failure),
+    };
+    ok(json!({
+        "workspace_id": workspace_id,
+        "surface_id": surface_id,
+        "queued": queued,
+    }))
+}
+
+fn terminal_input_target(
     workspace: &SessionWorkspaceSnapshot,
     surface_id: &str,
-) -> Option<TerminalMaterializationSpec> {
+) -> Option<TerminalInputTarget> {
     let surface = workspace
         .surfaces
         .as_deref()
         .unwrap_or_default()
         .iter()
         .find(|surface| surface.surface_id == surface_id)?;
-    if !matches!(
+    if matches!(
         surface.kind,
-        SessionSurfaceKindSnapshot::Terminal | SessionSurfaceKindSnapshot::RemoteTerminal { .. }
+        SessionSurfaceKindSnapshot::RemoteTerminal { .. }
     ) {
+        return Some(TerminalInputTarget::Remote);
+    }
+    if !matches!(surface.kind, SessionSurfaceKindSnapshot::Terminal) {
         return None;
     }
     let startup = surface.terminal_startup.as_ref();
@@ -10652,16 +10719,18 @@ fn terminal_materialization_spec(
         .and_then(|startup| startup.working_directory.clone())
         .or_else(|| surface.metadata.reported_directory.clone())
         .or_else(|| workspace.current_directory.clone());
-    Some(TerminalMaterializationSpec::new(
-        working_directory,
-        startup.and_then(|startup| startup.command.clone()),
-        startup
-            .and_then(|startup| startup.initial_input.clone())
-            .unwrap_or_default()
-            .into_bytes(),
-        startup
-            .and_then(|startup| startup.environment.clone())
-            .unwrap_or_default(),
+    Some(TerminalInputTarget::Local(
+        TerminalMaterializationSpec::new(
+            working_directory,
+            startup.and_then(|startup| startup.command.clone()),
+            startup
+                .and_then(|startup| startup.initial_input.clone())
+                .unwrap_or_default()
+                .into_bytes(),
+            startup
+                .and_then(|startup| startup.environment.clone())
+                .unwrap_or_default(),
+        ),
     ))
 }
 
@@ -10690,6 +10759,7 @@ fn terminal_mobile_workspace_list(
     current: &AppSessionSnapshot,
     window_index: usize,
     requested_workspace_id: Option<&str>,
+    requested_terminal_id: Option<&str>,
     created_terminal_id: &str,
 ) -> ControlCallResult {
     let Some(window) = current.windows.get(window_index) else {
@@ -10707,6 +10777,10 @@ fn terminal_mobile_workspace_list(
     let notifications = app
         .try_state::<crate::notifications::NotificationCommandState>()
         .and_then(|state| crate::notifications::notification_list_for_control(state.inner()).ok());
+    let groups = terminal_groups_for_mobile(
+        window,
+        requested_workspace_id.is_some() || requested_terminal_id.is_some(),
+    );
     let workspaces = window
         .tab_manager
         .workspaces
@@ -10717,53 +10791,11 @@ fn terminal_mobile_workspace_list(
                 || workspace.workspace_id.as_deref() == requested_workspace_id
         })
         .map(|(workspace_index, workspace)| {
-            let terminals = surfaces_for_workspace(workspace)
-                .into_iter()
-                .filter_map(|row| {
-                    let surface_id = row.get("id").and_then(Value::as_str)?;
-                    let surface = workspace
-                        .surfaces
-                        .as_deref()
-                        .unwrap_or_default()
-                        .iter()
-                        .find(|surface| surface.surface_id == surface_id)?;
-                    matches!(
-                        surface.kind,
-                        SessionSurfaceKindSnapshot::Terminal
-                            | SessionSurfaceKindSnapshot::RemoteTerminal { .. }
-                    )
-                    .then(|| {
-                        let title = surface
-                            .metadata
-                            .custom_title
-                            .clone()
-                            .or_else(|| panel_title(&workspace.panel_titles, surface_id))
-                            .unwrap_or_else(|| "Terminal".into());
-                        let current_directory = surface
-                            .metadata
-                            .reported_directory
-                            .clone()
-                            .or_else(|| {
-                                surface
-                                    .terminal_startup
-                                    .as_ref()
-                                    .and_then(|startup| startup.working_directory.clone())
-                            })
-                            .or_else(|| workspace.current_directory.clone());
-                        json!({
-                            "id": surface.surface_id,
-                            "title": title,
-                            "current_directory": current_directory,
-                            "is_ready": terminal_grid_size_for_panel(
-                                terminal_state.inner(),
-                                &surface.surface_id,
-                            ).is_some(),
-                            "is_focused": workspace.focused_panel_id.as_deref()
-                                == Some(surface.surface_id.as_str()),
-                        })
-                    })
-                })
-                .collect::<Vec<_>>();
+            let mut is_ready = |surface_id: &str| {
+                terminal_grid_size_for_panel(terminal_state.inner(), surface_id).is_some()
+            };
+            let terminals =
+                terminal_rows_for_mobile(workspace, requested_terminal_id, &mut is_ready);
             let latest = workspace.workspace_id.as_deref().and_then(|workspace_id| {
                 notifications.as_ref().and_then(|center| {
                     center
@@ -10811,11 +10843,127 @@ fn terminal_mobile_workspace_list(
             })
         })
         .collect::<Vec<_>>();
+    if requested_terminal_id.is_some_and(|requested| {
+        !workspaces.iter().any(|workspace| {
+            workspace
+                .get("terminals")
+                .and_then(Value::as_array)
+                .is_some_and(|terminals| {
+                    terminals.iter().any(|terminal| {
+                        terminal.get("id").and_then(Value::as_str) == Some(requested)
+                    })
+                })
+        })
+    }) {
+        let surface_id = requested_terminal_id.expect("requested terminal was present");
+        return ControlCallResult::Err {
+            code: "not_found".into(),
+            message: "Terminal not found".into(),
+            data: json!({"surface_id": surface_id}).try_into().ok(),
+        };
+    }
     ok(json!({
         "workspaces": workspaces,
-        "groups": [],
+        "groups": groups,
         "created_terminal_id": created_terminal_id,
     }))
+}
+
+fn terminal_rows_for_mobile(
+    workspace: &SessionWorkspaceSnapshot,
+    requested_terminal_id: Option<&str>,
+    is_ready: &mut impl FnMut(&str) -> bool,
+) -> Vec<Value> {
+    surfaces_for_workspace(workspace)
+        .into_iter()
+        .filter_map(|row| {
+            let surface_id = row.get("id").and_then(Value::as_str)?;
+            if requested_terminal_id.is_some_and(|requested| requested != surface_id) {
+                return None;
+            }
+            let surface = workspace
+                .surfaces
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .find(|surface| surface.surface_id == surface_id)?;
+            if !matches!(
+                surface.kind,
+                SessionSurfaceKindSnapshot::Terminal
+                    | SessionSurfaceKindSnapshot::RemoteTerminal { .. }
+            ) {
+                return None;
+            }
+            let title = surface
+                .metadata
+                .custom_title
+                .clone()
+                .or_else(|| panel_title(&workspace.panel_titles, surface_id))
+                .or_else(|| surface.metadata.runtime_title.clone())
+                .unwrap_or_else(|| "Terminal".into());
+            let current_directory = surface
+                .metadata
+                .reported_directory
+                .clone()
+                .or_else(|| {
+                    surface
+                        .terminal_startup
+                        .as_ref()
+                        .and_then(|startup| startup.working_directory.clone())
+                })
+                .or_else(|| workspace.current_directory.clone());
+            Some(json!({
+                "id": surface.surface_id,
+                "title": title,
+                "current_directory": current_directory,
+                "is_ready": is_ready(&surface.surface_id),
+                "is_focused": workspace.focused_panel_id.as_deref()
+                    == Some(surface.surface_id.as_str()),
+            }))
+        })
+        .collect()
+}
+
+fn terminal_groups_for_mobile(window: &SessionWindowSnapshot, targeted: bool) -> Vec<Value> {
+    if targeted {
+        return Vec::new();
+    }
+    window
+        .tab_manager
+        .workspace_groups
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|group| {
+            let members = window
+                .tab_manager
+                .workspaces
+                .iter()
+                .filter(|workspace| workspace.group_id.as_deref() == Some(group.id.as_str()))
+                .filter_map(|workspace| workspace.workspace_id.clone())
+                .collect::<Vec<_>>();
+            let anchor_workspace_id = group
+                .anchor_workspace_id
+                .as_ref()
+                .filter(|anchor| members.contains(anchor))
+                .cloned()
+                .or_else(|| {
+                    group
+                        .anchor_member_index
+                        .and_then(|index| usize::try_from(index).ok())
+                        .and_then(|index| members.get(index).cloned())
+                })
+                .or_else(|| members.first().cloned());
+            json!({
+                "id": group.id,
+                "name": group.name,
+                "is_collapsed": group.is_collapsed,
+                "is_pinned": group.is_pinned.unwrap_or(false),
+                "anchor_workspace_id": anchor_workspace_id,
+                "member_workspace_ids": members,
+            })
+        })
+        .collect()
 }
 
 fn mobile_workspace_preview(raw: &str) -> Option<String> {

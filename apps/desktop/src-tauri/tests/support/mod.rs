@@ -151,6 +151,23 @@ impl DesktopFixture {
     pub fn profile_path(&self) -> &Path {
         self.profile.path()
     }
+
+    pub fn stop(&mut self) -> Result<(), String> {
+        if self
+            .child
+            .try_wait()
+            .map_err(|error| format!("query owned desktop {}: {error}", self.pid))?
+            .is_none()
+        {
+            self.child
+                .kill()
+                .map_err(|error| format!("stop owned desktop {}: {error}", self.pid))?;
+        }
+        self.child
+            .wait()
+            .map(|_| ())
+            .map_err(|error| format!("wait for owned desktop {}: {error}", self.pid))
+    }
 }
 
 impl Drop for DesktopFixture {

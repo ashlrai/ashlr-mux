@@ -781,6 +781,36 @@ pub(crate) fn request_terminal_materialization(
     ))
 }
 
+pub(crate) fn request_live_terminal_input(
+    state: &TerminalState,
+    panel_id: &str,
+    mut events: Vec<TerminalMaterializationEvent>,
+) -> TerminalMaterializationDemand {
+    events.retain(|event| event.byte_len() != 0);
+    if events.is_empty() {
+        return TerminalMaterializationDemand::Noop;
+    }
+    let panel_id = panel_id.trim();
+    if panel_id.is_empty() {
+        return TerminalMaterializationDemand::SurfaceUnavailable;
+    }
+    let Some(bytes) = TerminalMaterializationSlot::batch_bytes(&events) else {
+        return TerminalMaterializationDemand::InputQueueFull;
+    };
+    if bytes > TERMINAL_PENDING_INPUT_LIMIT {
+        return TerminalMaterializationDemand::InputQueueFull;
+    }
+    match state.try_runtime_registry() {
+        Ok(registry)
+            if !registry.reserved_panel_ids.contains(panel_id)
+                && registry.has_live_panel(panel_id) =>
+        {
+            TerminalMaterializationDemand::Live(events)
+        }
+        _ => TerminalMaterializationDemand::SurfaceUnavailable,
+    }
+}
+
 #[allow(dead_code)]
 pub(crate) fn retry_terminal_materialization_start(
     state: &TerminalState,

@@ -13,6 +13,8 @@ pub(super) enum TerminalRequestPlan {
         window_index: usize,
         workspace_index: usize,
         pane_id: String,
+        requested_workspace_id: Option<String>,
+        requested_terminal_id: Option<String>,
     },
     Input {
         window_index: usize,
@@ -75,6 +77,8 @@ fn plan_create(
         window_index,
         workspace_index,
         pane_id,
+        requested_workspace_id: workspace_id,
+        requested_terminal_id: terminal_id,
     })
 }
 
@@ -779,6 +783,8 @@ mod tests {
                 window_index: 0,
                 workspace_index: 0,
                 pane_id: PANE.into(),
+                requested_workspace_id: Some(WORKSPACE.into()),
+                requested_terminal_id: None,
             })
         );
         let error = plan_terminal_request_with_active_window(

@@ -31,7 +31,11 @@ fn terminal_create_input_dispatch_has_one_shared_alias_path() {
     for method in FROZEN_METHODS {
         assert!(source.contains(&format!("\"{method}\"")));
     }
-    assert!(source.contains("terminal_create_input_control(app, &request.method, &request.params)"));
+    assert!(source.contains("terminal_create_control(app, &request.method, &request.params)"));
+    assert!(
+        source.contains("prepare_terminal_input_control(app, &request.method, &request.params)")
+    );
+    assert!(source.contains("finish_terminal_input_control(app, prepared)"));
 }
 
 #[test]
@@ -215,6 +219,7 @@ fn terminal_create_mobile_projection_preserves_scope_groups_and_runtime_titles()
     let workspace = SessionWorkspaceSnapshot {
         workspace_id: Some(WORKSPACE.into()),
         process_title: "Workspace".into(),
+        group_id: Some("66666666-6666-4666-8666-666666666666".into()),
         layout: Some(SessionWorkspaceLayoutSnapshot::Pane(pane)),
         focused_panel_id: Some(FIRST.into()),
         surfaces: Some(vec![
