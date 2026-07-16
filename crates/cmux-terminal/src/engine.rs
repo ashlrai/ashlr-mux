@@ -249,4 +249,269 @@ mod tests {
         assert_eq!(term.text_lines(true, None), vec!["two", "three"]);
         assert_eq!(term.text_lines(false, None), vec!["two", "three"]);
     }
+
+    #[test]
+    fn terminal_modes_track_the_vt_state_machine() {
+        let mut term = grid();
+        assert!(!term.bracketed_paste_enabled());
+        assert!(!term.application_cursor_keys_enabled());
+        assert!(!term.alternate_screen_enabled());
+        assert!(!term.mouse_reporting_enabled());
+        assert!(!term.sgr_mouse_enabled());
+
+        term.advance(b"\x1b[?1h\x1b[?1002h\x1b[?1006h\x1b[?2004h\x1b[?1049h");
+        assert!(term.bracketed_paste_enabled());
+        assert!(term.application_cursor_keys_enabled());
+        assert!(term.alternate_screen_enabled());
+        assert!(term.mouse_reporting_enabled());
+        assert!(term.sgr_mouse_enabled());
+
+        term.advance(b"\x1b[?1l\x1b[?1002l\x1b[?1006l\x1b[?2004l\x1b[?1049l");
+        assert!(!term.bracketed_paste_enabled());
+        assert!(!term.application_cursor_keys_enabled());
+        assert!(!term.alternate_screen_enabled());
+        assert!(!term.mouse_reporting_enabled());
+        assert!(!term.sgr_mouse_enabled());
+    }
+
+    #[test]
+    fn render_grid_snapshot_matches_the_canonical_wire_contract() {
+        let mut term = TerminalGrid::new(GridSize::new(8, 2));
+        term.advance(b"one\r\ntwo\r\nthree\x1b[?2004h");
+
+        let snapshot = term.render_grid_snapshot_with_scrollback("surface-1", 19, 240);
+        assert_eq!(snapshot.format, "cmux.render-grid.v1");
+        assert_eq!(snapshot.surface_id, "surface-1");
+        assert_eq!(snapshot.state_seq, 19);
+        assert_eq!((snapshot.columns, snapshot.rows), (8, 2));
+        assert!(snapshot.full);
+        assert!(snapshot.cleared_rows.is_empty());
+        assert_eq!(snapshot.active_screen, RenderGridScreen::Primary);
+        assert_eq!(
+            snapshot
+                .row_spans
+                .iter()
+                .map(|span| (span.row, span.column, span.text.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(0, 0, "two"), (1, 0, "three")]
+        );
+        assert_eq!(snapshot.scrollback_rows, 1);
+        assert_eq!(snapshot.scrollback_spans[0].text, "one");
+        assert!(snapshot
+            .modes
+            .iter()
+            .any(|mode| mode.code == 2004 && !mode.ansi && mode.on));
+        assert_eq!(
+            snapshot
+                .cursor
+                .as_ref()
+                .map(|cursor| (cursor.row, cursor.column)),
+            Some((1, 5))
+        );
+
+        let json = serde_json::to_value(&snapshot).expect("serializable render-grid frame");
+        assert_eq!(json["format"], "cmux.render-grid.v1");
+        assert_eq!(json["surface_id"], "surface-1");
+        assert_eq!(json["state_seq"], 19);
+        assert!(json.get("row_spans").is_some());
+        assert!(json.get("scrollback_spans").is_some());
+    }
+
+    #[test]
+    fn render_grid_snapshot_tracks_scrolled_viewports_and_budgets_history() {
+        let mut term = TerminalGrid::new(GridSize::new(8, 2));
+        term.advance(b"one\r\ntwo\r\nthree\r\nfour\r\nfive");
+
+        let bounded = term.render_grid_snapshot_with_scrollback("surface", 27, 2);
+        assert_eq!(bounded.scrollback_rows, 2);
+        assert_eq!(
+            bounded
+                .scrollback_spans
+                .iter()
+                .map(|span| span.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["two", "three"]
+        );
+
+        term.scroll_display_lines(1);
+        let scrolled = term.render_grid_snapshot_with_scrollback("surface", 28, 240);
+        assert_eq!(
+            scrolled
+                .row_spans
+                .iter()
+                .map(|span| (span.row, span.text.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(0, "three"), (1, "four")]
+        );
+        assert_eq!(scrolled.cursor, None, "live cursor is below the viewport");
+        assert_eq!(
+            scrolled
+                .scrollback_spans
+                .iter()
+                .map(|span| span.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["one", "two"]
+        );
+    }
+
+    #[test]
+    fn render_grid_preserves_widths_styles_and_resolved_colors() {
+        let mut term = TerminalGrid::new(GridSize::new(12, 2));
+        term.advance("界e\u{301}".as_bytes());
+        term.advance(b"\x1b[2;1H\x1b[1;2;3;4;5;7;8;9;53;38;2;1;2;3;48;5;4mA");
+
+        let snapshot = term.render_grid_snapshot("surface", 1);
+        let wide = snapshot
+            .row_spans
+            .iter()
+            .find(|span| span.row == 0)
+            .expect("wide and combining text span");
+        assert_eq!(wide.text, "界e\u{301}");
+        assert_eq!(wide.cell_width, Some(3));
+
+        let styled = snapshot
+            .row_spans
+            .iter()
+            .find(|span| span.row == 1)
+            .expect("styled span");
+        let style = &snapshot.styles[styled.style_id];
+        assert_eq!(style.foreground.as_deref(), Some("#010203"));
+        assert_eq!(style.background.as_deref(), Some("#0000ee"));
+        assert!(style.bold && style.faint && style.italic && style.underline);
+        assert!(style.blink && style.inverse && style.invisible);
+        assert!(style.strikethrough && style.overline);
+    }
+
+    #[test]
+    fn render_grid_preserves_dynamic_colors_and_active_screen() {
+        let mut term = TerminalGrid::new(GridSize::new(12, 2));
+        term.advance(b"primary\x1b]10;#112233\x07\x1b]11;#445566\x07\x1b]12;#778899\x07");
+        let primary = term.render_grid_snapshot("surface", 1);
+        assert_eq!(primary.terminal_foreground.as_deref(), Some("#112233"));
+        assert_eq!(primary.terminal_background.as_deref(), Some("#445566"));
+        assert_eq!(primary.terminal_cursor_color.as_deref(), Some("#778899"));
+
+        term.advance(b"\x1b[?1049h\x1b[Halternate");
+        let alternate = term.render_grid_snapshot_with_scrollback("surface", 2, 240);
+        assert_eq!(alternate.active_screen, RenderGridScreen::Alternate);
+        assert_eq!(alternate.scrollback_rows, 0);
+        assert!(alternate.scrollback_spans.is_empty());
+        assert_eq!(alternate.row_spans[0].text, "alternate");
+    }
+
+    #[test]
+    fn persistence_snapshot_is_reconstructible_bounded_and_theme_portable() {
+        let mut term = TerminalGrid::new(GridSize::new(12, 3));
+        term.advance(b"one\r\n\x1b]10;#112233\x07\x1b[1;31mtwo\x1b[0m\r\nthree\r\nfour");
+
+        let vt = term
+            .vt_snapshot_for_persistence(4_000, 400_000)
+            .expect("non-empty persisted state");
+        assert!(vt.chars().count() <= 400_000);
+        assert!(!vt.contains("\x1b]10;"));
+
+        let mut restored = TerminalGrid::new(GridSize::new(12, 3));
+        restored.advance(vt.as_bytes());
+        assert_eq!(restored.text_lines(true, None), term.text_lines(true, None));
+        let frame = restored.render_grid_snapshot_with_scrollback("surface", 1, 4_000);
+        assert!(frame
+            .styles
+            .iter()
+            .any(|style| style.bold && style.foreground.as_deref() == Some("#cd0000")));
+    }
+
+    #[test]
+    fn persistence_snapshot_caps_total_rows_and_can_tail_inside_the_viewport() {
+        let mut term = TerminalGrid::new(GridSize::new(16, 5));
+        term.advance(b"one\r\ntwo\r\nthree\r\nfour\r\nfive");
+        assert_eq!(
+            term.vt_snapshot_for_persistence(2, usize::MAX),
+            Some("four\n\x1b[1Gfive".into())
+        );
+
+        let mut many = TerminalGrid::new(GridSize::new(16, 1));
+        for row in 0..4_005 {
+            if row != 0 {
+                many.advance(b"\r\n");
+            }
+            many.advance(format!("row{row:04}").as_bytes());
+        }
+        let vt = many
+            .vt_snapshot_for_persistence(4_000, usize::MAX)
+            .expect("recent rows");
+        assert_eq!(vt.lines().count(), 4_000);
+        assert!(vt.starts_with("row0005"));
+        assert!(vt.ends_with("row4004"));
+    }
+
+    #[test]
+    fn persistence_snapshot_preserves_hyperlinks_and_underline_styles() {
+        let mut term = TerminalGrid::new(GridSize::new(40, 2));
+        term.advance(
+            b"\x1b]8;id=docs;https://example.test/docs\x1b\\link\x1b]8;;\x1b\\ \
+              \x1b[1;4:2mdouble\x1b[0m \x1b[4:3mcurly\x1b[0m \
+              \x1b[4:4mdotted\x1b[0m \x1b[4:5mdashed\x1b[0m",
+        );
+
+        let vt = term
+            .vt_snapshot_for_persistence(4_000, 400_000)
+            .expect("styled hyperlink row");
+        assert!(vt.contains("\x1b]8;id=docs;https://example.test/docs\x1b\\"));
+        assert!(vt.contains("\x1b]8;;\x1b\\"));
+        for underline in ["4:2", "4:3", "4:4", "4:5"] {
+            assert!(vt.contains(underline), "missing SGR {underline}: {vt:?}");
+        }
+        assert!(vt.contains(";1;4:2;"), "double underline must retain bold");
+
+        let mut restored = TerminalGrid::new(GridSize::new(40, 2));
+        restored.advance(vt.as_bytes());
+        let hyperlink = restored.term.grid()[Line(0)][Column(0)]
+            .hyperlink()
+            .expect("hyperlink metadata reconstructed");
+        assert_eq!(hyperlink.id(), "docs");
+        assert_eq!(hyperlink.uri(), "https://example.test/docs");
+        let double = &restored.term.grid()[Line(0)][Column(5)];
+        assert!(double.flags.contains(Flags::DOUBLE_UNDERLINE));
+        assert!(double.flags.contains(Flags::BOLD));
+    }
+
+    #[test]
+    fn persistence_snapshot_preserves_blink_overline_and_alternate_screen() {
+        let mut term = TerminalGrid::new(GridSize::new(32, 2));
+        term.advance(b"primary\r\nold\x1b[?1049h\x1b[H\x1b[5;53mstyled\x1b[25;55m plain");
+
+        let frame = term.render_grid_snapshot("surface", 1);
+        assert!(frame
+            .styles
+            .iter()
+            .any(|style| style.blink && style.overline));
+        let vt = term
+            .vt_snapshot_for_persistence(4_000, 400_000)
+            .expect("active alternate screen");
+        assert!(vt.contains(";5;") && vt.contains(";53;"), "{vt:?}");
+        assert!(vt.contains("styled"));
+        assert!(!vt.contains("primary"));
+        assert!(!vt.contains("old"));
+    }
+
+    #[test]
+    fn persistence_snapshot_rejects_blank_uses_lf_and_tails_at_escape_boundaries() {
+        let mut blank = TerminalGrid::new(GridSize::new(8, 2));
+        blank.advance(b" \t\r\n  ");
+        assert_eq!(blank.vt_snapshot_for_persistence(4_000, 400_000), None);
+
+        let mut content = TerminalGrid::new(GridSize::new(32, 1));
+        content.advance(b"\x1b[1;31m0123456789abcdef\x1b[0m");
+        let vt = content
+            .vt_snapshot_for_persistence(4_000, 10)
+            .expect("bounded newest text");
+        assert!(vt.chars().count() <= 10, "{vt:?}");
+        assert!(vt.contains("abcdef"), "{vt:?}");
+        assert!(!vt.starts_with("[1;"), "partial CSI: {vt:?}");
+        assert!(!vt.contains('\r'));
+
+        let mut restored = TerminalGrid::new(GridSize::new(32, 1));
+        restored.advance(vt.as_bytes());
+        assert!(restored.text_lines(false, None)[0].ends_with("abcdef"));
+    }
 }
