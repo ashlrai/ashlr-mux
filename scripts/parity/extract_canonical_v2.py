@@ -19,7 +19,7 @@ DEFAULT_COMMIT = "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452"
 DEFAULT_OUTPUT = Path("docs/parity/source/canonical_v2.json")
 CAPABILITY_PATH = "Sources/TerminalController.swift"
 DEBUG_PATH = "Sources/TerminalController+DebugMethodNames.swift"
-EXPECTED_RELEASE = 251
+EXPECTED_RELEASE = 261
 EXPECTED_DEBUG = 42
 METHOD_RE = re.compile(r'"([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+)"')
 FUNC_RE = re.compile(r"\bfunc\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")
@@ -102,6 +102,24 @@ def extract_array(
     return found
 
 
+def extract_function_case_methods(text: str, signature: str) -> list[tuple[str, int]]:
+    """Extract concrete dotted wire methods from case arms in one Swift function."""
+    lines = text.splitlines()
+    start = next(i for i, line in enumerate(lines) if signature in line)
+    depth = 0
+    found: dict[str, int] = {}
+    for index in range(start, len(lines)):
+        line = lines[index]
+        depth += line.count("{")
+        depth -= line.count("}")
+        if line.lstrip().startswith("case "):
+            for method in METHOD_RE.findall(line):
+                found.setdefault(method, index + 1)
+        if index > start and depth == 0:
+            break
+    return list(found.items())
+
+
 def enclosing_symbol(lines: list[str], index: int) -> str | None:
     for candidate in range(index, -1, -1):
         match = FUNC_RE.search(lines[candidate])
@@ -149,9 +167,15 @@ def main() -> int:
 
     commit = git("rev-parse", f"{args.commit}^{{commit}}").strip()
     capabilities = blob(commit, CAPABILITY_PATH)
-    release = extract_array(
+    advertised_release = extract_array(
         capabilities, "var methods: [String] = [", stop_marker="#if DEBUG"
     )
+    advertised_release_names = {name for name, _ in advertised_release}
+    mobile_rpc = extract_function_case_methods(capabilities, "func mobileHostHandleRPC(")
+    unadvertised_release = [
+        (name, line) for name, line in mobile_rpc if name not in advertised_release_names
+    ]
+    release = advertised_release + unadvertised_release
     debug_text = blob(commit, DEBUG_PATH)
     debug = extract_array(debug_text, "v2DebugMethodNames: [String] = [")
 
@@ -179,11 +203,20 @@ def main() -> int:
     pointer_index = {path: text.splitlines() for path, text in pointer_blobs.items()}
 
     entries: list[dict[str, object]] = []
-    advertised = [(name, line, "release") for name, line in release]
-    advertised += [(name, line, "debug_only") for name, line in debug]
-    advertised_names = {name for name, _, _ in advertised}
+    cataloged = [
+        (name, line, "release", "v2Capabilities")
+        for name, line in advertised_release
+    ]
+    cataloged += [
+        (name, line, "release", "mobileHostHandleRPC")
+        for name, line in unadvertised_release
+    ]
+    cataloged += [
+        (name, line, "debug_only", "v2DebugMethodNames") for name, line in debug
+    ]
+    cataloged_names = {name for name, _, _, _ in cataloged}
     source_occurrences: dict[str, list[tuple[str, int]]] = {
-        name: [] for name in advertised_names
+        name: [] for name in cataloged_names
     }
     for path, lines in source_index.items():
         for index, line in enumerate(lines):
@@ -191,7 +224,7 @@ def main() -> int:
                 if candidate in source_occurrences:
                     source_occurrences[candidate].append((path, index))
     pointer_occurrences: dict[str, list[tuple[str, int]]] = {
-        name: [] for name in advertised_names
+        name: [] for name in cataloged_names
     }
     for path, lines in pointer_index.items():
         for index, line in enumerate(lines):
@@ -205,11 +238,14 @@ def main() -> int:
                 if candidate in pointer_occurrences:
                     pointer_occurrences[candidate].append((path, index))
 
-    for method, source_line, availability in advertised:
+    for method, source_line, availability, source_symbol in cataloged:
         dispatch: list[dict[str, object]] = []
         for path, index in source_occurrences[method]:
             lines = source_index[path]
-            if path in (CAPABILITY_PATH, DEBUG_PATH) and index + 1 == source_line:
+            if source_symbol in ("v2Capabilities", "v2DebugMethodNames") and path in (
+                CAPABILITY_PATH,
+                DEBUG_PATH,
+            ) and index + 1 == source_line:
                 continue
             symbol = enclosing_symbol(lines, index)
             item = location(path, index + 1, symbol)
@@ -235,7 +271,7 @@ def main() -> int:
             "test_only": False,
             "domain": domain,
             "family": method_family,
-            "source_location": location(source_path, source_line, "v2Capabilities" if availability == "release" else "v2DebugMethodNames"),
+            "source_location": location(source_path, source_line, source_symbol),
             "dispatch_locations": dispatch,
             "implementation_locations": implementation_locations,
             "contract_test_pointers": pointers,
@@ -257,13 +293,15 @@ def main() -> int:
             "generator": "scripts/parity/extract_canonical_v2.py",
             "release_source": CAPABILITY_PATH,
             "debug_source": DEBUG_PATH,
-            "classification_rule": "release is the unconditional v2Capabilities array; debug_only is appended under #if DEBUG; test_only is reserved for endpoint methods defined only in test targets (none found)",
+            "classification_rule": "release is the union of the unconditional v2Capabilities array and concrete case methods dispatched by mobileHostHandleRPC; debug_only is appended under #if DEBUG; test_only is reserved for endpoint methods defined only in test targets (none found)",
         },
         "counts": {
             "release": len(release_names),
+            "advertised_release": len(advertised_release),
+            "unadvertised_release": len(unadvertised_release),
             "debug_only": len(debug_names),
             "test_only": 0,
-            "all_advertised_debug_build": len(release_names) + len(debug_names),
+            "all_release_debug_build": len(release_names) + len(debug_names),
         },
         "discrepancy": None if len(release_names) == EXPECTED_RELEASE else {
             "stated_release_count": EXPECTED_RELEASE,

@@ -8,7 +8,7 @@
     "ref_at_freeze": "origin/main",
     "frozen_on": "2026-07-11",
     "expected_top_level_commands": 158,
-    "expected_release_v2_methods": 251
+    "expected_release_v2_methods": 261
   },
   "windows": {
     "repository": "https://github.com/ashlrai/ashlr-mux.git",

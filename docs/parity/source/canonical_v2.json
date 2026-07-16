@@ -7,13 +7,15 @@
     "generator": "scripts/parity/extract_canonical_v2.py",
     "release_source": "Sources/TerminalController.swift",
     "debug_source": "Sources/TerminalController+DebugMethodNames.swift",
-    "classification_rule": "release is the unconditional v2Capabilities array; debug_only is appended under #if DEBUG; test_only is reserved for endpoint methods defined only in test targets (none found)"
+    "classification_rule": "release is the union of the unconditional v2Capabilities array and concrete case methods dispatched by mobileHostHandleRPC; debug_only is appended under #if DEBUG; test_only is reserved for endpoint methods defined only in test targets (none found)"
   },
   "counts": {
-    "release": 251,
+    "release": 261,
+    "advertised_release": 251,
+    "unadvertised_release": 10,
     "debug_only": 42,
     "test_only": 0,
-    "all_advertised_debug_build": 293
+    "all_release_debug_build": 303
   },
   "discrepancy": null,
   "methods": [
@@ -4805,6 +4807,33 @@
       ]
     },
     {
+      "method": "dogfood.feedback.submit",
+      "availability": "release",
+      "test_only": false,
+      "domain": "dogfood",
+      "family": "dogfood",
+      "source_location": {
+        "path": "Sources/TerminalController.swift",
+        "line": 14047,
+        "symbol": "mobileHostHandleRPC"
+      },
+      "dispatch_locations": [
+        {
+          "path": "Sources/TerminalController.swift",
+          "line": 14047,
+          "symbol": "mobileHostHandleRPC"
+        }
+      ],
+      "implementation_locations": [
+        {
+          "path": "Sources/TerminalController.swift",
+          "line": 14047,
+          "symbol": "mobileHostHandleRPC"
+        }
+      ],
+      "contract_test_pointers": []
+    },
+    {
       "method": "extension.sidebar.snapshot",
       "availability": "release",
       "test_only": false,
@@ -5786,6 +5815,43 @@
       ]
     },
     {
+      "method": "mobile.terminal.mouse",
+      "availability": "release",
+      "test_only": false,
+      "domain": "mobile",
+      "family": "mobile.terminal",
+      "source_location": {
+        "path": "Sources/TerminalController.swift",
+        "line": 14027,
+        "symbol": "mobileHostHandleRPC"
+      },
+      "dispatch_locations": [
+        {
+          "path": "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/MobileHost/ControlCommandCoordinator+MobileHost.swift",
+          "line": 50,
+          "symbol": "handleMobileHost"
+        },
+        {
+          "path": "Sources/TerminalController.swift",
+          "line": 14027,
+          "symbol": "mobileHostHandleRPC"
+        }
+      ],
+      "implementation_locations": [
+        {
+          "path": "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/MobileHost/ControlCommandCoordinator+MobileHost.swift",
+          "line": 50,
+          "symbol": "handleMobileHost"
+        },
+        {
+          "path": "Sources/TerminalController.swift",
+          "line": 14027,
+          "symbol": "mobileHostHandleRPC"
+        }
+      ],
+      "contract_test_pointers": []
+    },
+    {
       "method": "mobile.terminal.paste",
       "availability": "release",
       "test_only": false,
@@ -5827,6 +5893,43 @@
         {
           "path": "Sources/TerminalController.swift",
           "line": 14017,
+          "symbol": "mobileHostHandleRPC"
+        }
+      ],
+      "contract_test_pointers": []
+    },
+    {
+      "method": "mobile.terminal.paste_image",
+      "availability": "release",
+      "test_only": false,
+      "domain": "mobile",
+      "family": "mobile.terminal",
+      "source_location": {
+        "path": "Sources/TerminalController.swift",
+        "line": 14019,
+        "symbol": "mobileHostHandleRPC"
+      },
+      "dispatch_locations": [
+        {
+          "path": "Sources/Mobile/MobileHostService.swift",
+          "line": 1415,
+          "symbol": "ticketAuthorizationError"
+        },
+        {
+          "path": "Sources/TerminalController.swift",
+          "line": 14019,
+          "symbol": "mobileHostHandleRPC"
+        }
+      ],
+      "implementation_locations": [
+        {
+          "path": "Sources/Mobile/MobileHostService.swift",
+          "line": 1415,
+          "symbol": "ticketAuthorizationError"
+        },
+        {
+          "path": "Sources/TerminalController.swift",
+          "line": 14019,
           "symbol": "mobileHostHandleRPC"
         }
       ],
@@ -5893,6 +5996,53 @@
           "line": 878
         }
       ]
+    },
+    {
+      "method": "mobile.terminal.scroll",
+      "availability": "release",
+      "test_only": false,
+      "domain": "mobile",
+      "family": "mobile.terminal",
+      "source_location": {
+        "path": "Sources/TerminalController.swift",
+        "line": 14025,
+        "symbol": "mobileHostHandleRPC"
+      },
+      "dispatch_locations": [
+        {
+          "path": "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/MobileHost/ControlCommandCoordinator+MobileHost.swift",
+          "line": 48,
+          "symbol": "handleMobileHost"
+        },
+        {
+          "path": "Sources/Mobile/MobileHostService.swift",
+          "line": 1418,
+          "symbol": "ticketAuthorizationError"
+        },
+        {
+          "path": "Sources/TerminalController.swift",
+          "line": 14025,
+          "symbol": "mobileHostHandleRPC"
+        }
+      ],
+      "implementation_locations": [
+        {
+          "path": "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/MobileHost/ControlCommandCoordinator+MobileHost.swift",
+          "line": 48,
+          "symbol": "handleMobileHost"
+        },
+        {
+          "path": "Sources/Mobile/MobileHostService.swift",
+          "line": 1418,
+          "symbol": "ticketAuthorizationError"
+        },
+        {
+          "path": "Sources/TerminalController.swift",
+          "line": 14025,
+          "symbol": "mobileHostHandleRPC"
+        }
+      ],
+      "contract_test_pointers": []
     },
     {
       "method": "mobile.terminal.set_font",
@@ -6585,6 +6735,42 @@
         {
           "path": "cmuxTests/TerminalNotificationSocketActionTests.swift",
           "line": 150
+        }
+      ]
+    },
+    {
+      "method": "notification.reconcile",
+      "availability": "release",
+      "test_only": false,
+      "domain": "notification",
+      "family": "notification",
+      "source_location": {
+        "path": "Sources/TerminalController.swift",
+        "line": 14045,
+        "symbol": "mobileHostHandleRPC"
+      },
+      "dispatch_locations": [
+        {
+          "path": "Sources/TerminalController.swift",
+          "line": 14045,
+          "symbol": "mobileHostHandleRPC"
+        }
+      ],
+      "implementation_locations": [
+        {
+          "path": "Sources/TerminalController.swift",
+          "line": 14045,
+          "symbol": "mobileHostHandleRPC"
+        }
+      ],
+      "contract_test_pointers": [
+        {
+          "path": "cmuxTests/NotificationDismissSyncTests.swift",
+          "line": 209
+        },
+        {
+          "path": "cmuxTests/NotificationDismissSyncTests.swift",
+          "line": 250
         }
       ]
     },
@@ -10363,6 +10549,43 @@
       ]
     },
     {
+      "method": "terminal.mouse",
+      "availability": "release",
+      "test_only": false,
+      "domain": "terminal",
+      "family": "terminal",
+      "source_location": {
+        "path": "Sources/TerminalController.swift",
+        "line": 14027,
+        "symbol": "mobileHostHandleRPC"
+      },
+      "dispatch_locations": [
+        {
+          "path": "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/MobileHost/ControlCommandCoordinator+MobileHost.swift",
+          "line": 50,
+          "symbol": "handleMobileHost"
+        },
+        {
+          "path": "Sources/TerminalController.swift",
+          "line": 14027,
+          "symbol": "mobileHostHandleRPC"
+        }
+      ],
+      "implementation_locations": [
+        {
+          "path": "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/MobileHost/ControlCommandCoordinator+MobileHost.swift",
+          "line": 50,
+          "symbol": "handleMobileHost"
+        },
+        {
+          "path": "Sources/TerminalController.swift",
+          "line": 14027,
+          "symbol": "mobileHostHandleRPC"
+        }
+      ],
+      "contract_test_pointers": []
+    },
+    {
       "method": "terminal.paste",
       "availability": "release",
       "test_only": false,
@@ -10404,6 +10627,43 @@
         {
           "path": "Sources/TerminalController.swift",
           "line": 14017,
+          "symbol": "mobileHostHandleRPC"
+        }
+      ],
+      "contract_test_pointers": []
+    },
+    {
+      "method": "terminal.paste_image",
+      "availability": "release",
+      "test_only": false,
+      "domain": "terminal",
+      "family": "terminal",
+      "source_location": {
+        "path": "Sources/TerminalController.swift",
+        "line": 14019,
+        "symbol": "mobileHostHandleRPC"
+      },
+      "dispatch_locations": [
+        {
+          "path": "Sources/Mobile/MobileHostService.swift",
+          "line": 1415,
+          "symbol": "ticketAuthorizationError"
+        },
+        {
+          "path": "Sources/TerminalController.swift",
+          "line": 14019,
+          "symbol": "mobileHostHandleRPC"
+        }
+      ],
+      "implementation_locations": [
+        {
+          "path": "Sources/Mobile/MobileHostService.swift",
+          "line": 1415,
+          "symbol": "ticketAuthorizationError"
+        },
+        {
+          "path": "Sources/TerminalController.swift",
+          "line": 14019,
           "symbol": "mobileHostHandleRPC"
         }
       ],
@@ -10498,6 +10758,53 @@
           "line": 879
         }
       ]
+    },
+    {
+      "method": "terminal.scroll",
+      "availability": "release",
+      "test_only": false,
+      "domain": "terminal",
+      "family": "terminal",
+      "source_location": {
+        "path": "Sources/TerminalController.swift",
+        "line": 14025,
+        "symbol": "mobileHostHandleRPC"
+      },
+      "dispatch_locations": [
+        {
+          "path": "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/MobileHost/ControlCommandCoordinator+MobileHost.swift",
+          "line": 48,
+          "symbol": "handleMobileHost"
+        },
+        {
+          "path": "Sources/Mobile/MobileHostService.swift",
+          "line": 1418,
+          "symbol": "ticketAuthorizationError"
+        },
+        {
+          "path": "Sources/TerminalController.swift",
+          "line": 14025,
+          "symbol": "mobileHostHandleRPC"
+        }
+      ],
+      "implementation_locations": [
+        {
+          "path": "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/MobileHost/ControlCommandCoordinator+MobileHost.swift",
+          "line": 48,
+          "symbol": "handleMobileHost"
+        },
+        {
+          "path": "Sources/Mobile/MobileHostService.swift",
+          "line": 1418,
+          "symbol": "ticketAuthorizationError"
+        },
+        {
+          "path": "Sources/TerminalController.swift",
+          "line": 14025,
+          "symbol": "mobileHostHandleRPC"
+        }
+      ],
+      "contract_test_pointers": []
     },
     {
       "method": "terminal.viewport",
@@ -12125,6 +12432,60 @@
       ]
     },
     {
+      "method": "workspace.group.action",
+      "availability": "release",
+      "test_only": false,
+      "domain": "workspace",
+      "family": "workspace.group",
+      "source_location": {
+        "path": "Sources/TerminalController.swift",
+        "line": 14033,
+        "symbol": "mobileHostHandleRPC"
+      },
+      "dispatch_locations": [
+        {
+          "path": "Sources/Mobile/MobileHostService.swift",
+          "line": 1403,
+          "symbol": "ticketAuthorizationError"
+        },
+        {
+          "path": "Sources/TerminalController.swift",
+          "line": 14033,
+          "symbol": "mobileHostHandleRPC"
+        }
+      ],
+      "implementation_locations": [
+        {
+          "path": "Sources/Mobile/MobileHostService.swift",
+          "line": 1403,
+          "symbol": "ticketAuthorizationError"
+        },
+        {
+          "path": "Sources/TerminalController.swift",
+          "line": 14033,
+          "symbol": "mobileHostHandleRPC"
+        }
+      ],
+      "contract_test_pointers": [
+        {
+          "path": "cmuxTests/MobileHostAuthorizationTests.swift",
+          "line": 130
+        },
+        {
+          "path": "cmuxTests/MobileHostAuthorizationTests.swift",
+          "line": 1143
+        },
+        {
+          "path": "cmuxTests/MobileHostServiceSettingsTests.swift",
+          "line": 138
+        },
+        {
+          "path": "cmuxTests/MobileHostServiceSettingsTests.swift",
+          "line": 162
+        }
+      ]
+    },
+    {
       "method": "workspace.group.add",
       "availability": "release",
       "test_only": false,
@@ -13078,6 +13439,60 @@
         {
           "path": "tests_v2/test_workspace_relative.py",
           "line": 195
+        }
+      ]
+    },
+    {
+      "method": "workspace.move",
+      "availability": "release",
+      "test_only": false,
+      "domain": "workspace",
+      "family": "workspace",
+      "source_location": {
+        "path": "Sources/TerminalController.swift",
+        "line": 14031,
+        "symbol": "mobileHostHandleRPC"
+      },
+      "dispatch_locations": [
+        {
+          "path": "Sources/Mobile/MobileHostService.swift",
+          "line": 1396,
+          "symbol": "ticketAuthorizationError"
+        },
+        {
+          "path": "Sources/TerminalController.swift",
+          "line": 14031,
+          "symbol": "mobileHostHandleRPC"
+        }
+      ],
+      "implementation_locations": [
+        {
+          "path": "Sources/Mobile/MobileHostService.swift",
+          "line": 1396,
+          "symbol": "ticketAuthorizationError"
+        },
+        {
+          "path": "Sources/TerminalController.swift",
+          "line": 14031,
+          "symbol": "mobileHostHandleRPC"
+        }
+      ],
+      "contract_test_pointers": [
+        {
+          "path": "cmuxTests/MobileHostAuthorizationTests.swift",
+          "line": 128
+        },
+        {
+          "path": "cmuxTests/MobileHostAuthorizationTests.swift",
+          "line": 1127
+        },
+        {
+          "path": "cmuxTests/MobileHostServiceSettingsTests.swift",
+          "line": 137
+        },
+        {
+          "path": "cmuxTests/MobileHostServiceSettingsTests.swift",
+          "line": 161
         }
       ]
     },

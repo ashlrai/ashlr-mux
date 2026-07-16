@@ -38648,6 +38648,39 @@
     },
     {
       "acceptance_tests": [
+        "differential.v2.dogfood.feedback.submit.payload_error",
+        "differential.v2.dogfood.feedback.submit.state_events_persistence"
+      ],
+      "aliases": [],
+      "batch": "dogfood",
+      "canonical_sources": [
+        {
+          "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+          "line": 14047,
+          "path": "Sources/TerminalController.swift",
+          "symbol": "mobileHostHandleRPC"
+        }
+      ],
+      "dependencies": [],
+      "domain": "dogfood",
+      "family": "dogfood",
+      "id": "v2:dogfood.feedback.submit",
+      "kind": "v2_method",
+      "latest_verifying_commit": null,
+      "metadata": {
+        "availability": "release",
+        "test_only": false,
+        "windows_evidence": null
+      },
+      "name": "dogfood.feedback.submit",
+      "priority": 2,
+      "rationale": null,
+      "status": "missing",
+      "user_approval": null,
+      "windows_sources": []
+    },
+    {
+      "acceptance_tests": [
         "differential.v2.extension.sidebar.snapshot.payload_error",
         "differential.v2.extension.sidebar.snapshot.state_events_persistence"
       ],
@@ -40278,6 +40311,45 @@
     },
     {
       "acceptance_tests": [
+        "differential.v2.mobile.terminal.mouse.payload_error",
+        "differential.v2.mobile.terminal.mouse.state_events_persistence"
+      ],
+      "aliases": [],
+      "batch": "mobile.terminal",
+      "canonical_sources": [
+        {
+          "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+          "line": 50,
+          "path": "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/MobileHost/ControlCommandCoordinator+MobileHost.swift",
+          "symbol": "handleMobileHost"
+        },
+        {
+          "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+          "line": 14027,
+          "path": "Sources/TerminalController.swift",
+          "symbol": "mobileHostHandleRPC"
+        }
+      ],
+      "dependencies": [],
+      "domain": "mobile",
+      "family": "mobile.terminal",
+      "id": "v2:mobile.terminal.mouse",
+      "kind": "v2_method",
+      "latest_verifying_commit": null,
+      "metadata": {
+        "availability": "release",
+        "test_only": false,
+        "windows_evidence": null
+      },
+      "name": "mobile.terminal.mouse",
+      "priority": 3,
+      "rationale": null,
+      "status": "missing",
+      "user_approval": null,
+      "windows_sources": []
+    },
+    {
+      "acceptance_tests": [
         "differential.v2.mobile.terminal.paste.payload_error",
         "differential.v2.mobile.terminal.paste.state_events_persistence"
       ],
@@ -40321,6 +40393,45 @@
         "windows_evidence": null
       },
       "name": "mobile.terminal.paste",
+      "priority": 3,
+      "rationale": null,
+      "status": "missing",
+      "user_approval": null,
+      "windows_sources": []
+    },
+    {
+      "acceptance_tests": [
+        "differential.v2.mobile.terminal.paste_image.payload_error",
+        "differential.v2.mobile.terminal.paste_image.state_events_persistence"
+      ],
+      "aliases": [],
+      "batch": "mobile.terminal",
+      "canonical_sources": [
+        {
+          "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+          "line": 1415,
+          "path": "Sources/Mobile/MobileHostService.swift",
+          "symbol": "ticketAuthorizationError"
+        },
+        {
+          "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+          "line": 14019,
+          "path": "Sources/TerminalController.swift",
+          "symbol": "mobileHostHandleRPC"
+        }
+      ],
+      "dependencies": [],
+      "domain": "mobile",
+      "family": "mobile.terminal",
+      "id": "v2:mobile.terminal.paste_image",
+      "kind": "v2_method",
+      "latest_verifying_commit": null,
+      "metadata": {
+        "availability": "release",
+        "test_only": false,
+        "windows_evidence": null
+      },
+      "name": "mobile.terminal.paste_image",
       "priority": 3,
       "rationale": null,
       "status": "missing",
@@ -40384,6 +40495,51 @@
         "windows_evidence": null
       },
       "name": "mobile.terminal.replay",
+      "priority": 3,
+      "rationale": null,
+      "status": "missing",
+      "user_approval": null,
+      "windows_sources": []
+    },
+    {
+      "acceptance_tests": [
+        "differential.v2.mobile.terminal.scroll.payload_error",
+        "differential.v2.mobile.terminal.scroll.state_events_persistence"
+      ],
+      "aliases": [],
+      "batch": "mobile.terminal",
+      "canonical_sources": [
+        {
+          "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+          "line": 48,
+          "path": "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/MobileHost/ControlCommandCoordinator+MobileHost.swift",
+          "symbol": "handleMobileHost"
+        },
+        {
+          "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+          "line": 1418,
+          "path": "Sources/Mobile/MobileHostService.swift",
+          "symbol": "ticketAuthorizationError"
+        },
+        {
+          "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+          "line": 14025,
+          "path": "Sources/TerminalController.swift",
+          "symbol": "mobileHostHandleRPC"
+        }
+      ],
+      "dependencies": [],
+      "domain": "mobile",
+      "family": "mobile.terminal",
+      "id": "v2:mobile.terminal.scroll",
+      "kind": "v2_method",
+      "latest_verifying_commit": null,
+      "metadata": {
+        "availability": "release",
+        "test_only": false,
+        "windows_evidence": null
+      },
+      "name": "mobile.terminal.scroll",
       "priority": 3,
       "rationale": null,
       "status": "missing",
@@ -41716,6 +41872,51 @@
           "symbol": null
         }
       ]
+    },
+    {
+      "acceptance_tests": [
+        "differential.v2.notification.reconcile.payload_error",
+        "differential.v2.notification.reconcile.state_events_persistence"
+      ],
+      "aliases": [],
+      "batch": "notification",
+      "canonical_sources": [
+        {
+          "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+          "line": 14045,
+          "path": "Sources/TerminalController.swift",
+          "symbol": "mobileHostHandleRPC"
+        },
+        {
+          "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+          "line": 209,
+          "path": "cmuxTests/NotificationDismissSyncTests.swift",
+          "symbol": null
+        },
+        {
+          "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+          "line": 250,
+          "path": "cmuxTests/NotificationDismissSyncTests.swift",
+          "symbol": null
+        }
+      ],
+      "dependencies": [],
+      "domain": "notification",
+      "family": "notification",
+      "id": "v2:notification.reconcile",
+      "kind": "v2_method",
+      "latest_verifying_commit": null,
+      "metadata": {
+        "availability": "release",
+        "test_only": false,
+        "windows_evidence": null
+      },
+      "name": "notification.reconcile",
+      "priority": 1,
+      "rationale": null,
+      "status": "missing",
+      "user_approval": null,
+      "windows_sources": []
     },
     {
       "acceptance_tests": [
@@ -51877,6 +52078,45 @@
     },
     {
       "acceptance_tests": [
+        "differential.v2.terminal.mouse.payload_error",
+        "differential.v2.terminal.mouse.state_events_persistence"
+      ],
+      "aliases": [],
+      "batch": "terminal",
+      "canonical_sources": [
+        {
+          "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+          "line": 50,
+          "path": "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/MobileHost/ControlCommandCoordinator+MobileHost.swift",
+          "symbol": "handleMobileHost"
+        },
+        {
+          "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+          "line": 14027,
+          "path": "Sources/TerminalController.swift",
+          "symbol": "mobileHostHandleRPC"
+        }
+      ],
+      "dependencies": [],
+      "domain": "terminal",
+      "family": "terminal",
+      "id": "v2:terminal.mouse",
+      "kind": "v2_method",
+      "latest_verifying_commit": null,
+      "metadata": {
+        "availability": "release",
+        "test_only": false,
+        "windows_evidence": null
+      },
+      "name": "terminal.mouse",
+      "priority": 0,
+      "rationale": null,
+      "status": "missing",
+      "user_approval": null,
+      "windows_sources": []
+    },
+    {
+      "acceptance_tests": [
         "differential.v2.terminal.paste.payload_error",
         "differential.v2.terminal.paste.state_events_persistence"
       ],
@@ -51920,6 +52160,45 @@
         "windows_evidence": null
       },
       "name": "terminal.paste",
+      "priority": 0,
+      "rationale": null,
+      "status": "missing",
+      "user_approval": null,
+      "windows_sources": []
+    },
+    {
+      "acceptance_tests": [
+        "differential.v2.terminal.paste_image.payload_error",
+        "differential.v2.terminal.paste_image.state_events_persistence"
+      ],
+      "aliases": [],
+      "batch": "terminal",
+      "canonical_sources": [
+        {
+          "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+          "line": 1415,
+          "path": "Sources/Mobile/MobileHostService.swift",
+          "symbol": "ticketAuthorizationError"
+        },
+        {
+          "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+          "line": 14019,
+          "path": "Sources/TerminalController.swift",
+          "symbol": "mobileHostHandleRPC"
+        }
+      ],
+      "dependencies": [],
+      "domain": "terminal",
+      "family": "terminal",
+      "id": "v2:terminal.paste_image",
+      "kind": "v2_method",
+      "latest_verifying_commit": null,
+      "metadata": {
+        "availability": "release",
+        "test_only": false,
+        "windows_evidence": null
+      },
+      "name": "terminal.paste_image",
       "priority": 0,
       "rationale": null,
       "status": "missing",
@@ -52025,6 +52304,51 @@
         "windows_evidence": null
       },
       "name": "terminal.replay",
+      "priority": 0,
+      "rationale": null,
+      "status": "missing",
+      "user_approval": null,
+      "windows_sources": []
+    },
+    {
+      "acceptance_tests": [
+        "differential.v2.terminal.scroll.payload_error",
+        "differential.v2.terminal.scroll.state_events_persistence"
+      ],
+      "aliases": [],
+      "batch": "terminal",
+      "canonical_sources": [
+        {
+          "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+          "line": 48,
+          "path": "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/MobileHost/ControlCommandCoordinator+MobileHost.swift",
+          "symbol": "handleMobileHost"
+        },
+        {
+          "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+          "line": 1418,
+          "path": "Sources/Mobile/MobileHostService.swift",
+          "symbol": "ticketAuthorizationError"
+        },
+        {
+          "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+          "line": 14025,
+          "path": "Sources/TerminalController.swift",
+          "symbol": "mobileHostHandleRPC"
+        }
+      ],
+      "dependencies": [],
+      "domain": "terminal",
+      "family": "terminal",
+      "id": "v2:terminal.scroll",
+      "kind": "v2_method",
+      "latest_verifying_commit": null,
+      "metadata": {
+        "availability": "release",
+        "test_only": false,
+        "windows_evidence": null
+      },
+      "name": "terminal.scroll",
       "priority": 0,
       "rationale": null,
       "status": "missing",
@@ -55688,6 +56012,69 @@
     },
     {
       "acceptance_tests": [
+        "differential.v2.workspace.group.action.payload_error",
+        "differential.v2.workspace.group.action.state_events_persistence"
+      ],
+      "aliases": [],
+      "batch": "workspace.group",
+      "canonical_sources": [
+        {
+          "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+          "line": 1403,
+          "path": "Sources/Mobile/MobileHostService.swift",
+          "symbol": "ticketAuthorizationError"
+        },
+        {
+          "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+          "line": 14033,
+          "path": "Sources/TerminalController.swift",
+          "symbol": "mobileHostHandleRPC"
+        },
+        {
+          "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+          "line": 130,
+          "path": "cmuxTests/MobileHostAuthorizationTests.swift",
+          "symbol": null
+        },
+        {
+          "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+          "line": 1143,
+          "path": "cmuxTests/MobileHostAuthorizationTests.swift",
+          "symbol": null
+        },
+        {
+          "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+          "line": 138,
+          "path": "cmuxTests/MobileHostServiceSettingsTests.swift",
+          "symbol": null
+        },
+        {
+          "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+          "line": 162,
+          "path": "cmuxTests/MobileHostServiceSettingsTests.swift",
+          "symbol": null
+        }
+      ],
+      "dependencies": [],
+      "domain": "workspace",
+      "family": "workspace.group",
+      "id": "v2:workspace.group.action",
+      "kind": "v2_method",
+      "latest_verifying_commit": null,
+      "metadata": {
+        "availability": "release",
+        "test_only": false,
+        "windows_evidence": null
+      },
+      "name": "workspace.group.action",
+      "priority": 0,
+      "rationale": null,
+      "status": "missing",
+      "user_approval": null,
+      "windows_sources": []
+    },
+    {
+      "acceptance_tests": [
         "differential.v2.workspace.group.add.payload_error",
         "differential.v2.workspace.group.add.state_events_persistence"
       ],
@@ -58765,6 +59152,112 @@
           "commit": null,
           "line": 223,
           "path": "crates/cmux-cli/tests/reorder_workspace_regression.rs",
+          "symbol": null
+        }
+      ]
+    },
+    {
+      "acceptance_tests": [
+        "differential.v2.workspace.move.payload_error",
+        "differential.v2.workspace.move.state_events_persistence"
+      ],
+      "aliases": [],
+      "batch": "workspace",
+      "canonical_sources": [
+        {
+          "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+          "line": 1396,
+          "path": "Sources/Mobile/MobileHostService.swift",
+          "symbol": "ticketAuthorizationError"
+        },
+        {
+          "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+          "line": 14031,
+          "path": "Sources/TerminalController.swift",
+          "symbol": "mobileHostHandleRPC"
+        },
+        {
+          "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+          "line": 128,
+          "path": "cmuxTests/MobileHostAuthorizationTests.swift",
+          "symbol": null
+        },
+        {
+          "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+          "line": 1127,
+          "path": "cmuxTests/MobileHostAuthorizationTests.swift",
+          "symbol": null
+        },
+        {
+          "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+          "line": 137,
+          "path": "cmuxTests/MobileHostServiceSettingsTests.swift",
+          "symbol": null
+        },
+        {
+          "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+          "line": 161,
+          "path": "cmuxTests/MobileHostServiceSettingsTests.swift",
+          "symbol": null
+        }
+      ],
+      "dependencies": [],
+      "domain": "workspace",
+      "family": "workspace",
+      "id": "v2:workspace.move",
+      "kind": "v2_method",
+      "latest_verifying_commit": null,
+      "metadata": {
+        "availability": "release",
+        "test_only": false,
+        "windows_evidence": {
+          "advertised": true,
+          "evidence_class": "routed_with_test_references",
+          "explicit_not_supported": false,
+          "handler": "workspace_reorder",
+          "method": "workspace.move",
+          "routed": true,
+          "source_locations": {
+            "advertisement": {
+              "line": 1050,
+              "path": "apps/desktop/src-tauri/src/control_socket.rs"
+            },
+            "implementation_references": [],
+            "route": {
+              "line": 1466,
+              "path": "apps/desktop/src-tauri/src/control_socket.rs"
+            },
+            "test_references": [
+              {
+                "line": 1050,
+                "path": "apps/desktop/src-tauri/src/control_socket.rs"
+              },
+              {
+                "line": 1466,
+                "path": "apps/desktop/src-tauri/src/control_socket.rs"
+              }
+            ]
+          },
+          "unsupported_message": null,
+          "verification_claim": "unverified; source evidence is not behavioral parity proof"
+        }
+      },
+      "name": "workspace.move",
+      "priority": 0,
+      "rationale": null,
+      "status": "implemented_unverified",
+      "user_approval": null,
+      "windows_sources": [
+        {
+          "commit": null,
+          "line": 1050,
+          "path": "apps/desktop/src-tauri/src/control_socket.rs",
+          "symbol": null
+        },
+        {
+          "commit": null,
+          "line": 1466,
+          "path": "apps/desktop/src-tauri/src/control_socket.rs",
           "symbol": null
         }
       ]
@@ -61993,6 +62486,9 @@
         "implemented_unverified": 1,
         "missing": 39
       },
+      "dogfood": {
+        "missing": 1
+      },
       "extension": {
         "implemented_unverified": 1
       },
@@ -62023,14 +62519,14 @@
         "implemented_unverified": 8
       },
       "mobile": {
-        "missing": 13
+        "missing": 16
       },
       "native_services": {
         "missing": 1
       },
       "notification": {
         "implemented_unverified": 14,
-        "missing": 3
+        "missing": 4
       },
       "notifications": {
         "missing": 1
@@ -62074,7 +62570,7 @@
         "implemented_unverified": 1
       },
       "terminal": {
-        "missing": 6
+        "missing": 9
       },
       "tmux": {
         "missing": 1
@@ -62094,42 +62590,42 @@
         "missing": 1
       },
       "workspace": {
-        "implemented_unverified": 49,
-        "missing": 17
+        "implemented_unverified": 50,
+        "missing": 18
       }
     },
     "by_kind": {
       "cli_command": 158,
       "cli_contract": 16,
       "product_behavior": 19,
-      "v2_method": 293
+      "v2_method": 303
     },
     "by_status": {
-      "implemented_unverified": 273,
-      "missing": 213
+      "implemented_unverified": 274,
+      "missing": 222
     },
     "canonical_targets": {
       "debug_only_v2_methods": 42,
       "hidden_or_internal_top_level_commands": 16,
       "public_top_level_commands": 158,
-      "release_v2_methods": 251
+      "release_v2_methods": 261
     },
     "completion_resolution": {
-      "denominator": 486,
+      "denominator": 496,
       "numerator": 0,
       "percentage": 0.0
     },
     "core_local_workflow": {
-      "denominator": 277,
+      "denominator": 282,
       "numerator": 0,
       "percentage": 0.0
     },
     "strict_parity": {
-      "denominator": 486,
+      "denominator": 496,
       "numerator": 0,
       "percentage": 0.0
     },
-    "total_entries": 486,
-    "unresolved_entries": 486
+    "total_entries": 496,
+    "unresolved_entries": 496
   }
 }
