@@ -1257,14 +1257,134 @@ fn base64_encode(input: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::io::{self, Write};
+    use std::sync::{mpsc, Arc, Mutex};
+    use std::time::Duration;
 
     use super::{
         base64_encode, default_shell_command, descendant_pid_set, ports_for_pid_set,
-        reusable_panel_session_id, tcp_port_from_owner_pid_row,
+        reusable_panel_session_id, send_terminal_input, tcp_port_from_owner_pid_row,
         terminal_runtime_snapshot_from_processes, terminal_text, ProcessSnapshotEntry,
-        TerminalTitleParser,
+        TerminalInputOutcome, TerminalInputTransport, TerminalProcess, TerminalSession,
+        TerminalState, TerminalTitleParser, TERMINAL_PENDING_INPUT_LIMIT,
     };
+    use cmux_terminal::conpty::ConPtySize;
     use cmux_terminal::engine::{GridSize, TerminalGrid};
+
+    struct TestProcess {
+        wait: Result<Option<u32>, String>,
+    }
+
+    impl TerminalProcess for TestProcess {
+        fn kill(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn resize(&mut self, _size: ConPtySize) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn try_wait(&mut self) -> Result<Option<u32>, String> {
+            self.wait.clone()
+        }
+    }
+
+    struct CapturingWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for CapturingWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct ErrorWriter(io::ErrorKind);
+
+    impl Write for ErrorWriter {
+        fn write(&mut self, _bytes: &[u8]) -> io::Result<usize> {
+            Err(io::Error::from(self.0))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct BlockingWriter {
+        entered: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+        captured: Arc<Mutex<Vec<u8>>>,
+        block_once: bool,
+    }
+
+    impl Write for BlockingWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.block_once {
+                self.block_once = false;
+                self.entered.send(()).unwrap();
+                self.release.recv().unwrap();
+            }
+            self.captured.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct FailSecondWriteOnce {
+        entered: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+        captured: Arc<Mutex<Vec<u8>>>,
+        writes: usize,
+    }
+
+    impl Write for FailSecondWriteOnce {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.writes += 1;
+            if self.writes == 1 {
+                self.entered.send(()).unwrap();
+                self.release.recv().unwrap();
+            } else if self.writes == 2 {
+                return Err(io::Error::other("injected queued-write failure"));
+            }
+            self.captured.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn test_process(exited: bool) -> Arc<Mutex<Box<dyn TerminalProcess>>> {
+        Arc::new(Mutex::new(Box::new(TestProcess {
+            wait: Ok(exited.then_some(0)),
+        })))
+    }
+
+    fn test_transport(writer: impl Write + Send + 'static) -> Arc<TerminalInputTransport> {
+        Arc::new(TerminalInputTransport::new(Box::new(writer)))
+    }
+
+    fn test_session(
+        process: Arc<Mutex<Box<dyn TerminalProcess>>>,
+        input: Arc<TerminalInputTransport>,
+        panel_id: &str,
+    ) -> TerminalSession {
+        TerminalSession {
+            pty: process,
+            input,
+            grid: Arc::new(Mutex::new(TerminalGrid::new(GridSize::new(80, 24)))),
+            panel_id: Some(panel_id.to_string()),
+            root_pid: None,
+        }
+    }
 
     #[test]
     fn ui_attach_reuses_staged_panel_but_control_replace_reserves_a_new_session() {
@@ -1279,6 +1399,207 @@ mod tests {
             None,
             "control staging, including TerminalReplace, must create a distinct session"
         );
+    }
+
+    #[test]
+    fn empty_and_large_idle_live_input_bypass_the_pending_budget() {
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let input = test_transport(CapturingWriter(captured.clone()));
+        let exited = test_process(true);
+
+        assert_eq!(
+            send_terminal_input(exited, input.clone(), b""),
+            TerminalInputOutcome::Sent
+        );
+        assert_eq!(input.pending.lock().unwrap().bytes, 0);
+        assert!(input.pending.lock().unwrap().entries.is_empty());
+
+        let payload = vec![b'x'; TERMINAL_PENDING_INPUT_LIMIT + 1];
+        assert_eq!(
+            send_terminal_input(test_process(false), input, &payload),
+            TerminalInputOutcome::Sent
+        );
+        assert_eq!(*captured.lock().unwrap(), payload);
+    }
+
+    #[test]
+    fn contended_input_is_fifo_bounded_and_does_not_hold_the_registry() {
+        let state = Arc::new(TerminalState::default());
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        state.runtime_registry().sessions.insert(
+            1,
+            test_session(
+                test_process(false),
+                test_transport(BlockingWriter {
+                    entered: entered_tx,
+                    release: release_rx,
+                    captured: captured.clone(),
+                    block_once: true,
+                }),
+                "panel",
+            ),
+        );
+
+        let owner_state = state.clone();
+        let owner = std::thread::spawn(move || {
+            super::terminal_send_panel_bytes_for_control(&owner_state, "panel", b"first")
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("owner reached writer I/O");
+        assert!(state.registry.try_lock().is_ok());
+
+        let queued = vec![b'q'; TERMINAL_PENDING_INPUT_LIMIT];
+        assert_eq!(
+            super::terminal_send_panel_bytes_for_control(&state, "panel", &queued),
+            TerminalInputOutcome::Queued
+        );
+        assert_eq!(
+            super::terminal_send_panel_bytes_for_control(&state, "panel", b"overflow"),
+            TerminalInputOutcome::InputQueueFull
+        );
+        release_tx.send(()).unwrap();
+        assert_eq!(owner.join().unwrap(), TerminalInputOutcome::Sent);
+
+        let captured = captured.lock().unwrap();
+        assert_eq!(&captured[..5], b"first");
+        assert_eq!(&captured[5..], queued);
+    }
+
+    #[test]
+    fn queued_write_failure_retains_fifo_and_preserves_caller_relative_outcomes() {
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let input = test_transport(FailSecondWriteOnce {
+            entered: entered_tx,
+            release: release_rx,
+            captured: captured.clone(),
+            writes: 0,
+        });
+        let process = test_process(false);
+
+        let owner_input = input.clone();
+        let owner_process = process.clone();
+        let owner =
+            std::thread::spawn(move || send_terminal_input(owner_process, owner_input, b"first"));
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(
+            send_terminal_input(process.clone(), input.clone(), b"second"),
+            TerminalInputOutcome::Queued
+        );
+        release_tx.send(()).unwrap();
+        assert_eq!(owner.join().unwrap(), TerminalInputOutcome::Sent);
+        {
+            let pending = input.pending.lock().unwrap();
+            assert_eq!(pending.bytes, b"second".len());
+            assert_eq!(pending.entries.len(), 1);
+        }
+
+        assert_eq!(
+            send_terminal_input(process, input.clone(), b"third"),
+            TerminalInputOutcome::Queued
+        );
+        assert_eq!(&*captured.lock().unwrap(), b"firstsecondthird");
+        let pending = input.pending.lock().unwrap();
+        assert_eq!(pending.bytes, 0);
+        assert!(pending.entries.is_empty());
+    }
+
+    #[test]
+    fn live_input_classifies_exit_and_writer_failures_exactly() {
+        assert_eq!(
+            send_terminal_input(
+                test_process(true),
+                test_transport(CapturingWriter(Arc::new(Mutex::new(Vec::new())))),
+                b"input",
+            ),
+            TerminalInputOutcome::ProcessExited
+        );
+        assert_eq!(
+            send_terminal_input(
+                test_process(false),
+                test_transport(ErrorWriter(io::ErrorKind::BrokenPipe)),
+                b"input",
+            ),
+            TerminalInputOutcome::ProcessExited
+        );
+        assert_eq!(
+            send_terminal_input(
+                Arc::new(Mutex::new(Box::new(TestProcess {
+                    wait: Err("injected process query failure".to_string()),
+                }))),
+                test_transport(CapturingWriter(Arc::new(Mutex::new(Vec::new())))),
+                b"input",
+            ),
+            TerminalInputOutcome::SurfaceUnavailable
+        );
+        assert_eq!(
+            send_terminal_input(
+                test_process(false),
+                test_transport(ErrorWriter(io::ErrorKind::Other)),
+                b"input",
+            ),
+            TerminalInputOutcome::SurfaceUnavailable
+        );
+    }
+
+    #[test]
+    fn queued_compatibility_adapters_accept_without_retry() {
+        let state = Arc::new(TerminalState::default());
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        state.runtime_registry().sessions.insert(
+            7,
+            test_session(
+                test_process(false),
+                test_transport(BlockingWriter {
+                    entered: entered_tx,
+                    release: release_rx,
+                    captured: captured.clone(),
+                    block_once: true,
+                }),
+                "panel",
+            ),
+        );
+
+        let owner_state = state.clone();
+        let owner = std::thread::spawn(move || {
+            super::terminal_send_panel_bytes_for_control(&owner_state, "panel", b"first")
+        });
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(
+            super::terminal_write_panel(&state, "panel", "panel"),
+            Ok(())
+        );
+        assert_eq!(
+            super::terminal_write_id_for_control(&state, 7, b"id"),
+            Ok(())
+        );
+        release_tx.send(()).unwrap();
+        assert_eq!(owner.join().unwrap(), TerminalInputOutcome::Sent);
+        assert_eq!(&*captured.lock().unwrap(), b"firstpanelid");
+    }
+
+    #[test]
+    fn poisoned_registry_returns_classified_input_failure() {
+        let state = Arc::new(TerminalState::default());
+        let poison_state = state.clone();
+        assert!(std::thread::spawn(move || {
+            let _guard = poison_state.registry.lock().unwrap();
+            panic!("poison terminal registry for input contract");
+        })
+        .join()
+        .is_err());
+
+        assert_eq!(
+            super::terminal_send_panel_bytes_for_control(&state, "panel", b"input"),
+            TerminalInputOutcome::SurfaceUnavailable
+        );
+        assert!(super::terminal_write_id_for_control(&state, 1, b"input").is_err());
     }
 
     #[test]
