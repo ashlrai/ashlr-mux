@@ -4427,6 +4427,73 @@ mod tests {
         );
     }
 
+    #[test]
+    fn conpty_materialization_apply_failure_recovers_poisoned_registry() {
+        let state = Arc::new(TerminalState::default());
+        let spec = redesign_spec("C:/repo");
+        let lease = redesign_start(
+            &state,
+            "panel-poisoned-abort",
+            &spec,
+            super::TerminalMaterializationEvent::ProcessOutput(b"fails".to_vec()),
+        );
+        assert_eq!(
+            super::request_terminal_materialization(
+                &state,
+                "panel-poisoned-abort",
+                &spec,
+                vec![super::TerminalMaterializationEvent::Input(
+                    b"discarded".to_vec()
+                )],
+            ),
+            super::TerminalMaterializationDemand::Queued
+        );
+        let activation = Arc::new(Mutex::new(None));
+        let saved_activation = activation.clone();
+        let poison_state = state.clone();
+        let error = super::fulfill_terminal_materialization_with(
+            &state,
+            lease,
+            ConPtySize::new(80, 24),
+            move |_, panel_id, _, _| {
+                let (session, pending) = pending_test_session(
+                    test_process(false),
+                    test_transport(CapturingWriter(Arc::new(Mutex::new(Vec::new())))),
+                    panel_id,
+                );
+                *saved_activation.lock().unwrap() = Some(pending);
+                Ok(session)
+            },
+            move |_, _, _| {
+                let state = poison_state.clone();
+                assert!(std::thread::spawn(move || {
+                    let _registry = state.registry.lock().unwrap();
+                    panic!("poison registry during materialization apply failure");
+                })
+                .join()
+                .is_err());
+                Err("injected poisoned output apply failure".to_string())
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("injected poisoned output apply failure"));
+        let registry = match state.registry.lock() {
+            Ok(_) => panic!("registry must remain classified as poisoned"),
+            Err(error) => error.into_inner(),
+        };
+        assert!(registry
+            .sessions
+            .values()
+            .any(|session| { session.panel_id.as_deref() == Some("panel-poisoned-abort") }));
+        assert!(!registry
+            .materializations
+            .contains_key("panel-poisoned-abort"));
+        drop(registry);
+        assert!(!pump_is_pending(
+            activation.lock().unwrap().as_ref().unwrap()
+        ));
+    }
+
     #[cfg(windows)]
     #[test]
     fn conpty_materialization_real_round_trip_owns_process_and_spec() {
