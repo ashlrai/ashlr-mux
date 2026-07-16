@@ -495,6 +495,52 @@ fn agent_hibernation_contract_visible_split_canvas_and_zoom_protection_is_layout
     );
 }
 
+#[test]
+fn agent_hibernation_contract_split_zoom_protects_focus_only_inside_the_rendered_pane() {
+    let split = SessionWorkspaceLayoutSnapshot::Split(SessionSplitLayoutSnapshot {
+        split_id: None,
+        orientation: SessionSplitOrientation::Horizontal,
+        divider_position: 0.5,
+        first: Box::new(pane(
+            Some("zoom-selected"),
+            &["zoom-selected", "zoom-focus"],
+        )),
+        second: Box::new(pane(
+            Some("hidden-selected"),
+            &["hidden-selected", "hidden-focus"],
+        )),
+    });
+    let mut workspace = SessionWorkspaceSnapshot {
+        workspace_id: Some("workspace".into()),
+        process_title: "split".into(),
+        layout: Some(split),
+        zoomed_panel_id: Some("zoom-selected".into()),
+        focused_panel_id: Some("zoom-focus".into()),
+        ..Default::default()
+    };
+    let visible = BTreeSet::from(["window".to_owned()]);
+    let snapshot = AppSessionSnapshot {
+        version: 1,
+        created_at: 0,
+        windows: vec![window("window", workspace.clone())],
+    };
+    assert_eq!(
+        protected_panel_ids(&snapshot, &visible),
+        BTreeSet::from(["zoom-focus".to_owned(), "zoom-selected".to_owned()])
+    );
+
+    workspace.focused_panel_id = Some("hidden-focus".into());
+    let snapshot = AppSessionSnapshot {
+        version: 1,
+        created_at: 0,
+        windows: vec![window("window", workspace)],
+    };
+    assert_eq!(
+        protected_panel_ids(&snapshot, &visible),
+        BTreeSet::from(["zoom-selected".to_owned()])
+    );
+}
+
 fn agent(
     kind: &str,
     session_id: &str,
