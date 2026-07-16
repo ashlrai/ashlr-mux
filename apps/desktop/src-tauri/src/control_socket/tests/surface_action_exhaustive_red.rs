@@ -102,6 +102,7 @@ fn surface(id: &str, kind: SessionSurfaceKindSnapshot, pinned: bool) -> SessionS
             ..Default::default()
         },
         terminal_startup: None,
+        scrollback: None,
     }
 }
 

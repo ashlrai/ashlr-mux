@@ -8,4 +8,4 @@ import type { SessionSurfaceTerminalStartupSnapshot } from "./SessionSurfaceTerm
  * Persisted per-surface state. Runtime handles are intentionally absent: they
  * are rebound after restore using `generation` as the stale-callback fence.
  */
-export type SessionSurfaceSnapshot = { surface_id: string, pane_id: string, generation: number, kind: SessionSurfaceKindSnapshot, metadata: SessionSurfaceMetadataSnapshot, terminal_startup?: SessionSurfaceTerminalStartupSnapshot, };
+export type SessionSurfaceSnapshot = { surface_id: string, pane_id: string, generation: number, kind: SessionSurfaceKindSnapshot, metadata: SessionSurfaceMetadataSnapshot, terminal_startup?: SessionSurfaceTerminalStartupSnapshot, scrollback?: string, };

@@ -149,6 +149,7 @@ function makeTerminal(overrides: Partial<TerminalConfig> = {}): TerminalConfig {
       enabled: false,
       idleSeconds: 5,
       maxLiveTerminals: 12,
+      confirmationSeconds: 60,
     },
     rendererRealization: {
       enabled: true,

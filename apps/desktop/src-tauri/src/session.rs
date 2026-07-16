@@ -1074,6 +1074,7 @@ fn remint_noncanonical_identities(snapshot: &mut AppSessionSnapshot) -> bool {
                         kind: cmux_core::session::SessionSurfaceKindSnapshot::Terminal,
                         metadata: Default::default(),
                         terminal_startup: None,
+                        scrollback: None,
                     });
                 }
                 pane.pane_id = Some(new_pane_id);
@@ -1451,6 +1452,7 @@ fn seed_initial_surface_record(workspace: &mut SessionWorkspaceSnapshot) {
                 ..Default::default()
             }
         }),
+        scrollback: None,
     }]);
 }
 
@@ -11018,6 +11020,7 @@ mod tests {
                 tmux_start_command: Some(text()),
                 remote_pty_session_id: None,
                 resume_binding: None,
+                hibernation: None,
             });
 
         remint_noncanonical_identities(&mut legacy);

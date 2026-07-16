@@ -882,6 +882,9 @@ pub struct SessionSurfaceSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub terminal_startup: Option<SessionSurfaceTerminalStartupSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub scrollback: Option<String>,
 }
 
 fn default_surface_generation() -> u64 {
@@ -1004,6 +1007,9 @@ pub struct SessionSurfaceMetadataSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub custom_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub runtime_title: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub pinned: bool,
     #[serde(default, skip_serializing_if = "is_false")]
@@ -1019,7 +1025,7 @@ pub struct SessionSurfaceMetadataSnapshot {
     pub directory_provenance: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SessionSurfaceTerminalStartupSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1043,6 +1049,18 @@ pub struct SessionSurfaceTerminalStartupSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub resume_binding: Option<Box<SessionRestorableAgentSnapshot>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub hibernation: Option<SessionAgentHibernationSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionAgentHibernationSnapshot {
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub hibernated_at: f64,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub last_activity_at: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]

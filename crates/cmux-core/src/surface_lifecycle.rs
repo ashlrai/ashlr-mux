@@ -64,6 +64,7 @@ pub struct SurfaceRecord {
     pub kind: SurfaceKind,
     pub metadata: SurfaceMetadata,
     pub terminal_startup: TerminalStartup,
+    pub terminal_scrollback: Option<String>,
     pub runtime: Option<RuntimeHandle>,
     pub is_workspace_focused: bool,
 }
@@ -77,6 +78,8 @@ struct PersistedSurfaceRecord {
     metadata: SurfaceMetadata,
     #[serde(default)]
     terminal_startup: TerminalStartup,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    terminal_scrollback: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -248,6 +251,7 @@ impl SurfaceLifecycleModel {
                 kind: seed.kind,
                 metadata: seed.metadata,
                 terminal_startup: TerminalStartup::default(),
+                terminal_scrollback: None,
                 runtime: None,
                 is_workspace_focused: false,
             },
@@ -779,6 +783,7 @@ impl SurfaceLifecycleModel {
                     kind: s.kind.clone(),
                     metadata: s.metadata.clone(),
                     terminal_startup: s.terminal_startup.clone(),
+                    terminal_scrollback: s.terminal_scrollback.clone(),
                 })
                 .collect(),
         }
@@ -815,6 +820,7 @@ impl SurfaceLifecycleModel {
                             kind: persisted.kind,
                             metadata: persisted.metadata,
                             terminal_startup: persisted.terminal_startup,
+                            terminal_scrollback: persisted.terminal_scrollback,
                             runtime: None,
                             is_workspace_focused: false,
                         },
@@ -1744,6 +1750,7 @@ fn startup_from_legacy(value: &SessionPanelTerminalStartupSnapshot) -> TerminalS
         tmux_start_command: None,
         remote_pty_session_id: None,
         resume_binding: None,
+        hibernation: None,
     }
 }
 
@@ -1755,6 +1762,7 @@ fn record_from_session(value: &SessionSurfaceSnapshot) -> SurfaceRecord {
         kind: value.kind.clone(),
         metadata: value.metadata.clone(),
         terminal_startup: value.terminal_startup.clone().unwrap_or_default(),
+        terminal_scrollback: value.scrollback.clone(),
         runtime: None,
         is_workspace_focused: false,
     }
@@ -1771,5 +1779,6 @@ fn record_to_session(value: &SurfaceRecord) -> SessionSurfaceSnapshot {
             SurfaceKind::Terminal | SurfaceKind::RemoteTerminal { .. }
         ) && value.terminal_startup != TerminalStartup::default())
         .then(|| value.terminal_startup.clone()),
+        scrollback: value.terminal_scrollback.clone(),
     }
 }

@@ -136,6 +136,7 @@ fn dock_fixture(seed: u128) -> cmux_core::session::SessionDockSnapshot {
             kind: SessionSurfaceKindSnapshot::Terminal,
             metadata: Default::default(),
             terminal_startup: None,
+            scrollback: None,
         }],
         focused_surface_id: Some(surface_id),
     }
@@ -493,6 +494,7 @@ fn live_main_and_dock_identities_exclude_restored_collisions_coherently() {
             kind: SessionSurfaceKindSnapshot::Terminal,
             metadata: Default::default(),
             terminal_startup: None,
+            scrollback: None,
         },
         cmux_core::session::SessionSurfaceSnapshot {
             surface_id: live_dock_surface_id.clone(),
@@ -501,6 +503,7 @@ fn live_main_and_dock_identities_exclude_restored_collisions_coherently() {
             kind: SessionSurfaceKindSnapshot::Terminal,
             metadata: Default::default(),
             terminal_startup: None,
+            scrollback: None,
         },
     ]);
 

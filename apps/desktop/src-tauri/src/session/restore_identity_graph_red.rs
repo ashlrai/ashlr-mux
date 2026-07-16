@@ -79,6 +79,7 @@ fn terminal_surface(surface_id: u128, pane_id: u128) -> cmux_core::session::Sess
         kind: cmux_core::session::SessionSurfaceKindSnapshot::Terminal,
         metadata: Default::default(),
         terminal_startup: None,
+        scrollback: None,
     }
 }
 
@@ -331,6 +332,7 @@ fn rich_workspace_a() -> SessionWorkspaceSnapshot {
     };
     surface.metadata = cmux_core::session::SessionSurfaceMetadataSnapshot {
         custom_title: Some(id(SURFACE_A1)),
+        runtime_title: None,
         pinned: true,
         unread: true,
         unread_at: Some(1),
@@ -352,6 +354,7 @@ fn rich_workspace_a() -> SessionWorkspaceSnapshot {
             resume_command: Some(id(SURFACE_A1)),
             fork_command: Some(id(SURFACE_A1)),
         })),
+        hibernation: None,
     });
     workspace
 }
@@ -1555,6 +1558,7 @@ fn equal_legacy_literals_in_different_identity_domains_remain_unambiguous() {
                         },
                         metadata: Default::default(),
                         terminal_startup: None,
+                        scrollback: None,
                     }]),
                     ..Default::default()
                 }],

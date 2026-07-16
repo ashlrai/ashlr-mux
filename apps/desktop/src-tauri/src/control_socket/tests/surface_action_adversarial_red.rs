@@ -39,6 +39,7 @@ fn surface(id: &str, pane_id: &str, kind: SessionSurfaceKindSnapshot) -> Session
         kind,
         metadata: SessionSurfaceMetadataSnapshot::default(),
         terminal_startup: None,
+        scrollback: None,
     }
 }
 

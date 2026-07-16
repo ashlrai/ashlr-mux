@@ -39,6 +39,7 @@ fn previous_launch_restore_drops_nonrestorable_remote_mirrors() {
         },
         metadata: SessionSurfaceMetadataSnapshot::default(),
         terminal_startup: None,
+        scrollback: None,
     }]);
     let authority = GatedSnapshot::new(current);
     let next_panel = AtomicU64::new(2);
@@ -91,6 +92,7 @@ fn previous_launch_restore_preserves_nonmirror_remote_terminal_metadata() {
         },
         metadata: SessionSurfaceMetadataSnapshot::default(),
         terminal_startup: None,
+        scrollback: None,
     }]);
     let authority = GatedSnapshot::new(current);
     let next_panel = AtomicU64::new(2);

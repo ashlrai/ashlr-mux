@@ -179,6 +179,7 @@ fn workspace_scoped_method(method: &str) -> bool {
                 | "workspace.list_status"
                 | "workspace.set_agent_pid"
                 | "workspace.clear_agent_pid"
+                | "workspace.set_agent_lifecycle"
                 | "workspace.report_pr"
                 | "workspace.report_review"
                 | "workspace.clear_pr"
@@ -267,6 +268,8 @@ pub fn control_command_for(
             "system.capabilities",
             serde_json::json!({}),
         )),
+        "agent-hibernation" => Some(agent_hibernation_command(args)?),
+        "set-agent-lifecycle" | "set_agent_lifecycle" => Some(set_agent_lifecycle_command(args)?),
         "config"
             if args
                 .first()
@@ -649,6 +652,61 @@ pub fn control_command_for(
         _ => None,
     };
     Ok(mapped)
+}
+
+fn agent_hibernation_command(args: &[String]) -> Result<ControlCommand, CliError> {
+    let [value] = args else {
+        return Err(CliError::new(
+            "Usage: cmux agent-hibernation <on|off> [--json]",
+        ));
+    };
+    let enabled = match value.to_ascii_lowercase().as_str() {
+        "on" | "enable" => true,
+        "off" | "disable" => false,
+        _ => {
+            return Err(CliError::new(
+                "Usage: cmux agent-hibernation <on|off> [--json]",
+            ));
+        }
+    };
+    Ok(ControlCommand::new(
+        "agent_hibernation",
+        serde_json::json!({"enabled": enabled}),
+    ))
+}
+
+fn set_agent_lifecycle_command(args: &[String]) -> Result<ControlCommand, CliError> {
+    const USAGE: &str = "cmux set-agent-lifecycle <key> <unknown|running|idle|needsInput> [--tab=<id>] [--panel=<id>]";
+    let parsed = ParsedArgs::parse(args)?;
+    if parsed.positionals.len() < 2 {
+        return Err(CliError::new(format!("Usage: {USAGE}")));
+    }
+    let raw_lifecycle = &parsed.positionals[1];
+    let lifecycle = normalize_agent_lifecycle(raw_lifecycle).ok_or_else(|| {
+        CliError::new(format!(
+            "Invalid agent lifecycle '{raw_lifecycle}' — usage: {USAGE}"
+        ))
+    })?;
+    let mut params = serde_json::Map::new();
+    params.insert("key".to_string(), serde_json::json!(&parsed.positionals[0]));
+    params.insert("lifecycle".to_string(), serde_json::json!(lifecycle));
+    apply_workspace_scope_selector(&parsed, &mut params);
+    apply_surface_selector(&parsed, &mut params)?;
+    Ok(ControlCommand::new(
+        "workspace.set_agent_lifecycle",
+        serde_json::Value::Object(params),
+    ))
+}
+
+fn normalize_agent_lifecycle(raw: &str) -> Option<&'static str> {
+    let normalized = raw.trim().to_ascii_lowercase().replace('_', "-");
+    match normalized.as_str() {
+        "unknown" => Some("unknown"),
+        "running" => Some("running"),
+        "idle" => Some("idle"),
+        "needsinput" | "needs-input" => Some("needsInput"),
+        _ => None,
+    }
 }
 
 fn workspace_subcommand(args: &[String]) -> Result<Option<ControlCommand>, CliError> {
@@ -4853,7 +4911,7 @@ mod tests {
                     "key": "codex",
                     "lifecycle": "needsInput",
                     "workspace_id": "workspace-2",
-                    "surface_ref": "surface:3",
+                    "panel_id": "surface-3",
                 })
             );
         }

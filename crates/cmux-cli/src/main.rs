@@ -2151,6 +2151,8 @@ fn format_control_result(method: &str, result: &serde_json::Value) -> String {
         | "workspace.clear_status"
         | "workspace.set_agent_pid"
         | "workspace.clear_agent_pid"
+        | "workspace.set_agent_lifecycle"
+        | "agent_hibernation"
         | "workspace.report_pr"
         | "workspace.report_review"
         | "workspace.clear_pr"
@@ -3439,6 +3441,8 @@ mod control_result_tests {
             "notification.clear",
             "notification.create",
             "surface.refresh_all",
+            "workspace.set_agent_lifecycle",
+            "agent_hibernation",
         ] {
             assert_eq!(format_control_result(method, &serde_json::json!({})), "OK");
         }

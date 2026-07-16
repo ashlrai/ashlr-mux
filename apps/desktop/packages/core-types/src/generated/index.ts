@@ -56,6 +56,7 @@ export type { RateLimitRole } from "./RateLimitRole";
 export type { RendererRealization } from "./RendererRealization";
 export type { ResumeCommandApproval } from "./ResumeCommandApproval";
 export type { ResumePolicy } from "./ResumePolicy";
+export type { SessionAgentHibernationSnapshot } from "./SessionAgentHibernationSnapshot";
 export type { SessionCanvasPaneSnapshot } from "./SessionCanvasPaneSnapshot";
 export type { SessionDockSnapshot } from "./SessionDockSnapshot";
 export type { SessionGitBranchSnapshot } from "./SessionGitBranchSnapshot";

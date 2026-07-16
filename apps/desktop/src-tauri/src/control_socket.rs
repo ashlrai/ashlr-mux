@@ -9856,6 +9856,7 @@ fn workspace_group_control(
                             ..Default::default()
                         }
                     }),
+                    scrollback: None,
                 }]);
                 tabs.workspaces.push(anchor);
                 let group = session_ops::create_workspace_group_snapshot(

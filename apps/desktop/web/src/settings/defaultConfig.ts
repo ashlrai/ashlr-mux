@@ -164,6 +164,7 @@ export const DEFAULT_TERMINAL_CONFIG: TerminalConfig = {
     enabled: false,
     idleSeconds: 5,
     maxLiveTerminals: 12,
+    confirmationSeconds: 60,
   },
   rendererRealization: {
     enabled: true,

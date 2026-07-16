@@ -274,6 +274,9 @@ pub struct AgentHibernation {
     #[serde(rename = "maxLiveTerminals")]
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub max_live_terminals: i64,
+    #[serde(rename = "confirmationSeconds")]
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub confirmation_seconds: i64,
 }
 
 impl Default for AgentHibernation {
@@ -282,6 +285,7 @@ impl Default for AgentHibernation {
             enabled: false,
             idle_seconds: 5,
             max_live_terminals: 12,
+            confirmation_seconds: 60,
         }
     }
 }

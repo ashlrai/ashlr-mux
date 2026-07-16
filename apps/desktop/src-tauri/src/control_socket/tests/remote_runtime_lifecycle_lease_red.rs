@@ -286,6 +286,7 @@ fn remote_surface(id: &str) -> SessionSurfaceSnapshot {
         },
         metadata: SessionSurfaceMetadataSnapshot::default(),
         terminal_startup: None,
+        scrollback: None,
     }
 }
 
@@ -297,6 +298,7 @@ fn local_surface(id: &str) -> SessionSurfaceSnapshot {
         kind: SessionSurfaceKindSnapshot::Terminal,
         metadata: SessionSurfaceMetadataSnapshot::default(),
         terminal_startup: None,
+        scrollback: None,
     }
 }
 
@@ -358,6 +360,7 @@ fn remote_snapshot_with_second_slot() -> AppSessionSnapshot {
         },
         metadata: SessionSurfaceMetadataSnapshot::default(),
         terminal_startup: None,
+        scrollback: None,
     }]);
     let remote = workspace.remote.as_mut().unwrap();
     remote.destination = Some("host-a".into());
@@ -1091,6 +1094,7 @@ fn runtime_identity_collision_on_another_remote_owner_does_not_consume_this_arri
         },
         metadata: SessionSurfaceMetadataSnapshot::default(),
         terminal_startup: None,
+        scrollback: None,
     }]);
     snapshot.windows.push(foreign);
     let mut encoded = serde_json::to_value(snapshot).unwrap();

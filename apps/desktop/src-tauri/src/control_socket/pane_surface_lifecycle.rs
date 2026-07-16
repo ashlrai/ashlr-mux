@@ -510,6 +510,7 @@ pub(super) fn reconcile_runtime_arrival(
                 ..Default::default()
             },
             terminal_startup: None,
+            scrollback: None,
         },
     );
     let Ok(model) = SurfaceLifecycleModel::from_app_session(&next) else {
@@ -1951,6 +1952,7 @@ fn surface_create(
             kind: kind.clone(),
             metadata: Default::default(),
             terminal_startup: None,
+            scrollback: None,
         });
     }
     let mut model = match SurfaceLifecycleModel::from_app_session(&next) {
@@ -4451,6 +4453,7 @@ fn pane_create(
             kind: kind.clone(),
             metadata: Default::default(),
             terminal_startup: None,
+            scrollback: None,
         });
     }
     let mut model = match SurfaceLifecycleModel::from_app_session(&next) {

@@ -1198,17 +1198,17 @@ fn tidy_canvas_frames(
     updates
 }
 
-/// Set the OSC/process title of the workspace whose layout owns `panel_id`.
+/// Set the OSC/runtime title of the exact surface whose layout owns `panel_id`.
 ///
 /// This is the workspace-title feed for a terminal pane's top label
 /// (`cmux-terminal::top_label` `panelTitles`, seeded `"Terminal"` at panel
 /// creation): the incoming OSC title is trimmed and an empty title is dropped
-/// (a blank title never clobbers a real one), last-write-wins. `process_title`
-/// is what `workspaceDisplayName` shows once a workspace has no `custom_title`,
-/// so this is what replaces the "Terminal" fallback with the running program /
-/// directory the shell reports.
+/// (a blank title never clobbers a real one), last-write-wins. The exact surface
+/// always retains the runtime title. `process_title` follows it only when this
+/// is the workspace's sole panel and no custom workspace title is set.
 ///
-/// Returns `true` iff a workspace's `process_title` actually changed.
+/// Returns `true` iff either the exact surface title or eligible workspace
+/// process title changed.
 ///
 /// NOTE (minor divergence): Swift trims with `.whitespacesAndNewlines`; this
 /// uses Rust `str::trim` (Unicode `White_Space`). The two differ only on exotic
@@ -1223,17 +1223,32 @@ pub fn set_process_title(
         return false;
     }
     for workspace in &mut tabs.workspaces {
-        let owns = workspace
+        let Some(layout) = workspace
             .layout
             .as_ref()
-            .is_some_and(|layout| contains_panel(layout, panel_id));
-        if owns {
-            if workspace.process_title == trimmed {
-                return false;
+            .filter(|layout| contains_panel(layout, panel_id))
+        else {
+            continue;
+        };
+        let mut changed = false;
+        if let Some(surface) = workspace
+            .surfaces
+            .as_mut()
+            .and_then(|surfaces| surfaces.iter_mut().find(|row| row.surface_id == panel_id))
+        {
+            if surface.metadata.runtime_title.as_deref() != Some(trimmed) {
+                surface.metadata.runtime_title = Some(trimmed.to_string());
+                changed = true;
             }
-            workspace.process_title = trimmed.to_string();
-            return true;
         }
+        if panel_count(layout) == 1
+            && workspace.custom_title.is_none()
+            && workspace.process_title != trimmed
+        {
+            workspace.process_title = trimmed.to_string();
+            changed = true;
+        }
+        return changed;
     }
     false
 }
@@ -5848,8 +5863,6 @@ mod tests {
         serde_json::to_value(&tabs.workspaces[0].surfaces)
             .expect("serialize surface records")
             .as_array()
-            .and_then(|rows| rows.first())
-            .and_then(|rows| rows.as_array())
             .and_then(|rows| {
                 rows.iter()
                     .find(|row| row["surface_id"] == surface_id)

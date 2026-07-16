@@ -4,4 +4,4 @@
 /**
  * `terminal.agentHibernation`.
  */
-export type AgentHibernation = { enabled: boolean, idleSeconds: number, maxLiveTerminals: number, };
+export type AgentHibernation = { enabled: boolean, idleSeconds: number, maxLiveTerminals: number, confirmationSeconds: number, };
