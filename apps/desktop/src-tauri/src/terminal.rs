@@ -530,6 +530,10 @@ impl TerminalMaterializationSlot {
         self.generation == lease.generation && self.spec == lease.spec
     }
 
+    fn owns_start(&self, lease: &TerminalMaterializationLease) -> bool {
+        self.matches(lease) && matches!(self.phase, TerminalMaterializationPhase::Starting)
+    }
+
     fn runtime_is_live(
         runtime: &TerminalPublishedRuntime,
         sessions: &HashMap<u32, TerminalSession>,
@@ -802,9 +806,7 @@ pub(crate) fn owns_terminal_materialization_start(
     Ok(registry
         .materializations
         .get(&lease.panel_id)
-        .is_some_and(|slot| {
-            slot.matches(lease) && matches!(slot.phase, TerminalMaterializationPhase::Starting)
-        }))
+        .is_some_and(|slot| slot.owns_start(lease)))
 }
 
 #[allow(dead_code)]
@@ -816,7 +818,7 @@ pub(crate) fn fail_terminal_materialization_start(
     let Some(slot) = registry.materializations.get_mut(&lease.panel_id) else {
         return Ok(false);
     };
-    if !slot.matches(lease) || !matches!(slot.phase, TerminalMaterializationPhase::Starting) {
+    if !slot.owns_start(lease) {
         return Ok(false);
     }
     slot.phase = TerminalMaterializationPhase::Dormant;
@@ -829,11 +831,11 @@ pub(crate) fn cancel_terminal_materialization(
     lease: &TerminalMaterializationLease,
 ) -> Result<Option<Vec<TerminalMaterializationEvent>>, String> {
     let mut registry = state.try_runtime_registry()?;
-    let matches = registry
+    let cancellable = registry
         .materializations
         .get(&lease.panel_id)
-        .is_some_and(|slot| slot.matches(lease));
-    if !matches {
+        .is_some_and(|slot| slot.owns_start(lease));
+    if !cancellable {
         return Ok(None);
     }
     let slot = registry
@@ -857,9 +859,7 @@ fn publish_terminal_materialization_runtime(
     let valid_slot = registry
         .materializations
         .get(&lease.panel_id)
-        .is_some_and(|slot| {
-            slot.matches(lease) && matches!(slot.phase, TerminalMaterializationPhase::Starting)
-        });
+        .is_some_and(|slot| slot.owns_start(lease));
     let identity_available = session.panel_id.as_deref() == Some(lease.panel_id.as_str())
         && !registry.sessions.contains_key(&session_id)
         && !registry.reserved_session_ids.contains(&session_id)
