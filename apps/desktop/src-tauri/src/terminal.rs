@@ -2087,6 +2087,8 @@ fn terminal_open_with_policy(
         initial_input.unwrap_or_default().as_bytes().to_vec(),
         environment.unwrap_or_default(),
     );
+    // The exact identity reservation above must precede spawn_terminal_session and its
+    // ConPty::spawn boundary; publication rechecks that reservation after external work.
     let session = match spawn_terminal_session(app, id, panel_id, &spec, size) {
         Ok(session) => session,
         Err(error) => return Err(guard.rollback(error)),
@@ -2762,10 +2764,11 @@ fn emit_terminal_output_chunk(
     if let Some(panel_id) = panel_id {
         for title in titles {
             let state = app.state::<session::SessionState>();
-            if let Err(error) =
-                session::set_process_title_for_panel(app, state.inner(), panel_id, title)
-            {
-                eprintln!("[terminal] failed to persist process title: {error}");
+            match session::set_process_title_for_panel(app, state.inner(), panel_id, title) {
+                Ok(_) => {}
+                Err(error) => {
+                    eprintln!("[terminal] failed to persist process title: {error}");
+                }
             }
         }
     }
