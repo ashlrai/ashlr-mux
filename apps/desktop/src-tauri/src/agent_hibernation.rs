@@ -125,7 +125,7 @@ pub(crate) fn is_manual_lifecycle_key(key: &str) -> bool {
 }
 
 pub(crate) fn is_allowed_lifecycle_key(key: &str) -> bool {
-    ALLOWED_AGENT_LIFECYCLE_KEYS.contains(&key.trim())
+    ALLOWED_AGENT_LIFECYCLE_KEYS.contains(&key)
 }
 
 pub(crate) fn aggregate_lifecycle(
@@ -256,11 +256,15 @@ impl AgentHibernationPolicy {
         state: AgentLifecycleState,
         recorded_at: f64,
     ) {
+        let status_key = status_key.into();
+        if is_manual_lifecycle_key(&status_key) {
+            return;
+        }
         self.record_activity(key.clone(), recorded_at);
         self.lifecycle_by_panel
             .entry(key.clone())
             .or_default()
-            .insert(status_key.into(), state);
+            .insert(status_key, state);
         self.lifecycle_change_by_panel.insert(key, recorded_at);
     }
 
@@ -442,9 +446,9 @@ pub(crate) fn scrollback_fingerprint(
 }
 
 fn process_identity_fingerprint(process_ids: impl IntoIterator<Item = i32>) -> String {
-    let mut process_ids = process_ids.into_iter().collect::<Vec<_>>();
-    process_ids.sort_unstable();
     process_ids
+        .into_iter()
+        .collect::<BTreeSet<_>>()
         .into_iter()
         .map(|process_id| process_id.to_string())
         .collect::<Vec<_>>()
@@ -486,6 +490,18 @@ fn layout_selected_panel_ids(
     }
 }
 
+fn layout_contains_panel(layout: &SessionWorkspaceLayoutSnapshot, panel_id: &str) -> bool {
+    match layout {
+        SessionWorkspaceLayoutSnapshot::Pane(pane) => {
+            pane.panel_ids.iter().any(|candidate| candidate == panel_id)
+        }
+        SessionWorkspaceLayoutSnapshot::Split(split) => {
+            layout_contains_panel(&split.first, panel_id)
+                || layout_contains_panel(&split.second, panel_id)
+        }
+    }
+}
+
 fn rendered_panel_ids(workspace: &SessionWorkspaceSnapshot) -> BTreeSet<String> {
     if let Some(panel_id) = workspace.zoomed_panel_id.as_ref() {
         return BTreeSet::from([panel_id.clone()]);
@@ -508,6 +524,13 @@ fn rendered_panel_ids(workspace: &SessionWorkspaceSnapshot) -> BTreeSet<String> 
     let mut selected = BTreeSet::new();
     if let Some(layout) = workspace.layout.as_ref() {
         layout_selected_panel_ids(layout, &mut selected);
+        if let Some(focused_panel_id) = workspace
+            .focused_panel_id
+            .as_deref()
+            .filter(|panel_id| layout_contains_panel(layout, panel_id))
+        {
+            selected.insert(focused_panel_id.to_owned());
+        }
     }
     selected
 }
@@ -556,6 +579,8 @@ fn restorable_agents_are_compatible(
 ) -> bool {
     normalized_value(Some(&left.kind)) == normalized_value(Some(&right.kind))
         && normalized_value(Some(&left.session_id)) == normalized_value(Some(&right.session_id))
+        && normalized_value(left.resume_command.as_deref())
+            == normalized_value(right.resume_command.as_deref())
 }
 
 fn dormant_surface_binding_is_valid(
@@ -581,12 +606,14 @@ fn dormant_surface_binding_is_valid(
     {
         return false;
     }
-    if workspace
+    let Some(indexed) = workspace
         .restorable_agent_snapshots
         .as_deref()
         .and_then(|rows| rows.iter().find(|row| row.panel_id == surface.surface_id))
-        .is_some_and(|indexed| !restorable_agents_are_compatible(agent, &indexed.snapshot))
-    {
+    else {
+        return false;
+    };
+    if !restorable_agents_are_compatible(agent, &indexed.snapshot) {
         return false;
     }
     workspace
@@ -639,6 +666,7 @@ pub(crate) fn sanitize_invalid_hibernation(snapshot: &mut AppSessionSnapshot) ->
                         startup.command = None;
                         startup.tmux_start_command = None;
                         startup.initial_input = None;
+                        startup.remote_pty_session_id = None;
                     }
                 }
             }
