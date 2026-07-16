@@ -37,7 +37,15 @@ members = [
   "crates/cmux-windowing",
   "crates/cmux-workspaces",
 ]
+exclude = [
+  "third_party/alacritty_terminal",
+  "third_party/vte",
+]
 resolver = "2"
+
+[patch.crates-io]
+alacritty_terminal = { path = "third_party/alacritty_terminal" }
+vte = { path = "third_party/vte" }
 
 [workspace.package]
 edition = "2021"
