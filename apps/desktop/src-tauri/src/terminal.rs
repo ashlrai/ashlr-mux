@@ -76,7 +76,8 @@ impl TerminalInputTransport {
 struct TerminalPendingInput {
     entries: VecDeque<TerminalPendingEntry>,
     bytes: usize,
-    draining: bool,
+    owner: Option<u64>,
+    next_owner: u64,
 }
 
 struct TerminalPendingEntry {
@@ -86,9 +87,22 @@ struct TerminalPendingEntry {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TerminalInputClaim {
-    Direct,
-    Recovery(TerminalInputOutcome),
+    Direct(u64),
+    Recovery(u64, TerminalInputOutcome),
     Outcome(TerminalInputOutcome),
+}
+
+struct TerminalDrainLease<'a> {
+    pending: &'a Mutex<TerminalPendingInput>,
+    owner: u64,
+}
+
+impl Drop for TerminalDrainLease<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut pending) = self.pending.lock() {
+            pending.release_owner(self.owner);
+        }
+    }
 }
 
 impl TerminalPendingInput {
@@ -105,32 +119,49 @@ impl TerminalPendingInput {
     }
 
     fn claim(&mut self, data: &[u8]) -> TerminalInputClaim {
-        if !self.draining && self.entries.is_empty() {
-            self.draining = true;
-            return TerminalInputClaim::Direct;
+        if self.owner.is_none() && self.entries.is_empty() {
+            return TerminalInputClaim::Direct(self.claim_owner());
         }
 
         let outcome = self.enqueue(data);
-        if self.draining {
+        if self.owner.is_some() {
             TerminalInputClaim::Outcome(outcome)
         } else {
-            self.draining = true;
-            TerminalInputClaim::Recovery(outcome)
+            TerminalInputClaim::Recovery(self.claim_owner(), outcome)
         }
     }
 
-    fn front_for_drain(&mut self) -> Option<(Arc<[u8]>, usize)> {
+    fn claim_owner(&mut self) -> u64 {
+        self.next_owner = self.next_owner.wrapping_add(1);
+        let owner = self.next_owner;
+        self.owner = Some(owner);
+        owner
+    }
+
+    fn front_for_drain(&mut self, owner: u64) -> Result<Option<(Arc<[u8]>, usize)>, ()> {
+        if self.owner != Some(owner) {
+            return Err(());
+        }
         let front = self
             .entries
             .front()
             .map(|entry| (entry.data.clone(), entry.offset));
         if front.is_none() {
-            self.draining = false;
+            self.owner = None;
         }
-        front
+        Ok(front)
     }
 
-    fn advance_front(&mut self, data: &Arc<[u8]>, offset: usize, written: usize) -> bool {
+    fn advance_front(
+        &mut self,
+        owner: u64,
+        data: &Arc<[u8]>,
+        offset: usize,
+        written: usize,
+    ) -> bool {
+        if self.owner != Some(owner) {
+            return false;
+        }
         let Some(front) = self.entries.front_mut() else {
             return false;
         };
@@ -146,7 +177,10 @@ impl TerminalPendingInput {
         true
     }
 
-    fn commit_flushed_front(&mut self, data: &Arc<[u8]>) -> bool {
+    fn commit_flushed_front(&mut self, owner: u64, data: &Arc<[u8]>) -> bool {
+        if self.owner != Some(owner) {
+            return false;
+        }
         let matches = self.entries.front().is_some_and(|front| {
             Arc::ptr_eq(&front.data, data) && front.offset == front.data.len()
         });
@@ -156,8 +190,10 @@ impl TerminalPendingInput {
         matches
     }
 
-    fn release_drain(&mut self) {
-        self.draining = false;
+    fn release_owner(&mut self, owner: u64) {
+        if self.owner == Some(owner) {
+            self.owner = None;
+        }
     }
 }
 
@@ -756,6 +792,9 @@ fn terminal_write_id_for_control(
     id: u32,
     data: &[u8],
 ) -> Result<(), String> {
+    if data.is_empty() {
+        return Ok(());
+    }
     let (process, input) = {
         let registry = state.try_runtime_registry()?;
         if registry.reserved_session_ids.contains(&id) {
@@ -798,6 +837,9 @@ pub(crate) fn terminal_send_panel_bytes_for_control(
     panel_id: &str,
     data: &[u8],
 ) -> TerminalInputOutcome {
+    if data.is_empty() {
+        return TerminalInputOutcome::Sent;
+    }
     let normalized_panel_id = panel_id.trim();
     if normalized_panel_id.is_empty() {
         return TerminalInputOutcome::SurfaceUnavailable;
@@ -824,6 +866,9 @@ fn send_terminal_input(
     if data.is_empty() {
         return TerminalInputOutcome::Sent;
     }
+    if input.writer.is_poisoned() {
+        return TerminalInputOutcome::SurfaceUnavailable;
+    }
     let process_exited = match process.lock() {
         Ok(mut process) => match process.try_wait() {
             Ok(status) => status.is_some(),
@@ -839,49 +884,39 @@ fn send_terminal_input(
         Ok(mut pending) => pending.claim(data),
         Err(_) => return TerminalInputOutcome::SurfaceUnavailable,
     };
-    let (direct, completion) = match claim {
-        TerminalInputClaim::Direct => (true, TerminalInputOutcome::Sent),
-        TerminalInputClaim::Recovery(outcome) => (false, outcome),
+    let (owner, direct, completion) = match claim {
+        TerminalInputClaim::Direct(owner) => (owner, true, TerminalInputOutcome::Sent),
+        TerminalInputClaim::Recovery(owner, outcome) => (owner, false, outcome),
         TerminalInputClaim::Outcome(outcome) => return outcome,
+    };
+    let _drain_lease = TerminalDrainLease {
+        pending: &input.pending,
+        owner,
     };
 
     let mut writer = match input.writer.lock() {
         Ok(writer) => writer,
-        Err(_) => {
-            if let Ok(mut pending) = input.pending.lock() {
-                pending.release_drain();
-            }
-            return if direct {
-                TerminalInputOutcome::SurfaceUnavailable
-            } else {
-                completion
-            };
-        }
+        Err(_) if direct => return TerminalInputOutcome::SurfaceUnavailable,
+        Err(_) => return completion,
     };
     if direct {
         if let Err(outcome) = write_terminal_bytes(writer.as_mut(), data) {
-            if let Ok(mut pending) = input.pending.lock() {
-                pending.release_drain();
-            }
             return outcome;
         }
     }
 
     loop {
         let front = match input.pending.lock() {
-            Ok(mut pending) => pending.front_for_drain(),
+            Ok(mut pending) => pending.front_for_drain(owner),
             Err(_) => return completion,
         };
-        let Some((front, offset)) = front else {
+        let Ok(Some((front, offset))) = front else {
             return completion;
         };
 
         if offset < front.len() {
             let written = match writer.write(&front[offset..]) {
                 Ok(0) | Err(_) => {
-                    if let Ok(mut pending) = input.pending.lock() {
-                        pending.release_drain();
-                    }
                     return completion;
                 }
                 Ok(written) => written,
@@ -889,24 +924,19 @@ fn send_terminal_input(
             let Ok(mut pending) = input.pending.lock() else {
                 return completion;
             };
-            if !pending.advance_front(&front, offset, written) {
-                pending.release_drain();
+            if !pending.advance_front(owner, &front, offset, written) {
                 return completion;
             }
             continue;
         }
 
         if writer.flush().is_err() {
-            if let Ok(mut pending) = input.pending.lock() {
-                pending.release_drain();
-            }
             return completion;
         }
         let Ok(mut pending) = input.pending.lock() else {
             return completion;
         };
-        if !pending.commit_flushed_front(&front) {
-            pending.release_drain();
+        if !pending.commit_flushed_front(owner, &front) {
             return completion;
         }
     }
