@@ -794,12 +794,6 @@ pub(crate) fn request_live_terminal_input(
     if panel_id.is_empty() {
         return TerminalMaterializationDemand::SurfaceUnavailable;
     }
-    let Some(bytes) = TerminalMaterializationSlot::batch_bytes(&events) else {
-        return TerminalMaterializationDemand::InputQueueFull;
-    };
-    if bytes > TERMINAL_PENDING_INPUT_LIMIT {
-        return TerminalMaterializationDemand::InputQueueFull;
-    }
     match state.try_runtime_registry() {
         Ok(registry)
             if !registry.reserved_panel_ids.contains(panel_id)

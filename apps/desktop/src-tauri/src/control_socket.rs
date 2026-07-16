@@ -26,7 +26,10 @@ mod pane_surface_lifecycle;
 mod terminal_runtime_v2;
 mod window_lifecycle;
 
-use terminal_runtime_v2::{plan_terminal_request_with_active_window, TerminalRequestPlan};
+use terminal_runtime_v2::{
+    plan_terminal_request_with_active_window, terminal_create_response_terminal_id,
+    TerminalRequestPlan,
+};
 
 #[cfg(test)]
 use crate::browser::strict_browser_runtime_teardown_transaction;
@@ -10537,7 +10540,6 @@ fn terminal_create_control(
             workspace_index,
             pane_id,
             requested_workspace_id,
-            requested_terminal_id,
         } => {
             let workspace_id = before.windows[window_index].tab_manager.workspaces[workspace_index]
                 .workspace_id
@@ -10577,6 +10579,16 @@ fn terminal_create_control(
                     message: "Failed to create terminal".into(),
                     data: None,
                 };
+            };
+            let requested_terminal_id = match terminal_create_response_terminal_id(params) {
+                Ok(terminal_id) => terminal_id,
+                Err(error) => {
+                    return ControlCallResult::Err {
+                        code: error.code.into(),
+                        message: error.message.into(),
+                        data: None,
+                    }
+                }
             };
             terminal_mobile_workspace_list(
                 app,

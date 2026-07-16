@@ -14,7 +14,6 @@ pub(super) enum TerminalRequestPlan {
         workspace_index: usize,
         pane_id: String,
         requested_workspace_id: Option<String>,
-        requested_terminal_id: Option<String>,
     },
     Input {
         window_index: usize,
@@ -78,7 +77,6 @@ fn plan_create(
         workspace_index,
         pane_id,
         requested_workspace_id: workspace_id,
-        requested_terminal_id: terminal_id,
     })
 }
 
@@ -179,6 +177,12 @@ fn parse_terminal_aliases(
         selected = Some(candidate);
     }
     Ok(selected)
+}
+
+pub(super) fn terminal_create_response_terminal_id(
+    params: &Map<String, Value>,
+) -> Result<Option<String>, TerminalRequestError> {
+    parse_terminal_aliases(params).map(|terminal_id| terminal_id.map(|id| id.to_string()))
 }
 
 fn first_valid_terminal_alias(params: &Map<String, Value>) -> Option<Uuid> {
@@ -806,7 +810,6 @@ mod tests {
                 workspace_index: 0,
                 pane_id: PANE.into(),
                 requested_workspace_id: Some(WORKSPACE.into()),
-                requested_terminal_id: None,
             })
         );
         let error = plan_terminal_request_with_active_window(
