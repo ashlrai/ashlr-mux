@@ -12,7 +12,11 @@ fn agent_hibernation_help_is_the_canonical_public_contract() {
         .output()
         .expect("cmux binary must execute");
 
-    assert_eq!(output.status.code(), Some(0), "unexpected result: {output:?}");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "unexpected result: {output:?}"
+    );
     assert!(output.stderr.is_empty(), "unexpected stderr: {output:?}");
     assert_eq!(
         String::from_utf8(output.stdout).expect("help output must be UTF-8"),

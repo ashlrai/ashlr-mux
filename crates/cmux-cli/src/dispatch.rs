@@ -373,6 +373,9 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
         "refresh-surfaces" => Some(
             "Usage:\n  cmux refresh-surfaces\n\nRequests mounted surfaces to refresh their layout and terminal fit.",
         ),
+        "agent-hibernation" => Some(
+            "Usage: cmux agent-hibernation <on|off> [--json]\n\nEnable or disable Agent Hibernation.\nConfigure idle and live-terminal limits from Settings or cmux settings JSON.",
+        ),
         "identify" => Some(
             "Usage:\n  cmux identify\n\nPrints desktop/control-socket identity metadata.",
         ),
