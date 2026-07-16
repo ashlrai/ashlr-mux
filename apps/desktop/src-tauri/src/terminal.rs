@@ -78,6 +78,7 @@ struct TerminalPendingInput {
     bytes: usize,
     owner: Option<u64>,
     next_owner: u64,
+    writer_failed: bool,
 }
 
 struct TerminalPendingEntry {
@@ -100,7 +101,11 @@ struct TerminalDrainLease<'a> {
 impl Drop for TerminalDrainLease<'_> {
     fn drop(&mut self) {
         if let Ok(mut pending) = self.pending.lock() {
-            pending.release_owner(self.owner);
+            if std::thread::panicking() {
+                pending.fail_owner(self.owner);
+            } else {
+                pending.release_owner(self.owner);
+            }
         }
     }
 }
@@ -193,6 +198,13 @@ impl TerminalPendingInput {
     fn release_owner(&mut self, owner: u64) {
         if self.owner == Some(owner) {
             self.owner = None;
+        }
+    }
+
+    fn fail_owner(&mut self, owner: u64) {
+        if self.owner == Some(owner) {
+            self.owner = None;
+            self.writer_failed = true;
         }
     }
 }
@@ -866,9 +878,6 @@ fn send_terminal_input(
     if data.is_empty() {
         return TerminalInputOutcome::Sent;
     }
-    if input.writer.is_poisoned() {
-        return TerminalInputOutcome::SurfaceUnavailable;
-    }
     let process_exited = match process.lock() {
         Ok(mut process) => match process.try_wait() {
             Ok(status) => status.is_some(),
@@ -881,7 +890,13 @@ fn send_terminal_input(
     }
 
     let claim = match input.pending.lock() {
-        Ok(mut pending) => pending.claim(data),
+        Ok(mut pending) => {
+            if pending.writer_failed || input.writer.is_poisoned() {
+                pending.writer_failed = true;
+                return TerminalInputOutcome::SurfaceUnavailable;
+            }
+            pending.claim(data)
+        }
         Err(_) => return TerminalInputOutcome::SurfaceUnavailable,
     };
     let (owner, direct, completion) = match claim {
@@ -896,8 +911,12 @@ fn send_terminal_input(
 
     let mut writer = match input.writer.lock() {
         Ok(writer) => writer,
-        Err(_) if direct => return TerminalInputOutcome::SurfaceUnavailable,
-        Err(_) => return completion,
+        Err(_) => {
+            if let Ok(mut pending) = input.pending.lock() {
+                pending.fail_owner(owner);
+            }
+            return TerminalInputOutcome::SurfaceUnavailable;
+        }
     };
     if direct {
         if let Err(outcome) = write_terminal_bytes(writer.as_mut(), data) {
@@ -1076,8 +1095,7 @@ pub fn terminal_resize(
     process
         .lock()
         .map_err(|_| "terminal process mutex poisoned".to_string())?
-        .resize(ConPtySize::new(cols.max(1), rows.max(1)))
-        .map_err(|e| e.to_string())?;
+        .resize(ConPtySize::new(cols.max(1), rows.max(1)))?;
     grid.lock()
         .map_err(|_| "terminal grid mutex poisoned".to_string())?
         .resize(GridSize::new(cols.max(1) as usize, rows.max(1) as usize));
