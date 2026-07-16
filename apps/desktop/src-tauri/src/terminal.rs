@@ -2798,7 +2798,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_pump_stays_dormant_until_ownership_is_observable() {
+    fn terminal_pump_stays_dormant_until_the_consumer_is_ready() {
         let (activation, ready) = super::TerminalPumpActivation::pending();
         let (emitted_tx, emitted_rx) = mpsc::channel();
         let pump = std::thread::spawn(move || {
@@ -2807,12 +2807,55 @@ mod tests {
             }
         });
 
+        activation.advance(super::TerminalPumpReadiness::Published);
         assert!(emitted_rx.recv_timeout(Duration::from_millis(50)).is_err());
-        activation.activate();
+        activation.advance(super::TerminalPumpReadiness::ConsumerReady);
         emitted_rx
             .recv_timeout(Duration::from_secs(2))
             .expect("activation released dormant pump");
         pump.join().unwrap();
+    }
+
+    #[test]
+    fn open_rollback_recovers_exact_authority_after_mid_transaction_registry_poison() {
+        let state = Arc::new(TerminalState::default());
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        state.registry.lock().unwrap().sessions.insert(
+            41,
+            test_session(
+                test_process(false),
+                test_transport(CapturingWriter(captured.clone())),
+                "panel-a",
+            ),
+        );
+        let reservation =
+            match super::reserve_terminal_open_for_control(&state, Some("panel-a"), false).unwrap()
+            {
+                super::TerminalOpenReservation::Reserved(reservation) => reservation,
+                super::TerminalOpenReservation::Existing(_) => {
+                    panic!("control open reused runtime")
+                }
+            };
+        let poison_state = state.clone();
+        assert!(std::thread::spawn(move || {
+            let _guard = poison_state.registry.lock().unwrap();
+            panic!("poison registry during open transaction");
+        })
+        .join()
+        .is_err());
+
+        assert!(
+            super::rollback_terminal_open_reservation_for_control(&state, reservation).is_err()
+        );
+        state.registry.clear_poison();
+        {
+            let registry = state.registry.lock().unwrap();
+            assert!(registry.sessions.contains_key(&41));
+            assert!(registry.reserved_session_ids.is_empty());
+            assert!(registry.reserved_panel_ids.is_empty());
+        }
+        super::terminal_write_id_for_control(&state, 41, b"reopened").unwrap();
+        assert_eq!(&*captured.lock().unwrap(), b"reopened");
     }
 
     #[test]
