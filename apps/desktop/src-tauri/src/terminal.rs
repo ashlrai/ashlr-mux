@@ -392,7 +392,7 @@ pub(crate) fn detach_terminal_panels_for_control(
             (!panel_id.is_empty()).then(|| panel_id.to_string())
         })
         .collect::<BTreeSet<_>>();
-    let mut registry = state.runtime_registry();
+    let mut registry = state.try_runtime_registry()?;
     if let Some(panel_id) = panel_ids
         .iter()
         .find(|panel_id| registry.reserved_panel_ids.contains(*panel_id))
@@ -442,7 +442,10 @@ pub(crate) fn rollback_terminal_panels_for_control(
     state: &TerminalState,
     lease: TerminalPanelRuntimeLease,
 ) -> Result<(), TerminalPanelRollbackError> {
-    let mut registry = state.runtime_registry();
+    let mut registry = match state.try_runtime_registry() {
+        Ok(registry) => registry,
+        Err(message) => return Err(TerminalPanelRollbackError { message, lease }),
+    };
     let ownership_lost = lease
         .panel_ids
         .iter()
@@ -483,7 +486,15 @@ pub(crate) fn finalize_terminal_panels_for_control(
     state: &TerminalState,
     lease: TerminalPanelRuntimeLease,
 ) -> Result<(), TerminalPanelFinalizeError> {
-    let guard = state.runtime_registry();
+    let guard = match state.try_runtime_registry() {
+        Ok(registry) => registry,
+        Err(error) => {
+            return Err(TerminalPanelFinalizeError {
+                failures: vec![error],
+                retry: lease,
+            });
+        }
+    };
     let ownership_lost = lease
         .panel_ids
         .iter()
@@ -526,7 +537,18 @@ pub(crate) fn finalize_terminal_panels_for_control(
         .filter_map(|session| session.panel_id.clone())
         .collect::<BTreeSet<_>>();
 
-    let mut registry = state.runtime_registry();
+    let mut registry = match state.try_runtime_registry() {
+        Ok(registry) => registry,
+        Err(error) => {
+            return Err(TerminalPanelFinalizeError {
+                failures: vec![error],
+                retry: TerminalPanelRuntimeLease {
+                    panel_ids,
+                    sessions: retry_sessions,
+                },
+            });
+        }
+    };
     for id in completed_ids {
         registry.reserved_session_ids.remove(&id);
     }
@@ -662,24 +684,26 @@ fn reusable_panel_session_id<'a>(
     sessions.find_map(|(id, candidate)| (candidate == Some(panel_id)).then_some(id))
 }
 
-#[allow(clippy::too_many_arguments)]
-fn terminal_open_with_policy(
-    app: &AppHandle,
+struct TerminalOpenIdentityReservation {
+    id: u32,
+    panel_id: Option<String>,
+}
+
+enum TerminalOpenReservation {
+    Existing(u32),
+    Reserved(TerminalOpenIdentityReservation),
+}
+
+fn reserve_terminal_open_for_control(
     state: &TerminalState,
     panel_id: Option<&str>,
-    cwd: Option<&str>,
-    initial_command: Option<&str>,
-    initial_input: Option<&str>,
-    environment: Option<BTreeMap<String, String>>,
-    cols: Option<u16>,
-    rows: Option<u16>,
     reuse_existing: bool,
-) -> Result<u32, String> {
+) -> Result<TerminalOpenReservation, String> {
     let panel_id = panel_id.and_then(|value| {
         let trimmed = value.trim();
         (!trimmed.is_empty()).then(|| trimmed.to_string())
     });
-    let mut registry = state.runtime_registry();
+    let mut registry = state.try_runtime_registry()?;
     if let Some(panel_id) = panel_id
         .as_ref()
         .filter(|panel_id| registry.reserved_panel_ids.contains(*panel_id))
@@ -694,87 +718,254 @@ fn terminal_open_with_policy(
         panel_id.as_deref(),
         reuse_existing,
     ) {
-        return Ok(existing);
+        return Ok(TerminalOpenReservation::Existing(existing));
     }
-    let id = state.next_id.fetch_add(1, Ordering::Relaxed);
-    if registry.reserved_session_ids.contains(&id) {
-        return Err(format!("terminal session {id} is reserved"));
+
+    let id = loop {
+        let candidate = state.next_id.fetch_add(1, Ordering::Relaxed);
+        if !registry.reserved_session_ids.contains(&candidate)
+            && !registry.sessions.contains_key(&candidate)
+        {
+            break candidate;
+        }
+    };
+    registry.reserved_session_ids.insert(id);
+    if let Some(panel_id) = panel_id.as_ref() {
+        registry.reserved_panel_ids.insert(panel_id.clone());
     }
+    Ok(TerminalOpenReservation::Reserved(
+        TerminalOpenIdentityReservation { id, panel_id },
+    ))
+}
+
+fn rollback_terminal_open_reservation_for_control(
+    state: &TerminalState,
+    reservation: TerminalOpenIdentityReservation,
+) -> Result<(), String> {
+    let mut registry = state.try_runtime_registry()?;
+    if !registry.reserved_session_ids.contains(&reservation.id)
+        || reservation
+            .panel_id
+            .as_ref()
+            .is_some_and(|panel_id| !registry.reserved_panel_ids.contains(panel_id))
+    {
+        return Err("terminal open reservation lost".to_string());
+    }
+    registry.reserved_session_ids.remove(&reservation.id);
+    if let Some(panel_id) = reservation.panel_id {
+        registry.reserved_panel_ids.remove(&panel_id);
+    }
+    Ok(())
+}
+
+fn publish_terminal_open_reservation(
+    state: &TerminalState,
+    reservation: &TerminalOpenIdentityReservation,
+    session: TerminalSession,
+) -> Result<u32, (String, TerminalSession)> {
+    if session.panel_id != reservation.panel_id {
+        return Err(("terminal open identity mismatch".to_string(), session));
+    }
+    let mut registry = match state.try_runtime_registry() {
+        Ok(registry) => registry,
+        Err(error) => return Err((error, session)),
+    };
+    let owns_reservation = registry.reserved_session_ids.contains(&reservation.id)
+        && reservation
+            .panel_id
+            .as_ref()
+            .is_none_or(|panel_id| registry.reserved_panel_ids.contains(panel_id));
+    if !owns_reservation || registry.sessions.contains_key(&reservation.id) {
+        return Err(("terminal open reservation lost".to_string(), session));
+    }
+
+    registry.reserved_session_ids.remove(&reservation.id);
+    if let Some(panel_id) = reservation.panel_id.as_ref() {
+        registry.reserved_panel_ids.remove(panel_id);
+    }
+    registry.sessions.insert(reservation.id, session);
+    Ok(reservation.id)
+}
+
+fn write_terminal_initial_input(
+    writer: &mut (dyn Write + Send),
+    initial_input: Option<&str>,
+) -> Result<(), String> {
+    let Some(input) = initial_input.filter(|input| !input.is_empty()) else {
+        return Ok(());
+    };
+    writer
+        .write_all(input.as_bytes())
+        .and_then(|_| writer.flush())
+        .map_err(|error| error.to_string())
+}
+
+struct TerminalOpenReservationGuard<'a> {
+    state: &'a TerminalState,
+    reservation: Option<TerminalOpenIdentityReservation>,
+}
+
+impl<'a> TerminalOpenReservationGuard<'a> {
+    fn new(state: &'a TerminalState, reservation: TerminalOpenIdentityReservation) -> Self {
+        Self {
+            state,
+            reservation: Some(reservation),
+        }
+    }
+
+    fn reservation(&self) -> &TerminalOpenIdentityReservation {
+        self.reservation
+            .as_ref()
+            .expect("active terminal open reservation")
+    }
+
+    fn disarm(mut self) {
+        self.reservation = None;
+    }
+
+    fn rollback(mut self, error: String) -> String {
+        let reservation = self
+            .reservation
+            .take()
+            .expect("active terminal open reservation");
+        match rollback_terminal_open_reservation_for_control(self.state, reservation) {
+            Ok(()) => error,
+            Err(rollback) => format!("{error}; {rollback}"),
+        }
+    }
+}
+
+impl Drop for TerminalOpenReservationGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(reservation) = self.reservation.take() {
+            let _ = rollback_terminal_open_reservation_for_control(self.state, reservation);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn terminal_open_with_policy(
+    app: &AppHandle,
+    state: &TerminalState,
+    panel_id: Option<&str>,
+    cwd: Option<&str>,
+    initial_command: Option<&str>,
+    initial_input: Option<&str>,
+    environment: Option<BTreeMap<String, String>>,
+    cols: Option<u16>,
+    rows: Option<u16>,
+    reuse_existing: bool,
+) -> Result<u32, String> {
+    let reservation = match reserve_terminal_open_for_control(state, panel_id, reuse_existing)? {
+        TerminalOpenReservation::Existing(id) => return Ok(id),
+        TerminalOpenReservation::Reserved(reservation) => reservation,
+    };
+    let guard = TerminalOpenReservationGuard::new(state, reservation);
+    let id = guard.reservation().id;
+    let panel_id = guard.reservation().panel_id.clone();
     let size = ConPtySize::new(cols.unwrap_or(80).max(1), rows.unwrap_or(24).max(1));
     let command = default_shell_command(cwd, initial_command, environment);
 
-    let pty = ConPty::spawn(&command, size).map_err(|e| e.to_string())?;
-    // Clone the reader before taking the writer; both are independent handles
-    // onto the master side.
-    let reader = pty.reader().map_err(|e| e.to_string())?;
-    let mut writer = pty.take_writer().map_err(|e| e.to_string())?;
-    if let Some(input) = initial_input.filter(|input| !input.is_empty()) {
-        writer
-            .write_all(input.as_bytes())
-            .map_err(|e| e.to_string())?;
-        writer.flush().map_err(|e| e.to_string())?;
-    }
+    let session = (|| -> Result<TerminalSession, String> {
+        let pty = ConPty::spawn(&command, size).map_err(|error| error.to_string())?;
+        // Reader and writer are independent handles onto the ConPTY master.
+        let reader = pty.reader().map_err(|error| error.to_string())?;
+        let mut writer = pty.take_writer().map_err(|error| error.to_string())?;
+        write_terminal_initial_input(writer.as_mut(), initial_input)?;
 
-    let root_pid = pty.process_id();
-    let grid = Arc::new(Mutex::new(TerminalGrid::new(GridSize::new(
-        size.cols as usize,
-        size.rows as usize,
-    ))));
-    let pump_app = app.clone();
-    let pump_panel_id = panel_id.clone();
-    let pump_grid = grid.clone();
-    std::thread::Builder::new()
-        .name(format!("cmux-terminal-pump-{id}"))
-        .spawn(move || pump_reader(pump_app, id, pump_panel_id, pump_grid, reader))
-        .map_err(|e| e.to_string())?;
+        let root_pid = pty.process_id();
+        let grid = Arc::new(Mutex::new(TerminalGrid::new(GridSize::new(
+            usize::from(size.cols),
+            usize::from(size.rows),
+        ))));
+        let pump_app = app.clone();
+        let pump_panel_id = panel_id.clone();
+        let pump_grid = grid.clone();
+        std::thread::Builder::new()
+            .name(format!("cmux-terminal-pump-{id}"))
+            .spawn(move || pump_reader(pump_app, id, pump_panel_id, pump_grid, reader))
+            .map_err(|error| error.to_string())?;
 
-    registry.sessions.insert(
-        id,
-        TerminalSession {
+        Ok(TerminalSession {
             pty: Arc::new(Mutex::new(Box::new(pty))),
             input: Arc::new(TerminalInputTransport::new(writer)),
             grid,
             panel_id,
             root_pid,
-        },
-    );
+        })
+    })();
 
-    Ok(id)
+    let session = match session {
+        Ok(session) => session,
+        Err(error) => return Err(guard.rollback(error)),
+    };
+    match publish_terminal_open_reservation(state, guard.reservation(), session) {
+        Ok(id) => {
+            guard.disarm();
+            Ok(id)
+        }
+        Err((error, session)) => {
+            let kill_error = session
+                .pty
+                .lock()
+                .map_err(|_| "terminal process mutex poisoned".to_string())
+                .and_then(|mut process| process.kill())
+                .err();
+            let error = match kill_error {
+                Some(kill) => format!("{error}; terminal startup cleanup failed: {kill}"),
+                None => error,
+            };
+            Err(guard.rollback(error))
+        }
+    }
 }
 
 pub(crate) fn terminal_has_panel_for_control(state: &TerminalState, panel_id: &str) -> bool {
-    state
-        .runtime_registry()
-        .sessions
-        .values()
-        .any(|session| session.panel_id.as_deref() == Some(panel_id))
+    state.try_runtime_registry().is_ok_and(|registry| {
+        !registry.reserved_panel_ids.contains(panel_id)
+            && registry
+                .sessions
+                .values()
+                .any(|session| session.panel_id.as_deref() == Some(panel_id))
+    })
 }
 
 pub(crate) fn terminal_ids_for_panel_for_control(
     state: &TerminalState,
     panel_id: &str,
 ) -> Vec<u32> {
-    state
-        .runtime_registry()
-        .sessions
-        .iter()
-        .filter_map(|(id, session)| (session.panel_id.as_deref() == Some(panel_id)).then_some(*id))
-        .collect()
+    state.try_runtime_registry().map_or_else(
+        |_| Vec::new(),
+        |registry| {
+            if registry.reserved_panel_ids.contains(panel_id) {
+                return Vec::new();
+            }
+            registry
+                .sessions
+                .iter()
+                .filter_map(|(id, session)| {
+                    (session.panel_id.as_deref() == Some(panel_id)).then_some(*id)
+                })
+                .collect()
+        },
+    )
 }
 
 pub(crate) fn terminal_shutdown_id_preserving_authority_for_control(
     state: &TerminalState,
     id: u32,
 ) -> Result<(), String> {
-    let registry = state.runtime_registry();
-    if registry.reserved_session_ids.contains(&id) {
-        return Err(format!("terminal session {id} is reserved"));
-    }
-    let process = registry
-        .sessions
-        .get(&id)
-        .map(|session| session.pty.clone())
-        .ok_or_else(|| format!("terminal runtime {id} is unavailable"))?;
+    let process = {
+        let registry = state.try_runtime_registry()?;
+        if registry.reserved_session_ids.contains(&id) {
+            return Err(format!("terminal session {id} is reserved"));
+        }
+        registry
+            .sessions
+            .get(&id)
+            .map(|session| session.pty.clone())
+            .ok_or_else(|| format!("terminal runtime {id} is unavailable"))?
+    };
     let result = process
         .lock()
         .map_err(|_| "terminal process mutex poisoned".to_string())?
@@ -783,7 +974,7 @@ pub(crate) fn terminal_shutdown_id_preserving_authority_for_control(
 }
 
 pub(crate) fn terminal_remove_id_for_control(state: &TerminalState, id: u32) -> Result<(), String> {
-    let mut registry = state.runtime_registry();
+    let mut registry = state.try_runtime_registry()?;
     if registry.reserved_session_ids.contains(&id) {
         return Err(format!("terminal session {id} is reserved"));
     }
@@ -1085,15 +1276,26 @@ pub fn terminal_resize(
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    let registry = state.runtime_registry();
-    if registry.reserved_session_ids.contains(&id) {
-        return Err(format!("terminal session {id} is reserved"));
-    }
-    let (process, grid) = registry
-        .sessions
-        .get(&id)
-        .map(|session| (session.pty.clone(), session.grid.clone()))
-        .ok_or_else(|| format!("unknown terminal session {id}"))?;
+    terminal_resize_id_for_control(state.inner(), id, cols, rows)
+}
+
+fn terminal_resize_id_for_control(
+    state: &TerminalState,
+    id: u32,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    let (process, grid) = {
+        let registry = state.try_runtime_registry()?;
+        if registry.reserved_session_ids.contains(&id) {
+            return Err(format!("terminal session {id} is reserved"));
+        }
+        registry
+            .sessions
+            .get(&id)
+            .map(|session| (session.pty.clone(), session.grid.clone()))
+            .ok_or_else(|| format!("unknown terminal session {id}"))?
+    };
     process
         .lock()
         .map_err(|_| "terminal process mutex poisoned".to_string())?
@@ -1109,7 +1311,7 @@ pub fn terminal_resize(
 #[tauri::command]
 pub fn terminal_close(state: State<'_, TerminalState>, id: u32) -> Result<(), String> {
     let removed = {
-        let mut registry = state.runtime_registry();
+        let mut registry = state.try_runtime_registry()?;
         if registry.reserved_session_ids.contains(&id) {
             return Err(format!("terminal session {id} is reserved"));
         }
