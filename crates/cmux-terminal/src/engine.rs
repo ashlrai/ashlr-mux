@@ -22,7 +22,7 @@ use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor, Processor};
 use alacritty_terminal::vte::{Params, Parser as VteParser, Perform};
 use serde::Serialize;
 
-use crate::theme::TerminalTheme;
+use crate::theme::{Color, TerminalTheme, ThemeError};
 
 /// Terminal grid dimensions in character cells. Implements alacritty's
 /// [`Dimensions`] so it can drive `Term` construction and resize directly.
@@ -65,7 +65,19 @@ pub struct TerminalGrid<L: EventListener = VoidListener> {
     parser: Processor,
     mode_parser: VteParser,
     mode_state: CanonicalModeState,
+    theme: TerminalTheme,
+    bold_color: Option<RenderGridBoldColor>,
     size: GridSize,
+}
+
+/// Canonical Ghostty bold-color policy used while resolving render-grid cells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenderGridBoldColor {
+    /// Promote palette colors 0–7 to their bright 8–15 counterparts.
+    Bright,
+    /// Use an explicit color for bold default-foreground text, while still
+    /// promoting palette colors 0–7 as Ghostty does.
+    Color(Color),
 }
 
 const CANONICAL_RENDER_GRID_MODES: [RenderGridMode; 31] = [
@@ -303,6 +315,8 @@ impl<L: EventListener> TerminalGrid<L> {
             parser: Processor::new(),
             mode_parser: VteParser::new(),
             mode_state: CanonicalModeState::default(),
+            theme: TerminalTheme::default(),
+            bold_color: None,
             size,
         }
     }
@@ -310,6 +324,23 @@ impl<L: EventListener> TerminalGrid<L> {
     /// The current grid dimensions.
     pub fn size(&self) -> GridSize {
         self.size
+    }
+
+    /// Replace the active per-surface theme used for resolved render-grid
+    /// colors. The update is rejected atomically when its palette is invalid.
+    pub fn set_theme(&mut self, theme: TerminalTheme) -> Result<(), ThemeError> {
+        theme.validate()?;
+        self.theme = theme;
+        Ok(())
+    }
+
+    pub fn theme(&self) -> &TerminalTheme {
+        &self.theme
+    }
+
+    /// Update the active Ghostty-compatible bold-color policy.
+    pub fn set_bold_color(&mut self, bold_color: Option<RenderGridBoldColor>) {
+        self.bold_color = bold_color;
     }
 
     /// Feed raw terminal output (UTF-8 PTY bytes) into the VT state machine.
@@ -463,7 +494,7 @@ impl<L: EventListener> TerminalGrid<L> {
 
         let renderable = self.term.renderable_content();
         let colors = renderable.colors;
-        let theme = TerminalTheme::default();
+        let theme = &self.theme;
         let mut default_foreground = dynamic_color(colors, NamedColor::Foreground)
             .unwrap_or_else(|| theme_color_hex(theme.foreground));
         let mut default_background = dynamic_color(colors, NamedColor::Background)
@@ -479,9 +510,10 @@ impl<L: EventListener> TerminalGrid<L> {
         let mut styles = vec![default_style.clone()];
         let mut style_ids = HashMap::from([(default_style.clone(), 0)]);
         let style_context = RenderGridStyleContext {
-            theme: &theme,
+            theme,
             colors,
             default_style: &default_style,
+            bold_color: self.bold_color,
         };
         let row_spans = self.render_grid_spans(
             Line(-(display_offset as i32)),
@@ -672,6 +704,7 @@ struct RenderGridStyleContext<'a> {
     theme: &'a TerminalTheme,
     colors: &'a Colors,
     default_style: &'a RenderGridStyle,
+    bold_color: Option<RenderGridBoldColor>,
 }
 
 fn render_grid_style(cell: &Cell, context: &RenderGridStyleContext<'_>) -> RenderGridStyle {
@@ -687,6 +720,8 @@ fn render_grid_style(cell: &Cell, context: &RenderGridStyleContext<'_>) -> Rende
                 .foreground
                 .as_deref()
                 .expect("default foreground"),
+            cell.flags.contains(Flags::BOLD),
+            context.bold_color,
         ),
         background: render_grid_color(
             cell.bg,
@@ -698,6 +733,8 @@ fn render_grid_style(cell: &Cell, context: &RenderGridStyleContext<'_>) -> Rende
                 .background
                 .as_deref()
                 .expect("default background"),
+            false,
+            None,
         ),
         bold: cell.flags.contains(Flags::BOLD),
         faint: cell.flags.contains(Flags::DIM),
@@ -717,8 +754,10 @@ fn render_grid_color(
     colors: &Colors,
     foreground: bool,
     default_color: &str,
+    bold: bool,
+    bold_color: Option<RenderGridBoldColor>,
 ) -> Option<String> {
-    match color {
+    let mut resolved = match color {
         AnsiColor::Spec(rgb) => Some(rgb_hex(rgb)),
         AnsiColor::Indexed(index) => Some(
             colors[index as usize]
@@ -732,7 +771,29 @@ fn render_grid_color(
                 .map(rgb_hex)
                 .unwrap_or_else(|| named_color(named, theme)),
         ),
+    };
+    if foreground && bold {
+        if let Some(policy) = bold_color {
+            let palette_index = match color {
+                AnsiColor::Indexed(index) if index < 8 => Some(index),
+                AnsiColor::Named(named) => named_color_index(named).filter(|index| *index < 8),
+                _ => None,
+            };
+            if let Some(index) = palette_index {
+                let bright = index + 8;
+                resolved = Some(
+                    colors[bright as usize]
+                        .map(rgb_hex)
+                        .unwrap_or_else(|| indexed_color(bright, theme)),
+                );
+            } else if let RenderGridBoldColor::Color(color) = policy {
+                if resolved.as_deref() == Some(default_color) {
+                    resolved = Some(theme_color_hex(color));
+                }
+            }
+        }
     }
+    resolved
 }
 
 fn rgb_hex(rgb: alacritty_terminal::vte::ansi::Rgb) -> String {
@@ -1090,6 +1151,9 @@ fn named_color(color: NamedColor, theme: &TerminalTheme) -> String {
 }
 
 fn indexed_color(index: u8, theme: &TerminalTheme) -> String {
+    if theme.palette.len() == crate::theme::FULL_PALETTE_LEN {
+        return theme_color_hex(theme.palette_color(index as usize));
+    }
     match index {
         0..=15 => theme_color_hex(theme.palette_color(index as usize)),
         16..=231 => {
