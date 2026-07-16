@@ -2149,7 +2149,7 @@ fn base64_encode(input: &[u8]) -> String {
 mod tests {
     use std::collections::BTreeMap;
     use std::io::{self, Write};
-    use std::sync::{mpsc, Arc, Mutex, Weak};
+    use std::sync::{mpsc, Arc, Barrier, Mutex, Weak};
     use std::time::Duration;
 
     use super::{
@@ -2434,6 +2434,455 @@ mod tests {
             panel_id: Some(panel_id.to_string()),
             root_pid: None,
         }
+    }
+
+    fn redesign_spec(cwd: &str) -> super::TerminalMaterializationSpec {
+        super::TerminalMaterializationSpec::new(
+            Some(cwd.to_string()),
+            Some("echo ready".to_string()),
+            b"initial".to_vec(),
+            BTreeMap::from([("CMUX_TEST".to_string(), "1".to_string())]),
+        )
+    }
+
+    fn redesign_start(
+        state: &TerminalState,
+        panel_id: &str,
+        spec: &super::TerminalMaterializationSpec,
+        event: super::TerminalMaterializationEvent,
+    ) -> super::TerminalMaterializationLease {
+        match super::request_terminal_materialization(state, panel_id, spec, vec![event]) {
+            super::TerminalMaterializationDemand::Start(lease) => lease,
+            _ => panic!("first cold demand must own the sole start lease"),
+        }
+    }
+
+    #[test]
+    fn cold_materialization_redesign_empty_and_budget_are_atomic() {
+        let state = TerminalState::default();
+        let spec = redesign_spec("C:/repo");
+        assert_eq!(
+            super::request_terminal_materialization(&state, "   ", &spec, Vec::new()),
+            super::TerminalMaterializationDemand::Noop
+        );
+        assert_eq!(
+            super::request_terminal_materialization(
+                &state,
+                "panel-empty",
+                &spec,
+                vec![
+                    super::TerminalMaterializationEvent::Input(Vec::new()),
+                    super::TerminalMaterializationEvent::ProcessOutput(Vec::new()),
+                ],
+            ),
+            super::TerminalMaterializationDemand::Noop
+        );
+        assert_eq!(
+            state
+                .registry
+                .lock()
+                .unwrap()
+                .next_materialization_generation,
+            0
+        );
+
+        let exact = vec![
+            super::TerminalMaterializationEvent::Input(vec![
+                b'i';
+                TERMINAL_PENDING_INPUT_LIMIT - 4
+            ]),
+            super::TerminalMaterializationEvent::ProcessOutput(b"out!".to_vec()),
+        ];
+        let lease = match super::request_terminal_materialization(
+            &state,
+            "panel-budget",
+            &spec,
+            exact.clone(),
+        ) {
+            super::TerminalMaterializationDemand::Start(lease) => lease,
+            _ => panic!("an exact-budget batch must start"),
+        };
+        assert_eq!(
+            super::request_terminal_materialization(
+                &state,
+                "panel-budget",
+                &spec,
+                vec![super::TerminalMaterializationEvent::Input(vec![b'x'])],
+            ),
+            super::TerminalMaterializationDemand::InputQueueFull
+        );
+        assert_eq!(
+            super::cancel_terminal_materialization(&state, &lease).unwrap(),
+            Some(exact)
+        );
+        assert_eq!(
+            super::request_terminal_materialization(
+                &state,
+                "panel-oversized",
+                &spec,
+                vec![super::TerminalMaterializationEvent::ProcessOutput(vec![
+                    b'x';
+                    TERMINAL_PENDING_INPUT_LIMIT + 1
+                ])],
+            ),
+            super::TerminalMaterializationDemand::InputQueueFull
+        );
+    }
+
+    #[test]
+    fn cold_materialization_redesign_fifo_publication_and_live_handoff() {
+        let state = TerminalState::default();
+        let spec = redesign_spec("C:/repo");
+        let first = super::TerminalMaterializationEvent::Input(b"first".to_vec());
+        let second = super::TerminalMaterializationEvent::ProcessOutput(b"second".to_vec());
+        let lease = redesign_start(&state, " panel-a ", &spec, first.clone());
+        assert_eq!(
+            super::request_terminal_materialization(&state, "panel-a", &spec, vec![second.clone()],),
+            super::TerminalMaterializationDemand::Queued
+        );
+        assert_eq!(
+            super::request_terminal_materialization(
+                &state,
+                "panel-a",
+                &redesign_spec("C:/other"),
+                vec![super::TerminalMaterializationEvent::Input(
+                    b"wrong".to_vec()
+                )],
+            ),
+            super::TerminalMaterializationDemand::SurfaceUnavailable
+        );
+        super::publish_terminal_materialization_runtime(
+            &state,
+            &lease,
+            7,
+            test_session(
+                test_process(false),
+                test_transport(CapturingWriter(Arc::new(Mutex::new(Vec::new())))),
+                "panel-a",
+            ),
+        )
+        .unwrap();
+        for expected in [first, second] {
+            assert_eq!(
+                super::drain_terminal_materialization_event(&state, &lease).unwrap(),
+                Some(expected)
+            );
+        }
+        assert_eq!(
+            super::drain_terminal_materialization_event(&state, &lease).unwrap(),
+            None
+        );
+        let live = super::TerminalMaterializationEvent::Input(b"live".to_vec());
+        assert_eq!(
+            super::request_terminal_materialization(
+                &state,
+                "panel-a",
+                &redesign_spec("C:/live"),
+                vec![live.clone()],
+            ),
+            super::TerminalMaterializationDemand::Live(vec![live])
+        );
+    }
+
+    #[test]
+    fn cold_materialization_redesign_concurrency_and_poison_are_classified() {
+        let state = Arc::new(TerminalState::default());
+        let barrier = Arc::new(Barrier::new(3));
+        let mut workers = Vec::new();
+        for byte in [b'a', b'b'] {
+            let state = state.clone();
+            let barrier = barrier.clone();
+            workers.push(std::thread::spawn(move || {
+                barrier.wait();
+                super::request_terminal_materialization(
+                    &state,
+                    "panel-race",
+                    &redesign_spec("C:/repo"),
+                    vec![super::TerminalMaterializationEvent::Input(vec![byte])],
+                )
+            }));
+        }
+        barrier.wait();
+        let outcomes = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| matches!(outcome, super::TerminalMaterializationDemand::Start(_)))
+                .count(),
+            1
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| matches!(outcome, super::TerminalMaterializationDemand::Queued))
+                .count(),
+            1
+        );
+
+        let poisoned = Arc::new(TerminalState::default());
+        let target = poisoned.clone();
+        assert!(std::thread::spawn(move || {
+            let _guard = target.registry.lock().unwrap();
+            panic!("poison redesign registry");
+        })
+        .join()
+        .is_err());
+        assert_eq!(
+            super::request_terminal_materialization(
+                &poisoned,
+                "panel-poisoned",
+                &redesign_spec("C:/repo"),
+                vec![super::TerminalMaterializationEvent::Input(
+                    b"input".to_vec()
+                )],
+            ),
+            super::TerminalMaterializationDemand::SurfaceUnavailable
+        );
+    }
+
+    #[test]
+    fn cold_materialization_redesign_full_failure_retries_without_append() {
+        let state = TerminalState::default();
+        let spec = redesign_spec("C:/repo");
+        let retained =
+            super::TerminalMaterializationEvent::Input(vec![b'x'; TERMINAL_PENDING_INPUT_LIMIT]);
+        let first = redesign_start(&state, "panel-full", &spec, retained.clone());
+        assert!(super::fail_terminal_materialization_start(&state, &first).unwrap());
+        assert!(!super::owns_terminal_materialization_start(&state, &first).unwrap());
+        let retry = super::retry_terminal_materialization_start(&state, "panel-full", &spec)
+            .unwrap()
+            .expect("full retained FIFO must retry without another byte");
+        assert_ne!(first.generation(), retry.generation());
+        assert_eq!(
+            super::cancel_terminal_materialization(&state, &retry).unwrap(),
+            Some(vec![retained])
+        );
+    }
+
+    #[test]
+    fn cold_materialization_redesign_starting_fence_invalidates_spawn() {
+        let state = TerminalState::default();
+        let spec = redesign_spec("C:/repo");
+        let first = super::TerminalMaterializationEvent::Input(b"first".to_vec());
+        let second = super::TerminalMaterializationEvent::ProcessOutput(b"second".to_vec());
+        let stale = redesign_start(&state, "panel-starting-fence", &spec, first.clone());
+        let panels = ["panel-starting-fence".to_string()].into_iter().collect();
+        let lifecycle = super::detach_terminal_panels_for_control(&state, &panels).unwrap();
+        assert!(!super::owns_terminal_materialization_start(&state, &stale).unwrap());
+        assert_eq!(
+            super::request_terminal_materialization(
+                &state,
+                "panel-starting-fence",
+                &spec,
+                vec![second.clone()],
+            ),
+            super::TerminalMaterializationDemand::Queued
+        );
+        assert!(
+            super::retry_terminal_materialization_start(&state, "panel-starting-fence", &spec,)
+                .unwrap()
+                .is_none()
+        );
+        super::rollback_terminal_panels_for_control(&state, lifecycle)
+            .map_err(|error| error.message)
+            .unwrap();
+        assert!(!super::owns_terminal_materialization_start(&state, &stale).unwrap());
+        let retry =
+            super::retry_terminal_materialization_start(&state, "panel-starting-fence", &spec)
+                .unwrap()
+                .expect("rollback restores dormant retry authority");
+        assert_ne!(stale.generation(), retry.generation());
+        assert_eq!(
+            super::cancel_terminal_materialization(&state, &retry).unwrap(),
+            Some(vec![first, second])
+        );
+
+        let final_state = TerminalState::default();
+        let final_lease = redesign_start(
+            &final_state,
+            "panel-starting-finalize",
+            &spec,
+            super::TerminalMaterializationEvent::Input(b"discard".to_vec()),
+        );
+        let panels = ["panel-starting-finalize".to_string()]
+            .into_iter()
+            .collect();
+        let lifecycle = super::detach_terminal_panels_for_control(&final_state, &panels).unwrap();
+        assert!(super::finalize_terminal_panels_for_control(&final_state, lifecycle).is_ok());
+        assert!(
+            super::cancel_terminal_materialization(&final_state, &final_lease)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn cold_materialization_redesign_detached_published_fence_is_append_only() {
+        let state = TerminalState::default();
+        let spec = redesign_spec("C:/repo");
+        let first = super::TerminalMaterializationEvent::Input(b"first".to_vec());
+        let second = super::TerminalMaterializationEvent::ProcessOutput(b"second".to_vec());
+        let lease = redesign_start(&state, "panel-detached", &spec, first.clone());
+        super::publish_terminal_materialization_runtime(
+            &state,
+            &lease,
+            8,
+            test_session(
+                test_process(false),
+                test_transport(CapturingWriter(Arc::new(Mutex::new(Vec::new())))),
+                "panel-detached",
+            ),
+        )
+        .unwrap();
+        let panels = ["panel-detached".to_string()].into_iter().collect();
+        let lifecycle = super::detach_terminal_panels_for_control(&state, &panels).unwrap();
+        assert_eq!(
+            super::request_terminal_materialization(
+                &state,
+                "panel-detached",
+                &spec,
+                vec![second.clone()],
+            ),
+            super::TerminalMaterializationDemand::Queued
+        );
+        assert!(super::drain_terminal_materialization_event(&state, &lease).is_err());
+        super::rollback_terminal_panels_for_control(&state, lifecycle)
+            .map_err(|error| error.message)
+            .unwrap();
+        for expected in [first, second] {
+            assert_eq!(
+                super::drain_terminal_materialization_event(&state, &lease).unwrap(),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn cold_materialization_redesign_direct_transfer_fences_drain() {
+        let state = TerminalState::default();
+        let spec = redesign_spec("C:/repo");
+        let first = super::TerminalMaterializationEvent::Input(b"first".to_vec());
+        let second = super::TerminalMaterializationEvent::ProcessOutput(b"second".to_vec());
+        let lease = redesign_start(&state, "panel-direct", &spec, first.clone());
+        super::publish_terminal_materialization_runtime(
+            &state,
+            &lease,
+            9,
+            test_session(
+                test_process(false),
+                test_transport(CapturingWriter(Arc::new(Mutex::new(Vec::new())))),
+                "panel-direct",
+            ),
+        )
+        .unwrap();
+        let transfer = super::begin_terminal_session_transfer(&state, 9)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            super::request_terminal_materialization(
+                &state,
+                "panel-direct",
+                &spec,
+                vec![second.clone()],
+            ),
+            super::TerminalMaterializationDemand::Queued
+        );
+        assert!(super::drain_terminal_materialization_event(&state, &lease).is_err());
+        super::release_terminal_session_transfer(&state, transfer, false).unwrap();
+        for expected in [first, second] {
+            assert_eq!(
+                super::drain_terminal_materialization_event(&state, &lease).unwrap(),
+                Some(expected)
+            );
+        }
+
+        let remove_state = TerminalState::default();
+        let remove_lease = redesign_start(
+            &remove_state,
+            "panel-direct-remove",
+            &spec,
+            super::TerminalMaterializationEvent::Input(b"discard".to_vec()),
+        );
+        super::publish_terminal_materialization_runtime(
+            &remove_state,
+            &remove_lease,
+            10,
+            test_session(
+                test_process(false),
+                test_transport(CapturingWriter(Arc::new(Mutex::new(Vec::new())))),
+                "panel-direct-remove",
+            ),
+        )
+        .unwrap();
+        let transfer = super::begin_terminal_session_transfer(&remove_state, 10)
+            .unwrap()
+            .unwrap();
+        super::release_terminal_session_transfer(&remove_state, transfer, true).unwrap();
+        assert!(super::drain_terminal_materialization_event(&remove_state, &remove_lease).is_err());
+    }
+
+    #[test]
+    fn cold_materialization_redesign_open_and_materialization_are_exclusive() {
+        let state = TerminalState::default();
+        let spec = redesign_spec("C:/repo");
+        let stale = redesign_start(
+            &state,
+            "panel-exclusive",
+            &spec,
+            super::TerminalMaterializationEvent::Input(b"retained".to_vec()),
+        );
+        assert!(
+            super::reserve_terminal_open_for_control(&state, Some("panel-exclusive"), false,)
+                .is_err()
+        );
+        let panels = ["panel-exclusive".to_string()].into_iter().collect();
+        let lifecycle = super::detach_terminal_panels_for_control(&state, &panels).unwrap();
+        let publication = super::publish_terminal_materialization_runtime(
+            &state,
+            &stale,
+            11,
+            test_session(
+                test_process(false),
+                test_transport(CapturingWriter(Arc::new(Mutex::new(Vec::new())))),
+                "panel-exclusive",
+            ),
+        )
+        .unwrap_err();
+        super::rollback_terminal_panels_for_control(&state, lifecycle)
+            .map_err(|error| error.message)
+            .unwrap();
+        let retry = super::retry_terminal_materialization_start(&state, "panel-exclusive", &spec)
+            .unwrap()
+            .unwrap();
+        super::publish_terminal_materialization_runtime(&state, &retry, 11, publication.session)
+            .unwrap();
+
+        let reserved = TerminalState::default();
+        let reservation = match super::reserve_terminal_open_for_control(
+            &reserved,
+            Some("panel-reserved-first"),
+            false,
+        )
+        .unwrap()
+        {
+            super::TerminalOpenReservation::Reserved(reservation) => reservation,
+            super::TerminalOpenReservation::Existing(_) => panic!("unexpected existing runtime"),
+        };
+        assert_eq!(
+            super::request_terminal_materialization(
+                &reserved,
+                "panel-reserved-first",
+                &spec,
+                vec![super::TerminalMaterializationEvent::Input(
+                    b"blocked".to_vec()
+                )],
+            ),
+            super::TerminalMaterializationDemand::SurfaceUnavailable
+        );
+        super::rollback_terminal_open_reservation_for_control(&reserved, reservation).unwrap();
     }
 
     #[test]
