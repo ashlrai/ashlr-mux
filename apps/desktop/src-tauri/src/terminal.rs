@@ -5782,6 +5782,32 @@ mod tests {
     }
 
     #[test]
+    fn live_only_terminal_input_never_starts_a_cold_runtime() {
+        let state = TerminalState::default();
+        let events = vec![super::TerminalMaterializationEvent::Input(
+            b"remote".to_vec(),
+        )];
+        assert_eq!(
+            super::request_live_terminal_input(&state, "remote", events.clone()),
+            super::TerminalMaterializationDemand::SurfaceUnavailable
+        );
+
+        state.runtime_registry().sessions.insert(
+            7,
+            test_session(
+                test_process(false),
+                test_transport(CapturingWriter(Arc::new(Mutex::new(Vec::new())))),
+                "remote",
+            ),
+        );
+        assert_eq!(
+            super::request_live_terminal_input(&state, "remote", events.clone()),
+            super::TerminalMaterializationDemand::Live(events)
+        );
+        assert!(state.runtime_registry().materializations.is_empty());
+    }
+
+    #[test]
     fn poisoned_registry_returns_classified_input_failure() {
         let state = Arc::new(TerminalState::default());
         let poison_state = state.clone();

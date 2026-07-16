@@ -121,6 +121,10 @@ async fn run_process_proof() -> Result<(), String> {
             "invalid owned ConPTY evidence: desktop={owned_desktop_pid}, root={root_pid}"
         ));
     }
+    let root_pid =
+        u32::try_from(root_pid).map_err(|_| format!("ConPTY root PID exceeds u32: {root_pid}"))?;
+    let root_created_at = cmux_process::process_creation_time(root_pid)
+        .ok_or_else(|| format!("could not record ConPTY process identity for {root_pid}"))?;
 
     let mobile = rpc
         .call(
@@ -153,7 +157,23 @@ async fn run_process_proof() -> Result<(), String> {
     if full.pointer("/error/code").and_then(Value::as_str) != Some("input_queue_full") {
         return Err(format!("mobile cold queue limit drifted: {full}"));
     }
+    drop(rpc);
+    desktop.stop()?;
+    poll_process_identity_exit(root_pid, root_created_at, Duration::from_secs(5))?;
     Ok(())
+}
+
+fn poll_process_identity_exit(pid: u32, created_at: u64, wait: Duration) -> Result<(), String> {
+    let deadline = Instant::now() + wait;
+    while Instant::now() < deadline {
+        if cmux_process::process_creation_time(pid) != Some(created_at) {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    Err(format!(
+        "owned ConPTY root identity {pid}/{created_at} survived desktop teardown"
+    ))
 }
 
 fn find_terminal<'a>(payload: &'a Value, surface_id: &str) -> Result<&'a Value, String> {
