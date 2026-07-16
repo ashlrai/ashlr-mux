@@ -4473,6 +4473,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("injected poisoned output apply failure"));
+        assert!(error.contains("terminal runtime registry mutex poisoned"));
         let registry = match state.registry.lock() {
             Ok(_) => panic!("registry must remain classified as poisoned"),
             Err(error) => error.into_inner(),
