@@ -1489,7 +1489,8 @@ mod tests {
         let mut palette = vec![Color::rgb(0x10, 0x10, 0x10); 256];
         palette[1] = Color::rgb(0x11, 0x11, 0x11);
         palette[9] = Color::rgb(0x99, 0x99, 0x99);
-        palette[42] = Color::rgb(0x2a, 0x2b, 0x2c);
+        palette[42] = Color::rgb(0x01, 0x02, 0x03);
+        palette[43] = Color::rgb(0x2a, 0x2b, 0x2c);
         let theme = TerminalTheme {
             foreground: Color::rgb(0x01, 0x02, 0x03),
             background: Color::rgb(0x04, 0x05, 0x06),
@@ -1501,7 +1502,7 @@ mod tests {
         term.set_theme(theme.clone())
             .expect("valid 256-color theme");
         term.set_bold_color(Some(RenderGridBoldColor::Bright));
-        term.advance(b"D\x1b[1mB\x1b[31mR\x1b[38;5;42mI");
+        term.advance(b"D\x1b[1mB\x1b[31mR\x1b[38;5;42mI\x1b[22;38;5;43mJ");
 
         let color_for = |frame: &RenderGridFrame, text: &str| {
             let span = frame
@@ -1517,7 +1518,8 @@ mod tests {
         assert_eq!(color_for(&bright, "D").as_deref(), Some("#010203"));
         assert_eq!(color_for(&bright, "B").as_deref(), Some("#010203"));
         assert_eq!(color_for(&bright, "R").as_deref(), Some("#999999"));
-        assert_eq!(color_for(&bright, "I").as_deref(), Some("#2A2B2C"));
+        assert_eq!(color_for(&bright, "I").as_deref(), Some("#010203"));
+        assert_eq!(color_for(&bright, "J").as_deref(), Some("#2A2B2C"));
         assert_eq!(bright.terminal_foreground, None);
         assert_eq!(bright.terminal_background, None);
 
@@ -1527,6 +1529,11 @@ mod tests {
         let explicit_bold = term.render_grid_snapshot("surface", 2);
         assert_eq!(color_for(&explicit_bold, "B").as_deref(), Some("#ABCDEF"));
         assert_eq!(color_for(&explicit_bold, "R").as_deref(), Some("#999999"));
+        assert_eq!(
+            color_for(&explicit_bold, "I").as_deref(),
+            Some("#010203"),
+            "indexed colors >=8 remain palette colors when RGB equals the default"
+        );
 
         term.advance(b"\x1b[?5h");
         let reversed = term.render_grid_snapshot("surface", 3);
