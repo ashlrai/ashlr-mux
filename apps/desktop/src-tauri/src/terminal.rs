@@ -1942,10 +1942,10 @@ mod tests {
         let id = reservation.id;
         let session = test_session(test_process(false), test_transport(io::sink()), "panel-a");
 
-        assert_eq!(
-            super::publish_terminal_open_reservation(&state, &reservation, session),
-            Ok(id)
-        );
+        let published = super::publish_terminal_open_reservation(&state, &reservation, session)
+            .map_err(|(error, _session)| error)
+            .expect("publish reserved terminal");
+        assert_eq!(published, id);
         let registry = state.registry.lock().unwrap();
         assert!(registry.sessions.contains_key(&id));
         assert!(!registry.reserved_session_ids.contains(&id));
