@@ -10,11 +10,19 @@
 //! Bytes are decoded as UTF-8 by the VT parser (cross-cutting rule 5) — never
 //! as CP-437 — so box-drawing and emoji survive intact.
 
+use std::collections::HashMap;
+
 use alacritty_terminal::event::{EventListener, VoidListener};
-use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line};
-use alacritty_terminal::term::{Config, Term};
-use alacritty_terminal::vte::ansi::Processor;
+use alacritty_terminal::term::cell::{Cell, Flags};
+use alacritty_terminal::term::color::Colors;
+use alacritty_terminal::term::{Config, Term, TermMode};
+use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor, Processor};
+use alacritty_terminal::vte::{Params, Parser as VteParser, Perform};
+use serde::Serialize;
+
+use crate::theme::TerminalTheme;
 
 /// Terminal grid dimensions in character cells. Implements alacritty's
 /// [`Dimensions`] so it can drive `Term` construction and resize directly.
@@ -55,7 +63,227 @@ impl Dimensions for GridSize {
 pub struct TerminalGrid<L: EventListener = VoidListener> {
     term: Term<L>,
     parser: Processor,
+    mode_parser: VteParser,
+    mode_state: CanonicalModeState,
     size: GridSize,
+}
+
+const CANONICAL_RENDER_GRID_MODES: [RenderGridMode; 31] = [
+    // ANSI modes.
+    RenderGridMode::new(2, true, false),
+    RenderGridMode::new(4, true, false),
+    RenderGridMode::new(12, true, true),
+    RenderGridMode::new(20, true, false),
+    // DEC modes. Screen/cursor/geometry/negotiation modes excluded by the
+    // canonical producer are intentionally absent.
+    RenderGridMode::new(1, false, false),
+    RenderGridMode::new(4, false, false),
+    RenderGridMode::new(5, false, false),
+    RenderGridMode::new(6, false, false),
+    RenderGridMode::new(7, false, true),
+    RenderGridMode::new(8, false, false),
+    RenderGridMode::new(9, false, false),
+    RenderGridMode::new(40, false, false),
+    RenderGridMode::new(45, false, false),
+    RenderGridMode::new(66, false, false),
+    RenderGridMode::new(67, false, false),
+    RenderGridMode::new(69, false, false),
+    RenderGridMode::new(1000, false, false),
+    RenderGridMode::new(1002, false, false),
+    RenderGridMode::new(1003, false, false),
+    RenderGridMode::new(1004, false, false),
+    RenderGridMode::new(1005, false, false),
+    RenderGridMode::new(1006, false, false),
+    RenderGridMode::new(1007, false, true),
+    RenderGridMode::new(1015, false, false),
+    RenderGridMode::new(1016, false, false),
+    RenderGridMode::new(1035, false, true),
+    RenderGridMode::new(1036, false, true),
+    RenderGridMode::new(1039, false, false),
+    RenderGridMode::new(1045, false, false),
+    RenderGridMode::new(2004, false, false),
+    RenderGridMode::new(2027, false, false),
+];
+
+struct CanonicalModeState {
+    values: [RenderGridMode; CANONICAL_RENDER_GRID_MODES.len()],
+    saved: [bool; CANONICAL_RENDER_GRID_MODES.len()],
+}
+
+impl Default for CanonicalModeState {
+    fn default() -> Self {
+        Self {
+            values: CANONICAL_RENDER_GRID_MODES,
+            saved: [false; CANONICAL_RENDER_GRID_MODES.len()],
+        }
+    }
+}
+
+impl CanonicalModeState {
+    fn index(&self, code: u16, ansi: bool) -> Option<usize> {
+        self.values
+            .iter()
+            .position(|mode| mode.code == code && mode.ansi == ansi)
+    }
+
+    fn set(&mut self, code: u16, ansi: bool, on: bool) {
+        if let Some(index) = self.index(code, ansi) {
+            self.values[index].on = on;
+        }
+    }
+
+    fn save(&mut self, code: u16, ansi: bool) {
+        if let Some(index) = self.index(code, ansi) {
+            self.saved[index] = self.values[index].on;
+        }
+    }
+
+    fn restore(&mut self, code: u16, ansi: bool) {
+        if let Some(index) = self.index(code, ansi) {
+            self.values[index].on = self.saved[index];
+        }
+    }
+
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    fn is_set(&self, code: u16, ansi: bool) -> bool {
+        self.index(code, ansi)
+            .is_some_and(|index| self.values[index].on)
+    }
+}
+
+impl Perform for CanonicalModeState {
+    fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], ignore: bool, action: char) {
+        if ignore {
+            return;
+        }
+        let ansi = match intermediates {
+            b"" => true,
+            b"?" => false,
+            _ => return,
+        };
+        for param in params {
+            let Some(code) = param.first().copied() else {
+                continue;
+            };
+            match action {
+                'h' => self.set(code, ansi, true),
+                'l' => self.set(code, ansi, false),
+                's' => self.save(code, ansi),
+                'r' => self.restore(code, ansi),
+                _ => {}
+            }
+        }
+    }
+
+    fn esc_dispatch(&mut self, intermediates: &[u8], ignore: bool, byte: u8) {
+        if ignore || !intermediates.is_empty() {
+            return;
+        }
+        match byte {
+            b'=' => self.set(66, false, true),
+            b'>' => self.set(66, false, false),
+            b'c' => self.reset(),
+            _ => {}
+        }
+    }
+}
+
+/// A full terminal-state snapshot using canonical cmux's
+/// `cmux.render-grid.v1` JSON field names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RenderGridFrame {
+    pub format: String,
+    pub surface_id: String,
+    pub state_seq: u64,
+    pub columns: usize,
+    pub rows: usize,
+    pub cursor: Option<RenderGridCursor>,
+    pub full: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cleared_rows: Vec<usize>,
+    pub styles: Vec<RenderGridStyle>,
+    pub row_spans: Vec<RenderGridRowSpan>,
+    pub active_screen: RenderGridScreen,
+    pub modes: Vec<RenderGridMode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_foreground: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_background: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_cursor_color: Option<String>,
+    pub scrollback_rows: usize,
+    pub scrollback_spans: Vec<RenderGridRowSpan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RenderGridCursor {
+    pub row: usize,
+    pub column: usize,
+    pub visible: bool,
+    pub style: RenderGridCursorStyle,
+    pub blinking: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RenderGridCursorStyle {
+    Block,
+    Bar,
+    Underline,
+    BlockHollow,
+}
+
+/// A resolved visual style. IDs are assigned per frame and style zero is the
+/// canonical default pen.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize)]
+pub struct RenderGridStyle {
+    pub id: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub foreground: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub background: Option<String>,
+    pub bold: bool,
+    pub faint: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub blink: bool,
+    pub inverse: bool,
+    pub invisible: bool,
+    pub strikethrough: bool,
+    pub overline: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RenderGridRowSpan {
+    pub row: usize,
+    pub column: usize,
+    pub style_id: usize,
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cell_width: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RenderGridScreen {
+    Primary,
+    Alternate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct RenderGridMode {
+    pub code: u16,
+    pub ansi: bool,
+    pub on: bool,
+}
+
+impl RenderGridMode {
+    const fn new(code: u16, ansi: bool, on: bool) -> Self {
+        Self { code, ansi, on }
+    }
 }
 
 impl TerminalGrid<VoidListener> {
@@ -73,6 +301,8 @@ impl<L: EventListener> TerminalGrid<L> {
         Self {
             term,
             parser: Processor::new(),
+            mode_parser: VteParser::new(),
+            mode_state: CanonicalModeState::default(),
             size,
         }
     }
@@ -87,6 +317,7 @@ impl<L: EventListener> TerminalGrid<L> {
     /// across calls, so a multi-byte sequence split across two `advance` calls
     /// still parses correctly.
     pub fn advance(&mut self, bytes: &[u8]) {
+        self.mode_parser.advance(&mut self.mode_state, bytes);
         self.parser.advance(&mut self.term, bytes);
     }
 
@@ -146,6 +377,733 @@ impl<L: EventListener> TerminalGrid<L> {
     pub fn cursor(&self) -> (usize, usize) {
         let point = self.term.grid().cursor.point;
         (point.line.0.max(0) as usize, point.column.0)
+    }
+
+    /// Whether the child enabled DECSET 2004 bracketed-paste mode.
+    pub fn bracketed_paste_enabled(&self) -> bool {
+        self.term.mode().contains(TermMode::BRACKETED_PASTE)
+    }
+
+    /// Whether cursor/navigation keys must use SS3 instead of CSI encoding.
+    pub fn application_cursor_keys_enabled(&self) -> bool {
+        self.term.mode().contains(TermMode::APP_CURSOR)
+    }
+
+    pub fn alternate_screen_enabled(&self) -> bool {
+        self.term.mode().contains(TermMode::ALT_SCREEN)
+    }
+
+    pub fn mouse_reporting_enabled(&self) -> bool {
+        self.term.mode().intersects(TermMode::MOUSE_MODE)
+    }
+
+    pub fn sgr_mouse_enabled(&self) -> bool {
+        self.term.mode().contains(TermMode::SGR_MOUSE)
+    }
+
+    /// Scroll the displayed viewport without changing the live cursor.
+    pub fn scroll_display_lines(&mut self, lines: i32) {
+        if lines != 0 {
+            self.term.scroll_display(Scroll::Delta(lines));
+        }
+    }
+
+    /// Export the complete retained primary-screen history and displayed
+    /// viewport. Callers that cross a process boundary should prefer
+    /// [`Self::render_grid_snapshot_with_scrollback`] with an explicit budget.
+    pub fn render_grid_snapshot(&self, surface_id: &str, state_seq: u64) -> RenderGridFrame {
+        self.render_grid_snapshot_with_scrollback(surface_id, state_seq, usize::MAX)
+    }
+
+    /// Export a canonical full render-grid frame with at most
+    /// `max_scrollback_rows` rows above the displayed viewport.
+    pub fn render_grid_snapshot_with_scrollback(
+        &self,
+        surface_id: &str,
+        state_seq: u64,
+        max_scrollback_rows: usize,
+    ) -> RenderGridFrame {
+        let grid = self.term.grid();
+        let display_offset = grid.display_offset();
+        let scrollback_rows = if self.alternate_screen_enabled() {
+            0
+        } else {
+            grid.history_size()
+                .saturating_sub(display_offset)
+                .min(max_scrollback_rows)
+        };
+
+        let cursor_point = grid.cursor.point;
+        let displayed_cursor_row = cursor_point.line.0 + display_offset as i32;
+        let cursor_in_viewport = (0..self.size.screen_lines as i32).contains(&displayed_cursor_row);
+        let cursor_style = self.term.cursor_style();
+        let cursor = Some(RenderGridCursor {
+            row: if cursor_in_viewport {
+                displayed_cursor_row as usize
+            } else {
+                0
+            },
+            column: cursor_point.column.0,
+            visible: cursor_in_viewport && self.term.mode().contains(TermMode::SHOW_CURSOR),
+            style: match cursor_style.shape {
+                alacritty_terminal::vte::ansi::CursorShape::Underline => {
+                    RenderGridCursorStyle::Underline
+                }
+                alacritty_terminal::vte::ansi::CursorShape::Beam => RenderGridCursorStyle::Bar,
+                alacritty_terminal::vte::ansi::CursorShape::HollowBlock => {
+                    RenderGridCursorStyle::BlockHollow
+                }
+                alacritty_terminal::vte::ansi::CursorShape::Block
+                | alacritty_terminal::vte::ansi::CursorShape::Hidden => {
+                    RenderGridCursorStyle::Block
+                }
+            },
+            blinking: cursor_style.blinking,
+        });
+
+        let renderable = self.term.renderable_content();
+        let colors = renderable.colors;
+        let theme = TerminalTheme::default();
+        let mut default_foreground = dynamic_color(colors, NamedColor::Foreground)
+            .unwrap_or_else(|| theme_color_hex(theme.foreground));
+        let mut default_background = dynamic_color(colors, NamedColor::Background)
+            .unwrap_or_else(|| theme_color_hex(theme.background));
+        if self.mode_state.is_set(5, false) {
+            std::mem::swap(&mut default_foreground, &mut default_background);
+        }
+        let default_style = RenderGridStyle {
+            foreground: Some(default_foreground),
+            background: Some(default_background),
+            ..RenderGridStyle::default()
+        };
+        let mut styles = vec![default_style.clone()];
+        let mut style_ids = HashMap::from([(default_style.clone(), 0)]);
+        let style_context = RenderGridStyleContext {
+            theme: &theme,
+            colors,
+            default_style: &default_style,
+        };
+        let row_spans = self.render_grid_spans(
+            Line(-(display_offset as i32)),
+            self.size.screen_lines,
+            &style_context,
+            &mut styles,
+            &mut style_ids,
+        );
+        let scrollback_spans = self.render_grid_spans(
+            Line(-((display_offset + scrollback_rows) as i32)),
+            scrollback_rows,
+            &style_context,
+            &mut styles,
+            &mut style_ids,
+        );
+
+        RenderGridFrame {
+            format: "cmux.render-grid.v1".into(),
+            surface_id: surface_id.into(),
+            state_seq,
+            columns: self.size.columns,
+            rows: self.size.screen_lines,
+            cursor,
+            full: true,
+            cleared_rows: Vec::new(),
+            styles,
+            row_spans,
+            active_screen: if self.alternate_screen_enabled() {
+                RenderGridScreen::Alternate
+            } else {
+                RenderGridScreen::Primary
+            },
+            modes: self.render_grid_modes(),
+            terminal_foreground: dynamic_color(colors, NamedColor::Foreground),
+            terminal_background: dynamic_color(colors, NamedColor::Background),
+            terminal_cursor_color: dynamic_color(colors, NamedColor::Cursor),
+            scrollback_rows,
+            scrollback_spans,
+        }
+    }
+
+    /// Export rendered cells as a bounded VT stream suitable for session
+    /// restoration. Dynamic default-color OSC state is deliberately excluded
+    /// so the active theme remains authoritative after replay.
+    pub fn vt_snapshot_for_persistence(
+        &self,
+        max_active_rows: usize,
+        max_characters: usize,
+    ) -> Option<String> {
+        if max_active_rows == 0 || max_characters == 0 {
+            return None;
+        }
+
+        let grid = self.term.grid();
+        let history_rows = if self.alternate_screen_enabled() {
+            0
+        } else {
+            grid.history_size()
+        };
+        let candidate_rows = history_rows.saturating_add(self.size.screen_lines);
+        let row_count = candidate_rows.min(max_active_rows);
+        let skipped_rows = candidate_rows.saturating_sub(row_count);
+        let first_line = Line(-(history_rows as i32) + skipped_rows as i32);
+        let cursor_row = history_rows
+            .saturating_add(grid.cursor.point.line.0.max(0) as usize)
+            .checked_sub(skipped_rows)
+            .filter(|row| *row < row_count);
+
+        let mut rows = Vec::with_capacity(row_count);
+        let mut last_content_row = None;
+        for row_index in 0..row_count {
+            let line = Line(first_line.0 + row_index as i32);
+            let last_column = (0..self.size.columns)
+                .rfind(|column| persistence_cell_has_content(&grid[line][Column(*column)]));
+            if last_column.is_some() {
+                last_content_row = Some(row_index);
+            }
+            rows.push(persistence_vt_row(
+                grid,
+                line,
+                last_column.map_or(0, |column| column + 1),
+            ));
+        }
+
+        let meaningful_rows = last_content_row
+            .into_iter()
+            .chain(cursor_row)
+            .max()
+            .map_or(0, |row| row + 1);
+        rows.truncate(meaningful_rows);
+
+        // Explicit CHA after LF makes replay independent of linefeed/newline
+        // mode in the destination terminal.
+        let snapshot = rows.join("\n\x1b[1G");
+        if !vt_has_visible_text(&snapshot) {
+            return None;
+        }
+        let tailed = tail_vt_characters(&snapshot, max_characters);
+        vt_has_visible_text(tailed).then(|| tailed.to_owned())
+    }
+
+    fn render_grid_spans(
+        &self,
+        first_line: Line,
+        row_count: usize,
+        style_context: &RenderGridStyleContext<'_>,
+        styles: &mut Vec<RenderGridStyle>,
+        style_ids: &mut HashMap<RenderGridStyle, usize>,
+    ) -> Vec<RenderGridRowSpan> {
+        let grid = self.term.grid();
+        let mut spans = Vec::new();
+        for row in 0..row_count {
+            let line = Line(first_line.0 + row as i32);
+            let mut pending: Option<RenderGridRowSpan> = None;
+            for column in 0..self.size.columns {
+                let cell = &grid[line][Column(column)];
+                if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                    continue;
+                }
+                let style = render_grid_style(cell, style_context);
+                let style_id = render_grid_style_id(style, styles, style_ids);
+                let has_grapheme = cell
+                    .zerowidth()
+                    .is_some_and(|characters| !characters.is_empty());
+                let has_text = cell.c != ' ' || has_grapheme;
+                if !has_text && style_id == 0 {
+                    flush_render_grid_span(&mut pending, &mut spans);
+                    continue;
+                }
+
+                let cell_width = if cell.flags.contains(Flags::WIDE_CHAR) {
+                    2
+                } else {
+                    1
+                };
+                let owns_span = has_text && (cell_width != 1 || has_grapheme);
+                if owns_span {
+                    flush_render_grid_span(&mut pending, &mut spans);
+                }
+                let can_append = pending.as_ref().is_some_and(|span| {
+                    span.style_id == style_id
+                        && span.column + span.cell_width.unwrap_or_default() == column
+                });
+                if !can_append {
+                    flush_render_grid_span(&mut pending, &mut spans);
+                    pending = Some(RenderGridRowSpan {
+                        row,
+                        column,
+                        style_id,
+                        text: String::new(),
+                        cell_width: Some(0),
+                    });
+                }
+                let span = pending.as_mut().expect("render span initialized");
+                if has_text {
+                    span.text.push(cell.c);
+                    if let Some(zerowidth) = cell.zerowidth() {
+                        span.text.extend(zerowidth);
+                    }
+                } else {
+                    span.text.push(' ');
+                }
+                *span.cell_width.as_mut().expect("render span width") += cell_width;
+                if owns_span {
+                    flush_render_grid_span(&mut pending, &mut spans);
+                }
+            }
+            flush_render_grid_span(&mut pending, &mut spans);
+        }
+        spans
+    }
+
+    fn render_grid_modes(&self) -> Vec<RenderGridMode> {
+        self.mode_state.values.to_vec()
+    }
+}
+
+fn flush_render_grid_span(
+    pending: &mut Option<RenderGridRowSpan>,
+    spans: &mut Vec<RenderGridRowSpan>,
+) {
+    if let Some(span) = pending.take() {
+        spans.push(span);
+    }
+}
+
+struct RenderGridStyleContext<'a> {
+    theme: &'a TerminalTheme,
+    colors: &'a Colors,
+    default_style: &'a RenderGridStyle,
+}
+
+fn render_grid_style(cell: &Cell, context: &RenderGridStyleContext<'_>) -> RenderGridStyle {
+    RenderGridStyle {
+        id: 0,
+        foreground: render_grid_color(
+            cell.fg,
+            context.theme,
+            context.colors,
+            true,
+            context
+                .default_style
+                .foreground
+                .as_deref()
+                .expect("default foreground"),
+        ),
+        background: render_grid_color(
+            cell.bg,
+            context.theme,
+            context.colors,
+            false,
+            context
+                .default_style
+                .background
+                .as_deref()
+                .expect("default background"),
+        ),
+        bold: cell.flags.contains(Flags::BOLD),
+        faint: cell.flags.contains(Flags::DIM),
+        italic: cell.flags.contains(Flags::ITALIC),
+        underline: cell.flags.intersects(Flags::ALL_UNDERLINES),
+        blink: cell.flags.contains(Flags::BLINK),
+        inverse: cell.flags.contains(Flags::INVERSE),
+        invisible: cell.flags.contains(Flags::HIDDEN),
+        strikethrough: cell.flags.contains(Flags::STRIKEOUT),
+        overline: cell.flags.contains(Flags::OVERLINE),
+    }
+}
+
+fn render_grid_color(
+    color: AnsiColor,
+    theme: &TerminalTheme,
+    colors: &Colors,
+    foreground: bool,
+    default_color: &str,
+) -> Option<String> {
+    match color {
+        AnsiColor::Spec(rgb) => Some(rgb_hex(rgb)),
+        AnsiColor::Indexed(index) => Some(
+            colors[index as usize]
+                .map(rgb_hex)
+                .unwrap_or_else(|| indexed_color(index, theme)),
+        ),
+        AnsiColor::Named(NamedColor::Foreground) if foreground => Some(default_color.to_owned()),
+        AnsiColor::Named(NamedColor::Background) if !foreground => Some(default_color.to_owned()),
+        AnsiColor::Named(named) => Some(
+            colors[named]
+                .map(rgb_hex)
+                .unwrap_or_else(|| named_color(named, theme)),
+        ),
+    }
+}
+
+fn rgb_hex(rgb: alacritty_terminal::vte::ansi::Rgb) -> String {
+    format!("#{:02X}{:02X}{:02X}", rgb.r, rgb.g, rgb.b)
+}
+
+fn dynamic_color(colors: &Colors, named: NamedColor) -> Option<String> {
+    colors[named].map(rgb_hex)
+}
+
+fn theme_color_hex(color: crate::theme::Color) -> String {
+    format!("#{:02X}{:02X}{:02X}", color.r, color.g, color.b)
+}
+
+fn render_grid_style_id(
+    style: RenderGridStyle,
+    styles: &mut Vec<RenderGridStyle>,
+    style_ids: &mut HashMap<RenderGridStyle, usize>,
+) -> usize {
+    match style_ids.get(&style) {
+        Some(id) => *id,
+        None => {
+            let id = styles.len();
+            style_ids.insert(style.clone(), id);
+            let mut stored = style.clone();
+            stored.id = id;
+            styles.push(stored);
+            id
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PersistenceUnderline {
+    Single,
+    Double,
+    Curly,
+    Dotted,
+    Dashed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PersistenceCellStyle {
+    foreground: AnsiColor,
+    background: AnsiColor,
+    underline_color: Option<AnsiColor>,
+    bold: bool,
+    faint: bool,
+    italic: bool,
+    blink: bool,
+    underline: Option<PersistenceUnderline>,
+    inverse: bool,
+    invisible: bool,
+    strikethrough: bool,
+    overline: bool,
+}
+
+impl PersistenceCellStyle {
+    fn from_cell(cell: &Cell) -> Self {
+        let underline = if cell.flags.contains(Flags::DOUBLE_UNDERLINE) {
+            Some(PersistenceUnderline::Double)
+        } else if cell.flags.contains(Flags::UNDERCURL) {
+            Some(PersistenceUnderline::Curly)
+        } else if cell.flags.contains(Flags::DOTTED_UNDERLINE) {
+            Some(PersistenceUnderline::Dotted)
+        } else if cell.flags.contains(Flags::DASHED_UNDERLINE) {
+            Some(PersistenceUnderline::Dashed)
+        } else if cell.flags.contains(Flags::UNDERLINE) {
+            Some(PersistenceUnderline::Single)
+        } else {
+            None
+        };
+        Self {
+            foreground: cell.fg,
+            background: cell.bg,
+            underline_color: cell.underline_color(),
+            bold: cell.flags.contains(Flags::BOLD),
+            faint: cell.flags.contains(Flags::DIM),
+            italic: cell.flags.contains(Flags::ITALIC),
+            blink: cell.flags.contains(Flags::BLINK),
+            underline,
+            inverse: cell.flags.contains(Flags::INVERSE),
+            invisible: cell.flags.contains(Flags::HIDDEN),
+            strikethrough: cell.flags.contains(Flags::STRIKEOUT),
+            overline: cell.flags.contains(Flags::OVERLINE),
+        }
+    }
+
+    fn is_default(self) -> bool {
+        self.foreground == AnsiColor::Named(NamedColor::Foreground)
+            && self.background == AnsiColor::Named(NamedColor::Background)
+            && self.underline_color.is_none()
+            && !self.bold
+            && !self.faint
+            && !self.italic
+            && !self.blink
+            && self.underline.is_none()
+            && !self.inverse
+            && !self.invisible
+            && !self.strikethrough
+            && !self.overline
+    }
+}
+
+fn persistence_cell_has_content(cell: &Cell) -> bool {
+    cell.c != ' '
+        || cell
+            .zerowidth()
+            .is_some_and(|characters| !characters.is_empty())
+        || cell.hyperlink().is_some()
+        || !PersistenceCellStyle::from_cell(cell).is_default()
+        || cell.flags.intersects(
+            Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER,
+        )
+}
+
+fn persistence_vt_row(
+    grid: &alacritty_terminal::grid::Grid<Cell>,
+    line: Line,
+    column_count: usize,
+) -> String {
+    let mut row = String::new();
+    let mut active_style = None;
+    let mut active_hyperlink = None;
+    for column in 0..column_count {
+        let cell = &grid[line][Column(column)];
+        let hyperlink = cell.hyperlink();
+        if hyperlink != active_hyperlink {
+            if active_hyperlink.is_some() {
+                row.push_str("\x1b]8;;\x1b\\");
+            }
+            if let Some(hyperlink) = hyperlink.as_ref() {
+                row.push_str("\x1b]8;id=");
+                row.push_str(hyperlink.id());
+                row.push(';');
+                row.push_str(hyperlink.uri());
+                row.push_str("\x1b\\");
+            }
+            active_hyperlink = hyperlink;
+        }
+
+        let style = PersistenceCellStyle::from_cell(cell);
+        if active_style != Some(style) {
+            if style.is_default() {
+                if active_style.is_some_and(|previous| !previous.is_default()) {
+                    row.push_str("\x1b[0m");
+                }
+            } else {
+                row.push_str(&persistence_style_sgr(style));
+            }
+            active_style = Some(style);
+        }
+
+        if !cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+            row.push(cell.c);
+            if let Some(zerowidth) = cell.zerowidth() {
+                row.extend(zerowidth);
+            }
+        }
+    }
+    if active_hyperlink.is_some() {
+        row.push_str("\x1b]8;;\x1b\\");
+    }
+    if active_style.is_some_and(|style| !style.is_default()) {
+        row.push_str("\x1b[0m");
+    }
+    row
+}
+
+fn persistence_style_sgr(style: PersistenceCellStyle) -> String {
+    let mut codes = vec!["0".to_owned()];
+    for (enabled, code) in [
+        (style.bold, "1"),
+        (style.faint, "2"),
+        (style.italic, "3"),
+        (style.blink, "5"),
+        (style.inverse, "7"),
+        (style.invisible, "8"),
+        (style.strikethrough, "9"),
+        (style.overline, "53"),
+    ] {
+        if enabled {
+            codes.push(code.to_owned());
+        }
+    }
+    if let Some(underline) = style.underline {
+        codes.push(
+            match underline {
+                PersistenceUnderline::Single => "4",
+                PersistenceUnderline::Double => "4:2",
+                PersistenceUnderline::Curly => "4:3",
+                PersistenceUnderline::Dotted => "4:4",
+                PersistenceUnderline::Dashed => "4:5",
+            }
+            .to_owned(),
+        );
+    }
+    push_persistence_color(&mut codes, style.foreground, 38, 39, true);
+    push_persistence_color(&mut codes, style.background, 48, 49, false);
+    if let Some(color) = style.underline_color {
+        push_persistence_color(&mut codes, color, 58, 59, true);
+    }
+    format!("\x1b[{}m", codes.join(";"))
+}
+
+fn push_persistence_color(
+    codes: &mut Vec<String>,
+    color: AnsiColor,
+    extended_code: u8,
+    default_code: u8,
+    foreground: bool,
+) {
+    match color {
+        AnsiColor::Spec(rgb) => {
+            codes.push(format!("{extended_code};2;{};{};{}", rgb.r, rgb.g, rgb.b));
+        }
+        AnsiColor::Indexed(index) => codes.push(format!("{extended_code};5;{index}")),
+        AnsiColor::Named(named) => match named_color_index(named) {
+            Some(index) if extended_code == 38 && foreground && index < 8 => {
+                codes.push((30 + index).to_string());
+            }
+            Some(index) if extended_code == 38 && foreground => {
+                codes.push((90 + index - 8).to_string());
+            }
+            Some(index) if extended_code == 48 && !foreground && index < 8 => {
+                codes.push((40 + index).to_string());
+            }
+            Some(index) if extended_code == 48 && !foreground => {
+                codes.push((100 + index - 8).to_string());
+            }
+            Some(index) => codes.push(format!("{extended_code};5;{index}")),
+            None => codes.push(default_code.to_string()),
+        },
+    }
+}
+
+fn named_color_index(color: NamedColor) -> Option<u8> {
+    match color {
+        NamedColor::Black | NamedColor::DimBlack => Some(0),
+        NamedColor::Red | NamedColor::DimRed => Some(1),
+        NamedColor::Green | NamedColor::DimGreen => Some(2),
+        NamedColor::Yellow | NamedColor::DimYellow => Some(3),
+        NamedColor::Blue | NamedColor::DimBlue => Some(4),
+        NamedColor::Magenta | NamedColor::DimMagenta => Some(5),
+        NamedColor::Cyan | NamedColor::DimCyan => Some(6),
+        NamedColor::White | NamedColor::DimWhite => Some(7),
+        NamedColor::BrightBlack => Some(8),
+        NamedColor::BrightRed => Some(9),
+        NamedColor::BrightGreen => Some(10),
+        NamedColor::BrightYellow => Some(11),
+        NamedColor::BrightBlue => Some(12),
+        NamedColor::BrightMagenta => Some(13),
+        NamedColor::BrightCyan => Some(14),
+        NamedColor::BrightWhite => Some(15),
+        NamedColor::Foreground
+        | NamedColor::Background
+        | NamedColor::Cursor
+        | NamedColor::BrightForeground
+        | NamedColor::DimForeground => None,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VtEscapeState {
+    Text,
+    Escape,
+    Csi,
+    Osc,
+    OscEscape,
+}
+
+fn advance_vt_escape_state(state: VtEscapeState, byte: u8) -> VtEscapeState {
+    match state {
+        VtEscapeState::Text if byte == 0x1b => VtEscapeState::Escape,
+        VtEscapeState::Text => VtEscapeState::Text,
+        VtEscapeState::Escape if byte == b'[' => VtEscapeState::Csi,
+        VtEscapeState::Escape if byte == b']' => VtEscapeState::Osc,
+        VtEscapeState::Escape => VtEscapeState::Text,
+        VtEscapeState::Csi if (0x40..=0x7e).contains(&byte) => VtEscapeState::Text,
+        VtEscapeState::Csi => VtEscapeState::Csi,
+        VtEscapeState::Osc if byte == 0x07 => VtEscapeState::Text,
+        VtEscapeState::Osc if byte == 0x1b => VtEscapeState::OscEscape,
+        VtEscapeState::Osc => VtEscapeState::Osc,
+        VtEscapeState::OscEscape if byte == b'\\' => VtEscapeState::Text,
+        VtEscapeState::OscEscape if byte == 0x1b => VtEscapeState::OscEscape,
+        VtEscapeState::OscEscape => VtEscapeState::Osc,
+    }
+}
+
+fn tail_vt_characters(value: &str, max_characters: usize) -> &str {
+    let count = value.chars().count();
+    if count <= max_characters {
+        return value;
+    }
+    let skipped = count - max_characters;
+    let mut start = value
+        .char_indices()
+        .nth(skipped)
+        .map_or(value.len(), |(index, _)| index);
+    let mut state = VtEscapeState::Text;
+    for byte in value.as_bytes()[..start].iter().copied() {
+        state = advance_vt_escape_state(state, byte);
+    }
+    while state != VtEscapeState::Text && start < value.len() {
+        state = advance_vt_escape_state(state, value.as_bytes()[start]);
+        start += 1;
+    }
+    &value[start..]
+}
+
+fn vt_has_visible_text(value: &str) -> bool {
+    let mut state = VtEscapeState::Text;
+    let mut index = 0;
+    while index < value.len() {
+        let character = value[index..].chars().next().expect("valid UTF-8 suffix");
+        let byte = value.as_bytes()[index];
+        if state == VtEscapeState::Text
+            && byte != 0x1b
+            && !character.is_control()
+            && !character.is_whitespace()
+        {
+            return true;
+        }
+        state = advance_vt_escape_state(state, byte);
+        index += character.len_utf8();
+    }
+    false
+}
+
+fn named_color(color: NamedColor, theme: &TerminalTheme) -> String {
+    let palette_index = match color {
+        NamedColor::Black | NamedColor::DimBlack => Some(0),
+        NamedColor::Red | NamedColor::DimRed => Some(1),
+        NamedColor::Green | NamedColor::DimGreen => Some(2),
+        NamedColor::Yellow | NamedColor::DimYellow => Some(3),
+        NamedColor::Blue | NamedColor::DimBlue => Some(4),
+        NamedColor::Magenta | NamedColor::DimMagenta => Some(5),
+        NamedColor::Cyan | NamedColor::DimCyan => Some(6),
+        NamedColor::White | NamedColor::DimWhite => Some(7),
+        NamedColor::BrightBlack => Some(8),
+        NamedColor::BrightRed => Some(9),
+        NamedColor::BrightGreen => Some(10),
+        NamedColor::BrightYellow => Some(11),
+        NamedColor::BrightBlue => Some(12),
+        NamedColor::BrightMagenta => Some(13),
+        NamedColor::BrightCyan => Some(14),
+        NamedColor::BrightWhite => Some(15),
+        NamedColor::Foreground | NamedColor::BrightForeground | NamedColor::DimForeground => None,
+        NamedColor::Background => return theme_color_hex(theme.background),
+        NamedColor::Cursor => return theme_color_hex(theme.cursor),
+    };
+    palette_index
+        .map(|index| theme_color_hex(theme.palette_color(index)))
+        .unwrap_or_else(|| theme_color_hex(theme.foreground))
+}
+
+fn indexed_color(index: u8, theme: &TerminalTheme) -> String {
+    match index {
+        0..=15 => theme_color_hex(theme.palette_color(index as usize)),
+        16..=231 => {
+            let index = index - 16;
+            let component = |value: u8| if value == 0 { 0 } else { 55 + value * 40 };
+            let red = component(index / 36);
+            let green = component((index % 36) / 6);
+            let blue = component(index % 6);
+            format!("#{red:02X}{green:02X}{blue:02X}")
+        }
+        232..=255 => {
+            let value = 8 + (index - 232) * 10;
+            format!("#{value:02X}{value:02X}{value:02X}")
+        }
     }
 }
 
@@ -258,20 +1216,48 @@ mod tests {
         assert!(!term.alternate_screen_enabled());
         assert!(!term.mouse_reporting_enabled());
         assert!(!term.sgr_mouse_enabled());
+        let defaults = term.render_grid_snapshot("surface", 0).modes;
+        assert_eq!(defaults.len(), 31);
+        assert!(defaults
+            .iter()
+            .any(|mode| mode.code == 12 && mode.ansi && mode.on));
+        assert!(defaults
+            .iter()
+            .any(|mode| mode.code == 7 && !mode.ansi && mode.on));
 
-        term.advance(b"\x1b[?1h\x1b[?1002h\x1b[?1006h\x1b[?2004h\x1b[?1049h");
+        term.advance(b"\x1b[4h\x1b[?1h\x1b[?5h\x1b[?1002h\x1b[?1006h\x1b[?2004h\x1b=\x1b[?1049h");
         assert!(term.bracketed_paste_enabled());
         assert!(term.application_cursor_keys_enabled());
         assert!(term.alternate_screen_enabled());
         assert!(term.mouse_reporting_enabled());
         assert!(term.sgr_mouse_enabled());
+        let changed = term.render_grid_snapshot("surface", 1).modes;
+        for (code, ansi) in [(4, true), (1, false), (5, false), (66, false)] {
+            assert!(changed
+                .iter()
+                .any(|mode| mode.code == code && mode.ansi == ansi && mode.on));
+        }
 
-        term.advance(b"\x1b[?1l\x1b[?1002l\x1b[?1006l\x1b[?2004l\x1b[?1049l");
+        term.advance(
+            b"\x1b[4l\x1b[?1l\x1b[?5s\x1b[?5l\x1b[?5r\x1b[?1002l\x1b[?1006l\x1b[?2004l\x1b>\x1b[?1049l",
+        );
         assert!(!term.bracketed_paste_enabled());
         assert!(!term.application_cursor_keys_enabled());
         assert!(!term.alternate_screen_enabled());
         assert!(!term.mouse_reporting_enabled());
         assert!(!term.sgr_mouse_enabled());
+        assert!(term
+            .render_grid_snapshot("surface", 2)
+            .modes
+            .iter()
+            .any(|mode| mode.code == 5 && !mode.ansi && mode.on));
+
+        term.advance(b"\x1bc");
+        assert!(term
+            .render_grid_snapshot("surface", 3)
+            .modes
+            .iter()
+            .any(|mode| mode.code == 5 && !mode.ansi && !mode.on));
     }
 
     #[test]
@@ -287,6 +1273,13 @@ mod tests {
         assert!(snapshot.full);
         assert!(snapshot.cleared_rows.is_empty());
         assert_eq!(snapshot.active_screen, RenderGridScreen::Primary);
+        assert_eq!(
+            (
+                snapshot.styles[0].foreground.as_deref(),
+                snapshot.styles[0].background.as_deref()
+            ),
+            (Some("#E5E5E5"), Some("#000000"))
+        );
         assert_eq!(
             snapshot
                 .row_spans
@@ -313,8 +1306,10 @@ mod tests {
         assert_eq!(json["format"], "cmux.render-grid.v1");
         assert_eq!(json["surface_id"], "surface-1");
         assert_eq!(json["state_seq"], 19);
+        assert!(json.get("cleared_rows").is_none());
         assert!(json.get("row_spans").is_some());
         assert!(json.get("scrollback_spans").is_some());
+        assert_eq!(json["row_spans"][0]["cell_width"], 3);
     }
 
     #[test]
@@ -343,7 +1338,14 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![(0, "three"), (1, "four")]
         );
-        assert_eq!(scrolled.cursor, None, "live cursor is below the viewport");
+        assert_eq!(
+            scrolled
+                .cursor
+                .as_ref()
+                .map(|cursor| (cursor.row, cursor.column, cursor.visible)),
+            Some((0, 4, false)),
+            "canonical producer retains a hidden cursor object off viewport"
+        );
         assert_eq!(
             scrolled
                 .scrollback_spans
@@ -357,17 +1359,24 @@ mod tests {
     #[test]
     fn render_grid_preserves_widths_styles_and_resolved_colors() {
         let mut term = TerminalGrid::new(GridSize::new(12, 2));
-        term.advance("界e\u{301}".as_bytes());
+        term.advance("A界Be\u{301}".as_bytes());
         term.advance(b"\x1b[2;1H\x1b[1;2;3;4;5;7;8;9;53;38;2;1;2;3;48;5;4mA");
 
         let snapshot = term.render_grid_snapshot("surface", 1);
-        let wide = snapshot
-            .row_spans
-            .iter()
-            .find(|span| span.row == 0)
-            .expect("wide and combining text span");
-        assert_eq!(wide.text, "界e\u{301}");
-        assert_eq!(wide.cell_width, Some(3));
+        assert_eq!(
+            snapshot
+                .row_spans
+                .iter()
+                .filter(|span| span.row == 0)
+                .map(|span| (span.column, span.text.as_str(), span.cell_width))
+                .collect::<Vec<_>>(),
+            vec![
+                (0, "A", Some(1)),
+                (1, "界", Some(2)),
+                (3, "B", Some(1)),
+                (4, "e\u{301}", Some(1))
+            ]
+        );
 
         let styled = snapshot
             .row_spans
@@ -376,7 +1385,7 @@ mod tests {
             .expect("styled span");
         let style = &snapshot.styles[styled.style_id];
         assert_eq!(style.foreground.as_deref(), Some("#010203"));
-        assert_eq!(style.background.as_deref(), Some("#0000ee"));
+        assert_eq!(style.background.as_deref(), Some("#0000EE"));
         assert!(style.bold && style.faint && style.italic && style.underline);
         assert!(style.blink && style.inverse && style.invisible);
         assert!(style.strikethrough && style.overline);
@@ -390,6 +1399,17 @@ mod tests {
         assert_eq!(primary.terminal_foreground.as_deref(), Some("#112233"));
         assert_eq!(primary.terminal_background.as_deref(), Some("#445566"));
         assert_eq!(primary.terminal_cursor_color.as_deref(), Some("#778899"));
+        assert_eq!(primary.styles[0].foreground.as_deref(), Some("#112233"));
+        assert_eq!(primary.styles[0].background.as_deref(), Some("#445566"));
+        assert_eq!(
+            primary
+                .row_spans
+                .iter()
+                .map(|span| (span.row, span.text.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(0, "primary")],
+            "dynamic defaults must not turn blank cells into content"
+        );
 
         term.advance(b"\x1b[?1049h\x1b[Halternate");
         let alternate = term.render_grid_snapshot_with_scrollback("surface", 2, 240);
@@ -417,7 +1437,7 @@ mod tests {
         assert!(frame
             .styles
             .iter()
-            .any(|style| style.bold && style.foreground.as_deref() == Some("#cd0000")));
+            .any(|style| style.bold && style.foreground.as_deref() == Some("#CD0000")));
     }
 
     #[test]
