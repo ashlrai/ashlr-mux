@@ -764,6 +764,40 @@ fn browser_and_nonterminal_kind_state_round_trips_losslessly() {
 }
 
 #[test]
+fn terminal_runtime_title_scrollback_and_hibernation_project_losslessly() {
+    let input = serde_json::json!({
+        "selected_workspace_index": 0,
+        "workspaces": [{
+            "workspace_id": "workspace-1",
+            "process_title": "terminal",
+            "layout": {"type":"pane","pane":{"pane_id":"pane-1","panel_ids":["terminal"]}},
+            "surfaces": [{
+                "surface_id": "terminal",
+                "pane_id": "pane-1",
+                "generation": 3,
+                "kind": {"type": "terminal"},
+                "metadata": {"runtime_title": "cargo test"},
+                "terminal_startup": {
+                    "working_directory": "C:/repo",
+                    "hibernation": {
+                        "hibernated_at": 1_700_000_001.25,
+                        "last_activity_at": 1_700_000_000.5
+                    }
+                },
+                "scrollback": "one\r\ntwo\r\n"
+            }]
+        }]
+    });
+    let tabs: SessionTabManagerSnapshot = serde_json::from_value(input.clone()).unwrap();
+    let model = SurfaceLifecycleModel::from_session_snapshot("window-1", &tabs).unwrap();
+    let output = serde_json::to_value(model.to_session_snapshot(&tabs).unwrap()).unwrap();
+    assert_eq!(
+        output["workspaces"][0]["surfaces"],
+        input["workspaces"][0]["surfaces"]
+    );
+}
+
+#[test]
 fn legacy_optional_kind_identities_remain_absent_instead_of_becoming_empty_defaults() {
     let tabs: SessionTabManagerSnapshot = serde_json::from_value(serde_json::json!({
         "workspaces":[

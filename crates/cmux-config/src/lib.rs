@@ -3827,6 +3827,28 @@ mod tests {
     }
 
     #[test]
+    fn agent_hibernation_confirmation_seconds_defaults_and_round_trips() {
+        let defaults = TerminalConfig::default();
+        assert_eq!(
+            serde_json::to_value(&defaults.agent_hibernation).expect("serialize defaults")
+                ["confirmationSeconds"],
+            60
+        );
+
+        let config =
+            decode_config(r#"{"terminal":{"agentHibernation":{"confirmationSeconds":42}}}"#)
+                .expect("decode explicit confirmation window");
+        let encoded: serde_json::Value = serde_json::from_str(
+            &encode_config(&config).expect("encode explicit confirmation window"),
+        )
+        .expect("parse encoded config");
+        assert_eq!(
+            encoded["terminal"]["agentHibernation"]["confirmationSeconds"],
+            42
+        );
+    }
+
+    #[test]
     fn ghostty_config_candidates_prefer_xdg_config_home() {
         let xdg = Path::new("C:/xdg");
         let home = Path::new("C:/Users/example");

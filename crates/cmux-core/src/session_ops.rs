@@ -5826,6 +5826,91 @@ mod tests {
         assert_eq!(tabs.workspaces[2].process_title, "cargo test");
     }
 
+    fn install_surface_records(tabs: &mut SessionTabManagerSnapshot, surface_ids: &[&str]) {
+        tabs.workspaces[0].surfaces = Some(
+            surface_ids
+                .iter()
+                .map(|surface_id| {
+                    serde_json::from_value(serde_json::json!({
+                        "surface_id": surface_id,
+                        "pane_id": "surface-1",
+                        "generation": 1,
+                        "kind": {"type": "terminal"},
+                        "metadata": {}
+                    }))
+                    .expect("surface record")
+                })
+                .collect(),
+        );
+    }
+
+    fn runtime_title(tabs: &SessionTabManagerSnapshot, surface_id: &str) -> Option<String> {
+        serde_json::to_value(&tabs.workspaces[0].surfaces)
+            .expect("serialize surface records")
+            .as_array()
+            .and_then(|rows| rows.first())
+            .and_then(|rows| rows.as_array())
+            .and_then(|rows| {
+                rows.iter()
+                    .find(|row| row["surface_id"] == surface_id)
+                    .and_then(|row| row["metadata"]["runtime_title"].as_str())
+            })
+            .map(str::to_owned)
+    }
+
+    #[test]
+    fn set_process_title_keeps_exact_surface_authority_and_ignores_blank() {
+        let mut tabs = one_workspace_tabs("surface-1");
+        install_surface_records(&mut tabs, &["surface-1"]);
+
+        assert!(set_process_title(
+            &mut tabs,
+            "surface-1",
+            "  pwsh — C:/repo  "
+        ));
+        assert_eq!(tabs.workspaces[0].process_title, "pwsh — C:/repo");
+        assert_eq!(
+            runtime_title(&tabs, "surface-1").as_deref(),
+            Some("pwsh — C:/repo")
+        );
+
+        assert!(!set_process_title(&mut tabs, "surface-1", " \r\n\t "));
+        assert_eq!(
+            runtime_title(&tabs, "surface-1").as_deref(),
+            Some("pwsh — C:/repo")
+        );
+        assert!(!set_process_title(&mut tabs, "unknown", "ignored"));
+    }
+
+    #[test]
+    fn set_process_title_does_not_replace_multi_panel_or_custom_workspace_title() {
+        let mut multi = one_workspace_tabs("surface-1");
+        assert!(split_pane(
+            multi.workspaces[0].layout.as_mut().unwrap(),
+            "surface-1",
+            SessionSplitOrientation::Horizontal,
+            "surface-2",
+            false,
+        ));
+        install_surface_records(&mut multi, &["surface-1", "surface-2"]);
+        assert!(set_process_title(&mut multi, "surface-2", "cargo test"));
+        assert_eq!(multi.workspaces[0].process_title, "Terminal");
+        assert_eq!(
+            runtime_title(&multi, "surface-2").as_deref(),
+            Some("cargo test")
+        );
+
+        let mut custom = one_workspace_tabs("surface-1");
+        custom.workspaces[0].custom_title = Some("Pinned name".into());
+        install_surface_records(&mut custom, &["surface-1"]);
+        assert!(set_process_title(&mut custom, "surface-1", "npm run dev"));
+        assert_eq!(custom.workspaces[0].process_title, "Terminal");
+        assert_eq!(
+            runtime_title(&custom, "surface-1").as_deref(),
+            Some("npm run dev")
+        );
+    }
+
     // Case A: append-when-no-groups / no-pins (AfterCurrent, single tab).
     #[test]
     fn new_workspace_appends_and_selects_it() {

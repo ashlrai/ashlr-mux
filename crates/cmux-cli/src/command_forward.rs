@@ -4811,6 +4811,87 @@ mod tests {
     }
 
     #[test]
+    fn agent_hibernation_maps_canonical_aliases_and_rejects_invalid_usage() {
+        for (value, enabled) in [
+            ("on", true),
+            ("ENABLE", true),
+            ("off", false),
+            ("Disable", false),
+        ] {
+            let command = mapped("agent-hibernation", &[value]);
+            assert_eq!(command.method, "agent_hibernation");
+            assert_eq!(command.params, serde_json::json!({"enabled": enabled}));
+        }
+
+        for invalid in [vec![], vec!["enabled"], vec!["on", "extra"]] {
+            let error = control_command_for("agent-hibernation", &args(&invalid))
+                .expect_err("invalid hibernation CLI usage must fail");
+            assert_eq!(
+                error.message,
+                "Usage: cmux agent-hibernation <on|off> [--json]"
+            );
+        }
+    }
+
+    #[test]
+    fn set_agent_lifecycle_normalizes_state_and_preserves_scope() {
+        for value in ["needsInput", "needsinput", "needs-input", "needs_input"] {
+            let command = mapped(
+                "set-agent-lifecycle",
+                &[
+                    "codex",
+                    value,
+                    "ignored-extra-positional",
+                    "--tab=workspace-2",
+                    "--panel=surface-3",
+                ],
+            );
+            assert_eq!(command.method, "workspace.set_agent_lifecycle");
+            assert_eq!(
+                command.params,
+                serde_json::json!({
+                    "key": "codex",
+                    "lifecycle": "needsInput",
+                    "workspace_id": "workspace-2",
+                    "surface_ref": "surface:3",
+                })
+            );
+        }
+
+        let alias = mapped(
+            "set_agent_lifecycle",
+            &["claude_code", "IDLE", "--tab", "2", "--panel", "panel-id"],
+        );
+        assert_eq!(alias.method, "workspace.set_agent_lifecycle");
+        assert_eq!(
+            alias.params,
+            serde_json::json!({
+                "key": "claude_code",
+                "lifecycle": "idle",
+                "workspace_ref": "workspace:2",
+                "panel_id": "panel-id",
+            })
+        );
+
+        let invalid = control_command_for(
+            "set-agent-lifecycle",
+            &args(&["codex", "waiting", "--tab", "workspace-2"]),
+        )
+        .expect_err("unknown lifecycle must fail before dispatch");
+        assert_eq!(
+            invalid.message,
+            "Invalid agent lifecycle 'waiting' — usage: cmux set-agent-lifecycle <key> <unknown|running|idle|needsInput> [--tab=<id>] [--panel=<id>]"
+        );
+
+        let missing = control_command_for("set-agent-lifecycle", &args(&["codex"]))
+            .expect_err("missing lifecycle must fail");
+        assert_eq!(
+            missing.message,
+            "Usage: cmux set-agent-lifecycle <key> <unknown|running|idle|needsInput> [--tab=<id>] [--panel=<id>]"
+        );
+    }
+
+    #[test]
     fn ambient_workspace_id_is_added_to_scoped_surface_commands() {
         let command = mapped("new-split", &["--direction", "down"])
             .with_ambient_workspace_id(Some(" workspace-2 "));

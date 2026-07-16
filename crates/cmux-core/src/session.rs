@@ -1650,4 +1650,29 @@ mod tests {
         let decoded: SessionPanelUnreadSnapshot = serde_json::from_value(raw).expect("deserialize");
         assert_eq!(decoded.unread_at, None);
     }
+
+    #[test]
+    fn terminal_surface_runtime_title_scrollback_and_hibernation_round_trip() {
+        let raw = serde_json::json!({
+            "surface_id": "surface-1",
+            "pane_id": "pane-1",
+            "generation": 4,
+            "kind": {"type": "terminal"},
+            "metadata": {"runtime_title": "pwsh — C:/repo"},
+            "terminal_startup": {
+                "working_directory": "C:/repo",
+                "hibernation": {
+                    "hibernated_at": 1_700_000_001.25,
+                    "last_activity_at": 1_700_000_000.5
+                }
+            },
+            "scrollback": "first\r\nsecond\r\n"
+        });
+        let decoded: SessionSurfaceSnapshot =
+            serde_json::from_value(raw.clone()).expect("deserialize terminal surface");
+        assert_eq!(
+            serde_json::to_value(decoded).expect("serialize terminal surface"),
+            raw
+        );
+    }
 }
