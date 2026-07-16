@@ -1797,7 +1797,7 @@ fn base64_encode(input: &[u8]) -> String {
 mod tests {
     use std::collections::BTreeMap;
     use std::io::{self, Write};
-    use std::sync::{mpsc, Arc, Mutex};
+    use std::sync::{mpsc, Arc, Mutex, Weak};
     use std::time::Duration;
 
     use super::{
@@ -1861,6 +1861,30 @@ mod tests {
     impl TerminalProcess for FailingKillProcess {
         fn kill(&mut self) -> Result<(), String> {
             Err("injected kill failure".to_string())
+        }
+
+        fn resize(&mut self, _size: ConPtySize) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn try_wait(&mut self) -> Result<Option<u32>, String> {
+            Ok(None)
+        }
+    }
+
+    struct PoisonRegistryDuringKillProcess {
+        state: Weak<TerminalState>,
+    }
+
+    impl TerminalProcess for PoisonRegistryDuringKillProcess {
+        fn kill(&mut self) -> Result<(), String> {
+            let state = self.state.upgrade().expect("terminal state remains live");
+            let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _guard = state.registry.lock().unwrap();
+                panic!("poison registry after successful kill");
+            }));
+            assert!(poisoned.is_err());
+            Ok(())
         }
 
         fn resize(&mut self, _size: ConPtySize) -> Result<(), String> {
@@ -2394,6 +2418,253 @@ mod tests {
         .is_err());
         assert!(super::terminal_resize_id_for_control(&state, 1, 80, 24).is_err());
         assert!(super::terminal_shutdown_id_preserving_authority_for_control(&state, 1).is_err());
+    }
+
+    #[test]
+    fn control_panel_reservation_fences_every_id_based_mutation_of_the_old_runtime() {
+        let state = TerminalState::default();
+        state
+            .next_id
+            .store(42, std::sync::atomic::Ordering::Relaxed);
+        state.registry.lock().unwrap().sessions.insert(
+            41,
+            test_session(
+                test_process(false),
+                test_transport(CapturingWriter(Arc::new(Mutex::new(Vec::new())))),
+                "panel-a",
+            ),
+        );
+        let replacement =
+            match super::reserve_terminal_open_for_control(&state, Some("panel-a"), false).unwrap()
+            {
+                super::TerminalOpenReservation::Reserved(reservation) => reservation,
+                super::TerminalOpenReservation::Existing(_) => {
+                    panic!("control open reused runtime")
+                }
+            };
+
+        assert!(super::terminal_write_id_for_control(&state, 41, b"blocked").is_err());
+        assert!(super::terminal_resize_id_for_control(&state, 41, 100, 30).is_err());
+        assert!(super::terminal_shutdown_id_preserving_authority_for_control(&state, 41).is_err());
+        assert!(super::terminal_remove_id_for_control(&state, 41).is_err());
+        assert!(super::terminal_close_id_for_control(&state, 41).is_err());
+        assert!(state.registry.lock().unwrap().sessions.contains_key(&41));
+
+        super::rollback_terminal_open_reservation_for_control(&state, replacement).unwrap();
+    }
+
+    #[test]
+    fn terminal_pump_stays_dormant_until_ownership_is_observable() {
+        let (activation, ready) = super::TerminalPumpActivation::pending();
+        let (emitted_tx, emitted_rx) = mpsc::channel();
+        let pump = std::thread::spawn(move || {
+            if ready.recv().is_ok() {
+                emitted_tx.send(()).unwrap();
+            }
+        });
+
+        assert!(emitted_rx.recv_timeout(Duration::from_millis(50)).is_err());
+        activation.activate();
+        emitted_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("activation released dormant pump");
+        pump.join().unwrap();
+    }
+
+    #[test]
+    fn detach_waits_for_inflight_input_resize_and_shutdown_before_returning_lease() {
+        let input_state = Arc::new(TerminalState::default());
+        let (input_entered_tx, input_entered_rx) = mpsc::channel();
+        let (input_release_tx, input_release_rx) = mpsc::channel();
+        input_state.registry.lock().unwrap().sessions.insert(
+            1,
+            test_session(
+                test_process(false),
+                test_transport(BlockingWriter {
+                    entered: input_entered_tx,
+                    release: input_release_rx,
+                    captured: Arc::new(Mutex::new(Vec::new())),
+                    block_once: true,
+                }),
+                "input-panel",
+            ),
+        );
+        let input_worker_state = input_state.clone();
+        let input_worker = std::thread::spawn(move || {
+            super::terminal_write_id_for_control(&input_worker_state, 1, b"input")
+        });
+        input_entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("input reached writer");
+        let input_detach_state = input_state.clone();
+        let (input_lease_tx, input_lease_rx) = mpsc::channel();
+        let input_detach = std::thread::spawn(move || {
+            let lease = super::detach_terminal_panels_for_control(
+                &input_detach_state,
+                &["input-panel".to_string()].into_iter().collect(),
+            )
+            .unwrap();
+            input_lease_tx.send(lease).unwrap();
+        });
+        assert!(input_lease_rx
+            .recv_timeout(Duration::from_millis(50))
+            .is_err());
+        input_release_tx.send(()).unwrap();
+        input_worker.join().unwrap().unwrap();
+        let input_lease = input_lease_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        input_detach.join().unwrap();
+        super::rollback_terminal_panels_for_control(&input_state, input_lease)
+            .unwrap_or_else(|error| panic!("input rollback failed: {}", error.message));
+
+        let resize_state = Arc::new(TerminalState::default());
+        let (resize_entered_tx, resize_entered_rx) = mpsc::channel();
+        let (resize_release_tx, resize_release_rx) = mpsc::channel();
+        resize_state.registry.lock().unwrap().sessions.insert(
+            2,
+            test_session(
+                Arc::new(Mutex::new(Box::new(BlockingResizeProcess {
+                    entered: resize_entered_tx,
+                    release: resize_release_rx,
+                }))),
+                test_transport(io::sink()),
+                "resize-panel",
+            ),
+        );
+        let resize_worker_state = resize_state.clone();
+        let resize_worker = std::thread::spawn(move || {
+            super::terminal_resize_id_for_control(&resize_worker_state, 2, 100, 30)
+        });
+        resize_entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("resize reached process");
+        let resize_detach_state = resize_state.clone();
+        let (resize_lease_tx, resize_lease_rx) = mpsc::channel();
+        let resize_detach = std::thread::spawn(move || {
+            let lease = super::detach_terminal_panels_for_control(
+                &resize_detach_state,
+                &["resize-panel".to_string()].into_iter().collect(),
+            )
+            .unwrap();
+            resize_lease_tx.send(lease).unwrap();
+        });
+        assert!(resize_lease_rx
+            .recv_timeout(Duration::from_millis(50))
+            .is_err());
+        resize_release_tx.send(()).unwrap();
+        resize_worker.join().unwrap().unwrap();
+        let resize_lease = resize_lease_rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        resize_detach.join().unwrap();
+        super::rollback_terminal_panels_for_control(&resize_state, resize_lease)
+            .unwrap_or_else(|error| panic!("resize rollback failed: {}", error.message));
+
+        let shutdown_state = Arc::new(TerminalState::default());
+        let (kill_entered_tx, kill_entered_rx) = mpsc::channel();
+        let (kill_release_tx, kill_release_rx) = mpsc::channel();
+        shutdown_state.registry.lock().unwrap().sessions.insert(
+            3,
+            test_session(
+                Arc::new(Mutex::new(Box::new(BlockingKillProcess {
+                    entered: kill_entered_tx,
+                    release: kill_release_rx,
+                }))),
+                test_transport(io::sink()),
+                "shutdown-panel",
+            ),
+        );
+        let shutdown_worker_state = shutdown_state.clone();
+        let shutdown_worker = std::thread::spawn(move || {
+            super::terminal_shutdown_id_preserving_authority_for_control(&shutdown_worker_state, 3)
+        });
+        kill_entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("shutdown reached process");
+        let shutdown_detach_state = shutdown_state.clone();
+        let (shutdown_lease_tx, shutdown_lease_rx) = mpsc::channel();
+        let shutdown_detach = std::thread::spawn(move || {
+            let lease = super::detach_terminal_panels_for_control(
+                &shutdown_detach_state,
+                &["shutdown-panel".to_string()].into_iter().collect(),
+            )
+            .unwrap();
+            shutdown_lease_tx.send(lease).unwrap();
+        });
+        assert!(shutdown_lease_rx
+            .recv_timeout(Duration::from_millis(50))
+            .is_err());
+        kill_release_tx.send(()).unwrap();
+        shutdown_worker.join().unwrap().unwrap();
+        let shutdown_lease = shutdown_lease_rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        shutdown_detach.join().unwrap();
+        super::rollback_terminal_panels_for_control(&shutdown_state, shutdown_lease)
+            .unwrap_or_else(|error| panic!("shutdown rollback failed: {}", error.message));
+    }
+
+    #[test]
+    fn finalize_retry_releases_completed_ids_after_registry_recovery() {
+        let state = Arc::new(TerminalState::default());
+        state.registry.lock().unwrap().sessions.insert(
+            9,
+            test_session(
+                Arc::new(Mutex::new(Box::new(PoisonRegistryDuringKillProcess {
+                    state: Arc::downgrade(&state),
+                }))),
+                test_transport(io::sink()),
+                "panel",
+            ),
+        );
+        let lease = super::detach_terminal_panels_for_control(
+            &state,
+            &["panel".to_string()].into_iter().collect(),
+        )
+        .unwrap();
+        let failed = super::finalize_terminal_panels_for_control(&state, lease)
+            .expect_err("post-kill registry poison must preserve retry authority");
+        state.registry.clear_poison();
+        super::finalize_terminal_panels_for_control(&state, failed.retry)
+            .unwrap_or_else(|error| panic!("retry finalize failed: {:?}", error.failures));
+
+        let registry = state.registry.lock().unwrap();
+        assert!(registry.reserved_session_ids.is_empty());
+        assert!(registry.reserved_panel_ids.is_empty());
+        assert!(registry.sessions.is_empty());
+    }
+
+    #[test]
+    fn close_failure_is_classified_and_retains_exact_runtime_authority() {
+        let failing = TerminalState::default();
+        failing.registry.lock().unwrap().sessions.insert(
+            12,
+            test_session(
+                Arc::new(Mutex::new(Box::new(FailingKillProcess))),
+                test_transport(io::sink()),
+                "failing-panel",
+            ),
+        );
+        assert!(super::terminal_close_id_for_control(&failing, 12).is_err());
+        assert!(failing.registry.lock().unwrap().sessions.contains_key(&12));
+
+        let poisoned = TerminalState::default();
+        let process = test_process(false);
+        poisoned.registry.lock().unwrap().sessions.insert(
+            13,
+            test_session(
+                process.clone(),
+                test_transport(io::sink()),
+                "poisoned-panel",
+            ),
+        );
+        assert!(std::thread::spawn(move || {
+            let _guard = process.lock().unwrap();
+            panic!("poison process before close");
+        })
+        .join()
+        .is_err());
+        assert!(super::terminal_close_id_for_control(&poisoned, 13).is_err());
+        assert!(poisoned.registry.lock().unwrap().sessions.contains_key(&13));
     }
 
     #[test]
