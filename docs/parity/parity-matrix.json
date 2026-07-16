@@ -40409,12 +40409,6 @@
       "canonical_sources": [
         {
           "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
-          "line": 1415,
-          "path": "Sources/Mobile/MobileHostService.swift",
-          "symbol": "ticketAuthorizationError"
-        },
-        {
-          "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
           "line": 14019,
           "path": "Sources/TerminalController.swift",
           "symbol": "mobileHostHandleRPC"
@@ -40514,12 +40508,6 @@
           "line": 48,
           "path": "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/MobileHost/ControlCommandCoordinator+MobileHost.swift",
           "symbol": "handleMobileHost"
-        },
-        {
-          "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
-          "line": 1418,
-          "path": "Sources/Mobile/MobileHostService.swift",
-          "symbol": "ticketAuthorizationError"
         },
         {
           "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
@@ -52176,12 +52164,6 @@
       "canonical_sources": [
         {
           "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
-          "line": 1415,
-          "path": "Sources/Mobile/MobileHostService.swift",
-          "symbol": "ticketAuthorizationError"
-        },
-        {
-          "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
           "line": 14019,
           "path": "Sources/TerminalController.swift",
           "symbol": "mobileHostHandleRPC"
@@ -52323,12 +52305,6 @@
           "line": 48,
           "path": "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/MobileHost/ControlCommandCoordinator+MobileHost.swift",
           "symbol": "handleMobileHost"
-        },
-        {
-          "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
-          "line": 1418,
-          "path": "Sources/Mobile/MobileHostService.swift",
-          "symbol": "ticketAuthorizationError"
         },
         {
           "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
@@ -56020,12 +55996,6 @@
       "canonical_sources": [
         {
           "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
-          "line": 1403,
-          "path": "Sources/Mobile/MobileHostService.swift",
-          "symbol": "ticketAuthorizationError"
-        },
-        {
-          "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
           "line": 14033,
           "path": "Sources/TerminalController.swift",
           "symbol": "mobileHostHandleRPC"
@@ -59164,12 +59134,6 @@
       "aliases": [],
       "batch": "workspace",
       "canonical_sources": [
-        {
-          "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
-          "line": 1396,
-          "path": "Sources/Mobile/MobileHostService.swift",
-          "symbol": "ticketAuthorizationError"
-        },
         {
           "commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
           "line": 14031,

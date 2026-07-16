@@ -248,6 +248,11 @@ def main() -> int:
             ) and index + 1 == source_line:
                 continue
             symbol = enclosing_symbol(lines, index)
+            if (
+                source_symbol == "mobileHostHandleRPC"
+                and symbol == "ticketAuthorizationError"
+            ):
+                continue
             item = location(path, index + 1, symbol)
             if is_dispatch_occurrence(lines, index, method):
                 dispatch.append(item)

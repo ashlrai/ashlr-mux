@@ -5911,22 +5911,12 @@
       },
       "dispatch_locations": [
         {
-          "path": "Sources/Mobile/MobileHostService.swift",
-          "line": 1415,
-          "symbol": "ticketAuthorizationError"
-        },
-        {
           "path": "Sources/TerminalController.swift",
           "line": 14019,
           "symbol": "mobileHostHandleRPC"
         }
       ],
       "implementation_locations": [
-        {
-          "path": "Sources/Mobile/MobileHostService.swift",
-          "line": 1415,
-          "symbol": "ticketAuthorizationError"
-        },
         {
           "path": "Sources/TerminalController.swift",
           "line": 14019,
@@ -6015,11 +6005,6 @@
           "symbol": "handleMobileHost"
         },
         {
-          "path": "Sources/Mobile/MobileHostService.swift",
-          "line": 1418,
-          "symbol": "ticketAuthorizationError"
-        },
-        {
           "path": "Sources/TerminalController.swift",
           "line": 14025,
           "symbol": "mobileHostHandleRPC"
@@ -6030,11 +6015,6 @@
           "path": "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/MobileHost/ControlCommandCoordinator+MobileHost.swift",
           "line": 48,
           "symbol": "handleMobileHost"
-        },
-        {
-          "path": "Sources/Mobile/MobileHostService.swift",
-          "line": 1418,
-          "symbol": "ticketAuthorizationError"
         },
         {
           "path": "Sources/TerminalController.swift",
@@ -10645,22 +10625,12 @@
       },
       "dispatch_locations": [
         {
-          "path": "Sources/Mobile/MobileHostService.swift",
-          "line": 1415,
-          "symbol": "ticketAuthorizationError"
-        },
-        {
           "path": "Sources/TerminalController.swift",
           "line": 14019,
           "symbol": "mobileHostHandleRPC"
         }
       ],
       "implementation_locations": [
-        {
-          "path": "Sources/Mobile/MobileHostService.swift",
-          "line": 1415,
-          "symbol": "ticketAuthorizationError"
-        },
         {
           "path": "Sources/TerminalController.swift",
           "line": 14019,
@@ -10777,11 +10747,6 @@
           "symbol": "handleMobileHost"
         },
         {
-          "path": "Sources/Mobile/MobileHostService.swift",
-          "line": 1418,
-          "symbol": "ticketAuthorizationError"
-        },
-        {
           "path": "Sources/TerminalController.swift",
           "line": 14025,
           "symbol": "mobileHostHandleRPC"
@@ -10792,11 +10757,6 @@
           "path": "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/MobileHost/ControlCommandCoordinator+MobileHost.swift",
           "line": 48,
           "symbol": "handleMobileHost"
-        },
-        {
-          "path": "Sources/Mobile/MobileHostService.swift",
-          "line": 1418,
-          "symbol": "ticketAuthorizationError"
         },
         {
           "path": "Sources/TerminalController.swift",
@@ -12444,22 +12404,12 @@
       },
       "dispatch_locations": [
         {
-          "path": "Sources/Mobile/MobileHostService.swift",
-          "line": 1403,
-          "symbol": "ticketAuthorizationError"
-        },
-        {
           "path": "Sources/TerminalController.swift",
           "line": 14033,
           "symbol": "mobileHostHandleRPC"
         }
       ],
       "implementation_locations": [
-        {
-          "path": "Sources/Mobile/MobileHostService.swift",
-          "line": 1403,
-          "symbol": "ticketAuthorizationError"
-        },
         {
           "path": "Sources/TerminalController.swift",
           "line": 14033,
@@ -13455,22 +13405,12 @@
       },
       "dispatch_locations": [
         {
-          "path": "Sources/Mobile/MobileHostService.swift",
-          "line": 1396,
-          "symbol": "ticketAuthorizationError"
-        },
-        {
           "path": "Sources/TerminalController.swift",
           "line": 14031,
           "symbol": "mobileHostHandleRPC"
         }
       ],
       "implementation_locations": [
-        {
-          "path": "Sources/Mobile/MobileHostService.swift",
-          "line": 1396,
-          "symbol": "ticketAuthorizationError"
-        },
         {
           "path": "Sources/TerminalController.swift",
           "line": 14031,
