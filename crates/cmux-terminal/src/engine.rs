@@ -775,17 +775,19 @@ fn render_grid_color(
     if foreground && bold {
         if let Some(policy) = bold_color {
             let palette_index = match color {
-                AnsiColor::Indexed(index) if index < 8 => Some(index),
-                AnsiColor::Named(named) => named_color_index(named).filter(|index| *index < 8),
+                AnsiColor::Indexed(index) => Some(index),
+                AnsiColor::Named(named) => named_color_index(named),
                 _ => None,
             };
             if let Some(index) = palette_index {
-                let bright = index + 8;
-                resolved = Some(
-                    colors[bright as usize]
-                        .map(rgb_hex)
-                        .unwrap_or_else(|| indexed_color(bright, theme)),
-                );
+                if index < 8 {
+                    let bright = index + 8;
+                    resolved = Some(
+                        colors[bright as usize]
+                            .map(rgb_hex)
+                            .unwrap_or_else(|| indexed_color(bright, theme)),
+                    );
+                }
             } else if let RenderGridBoldColor::Color(color) = policy {
                 if resolved.as_deref() == Some(default_color) {
                     resolved = Some(theme_color_hex(color));
