@@ -281,9 +281,13 @@ pub fn run() {
     let mut builder = tauri::Builder::default();
     #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
     {
-        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
-            route_launch_arguments(app, &argv, Path::new(&cwd));
-        }));
+        let disable_single_instance_for_test = cfg!(debug_assertions)
+            && std::env::var("CMUX_TEST_DISABLE_SINGLE_INSTANCE").as_deref() == Ok("1");
+        if !disable_single_instance_for_test {
+            builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+                route_launch_arguments(app, &argv, Path::new(&cwd));
+            }));
+        }
     }
 
     builder

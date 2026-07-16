@@ -1277,11 +1277,24 @@ where
         };
         let applied = match event {
             TerminalMaterializationEvent::Input(bytes) => {
-                match send_terminal_input(flush.process.clone(), flush.input.clone(), &bytes) {
-                    TerminalInputOutcome::Sent | TerminalInputOutcome::Queued => Ok(()),
-                    outcome => Err(format!(
-                        "terminal materialization input failed: {outcome:?}"
-                    )),
+                match flush
+                    .grid
+                    .lock()
+                    .map(|grid| terminal_input_bytes_for_grid(&grid, &bytes))
+                {
+                    Ok(bytes) => {
+                        match send_terminal_input(
+                            flush.process.clone(),
+                            flush.input.clone(),
+                            &bytes,
+                        ) {
+                            TerminalInputOutcome::Sent | TerminalInputOutcome::Queued => Ok(()),
+                            outcome => Err(format!(
+                                "terminal materialization input failed: {outcome:?}"
+                            )),
+                        }
+                    }
+                    Err(_) => Err("terminal grid mutex poisoned".to_string()),
                 }
             }
             TerminalMaterializationEvent::ProcessOutput(bytes) => {
@@ -2393,6 +2406,7 @@ pub(crate) fn terminal_send_panel_bytes_for_control(
                         (
                             session.pty.clone(),
                             session.input.clone(),
+                            session.grid.clone(),
                             session.pump_activation.clone(),
                             operation,
                         )
@@ -2400,11 +2414,130 @@ pub(crate) fn terminal_send_panel_bytes_for_control(
             }),
         _ => return TerminalInputOutcome::SurfaceUnavailable,
     };
-    let Some((process, input, activation, _operation)) = handles else {
+    let Some((process, input, grid, activation, _operation)) = handles else {
+        return TerminalInputOutcome::SurfaceUnavailable;
+    };
+    let data = match grid.lock() {
+        Ok(grid) => terminal_input_bytes_for_grid(&grid, data),
+        Err(_) => return TerminalInputOutcome::SurfaceUnavailable,
+    };
+    activation.advance(TerminalPumpReadiness::ConsumerReady);
+    send_terminal_input(process, input, &data)
+}
+
+pub(crate) fn terminal_apply_materialization_events_for_control(
+    app: &AppHandle,
+    state: &TerminalState,
+    panel_id: &str,
+    events: Vec<TerminalMaterializationEvent>,
+) -> TerminalInputOutcome {
+    terminal_apply_materialization_events_with(state, panel_id, events, |id, bytes, titles| {
+        emit_terminal_output_chunk(app, id, Some(panel_id), bytes, titles)
+    })
+}
+
+fn terminal_apply_materialization_events_with<Emit>(
+    state: &TerminalState,
+    panel_id: &str,
+    events: Vec<TerminalMaterializationEvent>,
+    mut emit_output: Emit,
+) -> TerminalInputOutcome
+where
+    Emit: FnMut(u32, &[u8], &[String]) -> Result<(), String>,
+{
+    if events.is_empty() {
+        return TerminalInputOutcome::Sent;
+    }
+    let panel_id = panel_id.trim();
+    let handles = match state.try_runtime_registry() {
+        Ok(registry) if !registry.reserved_panel_ids.contains(panel_id) => registry
+            .sessions
+            .iter()
+            .find(|(_, session)| session.panel_id.as_deref() == Some(panel_id))
+            .and_then(|(id, session)| {
+                ensure_terminal_session_available(&registry, *id, session)
+                    .ok()
+                    .and_then(|_| session.operations.claim())
+                    .map(|operation| {
+                        (
+                            *id,
+                            session.pty.clone(),
+                            session.input.clone(),
+                            session.grid.clone(),
+                            session.title_parser.clone(),
+                            session.pump_activation.clone(),
+                            operation,
+                        )
+                    })
+            }),
+        _ => return TerminalInputOutcome::SurfaceUnavailable,
+    };
+    let Some((id, process, input, grid, title_parser, activation, _operation)) = handles else {
         return TerminalInputOutcome::SurfaceUnavailable;
     };
     activation.advance(TerminalPumpReadiness::ConsumerReady);
-    send_terminal_input(process, input, data)
+
+    let mut queued = false;
+    for event in events {
+        let outcome = match event {
+            TerminalMaterializationEvent::Input(bytes) => match grid
+                .lock()
+                .map(|grid| terminal_input_bytes_for_grid(&grid, &bytes))
+            {
+                Ok(bytes) => send_terminal_input(process.clone(), input.clone(), &bytes),
+                Err(_) => TerminalInputOutcome::SurfaceUnavailable,
+            },
+            TerminalMaterializationEvent::ProcessOutput(bytes) => {
+                let titles = match grid.lock() {
+                    Ok(mut grid) => {
+                        grid.advance(&bytes);
+                        drop(grid);
+                        match title_parser.lock() {
+                            Ok(mut parser) => parser.consume(&bytes),
+                            Err(_) => return TerminalInputOutcome::SurfaceUnavailable,
+                        }
+                    }
+                    Err(_) => return TerminalInputOutcome::SurfaceUnavailable,
+                };
+                if emit_output(id, &bytes, &titles).is_err() {
+                    return TerminalInputOutcome::SurfaceUnavailable;
+                }
+                TerminalInputOutcome::Sent
+            }
+        };
+        match outcome {
+            TerminalInputOutcome::Sent => {}
+            TerminalInputOutcome::Queued => queued = true,
+            failure => return failure,
+        }
+    }
+    if queued {
+        TerminalInputOutcome::Queued
+    } else {
+        TerminalInputOutcome::Sent
+    }
+}
+
+fn terminal_input_bytes_for_grid(grid: &TerminalGrid, data: &[u8]) -> Vec<u8> {
+    if !grid.application_cursor_keys_enabled() {
+        return data.to_vec();
+    }
+    let mut encoded = Vec::with_capacity(data.len());
+    let mut index = 0;
+    while index < data.len() {
+        if index + 2 < data.len()
+            && data[index] == 0x1b
+            && matches!(data[index + 1], b'[' | b'O')
+            && matches!(data[index + 2], b'A' | b'B' | b'C' | b'D' | b'H' | b'F')
+        {
+            encoded.extend_from_slice(&[0x1b, b'O', data[index + 2]]);
+            index += 3;
+        } else {
+            encoded.push(data[index]);
+            index += 1;
+        }
+    }
+    encoded
 }
 
 fn send_terminal_input(
@@ -5580,6 +5713,72 @@ mod tests {
         release_tx.send(()).unwrap();
         assert_eq!(owner.join().unwrap(), TerminalInputOutcome::Sent);
         assert_eq!(&*captured.lock().unwrap(), b"firstpanelid");
+    }
+
+    #[test]
+    fn live_materialization_events_remain_ordered_after_input_queues() {
+        let state = Arc::new(TerminalState::default());
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        state.runtime_registry().sessions.insert(
+            7,
+            test_session(
+                test_process(false),
+                test_transport(BlockingWriter {
+                    entered: entered_tx,
+                    release: release_rx,
+                    captured: captured.clone(),
+                    block_once: true,
+                }),
+                "panel",
+            ),
+        );
+
+        let owner_state = state.clone();
+        let owner = std::thread::spawn(move || {
+            super::terminal_send_panel_bytes_for_control(&owner_state, "panel", b"owner")
+        });
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+
+        let emitted_for_call = emitted.clone();
+        assert_eq!(
+            super::terminal_apply_materialization_events_with(
+                &state,
+                "panel",
+                vec![
+                    super::TerminalMaterializationEvent::Input(b"first".to_vec()),
+                    super::TerminalMaterializationEvent::ProcessOutput(b"output".to_vec()),
+                    super::TerminalMaterializationEvent::Input(b"second".to_vec()),
+                ],
+                move |_id, bytes, _titles| {
+                    emitted_for_call.lock().unwrap().extend_from_slice(bytes);
+                    Ok(())
+                },
+            ),
+            TerminalInputOutcome::Queued
+        );
+        assert_eq!(&*emitted.lock().unwrap(), b"output");
+
+        release_tx.send(()).unwrap();
+        assert_eq!(owner.join().unwrap(), TerminalInputOutcome::Sent);
+        assert_eq!(&*captured.lock().unwrap(), b"ownerfirstsecond");
+    }
+
+    #[test]
+    fn control_input_navigation_tracks_application_cursor_mode() {
+        let mut grid = TerminalGrid::new(GridSize::new(80, 24));
+        assert_eq!(
+            super::terminal_input_bytes_for_grid(&grid, b"\x1b[A\x1bOA\x1b[5~"),
+            b"\x1b[A\x1bOA\x1b[5~"
+        );
+
+        grid.advance(b"\x1b[?1h");
+        assert_eq!(
+            super::terminal_input_bytes_for_grid(&grid, b"\x1b[A\x1bOB\x1b[5~\xc3\xa9"),
+            b"\x1bOA\x1bOB\x1b[5~\xc3\xa9"
+        );
     }
 
     #[test]

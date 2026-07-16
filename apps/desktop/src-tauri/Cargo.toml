@@ -56,6 +56,7 @@ parking_lot = "0.12"
 [dev-dependencies]
 # Temp fixtures for the diff-store / markdown-asset / scheme unit tests.
 tempfile = "3"
+tokio = { version = "1", features = ["io-util", "net", "rt", "time"] }
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = { version = "2.0.0", features = ["deep-link"] }

@@ -665,6 +665,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tempfile",
  "time",
+ "tokio",
  "ureq",
  "url",
  "uuid",
