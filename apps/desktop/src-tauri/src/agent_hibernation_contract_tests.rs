@@ -53,11 +53,12 @@ fn candidate(panel: &str, last_activity_at: f64) -> AgentHibernationCandidate {
 fn agent_hibernation_contract_settings_match_canonical_defaults_bounds_and_cadence() {
     assert_eq!(
         AgentHibernationSettingsValues::default(),
-        settings(false, 5.0, 12)
-    );
-    assert_eq!(
-        AgentHibernationSettingsValues::default().confirmation_seconds,
-        60.0
+        AgentHibernationSettingsValues {
+            enabled: false,
+            idle_seconds: 5.0,
+            max_live_terminals: 12,
+            confirmation_seconds: 60.0,
+        }
     );
     assert_eq!(INITIAL_EVALUATION_DELAY_SECONDS, 5);
     assert_eq!(EVALUATION_INTERVAL_SECONDS, 30);
