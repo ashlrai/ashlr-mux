@@ -156,6 +156,7 @@ fn agent_hibernation_contract_live_policy_tracks_activity_input_and_lifecycle_ac
         AgentLifecycleState::NeedsInput,
         21.0,
     );
+    assert_eq!(policy.latest_lifecycle_change_at(&panel), Some(21.0));
     assert_eq!(
         policy.lifecycle(&panel, AgentLifecycleState::Idle),
         AgentLifecycleState::NeedsInput
@@ -171,7 +172,7 @@ fn agent_hibernation_contract_live_policy_tracks_activity_input_and_lifecycle_ac
 fn agent_hibernation_contract_planner_selects_only_oldest_eligible_excess_live_agents() {
     let now = 1_000.0;
     let mut old = candidate("old", now - 300.0);
-    let newer = candidate("new", now - 200.0);
+    let newer = candidate("new", now - 10.0);
     let mut protected = candidate("protected", now - 400.0);
     protected.is_protected = true;
     let mut running = candidate("running", now - 500.0);
@@ -253,6 +254,25 @@ fn agent_hibernation_contract_fingerprints_include_sorted_process_identity_and_t
     assert_eq!(
         tail_fingerprint_stable_since(Some("tail-a"), None, "tail-a", 10.0, 40.0),
         10.0
+    );
+
+    let panel = key("workspace", "tail-panel");
+    let mut policy = AgentHibernationPolicy::default();
+    assert_eq!(
+        policy.observe_tail_fingerprint(&panel, Some("tail-a"), true, 10.0, 30.0),
+        Some(30.0)
+    );
+    assert_eq!(
+        policy.observe_tail_fingerprint(&panel, Some("tail-a"), true, 10.0, 40.0),
+        Some(30.0)
+    );
+    assert_eq!(
+        policy.observe_tail_fingerprint(&panel, Some("tail-b"), true, 10.0, 50.0),
+        Some(50.0)
+    );
+    assert_eq!(
+        policy.observe_tail_fingerprint(&panel, Some("tail-b"), false, 10.0, 60.0),
+        None
     );
 }
 
