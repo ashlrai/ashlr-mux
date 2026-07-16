@@ -14,7 +14,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard, Weak};
 
 use cmux_terminal::conpty::{ConPty, ConPtyCommand, ConPtySize};
 use cmux_terminal::engine::{GridSize, TerminalGrid};
@@ -452,11 +452,222 @@ impl TerminalTitleParser {
 }
 
 /// Managed Tauri state: the set of open terminal sessions keyed by id.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TerminalMaterializationEvent {
+    Input(Vec<u8>),
+    ProcessOutput(Vec<u8>),
+}
+
+impl TerminalMaterializationEvent {
+    fn byte_len(&self) -> usize {
+        match self {
+            Self::Input(bytes) | Self::ProcessOutput(bytes) => bytes.len(),
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TerminalMaterializationSpec {
+    working_directory: Option<String>,
+    initial_command: Option<String>,
+    initial_input: Vec<u8>,
+    environment: BTreeMap<String, String>,
+}
+
+#[allow(dead_code)]
+impl TerminalMaterializationSpec {
+    pub(crate) fn new(
+        working_directory: Option<String>,
+        initial_command: Option<String>,
+        initial_input: Vec<u8>,
+        environment: BTreeMap<String, String>,
+    ) -> Self {
+        Self {
+            working_directory,
+            initial_command,
+            initial_input,
+            environment,
+        }
+    }
+}
+
+struct TerminalPublishedRuntime {
+    session_id: u32,
+    operations: Weak<TerminalOperationGate>,
+}
+
+enum TerminalMaterializationPhase {
+    Dormant,
+    Starting,
+    Published(TerminalPublishedRuntime),
+    FencedDormant,
+    FencedPublished(TerminalPublishedRuntime),
+}
+
+struct TerminalMaterializationSlot {
+    spec: TerminalMaterializationSpec,
+    events: VecDeque<TerminalMaterializationEvent>,
+    bytes: usize,
+    generation: u64,
+    phase: TerminalMaterializationPhase,
+}
+
+impl TerminalMaterializationSlot {
+    fn batch_bytes(events: &[TerminalMaterializationEvent]) -> Option<usize> {
+        events
+            .iter()
+            .try_fold(0_usize, |total, event| total.checked_add(event.byte_len()))
+    }
+
+    fn append(&mut self, events: Vec<TerminalMaterializationEvent>, bytes: usize) {
+        self.bytes += bytes;
+        self.events.extend(events);
+    }
+
+    fn matches(&self, lease: &TerminalMaterializationLease) -> bool {
+        self.generation == lease.generation && self.spec == lease.spec
+    }
+
+    fn runtime_is_live(
+        runtime: &TerminalPublishedRuntime,
+        sessions: &HashMap<u32, TerminalSession>,
+        panel_id: &str,
+    ) -> bool {
+        let Some(operations) = runtime.operations.upgrade() else {
+            return false;
+        };
+        sessions.get(&runtime.session_id).is_some_and(|session| {
+            session.panel_id.as_deref() == Some(panel_id)
+                && Arc::ptr_eq(&session.operations, &operations)
+        })
+    }
+
+    fn accepts_demand(&self, registry: &TerminalRuntimeRegistry, panel_id: &str) -> bool {
+        match &self.phase {
+            TerminalMaterializationPhase::Published(runtime) => {
+                Self::runtime_is_live(runtime, &registry.sessions, panel_id)
+            }
+            TerminalMaterializationPhase::FencedPublished(runtime) => {
+                registry.reserved_panel_ids.contains(panel_id)
+                    && registry.reserved_session_ids.contains(&runtime.session_id)
+                    && runtime.operations.upgrade().is_some()
+            }
+            _ => true,
+        }
+    }
+
+    fn begin_lifecycle_fence(&mut self) {
+        let phase = std::mem::replace(&mut self.phase, TerminalMaterializationPhase::FencedDormant);
+        self.phase = match phase {
+            TerminalMaterializationPhase::Dormant | TerminalMaterializationPhase::Starting => {
+                TerminalMaterializationPhase::FencedDormant
+            }
+            TerminalMaterializationPhase::Published(runtime) => {
+                TerminalMaterializationPhase::FencedPublished(runtime)
+            }
+            fenced @ (TerminalMaterializationPhase::FencedDormant
+            | TerminalMaterializationPhase::FencedPublished(_)) => fenced,
+        };
+    }
+
+    fn rollback_lifecycle_fence(&mut self) {
+        let phase = std::mem::replace(&mut self.phase, TerminalMaterializationPhase::Dormant);
+        self.phase = match phase {
+            TerminalMaterializationPhase::FencedDormant => TerminalMaterializationPhase::Dormant,
+            TerminalMaterializationPhase::FencedPublished(runtime) => {
+                TerminalMaterializationPhase::Published(runtime)
+            }
+            phase => phase,
+        };
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct TerminalMaterializationLease {
+    panel_id: String,
+    generation: u64,
+    spec: TerminalMaterializationSpec,
+}
+
+#[allow(dead_code)]
+impl TerminalMaterializationLease {
+    fn new(panel_id: &str, generation: u64, spec: &TerminalMaterializationSpec) -> Self {
+        Self {
+            panel_id: panel_id.to_string(),
+            generation,
+            spec: spec.clone(),
+        }
+    }
+
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum TerminalMaterializationDemand {
+    Noop,
+    Live(Vec<TerminalMaterializationEvent>),
+    Queued,
+    Start(TerminalMaterializationLease),
+    InputQueueFull,
+    SurfaceUnavailable,
+}
+
+#[allow(dead_code)]
+struct TerminalMaterializationPublishError {
+    message: String,
+    session: TerminalSession,
+}
+
+impl std::fmt::Debug for TerminalMaterializationPublishError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TerminalMaterializationPublishError")
+            .field("message", &self.message)
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Default)]
 struct TerminalRuntimeRegistry {
     sessions: HashMap<u32, TerminalSession>,
     reserved_session_ids: BTreeSet<u32>,
     reserved_panel_ids: BTreeSet<String>,
+    materializations: HashMap<String, TerminalMaterializationSlot>,
+    next_materialization_generation: u64,
+}
+
+impl TerminalRuntimeRegistry {
+    fn next_materialization_generation(&mut self) -> u64 {
+        self.next_materialization_generation = self.next_materialization_generation.wrapping_add(1);
+        if self.next_materialization_generation == 0 {
+            self.next_materialization_generation = 1;
+        }
+        self.next_materialization_generation
+    }
+
+    fn has_live_panel(&self, panel_id: &str) -> bool {
+        self.sessions
+            .values()
+            .any(|session| session.panel_id.as_deref() == Some(panel_id))
+    }
+
+    fn begin_materialization_fence(&mut self, panel_id: &str) {
+        if let Some(slot) = self.materializations.get_mut(panel_id) {
+            slot.begin_lifecycle_fence();
+        }
+    }
+
+    fn rollback_materialization_fence(&mut self, panel_id: &str) {
+        if let Some(slot) = self.materializations.get_mut(panel_id) {
+            slot.rollback_lifecycle_fence();
+        }
+    }
 }
 
 #[derive(Default)]
@@ -477,6 +688,237 @@ impl TerminalState {
             .lock()
             .map_err(|_| "terminal runtime registry mutex poisoned".to_string())
     }
+}
+
+#[allow(dead_code)]
+pub(crate) fn request_terminal_materialization(
+    state: &TerminalState,
+    panel_id: &str,
+    spec: &TerminalMaterializationSpec,
+    mut events: Vec<TerminalMaterializationEvent>,
+) -> TerminalMaterializationDemand {
+    events.retain(|event| event.byte_len() != 0);
+    if events.is_empty() {
+        return TerminalMaterializationDemand::Noop;
+    }
+    let panel_id = panel_id.trim();
+    if panel_id.is_empty() {
+        return TerminalMaterializationDemand::SurfaceUnavailable;
+    }
+    let Ok(mut registry) = state.try_runtime_registry() else {
+        return TerminalMaterializationDemand::SurfaceUnavailable;
+    };
+
+    if let Some(slot) = registry.materializations.get(panel_id) {
+        if slot.spec != *spec || !slot.accepts_demand(&registry, panel_id) {
+            return TerminalMaterializationDemand::SurfaceUnavailable;
+        }
+        let Some(bytes) = TerminalMaterializationSlot::batch_bytes(&events) else {
+            return TerminalMaterializationDemand::InputQueueFull;
+        };
+        if bytes > TERMINAL_PENDING_INPUT_LIMIT.saturating_sub(slot.bytes) {
+            return TerminalMaterializationDemand::InputQueueFull;
+        }
+        let restart = matches!(slot.phase, TerminalMaterializationPhase::Dormant);
+        let generation = restart.then(|| registry.next_materialization_generation());
+        let slot = registry
+            .materializations
+            .get_mut(panel_id)
+            .expect("materialization remains under registry lock");
+        slot.append(events, bytes);
+        if let Some(generation) = generation {
+            slot.generation = generation;
+            slot.phase = TerminalMaterializationPhase::Starting;
+            return TerminalMaterializationDemand::Start(TerminalMaterializationLease::new(
+                panel_id, generation, spec,
+            ));
+        }
+        return TerminalMaterializationDemand::Queued;
+    }
+
+    if registry.reserved_panel_ids.contains(panel_id) {
+        return TerminalMaterializationDemand::SurfaceUnavailable;
+    }
+    if registry.has_live_panel(panel_id) {
+        return TerminalMaterializationDemand::Live(events);
+    }
+    let Some(bytes) = TerminalMaterializationSlot::batch_bytes(&events) else {
+        return TerminalMaterializationDemand::InputQueueFull;
+    };
+    if bytes > TERMINAL_PENDING_INPUT_LIMIT {
+        return TerminalMaterializationDemand::InputQueueFull;
+    }
+    let generation = registry.next_materialization_generation();
+    registry.materializations.insert(
+        panel_id.to_string(),
+        TerminalMaterializationSlot {
+            spec: spec.clone(),
+            events: events.into(),
+            bytes,
+            generation,
+            phase: TerminalMaterializationPhase::Starting,
+        },
+    );
+    TerminalMaterializationDemand::Start(TerminalMaterializationLease::new(
+        panel_id, generation, spec,
+    ))
+}
+
+#[allow(dead_code)]
+pub(crate) fn retry_terminal_materialization_start(
+    state: &TerminalState,
+    panel_id: &str,
+    spec: &TerminalMaterializationSpec,
+) -> Result<Option<TerminalMaterializationLease>, String> {
+    let panel_id = panel_id.trim();
+    if panel_id.is_empty() {
+        return Ok(None);
+    }
+    let mut registry = state.try_runtime_registry()?;
+    let retryable = registry.materializations.get(panel_id).is_some_and(|slot| {
+        slot.spec == *spec && matches!(slot.phase, TerminalMaterializationPhase::Dormant)
+    });
+    if !retryable || registry.reserved_panel_ids.contains(panel_id) {
+        return Ok(None);
+    }
+    let generation = registry.next_materialization_generation();
+    let slot = registry
+        .materializations
+        .get_mut(panel_id)
+        .expect("retryable materialization remains under registry lock");
+    slot.generation = generation;
+    slot.phase = TerminalMaterializationPhase::Starting;
+    Ok(Some(TerminalMaterializationLease::new(
+        panel_id, generation, spec,
+    )))
+}
+
+#[allow(dead_code)]
+pub(crate) fn owns_terminal_materialization_start(
+    state: &TerminalState,
+    lease: &TerminalMaterializationLease,
+) -> Result<bool, String> {
+    let registry = state.try_runtime_registry()?;
+    Ok(registry
+        .materializations
+        .get(&lease.panel_id)
+        .is_some_and(|slot| {
+            slot.matches(lease) && matches!(slot.phase, TerminalMaterializationPhase::Starting)
+        }))
+}
+
+#[allow(dead_code)]
+pub(crate) fn fail_terminal_materialization_start(
+    state: &TerminalState,
+    lease: &TerminalMaterializationLease,
+) -> Result<bool, String> {
+    let mut registry = state.try_runtime_registry()?;
+    let Some(slot) = registry.materializations.get_mut(&lease.panel_id) else {
+        return Ok(false);
+    };
+    if !slot.matches(lease) || !matches!(slot.phase, TerminalMaterializationPhase::Starting) {
+        return Ok(false);
+    }
+    slot.phase = TerminalMaterializationPhase::Dormant;
+    Ok(true)
+}
+
+#[allow(dead_code)]
+pub(crate) fn cancel_terminal_materialization(
+    state: &TerminalState,
+    lease: &TerminalMaterializationLease,
+) -> Result<Option<Vec<TerminalMaterializationEvent>>, String> {
+    let mut registry = state.try_runtime_registry()?;
+    let matches = registry
+        .materializations
+        .get(&lease.panel_id)
+        .is_some_and(|slot| slot.matches(lease));
+    if !matches {
+        return Ok(None);
+    }
+    let slot = registry
+        .materializations
+        .remove(&lease.panel_id)
+        .expect("matching materialization remains under registry lock");
+    Ok(Some(slot.events.into()))
+}
+
+#[allow(dead_code)]
+fn publish_terminal_materialization_runtime(
+    state: &TerminalState,
+    lease: &TerminalMaterializationLease,
+    session_id: u32,
+    session: TerminalSession,
+) -> Result<(), TerminalMaterializationPublishError> {
+    let mut registry = match state.try_runtime_registry() {
+        Ok(registry) => registry,
+        Err(message) => return Err(TerminalMaterializationPublishError { message, session }),
+    };
+    let valid_slot = registry
+        .materializations
+        .get(&lease.panel_id)
+        .is_some_and(|slot| {
+            slot.matches(lease) && matches!(slot.phase, TerminalMaterializationPhase::Starting)
+        });
+    let identity_available = session.panel_id.as_deref() == Some(lease.panel_id.as_str())
+        && !registry.sessions.contains_key(&session_id)
+        && !registry.reserved_session_ids.contains(&session_id)
+        && !registry.reserved_panel_ids.contains(&lease.panel_id)
+        && !registry.has_live_panel(&lease.panel_id);
+    if !valid_slot || !identity_available {
+        return Err(TerminalMaterializationPublishError {
+            message: "terminal materialization publication lost exact ownership".to_string(),
+            session,
+        });
+    }
+    let operations = Arc::downgrade(&session.operations);
+    registry.sessions.insert(session_id, session);
+    registry
+        .materializations
+        .get_mut(&lease.panel_id)
+        .expect("validated materialization remains under registry lock")
+        .phase = TerminalMaterializationPhase::Published(TerminalPublishedRuntime {
+        session_id,
+        operations,
+    });
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub(crate) fn drain_terminal_materialization_event(
+    state: &TerminalState,
+    lease: &TerminalMaterializationLease,
+) -> Result<Option<TerminalMaterializationEvent>, String> {
+    let mut registry = state.try_runtime_registry()?;
+    let owns_runtime = registry
+        .materializations
+        .get(&lease.panel_id)
+        .is_some_and(|slot| {
+            slot.matches(lease)
+                && match &slot.phase {
+                    TerminalMaterializationPhase::Published(runtime) => {
+                        TerminalMaterializationSlot::runtime_is_live(
+                            runtime,
+                            &registry.sessions,
+                            &lease.panel_id,
+                        )
+                    }
+                    _ => false,
+                }
+        });
+    if !owns_runtime {
+        return Err("terminal materialization lease does not own a live runtime".to_string());
+    }
+    let slot = registry
+        .materializations
+        .get_mut(&lease.panel_id)
+        .expect("owned materialization remains under registry lock");
+    if let Some(event) = slot.events.pop_front() {
+        slot.bytes -= event.byte_len();
+        return Ok(Some(event));
+    }
+    registry.materializations.remove(&lease.panel_id);
+    Ok(None)
 }
 
 fn terminal_registry_for_exact_cleanup(
@@ -552,6 +994,9 @@ pub(crate) fn detach_terminal_panels_for_control(
             .operations
             .begin_transfer();
     }
+    for panel_id in &panel_ids {
+        registry.begin_materialization_fence(panel_id);
+    }
 
     let mut sessions = BTreeMap::new();
     for id in &session_ids {
@@ -623,6 +1068,7 @@ pub(crate) fn rollback_terminal_panels_for_control(
     }
     for panel_id in lease.panel_ids {
         registry.reserved_panel_ids.remove(&panel_id);
+        registry.rollback_materialization_fence(&panel_id);
     }
     Ok(())
 }
@@ -705,6 +1151,7 @@ pub(crate) fn finalize_terminal_panels_for_control(
     }
     for panel_id in panel_ids {
         if !retry_panel_ids.contains(&panel_id) {
+            registry.materializations.remove(&panel_id);
             registry.reserved_panel_ids.remove(&panel_id);
         }
     }
@@ -885,6 +1332,14 @@ fn reserve_terminal_open_for_control(
     ) {
         return Ok(TerminalOpenReservation::Existing(existing));
     }
+    if let Some(panel_id) = panel_id
+        .as_ref()
+        .filter(|panel_id| registry.materializations.contains_key(*panel_id))
+    {
+        return Err(format!(
+            "terminal panel {panel_id} is materializing under another owner"
+        ));
+    }
 
     let id = loop {
         let candidate = state.next_id.fetch_add(1, Ordering::Relaxed);
@@ -962,7 +1417,14 @@ fn publish_terminal_open_reservation(
             .panel_id
             .as_ref()
             .is_none_or(|panel_id| registry.reserved_panel_ids.contains(panel_id));
-    if !owns_reservation || registry.sessions.contains_key(&reservation.id) {
+    let conflicts_with_materialization = reservation
+        .panel_id
+        .as_ref()
+        .is_some_and(|panel_id| registry.materializations.contains_key(panel_id));
+    if !owns_reservation
+        || conflicts_with_materialization
+        || registry.sessions.contains_key(&reservation.id)
+    {
         return Err(("terminal open reservation lost".to_string(), session));
     }
 
@@ -1231,6 +1693,9 @@ fn begin_terminal_session_transfer(
         for operations in &transfer.fenced_operations {
             operations.begin_transfer();
         }
+        if let Some(panel_id) = transfer.panel_id.as_ref() {
+            registry.begin_materialization_fence(panel_id);
+        }
         registry.reserved_session_ids.insert(id);
         if let Some(panel_id) = transfer.panel_id.as_ref() {
             registry.reserved_panel_ids.insert(panel_id.clone());
@@ -1269,6 +1734,9 @@ fn release_terminal_session_transfer(
     }
     let removed = if remove {
         let removed = registry.sessions.remove(&transfer.id);
+        if let Some(panel_id) = transfer.panel_id.as_ref() {
+            registry.materializations.remove(panel_id);
+        }
         for operations in &transfer.fenced_operations {
             if !Arc::ptr_eq(operations, &transfer.operations) {
                 operations.reopen();
@@ -1284,6 +1752,9 @@ fn release_terminal_session_transfer(
     registry.reserved_session_ids.remove(&transfer.id);
     if let Some(panel_id) = transfer.panel_id {
         registry.reserved_panel_ids.remove(&panel_id);
+        if !remove {
+            registry.rollback_materialization_fence(&panel_id);
+        }
     }
     drop(registry);
     drop(removed);
