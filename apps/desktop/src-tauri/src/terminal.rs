@@ -540,8 +540,9 @@ pub(crate) fn finalize_terminal_panels_for_control(
     let mut registry = match state.try_runtime_registry() {
         Ok(registry) => registry,
         Err(error) => {
+            failures.push(error);
             return Err(TerminalPanelFinalizeError {
-                failures: vec![error],
+                failures,
                 retry: TerminalPanelRuntimeLease {
                     panel_ids,
                     sessions: retry_sessions,
@@ -2152,6 +2153,32 @@ mod tests {
         assert!(registry.sessions.contains_key(&id));
         assert!(!registry.reserved_session_ids.contains(&id));
         assert!(!registry.reserved_panel_ids.contains("panel-a"));
+    }
+
+    #[test]
+    fn abandoned_open_guard_releases_its_unpublished_identity() {
+        let state = TerminalState::default();
+        let reservation =
+            match super::reserve_terminal_open_for_control(&state, Some("abandoned-panel"), false)
+                .unwrap()
+            {
+                super::TerminalOpenReservation::Reserved(reservation) => reservation,
+                super::TerminalOpenReservation::Existing(_) => {
+                    panic!("unexpected existing runtime")
+                }
+            };
+        {
+            let _guard = super::TerminalOpenReservationGuard::new(&state, reservation);
+            assert!(state
+                .registry
+                .lock()
+                .unwrap()
+                .reserved_panel_ids
+                .contains("abandoned-panel"));
+        }
+        let registry = state.registry.lock().unwrap();
+        assert!(registry.reserved_session_ids.is_empty());
+        assert!(!registry.reserved_panel_ids.contains("abandoned-panel"));
     }
 
     #[test]
