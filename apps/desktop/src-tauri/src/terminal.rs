@@ -11,7 +11,7 @@
 //! chunk can split a multi-byte sequence at an arbitrary boundary; the webview
 //! decodes with `atob` and feeds the raw `Uint8Array` to `term.write`.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -27,11 +27,144 @@ use crate::session;
 const TERMINAL_OUTPUT_EVENT: &str = "cmux://terminal-output";
 /// Event signalling that a session's shell exited and the pump thread ended.
 const TERMINAL_EXIT_EVENT: &str = "cmux://terminal-exit";
+const TERMINAL_PENDING_INPUT_LIMIT: usize = 1024 * 1024;
+
+trait TerminalProcess: Send {
+    fn kill(&mut self) -> Result<(), String>;
+    fn resize(&mut self, size: ConPtySize) -> Result<(), String>;
+    fn try_wait(&mut self) -> Result<Option<u32>, String>;
+}
+
+impl TerminalProcess for ConPty {
+    fn kill(&mut self) -> Result<(), String> {
+        ConPty::kill(self).map_err(|error| error.to_string())
+    }
+
+    fn resize(&mut self, size: ConPtySize) -> Result<(), String> {
+        ConPty::resize(self, size).map_err(|error| error.to_string())
+    }
+
+    fn try_wait(&mut self) -> Result<Option<u32>, String> {
+        ConPty::try_wait(self).map_err(|error| error.to_string())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TerminalInputOutcome {
+    Sent,
+    Queued,
+    InputQueueFull,
+    SurfaceUnavailable,
+    ProcessExited,
+}
+
+struct TerminalInputTransport {
+    writer: Mutex<Box<dyn Write + Send>>,
+    pending: Mutex<TerminalPendingInput>,
+}
+
+impl TerminalInputTransport {
+    fn new(writer: Box<dyn Write + Send>) -> Self {
+        Self {
+            writer: Mutex::new(writer),
+            pending: Mutex::new(TerminalPendingInput::default()),
+        }
+    }
+}
+
+#[derive(Default)]
+struct TerminalPendingInput {
+    entries: VecDeque<TerminalPendingEntry>,
+    bytes: usize,
+    draining: bool,
+}
+
+struct TerminalPendingEntry {
+    data: Arc<[u8]>,
+    offset: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerminalInputClaim {
+    Direct,
+    Recovery(TerminalInputOutcome),
+    Outcome(TerminalInputOutcome),
+}
+
+impl TerminalPendingInput {
+    fn enqueue(&mut self, data: &[u8]) -> TerminalInputOutcome {
+        if data.len() > TERMINAL_PENDING_INPUT_LIMIT.saturating_sub(self.bytes) {
+            return TerminalInputOutcome::InputQueueFull;
+        }
+        self.entries.push_back(TerminalPendingEntry {
+            data: Arc::from(data),
+            offset: 0,
+        });
+        self.bytes += data.len();
+        TerminalInputOutcome::Queued
+    }
+
+    fn claim(&mut self, data: &[u8]) -> TerminalInputClaim {
+        if !self.draining && self.entries.is_empty() {
+            self.draining = true;
+            return TerminalInputClaim::Direct;
+        }
+
+        let outcome = self.enqueue(data);
+        if self.draining {
+            TerminalInputClaim::Outcome(outcome)
+        } else {
+            self.draining = true;
+            TerminalInputClaim::Recovery(outcome)
+        }
+    }
+
+    fn front_for_drain(&mut self) -> Option<(Arc<[u8]>, usize)> {
+        let front = self
+            .entries
+            .front()
+            .map(|entry| (entry.data.clone(), entry.offset));
+        if front.is_none() {
+            self.draining = false;
+        }
+        front
+    }
+
+    fn advance_front(&mut self, data: &Arc<[u8]>, offset: usize, written: usize) -> bool {
+        let Some(front) = self.entries.front_mut() else {
+            return false;
+        };
+        if !Arc::ptr_eq(&front.data, data)
+            || front.offset != offset
+            || written > front.data.len().saturating_sub(front.offset)
+            || written > self.bytes
+        {
+            return false;
+        }
+        front.offset += written;
+        self.bytes -= written;
+        true
+    }
+
+    fn commit_flushed_front(&mut self, data: &Arc<[u8]>) -> bool {
+        let matches = self.entries.front().is_some_and(|front| {
+            Arc::ptr_eq(&front.data, data) && front.offset == front.data.len()
+        });
+        if matches {
+            self.entries.pop_front();
+        }
+        matches
+    }
+
+    fn release_drain(&mut self) {
+        self.draining = false;
+    }
+}
 
 /// One live shell: its PTY (kept for resize/kill) plus the single input writer.
 struct TerminalSession {
-    pty: ConPty,
-    writer: Box<dyn Write + Send>,
+    pty: Arc<Mutex<Box<dyn TerminalProcess>>>,
+    input: Arc<TerminalInputTransport>,
     grid: Arc<Mutex<TerminalGrid>>,
     panel_id: Option<String>,
     root_pid: Option<u32>,
@@ -170,6 +303,12 @@ impl TerminalState {
         self.registry
             .lock()
             .expect("terminal runtime registry mutex poisoned")
+    }
+
+    fn try_runtime_registry(&self) -> Result<MutexGuard<'_, TerminalRuntimeRegistry>, String> {
+        self.registry
+            .lock()
+            .map_err(|_| "terminal runtime registry mutex poisoned".to_string())
     }
 }
 
@@ -318,8 +457,13 @@ pub(crate) fn finalize_terminal_panels_for_control(
     let mut failures = Vec::new();
     let mut retry_sessions = BTreeMap::new();
     let mut completed_ids = Vec::new();
-    for (id, mut session) in sessions {
-        match session.pty.kill() {
+    for (id, session) in sessions {
+        let kill = session
+            .pty
+            .lock()
+            .map_err(|_| "terminal process mutex poisoned".to_string())
+            .and_then(|mut process| process.kill());
+        match kill {
             Ok(()) => completed_ids.push(id),
             Err(error) => {
                 failures.push(format!("terminal runtime {id} kill failed: {error}"));
@@ -537,8 +681,8 @@ fn terminal_open_with_policy(
     registry.sessions.insert(
         id,
         TerminalSession {
-            pty,
-            writer,
+            pty: Arc::new(Mutex::new(Box::new(pty))),
+            input: Arc::new(TerminalInputTransport::new(writer)),
             grid,
             panel_id,
             root_pid,
@@ -572,15 +716,20 @@ pub(crate) fn terminal_shutdown_id_preserving_authority_for_control(
     state: &TerminalState,
     id: u32,
 ) -> Result<(), String> {
-    let mut registry = state.runtime_registry();
+    let registry = state.runtime_registry();
     if registry.reserved_session_ids.contains(&id) {
         return Err(format!("terminal session {id} is reserved"));
     }
-    let session = registry
+    let process = registry
         .sessions
-        .get_mut(&id)
+        .get(&id)
+        .map(|session| session.pty.clone())
         .ok_or_else(|| format!("terminal runtime {id} is unavailable"))?;
-    session.pty.kill().map_err(|error| error.to_string())
+    let result = process
+        .lock()
+        .map_err(|_| "terminal process mutex poisoned".to_string())?
+        .kill();
+    result
 }
 
 pub(crate) fn terminal_remove_id_for_control(state: &TerminalState, id: u32) -> Result<(), String> {
@@ -599,20 +748,26 @@ pub fn terminal_write(
     id: u32,
     data: String,
 ) -> Result<(), String> {
-    let mut registry = state.runtime_registry();
-    if registry.reserved_session_ids.contains(&id) {
-        return Err(format!("terminal session {id} is reserved"));
-    }
-    let session = registry
-        .sessions
-        .get_mut(&id)
-        .ok_or_else(|| format!("unknown terminal session {id}"))?;
-    session
-        .writer
-        .write_all(data.as_bytes())
-        .map_err(|e| e.to_string())?;
-    session.writer.flush().map_err(|e| e.to_string())?;
-    Ok(())
+    terminal_write_id_for_control(state.inner(), id, data.as_bytes())
+}
+
+fn terminal_write_id_for_control(
+    state: &TerminalState,
+    id: u32,
+    data: &[u8],
+) -> Result<(), String> {
+    let (process, input) = {
+        let registry = state.try_runtime_registry()?;
+        if registry.reserved_session_ids.contains(&id) {
+            return Err(format!("terminal session {id} is reserved"));
+        }
+        let session = registry
+            .sessions
+            .get(&id)
+            .ok_or_else(|| format!("unknown terminal session {id}"))?;
+        (session.pty.clone(), session.input.clone())
+    };
+    accepted_terminal_input(send_terminal_input(process, input, data))
 }
 
 pub(crate) fn terminal_write_panel(
@@ -620,25 +775,154 @@ pub(crate) fn terminal_write_panel(
     panel_id: &str,
     data: &str,
 ) -> Result<(), String> {
+    terminal_write_panel_bytes(state, panel_id, data.as_bytes())
+}
+
+pub(crate) fn terminal_write_panel_bytes(
+    state: &TerminalState,
+    panel_id: &str,
+    data: &[u8],
+) -> Result<(), String> {
+    accepted_terminal_input(terminal_send_panel_bytes_for_control(state, panel_id, data))
+}
+
+fn accepted_terminal_input(outcome: TerminalInputOutcome) -> Result<(), String> {
+    match outcome {
+        TerminalInputOutcome::Sent | TerminalInputOutcome::Queued => Ok(()),
+        outcome => Err(format!("terminal input failed: {outcome:?}")),
+    }
+}
+
+pub(crate) fn terminal_send_panel_bytes_for_control(
+    state: &TerminalState,
+    panel_id: &str,
+    data: &[u8],
+) -> TerminalInputOutcome {
     let normalized_panel_id = panel_id.trim();
     if normalized_panel_id.is_empty() {
-        return Err("missing terminal panel id".to_string());
+        return TerminalInputOutcome::SurfaceUnavailable;
     }
-    let mut registry = state.runtime_registry();
-    if registry.reserved_panel_ids.contains(normalized_panel_id) {
-        return Err(format!("terminal panel {normalized_panel_id} is reserved"));
+    let handles = match state.try_runtime_registry() {
+        Ok(registry) if !registry.reserved_panel_ids.contains(normalized_panel_id) => registry
+            .sessions
+            .values()
+            .find(|session| session.panel_id.as_deref() == Some(normalized_panel_id))
+            .map(|session| (session.pty.clone(), session.input.clone())),
+        _ => return TerminalInputOutcome::SurfaceUnavailable,
+    };
+    let Some((process, input)) = handles else {
+        return TerminalInputOutcome::SurfaceUnavailable;
+    };
+    send_terminal_input(process, input, data)
+}
+
+fn send_terminal_input(
+    process: Arc<Mutex<Box<dyn TerminalProcess>>>,
+    input: Arc<TerminalInputTransport>,
+    data: &[u8],
+) -> TerminalInputOutcome {
+    if data.is_empty() {
+        return TerminalInputOutcome::Sent;
     }
-    let session = registry
-        .sessions
-        .values_mut()
-        .find(|session| session.panel_id.as_deref() == Some(normalized_panel_id))
-        .ok_or_else(|| format!("unknown terminal panel {normalized_panel_id}"))?;
-    session
-        .writer
-        .write_all(data.as_bytes())
-        .map_err(|e| e.to_string())?;
-    session.writer.flush().map_err(|e| e.to_string())?;
-    Ok(())
+    let process_exited = match process.lock() {
+        Ok(mut process) => match process.try_wait() {
+            Ok(status) => status.is_some(),
+            Err(_) => return TerminalInputOutcome::SurfaceUnavailable,
+        },
+        Err(_) => return TerminalInputOutcome::SurfaceUnavailable,
+    };
+    if process_exited {
+        return TerminalInputOutcome::ProcessExited;
+    }
+
+    let claim = match input.pending.lock() {
+        Ok(mut pending) => pending.claim(data),
+        Err(_) => return TerminalInputOutcome::SurfaceUnavailable,
+    };
+    let (direct, completion) = match claim {
+        TerminalInputClaim::Direct => (true, TerminalInputOutcome::Sent),
+        TerminalInputClaim::Recovery(outcome) => (false, outcome),
+        TerminalInputClaim::Outcome(outcome) => return outcome,
+    };
+
+    let mut writer = match input.writer.lock() {
+        Ok(writer) => writer,
+        Err(_) => {
+            if let Ok(mut pending) = input.pending.lock() {
+                pending.release_drain();
+            }
+            return if direct {
+                TerminalInputOutcome::SurfaceUnavailable
+            } else {
+                completion
+            };
+        }
+    };
+    if direct {
+        if let Err(outcome) = write_terminal_bytes(writer.as_mut(), data) {
+            if let Ok(mut pending) = input.pending.lock() {
+                pending.release_drain();
+            }
+            return outcome;
+        }
+    }
+
+    loop {
+        let front = match input.pending.lock() {
+            Ok(mut pending) => pending.front_for_drain(),
+            Err(_) => return completion,
+        };
+        let Some((front, offset)) = front else {
+            return completion;
+        };
+
+        if offset < front.len() {
+            let written = match writer.write(&front[offset..]) {
+                Ok(0) | Err(_) => {
+                    if let Ok(mut pending) = input.pending.lock() {
+                        pending.release_drain();
+                    }
+                    return completion;
+                }
+                Ok(written) => written,
+            };
+            let Ok(mut pending) = input.pending.lock() else {
+                return completion;
+            };
+            if !pending.advance_front(&front, offset, written) {
+                pending.release_drain();
+                return completion;
+            }
+            continue;
+        }
+
+        if writer.flush().is_err() {
+            if let Ok(mut pending) = input.pending.lock() {
+                pending.release_drain();
+            }
+            return completion;
+        }
+        let Ok(mut pending) = input.pending.lock() else {
+            return completion;
+        };
+        if !pending.commit_flushed_front(&front) {
+            pending.release_drain();
+            return completion;
+        }
+    }
+}
+
+fn write_terminal_bytes(writer: &mut dyn Write, bytes: &[u8]) -> Result<(), TerminalInputOutcome> {
+    writer
+        .write_all(bytes)
+        .and_then(|_| writer.flush())
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::BrokenPipe {
+                TerminalInputOutcome::ProcessExited
+            } else {
+                TerminalInputOutcome::SurfaceUnavailable
+            }
+        })
 }
 
 pub(crate) fn terminal_read_panel(
@@ -750,21 +1034,21 @@ pub fn terminal_resize(
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    let mut registry = state.runtime_registry();
+    let registry = state.runtime_registry();
     if registry.reserved_session_ids.contains(&id) {
         return Err(format!("terminal session {id} is reserved"));
     }
-    let session = registry
+    let (process, grid) = registry
         .sessions
-        .get_mut(&id)
+        .get(&id)
+        .map(|session| (session.pty.clone(), session.grid.clone()))
         .ok_or_else(|| format!("unknown terminal session {id}"))?;
-    session
-        .pty
+    process
+        .lock()
+        .map_err(|_| "terminal process mutex poisoned".to_string())?
         .resize(ConPtySize::new(cols.max(1), rows.max(1)))
         .map_err(|e| e.to_string())?;
-    session
-        .grid
-        .lock()
+    grid.lock()
         .map_err(|_| "terminal grid mutex poisoned".to_string())?
         .resize(GridSize::new(cols.max(1) as usize, rows.max(1) as usize));
     Ok(())
@@ -781,8 +1065,10 @@ pub fn terminal_close(state: State<'_, TerminalState>, id: u32) -> Result<(), St
         }
         registry.sessions.remove(&id)
     };
-    if let Some(mut session) = removed {
-        let _ = session.pty.kill();
+    if let Some(session) = removed {
+        if let Ok(mut process) = session.pty.lock() {
+            let _ = process.kill();
+        }
     }
     Ok(())
 }
@@ -1344,6 +1630,38 @@ mod tests {
         writes: usize,
     }
 
+    struct PartialQueuedFailureOnce {
+        entered: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+        captured: Arc<Mutex<Vec<u8>>>,
+        writes: usize,
+    }
+
+    impl Write for PartialQueuedFailureOnce {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.writes += 1;
+            if self.writes == 1 {
+                self.entered.send(()).unwrap();
+                self.release.recv().unwrap();
+            } else if self.writes == 2 {
+                let written = bytes.len().min(3);
+                self.captured
+                    .lock()
+                    .unwrap()
+                    .extend_from_slice(&bytes[..written]);
+                return Ok(written);
+            } else if self.writes == 3 {
+                return Err(io::Error::other("injected failure after partial write"));
+            }
+            self.captured.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
     impl Write for FailSecondWriteOnce {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
             self.writes += 1;
@@ -1497,6 +1815,41 @@ mod tests {
             assert_eq!(pending.bytes, b"second".len());
             assert_eq!(pending.entries.len(), 1);
         }
+
+        assert_eq!(
+            send_terminal_input(process, input.clone(), b"third"),
+            TerminalInputOutcome::Queued
+        );
+        assert_eq!(&*captured.lock().unwrap(), b"firstsecondthird");
+        let pending = input.pending.lock().unwrap();
+        assert_eq!(pending.bytes, 0);
+        assert!(pending.entries.is_empty());
+    }
+
+    #[test]
+    fn partial_queued_write_recovers_from_the_exact_unwritten_offset() {
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let input = test_transport(PartialQueuedFailureOnce {
+            entered: entered_tx,
+            release: release_rx,
+            captured: captured.clone(),
+            writes: 0,
+        });
+        let process = test_process(false);
+
+        let owner_input = input.clone();
+        let owner_process = process.clone();
+        let owner =
+            std::thread::spawn(move || send_terminal_input(owner_process, owner_input, b"first"));
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(
+            send_terminal_input(process.clone(), input.clone(), b"second"),
+            TerminalInputOutcome::Queued
+        );
+        release_tx.send(()).unwrap();
+        assert_eq!(owner.join().unwrap(), TerminalInputOutcome::Sent);
 
         assert_eq!(
             send_terminal_input(process, input.clone(), b"third"),
