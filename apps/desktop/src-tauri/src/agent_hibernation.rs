@@ -8,8 +8,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use cmux_core::session::{
-    AppSessionSnapshot, SessionRestorableAgentSnapshot, SessionSurfaceKindSnapshot,
-    SessionSurfaceSnapshot, SessionWorkspaceLayoutSnapshot, SessionWorkspaceSnapshot,
+    AppSessionSnapshot, SessionPaneLayoutSnapshot, SessionRestorableAgentSnapshot,
+    SessionSurfaceKindSnapshot, SessionSurfaceSnapshot, SessionWorkspaceLayoutSnapshot,
+    SessionWorkspaceSnapshot,
 };
 
 pub(crate) const INITIAL_EVALUATION_DELAY_SECONDS: u64 = 5;
@@ -475,11 +476,7 @@ fn layout_selected_panel_ids(
 ) {
     match layout {
         SessionWorkspaceLayoutSnapshot::Pane(pane) => {
-            if let Some(panel_id) = pane
-                .selected_panel_id
-                .as_ref()
-                .or_else(|| pane.panel_ids.first())
-            {
+            if let Some(panel_id) = pane_selected_panel_id(pane) {
                 selected.insert(panel_id.clone());
             }
         }
@@ -490,21 +487,51 @@ fn layout_selected_panel_ids(
     }
 }
 
-fn layout_contains_panel(layout: &SessionWorkspaceLayoutSnapshot, panel_id: &str) -> bool {
+fn pane_selected_panel_id(pane: &SessionPaneLayoutSnapshot) -> Option<&String> {
+    pane.selected_panel_id
+        .as_ref()
+        .or_else(|| pane.panel_ids.first())
+}
+
+fn layout_pane_containing_panel<'a>(
+    layout: &'a SessionWorkspaceLayoutSnapshot,
+    panel_id: &str,
+) -> Option<&'a SessionPaneLayoutSnapshot> {
     match layout {
-        SessionWorkspaceLayoutSnapshot::Pane(pane) => {
-            pane.panel_ids.iter().any(|candidate| candidate == panel_id)
-        }
+        SessionWorkspaceLayoutSnapshot::Pane(pane) => pane
+            .panel_ids
+            .iter()
+            .any(|candidate| candidate == panel_id)
+            .then_some(pane),
         SessionWorkspaceLayoutSnapshot::Split(split) => {
-            layout_contains_panel(&split.first, panel_id)
-                || layout_contains_panel(&split.second, panel_id)
+            layout_pane_containing_panel(&split.first, panel_id)
+                .or_else(|| layout_pane_containing_panel(&split.second, panel_id))
         }
     }
 }
 
 fn rendered_panel_ids(workspace: &SessionWorkspaceSnapshot) -> BTreeSet<String> {
     if let Some(panel_id) = workspace.zoomed_panel_id.as_ref() {
-        return BTreeSet::from([panel_id.clone()]);
+        let mut rendered = BTreeSet::from([panel_id.clone()]);
+        if workspace.layout_mode.as_deref() != Some("canvas") {
+            let zoomed_pane = workspace
+                .layout
+                .as_ref()
+                .and_then(|layout| layout_pane_containing_panel(layout, panel_id));
+            if let Some(pane) = zoomed_pane {
+                if let Some(selected_panel_id) = pane_selected_panel_id(pane) {
+                    rendered.insert(selected_panel_id.clone());
+                }
+                if let Some(focused_panel_id) = workspace
+                    .focused_panel_id
+                    .as_ref()
+                    .filter(|focused| pane.panel_ids.contains(focused))
+                {
+                    rendered.insert(focused_panel_id.clone());
+                }
+            }
+        }
+        return rendered;
     }
     if workspace.layout_mode.as_deref() == Some("canvas") {
         return workspace
@@ -527,7 +554,7 @@ fn rendered_panel_ids(workspace: &SessionWorkspaceSnapshot) -> BTreeSet<String> 
         if let Some(focused_panel_id) = workspace
             .focused_panel_id
             .as_deref()
-            .filter(|panel_id| layout_contains_panel(layout, panel_id))
+            .filter(|panel_id| layout_pane_containing_panel(layout, panel_id).is_some())
         {
             selected.insert(focused_panel_id.to_owned());
         }
