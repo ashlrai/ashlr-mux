@@ -86,6 +86,8 @@ struct TerminalPendingEntry {
     offset: usize,
 }
 
+type TerminalPendingChunk = (Arc<[u8]>, usize);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TerminalInputClaim {
     Direct(u64),
@@ -143,7 +145,7 @@ impl TerminalPendingInput {
         owner
     }
 
-    fn front_for_drain(&mut self, owner: u64) -> Result<Option<(Arc<[u8]>, usize)>, ()> {
+    fn front_for_drain(&mut self, owner: u64) -> Result<Option<TerminalPendingChunk>, ()> {
         if self.owner != Some(owner) {
             return Err(());
         }
