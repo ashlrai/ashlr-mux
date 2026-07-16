@@ -1672,6 +1672,32 @@ mod tests {
         release: mpsc::Receiver<()>,
     }
 
+    struct BlockingNthWaitProcess {
+        calls: usize,
+        block_on: usize,
+        entered: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+    }
+
+    impl TerminalProcess for BlockingNthWaitProcess {
+        fn kill(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn resize(&mut self, _size: ConPtySize) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn try_wait(&mut self) -> Result<Option<u32>, String> {
+            self.calls += 1;
+            if self.calls == self.block_on {
+                self.entered.send(()).unwrap();
+                self.release.recv().unwrap();
+            }
+            Ok(None)
+        }
+    }
+
     impl Write for PanicWriter {
         fn write(&mut self, _bytes: &[u8]) -> io::Result<usize> {
             self.entered.send(()).unwrap();
@@ -1936,6 +1962,73 @@ mod tests {
             TerminalInputOutcome::SurfaceUnavailable
         );
         assert_eq!(input.pending.lock().unwrap().bytes, bytes_before);
+    }
+
+    #[test]
+    fn process_exit_precedes_writer_poison_classification() {
+        let input = test_transport(CapturingWriter(Arc::new(Mutex::new(Vec::new()))));
+        let poison_input = input.clone();
+        assert!(std::thread::spawn(move || {
+            let _guard = poison_input.writer.lock().unwrap();
+            panic!("poison writer for precedence contract");
+        })
+        .join()
+        .is_err());
+
+        assert_eq!(
+            send_terminal_input(test_process(true), input, b"input"),
+            TerminalInputOutcome::ProcessExited
+        );
+    }
+
+    #[test]
+    fn process_query_race_cannot_enqueue_after_writer_poison() {
+        let (writer_entered_tx, writer_entered_rx) = mpsc::channel();
+        let (writer_release_tx, writer_release_rx) = mpsc::channel();
+        let input = test_transport(PanicWriter {
+            entered: writer_entered_tx,
+            release: writer_release_rx,
+        });
+        let (query_entered_tx, query_entered_rx) = mpsc::channel();
+        let (query_release_tx, query_release_rx) = mpsc::channel();
+        let process: Arc<Mutex<Box<dyn TerminalProcess>>> =
+            Arc::new(Mutex::new(Box::new(BlockingNthWaitProcess {
+                calls: 0,
+                block_on: 3,
+                entered: query_entered_tx,
+                release: query_release_rx,
+            })));
+
+        let owner_input = input.clone();
+        let owner_process = process.clone();
+        let owner =
+            std::thread::spawn(move || send_terminal_input(owner_process, owner_input, b"first"));
+        writer_entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(
+            send_terminal_input(process.clone(), input.clone(), b"retained"),
+            TerminalInputOutcome::Queued
+        );
+
+        let racer_input = input.clone();
+        let racer_process = process.clone();
+        let racer =
+            std::thread::spawn(move || send_terminal_input(racer_process, racer_input, b"racer"));
+        query_entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        writer_release_tx.send(()).unwrap();
+        assert!(owner.join().is_err());
+        query_release_tx.send(()).unwrap();
+
+        assert_eq!(
+            racer.join().unwrap(),
+            TerminalInputOutcome::SurfaceUnavailable
+        );
+        let pending = input.pending.lock().unwrap();
+        assert_eq!(pending.bytes, b"retained".len());
+        assert_eq!(pending.entries.len(), 1);
     }
 
     #[test]
