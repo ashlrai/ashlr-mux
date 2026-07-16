@@ -15,6 +15,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard, Weak};
+use std::time::{Duration, Instant};
 
 use cmux_terminal::conpty::{ConPty, ConPtyCommand, ConPtySize};
 use cmux_terminal::engine::{GridSize, TerminalGrid};
@@ -331,6 +332,7 @@ struct TerminalSession {
     pty: Arc<Mutex<Box<dyn TerminalProcess>>>,
     input: Arc<TerminalInputTransport>,
     grid: Arc<Mutex<TerminalGrid>>,
+    title_parser: Arc<Mutex<TerminalTitleParser>>,
     operations: Arc<TerminalOperationGate>,
     pump_activation: Arc<TerminalPumpActivation>,
     panel_id: Option<String>,
@@ -512,6 +514,7 @@ struct TerminalMaterializationSlot {
     bytes: usize,
     generation: u64,
     phase: TerminalMaterializationPhase,
+    flushing: bool,
 }
 
 impl TerminalMaterializationSlot {
@@ -724,6 +727,8 @@ pub(crate) fn request_terminal_materialization(
             return TerminalMaterializationDemand::InputQueueFull;
         }
         let restart = matches!(slot.phase, TerminalMaterializationPhase::Dormant);
+        let resume =
+            matches!(slot.phase, TerminalMaterializationPhase::Published(_)) && !slot.flushing;
         let generation = restart.then(|| registry.next_materialization_generation());
         let slot = registry
             .materializations
@@ -735,6 +740,13 @@ pub(crate) fn request_terminal_materialization(
             slot.phase = TerminalMaterializationPhase::Starting;
             return TerminalMaterializationDemand::Start(TerminalMaterializationLease::new(
                 panel_id, generation, spec,
+            ));
+        }
+        if resume {
+            return TerminalMaterializationDemand::Start(TerminalMaterializationLease::new(
+                panel_id,
+                slot.generation,
+                spec,
             ));
         }
         return TerminalMaterializationDemand::Queued;
@@ -761,6 +773,7 @@ pub(crate) fn request_terminal_materialization(
             bytes,
             generation,
             phase: TerminalMaterializationPhase::Starting,
+            flushing: false,
         },
     );
     TerminalMaterializationDemand::Start(TerminalMaterializationLease::new(
@@ -795,6 +808,33 @@ pub(crate) fn retry_terminal_materialization_start(
     Ok(Some(TerminalMaterializationLease::new(
         panel_id, generation, spec,
     )))
+}
+
+#[allow(dead_code)]
+pub(crate) fn retry_terminal_materialization_flush(
+    state: &TerminalState,
+    panel_id: &str,
+    spec: &TerminalMaterializationSpec,
+) -> Result<Option<TerminalMaterializationLease>, String> {
+    let panel_id = panel_id.trim();
+    if panel_id.is_empty() {
+        return Ok(None);
+    }
+    let registry = state.try_runtime_registry()?;
+    let Some(slot) = registry.materializations.get(panel_id) else {
+        return Ok(None);
+    };
+    let resumable = slot.spec == *spec
+        && !slot.events.is_empty()
+        && !slot.flushing
+        && !registry.reserved_panel_ids.contains(panel_id)
+        && match &slot.phase {
+            TerminalMaterializationPhase::Published(runtime) => {
+                TerminalMaterializationSlot::runtime_is_live(runtime, &registry.sessions, panel_id)
+            }
+            _ => false,
+        };
+    Ok(resumable.then(|| TerminalMaterializationLease::new(panel_id, slot.generation, spec)))
 }
 
 #[allow(dead_code)]
@@ -894,7 +934,8 @@ pub(crate) fn drain_terminal_materialization_event(
         .materializations
         .get(&lease.panel_id)
         .is_some_and(|slot| {
-            slot.matches(lease)
+            !slot.flushing
+                && slot.matches(lease)
                 && match &slot.phase {
                     TerminalMaterializationPhase::Published(runtime) => {
                         TerminalMaterializationSlot::runtime_is_live(
@@ -919,6 +960,365 @@ pub(crate) fn drain_terminal_materialization_event(
     }
     registry.materializations.remove(&lease.panel_id);
     Ok(None)
+}
+
+enum TerminalMaterializationPreparation {
+    Spawn(u32),
+    Flush,
+}
+
+fn prepare_terminal_materialization(
+    state: &TerminalState,
+    lease: &TerminalMaterializationLease,
+) -> Result<TerminalMaterializationPreparation, String> {
+    let registry = state.try_runtime_registry()?;
+    let slot = registry
+        .materializations
+        .get(&lease.panel_id)
+        .ok_or_else(|| "terminal materialization ownership lost".to_string())?;
+    if !slot.matches(lease) || registry.reserved_panel_ids.contains(&lease.panel_id) {
+        return Err("terminal materialization ownership lost".to_string());
+    }
+    match &slot.phase {
+        TerminalMaterializationPhase::Starting => {
+            let id = loop {
+                let candidate = state.next_id.fetch_add(1, Ordering::Relaxed);
+                if !registry.reserved_session_ids.contains(&candidate)
+                    && !registry.sessions.contains_key(&candidate)
+                {
+                    break candidate;
+                }
+            };
+            Ok(TerminalMaterializationPreparation::Spawn(id))
+        }
+        TerminalMaterializationPhase::Published(runtime)
+            if !slot.flushing
+                && !slot.events.is_empty()
+                && TerminalMaterializationSlot::runtime_is_live(
+                    runtime,
+                    &registry.sessions,
+                    &lease.panel_id,
+                ) =>
+        {
+            Ok(TerminalMaterializationPreparation::Flush)
+        }
+        _ => Err("terminal materialization ownership lost".to_string()),
+    }
+}
+
+fn terminal_runtime_matches(
+    runtime: &TerminalPublishedRuntime,
+    session_id: u32,
+    operations: &Arc<TerminalOperationGate>,
+) -> bool {
+    runtime.session_id == session_id
+        && runtime
+            .operations
+            .upgrade()
+            .is_some_and(|owned| Arc::ptr_eq(&owned, operations))
+}
+
+struct TerminalMaterializationFlushGuard<'a> {
+    state: &'a TerminalState,
+    lease: TerminalMaterializationLease,
+    session_id: u32,
+    operations: Arc<TerminalOperationGate>,
+    process: Arc<Mutex<Box<dyn TerminalProcess>>>,
+    input: Arc<TerminalInputTransport>,
+    grid: Arc<Mutex<TerminalGrid>>,
+    title_parser: Arc<Mutex<TerminalTitleParser>>,
+    pump_activation: Arc<TerminalPumpActivation>,
+    _operation: TerminalOperationLease,
+    finished: bool,
+}
+
+impl TerminalMaterializationFlushGuard<'_> {
+    fn owns_published_runtime(&self, slot: &TerminalMaterializationSlot) -> bool {
+        slot.matches(&self.lease)
+            && slot.flushing
+            && match &slot.phase {
+                TerminalMaterializationPhase::Published(runtime) => {
+                    terminal_runtime_matches(runtime, self.session_id, &self.operations)
+                }
+                _ => false,
+            }
+    }
+
+    fn owns_runtime(&self, slot: &TerminalMaterializationSlot) -> bool {
+        slot.matches(&self.lease)
+            && match &slot.phase {
+                TerminalMaterializationPhase::Published(runtime)
+                | TerminalMaterializationPhase::FencedPublished(runtime) => {
+                    terminal_runtime_matches(runtime, self.session_id, &self.operations)
+                }
+                _ => false,
+            }
+    }
+
+    fn take_event(&self) -> Result<Option<TerminalMaterializationEvent>, String> {
+        let mut registry = self.state.try_runtime_registry()?;
+        let owns_flush = registry
+            .materializations
+            .get(&self.lease.panel_id)
+            .is_some_and(|slot| {
+                self.owns_published_runtime(slot)
+                    && match &slot.phase {
+                        TerminalMaterializationPhase::Published(runtime) => {
+                            TerminalMaterializationSlot::runtime_is_live(
+                                runtime,
+                                &registry.sessions,
+                                &self.lease.panel_id,
+                            )
+                        }
+                        _ => unreachable!("published ownership checked above"),
+                    }
+            });
+        if !owns_flush {
+            return Err("terminal materialization flush ownership lost".to_string());
+        }
+        let slot = registry
+            .materializations
+            .get_mut(&self.lease.panel_id)
+            .expect("validated flush remains under registry lock");
+        let event = slot.events.pop_front();
+        if let Some(event) = event.as_ref() {
+            slot.bytes -= event.byte_len();
+        }
+        Ok(event)
+    }
+
+    fn try_finish(&mut self) -> Result<bool, String> {
+        let mut registry = self.state.try_runtime_registry()?;
+        let finishable = registry
+            .materializations
+            .get(&self.lease.panel_id)
+            .is_some_and(|slot| {
+                self.owns_published_runtime(slot)
+                    && slot.events.is_empty()
+                    && match &slot.phase {
+                        TerminalMaterializationPhase::Published(runtime) => {
+                            TerminalMaterializationSlot::runtime_is_live(
+                                runtime,
+                                &registry.sessions,
+                                &self.lease.panel_id,
+                            )
+                        }
+                        _ => unreachable!("published ownership checked above"),
+                    }
+            });
+        if finishable {
+            registry.materializations.remove(&self.lease.panel_id);
+            self.finished = true;
+            return Ok(true);
+        }
+        let still_owned = registry
+            .materializations
+            .get(&self.lease.panel_id)
+            .is_some_and(|slot| self.owns_published_runtime(slot));
+        if still_owned {
+            Ok(false)
+        } else {
+            Err("terminal materialization flush ownership lost".to_string())
+        }
+    }
+
+    fn abort(&mut self) -> Result<bool, String> {
+        let mut registry = self.state.try_runtime_registry()?;
+        let abortable = registry
+            .materializations
+            .get(&self.lease.panel_id)
+            .is_some_and(|slot| self.owns_published_runtime(slot));
+        if abortable {
+            registry.materializations.remove(&self.lease.panel_id);
+            self.finished = true;
+        }
+        Ok(abortable)
+    }
+}
+
+impl Drop for TerminalMaterializationFlushGuard<'_> {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        let (mut registry, _) = terminal_registry_for_exact_cleanup(self.state);
+        if let Some(slot) = registry.materializations.get_mut(&self.lease.panel_id) {
+            if self.owns_runtime(slot) {
+                slot.flushing = false;
+            }
+        }
+    }
+}
+
+fn begin_terminal_materialization_flush<'a>(
+    state: &'a TerminalState,
+    lease: TerminalMaterializationLease,
+) -> Result<TerminalMaterializationFlushGuard<'a>, String> {
+    let mut registry = state.try_runtime_registry()?;
+    let (session_id, operations) = {
+        let slot = registry
+            .materializations
+            .get(&lease.panel_id)
+            .ok_or_else(|| "terminal materialization flush ownership lost".to_string())?;
+        if !slot.matches(&lease) || slot.flushing {
+            return Err("terminal materialization flush ownership lost".to_string());
+        }
+        let TerminalMaterializationPhase::Published(runtime) = &slot.phase else {
+            return Err("terminal materialization flush ownership lost".to_string());
+        };
+        let operations = runtime
+            .operations
+            .upgrade()
+            .ok_or_else(|| "terminal materialization runtime expired".to_string())?;
+        (runtime.session_id, operations)
+    };
+    let (process, input, grid, title_parser, pump_activation, operation) = {
+        let session = registry
+            .sessions
+            .get(&session_id)
+            .filter(|session| {
+                session.panel_id.as_deref() == Some(lease.panel_id.as_str())
+                    && Arc::ptr_eq(&session.operations, &operations)
+            })
+            .ok_or_else(|| "terminal materialization runtime ownership lost".to_string())?;
+        let operation = session
+            .operations
+            .claim()
+            .ok_or_else(|| "terminal materialization runtime is fenced".to_string())?;
+        (
+            session.pty.clone(),
+            session.input.clone(),
+            session.grid.clone(),
+            session.title_parser.clone(),
+            session.pump_activation.clone(),
+            operation,
+        )
+    };
+    registry
+        .materializations
+        .get_mut(&lease.panel_id)
+        .expect("validated flush remains under registry lock")
+        .flushing = true;
+    drop(registry);
+    Ok(TerminalMaterializationFlushGuard {
+        state,
+        lease,
+        session_id,
+        operations,
+        process,
+        input,
+        grid,
+        title_parser,
+        pump_activation,
+        _operation: operation,
+        finished: false,
+    })
+}
+
+fn kill_terminal_session(session: &TerminalSession) -> Result<(), String> {
+    session
+        .pty
+        .lock()
+        .map_err(|_| "terminal process mutex poisoned".to_string())?
+        .kill()
+}
+
+#[allow(dead_code)]
+fn fulfill_terminal_materialization_with<Spawn, Emit>(
+    state: &TerminalState,
+    lease: TerminalMaterializationLease,
+    size: ConPtySize,
+    spawn: Spawn,
+    mut emit_output: Emit,
+) -> Result<u32, String>
+where
+    Spawn: FnOnce(
+        u32,
+        &str,
+        &TerminalMaterializationSpec,
+        ConPtySize,
+    ) -> Result<TerminalSession, String>,
+    Emit: FnMut(u32, &[u8], &[String]) -> Result<(), String>,
+{
+    let preparation = prepare_terminal_materialization(state, &lease)?;
+    if let TerminalMaterializationPreparation::Spawn(id) = preparation {
+        let session = match spawn(id, &lease.panel_id, &lease.spec, size) {
+            Ok(session) => session,
+            Err(error) => {
+                let _ = fail_terminal_materialization_start(state, &lease);
+                return Err(error);
+            }
+        };
+        if let Err(publication) =
+            publish_terminal_materialization_runtime(state, &lease, id, session)
+        {
+            let cleanup = kill_terminal_session(&publication.session).err();
+            let _ = fail_terminal_materialization_start(state, &lease);
+            return Err(match cleanup {
+                Some(cleanup) => format!(
+                    "{}; terminal startup cleanup failed: {cleanup}",
+                    publication.message
+                ),
+                None => publication.message,
+            });
+        }
+    }
+
+    let mut flush = begin_terminal_materialization_flush(state, lease)?;
+    loop {
+        let Some(event) = flush.take_event()? else {
+            if flush.try_finish()? {
+                flush
+                    .pump_activation
+                    .advance(TerminalPumpReadiness::ConsumerReady);
+                return Ok(flush.session_id);
+            }
+            continue;
+        };
+        let applied = match event {
+            TerminalMaterializationEvent::Input(bytes) => {
+                match send_terminal_input(flush.process.clone(), flush.input.clone(), &bytes) {
+                    TerminalInputOutcome::Sent | TerminalInputOutcome::Queued => Ok(()),
+                    outcome => Err(format!(
+                        "terminal materialization input failed: {outcome:?}"
+                    )),
+                }
+            }
+            TerminalMaterializationEvent::ProcessOutput(bytes) => {
+                let titles = match flush.grid.lock() {
+                    Ok(mut grid) => {
+                        grid.advance(&bytes);
+                        drop(grid);
+                        flush
+                            .title_parser
+                            .lock()
+                            .map_err(|_| "terminal title parser mutex poisoned".to_string())
+                            .map(|mut parser| parser.consume(&bytes))
+                    }
+                    Err(_) => Err("terminal grid mutex poisoned".to_string()),
+                };
+                titles.and_then(|titles| emit_output(flush.session_id, &bytes, &titles))
+            }
+        };
+        if let Err(error) = applied {
+            let abort = flush.abort();
+            if abort.as_ref().is_ok_and(|aborted| *aborted) {
+                flush
+                    .pump_activation
+                    .advance(TerminalPumpReadiness::ConsumerReady);
+            }
+            return Err(match abort {
+                Ok(_) => error,
+                Err(abort) => format!("{error}; materialization abort failed: {abort}"),
+            });
+        }
+        if flush.try_finish()? {
+            flush
+                .pump_activation
+                .advance(TerminalPumpReadiness::ConsumerReady);
+            return Ok(flush.session_id);
+        }
+    }
 }
 
 fn terminal_registry_for_exact_cleanup(
@@ -1221,6 +1621,159 @@ fn default_shell_command(
     }
 }
 
+struct TerminalProcessComponents {
+    process: Box<dyn TerminalProcess>,
+    reader: Box<dyn Read + Send>,
+    writer: Box<dyn Write + Send>,
+    root_pid: Option<u32>,
+}
+
+fn cleanup_failed_conpty(mut pty: ConPty, error: String) -> String {
+    let kill = pty.kill().err();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let wait = loop {
+        match pty.try_wait() {
+            Ok(Some(_)) => break None,
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(None) => break Some("timed out waiting for terminal startup cleanup".to_string()),
+            Err(wait) => break Some(format!("terminal startup wait failed: {wait}")),
+        }
+    };
+    match (kill, wait) {
+        (None, None) => error,
+        (kill, wait) => {
+            let cleanup = kill
+                .into_iter()
+                .map(|kill| format!("terminal startup kill failed: {kill}"))
+                .chain(wait)
+                .collect::<Vec<_>>()
+                .join("; ");
+            format!("{error}; {cleanup}")
+        }
+    }
+}
+
+fn spawn_terminal_process_components(
+    spec: &TerminalMaterializationSpec,
+    size: ConPtySize,
+) -> Result<TerminalProcessComponents, String> {
+    let command = default_shell_command(
+        spec.working_directory.as_deref(),
+        spec.initial_command.as_deref(),
+        Some(spec.environment.clone()),
+    );
+    let pty = ConPty::spawn(&command, size).map_err(|error| error.to_string())?;
+    let reader = match pty.reader() {
+        Ok(reader) => reader,
+        Err(error) => return Err(cleanup_failed_conpty(pty, error.to_string())),
+    };
+    let mut writer = match pty.take_writer() {
+        Ok(writer) => writer,
+        Err(error) => {
+            drop(reader);
+            return Err(cleanup_failed_conpty(pty, error.to_string()));
+        }
+    };
+    if let Err(error) = write_terminal_initial_bytes(writer.as_mut(), &spec.initial_input) {
+        drop(writer);
+        drop(reader);
+        return Err(cleanup_failed_conpty(pty, error));
+    }
+    let root_pid = pty.process_id();
+    Ok(TerminalProcessComponents {
+        process: Box::new(pty),
+        reader,
+        writer,
+        root_pid,
+    })
+}
+
+fn spawn_terminal_session(
+    app: &AppHandle,
+    id: u32,
+    panel_id: Option<String>,
+    spec: &TerminalMaterializationSpec,
+    size: ConPtySize,
+) -> Result<TerminalSession, String> {
+    let TerminalProcessComponents {
+        process,
+        reader,
+        writer,
+        root_pid,
+    } = spawn_terminal_process_components(spec, size)?;
+    let process = Arc::new(Mutex::new(process));
+    let grid = Arc::new(Mutex::new(TerminalGrid::new(GridSize::new(
+        usize::from(size.cols),
+        usize::from(size.rows),
+    ))));
+    let title_parser = Arc::new(Mutex::new(TerminalTitleParser::default()));
+    let (pump_activation, pump_ready) = TerminalPumpActivation::pending();
+    let pump_app = app.clone();
+    let pump_panel_id = panel_id.clone();
+    let pump_grid = grid.clone();
+    let pump_title_parser = title_parser.clone();
+    if let Err(error) = std::thread::Builder::new()
+        .name(format!("cmux-terminal-pump-{id}"))
+        .spawn(move || {
+            if pump_ready.recv().is_ok() {
+                pump_reader(
+                    pump_app,
+                    id,
+                    pump_panel_id,
+                    pump_grid,
+                    pump_title_parser,
+                    reader,
+                );
+            }
+        })
+    {
+        let cleanup = process
+            .lock()
+            .map_err(|_| "terminal process mutex poisoned".to_string())
+            .and_then(|mut process| process.kill())
+            .err();
+        return Err(match cleanup {
+            Some(cleanup) => format!("{error}; terminal startup cleanup failed: {cleanup}"),
+            None => error.to_string(),
+        });
+    }
+    Ok(TerminalSession {
+        pty: process,
+        input: Arc::new(TerminalInputTransport::new(writer)),
+        grid,
+        title_parser,
+        operations: Arc::new(TerminalOperationGate::default()),
+        pump_activation,
+        panel_id,
+        root_pid,
+    })
+}
+
+#[allow(dead_code)]
+pub(crate) fn materialize_terminal_for_input(
+    app: &AppHandle,
+    state: &TerminalState,
+    lease: TerminalMaterializationLease,
+    cols: Option<u16>,
+    rows: Option<u16>,
+) -> Result<u32, String> {
+    let size = ConPtySize::new(cols.unwrap_or(80).max(1), rows.unwrap_or(24).max(1));
+    let output_panel_id = lease.panel_id.clone();
+    fulfill_terminal_materialization_with(
+        state,
+        lease,
+        size,
+        |id, panel_id, spec, size| {
+            spawn_terminal_session(app, id, Some(panel_id.to_string()), spec, size)
+        },
+        |id, bytes, titles| {
+            emit_terminal_output_chunk(app, id, Some(&output_panel_id), bytes, titles)
+        },
+    )
+}
+
 /// Open a new shell session on a pseudo console of `cols`x`rows` and start a
 /// dedicated thread pumping its output to the webview. Returns the session id.
 #[tauri::command]
@@ -1439,6 +1992,7 @@ fn publish_terminal_open_reservation(
     Ok(reservation.id)
 }
 
+#[cfg(test)]
 fn write_terminal_initial_input(
     writer: &mut (dyn Write + Send),
     initial_input: Option<&str>,
@@ -1446,8 +2000,18 @@ fn write_terminal_initial_input(
     let Some(input) = initial_input.filter(|input| !input.is_empty()) else {
         return Ok(());
     };
+    write_terminal_initial_bytes(writer, input.as_bytes())
+}
+
+fn write_terminal_initial_bytes(
+    writer: &mut (dyn Write + Send),
+    input: &[u8],
+) -> Result<(), String> {
+    if input.is_empty() {
+        return Ok(());
+    }
     writer
-        .write_all(input.as_bytes())
+        .write_all(input)
         .and_then(|_| writer.flush())
         .map_err(|error| error.to_string())
 }
@@ -1516,51 +2080,17 @@ fn terminal_open_with_policy(
     let id = guard.reservation().id;
     let panel_id = guard.reservation().panel_id.clone();
     let size = ConPtySize::new(cols.unwrap_or(80).max(1), rows.unwrap_or(24).max(1));
-    let command = default_shell_command(cwd, initial_command, environment);
-
-    let session = (|| -> Result<(TerminalSession, Arc<TerminalPumpActivation>), String> {
-        let pty = ConPty::spawn(&command, size).map_err(|error| error.to_string())?;
-        // Reader and writer are independent handles onto the ConPTY master.
-        let reader = pty.reader().map_err(|error| error.to_string())?;
-        let mut writer = pty.take_writer().map_err(|error| error.to_string())?;
-        write_terminal_initial_input(writer.as_mut(), initial_input)?;
-
-        let root_pid = pty.process_id();
-        let grid = Arc::new(Mutex::new(TerminalGrid::new(GridSize::new(
-            usize::from(size.cols),
-            usize::from(size.rows),
-        ))));
-        let pump_app = app.clone();
-        let pump_panel_id = panel_id.clone();
-        let pump_grid = grid.clone();
-        let (pump_activation, pump_ready) = TerminalPumpActivation::pending();
-        std::thread::Builder::new()
-            .name(format!("cmux-terminal-pump-{id}"))
-            .spawn(move || {
-                if pump_ready.recv().is_ok() {
-                    pump_reader(pump_app, id, pump_panel_id, pump_grid, reader);
-                }
-            })
-            .map_err(|error| error.to_string())?;
-
-        Ok((
-            TerminalSession {
-                pty: Arc::new(Mutex::new(Box::new(pty))),
-                input: Arc::new(TerminalInputTransport::new(writer)),
-                grid,
-                operations: Arc::new(TerminalOperationGate::default()),
-                pump_activation: pump_activation.clone(),
-                panel_id,
-                root_pid,
-            },
-            pump_activation,
-        ))
-    })();
-
-    let (session, pump_activation) = match session {
+    let spec = TerminalMaterializationSpec::new(
+        cwd.map(str::to_string),
+        initial_command.map(str::to_string),
+        initial_input.unwrap_or_default().as_bytes().to_vec(),
+        environment.unwrap_or_default(),
+    );
+    let session = match spawn_terminal_session(app, id, panel_id, &spec, size) {
         Ok(session) => session,
         Err(error) => return Err(guard.rollback(error)),
     };
+    let pump_activation = session.pump_activation.clone();
     match publish_terminal_open_reservation(state, guard.reservation(), session) {
         Ok(id) => {
             pump_activation.advance(TerminalPumpReadiness::Published);
@@ -2221,16 +2751,43 @@ pub(crate) fn scan_terminal_listening_ports(
     })
 }
 
+fn emit_terminal_output_chunk(
+    app: &AppHandle,
+    id: u32,
+    panel_id: Option<&str>,
+    bytes: &[u8],
+    titles: &[String],
+) -> Result<(), String> {
+    if let Some(panel_id) = panel_id {
+        for title in titles {
+            let state = app.state::<session::SessionState>();
+            if let Err(error) =
+                session::set_process_title_for_panel(app, state.inner(), panel_id, title)
+            {
+                eprintln!("[terminal] failed to persist process title: {error}");
+            }
+        }
+    }
+    app.emit(
+        TERMINAL_OUTPUT_EVENT,
+        TerminalOutput {
+            id,
+            data: base64_encode(bytes),
+        },
+    )
+    .map_err(|error| error.to_string())
+}
+
 /// Read the child's output until EOF, emitting each chunk to the webview.
 fn pump_reader(
     app: AppHandle,
     id: u32,
     panel_id: Option<String>,
     grid: Arc<Mutex<TerminalGrid>>,
+    title_parser: Arc<Mutex<TerminalTitleParser>>,
     mut reader: Box<dyn Read + Send>,
 ) {
     let mut buf = [0u8; 4096];
-    let mut title_parser = TerminalTitleParser::default();
     loop {
         match reader.read(&mut buf) {
             Ok(0) => break,
@@ -2238,27 +2795,13 @@ fn pump_reader(
                 if let Ok(mut grid) = grid.lock() {
                     grid.advance(&buf[..n]);
                 }
-                if let Some(panel_id) = panel_id.as_deref() {
-                    for title in title_parser.consume(&buf[..n]) {
-                        let state = app.state::<session::SessionState>();
-                        match session::set_process_title_for_panel(
-                            &app,
-                            state.inner(),
-                            panel_id,
-                            &title,
-                        ) {
-                            Ok(_) => {}
-                            Err(error) => {
-                                eprintln!("[terminal] failed to persist process title: {error}");
-                            }
-                        }
-                    }
-                }
-                let payload = TerminalOutput {
-                    id,
-                    data: base64_encode(&buf[..n]),
+                let titles = match title_parser.lock() {
+                    Ok(mut parser) => parser.consume(&buf[..n]),
+                    Err(_) => break,
                 };
-                if app.emit(TERMINAL_OUTPUT_EVENT, payload).is_err() {
+                if emit_terminal_output_chunk(&app, id, panel_id.as_deref(), &buf[..n], &titles)
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -2622,7 +3165,7 @@ mod tests {
     use std::io::{self, Read, Write};
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     use std::sync::{mpsc, Arc, Barrier, Mutex, Weak};
-    use std::time::{Duration, Instant};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     use super::{
         base64_encode, default_shell_command, descendant_pid_set, ports_for_pid_set,
@@ -2952,6 +3495,7 @@ mod tests {
             pty: process,
             input,
             grid: Arc::new(Mutex::new(TerminalGrid::new(GridSize::new(80, 24)))),
+            title_parser: Arc::new(Mutex::new(TerminalTitleParser::default())),
             operations: Arc::new(super::TerminalOperationGate::default()),
             pump_activation: super::TerminalPumpActivation::active(),
             panel_id: Some(panel_id.to_string()),
@@ -3889,7 +4433,10 @@ mod tests {
         let directory = std::env::temp_dir().join(format!(
             "cmux-conpty-materialization-{}-{}",
             std::process::id(),
-            std::thread::current().name().unwrap_or("test")
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         std::fs::create_dir_all(&directory).unwrap();
         let expected_cwd = directory.to_string_lossy().to_string();
@@ -3905,6 +4452,7 @@ mod tests {
         assert!(components.root_pid.is_some_and(|pid| pid > 0));
         let mut process = components.process;
         let mut reader = components.reader;
+        let mut writer = components.writer;
         let (output_tx, output_rx) = mpsc::channel();
         let reader_thread = std::thread::spawn(move || {
             let mut chunk = [0_u8; 4096];
@@ -3918,14 +4466,40 @@ mod tests {
         let marker = format!("CMUX-OWNED|environment-ok|{}|initial-payload", expected_cwd);
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut output = Vec::new();
+        let mut answered_cursor_request = false;
         while !String::from_utf8_lossy(&output).contains(&marker) {
+            if !answered_cursor_request && output.windows(4).any(|bytes| bytes == b"\x1b[6n") {
+                writer.write_all(b"\x1b[1;1R").unwrap();
+                writer.flush().unwrap();
+                answered_cursor_request = true;
+            }
             let remaining = deadline.saturating_duration_since(Instant::now());
-            assert!(
-                !remaining.is_zero(),
-                "ConPTY marker missing: {}",
-                String::from_utf8_lossy(&output)
-            );
-            output.extend(output_rx.recv_timeout(remaining).unwrap());
+            if remaining.is_zero() {
+                let _ = process.kill();
+                drop(writer);
+                drop(process);
+                reader_thread.join().unwrap();
+                let _ = std::fs::remove_dir(&directory);
+                panic!(
+                    "ConPTY marker missing: {}",
+                    String::from_utf8_lossy(&output)
+                );
+            }
+            match output_rx.recv_timeout(remaining.min(Duration::from_millis(250))) {
+                Ok(chunk) => output.extend(chunk),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    let _ = process.kill();
+                    drop(writer);
+                    drop(process);
+                    reader_thread.join().unwrap();
+                    let _ = std::fs::remove_dir(&directory);
+                    panic!(
+                        "ConPTY reader closed before marker: {}",
+                        String::from_utf8_lossy(&output)
+                    );
+                }
+            }
         }
         process.kill().unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -3939,6 +4513,8 @@ mod tests {
             );
             std::thread::yield_now();
         }
+        drop(writer);
+        drop(process);
         reader_thread.join().unwrap();
         std::fs::remove_dir(&directory).unwrap();
     }
