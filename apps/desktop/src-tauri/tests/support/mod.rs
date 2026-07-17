@@ -61,7 +61,11 @@ impl PipeRpc {
             .map_err(|error| format!("non-UTF-8 response to {method}: {error}"))?;
         let envelope: Value = serde_json::from_str(&raw)
             .map_err(|error| format!("invalid response to {method}: {error}; raw={raw}"))?;
-        if envelope.get("id") != Some(&json!(id)) {
+        let canonical_encode_failure = json!({
+            "ok": false,
+            "error": {"code": "encode_error", "message": "Failed to encode JSON"},
+        });
+        if envelope.get("id") != Some(&json!(id)) && envelope != canonical_encode_failure {
             return Err(format!(
                 "response id mismatch for {method}: expected {id}; raw={raw}"
             ));
@@ -78,15 +82,20 @@ impl PipeEventStream {
     async fn subscribe(
         pipe_path: &str,
         names: &[&str],
+        after_seq: Option<u64>,
         wait: Duration,
     ) -> Result<(Self, Value), String> {
         let mut pipe = connect_pipe(pipe_path, wait)
             .await
             .map_err(|error| format!("connect event stream: {error}"))?;
+        let mut params = json!({"names": names, "no_heartbeat": true});
+        if let Some(after_seq) = after_seq {
+            params["after_seq"] = json!(after_seq);
+        }
         let request = json!({
             "id": 1,
             "method": "events.stream",
-            "params": {"names": names, "no_heartbeat": true},
+            "params": params,
         })
         .to_string();
         timeout(RPC_TIMEOUT, write_frame(&mut pipe, &request))
@@ -193,9 +202,11 @@ impl DesktopFixture {
     pub async fn subscribe(
         &mut self,
         names: &[&str],
+        after_seq: u64,
         wait: Duration,
     ) -> Result<(PipeEventStream, Value), String> {
-        let subscribed = PipeEventStream::subscribe(&self.pipe_path, names, wait).await;
+        let subscribed =
+            PipeEventStream::subscribe(&self.pipe_path, names, Some(after_seq), wait).await;
         if let Ok(Some(status)) = self.child.try_wait() {
             return Err(format!(
                 "owned cmux-desktop process {} exited while subscribing: {status}",

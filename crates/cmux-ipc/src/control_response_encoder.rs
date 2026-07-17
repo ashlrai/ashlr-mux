@@ -143,4 +143,19 @@ mod tests {
         assert!(encoded.contains("\\n"));
         assert!(encoded.contains("\\r"));
     }
+
+    #[test]
+    fn nonfinite_error_data_collapses_to_canonical_encode_failure() {
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                ControlResponseEncoder.error(
+                    Some(JsonValue::Int(7)),
+                    "invalid_params",
+                    "font_size must be a positive number of points",
+                    Some(JsonValue::Double(value)),
+                ),
+                ControlResponseEncoder::ENCODE_FAILURE_RESPONSE
+            );
+        }
+    }
 }

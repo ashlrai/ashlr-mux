@@ -83,24 +83,53 @@ fn set_font_freezes_exact_validation_classes() {
 }
 
 #[test]
-fn delivered_reflects_pre_emit_matching_subscription_presence() {
+fn delivered_requires_a_live_matching_subscription() {
     let event = json!({"name": "terminal.set_font", "category": "terminal"});
-    let (matching_sender, _matching_receiver) = cmux_ipc::stream_mpsc::unbounded_channel();
-    let (other_sender, _other_receiver) = cmux_ipc::stream_mpsc::unbounded_channel();
-    let subscribers = vec![
+    let (matching_sender, mut matching_receiver) = cmux_ipc::stream_mpsc::unbounded_channel();
+    let (closed_sender, closed_receiver) = cmux_ipc::stream_mpsc::unbounded_channel();
+    let (unrelated_sender, _unrelated_receiver) = cmux_ipc::stream_mpsc::unbounded_channel();
+    drop(closed_receiver);
+    let mut subscribers = vec![
+        EventSubscriber {
+            sender: closed_sender,
+            names: vec!["terminal.set_font".into()],
+            categories: Vec::new(),
+        },
         EventSubscriber {
             sender: matching_sender,
             names: vec!["terminal.set_font".into()],
             categories: Vec::new(),
         },
         EventSubscriber {
-            sender: other_sender,
+            sender: unrelated_sender,
             names: vec!["workspace.created".into()],
-            categories: vec!["workspace".into()],
+            categories: Vec::new(),
         },
     ];
-    assert!(event_subscribers_match(&subscribers, &event));
+    assert!(fan_out_event_to_subscribers(
+        &mut subscribers,
+        &event,
+        "set-font-frame"
+    ));
+    assert_eq!(
+        matching_receiver.try_recv().ok().as_deref(),
+        Some("set-font-frame")
+    );
+    assert_eq!(
+        subscribers.len(),
+        2,
+        "closed matching sender must be removed"
+    );
 
-    let unrelated = json!({"name": "terminal.updated", "category": "terminal"});
-    assert!(!event_subscribers_match(&subscribers, &unrelated));
+    drop(matching_receiver);
+    assert!(!fan_out_event_to_subscribers(
+        &mut subscribers,
+        &event,
+        "closed-frame"
+    ));
+    assert_eq!(
+        subscribers.len(),
+        1,
+        "unrelated live sender must be retained"
+    );
 }

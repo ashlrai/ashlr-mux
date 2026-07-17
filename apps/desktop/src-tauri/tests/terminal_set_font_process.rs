@@ -24,6 +24,11 @@ fn production_pipe_set_font_is_event_only_and_reports_subscribers() {
 async fn run_process_proof() -> Result<(), String> {
     let desktop_exe = Path::new(env!("CARGO_BIN_EXE_cmux-desktop"));
     let mut desktop = DesktopFixture::launch(desktop_exe, &process_proof_log_dir())?;
+    let event_log = desktop
+        .profile_path()
+        .join("profile")
+        .join(".cmuxterm")
+        .join("events.jsonl");
     let mut rpc = desktop.connect(Duration::from_secs(20)).await?;
     if rpc.call("system.ping", json!({})).await? != json!("pong") {
         return Err("owned desktop returned an unexpected ping".into());
@@ -58,12 +63,22 @@ async fn run_process_proof() -> Result<(), String> {
     if rpc.call("workspace.current", json!({})).await? != session_before {
         return Err("set-font mutated session or focus without a subscriber".into());
     }
+    if std::fs::read_to_string(&event_log)
+        .unwrap_or_default()
+        .contains("terminal.set_font")
+    {
+        return Err(format!(
+            "no-subscriber set-font was durably logged: {}",
+            event_log.display()
+        ));
+    }
 
     let (mut events, ack) = desktop
-        .subscribe(&["terminal.set_font"], Duration::from_secs(5))
+        .subscribe(&["terminal.set_font"], 0, Duration::from_secs(5))
         .await?;
     if ack.get("type").and_then(Value::as_str) != Some("ack")
         || ack.pointer("/filters/names") != Some(&json!(["terminal.set_font"]))
+        || ack.get("replay_count").and_then(Value::as_u64) != Some(0)
         || ack.get("heartbeat").is_some()
     {
         return Err(format!("events.stream acknowledgement drifted: {ack}"));
@@ -129,11 +144,43 @@ async fn run_process_proof() -> Result<(), String> {
             return Err(format!("set-font validation drifted: {error}"));
         }
     }
+    let encode_failure = json!({
+        "ok": false,
+        "error": {"code": "encode_error", "message": "Failed to encode JSON"},
+    });
+    for font_size in ["NaN", "Infinity"] {
+        let error = rpc
+            .call_error("mobile.terminal.set_font", json!({"font_size": font_size}))
+            .await?;
+        if error != encode_failure {
+            return Err(format!(
+                "nonfinite {font_size} wire response drifted: {error}"
+            ));
+        }
+    }
     if rpc.call("workspace.current", json!({})).await? != session_before {
         return Err("set-font mutated session or focus".into());
     }
 
     drop(events);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let after_disconnect = rpc
+        .call("mobile.terminal.set_font", json!({"font_size": 15}))
+        .await?;
+    if after_disconnect != json!({"ok": true, "font_size": 15.0, "delivered": false}) {
+        return Err(format!(
+            "closed set-font subscriber remained live: {after_disconnect}"
+        ));
+    }
+    if std::fs::read_to_string(&event_log)
+        .unwrap_or_default()
+        .contains("terminal.set_font")
+    {
+        return Err(format!(
+            "set-font was durably logged: {}",
+            event_log.display()
+        ));
+    }
     drop(rpc);
     desktop.stop()?;
     Ok(())
