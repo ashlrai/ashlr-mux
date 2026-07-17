@@ -74,10 +74,14 @@ impl PipeRpc {
     }
 }
 
+// Each integration-test crate compiles this shared module independently;
+// only event-stream process proofs construct this helper.
+#[allow(dead_code)]
 pub struct PipeEventStream {
     pipe: NamedPipeClient,
 }
 
+#[allow(dead_code)]
 impl PipeEventStream {
     async fn subscribe(
         pipe_path: &str,
@@ -111,6 +115,7 @@ impl PipeEventStream {
     }
 }
 
+#[allow(dead_code)]
 async fn read_json_frame(pipe: &mut NamedPipeClient, context: &str) -> Result<Value, String> {
     let raw = timeout(RPC_TIMEOUT, read_frame(pipe, MAX_RPC_FRAME_BYTES))
         .await
@@ -199,6 +204,9 @@ impl DesktopFixture {
         })
     }
 
+    // Each integration-test crate compiles this shared module independently;
+    // only event-stream process proofs subscribe through the fixture.
+    #[allow(dead_code)]
     pub async fn subscribe(
         &mut self,
         names: &[&str],
