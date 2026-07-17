@@ -162,6 +162,13 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--commit", default=DEFAULT_COMMIT)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--expected-release", type=int, default=EXPECTED_RELEASE)
+    parser.add_argument("--expected-debug", type=int, default=EXPECTED_DEBUG)
+    parser.add_argument(
+        "--allow-count-drift",
+        action="store_true",
+        help="write a catalog when upstream method counts changed",
+    )
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
 
@@ -182,10 +189,14 @@ def main() -> int:
     release_names = [name for name, _ in release]
     debug_names = [name for name, _ in debug]
     errors: list[str] = []
-    if len(release_names) != EXPECTED_RELEASE:
-        errors.append(f"release count: expected {EXPECTED_RELEASE}, got {len(release_names)}")
-    if len(debug_names) != EXPECTED_DEBUG:
-        errors.append(f"debug count: expected {EXPECTED_DEBUG}, got {len(debug_names)}")
+    if not args.allow_count_drift and len(release_names) != args.expected_release:
+        errors.append(
+            f"release count: expected {args.expected_release}, got {len(release_names)}"
+        )
+    if not args.allow_count_drift and len(debug_names) != args.expected_debug:
+        errors.append(
+            f"debug count: expected {args.expected_debug}, got {len(debug_names)}"
+        )
     if len(set(release_names)) != len(release_names):
         errors.append("release capability array contains duplicate methods")
     if len(set(debug_names)) != len(debug_names):
@@ -308,8 +319,8 @@ def main() -> int:
             "test_only": 0,
             "all_release_debug_build": len(release_names) + len(debug_names),
         },
-        "discrepancy": None if len(release_names) == EXPECTED_RELEASE else {
-            "stated_release_count": EXPECTED_RELEASE,
+        "discrepancy": None if len(release_names) == args.expected_release else {
+            "stated_release_count": args.expected_release,
             "source_release_count": len(release_names),
         },
         "methods": entries,

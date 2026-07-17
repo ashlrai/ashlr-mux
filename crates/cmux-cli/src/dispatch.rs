@@ -8,7 +8,8 @@
 //! unit-testable; `main.rs` is the thin executor that performs the I/O each
 //! [`DispatchPlan`] describes.
 //!
-//! ## Port scope (deliberate, see also `DECISIONS.md`)
+//! ## Port scope (deliberate, see also
+//! `docs/archive/windows-port-legacy/DECISIONS.md`)
 //!
 //! Actions with a complete local or v2-control contract are executed today:
 //! `version`, the bare/unknown/subcommand help renders, raw `rpc`, and the

@@ -16,7 +16,7 @@
 // so they are re-implemented here in pure TS (the ported Rust fns are the oracle
 // for parity, not a runtime dependency).
 //
-// D4 CAVEAT (BACKLOG.md:99): `hasVisibleResultsForScope` /
+// D4 CAVEAT (docs/archive/windows-port-legacy/BACKLOG.md:99): `hasVisibleResultsForScope` /
 // `visibleResultsScopeMatches` / `resolvedResultsAreEmpty` must be fed from the
 // D4 host's authoritative "results currently shown" tracker — NEVER inferred
 // from `paletteSelection.count`, which drops to 0 between an async query change

@@ -9,11 +9,9 @@ references.  None of those claims alone is promoted to behavioral verification.
 from __future__ import annotations
 
 import argparse
-import io
 import json
 import re
 import subprocess
-import tarfile
 import tempfile
 from pathlib import Path
 from typing import Iterable
@@ -25,6 +23,12 @@ FORWARD = Path("crates/cmux-cli/src/command_forward.rs")
 DISPATCH = Path("crates/cmux-cli/src/dispatch.rs")
 DEFAULT_OUTPUT = Path("docs/parity/source/windows_evidence.json")
 PINNED_WINDOWS_COMMIT = "73dacea41d6a38f75db36d696825aef7547838ce"
+SOURCE_ROOTS = (
+    "apps/desktop/src-tauri/src",
+    "apps/desktop/web/src",
+    "crates/cmux-cli",
+)
+SOURCE_SUFFIXES = {".rs", ".ts", ".tsx"}
 
 
 def line_number(text: str, offset: int) -> int:
@@ -137,6 +141,32 @@ def function_body(text: str, function_name: str) -> tuple[int, int]:
         raise ValueError(f"function not found: {function_name}")
     opening = masked.find("{", match.end())
     return opening + 1, matching_brace(masked, opening)
+
+
+def production_function_source(
+    root: Path, function_name: str
+) -> tuple[Path, str, tuple[int, int]]:
+    candidates = [CONTROL]
+    control_modules = root / CONTROL.parent / "control_socket"
+    if control_modules.exists():
+        candidates.extend(
+            path.relative_to(root)
+            for path in sorted(control_modules.glob("*.rs"))
+            if path.name != "unit_tests.rs"
+        )
+    matches = []
+    for relative in candidates:
+        text = (root / relative).read_text(encoding="utf-8")
+        try:
+            body = function_body(text, function_name)
+        except ValueError:
+            continue
+        matches.append((relative, text, body))
+    if len(matches) != 1:
+        raise ValueError(
+            f"expected one production definition of {function_name}, found {len(matches)}"
+        )
+    return matches[0]
 
 
 def named_array(text: str, name: str) -> tuple[list[tuple[str, int]], tuple[int, int]]:
@@ -421,10 +451,13 @@ def build(root: Path) -> dict:
     dispatch_text = (root / DISPATCH).read_text(encoding="utf-8")
     advertised_values, _ = named_array(control_text, "CONTROL_SOCKET_METHODS")
     routes, guarded = extract_routes(control_text)
-    predicate_start, predicate_end = function_body(control_text, "is_unported_browser_automation_method")
-    predicate_body = control_text[predicate_start:predicate_end].strip()
+    predicate_path, predicate_text, predicate_body_range = production_function_source(
+        root, "is_unported_browser_automation_method"
+    )
+    predicate_start, predicate_end = predicate_body_range
+    predicate_body = predicate_text[predicate_start:predicate_end].strip()
     for route in guarded:
-        route["predicate_source"] = loc(CONTROL, control_text, predicate_start)
+        route["predicate_source"] = loc(predicate_path, predicate_text, predicate_start)
         route["predicate_body"] = predicate_body
         route["currently_active"] = predicate_body != "false"
         route["matched_methods"] = [] if predicate_body == "false" else None
@@ -519,7 +552,7 @@ def build(root: Path) -> dict:
     direct_unsupported = sorted(row["method"] for row in method_rows if row["explicit_not_supported"])
     return {
         "schema_version": 1,
-        "generated_from": {"repository_commit": PINNED_WINDOWS_COMMIT, "source_mode": "git archive of pinned commit (not ambient worktree)", "platform": "windows-tauri", "extractor": "scripts/parity/extract_windows_evidence.py"},
+        "generated_from": {"repository_commit": PINNED_WINDOWS_COMMIT, "source_mode": "git cat-file source snapshot of pinned commit (not ambient worktree)", "platform": "windows-tauri", "extractor": "scripts/parity/extract_windows_evidence.py"},
         "semantics": {
             "warning": "This catalog is source evidence only. Advertised, routed, compiled, or test-referenced does not mean canonically verified.",
             "method_join_key": "control_socket_methods[].method",
@@ -580,33 +613,66 @@ def validate(data: dict) -> list[str]:
     return errors
 
 
+def materialize_commit_sources(repository_root: Path, commit: str, destination: Path) -> None:
+    """Materialize only source blobs consumed by this extractor."""
+    listing = subprocess.check_output(
+        ["git", "ls-tree", "-r", "--name-only", "-z", commit, "--", *SOURCE_ROOTS],
+        cwd=repository_root,
+    )
+    paths = [
+        entry.decode("utf-8")
+        for entry in listing.split(b"\0")
+        if entry and Path(entry.decode("utf-8")).suffix in SOURCE_SUFFIXES
+    ]
+    requests = b"".join(f"{commit}:{path}\n".encode("utf-8") for path in paths)
+    batch = subprocess.check_output(
+        ["git", "cat-file", "--batch"],
+        cwd=repository_root,
+        input=requests,
+    )
+    cursor = 0
+    for path in paths:
+        header_end = batch.find(b"\n", cursor)
+        if header_end < 0:
+            raise RuntimeError(f"missing git cat-file header for {path}")
+        header = batch[cursor:header_end]
+        if header.endswith(b" missing"):
+            raise RuntimeError(f"missing source blob at {commit}:{path}")
+        size = int(header.rsplit(b" ", 1)[1])
+        content_start = header_end + 1
+        content_end = content_start + size
+        relative = Path(path)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise RuntimeError(f"unsafe source path in commit: {path}")
+        output = destination / relative
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(batch[content_start:content_end])
+        cursor = content_end + 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--commit", default=PINNED_WINDOWS_COMMIT)
     parser.add_argument("--check", action="store_true", help="validate and require generated output to match disk")
     args = parser.parse_args()
     repository_root = args.root.resolve()
-    try:
-        archive = subprocess.check_output(
-            [
-                "git", "archive", "--format=tar", PINNED_WINDOWS_COMMIT, "--",
-                "apps/desktop/src-tauri/src", "apps/desktop/web/src", "crates/cmux-cli",
-            ],
-            cwd=repository_root,
-        )
-    except subprocess.CalledProcessError:
-        print(f"error: pinned Windows commit is unavailable: {PINNED_WINDOWS_COMMIT}")
-        return 1
+    commit = subprocess.check_output(
+        ["git", "rev-parse", f"{args.commit}^{{commit}}"],
+        cwd=repository_root,
+        text=True,
+        encoding="utf-8",
+    ).strip()
     with tempfile.TemporaryDirectory(prefix="cmux-windows-evidence-") as temporary:
         snapshot_root = Path(temporary)
-        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
-            members = tar.getmembers()
-            if any(member.name.startswith(("/", "\\")) or ".." in Path(member.name).parts for member in members):
-                print("error: unsafe path in git archive")
-                return 1
-            tar.extractall(snapshot_root, members=members)
+        try:
+            materialize_commit_sources(repository_root, commit, snapshot_root)
+        except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+            print(f"error: Windows commit is unavailable: {commit}: {error}")
+            return 1
         data = build(snapshot_root)
+    data["generated_from"]["repository_commit"] = commit
     errors = validate(data)
     rendered = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
     output = args.output if args.output.is_absolute() else repository_root / args.output

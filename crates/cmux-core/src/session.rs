@@ -1166,7 +1166,8 @@ pub fn encode_session(snapshot: &AppSessionSnapshot) -> Result<Vec<u8>, serde_js
 // `{type, pane|split}` adjacently-tagged-with-variant-named-content wire shape),
 // which ts-rs cannot express via derive. The test below writes that one type's
 // `.ts` by hand so the shape stays byte-exact with the Rust serializer, and emits
-// a barrel `index.ts` re-exporting everything. See `REPORT_WS1.md`.
+// a barrel `index.ts` re-exporting everything. See
+// `docs/archive/windows-port-legacy/REPORT_WS1.md`.
 #[cfg(all(test, feature = "ts"))]
 mod ts_export {
     use super::*;

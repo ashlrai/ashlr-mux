@@ -1,0 +1,66 @@
+{
+  "canonical": {
+    "catalog_rows_added_since_baseline": [
+      "cli:todo",
+      "v2:agent.resolve_delivery_target",
+      "v2:debug.pro_welcome_checklist.show",
+      "v2:debug.workspace_todo.checklist_add_field",
+      "v2:remote.tmux.pane_surfaces",
+      "v2:remote.tmux.sizing_settled",
+      "v2:remote.tmux.test_perturb_divider"
+    ],
+    "catalog_rows_removed_since_baseline": [],
+    "commit": "c9f2d8c4382e29db89a030d80d02d8174ef7f2ac",
+    "commit_date": "2026-07-17T13:40:33-07:00",
+    "commit_subject": "Prevent detached replacements from displacing rearmed Dock portal hosts (#8310)",
+    "commits_ahead_of_tracked_baseline": 333,
+    "counts": {
+      "debug_only_v2_methods": 46,
+      "hidden_or_internal_cli_commands": 16,
+      "public_cli_commands": 159,
+      "release_v2_methods": 263
+    },
+    "tracked_acceptance_baseline": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452"
+  },
+  "matrix_rows": {
+    "by_kind": {
+      "cli_command": 159,
+      "cli_contract": 16,
+      "product_behavior": 19,
+      "v2_method": 309
+    },
+    "by_status": {
+      "implemented_unverified": 277,
+      "missing": 226
+    },
+    "strict_verified": 0,
+    "total": 503,
+    "warning": "Rows mix CLI commands, socket methods, debug endpoints, and broad product umbrellas. They are neither deduplicated user capabilities nor effort-weighted."
+  },
+  "schema_version": 1,
+  "user_capability_completion": {
+    "reason": "The current catalog does not yet deduplicate entry points into observable user capabilities with acceptance evidence.",
+    "status": "not_measured"
+  },
+  "windows": {
+    "commit": "758e80606a0ab1e8e2116844f5cf5993beefb78e",
+    "commit_date": "2026-07-17T16:56:18-04:00",
+    "commit_subject": "refactor(windows): split oversized parity modules",
+    "commits_ahead_of_tracked_evidence": 68,
+    "source_evidence": {
+      "advertised_and_routed_count": 267,
+      "advertised_method_count": 270,
+      "advertised_only_count": 3,
+      "cli_any_control_mapping_count": 121,
+      "cli_concrete_help_count": 121,
+      "cli_direct_control_mapped_count": 110,
+      "cli_explicit_socket_not_ported_count": 53,
+      "explicit_not_supported_method_count": 12,
+      "guarded_not_supported_path_count": 1,
+      "routed_method_count": 308,
+      "routed_not_advertised_count": 41,
+      "top_level_cli_count": 193
+    },
+    "tracked_evidence_commit": "73dacea41d6a38f75db36d696825aef7547838ce"
+  }
+}
