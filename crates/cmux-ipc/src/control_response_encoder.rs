@@ -25,6 +25,9 @@ impl ControlResponseEncoder {
         message: &str,
         data: Option<JsonValue>,
     ) -> String {
+        if data.as_ref().is_some_and(json_value_has_nonfinite) {
+            return Self::ENCODE_FAILURE_RESPONSE.to_owned();
+        }
         let mut error = serde_json::Map::from_iter([
             (
                 "code".to_owned(),
@@ -105,6 +108,14 @@ impl ControlResponseEncoder {
             Ok(serialized) => serialized.replace('\n', "\\n").replace('\r', "\\r"),
             Err(_) => Self::ENCODE_FAILURE_RESPONSE.to_owned(),
         }
+    }
+}
+
+fn json_value_has_nonfinite(value: &JsonValue) -> bool {
+    match value {
+        JsonValue::Double(value) => !value.is_finite(),
+        JsonValue::Array(values) => values.iter().any(json_value_has_nonfinite),
+        _ => false,
     }
 }
 

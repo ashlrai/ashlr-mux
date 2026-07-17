@@ -6401,32 +6401,8 @@ fn record_event(
     surface_id: Option<String>,
     payload: Value,
 ) {
-    let _ = record_event_with_delivery(
-        app,
-        name,
-        category,
-        source,
-        window_id,
-        workspace_id,
-        pane_id,
-        surface_id,
-        payload,
-    );
-}
-
-fn record_event_with_delivery(
-    app: &AppHandle,
-    name: &str,
-    category: &str,
-    source: &str,
-    window_id: Option<String>,
-    workspace_id: Option<String>,
-    pane_id: Option<String>,
-    surface_id: Option<String>,
-    payload: Value,
-) -> bool {
     let Some(state) = app.try_state::<ControlEventState>() else {
-        return false;
+        return;
     };
     let mut guard = state
         .inner
@@ -6457,9 +6433,8 @@ fn record_event_with_delivery(
     while guard.events.len() > EVENT_REPLAY_LIMIT {
         guard.events.pop_front();
     }
-    let event = guard.events.back().cloned().unwrap_or(Value::Null);
-    let delivered = event_subscribers_match(&guard.subscribers, &event);
     if let Some(frame) = frame {
+        let event = guard.events.back().cloned().unwrap_or(Value::Null);
         fan_out_event_to_subscribers(&mut guard.subscribers, &event, &frame);
     }
     let event = guard.events.back().cloned();
@@ -6468,7 +6443,45 @@ fn record_event_with_delivery(
         let _ = app.emit(CONTROL_EVENTS_CHANGED_EVENT, event.clone());
         append_event_to_disk(&event);
     }
-    delivered
+}
+
+fn emit_transient_control_event(
+    app: &AppHandle,
+    name: &str,
+    category: &str,
+    source: &str,
+    window_id: Option<String>,
+    workspace_id: Option<String>,
+    pane_id: Option<String>,
+    surface_id: Option<String>,
+    payload: Value,
+) -> bool {
+    let Some(state) = app.try_state::<ControlEventState>() else {
+        return false;
+    };
+    let mut guard = state
+        .inner
+        .lock()
+        .expect("control event log mutex poisoned");
+    let event = json!({
+        "type": "event",
+        "protocol": EVENT_STREAM_PROTOCOL,
+        "version": EVENT_STREAM_VERSION,
+        "boot_id": guard.boot_id.clone(),
+        "name": name,
+        "category": category,
+        "source": source,
+        "occurred_at": event_timestamp(),
+        "workspace_id": workspace_id,
+        "surface_id": surface_id,
+        "pane_id": pane_id,
+        "window_id": window_id,
+        "payload": payload,
+    });
+    let Ok(frame) = serde_json::to_string(&event) else {
+        return false;
+    };
+    fan_out_event_to_subscribers(&mut guard.subscribers, &event, &frame)
 }
 
 pub(crate) fn publish_notification_removal_effects(
@@ -6576,19 +6589,17 @@ fn fan_out_event_to_subscribers(
     subscribers: &mut Vec<EventSubscriber>,
     event: &Value,
     frame: &str,
-) {
+) -> bool {
+    let mut delivered = false;
     subscribers.retain(|subscriber| {
         if !event_matches_filters(event, &subscriber.names, &subscriber.categories) {
             return true;
         }
-        subscriber.sender.send(frame.to_string()).is_ok()
+        let sent = subscriber.sender.send(frame.to_string()).is_ok();
+        delivered |= sent;
+        sent
     });
-}
-
-fn event_subscribers_match(subscribers: &[EventSubscriber], event: &Value) -> bool {
-    subscribers
-        .iter()
-        .any(|subscriber| event_matches_filters(event, &subscriber.names, &subscriber.categories))
+    delivered
 }
 
 fn event_log_home_directory() -> Option<PathBuf> {
@@ -10554,9 +10565,13 @@ fn terminal_set_font_control(
     let plan = match plan_terminal_set_font_request(params) {
         Ok(plan) => plan,
         Err(error) => {
-            let data = error
-                .font_size
-                .and_then(|font_size| JsonValue::try_from(json!({"font_size": font_size})).ok());
+            let data = error.font_size.and_then(|font_size| {
+                if font_size.is_finite() {
+                    JsonValue::try_from(json!({"font_size": font_size})).ok()
+                } else {
+                    Some(JsonValue::Double(font_size))
+                }
+            });
             return ControlCallResult::Err {
                 code: error.code.into(),
                 message: error.message.into(),
@@ -10571,7 +10586,7 @@ fn terminal_set_font_control(
     if let Some(workspace_id) = plan.workspace_id.as_deref() {
         payload["workspace_id"] = json!(workspace_id);
     }
-    let delivered = record_event_with_delivery(
+    let delivered = emit_transient_control_event(
         app,
         "terminal.set_font",
         "terminal",

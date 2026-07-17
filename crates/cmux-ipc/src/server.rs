@@ -147,7 +147,7 @@ where
                         None => match parser.request(line) {
                             Ok(request) => {
                                 if let Some(stream) = handler.handle_stream(request.clone()) {
-                                    write_stream(&mut writer, stream).await?;
+                                    write_stream(&mut reader, &mut writer, stream).await?;
                                     return Ok(());
                                 }
                                 let id = request.id.clone();
@@ -165,8 +165,13 @@ where
     Ok(())
 }
 
-async fn write_stream<W>(writer: &mut W, stream: ControlStream) -> std::io::Result<()>
+async fn write_stream<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    stream: ControlStream,
+) -> std::io::Result<()>
 where
+    R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
     match stream {
@@ -182,8 +187,19 @@ where
             for frame in initial_frames {
                 write_frame(writer, &frame).await?;
             }
-            while let Some(frame) = receiver.recv().await {
-                write_frame(writer, &frame).await?;
+            let mut peer_probe = [0u8; 1];
+            loop {
+                tokio::select! {
+                    biased;
+                    frame = receiver.recv() => {
+                        let Some(frame) = frame else { break };
+                        write_frame(writer, &frame).await?;
+                    }
+                    read = reader.read(&mut peer_probe) => {
+                        let _ = read?;
+                        break;
+                    }
+                }
             }
         }
     }
@@ -449,11 +465,25 @@ mod tests {
 
     #[tokio::test]
     async fn live_stream_handler_keeps_connection_for_receiver_frames() {
-        let responses = round_trip(
-            LiveStreamHandler,
-            &[r#"{"id":1,"method":"events.stream","params":{}}"#],
+        let (mut client, server) = duplex(64 * 1024);
+        let (server_reader, server_writer) = tokio::io::split(server);
+        let server_task = tokio::spawn(async move {
+            serve_connection(server_reader, server_writer, LiveStreamHandler).await
+        });
+        write_frame(
+            &mut client,
+            r#"{"id":1,"method":"events.stream","params":{}}"#,
         )
-        .await;
+        .await
+        .expect("write subscription");
+        let mut responses = Vec::new();
+        for _ in 0..2 {
+            let frame = read_frame(&mut client, MAX_RPC_FRAME_BYTES)
+                .await
+                .expect("read")
+                .expect("stream frame");
+            responses.push(String::from_utf8(frame).expect("utf8"));
+        }
         assert_eq!(
             responses,
             vec![
@@ -461,6 +491,8 @@ mod tests {
                 r#"{"type":"event","seq":1}"#.to_string()
             ]
         );
+        drop(client);
+        server_task.await.expect("join").expect("serve");
     }
 
     #[tokio::test]
