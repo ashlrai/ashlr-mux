@@ -1,0 +1,43 @@
+# Windows-port source file length budget.
+# Format: max_lines<TAB>relative path
+# New files may not exceed 1500 lines. Reduce entries as files shrink.
+8232	crates/cmux-core/src/session_ops.rs
+7026	crates/cmux-cli/src/command_forward.rs
+6272	apps/desktop/src-tauri/src/session.rs
+6097	apps/desktop/src-tauri/src/terminal.rs
+5975	apps/desktop/web/src/components/CustomSidebarSurface.test.tsx
+5419	apps/desktop/web/src/components/CustomSidebarSurface.tsx
+5417	apps/desktop/web/src/components/customSidebarSwiftParser.ts
+4638	apps/desktop/src-tauri/src/control_socket/pane_surface_lifecycle.rs
+4386	apps/desktop/src-tauri/src/control_socket.rs
+4088	apps/desktop/src-tauri/src/control_socket/unit_tests.rs
+4059	crates/cmux-cli/src/main.rs
+3997	crates/cmux-cli/src/hooks_installer.rs
+3922	crates/cmux-config/src/lib.rs
+3708	apps/desktop/src-tauri/src/control_socket/workspace_control.rs
+3522	apps/desktop/src-tauri/src/control_socket/pane_surface_control.rs
+3412	apps/desktop/src-tauri/src/session/unit_tests.rs
+3297	apps/desktop/src-tauri/src/browser.rs
+3183	apps/desktop/src-tauri/src/control_socket/browser_control.rs
+3056	apps/desktop/web/src/components/SettingsPane.tsx
+3021	apps/desktop/src-tauri/src/control_socket/payloads.rs
+2842	apps/desktop/src-tauri/src/remote_proxy.rs
+2499	apps/desktop/src-tauri/src/control_socket/tests/surface_action_adversarial_red.rs
+2465	apps/desktop/src-tauri/src/control_socket/tests/pane_surface_lifecycle_red.rs
+2437	apps/desktop/src-tauri/src/agent_session.rs
+2282	crates/cmux-core/src/shortcuts.rs
+2103	apps/desktop/src-tauri/src/control_socket/tests/differential_remediation_red.rs
+2087	apps/desktop/src-tauri/src/session/restore_identity_graph_red.rs
+1973	crates/cmux-cli/src/sessions.rs
+1784	crates/cmux-core/src/surface_lifecycle.rs
+1777	apps/desktop/web/src/palette/useCommandPalette.ts
+1775	apps/desktop/web/src/palette/commandCatalog.ts
+1732	apps/desktop/web/src/components/Workspace.tsx
+1728	apps/desktop/src-tauri/src/dock.rs
+1727	apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs
+1697	crates/cmux-core/src/session.rs
+1696	crates/cmux-core/src/notifications.rs
+1560	apps/desktop/src-tauri/src/control_socket/event_stream.rs
+1555	crates/cmux-cli/src/dispatch.rs
+1547	crates/cmux-cli/src/feed_hook.rs
+1530	apps/desktop/web/src/components/SettingsPane.test.tsx

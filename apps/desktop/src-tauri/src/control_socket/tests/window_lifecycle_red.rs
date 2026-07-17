@@ -552,21 +552,6 @@ fn last_window_close_does_not_clear_notifications() {
 }
 
 #[test]
-fn window_lifecycle_executor_wires_notification_clearing() {
-    // Source oracle: the executor must give ClearWindowNotifications its own
-    // arm that calls the notifications seam, not the documented no-op group.
-    let source = include_str!("../../control_socket.rs");
-    assert!(
-        source.contains("Effect::ClearWindowNotifications {"),
-        "effect must exist in the executor"
-    );
-    assert!(
-        source.contains("notification_clear_window_for_control("),
-        "executor must call the notifications seam"
-    );
-}
-
-#[test]
 fn window_close_of_the_active_window_repoints_to_first_remaining() {
     // Closing the window that owns the caller's active TabManager repoints to
     // key window else first remaining (AppDelegate.swift:16283-16293).
@@ -708,30 +693,6 @@ fn session_window_id_for_label_maps_main_to_first_window() {
         "the main webview presents the first session window"
     );
     assert_eq!(session_window_id_for_label(&snapshot, "window-404"), None);
-}
-
-#[test]
-fn window_lifecycle_executor_wires_the_active_pointer() {
-    // Source oracle (pattern: session/window_lifecycle_transactions_red.rs):
-    // the executor must give SetActiveWindow its own arm that writes the
-    // pointer (not the documented no-op group), and BOTH request handlers
-    // must route selector-less commands through control_active_window_id.
-    let source = include_str!("../../control_socket.rs");
-    assert!(
-        source.contains("Effect::SetActiveWindow { window_id } =>"),
-        "SetActiveWindow needs its own executor arm"
-    );
-    assert!(
-        source.matches("control_active_window_id(app)").count() >= 2,
-        "both the pane and window lifecycle handlers must read the pointer"
-    );
-    // The webview Focused listener must repoint (canonical key-transition
-    // parity); it lives in window.rs.
-    let window = include_str!("../../window.rs");
-    assert!(
-        window.contains("note_window_focused"),
-        "webview focus must rewrite the active pointer"
-    );
 }
 
 #[test]

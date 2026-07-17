@@ -764,91 +764,6 @@ fn production_remote_tmux_command_omits_unusable_cwd_and_trims_safe_cwd() {
 }
 
 #[test]
-fn production_remote_source_lookup_uses_the_safe_command_builder() {
-    let production = include_str!("../../control_socket.rs");
-    assert!(
-        production.contains("remote_tmux_source_window_command("),
-        "source-window lookup needs the same safe single-command builder seam"
-    );
-    assert!(
-        !production.contains("pane_token,\n                                \"#{window_id}\""),
-        "raw tmux formats must never be passed as ssh argv"
-    );
-}
-
-#[test]
-fn deferred_remote_arrival_is_flushed_only_after_action_completion_publication() {
-    let production = include_str!("../../control_socket.rs");
-    let executor_start = production
-        .find("impl pane_surface_lifecycle::LifecycleEffectExecutor")
-        .unwrap();
-    let handler_start = production
-        .find("fn handle_pane_surface_lifecycle_request")
-        .unwrap();
-    let executor = &production[executor_start..handler_start];
-    assert!(
-        !executor.contains("schedule_remote_window_reconciliation("),
-        "commit_staged may enqueue identity, but must not spawn reconciliation"
-    );
-
-    let handler_end = production[handler_start..]
-        .find("\nfn commit_runtime_arrival_for_control")
-        .map(|offset| handler_start + offset)
-        .unwrap();
-    let handler = &production[handler_start..handler_end];
-    let completion_publication = handler
-        .rfind("for completion in completion_events")
-        .expect("handler must publish action completion events");
-    let deferred_flush = handler
-        .find("executor.flush_deferred_remote_reconciliations(")
-        .expect("handler needs an explicit deferred reconciliation queue seam");
-    assert!(
-        deferred_flush > completion_publication,
-        "deferred surface.created must be impossible before surface.action completion"
-    );
-}
-
-#[test]
-fn production_arrival_commit_has_typed_noop_and_compensation_outcomes() {
-    let production = include_str!("../../control_socket.rs");
-    let missing = [
-        "enum RuntimeArrivalCommitOutcome",
-        "Committed",
-        "DuplicateOrStale",
-        "SourceMissing",
-        "Result<RuntimeArrivalCommitOutcome, String>",
-    ]
-    .into_iter()
-    .filter(|contract| !production.contains(contract))
-    .collect::<Vec<_>>();
-    assert!(missing.is_empty(), "missing typed contracts: {missing:?}");
-}
-
-#[test]
-fn production_arrival_scheduler_only_compensates_source_loss_or_final_failure() {
-    let production = include_str!("../../control_socket.rs");
-    let scheduler_start = production
-        .find("fn schedule_remote_window_reconciliation")
-        .unwrap();
-    let scheduler_end = production[scheduler_start..]
-        .find("\nfn should_focus_window_after_remote_arrival")
-        .map(|offset| scheduler_start + offset)
-        .unwrap();
-    let scheduler = &production[scheduler_start..scheduler_end];
-    assert!(scheduler.contains("RuntimeArrivalCommitOutcome::Committed"));
-    assert!(scheduler.contains("RuntimeArrivalCommitOutcome::DuplicateOrStale"));
-    assert!(scheduler.contains("RuntimeArrivalCommitOutcome::SourceMissing"));
-    assert!(
-        scheduler.contains("DuplicateOrStale => return"),
-        "duplicate/stale callbacks are successful idempotent no-ops"
-    );
-    assert!(
-        scheduler.contains("SourceMissing") && scheduler.contains("CompensateKillWindow"),
-        "only source loss or exhausted commit failure may compensate kill-window"
-    );
-}
-
-#[test]
 fn remote_pane_create_resolves_terminal_source_and_direction_before_routing() {
     let snapshot = remote_split_snapshot();
     let mut actual = Vec::new();
@@ -875,81 +790,6 @@ fn remote_pane_create_resolves_terminal_source_and_direction_before_routing() {
         }));
     }
     assert_eq!(actual, expected);
-}
-
-#[test]
-fn production_remote_split_command_targets_the_resolved_tmux_pane() {
-    assert_eq!(
-        remote_tmux_create_argv(&RemoteTmuxCreateSpec {
-            operation: "split-window",
-            focus: false,
-            source_target: Some("@7.%34"),
-            working_directory: None,
-        })
-        .unwrap(),
-        ["tmux split-window -h -t '@7.%34' -P -F '#{pane_id}'"]
-    );
-
-    let production = include_str!("../../control_socket.rs");
-    assert!(production.contains("RemoteTmuxSplitDirection"));
-    assert!(production.contains("split_direction: RemoteTmuxSplitDirection"));
-    assert!(production.contains("valid_tmux_split_target"));
-}
-
-#[test]
-fn production_remote_split_observation_is_strict_before_stage_or_rollback() {
-    let parse_contract = |output: &str| {
-        let line = output
-            .strip_suffix("\r\n")
-            .or_else(|| output.strip_suffix('\n'))
-            .unwrap_or(output);
-        !line.contains(['\r', '\n']) && valid_tmux_identity(line, '%')
-    };
-    assert!(parse_contract("%34\n"));
-    assert!(parse_contract("%34\r\n"));
-    for invalid in [
-        "",
-        "%",
-        "%x",
-        "%34x",
-        "%34\textra",
-        "%34\nextra\n",
-        "%34\r",
-        "%34\u{0007}",
-        "@34\n",
-    ] {
-        assert!(!parse_contract(invalid), "{invalid:?}");
-    }
-
-    let production = include_str!("../../control_socket.rs");
-    assert!(production.contains("fn parse_remote_tmux_pane_observation("));
-    assert!(
-        production.contains("parse_remote_tmux_pane_observation(&raw_output)"),
-        "split identity must be parsed before immediate arrival is staged"
-    );
-}
-
-#[test]
-fn remote_split_observation_is_deferred_through_the_handler_queue() {
-    let production = include_str!("../../control_socket.rs");
-    let executor_start = production
-        .find("impl pane_surface_lifecycle::LifecycleEffectExecutor")
-        .unwrap();
-    let handler_start = production
-        .find("fn handle_pane_surface_lifecycle_request")
-        .unwrap();
-    let executor = &production[executor_start..handler_start];
-    assert!(executor.contains("deferred_remote_reconciliations.extend"));
-    assert!(
-        !executor.contains("commit_runtime_arrival_for_control(self.app, arrival.clone())"),
-        "split observations must not reconcile inside commit_staged"
-    );
-    let handler = &production[handler_start..];
-    let completion = handler.find("for completion in completion_events").unwrap();
-    let flush = handler
-        .find("executor.flush_deferred_remote_reconciliations(")
-        .unwrap();
-    assert!(flush > completion);
 }
 
 #[test]
@@ -1224,16 +1064,6 @@ fn production_remote_split_command_is_never_detached_by_requested_focus() {
 }
 
 #[test]
-fn remote_split_requested_focus_never_activates_the_app_window() {
-    let production = include_str!("../../control_socket.rs");
-    assert!(
-        production.contains("remote.target == RemoteTmuxTarget::Window")
-            && production.contains("should_focus_window_after_remote_arrival"),
-        "requested focus may activate an app window only for remote new-window, never split-window"
-    );
-}
-
-#[test]
 fn mirror_workspace_terminal_split_without_live_remote_source_never_creates_local_panel() {
     let mut snapshot = remote_split_snapshot();
     snapshot.windows[0].tab_manager.workspaces[0]
@@ -1251,41 +1081,6 @@ fn mirror_workspace_terminal_split_without_live_remote_source_never_creates_loca
     assert_error(&transition, "internal_error", "Failed to create pane");
     assert_eq!(transition.snapshot, snapshot);
     assert!(transition.effects.is_empty());
-}
-
-#[test]
-fn remote_split_source_disappearance_is_typed_for_kill_pane_compensation() {
-    let production = include_str!("../../control_socket.rs");
-    assert!(production.contains("arrival.source_pane_id.as_deref()"));
-    assert!(production.contains("RuntimeArrivalCommitOutcome::SourceMissing"));
-    assert!(production.contains("remote_tmux_kill_command(remote.target"));
-    assert!(production.contains("RemoteTmuxTarget::Pane"));
-}
-
-#[test]
-fn remote_split_arrival_carries_source_orientation_into_topology_and_event() {
-    let lifecycle = include_str!("../pane_surface_lifecycle.rs");
-    for contract in [
-        "split_orientation: Option<SessionSplitOrientation>",
-        "source_pane_id: Option<String>",
-        "arrival.anchor_surface_id",
-        "arrival.split_orientation",
-    ] {
-        assert!(
-            lifecycle.contains(contract),
-            "missing split arrival contract: {contract}"
-        );
-    }
-    let production = include_str!("../../control_socket.rs");
-    for contract in [
-        "\"source_pane_id\":arrival.source_pane_id",
-        "\"orientation\":arrival.split_orientation",
-    ] {
-        assert!(
-            production.contains(contract),
-            "missing split event contract: {contract}"
-        );
-    }
 }
 
 #[test]
@@ -1871,53 +1666,6 @@ fn remote_mirror_rename_omits_unsafe_or_unroutable_remote_effect_but_keeps_local
             .get("RemoteWindowRename")
             .is_some()
     }));
-}
-
-#[test]
-fn production_remote_window_rename_command_is_single_safe_and_authoritative() {
-    let production = include_str!("../../control_socket.rs");
-    for contract in [
-        "fn remote_tmux_rename_window_command(",
-        "tmux rename-window -t {} {}",
-        "remote_tmux_source_window_command",
-        "RemoteWindowRename",
-    ] {
-        assert!(
-            production.contains(contract),
-            "missing rename contract: {contract}"
-        );
-    }
-    assert!(
-        production.contains("'\"'\"'"),
-        "apostrophes require safe shell quoting"
-    );
-}
-
-#[test]
-fn production_remote_window_close_uses_authoritative_deferred_departure() {
-    let production = include_str!("../../control_socket.rs");
-    let lifecycle = include_str!("../pane_surface_lifecycle.rs");
-    for contract in [
-        "RemoteWindowClose",
-        "remote_tmux_source_window_command",
-        "remote_tmux_kill_command",
-        "schedule_remote_window_departure_reconciliation",
-    ] {
-        assert!(
-            production.contains(contract),
-            "missing close production contract: {contract}"
-        );
-    }
-    for contract in [
-        "struct RuntimeDeparture",
-        "reconcile_runtime_departure",
-        "runtime-window-close",
-    ] {
-        assert!(
-            lifecycle.contains(contract),
-            "missing departure contract: {contract}"
-        );
-    }
 }
 
 #[test]

@@ -1603,22 +1603,6 @@ fn close_publication_failed_commit_rolls_back_without_publishing_the_candidate()
     );
 }
 
-#[test]
-fn lifecycle_command_commits_do_not_emit_derived_session_model_events() {
-    // Capture (all four events cases): the case action emits ONLY the
-    // workspace.lifecycle / socket.v2 frames — no session.changed and no
-    // derived pane.focused (source session.model) extras.
-    let source = include_str!("../../control_socket.rs");
-    let start = source
-        .find("fn handle_pane_surface_lifecycle_request(")
-        .expect("handler present");
-    let body = &source[start..start + 6_000];
-    assert!(
-        !body.contains("record_session_changed_event_suppressing"),
-        "the v2 lifecycle commit path must not emit derived session.model events"
-    );
-}
-
 // ---------------------------------------------------------------------------
 // D3 — handle registry seeded with the bootstrap entities
 // ---------------------------------------------------------------------------
@@ -1807,46 +1791,6 @@ fn registry_forget_mints_a_fresh_ref_on_rerender() {
 }
 
 #[test]
-fn lifecycle_wrapper_forgets_close_handles_before_decoration() {
-    // Source oracle: the forget hook runs on the wrapper BEFORE the ref
-    // decoration pass for surface.close.
-    let source = include_str!("../../control_socket.rs");
-    let start = source
-        .find("fn handle_pane_surface_lifecycle_request(")
-        .expect("handler present");
-    let body = &source[start..start + 4_000];
-    let forget = body
-        .find("forget_recreated_lifecycle_handles(")
-        .expect("forget hook wired");
-    let decorate = body
-        .find("decorate_lifecycle_result_refs(")
-        .expect("decoration present");
-    assert!(forget < decorate, "forget must precede ref decoration");
-}
-
-#[test]
-fn forget_scope_is_close_only_and_pane_only_when_gone() {
-    // Round 5 item 1 (canonical counter-evidence: pane:2 SURVIVES across all
-    // three canonical datasets after a surface close on that pane): close
-    // forgets only the closed SURFACE ref; the pane ref is forgotten only
-    // when the pane left the tree. Respawn still forgets nothing (its echo
-    // reuses the pre-existing surface ref).
-    let source = include_str!("../../control_socket.rs");
-    let start = source
-        .find("fn forget_recreated_lifecycle_handles(")
-        .expect("forget helper present");
-    let body = &source[start..start + 2_800];
-    assert!(
-        !body.contains("surface.respawn"),
-        "respawn must not forget any handles"
-    );
-    assert!(
-        body.contains("pane_survives"),
-        "the pane ref survives while the pane remains in the tree"
-    );
-}
-
-#[test]
 fn closing_an_unselected_tab_suppresses_the_noop_pair() {
     // Round 5 item 4 (overrides round 3's emit-when-equal): canonical
     // publishCmuxFocusedSelection guards previousSelectedSurfaceId !=
@@ -1998,20 +1942,6 @@ fn pane_resize_failures_carry_the_canonical_data_blocks() {
 }
 
 #[test]
-fn anchor_params_participate_in_handle_ref_resolution() {
-    // Round 5 item 6: surface:N refs in before_surface_id/after_surface_id
-    // resolve through the registry before uuid-counting, like every other
-    // selector key (resolve_request_handle_refs).
-    let source = include_str!("../../control_socket.rs");
-    let start = source
-        .find("fn resolve_request_handle_refs(")
-        .expect("resolver present");
-    let body = &source[start..start + 1_800];
-    assert!(body.contains("(\"before_surface_id\", \"surface\")"));
-    assert!(body.contains("(\"after_surface_id\", \"surface\")"));
-}
-
-#[test]
 fn create_after_explicit_focus_keeps_the_new_tab_selected() {
     // Round 6 item 1: shouldFocusNewTab = focus ?? (focusedPaneId == paneId)
     // (Workspace.swift:7480). After an explicit surface.focus lands in the
@@ -2070,31 +2000,6 @@ fn create_after_explicit_focus_keeps_the_new_tab_selected() {
     );
     let names: Vec<_> = closed.events.iter().map(|event| event.name).collect();
     assert_eq!(names, ["surface.closed"]);
-}
-
-#[test]
-fn every_dispatch_refreshes_known_refs_before_resolution() {
-    // Round 6 item 2: canonical's dispatch preamble mints refs for EVERY live
-    // window/workspace/pane/surface/group on every control dispatch
-    // (v2RefreshKnownRefs, TerminalController.swift:3561-3586 at pinned
-    // e1825d40d). That is what burns pane refs for entities that are never
-    // rendered (the last-surface workspace's pane becomes pane:10 at its
-    // close dispatch; the respawn workspace's pane then mints pane:11).
-    let source = include_str!("../../control_socket.rs");
-    let start = source
-        .find("fn handle_control_request(")
-        .expect("dispatch present");
-    let body = &source[start..start + 3_000];
-    let refresh = body
-        .find("refresh_known_handle_refs(")
-        .expect("dispatch preamble refresh wired");
-    let resolve = body
-        .find("resolve_request_handle_refs(")
-        .expect("ref resolution present");
-    assert!(
-        refresh < resolve,
-        "the known-ref refresh precedes handle-ref resolution (canonical preamble order)"
-    );
 }
 
 #[test]

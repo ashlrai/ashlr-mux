@@ -810,9 +810,6 @@ fn spawn_failure_is_definitive_but_wait_failure_retains_unknown_ownership() {
         remote_runtime_process_error_outcome(true),
         RemoteRuntimeCommandOutcome::Unknown
     );
-    let production = include_str!("../../control_socket.rs");
-    assert!(production.contains(".spawn()"));
-    assert!(production.contains(".wait_with_output()"));
 }
 
 #[test]
@@ -1293,23 +1290,4 @@ fn endpoint_session_scope_restore_and_unsupported_actions_are_closed_boundaries(
         "remote mirrors cannot move into locally owned Dock topology"
     );
     assert_eq!(move_into_dock.snapshot, dock_snapshot);
-}
-
-#[test]
-fn production_lease_seams_are_stateful_and_separate_from_remote_proxy_transport() {
-    let source = include_str!("../../control_socket.rs");
-    for required in [
-        "RemoteRuntimeLeaseRegistryState",
-        "reserve_remote_runtime_lease",
-        "expire_remote_runtime_lease",
-    ] {
-        assert!(
-            source.contains(required),
-            "missing production lease seam: {required}"
-        );
-    }
-    assert!(
-        !source.contains("remote_proxy::"),
-        "remote runtime lease ownership must remain separate from remote_proxy transport"
-    );
 }

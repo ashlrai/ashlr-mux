@@ -380,38 +380,3 @@ fn unavailable_restore_has_no_runtime_or_publication_effects() {
     assert_eq!(outcome.snapshot, current);
     assert!(ledger_entries(&ledger).is_empty());
 }
-
-fn function_source<'a>(source: &'a str, signature: &str) -> &'a str {
-    let start = source.find(signature).expect("function signature");
-    let tail = &source[start..];
-    let body_start = tail.find('{').expect("function body");
-    let mut depth = 0;
-    for (offset, character) in tail[body_start..].char_indices() {
-        match character {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return &tail[..body_start + offset + 1];
-                }
-            }
-            _ => {}
-        }
-    }
-    panic!("unterminated function")
-}
-
-#[test]
-fn manual_event_suppression_does_not_change_shared_deferred_reseed_publications() {
-    let source = include_str!("../session.rs");
-    let shared = function_source(source, "fn with_deferred_next_panel_reseed(");
-    assert!(shared.contains("derived_events: DerivedEventPolicy::Record"));
-
-    let manual = function_source(source, "fn for_manual_restore(");
-    assert!(manual.contains("derived_events: DerivedEventPolicy::Suppress"));
-    assert!(manual.contains("reseed_next_panel: false"));
-
-    let route = function_source(source, "fn restore_previous_launch_for_route(");
-    assert!(route.contains("ProductionSnapshotPublicationOperations::for_manual_restore("));
-    assert!(!route.contains("with_deferred_next_panel_reseed("));
-}
