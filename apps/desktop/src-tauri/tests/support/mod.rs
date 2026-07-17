@@ -114,7 +114,7 @@ async fn read_json_frame(pipe: &mut NamedPipeClient, context: &str) -> Result<Va
 
 pub struct DesktopFixture {
     child: Child,
-    profile: TempDir,
+    _profile: TempDir,
     pipe_path: String,
     pub pid: u32,
 }
@@ -168,7 +168,7 @@ impl DesktopFixture {
         let pid = child.id();
         Ok(Self {
             child,
-            profile,
+            _profile: profile,
             pipe_path,
             pid,
         })
@@ -205,8 +205,11 @@ impl DesktopFixture {
         subscribed
     }
 
+    // Each integration-test crate compiles this shared module independently;
+    // only the create/input process proof inspects the isolated profile.
+    #[allow(dead_code)]
     pub fn profile_path(&self) -> &Path {
-        self.profile.path()
+        self._profile.path()
     }
 
     pub fn stop(&mut self) -> Result<(), String> {
