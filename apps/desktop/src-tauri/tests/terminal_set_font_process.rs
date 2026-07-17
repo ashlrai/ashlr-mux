@@ -104,27 +104,27 @@ async fn run_process_proof() -> Result<(), String> {
     }
 
     for (input, message, data) in [
-        (json!({}), "Missing or invalid font_size", Value::Null),
+        (json!({}), "Missing or invalid font_size", None),
         (
             json!({"font_size": "large"}),
             "Missing or invalid font_size",
-            Value::Null,
+            None,
         ),
         (
             json!({"font_size": false}),
             "font_size must be a positive number of points",
-            json!({"font_size": 0.0}),
+            Some(json!({"font_size": 0.0})),
         ),
         (
             json!({"font_size": -1}),
             "font_size must be a positive number of points",
-            json!({"font_size": -1.0}),
+            Some(json!({"font_size": -1.0})),
         ),
     ] {
         let error = rpc.call_error("mobile.terminal.set_font", input).await?;
         if error.pointer("/error/code").and_then(Value::as_str) != Some("invalid_params")
-            || error.pointer("/error/userMessage").and_then(Value::as_str) != Some(message)
-            || error.pointer("/error/data") != Some(&data)
+            || error.pointer("/error/message").and_then(Value::as_str) != Some(message)
+            || error.pointer("/error/data") != data.as_ref()
         {
             return Err(format!("set-font validation drifted: {error}"));
         }
