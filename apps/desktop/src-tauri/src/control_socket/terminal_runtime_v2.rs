@@ -29,6 +29,57 @@ pub(super) struct TerminalRequestError {
     pub(super) message: &'static str,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct TerminalSetFontPlan {
+    pub(super) font_size: f64,
+    pub(super) surface_id: Option<String>,
+    pub(super) workspace_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct TerminalSetFontError {
+    pub(super) code: &'static str,
+    pub(super) message: &'static str,
+    pub(super) font_size: Option<f64>,
+}
+
+pub(super) fn plan_terminal_set_font_request(
+    params: &Map<String, Value>,
+) -> Result<TerminalSetFontPlan, TerminalSetFontError> {
+    let font_size = match params.get("font_size") {
+        Some(Value::Bool(value)) => f64::from(u8::from(*value)),
+        Some(Value::Number(value)) => value.as_f64().ok_or_else(missing_font_size)?,
+        Some(Value::String(value)) => value.parse::<f64>().map_err(|_| missing_font_size())?,
+        _ => return Err(missing_font_size()),
+    };
+    if !font_size.is_finite() || font_size <= 0.0 {
+        return Err(TerminalSetFontError {
+            code: "invalid_params",
+            message: "font_size must be a positive number of points",
+            font_size: Some(font_size),
+        });
+    }
+    Ok(TerminalSetFontPlan {
+        font_size,
+        surface_id: params
+            .get("surface_id")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        workspace_id: params
+            .get("workspace_id")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    })
+}
+
+fn missing_font_size() -> TerminalSetFontError {
+    TerminalSetFontError {
+        code: "invalid_params",
+        message: "Missing or invalid font_size",
+        font_size: None,
+    }
+}
+
 pub(super) fn plan_terminal_request_with_active_window(
     snapshot: &AppSessionSnapshot,
     method: &str,

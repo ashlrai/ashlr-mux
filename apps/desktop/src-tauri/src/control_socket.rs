@@ -27,8 +27,8 @@ mod terminal_runtime_v2;
 mod window_lifecycle;
 
 use terminal_runtime_v2::{
-    plan_terminal_request_with_active_window, terminal_create_response_terminal_id,
-    TerminalRequestPlan,
+    plan_terminal_request_with_active_window, plan_terminal_set_font_request,
+    terminal_create_response_terminal_id, TerminalRequestPlan,
 };
 
 #[cfg(test)]
@@ -1013,6 +1013,7 @@ const CONTROL_SOCKET_METHODS: &[&str] = &[
     "system.capabilities",
     "mobile.terminal.create",
     "mobile.terminal.input",
+    "mobile.terminal.set_font",
     "terminal.create",
     "terminal.input",
     "config.reload",
@@ -1348,6 +1349,12 @@ fn run_after_control_mutation_gate<T>(
 }
 
 fn handle_control_request(app: &AppHandle, mut request: ControlRequest) -> ControlCallResult {
+    // Canonical runs this event-only route on the worker lane. Dispatch before
+    // handle normalization and the model mutation gate so optional scopes stay
+    // raw and the request cannot acquire session authority.
+    if request.method == "mobile.terminal.set_font" {
+        return terminal_set_font_control(app, &request.params);
+    }
     let session_state = app.state::<SessionState>();
     // Declared before the guard so reverse drop order releases the request-wide
     // mutation gate before any deferred SSH process is created.
@@ -6394,8 +6401,32 @@ fn record_event(
     surface_id: Option<String>,
     payload: Value,
 ) {
+    let _ = record_event_with_delivery(
+        app,
+        name,
+        category,
+        source,
+        window_id,
+        workspace_id,
+        pane_id,
+        surface_id,
+        payload,
+    );
+}
+
+fn record_event_with_delivery(
+    app: &AppHandle,
+    name: &str,
+    category: &str,
+    source: &str,
+    window_id: Option<String>,
+    workspace_id: Option<String>,
+    pane_id: Option<String>,
+    surface_id: Option<String>,
+    payload: Value,
+) -> bool {
     let Some(state) = app.try_state::<ControlEventState>() else {
-        return;
+        return false;
     };
     let mut guard = state
         .inner
@@ -6426,8 +6457,9 @@ fn record_event(
     while guard.events.len() > EVENT_REPLAY_LIMIT {
         guard.events.pop_front();
     }
+    let event = guard.events.back().cloned().unwrap_or(Value::Null);
+    let delivered = event_subscribers_match(&guard.subscribers, &event);
     if let Some(frame) = frame {
-        let event = guard.events.back().cloned().unwrap_or(Value::Null);
         fan_out_event_to_subscribers(&mut guard.subscribers, &event, &frame);
     }
     let event = guard.events.back().cloned();
@@ -6436,6 +6468,7 @@ fn record_event(
         let _ = app.emit(CONTROL_EVENTS_CHANGED_EVENT, event.clone());
         append_event_to_disk(&event);
     }
+    delivered
 }
 
 pub(crate) fn publish_notification_removal_effects(
@@ -6550,6 +6583,12 @@ fn fan_out_event_to_subscribers(
         }
         subscriber.sender.send(frame.to_string()).is_ok()
     });
+}
+
+fn event_subscribers_match(subscribers: &[EventSubscriber], event: &Value) -> bool {
+    subscribers
+        .iter()
+        .any(|subscriber| event_matches_filters(event, &subscriber.names, &subscriber.categories))
 }
 
 fn event_log_home_directory() -> Option<PathBuf> {
@@ -10507,6 +10546,48 @@ const TERMINAL_SURFACE_UNAVAILABLE_MESSAGE: &str =
     "The terminal surface is no longer available; reopen it or create a new terminal session.";
 const TERMINAL_PROCESS_EXITED_MESSAGE: &str =
     "The terminal session has ended; reopen it or create a new terminal session.";
+
+fn terminal_set_font_control(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let plan = match plan_terminal_set_font_request(params) {
+        Ok(plan) => plan,
+        Err(error) => {
+            let data = error
+                .font_size
+                .and_then(|font_size| JsonValue::try_from(json!({"font_size": font_size})).ok());
+            return ControlCallResult::Err {
+                code: error.code.into(),
+                message: error.message.into(),
+                data,
+            };
+        }
+    };
+    let mut payload = json!({"font_size": plan.font_size});
+    if let Some(surface_id) = plan.surface_id.as_deref() {
+        payload["surface_id"] = json!(surface_id);
+    }
+    if let Some(workspace_id) = plan.workspace_id.as_deref() {
+        payload["workspace_id"] = json!(workspace_id);
+    }
+    let delivered = record_event_with_delivery(
+        app,
+        "terminal.set_font",
+        "terminal",
+        "socket.v2",
+        None,
+        plan.workspace_id,
+        None,
+        plan.surface_id,
+        payload,
+    );
+    ok(json!({
+        "ok": true,
+        "font_size": plan.font_size,
+        "delivered": delivered,
+    }))
+}
 
 fn terminal_request_plan(
     app: &AppHandle,
