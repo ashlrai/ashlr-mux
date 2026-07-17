@@ -24129,4 +24129,7 @@ mod tests {
 
     #[path = "terminal_create_input_red.rs"]
     mod terminal_create_input_red;
+
+    #[path = "terminal_set_font_red.rs"]
+    mod terminal_set_font_red;
 }

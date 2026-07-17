@@ -70,6 +70,48 @@ impl PipeRpc {
     }
 }
 
+pub struct PipeEventStream {
+    pipe: NamedPipeClient,
+}
+
+impl PipeEventStream {
+    async fn subscribe(
+        pipe_path: &str,
+        names: &[&str],
+        wait: Duration,
+    ) -> Result<(Self, Value), String> {
+        let mut pipe = connect_pipe(pipe_path, wait)
+            .await
+            .map_err(|error| format!("connect event stream: {error}"))?;
+        let request = json!({
+            "id": 1,
+            "method": "events.stream",
+            "params": {"names": names, "no_heartbeat": true},
+        })
+        .to_string();
+        timeout(RPC_TIMEOUT, write_frame(&mut pipe, &request))
+            .await
+            .map_err(|_| "timed out writing events.stream".to_string())?
+            .map_err(|error| format!("failed writing events.stream: {error}"))?;
+        let ack = read_json_frame(&mut pipe, "events.stream ack").await?;
+        Ok((Self { pipe }, ack))
+    }
+
+    pub async fn next(&mut self) -> Result<Value, String> {
+        read_json_frame(&mut self.pipe, "event stream frame").await
+    }
+}
+
+async fn read_json_frame(pipe: &mut NamedPipeClient, context: &str) -> Result<Value, String> {
+    let raw = timeout(RPC_TIMEOUT, read_frame(pipe, MAX_RPC_FRAME_BYTES))
+        .await
+        .map_err(|_| format!("timed out reading {context}"))?
+        .map_err(|error| format!("failed reading {context}: {error}"))?
+        .ok_or_else(|| format!("control pipe closed while reading {context}"))?;
+    let raw = String::from_utf8(raw).map_err(|error| format!("non-UTF-8 {context}: {error}"))?;
+    serde_json::from_str(&raw).map_err(|error| format!("invalid {context}: {error}; raw={raw}"))
+}
+
 pub struct DesktopFixture {
     child: Child,
     profile: TempDir,
@@ -146,6 +188,21 @@ impl DesktopFixture {
                 self.pipe_path, self.pid
             )
         })
+    }
+
+    pub async fn subscribe(
+        &mut self,
+        names: &[&str],
+        wait: Duration,
+    ) -> Result<(PipeEventStream, Value), String> {
+        let subscribed = PipeEventStream::subscribe(&self.pipe_path, names, wait).await;
+        if let Ok(Some(status)) = self.child.try_wait() {
+            return Err(format!(
+                "owned cmux-desktop process {} exited while subscribing: {status}",
+                self.pid
+            ));
+        }
+        subscribed
     }
 
     pub fn profile_path(&self) -> &Path {
