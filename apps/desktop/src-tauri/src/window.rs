@@ -217,14 +217,31 @@ pub fn move_control_windows_to_display(
 }
 
 pub fn control_window_summaries(app: &AppHandle) -> Vec<WindowControlSummary> {
+    let capture_windows_hidden = capture_windows_hidden();
     ordered_control_windows(app)
         .into_iter()
-        .map(|(identity, window)| WindowControlSummary {
-            identity,
-            is_key: window.is_focused().unwrap_or(false),
-            is_visible: window.is_visible().unwrap_or(false),
+        .map(|(identity, window)| {
+            let (is_key, is_visible) = control_window_summary_state(
+                capture_windows_hidden,
+                || (
+                    window.is_focused().unwrap_or(false),
+                    window.is_visible().unwrap_or(false),
+                ),
+            );
+            WindowControlSummary {
+                identity,
+                is_key,
+                is_visible,
+            }
         })
         .collect()
+}
+
+fn control_window_summary_state(
+    _capture_windows_hidden: bool,
+    native_state: impl FnOnce() -> (bool, bool),
+) -> (bool, bool) {
+    native_state()
 }
 
 pub fn current_control_window(
@@ -785,6 +802,20 @@ mod tests {
         assert!(!capture_window_starts_focused(true, false));
         assert!(capture_window_starts_focused(false, true));
         assert!(!capture_window_starts_focused(false, false));
+    }
+
+    #[test]
+    fn capture_headless_mode_does_not_read_native_window_summary_state() {
+        let native_reads = Cell::new(0);
+
+        assert_eq!(
+            super::control_window_summary_state(true, || {
+                native_reads.set(native_reads.get() + 1);
+                (true, true)
+            }),
+            (false, false)
+        );
+        assert_eq!(native_reads.get(), 0);
     }
 
     #[test]
