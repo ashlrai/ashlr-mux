@@ -13,9 +13,9 @@
     "unsatisfied_settles": 0
   },
   "windows": {
-    "behavior_commit": "14953b82f8bc712f774196acf0a69271886c0b9f",
+    "behavior_commit": "78825bba260a57e9c7d90b82d4eeb5a36789e5ff",
     "harness_commit": "e23cd72b7807f700a5961b2d8ae44919c810911c",
-    "sha256": "4650151D919970D0930F7D2A479EAFFF121897225CA6B3FC5B731D46ED2A64A8",
+    "sha256": "DB9E5731873D0CD9873C0FD666DD4BF66EE19D89061B8534098584734514050F",
     "cases": 68,
     "capture_errors": 0,
     "unsatisfied_settles": 0,
@@ -25,10 +25,10 @@
   "comparison": {
     "comparator_commit": "e23cd72b7807f700a5961b2d8ae44919c810911c",
     "manifest_commit": "9257db511b975335e2ee79bc4bb143c04bfa95f8",
-    "sha256": "AF56DDF8DE729FE8CDF211BDFBAC7AFE74082A6AC5702A04ADB79A729266EAD4",
+    "sha256": "3AB24E6CCC6B74AE6241C10354494C4683CEEF50866963AF121A5226D900EEC0",
     "cases": 68,
-    "identical": 66,
-    "deltas": 2,
+    "identical": 67,
+    "deltas": 1,
     "capture_integrity": {
       "valid_for_promotion": true,
       "canonical_capture_errors": [],
@@ -38,7 +38,6 @@
       "missing_cases": []
     },
     "delta_cases": {
-      "window_close.happy_non_active_multiwindow": ["state"],
       "window_close.last_window_may_exit_ui_test_mode": ["error", "response", "events"]
     },
     "normalization": {
@@ -51,34 +50,30 @@
     "manifest_commit": "9257db511b975335e2ee79bc4bb143c04bfa95f8",
     "cases_with_approved_pointers": 9,
     "approved_pointer_count": 29,
-    "cases_made_equivalent": 8,
+    "cases_made_equivalent": 9,
     "categories": [
       "AppKit versus noninteractive-Windows key-window booleans",
       "window.keyed cleanup ownership derived from the OS-selected fallback key",
       "isolated test-profile home/current-directory strings"
     ],
-    "strict_guards": "Responses, errors, event names/order/origins/counts, UUID/ref identity, visibility, workspace linkage, selector routing, and all non-approved fields remain strict. The non-active close case retains its active-route identity delta."
+    "strict_guards": "Responses, errors, event names/order/origins/counts, UUID/ref identity, visibility, workspace linkage, selector routing, and all non-approved fields remain strict."
   },
   "closed_window_history": {
     "status": "implemented_and_live_observed",
-    "behavior_commit": "14953b82f8bc712f774196acf0a69271886c0b9f",
+    "behavior_commit": "78825bba260a57e9c7d90b82d4eeb5a36789e5ff",
     "harness_commit": "e23cd72b7807f700a5961b2d8ae44919c810911c",
     "behavior": [
       "A close appends an invisible recoverable window.list row with stable window/workspace ids, refs, selection, and workspace count, including the matched CLI-created rows.",
       "Live native rows precede recoverable rows and win identity collisions.",
       "A failed native close discards staged history; successful close commits it atomically.",
       "A repeated close of a committed recoverable route is idempotent and returns its stable window id/ref without another event or mutation.",
+      "Selector-less workspace.list remains routed to the active recoverable manager after its native window closes; explicit selectors and live active windows keep their normal routes.",
       "Restart clears the in-process recoverable history."
     ],
     "measurement_correction": "Canonical intentionally retains closed windows as invisible recoverable routes. The previous until_absent predicate incorrectly classified this product behavior as failed cleanup. until_window_not_visible now accepts visible:false or absence while keeping the final row payload strict.",
-    "result": "The environment-matched 68-case pair has zero unsatisfied settles and a valid 66-equivalent/2-delta comparison after exact platform-pointer review."
+    "result": "The environment-matched 68-case pair has zero unsatisfied settles and a valid 67-equivalent/1-delta comparison after exact platform-pointer review."
   },
   "residual_clusters": [
-    {
-      "name": "post_close_active_routing",
-      "cases": ["window_close.happy_non_active_multiwindow"],
-      "evidence": "After close settles non-visible, canonical selector-less workspace.list reports the closed target (window:6/workspace:7) while Windows reports its live fallback (window:1/workspace:1). Platform path/key leaves are removed and this identity mismatch remains strict."
-    },
     {
       "name": "last_window_close",
       "cases": ["window_close.last_window_may_exit_ui_test_mode"],
@@ -87,7 +82,7 @@
   ],
   "verification": {
     "closed_history_unit_tests": 4,
-    "window_list_unit_tests": 2,
+    "window_list_unit_tests": 3,
     "window_lifecycle_tests": 78,
     "window_lifecycle_post_simplification_runs": 2,
     "desktop_all_targets_check_runs": 1,
@@ -97,11 +92,13 @@
     "native_window_unit_tests": 3,
     "native_window_full_capture_runs": 3,
     "recoverable_repeat_close_full_capture_runs": 1,
-    "platform_equivalence_comparison_runs": 2,
+    "recoverable_active_routing_focused_runs": 3,
+    "recoverable_active_routing_full_capture_runs": 1,
+    "platform_equivalence_comparison_runs": 3,
     "file_length_budget": "39 tracked oversized files; all frozen at current-or-smaller size"
   },
   "promotion": {
     "rows_promoted": [],
-    "reason": "The pair is valid evidence, but two cases retain strict semantic deltas. Promote only mapped capabilities whose applicable lanes are identical or explicitly platform-equivalent."
+    "reason": "The pair is valid evidence, but the last-window case retains strict process-lifecycle deltas. Promote only mapped capabilities whose applicable lanes are identical or explicitly platform-equivalent."
   }
 }

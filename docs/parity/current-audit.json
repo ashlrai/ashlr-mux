@@ -10,10 +10,10 @@
       "v2:remote.tmux.test_perturb_divider"
     ],
     "catalog_rows_removed_since_baseline": [],
-    "commit": "ecebdbb64b3532b0308650280ae4b83f30becf2a",
-    "commit_date": "2026-07-18T23:29:47-07:00",
-    "commit_subject": "cmux-tui: TUI dead-band dimming for foreign-sized surfaces; move CmuxLite out of tree (#8305)",
-    "commits_ahead_of_tracked_baseline": 359,
+    "commit": "41756f7285a02d2592751438793647f7d4ba9b71",
+    "commit_date": "2026-07-19T04:58:23-07:00",
+    "commit_subject": "feat(tui): support browser terminal backends (#8294)",
+    "commits_ahead_of_tracked_baseline": 366,
     "counts": {
       "debug_only_v2_methods": 46,
       "hidden_or_internal_cli_commands": 16,
@@ -44,10 +44,10 @@
     "status": "not_measured"
   },
   "windows": {
-    "commit": "14953b82f8bc712f774196acf0a69271886c0b9f",
-    "commit_date": "2026-07-19T08:53:17-04:00",
-    "commit_subject": "fix(desktop): accept recoverable window reclose",
-    "commits_ahead_of_tracked_evidence": 14,
+    "commit": "78825bba260a57e9c7d90b82d4eeb5a36789e5ff",
+    "commit_date": "2026-07-19T09:08:05-04:00",
+    "commit_subject": "fix(desktop): route reads to recoverable active window",
+    "commits_ahead_of_tracked_evidence": 17,
     "source_evidence": {
       "advertised_and_routed_count": 267,
       "advertised_method_count": 270,

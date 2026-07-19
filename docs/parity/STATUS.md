@@ -2,10 +2,10 @@
 
 Checkpoint commits:
 
-- Current canonical audit: `ecebdbb64b3532b0308650280ae4b83f30becf2a`
+- Current canonical audit: `41756f7285a02d2592751438793647f7d4ba9b71`
 - Frozen differential canonical: `e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452`
-- Windows behavior captured: `14953b82f8bc712f774196acf0a69271886c0b9f`
-- Latest Windows code checkpoint: `14953b82f8bc712f774196acf0a69271886c0b9f`
+- Windows behavior captured: `78825bba260a57e9c7d90b82d4eeb5a36789e5ff`
+- Latest Windows code checkpoint: `78825bba260a57e9c7d90b82d4eeb5a36789e5ff`
 - Latest exact startup differential evidence: `parity/diff-lane@215737999ac0579682b6b2a2d230d7a0d064a51d`
 - Latest window harness checkpoint: `parity/diff-lane@9257db511b975335e2ee79bc4bb143c04bfa95f8`
 - Latest canonical window capture: workflow run `29686515273`
@@ -13,8 +13,8 @@ Checkpoint commits:
 The Windows desktop and CLI build successfully. The retained pane/surface and
 startup-restore evidence remains valid. The exact environment-matched window
 pair contains all 68 cases with zero capture errors, zero missing cases, and
-zero unsatisfied settles. Its normalized comparison is valid: 66 exact or
-platform-equivalent and 2 strict delta cases. See
+zero unsatisfied settles. Its normalized comparison is valid: 67 exact or
+platform-equivalent and 1 strict delta case. See
 `evidence/window_lifecycle_2026-07-19.json` for hashes,
 strict lanes, and provenance.
 
@@ -28,6 +28,9 @@ Repeated close of a committed recoverable route is now idempotent: it returns
 the same window id/ref with no duplicate state mutation or lifecycle event.
 The exact case's response and error lanes match canonical; its native `key`
 leaf is now an exact reviewed platform equivalence.
+Selector-less `workspace.list` also remains routed to the active recoverable
+TabManager after its native window closes. Explicit selectors and live active
+windows retain their existing routes; no closed window is resurrected.
 
 The shared window identity boundary is now repaired. Socket-created windows
 use canonical UUID identities end to end, selector-less `window.current`
@@ -83,13 +86,13 @@ baseline, not "222 of 496 complete" and not the rolling catalog.
 
 ## Known acceptance blockers
 
-1. The valid window pair is 66/2 after exact platform-pointer review. UI-test matching removed the apparent restart
+1. The valid window pair is 67/1 after exact platform-pointer review. UI-test matching removed the apparent restart
    resume gap entirely. Browser child attachment was proven to remove live
    `window:2` from `webview_windows()` and is fixed at `1717704e09` by enumerating
    native windows; two full captures retain it. The three CLI cases now differ
    only in native key selection and are now platform-equivalent. Recoverable
-   repeat-close is exact. The two strict gaps are selector-less active routing
-   after non-active close and last-window close, which disconnects only on canonical.
+   repeat-close and post-close selector-less active routing are exact. The only
+   strict gap is last-window close, which disconnects only on canonical.
 2. Four differential-remediation unit tests fail unchanged at both pushed
    baseline `0ea973d28d` and behavior checkpoint `286b2d7b67`:
    `closing_an_unselected_tab_suppresses_the_noop_pair`,
@@ -167,8 +170,9 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
   The move adds 19 net module/import/visibility lines; the full CLI all-target suite
   passes before the move, after extraction, and after visibility tightening.
 - `workspace_control.rs` is now 3,180 physical lines (from 3,711 at this
-  checkpoint). Strict live/recoverable `window.list` projection lives in the
-  183-line `workspace_control/window_list.rs` child. Right-sidebar, feed, and
+  checkpoint). Strict live/recoverable `window.list` projection and read-only
+  recoverable active routing live in the 267-line
+  `workspace_control/window_list.rs` child. Right-sidebar, feed, and
   notification socket controls moved mechanically to the 495-line
   `workspace_control/activity_controls.rs` child; 21 notification, 5 feed, and
   5 right-sidebar tests pass twice after visibility simplification, and the
@@ -189,8 +193,7 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
 
 ## Next efficient slice
 
-Diagnose the post-close active-routing case: canonical retains selector-less
-routing to the closed recoverable TabManager while Windows repoints to a live
-fallback. Determine the contractual lifetime before changing production. Then
-address the last-window close semantic. Keep the next oversized-file split
-isolated from behavior changes.
+Determine whether canonical last-window disconnect/termination is a required
+product behavior under Windows UI-test mode or an explicit platform
+equivalence, then resolve and recapture that single strict case. Keep the next
+oversized-file split isolated from behavior changes.
