@@ -216,6 +216,7 @@ pub fn break_surface_to_new_workspace(
         initial_terminal_command: source.initial_terminal_command.clone(),
         initial_terminal_input: source.initial_terminal_input.clone(),
         initial_terminal_environment: source.initial_terminal_environment.clone(),
+        focused_panel_id: Some(panel_id.to_string()),
         layout: Some(Layout::Pane(detached_pane)),
         ..Default::default()
     };
@@ -227,6 +228,9 @@ pub fn break_surface_to_new_workspace(
     }
     if source.zoomed_panel_id.as_deref() == Some(panel_id) {
         source.zoomed_panel_id = None;
+    }
+    if source.focused_panel_id.as_deref() == Some(panel_id) {
+        source.focused_panel_id = source.layout.as_ref().and_then(first_panel_id);
     }
     attach_panel_metadata(&mut detached, metadata);
 
