@@ -41,6 +41,7 @@ use uuid::Uuid;
 
 mod commands;
 mod control_window_registration;
+mod workspace_ordering;
 use commands::collapse_infallible_publication_error;
 pub use commands::*;
 #[cfg(test)]
@@ -48,6 +49,10 @@ use commands::{parse_session_navigation_uri, parse_ssh_uri, workspace_is_selecte
 use control_window_registration::transact_register_window;
 pub(crate) use control_window_registration::{
     register_prepared_window_for_control, unregister_window_for_control_suppressing_events,
+};
+pub(crate) use workspace_ordering::{
+    reorder_workspaces_in_window_for_control, reorder_workspaces_many_in_window_for_control,
+    ReorderWorkspacesManyControlError,
 };
 
 /// Event carrying the full session snapshot after any structural change.
@@ -2281,6 +2286,7 @@ pub(crate) fn move_workspace_to_window_for_control(
 ) -> Result<AppSessionSnapshot, MoveWorkspaceToWindowControlError> {
     let mut publication =
         ProductionSnapshotPublicationOperations::with_deferred_next_panel_reseed(app, state);
+    publication.derived_events = DerivedEventPolicy::Suppress;
     transact_move_workspace_and_register_window(
         &state.snapshot,
         &state.next_panel,
@@ -4854,54 +4860,6 @@ pub(crate) fn move_surface_for_control(
         )
         .ok_or(SurfacePositionControlError::InvalidRequest)
     })
-}
-
-pub(crate) fn reorder_workspaces_many_for_control(
-    app: &AppHandle,
-    state: &SessionState,
-    ordered_workspace_ids: &[Uuid],
-    dry_run: bool,
-) -> Result<
-    (Vec<WorkspaceReorderPlanItem>, AppSessionSnapshot),
-    PaneTopologyControlError<ReorderWorkspacesManyControlError>,
-> {
-    if dry_run {
-        let current = state.snapshot_for_lifecycle();
-        let mut snapshot = current.map_err(PaneTopologyControlError::Publication)?;
-        let window = snapshot
-            .windows
-            .first_mut()
-            .ok_or(PaneTopologyControlError::Operation(
-                ReorderWorkspacesManyControlError::Unavailable,
-            ))?;
-        let plan = session_ops::reorder_workspaces_many(
-            &mut window.tab_manager,
-            ordered_workspace_ids,
-            false,
-        )
-        .map_err(ReorderWorkspacesManyControlError::Batch)
-        .map_err(PaneTopologyControlError::Operation)?;
-        return Ok((plan, snapshot));
-    }
-    state.transact_value_if_changed(app, |snapshot| {
-        let window = snapshot
-            .windows
-            .first_mut()
-            .ok_or(ReorderWorkspacesManyControlError::Unavailable)?;
-        let plan = session_ops::reorder_workspaces_many(
-            &mut window.tab_manager,
-            ordered_workspace_ids,
-            false,
-        )
-        .map_err(ReorderWorkspacesManyControlError::Batch)?;
-        let changed = plan.iter().any(|item| item.from_index != item.to_index);
-        Ok((plan, changed))
-    })
-}
-
-pub(crate) enum ReorderWorkspacesManyControlError {
-    Unavailable,
-    Batch(WorkspaceBatchReorderError),
 }
 
 pub(crate) fn set_group_collapsed_for_control(

@@ -1,5 +1,9 @@
 use super::*;
 
+#[path = "payloads/workspace_ordering.rs"]
+mod workspace_ordering;
+pub(super) use workspace_ordering::*;
+
 pub(super) fn snapshot(app: &AppHandle) -> AppSessionSnapshot {
     let state = app.state::<SessionState>();
     current_session_snapshot(&state)
@@ -1694,136 +1698,6 @@ pub(super) fn canonical_workspace_target_index(
     workspaces
         .iter()
         .position(|workspace| workspace.workspace_id.as_deref() == Some(selector.as_str()))
-}
-
-pub(super) fn workspace_index_for_id(
-    snapshot: &AppSessionSnapshot,
-    workspace_id: &str,
-) -> Option<usize> {
-    snapshot
-        .windows
-        .first()?
-        .tab_manager
-        .workspaces
-        .iter()
-        .position(|workspace| workspace.workspace_id.as_deref() == Some(workspace_id))
-}
-
-pub(super) fn workspace_index_from_params(
-    snapshot: &AppSessionSnapshot,
-    params: &serde_json::Map<String, Value>,
-) -> Option<usize> {
-    if let Some(workspace_ref) = string_param(params, &["workspace_ref", "ref"]) {
-        if let Some(index) = one_based_ref_index(&workspace_ref, "workspace") {
-            if snapshot
-                .windows
-                .first()
-                .is_some_and(|window| index < window.tab_manager.workspaces.len())
-            {
-                return Some(index);
-            }
-            return None;
-        }
-    }
-
-    let workspace_id = params
-        .get("workspace_id")
-        .or_else(|| params.get("id"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())?;
-    workspace_index_for_id(snapshot, workspace_id)
-}
-
-pub(super) fn workspace_reorder_destination_index(
-    snapshot: &AppSessionSnapshot,
-    params: &serde_json::Map<String, Value>,
-    from_index: usize,
-) -> Option<i64> {
-    if params.contains_key("to_index")
-        || params.contains_key("to")
-        || params.contains_key("target_index")
-    {
-        return None;
-    }
-
-    let index = i64_param(params, &["index"]);
-    let before = workspace_index_from_selector_keys(
-        snapshot,
-        params,
-        &["before_workspace_ref", "before_ref"],
-        &["before_workspace_id", "before_workspace"],
-    );
-    let after = workspace_index_from_selector_keys(
-        snapshot,
-        params,
-        &["after_workspace_ref", "after_ref"],
-        &["after_workspace_id", "after_workspace"],
-    );
-    match (index, before, after) {
-        (Some(index), None, None) => Some(index),
-        (None, Some(target), None) => {
-            let destination = if from_index < target {
-                target.saturating_sub(1)
-            } else {
-                target
-            };
-            Some(destination as i64)
-        }
-        (None, None, Some(target)) => {
-            let destination = if from_index < target {
-                target
-            } else {
-                target.saturating_add(1)
-            };
-            Some(destination as i64)
-        }
-        _ => None,
-    }
-}
-
-pub(super) fn workspace_reorder_window_matches(
-    snapshot: &AppSessionSnapshot,
-    params: &serde_json::Map<String, Value>,
-) -> bool {
-    let Some(window) = snapshot.windows.first() else {
-        return false;
-    };
-    let reference_matches = string_param(params, &["window_ref"])
-        .map(|reference| one_based_ref_index(&reference, "window") == Some(0))
-        .unwrap_or(true);
-    let id_matches = string_param(params, &["window_id"])
-        .map(|id| window.window_id.as_deref() == Some(id.as_str()))
-        .unwrap_or(true);
-    reference_matches && id_matches
-}
-
-pub(super) fn workspace_index_from_selector_keys(
-    snapshot: &AppSessionSnapshot,
-    params: &serde_json::Map<String, Value>,
-    ref_keys: &[&str],
-    id_keys: &[&str],
-) -> Option<usize> {
-    if let Some(workspace_ref) = string_param(params, ref_keys) {
-        let index = one_based_ref_index(&workspace_ref, "workspace")?;
-        if snapshot
-            .windows
-            .first()
-            .is_some_and(|window| index < window.tab_manager.workspaces.len())
-        {
-            return Some(index);
-        }
-        return None;
-    }
-
-    let workspace_id = string_param(params, id_keys)?;
-    snapshot
-        .windows
-        .first()?
-        .tab_manager
-        .workspaces
-        .iter()
-        .position(|workspace| workspace.workspace_id.as_deref() == Some(workspace_id.as_str()))
 }
 
 pub(super) fn workspace_indices_from_params(

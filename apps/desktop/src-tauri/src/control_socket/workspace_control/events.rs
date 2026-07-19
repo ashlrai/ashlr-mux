@@ -24,6 +24,78 @@ pub(super) fn record_workspace_events(app: &AppHandle, events: Vec<DerivedEventS
     }
 }
 
+pub(in crate::control_socket) fn workspace_reordered_event_spec(
+    snapshot: &AppSessionSnapshot,
+    window_index: usize,
+    moved_workspace_ids: &[String],
+) -> Option<DerivedEventSpec> {
+    let window = snapshot.windows.get(window_index)?;
+    let workspace_ids = window
+        .tab_manager
+        .workspaces
+        .iter()
+        .filter_map(|workspace| workspace.workspace_id.clone())
+        .collect::<Vec<_>>();
+    let workspace_id = moved_workspace_ids.first()?.clone();
+    Some(DerivedEventSpec {
+        name: "workspace.reordered",
+        category: "workspace",
+        source: "workspace.lifecycle",
+        window_id: None,
+        workspace_id: Some(workspace_id),
+        surface_id: None,
+        payload: json!({
+            "workspace_ids": workspace_ids,
+            "moved_workspace_ids": moved_workspace_ids,
+            "pinned_workspace_ids": [],
+            "count": window.tab_manager.workspaces.len(),
+        }),
+    })
+}
+
+pub(super) fn record_workspace_reordered_event(
+    app: &AppHandle,
+    snapshot: &AppSessionSnapshot,
+    window_index: usize,
+    moved_workspace_ids: &[String],
+) {
+    if let Some(event) = workspace_reordered_event_spec(snapshot, window_index, moved_workspace_ids)
+    {
+        record_derived_event(app, event);
+    }
+}
+
+pub(in crate::control_socket) fn workspace_moved_event_spec(
+    params: &serde_json::Map<String, Value>,
+    result: &Value,
+) -> Option<DerivedEventSpec> {
+    let window_id = result.get("window_id")?.as_str()?.to_owned();
+    let workspace_id = result.get("workspace_id")?.as_str()?.to_owned();
+    Some(DerivedEventSpec {
+        name: "workspace.moved",
+        category: "workspace",
+        source: "socket.v2",
+        window_id: Some(window_id),
+        workspace_id: Some(workspace_id),
+        surface_id: None,
+        payload: json!({
+            "method": "workspace.move_to_window",
+            "params": params,
+            "result": result,
+        }),
+    })
+}
+
+pub(super) fn record_workspace_moved_event(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+    result: &Value,
+) {
+    if let Some(event) = workspace_moved_event_spec(params, result) {
+        record_derived_event(app, event);
+    }
+}
+
 pub(super) fn record_workspace_create_events(
     app: &AppHandle,
     previous: &AppSessionSnapshot,

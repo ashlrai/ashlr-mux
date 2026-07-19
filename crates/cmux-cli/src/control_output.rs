@@ -86,7 +86,7 @@ pub(super) fn format_control_result(method: &str, result: &serde_json::Value) ->
         "workspace.reorder" => format_workspace_reorder(result),
         "workspace.reorder_many" => format_workspace_reorder_items(result),
         "workspace.move_to_window" => format!(
-            "OK workspace={} window={}",
+            "OK {} {}",
             control_handle(result, "workspace"),
             control_handle(result, "window"),
         ),

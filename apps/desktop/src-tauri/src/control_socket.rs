@@ -96,7 +96,7 @@ use crate::session::{
     open_markdown_file_in_panel, reconnect_workspace_remote_for_control,
     rename_workspace_in_window_for_control, reopen_closed_browser_tab_for_control,
     reopen_closed_workspace_for_control, reorder_surface_for_control,
-    reorder_workspaces_for_control, reorder_workspaces_many_for_control,
+    reorder_workspaces_in_window_for_control, reorder_workspaces_many_in_window_for_control,
     reset_workspace_color_for_control, reset_workspace_sidebar_metadata_for_control,
     resize_pane_for_control, restore_previous_launch_for_control,
     select_adjacent_panel_for_control, select_last_workspace_for_control,

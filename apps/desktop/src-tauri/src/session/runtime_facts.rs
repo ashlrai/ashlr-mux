@@ -492,7 +492,17 @@ pub(super) fn apply_reorder_workspaces(
     to_index: i64,
     uses_top_level_rows: bool,
 ) -> bool {
-    match snapshot.windows.first_mut() {
+    apply_reorder_workspaces_in_window(snapshot, 0, index, to_index, uses_top_level_rows)
+}
+
+pub(super) fn apply_reorder_workspaces_in_window(
+    snapshot: &mut AppSessionSnapshot,
+    window_index: usize,
+    index: i64,
+    to_index: i64,
+    uses_top_level_rows: bool,
+) -> bool {
+    match snapshot.windows.get_mut(window_index) {
         Some(window) => session_ops::reorder_workspaces_with_mode(
             &mut window.tab_manager,
             index,

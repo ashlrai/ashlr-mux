@@ -13,11 +13,14 @@ pub(super) use create_params::{
 
 #[path = "workspace_control/events.rs"]
 mod events;
-use events::{record_workspace_create_events, record_workspace_selected_event};
+use events::{
+    record_workspace_create_events, record_workspace_moved_event, record_workspace_reordered_event,
+    record_workspace_selected_event,
+};
 #[cfg(test)]
 pub(super) use events::{
-    workspace_close_event_specs, workspace_create_event_specs, workspace_rename_event_spec,
-    workspace_selected_event_spec,
+    workspace_close_event_specs, workspace_create_event_specs, workspace_moved_event_spec,
+    workspace_rename_event_spec, workspace_reordered_event_spec, workspace_selected_event_spec,
 };
 
 #[path = "workspace_control/close.rs"]
@@ -35,6 +38,10 @@ pub(super) use rename::workspace_rename;
 #[path = "workspace_control/navigation.rs"]
 pub(super) mod navigation;
 pub(super) use navigation::{workspace_last, workspace_select_relative};
+
+#[path = "workspace_control/ordering_params.rs"]
+mod ordering_params;
+pub(super) use ordering_params::{workspace_reorder_many_order, WorkspaceReorderManyOrderError};
 
 pub(super) fn workspace_create(
     app: &AppHandle,
@@ -627,9 +634,7 @@ pub(super) fn workspace_id_for_window_move(
 
 pub(super) fn focus_window_after_workspace_move(app: &AppHandle, label: &str, focus: bool) {
     if focus {
-        if let Some(window) = app.get_webview_window(label) {
-            let _ = window.set_focus();
-        }
+        let _ = crate::window::focus_control_window(app, label);
     }
 }
 
@@ -694,30 +699,28 @@ pub(super) fn workspace_move_to_window(
             };
         }
     };
-    let Some(target_window) = result
+    if !result
         .windows
         .iter()
-        .find(|window| window.window_id.as_deref() == Some(window_identity.label.as_str()))
-    else {
+        .any(|window| window.window_id.as_deref() == Some(window_identity.label.as_str()))
+    {
         return ControlCallResult::Err {
             code: "internal_error".to_string(),
             message: "Failed to move workspace".to_string(),
             data: None,
         };
-    };
+    }
     focus_window_after_workspace_move(app, &window_identity.label, focus);
-    let workspace_ref_value = target_window
-        .tab_manager
-        .workspaces
-        .iter()
-        .position(|workspace| workspace.workspace_id.as_deref() == Some(workspace_id.as_str()))
-        .map(workspace_ref);
-    ok(json!({
+    let workspace_ref_value = control_handle_ref(app, "workspace", &workspace_id);
+    let window_ref = control_handle_ref(app, "window", &window_identity.id);
+    let payload = json!({
         "workspace_id": workspace_id,
         "workspace_ref": workspace_ref_value,
         "window_id": window_identity.id,
-        "window_ref": window_identity.reference,
-    }))
+        "window_ref": window_ref,
+    });
+    record_workspace_moved_event(app, params, &payload);
+    ok(payload)
 }
 
 pub(super) fn workspace_reorder(
@@ -725,25 +728,29 @@ pub(super) fn workspace_reorder(
     params: &serde_json::Map<String, Value>,
 ) -> ControlCallResult {
     let current = snapshot(app);
-    if !workspace_reorder_window_matches(&current, params) {
+    let Some(window_index) = workspace_routed_window_index_for_app(app, &current, params) else {
         return ControlCallResult::Err {
             code: "unavailable".to_string(),
             message: "TabManager not available".to_string(),
             data: None,
         };
-    }
-    let Some(index) = workspace_index_from_params(&current, params) else {
-        return invalid_params("Missing or invalid workspace selector");
     };
-    let Some(workspace_id) = current
-        .windows
-        .first()
-        .and_then(|window| window.tab_manager.workspaces.get(index))
-        .and_then(|workspace| workspace.workspace_id.clone())
+    let Some(workspace_id) = raw_string_param(params, &["workspace_id"])
+        .filter(|workspace_id| Uuid::parse_str(workspace_id).is_ok())
     else {
-        return invalid_params("Missing or invalid workspace selector");
+        return invalid_params("Missing or invalid workspace_id");
     };
-    let Some(requested_index) = workspace_reorder_destination_index(&current, params, index) else {
+    let Some(index) = workspace_index_for_id_in_window(&current, window_index, &workspace_id)
+    else {
+        return ControlCallResult::Err {
+            code: "not_found".to_string(),
+            message: "Workspace not found".to_string(),
+            data: json!({"workspace_id": workspace_id}).try_into().ok(),
+        };
+    };
+    let Some(requested_index) =
+        workspace_reorder_destination_index_in_window(&current, window_index, params, index)
+    else {
         return invalid_params(
             "Specify exactly one target: index, before_workspace_id, or after_workspace_id",
         );
@@ -751,7 +758,7 @@ pub(super) fn workspace_reorder(
     let uses_top_level_rows =
         bool_param(params, &["uses_top_level_rows", "top_level_rows"]).unwrap_or(false);
     let mut planned = current.clone();
-    if let Some(window) = planned.windows.first_mut() {
+    if let Some(window) = planned.windows.get_mut(window_index) {
         session_ops::reorder_workspaces_with_mode(
             &mut window.tab_manager,
             index as i64,
@@ -759,17 +766,19 @@ pub(super) fn workspace_reorder(
             uses_top_level_rows,
         );
     }
-    let Some(to_index) = workspace_index_for_id(&planned, &workspace_id) else {
-        return invalid_params("Missing or invalid workspace selector");
+    let Some(to_index) = workspace_index_for_id_in_window(&planned, window_index, &workspace_id)
+    else {
+        return invalid_params("Missing or invalid workspace_id");
     };
     let dry_run = bool_param(params, &["dry_run"]).unwrap_or(false);
     let result = if dry_run {
         planned
     } else {
         let state = app.state::<SessionState>();
-        match reorder_workspaces_for_control(
+        match reorder_workspaces_in_window_for_control(
             app,
             &state,
+            window_index,
             index as i64,
             requested_index,
             uses_top_level_rows,
@@ -784,10 +793,12 @@ pub(super) fn workspace_reorder(
             }
         }
     };
-    let window = result.windows.first();
+    let window = result.windows.get(window_index);
     let window_id = window.and_then(|window| window.window_id.clone());
-    let window_ref = window_id.as_ref().map(|_| "window:1");
-    let workspace_ref = workspace_ref(to_index);
+    let window_ref = window_id
+        .as_deref()
+        .map(|window_id| control_handle_ref(app, "window", window_id));
+    let workspace_ref = control_handle_ref(app, "workspace", &workspace_id);
     let plan = json!({
         "workspace_id": workspace_id,
         "workspace_ref": workspace_ref,
@@ -801,6 +812,9 @@ pub(super) fn workspace_reorder(
     } else {
         Vec::new()
     };
+    if !events.is_empty() {
+        record_workspace_reordered_event(app, &result, window_index, &[workspace_id.clone()]);
+    }
     ok(json!({
         "workspace_id": workspace_id,
         "workspace_ref": workspace_ref,
@@ -820,13 +834,6 @@ pub(super) fn workspace_reorder_many(
     params: &serde_json::Map<String, Value>,
 ) -> ControlCallResult {
     let current = snapshot(app);
-    if !workspace_reorder_window_matches(&current, params) {
-        return ControlCallResult::Err {
-            code: "unavailable".to_string(),
-            message: "TabManager not available".to_string(),
-            data: None,
-        };
-    }
     let ordered_workspace_ids = match workspace_reorder_many_order(&current, params) {
         Ok(ids) => ids,
         Err(WorkspaceReorderManyOrderError::Missing) => {
@@ -844,64 +851,89 @@ pub(super) fn workspace_reorder_many(
             };
         }
     };
+    let active_window_id = control_active_window_id(app);
+    let Some(window_index) = workspace_reorder_many_window_index_with_active(
+        &current,
+        params,
+        &ordered_workspace_ids,
+        active_window_id.as_deref(),
+    ) else {
+        return ControlCallResult::Err {
+            code: "unavailable".to_string(),
+            message: "TabManager not available".to_string(),
+            data: None,
+        };
+    };
     let dry_run = bool_param(params, &["dry_run"]).unwrap_or(false);
     let state = app.state::<SessionState>();
-    let (plan, result) =
-        match reorder_workspaces_many_for_control(app, &state, &ordered_workspace_ids, dry_run) {
-            Ok(result) => result,
-            Err(PaneTopologyControlError::Operation(
-                ReorderWorkspacesManyControlError::Unavailable,
-            )) => {
-                return ControlCallResult::Err {
-                    code: "unavailable".to_string(),
-                    message: "TabManager not available".to_string(),
-                    data: None,
-                };
-            }
-            Err(PaneTopologyControlError::Operation(ReorderWorkspacesManyControlError::Batch(
-                WorkspaceBatchReorderError::DuplicateWorkspace(workspace_id),
-            ))) => {
-                return ControlCallResult::Err {
+    let (plan, result) = match reorder_workspaces_many_in_window_for_control(
+        app,
+        &state,
+        window_index,
+        &ordered_workspace_ids,
+        dry_run,
+    ) {
+        Ok(result) => result,
+        Err(PaneTopologyControlError::Operation(
+            ReorderWorkspacesManyControlError::Unavailable,
+        )) => {
+            return ControlCallResult::Err {
+                code: "unavailable".to_string(),
+                message: "TabManager not available".to_string(),
+                data: None,
+            };
+        }
+        Err(PaneTopologyControlError::Operation(ReorderWorkspacesManyControlError::Batch(
+            WorkspaceBatchReorderError::DuplicateWorkspace(workspace_id),
+        ))) => {
+            return ControlCallResult::Err {
                 code: "invalid_params".to_string(),
                 message: "Duplicate workspace in order".to_string(),
                 data: Some(
                     json!({
-                        "workspace_id": workspace_id,
-                        "workspace_ref": workspace_index_for_id(&current, &workspace_id.to_string())
-                            .map(workspace_ref),
+                            "workspace_id": workspace_id,
+                            "workspace_ref": control_handle_ref(
+                                app,
+                                "workspace",
+                                &workspace_id.to_string()
+                            ),
                     })
                     .try_into()
                     .unwrap_or(JsonValue::Null),
                 ),
             };
-            }
-            Err(PaneTopologyControlError::Operation(ReorderWorkspacesManyControlError::Batch(
-                WorkspaceBatchReorderError::WorkspaceNotFound(workspace_id),
-            ))) => {
-                return ControlCallResult::Err {
-                    code: "not_found".to_string(),
-                    message: "Workspace not found".to_string(),
-                    data: Some(
-                        json!({
-                            "workspace_id": workspace_id,
-                            "workspace_ref": Value::Null,
-                        })
-                        .try_into()
-                        .unwrap_or(JsonValue::Null),
-                    ),
-                };
-            }
-            Err(PaneTopologyControlError::Publication(message)) => {
-                return ControlCallResult::Err {
-                    code: "internal".to_string(),
-                    message,
-                    data: None,
-                };
-            }
-        };
+        }
+        Err(PaneTopologyControlError::Operation(ReorderWorkspacesManyControlError::Batch(
+            WorkspaceBatchReorderError::WorkspaceNotFound(workspace_id),
+        ))) => {
+            return ControlCallResult::Err {
+                code: "not_found".to_string(),
+                message: "Workspace not found".to_string(),
+                data: Some(
+                    json!({
+                        "workspace_id": workspace_id,
+                        "workspace_ref": control_handle_ref(
+                            app,
+                            "workspace",
+                            &workspace_id.to_string()
+                        ),
+                    })
+                    .try_into()
+                    .unwrap_or(JsonValue::Null),
+                ),
+            };
+        }
+        Err(PaneTopologyControlError::Publication(message)) => {
+            return ControlCallResult::Err {
+                code: "internal".to_string(),
+                message,
+                data: None,
+            };
+        }
+    };
     let plan_payloads: Vec<Value> = plan
         .iter()
-        .map(|item| workspace_reorder_plan_payload(&result, item))
+        .map(|item| workspace_reorder_plan_payload(app, &result, window_index, item))
         .collect();
     let events: Vec<Value> = if dry_run {
         Vec::new()
@@ -913,13 +945,20 @@ pub(super) fn workspace_reorder_many(
             })
             .collect()
     };
+    if !events.is_empty() {
+        let moved_workspace_ids = ordered_workspace_ids
+            .iter()
+            .map(Uuid::to_string)
+            .collect::<Vec<_>>();
+        record_workspace_reordered_event(app, &result, window_index, &moved_workspace_ids);
+    }
     let window_id = result
         .windows
-        .first()
+        .get(window_index)
         .and_then(|window| window.window_id.clone());
     ok(json!({
         "window_id": window_id,
-        "window_ref": window_id.as_ref().map(|_| "window:1"),
+        "window_ref": window_id.as_deref().map(|window_id| control_handle_ref(app, "window", window_id)),
         "dry_run": dry_run,
         "plan": plan_payloads,
         "events": events,
@@ -927,89 +966,25 @@ pub(super) fn workspace_reorder_many(
 }
 
 pub(super) fn workspace_reorder_plan_payload(
+    app: &AppHandle,
     snapshot: &AppSessionSnapshot,
+    window_index: usize,
     item: &WorkspaceReorderPlanItem,
 ) -> Value {
     let workspace_id = item.workspace_id.to_string();
-    let workspace_ref_value = workspace_index_for_id(snapshot, &workspace_id).map(workspace_ref);
+    let workspace_ref_value = control_handle_ref(app, "workspace", &workspace_id);
     let window_id = snapshot
         .windows
-        .first()
+        .get(window_index)
         .and_then(|window| window.window_id.clone());
     json!({
         "workspace_id": workspace_id,
         "workspace_ref": workspace_ref_value,
         "window_id": window_id,
-        "window_ref": window_id.as_ref().map(|_| "window:1"),
+        "window_ref": window_id.as_deref().map(|window_id| control_handle_ref(app, "window", window_id)),
         "from_index": item.from_index,
         "to_index": item.to_index,
     })
-}
-
-#[derive(Debug)]
-pub(super) enum WorkspaceReorderManyOrderError {
-    Missing,
-    Invalid(String),
-}
-
-pub(super) fn workspace_reorder_many_order(
-    snapshot: &AppSessionSnapshot,
-    params: &serde_json::Map<String, Value>,
-) -> Result<Vec<Uuid>, WorkspaceReorderManyOrderError> {
-    let values: Vec<&str> = if let Some(raw) = params.get("workspace_ids") {
-        match raw {
-            Value::Array(values) => values
-                .iter()
-                .map(|value| {
-                    value
-                        .as_str()
-                        .ok_or_else(|| WorkspaceReorderManyOrderError::Invalid(value.to_string()))
-                })
-                .collect::<Result<_, _>>()?,
-            Value::String(value) => vec![value],
-            value => {
-                return Err(WorkspaceReorderManyOrderError::Invalid(value.to_string()));
-            }
-        }
-    } else if let Some(raw) = params.get("order") {
-        match raw {
-            Value::String(value) => value.split(',').collect(),
-            value => {
-                return Err(WorkspaceReorderManyOrderError::Invalid(value.to_string()));
-            }
-        }
-    } else {
-        return Err(WorkspaceReorderManyOrderError::Missing);
-    };
-    if values.is_empty() {
-        return Err(WorkspaceReorderManyOrderError::Missing);
-    }
-
-    values
-        .into_iter()
-        .map(|raw| {
-            let raw = raw.trim();
-            if raw.is_empty() {
-                return Err(WorkspaceReorderManyOrderError::Invalid(raw.to_string()));
-            }
-            let workspace_id = if let Some(index) = one_based_ref_index(raw, "workspace") {
-                snapshot
-                    .windows
-                    .first()
-                    .and_then(|window| window.tab_manager.workspaces.get(index))
-                    .and_then(|workspace| workspace.workspace_id.as_deref())
-                    .ok_or_else(|| WorkspaceReorderManyOrderError::Invalid(raw.to_string()))?
-            } else if workspace_index_for_id(snapshot, raw).is_some()
-                || Uuid::parse_str(raw).is_ok()
-            {
-                raw
-            } else {
-                return Err(WorkspaceReorderManyOrderError::Invalid(raw.to_string()));
-            };
-            Uuid::parse_str(workspace_id)
-                .map_err(|_| WorkspaceReorderManyOrderError::Invalid(raw.to_string()))
-        })
-        .collect()
 }
 
 pub(super) fn workspace_equalize_splits(app: &AppHandle) -> ControlCallResult {
