@@ -69,7 +69,7 @@ pub fn pane_report_geometry(
 
 #[cfg(test)]
 mod tests {
-    use super::{PaneGeometryState, WorkspacePaneGeometry};
+    use super::{PaneGeometryAuthority, PaneGeometryState, WorkspacePaneGeometry};
 
     fn geometry(width: f64) -> WorkspacePaneGeometry {
         WorkspacePaneGeometry {
@@ -81,24 +81,43 @@ mod tests {
     }
 
     #[test]
-    fn reports_replace_geometry_without_crossing_workspaces() {
+    fn reports_are_scoped_by_window_and_workspace() {
         let state = PaneGeometryState::default();
-        state.report("first", geometry(760.0)).unwrap();
-        state.report("second", geometry(500.0)).unwrap();
-        state.report("first", geometry(800.0)).unwrap();
+        state.report("main", "first", geometry(760.0)).unwrap();
+        state.report("aux", "first", geometry(500.0)).unwrap();
+        state.report("main", "first", geometry(800.0)).unwrap();
 
-        assert_eq!(state.geometry_for("first"), Some(geometry(800.0)));
-        assert_eq!(state.geometry_for("second"), Some(geometry(500.0)));
-        assert_eq!(state.geometry_for("missing"), None);
+        assert_eq!(
+            state.authority_for("main", "first"),
+            PaneGeometryAuthority::Rendered(geometry(800.0))
+        );
+        assert_eq!(
+            state.authority_for("aux", "first"),
+            PaneGeometryAuthority::Rendered(geometry(500.0))
+        );
+        assert_eq!(
+            state.authority_for("main", "unrendered"),
+            PaneGeometryAuthority::WorkspaceUnrendered
+        );
+        assert_eq!(
+            state.authority_for("missing", "first"),
+            PaneGeometryAuthority::Uninitialized
+        );
     }
 
     #[test]
     fn rejects_geometry_that_cannot_describe_a_rendered_portal() {
         let state = PaneGeometryState::default();
 
-        assert!(state.report("", geometry(760.0)).is_err());
-        assert!(state.report("workspace", geometry(0.0)).is_err());
-        assert!(state.report("workspace", geometry(f64::NAN)).is_err());
-        assert_eq!(state.geometry_for("workspace"), None);
+        assert!(state.report("", "workspace", geometry(760.0)).is_err());
+        assert!(state.report("main", "", geometry(760.0)).is_err());
+        assert!(state.report("main", "workspace", geometry(0.0)).is_err());
+        assert!(state
+            .report("main", "workspace", geometry(f64::NAN))
+            .is_err());
+        assert_eq!(
+            state.authority_for("main", "workspace"),
+            PaneGeometryAuthority::Uninitialized
+        );
     }
 }

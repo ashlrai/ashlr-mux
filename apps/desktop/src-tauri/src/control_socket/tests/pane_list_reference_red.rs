@@ -86,6 +86,8 @@ fn pane_list_reports_logical_points_instead_of_physical_dpi_pixels() {
 
 #[test]
 fn pane_list_prefers_the_rendered_workspace_frame_over_the_native_window() {
+    use crate::pane_geometry::PaneGeometryAuthority;
+
     let observed = PanePixelFrame {
         x: 240.0,
         y: 28.0,
@@ -100,8 +102,49 @@ fn pane_list_prefers_the_rendered_workspace_frame_over_the_native_window() {
     };
 
     assert_eq!(
-        pane_surface_control::pane_list::pane_list_root_frame(Some(observed), native_window),
+        pane_surface_control::pane_list::pane_list_root_frame(
+            PaneGeometryAuthority::Rendered(crate::pane_geometry::WorkspacePaneGeometry {
+                x: observed.x,
+                y: observed.y,
+                width: observed.width,
+                height: observed.height,
+            }),
+            native_window,
+        ),
         observed
+    );
+}
+
+#[test]
+fn pane_list_uses_zero_frames_only_after_the_window_has_rendered_another_workspace() {
+    use crate::pane_geometry::PaneGeometryAuthority;
+
+    let native_window = PanePixelFrame {
+        x: 0.0,
+        y: 0.0,
+        width: 1000.0,
+        height: 700.0,
+    };
+    let zero = PanePixelFrame {
+        x: 0.0,
+        y: 0.0,
+        width: 0.0,
+        height: 0.0,
+    };
+
+    assert_eq!(
+        pane_surface_control::pane_list::pane_list_root_frame(
+            PaneGeometryAuthority::Uninitialized,
+            native_window,
+        ),
+        native_window
+    );
+    assert_eq!(
+        pane_surface_control::pane_list::pane_list_root_frame(
+            PaneGeometryAuthority::WorkspaceUnrendered,
+            native_window,
+        ),
+        zero
     );
 }
 
