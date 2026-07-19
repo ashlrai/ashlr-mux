@@ -4394,5 +4394,3 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
         self.rollback_resources()
     }
 }
-
-mod resume_approval;

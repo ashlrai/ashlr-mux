@@ -10,7 +10,7 @@ use cmux_ipc::ControlCallResult;
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
-use super::window_lifecycle::ResumeApprovalDecision;
+use super::super::window_lifecycle::ResumeApprovalDecision;
 
 fn store_path(app: &AppHandle) -> Option<PathBuf> {
     std::env::var("CMUX_SURFACE_RESUME_APPROVAL_STORE_PATH")

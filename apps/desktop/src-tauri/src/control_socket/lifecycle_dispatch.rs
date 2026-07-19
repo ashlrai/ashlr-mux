@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "resume_approval.rs"]
+mod resume_approval;
+
 pub(super) fn handle_pane_surface_lifecycle_request(
     app: &AppHandle,
     method: &str,
@@ -585,11 +588,9 @@ pub(super) fn handle_window_lifecycle_request(
     let mut transition =
         window_lifecycle::dispatch_window_lifecycle_request(&current, method, &params, &context);
     if method == "surface.resume.set" {
-        if let Some(decision) = super::resume_approval::promptless_cli_decision(
-            app,
-            &transition.snapshot,
-            &transition.result,
-        ) {
+        if let Some(decision) =
+            resume_approval::promptless_cli_decision(app, &transition.snapshot, &transition.result)
+        {
             context.resume_approval = Some(decision);
             transition = window_lifecycle::dispatch_window_lifecycle_request(
                 &current, method, &params, &context,
