@@ -5,7 +5,10 @@
 //! bar consumes this so its presentation stays in sync with the actual Tauri
 //! window, including windows created at runtime from the command palette.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::{
+    ffi::OsStr,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use cmux_core::window_display::{
     centered_window_geometry, matching_monitor_index, ordered_window_identities,
@@ -16,9 +19,18 @@ use tauri::{
 };
 
 const MAIN_WINDOW_LABEL: &str = "main";
+const CAPTURE_HEADLESS_ENV: &str = "CMUX_PARITY_CAPTURE_HEADLESS";
 const AUX_WINDOW_LABEL_PREFIX: &str = "window-";
 const WINDOW_STATE_CHANGED_EVENT: &str = "cmux://window-state-changed";
 static NEXT_WINDOW_NUMBER: AtomicU64 = AtomicU64::new(2);
+
+fn capture_windows_hidden_for_value(value: Option<&OsStr>) -> bool {
+    value == Some(OsStr::new("1"))
+}
+
+pub(crate) fn capture_windows_hidden() -> bool {
+    capture_windows_hidden_for_value(std::env::var_os(CAPTURE_HEADLESS_ENV).as_deref())
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowDisplayInfo {
@@ -167,6 +179,9 @@ pub fn focus_control_window(app: &AppHandle, selector: &str) -> Result<(), Strin
         .collect();
     let index = resolve_window_selector(&identities, selector)
         .ok_or_else(|| format!("Window not found: {selector}"))?;
+    if capture_windows_hidden() {
+        return Ok(());
+    }
     let window = &windows[index].1;
     window.show().map_err(|error| error.to_string())?;
     window.set_focus().map_err(|error| error.to_string())
@@ -430,20 +445,18 @@ fn close_webview_window(
     let outcome = match unregistration {
         Ok(outcome) => outcome,
         Err(message) => {
-            let failures = window
-                .show()
+            let failures = restore_webview_visibility(&window)
                 .err()
-                .map(|error| vec![error.to_string()])
+                .map(|error| vec![error])
                 .unwrap_or_default();
             return Err(append_compensation_failures(message, failures));
         }
     };
     let crate::session::UnregisterWindowOutcome::Removed { lease, .. } = outcome else {
         return window.close().map_err(|error| {
-            let failures = window
-                .show()
+            let failures = restore_webview_visibility(&window)
                 .err()
-                .map(|show_error| vec![show_error.to_string()])
+                .map(|show_error| vec![show_error])
                 .unwrap_or_default();
             append_compensation_failures(error.to_string(), failures)
         });
@@ -455,8 +468,8 @@ fn close_webview_window(
         {
             failures.push(error);
         }
-        if let Err(error) = window.show() {
-            failures.push(error.to_string());
+        if let Err(error) = restore_webview_visibility(&window) {
+            failures.push(error);
         }
         return Err(append_compensation_failures(error.to_string(), failures));
     }
@@ -490,7 +503,7 @@ fn create_window_for_label(
         return Err(append_compensation_failures(message, failures));
     }
     install_window_state_listener(&new_window);
-    if let Err(error) = new_window.show() {
+    if let Err(error) = restore_webview_visibility(&new_window) {
         let mut failures = Vec::new();
         let unregistration = if prepared_snapshot.is_some() {
             crate::session::unregister_window_for_control_suppressing_events(
@@ -511,7 +524,7 @@ fn create_window_for_label(
         if let Err(error) = new_window.close() {
             failures.push(error.to_string());
         }
-        return Err(append_compensation_failures(error.to_string(), failures));
+        return Err(append_compensation_failures(error, failures));
     }
     let _ = emit_window_state(&new_window);
     Ok(())
@@ -546,10 +559,16 @@ fn restored_window(app: &AppHandle, label: &str) -> Result<WebviewWindow, String
         .ok_or_else(|| format!("Restored window {label} is unavailable"))
 }
 
+fn restore_webview_visibility(window: &WebviewWindow) -> Result<(), String> {
+    if capture_windows_hidden() {
+        Ok(())
+    } else {
+        window.show().map_err(|error| error.to_string())
+    }
+}
+
 pub(crate) fn show_restored_window_unfocused(app: &AppHandle, label: &str) -> Result<(), String> {
-    restored_window(app, label)?
-        .show()
-        .map_err(|error| error.to_string())
+    restore_webview_visibility(&restored_window(app, label)?)
 }
 
 pub(crate) fn close_restored_window(app: &AppHandle, label: &str) -> Result<(), String> {
@@ -559,6 +578,9 @@ pub(crate) fn close_restored_window(app: &AppHandle, label: &str) -> Result<(), 
 }
 
 pub(crate) fn activate_restored_window(app: &AppHandle, label: &str) -> Result<(), String> {
+    if capture_windows_hidden() {
+        return Ok(());
+    }
     restored_window(app, label)?
         .set_focus()
         .map_err(|error| error.to_string())

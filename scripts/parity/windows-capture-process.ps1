@@ -109,6 +109,7 @@ function Start-OwnedProcess {
 
     $env:CMUX_CONTROL_PIPE_NAME = $PipeName
     $env:CMUX_TEST_DISABLE_SINGLE_INSTANCE = '1'
+    $env:CMUX_PARITY_CAPTURE_HEADLESS = '1'
     $env:CMUX_SOCKET_PASSWORD = $null
     $env:LOCALAPPDATA = $localAppData
     $env:APPDATA = $roamingAppData
@@ -119,7 +120,7 @@ function Start-OwnedProcess {
     $stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ')
     $stdoutPath = Join-Path $profilePath "cmux-desktop.$stamp.stdout.log"
     $stderrPath = Join-Path $profilePath "cmux-desktop.$stamp.stderr.log"
-    $process = Start-Process -FilePath $executable -WorkingDirectory $profilePath -PassThru `
+    $process = Start-Process -FilePath $executable -WorkingDirectory $profilePath -PassThru -WindowStyle Hidden `
         -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
     $process.Refresh()
     $state = [ordered]@{

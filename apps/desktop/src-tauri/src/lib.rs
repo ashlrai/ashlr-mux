@@ -195,9 +195,11 @@ fn route_launch_arguments(app: &tauri::AppHandle, args: &[String], cwd: &Path) {
             None,
         ) {
             Ok(_) => {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
+                if !window::capture_windows_hidden() {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
                 }
             }
             Err(error) => {
@@ -364,6 +366,11 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 let _ =
                     session::session_snapshot(handle, window, app.state::<session::SessionState>());
+            }
+            if !window::capture_windows_hidden() {
+                if let Some(window) = app.get_webview_window("main") {
+                    window.show()?;
+                }
             }
             Ok(())
         })
