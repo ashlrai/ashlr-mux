@@ -174,6 +174,12 @@ function Start-WindowSupervisor([System.Diagnostics.Process]$process, [hashtable
     $watchdogStdoutPath = Join-Path $profilePath 'cmux-capture-window-watchdog.stdout.log'
     $watchdogStderrPath = Join-Path $profilePath 'cmux-capture-window-watchdog.stderr.log'
     $violationLogPath = Join-Path $profilePath 'cmux-capture-window-violation.json'
+    $readyPath = Join-Path $profilePath 'cmux-capture-window-watchdog.ready'
+    foreach ($staleArtifact in @($violationLogPath, $readyPath)) {
+        if (Test-Path -LiteralPath $staleArtifact -PathType Leaf) {
+            Remove-Item -LiteralPath $staleArtifact
+        }
+    }
     $arguments = @(
         '-NoProfile',
         '-NonInteractive',
@@ -188,7 +194,9 @@ function Start-WindowSupervisor([System.Diagnostics.Process]$process, [hashtable
         '-TargetExecutable',
         "`"$($process.Path)`"",
         '-ViolationLogPath',
-        "`"$violationLogPath`""
+        "`"$violationLogPath`"",
+        '-ReadyPath',
+        "`"$readyPath`""
     )
     $supervisor = Start-Process -FilePath $powershellPath -ArgumentList $arguments -PassThru `
         -WindowStyle Hidden -RedirectStandardOutput $watchdogStdoutPath `
@@ -198,6 +206,22 @@ function Start-WindowSupervisor([System.Diagnostics.Process]$process, [hashtable
     $state.supervisor_start_time_utc_ticks = $supervisor.StartTime.ToUniversalTime().Ticks
     $state.supervisor_executable = $powershellPath
     $state | ConvertTo-Json | Set-Content -LiteralPath $statePath -Encoding UTF8
+
+    $readyDeadline = [DateTime]::UtcNow.AddSeconds(10)
+    while ([DateTime]::UtcNow -lt $readyDeadline) {
+        $supervisor.Refresh()
+        if ($supervisor.HasExited) {
+            Stop-OwnedProcess
+            throw 'Capture window watchdog exited before it became ready.'
+        }
+        if (Test-Path -LiteralPath $readyPath -PathType Leaf) {
+            Remove-Item -LiteralPath $readyPath
+            return
+        }
+        Start-Sleep -Milliseconds 25
+    }
+    Stop-OwnedProcess
+    throw 'Capture window watchdog was not ready within 10 seconds.'
 }
 
 function Test-PipeReady {

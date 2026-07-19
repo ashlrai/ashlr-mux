@@ -6,7 +6,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$TargetExecutable,
     [Parameter(Mandatory = $true)]
-    [string]$ViolationLogPath
+    [string]$ViolationLogPath,
+    [Parameter(Mandatory = $true)]
+    [string]$ReadyPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -215,6 +217,7 @@ function Hide-VisibleOnscreenTargetWindows {
     return $visibleWindows.Count
 }
 
+[DateTime]::UtcNow.ToString('O') | Set-Content -LiteralPath $ReadyPath -Encoding ASCII
 while ($null -ne (Get-ExactTargetProcess)) {
     if ((Hide-VisibleOnscreenTargetWindows) -gt 0) {
         $process = Get-ExactTargetProcess
