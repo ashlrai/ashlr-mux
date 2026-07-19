@@ -1084,7 +1084,16 @@ fn app_wide_authority_moves_across_windows_atomically_and_projects_both() {
         serde_json::json!(["surface-b", "surface-a"])
     );
     assert_eq!(
-        projected["windows"][1]["tab_manager"]["workspaces"][0]["surfaces"][1]["metadata"]
+        projected["windows"][1]["tab_manager"]["workspaces"][0]["surfaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|surface| surface["surface_id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["surface-a", "surface-b"]
+    );
+    assert_eq!(
+        projected["windows"][1]["tab_manager"]["workspaces"][0]["surfaces"][0]["metadata"]
             ["custom_title"],
         "api"
     );

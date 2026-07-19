@@ -15,6 +15,8 @@ use crate::dock::{
     DockCreateRequest, DockPlacement, DockRuntimeIntent, DockStore, DockSurfaceKind,
 };
 
+use super::payloads::surfaces_for_workspace;
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub(super) struct LifecycleEvent {
     pub name: &'static str,
@@ -1425,13 +1427,18 @@ fn surface_list(
     let workspace =
         &projected.windows[scope.window_index].tab_manager.workspaces[scope.workspace_index];
     let mut rows = Vec::new();
-    for (index, record) in workspace
-        .surfaces
-        .as_deref()
-        .unwrap_or_default()
-        .iter()
-        .enumerate()
-    {
+    let ordered_surface_ids = surfaces_for_workspace(workspace)
+        .into_iter()
+        .filter_map(|surface| surface.get("id").and_then(Value::as_str).map(str::to_owned))
+        .collect::<Vec<_>>();
+    for (index, surface_id) in ordered_surface_ids.iter().enumerate() {
+        let Some(record) = workspace.surfaces.as_deref().and_then(|records| {
+            records
+                .iter()
+                .find(|record| record.surface_id == *surface_id)
+        }) else {
+            continue;
+        };
         let Some(owner) = model.owner_of_surface(&record.surface_id) else {
             continue;
         };

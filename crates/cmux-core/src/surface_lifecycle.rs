@@ -178,6 +178,7 @@ pub struct SurfaceLifecycleModel {
     panes: BTreeMap<String, PaneRecord>,
     pane_order: Vec<String>,
     surfaces: BTreeMap<String, SurfaceRecord>,
+    surface_order: Vec<String>,
     focused_surfaces: BTreeMap<String, String>,
     surface_owners: HashMap<String, Owner>,
     runtime_owners: HashMap<String, String>,
@@ -256,6 +257,7 @@ impl SurfaceLifecycleModel {
                 is_workspace_focused: false,
             },
         );
+        self.surface_order.push(seed.surface_id.clone());
         Ok(Reservation {
             surface_id: seed.surface_id,
             generation,
@@ -483,6 +485,7 @@ impl SurfaceLifecycleModel {
             .remove(surface_id)
             .ok_or_else(|| LifecycleError::SurfaceNotFound(surface_id.into()))?;
         let record = self.surfaces.remove(surface_id).unwrap();
+        self.surface_order.retain(|id| id != surface_id);
         if let Some(runtime) = &record.runtime {
             self.runtime_owners.remove(runtime.id());
         }
@@ -774,8 +777,9 @@ impl SurfaceLifecycleModel {
                 .collect(),
             focused_surfaces: self.focused_surfaces.clone(),
             surfaces: self
-                .surfaces
-                .values()
+                .surface_order
+                .iter()
+                .filter_map(|id| self.surfaces.get(id))
                 .map(|s| PersistedSurfaceRecord {
                     surface_id: s.surface_id.clone(),
                     pane_id: s.pane_id.clone(),
@@ -841,13 +845,14 @@ impl SurfaceLifecycleModel {
                         window_id: p.window_id.clone(),
                         workspace_id: p.workspace_id.clone(),
                         pane_id: p.pane_id.clone(),
-                        surface_id: persisted.surface_id,
+                        surface_id: persisted.surface_id.clone(),
                     },
                 )
                 .is_some()
             {
                 return Err(LifecycleError::Invalid("duplicate surface owner".into()));
             }
+            model.surface_order.push(persisted.surface_id);
         }
         model.focused_surfaces = snapshot.focused_surfaces;
         for id in model.focused_surfaces.values() {
@@ -963,6 +968,7 @@ impl SurfaceLifecycleModel {
                             persisted.surface_id
                         )));
                     }
+                    model.surface_order.push(persisted.surface_id.clone());
                 }
             } else {
                 migrate_workspace_legacy(&mut model, workspace, &workspace_id)?;
@@ -1100,6 +1106,7 @@ impl SurfaceLifecycleModel {
                     persisted.surface_id
                 )));
             }
+            model.surface_order.push(persisted.surface_id.clone());
         }
         if let Some(focused) = &dock.focused_surface_id {
             if !model.surface_owners.contains_key(focused) {
@@ -1141,6 +1148,7 @@ impl SurfaceLifecycleModel {
                 return Err(LifecycleError::DuplicateSurface(id));
             }
         }
+        self.surface_order.extend(other.surface_order);
         for (id, owner) in other.surface_owners {
             if self.surface_owners.insert(id.clone(), owner).is_some() {
                 return Err(LifecycleError::DuplicateSurface(id));
@@ -1213,16 +1221,20 @@ impl SurfaceLifecycleModel {
             window.tab_manager = self.project_tab_manager(Some(&window_id), &window.tab_manager)?;
             if let Some(dock) = window.dock.as_mut() {
                 dock.surfaces = self
-                    .pane_order
+                    .surface_order
                     .iter()
-                    .filter_map(|id| self.panes.get(id))
-                    .filter(|pane| {
-                        pane.container == ContainerKind::Dock
-                            && pane.window_id == window_id
-                            && pane.workspace_id == dock.workspace_id
+                    .filter_map(|id| {
+                        let owner = self.surface_owners.get(id)?;
+                        let pane = self.panes.get(&owner.pane_id)?;
+                        if pane.container == ContainerKind::Dock
+                            && owner.window_id == window_id
+                            && owner.workspace_id == dock.workspace_id
+                        {
+                            self.surfaces.get(id)
+                        } else {
+                            None
+                        }
                     })
-                    .flat_map(|pane| pane.surface_ids.iter())
-                    .filter_map(|id| self.surfaces.get(id))
                     .map(record_to_session)
                     .collect();
                 dock.focused_surface_id = self.focused_surfaces.get(&dock.workspace_id).cloned();
@@ -1246,15 +1258,18 @@ impl SurfaceLifecycleModel {
             });
             workspace.workspace_id = Some(workspace_id.clone());
             workspace.surfaces = Some(
-                self.pane_order
+                self.surface_order
                     .iter()
-                    .filter_map(|id| self.panes.get(id))
-                    .filter(|pane| {
-                        pane.workspace_id == workspace_id
-                            && window_id.is_none_or(|window| pane.window_id == window)
+                    .filter_map(|id| {
+                        let owner = self.surface_owners.get(id)?;
+                        if owner.workspace_id == workspace_id
+                            && window_id.is_none_or(|window| owner.window_id == window)
+                        {
+                            self.surfaces.get(id)
+                        } else {
+                            None
+                        }
                     })
-                    .flat_map(|pane| pane.surface_ids.iter())
-                    .filter_map(|id| self.surfaces.get(id))
                     .map(record_to_session)
                     .collect(),
             );
@@ -1309,6 +1324,18 @@ impl SurfaceLifecycleModel {
             || self.panes.keys().any(|id| !pane_order_set.contains(id))
         {
             return Err(LifecycleError::Invalid("pane order/index mismatch".into()));
+        }
+        let surface_order_set = self.surface_order.iter().collect::<HashSet<_>>();
+        if surface_order_set.len() != self.surface_order.len()
+            || surface_order_set.len() != self.surfaces.len()
+            || self
+                .surfaces
+                .keys()
+                .any(|id| !surface_order_set.contains(id))
+        {
+            return Err(LifecycleError::Invalid(
+                "surface order/index mismatch".into(),
+            ));
         }
         let mut ordered = HashSet::new();
         for pane in self.panes.values() {

@@ -260,7 +260,24 @@ pub(super) fn remint_noncanonical_identities(snapshot: &mut AppSessionSnapshot) 
                 &mut created_surfaces,
             )
         });
-        workspace.surfaces = original_surfaces.map(|_| created_surfaces);
+        workspace.surfaces = original_surfaces.map(|original_surfaces| {
+            let mut created_by_id = created_surfaces
+                .iter()
+                .cloned()
+                .map(|surface| (surface.surface_id.clone(), surface))
+                .collect::<HashMap<_, _>>();
+            let mut ordered = original_surfaces
+                .iter()
+                .filter_map(|surface| aliases.surfaces.get(&surface.surface_id))
+                .filter_map(|surface_id| created_by_id.remove(surface_id))
+                .collect::<Vec<_>>();
+            ordered.extend(
+                created_surfaces
+                    .into_iter()
+                    .filter(|surface| created_by_id.remove(&surface.surface_id).is_some()),
+            );
+            ordered
+        });
 
         workspace.group_id = workspace
             .group_id

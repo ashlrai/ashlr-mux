@@ -304,10 +304,13 @@ impl ControlHandleRegistry {
 /// the handle registry before the first socket mint, so fixture refs start at
 /// :2 per kind (live capture: workspace:2/pane:2 for the fixture workspace,
 /// pane:3/surface:4 for the first split). Walk order: window, then per
-/// workspace: workspace id, panes in layout order, surfaces in layout order.
+/// workspace: workspace id, panes in layout order, and authoritative surface
+/// records in creation order. Legacy snapshots without records fall back to
+/// layout order.
 fn bootstrap_registry_seeds(snapshot: &AppSessionSnapshot) -> Vec<(&'static str, String)> {
     fn walk_layout(
         layout: &cmux_core::session::SessionWorkspaceLayoutSnapshot,
+        seed_surfaces: bool,
         seeds: &mut Vec<(&'static str, String)>,
     ) {
         match layout {
@@ -315,13 +318,15 @@ fn bootstrap_registry_seeds(snapshot: &AppSessionSnapshot) -> Vec<(&'static str,
                 if let Some(id) = &pane.pane_id {
                     seeds.push(("pane", id.clone()));
                 }
-                for panel in &pane.panel_ids {
-                    seeds.push(("surface", panel.clone()));
+                if seed_surfaces {
+                    for panel in &pane.panel_ids {
+                        seeds.push(("surface", panel.clone()));
+                    }
                 }
             }
             cmux_core::session::SessionWorkspaceLayoutSnapshot::Split(split) => {
-                walk_layout(&split.first, seeds);
-                walk_layout(&split.second, seeds);
+                walk_layout(&split.first, seed_surfaces, seeds);
+                walk_layout(&split.second, seed_surfaces, seeds);
             }
         }
     }
@@ -335,7 +340,12 @@ fn bootstrap_registry_seeds(snapshot: &AppSessionSnapshot) -> Vec<(&'static str,
                 seeds.push(("workspace", id.clone()));
             }
             if let Some(layout) = &workspace.layout {
-                walk_layout(layout, &mut seeds);
+                walk_layout(layout, workspace.surfaces.is_none(), &mut seeds);
+            }
+            if let Some(surfaces) = &workspace.surfaces {
+                for surface in surfaces {
+                    seeds.push(("surface", surface.surface_id.clone()));
+                }
             }
         }
         // Canonical mints group refs after the window's workspaces
