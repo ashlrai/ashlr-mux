@@ -1,0 +1,2 @@
+{"driver_version": 2, "family": "startup_restore", "platform": "canonical", "type": "session"}
+{"approved_differences": [], "capture_error": "PlaceholderError: cannot resolve 'state.0.result.windows.1.ref' at token '1'", "id": "startup_restore.multiwindow_move_close_focus", "observation": {"error": null, "events": null, "exit_status": null, "multiwindow": null, "persistence": null, "response": null, "selectors": null, "state": null, "stderr": null, "stdout": null}, "platform": "canonical", "type": "case"}
