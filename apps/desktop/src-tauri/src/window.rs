@@ -43,6 +43,11 @@ fn run_control_window_activation(
     }
 }
 
+fn capture_window_starts_focused(capture_windows_hidden: bool, requested: bool) -> bool {
+    let _ = capture_windows_hidden;
+    requested
+}
+
 pub(crate) fn activate_control_window(app: &AppHandle, label: &str) -> Result<(), String> {
     run_control_window_activation(capture_windows_hidden(), || {
         if let Some(window) = app.get_webview_window(label) {
@@ -558,7 +563,10 @@ fn build_hidden_window(
     config.visible = false;
     let new_window = tauri::WebviewWindowBuilder::from_config(app, &config)
         .map_err(|error| error.to_string())?
-        .focused(focused)
+        .focused(capture_window_starts_focused(
+            capture_windows_hidden(),
+            focused,
+        ))
         .build()
         .map_err(|error| error.to_string())?;
     if let Err(error) = apply_default_display(&new_window) {
@@ -638,8 +646,9 @@ pub fn window_open_task_manager() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        capture_windows_hidden_for_value, run_control_window_activation, task_manager_command,
-        WindowStateSnapshot, AUX_WINDOW_LABEL_PREFIX,
+        capture_window_starts_focused, capture_windows_hidden_for_value,
+        run_control_window_activation, task_manager_command, WindowStateSnapshot,
+        AUX_WINDOW_LABEL_PREFIX,
     };
     use std::cell::Cell;
     use std::ffi::OsStr;
@@ -668,6 +677,14 @@ mod tests {
         })
         .expect("interactive activation executes the native action");
         assert_eq!(activation_count.get(), 1);
+    }
+
+    #[test]
+    fn capture_headless_mode_never_focuses_new_native_windows() {
+        assert!(!capture_window_starts_focused(true, true));
+        assert!(!capture_window_starts_focused(true, false));
+        assert!(capture_window_starts_focused(false, true));
+        assert!(!capture_window_starts_focused(false, false));
     }
 
     #[test]
