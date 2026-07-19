@@ -1228,6 +1228,55 @@ fn swap_selected_singleton_panes_preserves_identities_and_selection() {
 }
 
 #[test]
+fn swap_selected_pane_surfaces_moves_persisted_surface_ownership() {
+    let mut source = pane("a");
+    let Layout::Pane(source_pane) = &mut source else {
+        unreachable!();
+    };
+    source_pane.pane_id = Some("pane-source".into());
+    let mut target = pane("b");
+    let Layout::Pane(target_pane) = &mut target else {
+        unreachable!();
+    };
+    target_pane.pane_id = Some("pane-target".into());
+    let mut workspace = fresh_terminal_workspace("unused");
+    workspace.layout = Some(split(
+        SessionSplitOrientation::Vertical,
+        0.5,
+        source,
+        target,
+    ));
+    workspace.surfaces = Some(
+        [("a", "pane-source"), ("b", "pane-target")]
+            .into_iter()
+            .map(|(surface_id, pane_id)| {
+                serde_json::from_value(serde_json::json!({
+                    "surface_id": surface_id,
+                    "pane_id": pane_id,
+                    "generation": 1,
+                    "kind": {"type": "terminal"},
+                    "metadata": {}
+                }))
+                .expect("surface record")
+            })
+            .collect(),
+    );
+
+    swap_selected_pane_surfaces(&mut workspace, "pane-source", "pane-target").unwrap();
+
+    let records = workspace.surfaces.as_ref().unwrap();
+    assert_eq!(records[0].pane_id, "pane-target");
+    assert_eq!(records[1].pane_id, "pane-source");
+    let tabs = SessionTabManagerSnapshot {
+        selected_workspace_index: Some(0),
+        workspaces: vec![workspace],
+        workspace_groups: None,
+    };
+    SurfaceLifecycleModel::from_session_snapshot("window-1", &tabs)
+        .expect("swapped surface ownership remains valid");
+}
+
+#[test]
 fn swap_selected_pane_surfaces_rejects_invalid_target_atomically() {
     let mut workspace = fresh_terminal_workspace("a");
     let Layout::Pane(pane) = workspace.layout.as_mut().unwrap() else {
