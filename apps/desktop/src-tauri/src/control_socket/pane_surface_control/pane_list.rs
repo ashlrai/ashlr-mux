@@ -63,11 +63,11 @@ pub(in crate::control_socket) fn pane_list_logical_size(
 
 pub(in crate::control_socket) fn pane_list_root_frame(
     authority: PaneGeometryAuthority,
-    _capture_fallback: Option<PanePixelFrame>,
+    capture_fallback: Option<PanePixelFrame>,
     native_fallback: impl FnOnce() -> PanePixelFrame,
 ) -> PanePixelFrame {
     match authority {
-        PaneGeometryAuthority::Uninitialized => native_fallback(),
+        PaneGeometryAuthority::Uninitialized => capture_fallback.unwrap_or_else(native_fallback),
         PaneGeometryAuthority::WorkspaceUnrendered => PanePixelFrame {
             x: 0.0,
             y: 0.0,
@@ -148,7 +148,28 @@ pub(in crate::control_socket) fn pane_list(
                 .authority_for(window_label, workspace_id)
         },
     );
-    let root_frame = pane_list_root_frame(geometry_authority, None, || {
+    let capture_fallback = crate::window::capture_windows_hidden().then(|| {
+        let configured_windows = &app.config().app.windows;
+        let configured_window = configured_windows
+            .iter()
+            .find(|window| window.label == window_label)
+            .or_else(|| configured_windows.first());
+        configured_window.map_or(
+            PanePixelFrame {
+                x: 0.0,
+                y: 0.0,
+                width: 1.0,
+                height: 1.0,
+            },
+            |window| PanePixelFrame {
+                x: 0.0,
+                y: 0.0,
+                width: window.width,
+                height: window.height,
+            },
+        )
+    });
+    let root_frame = pane_list_root_frame(geometry_authority, capture_fallback, || {
         let (width, height) = pane_list_window_size_with(&current, window_id, |label| {
             let window = app.get_webview_window(label)?;
             let size = window.inner_size().ok()?;
