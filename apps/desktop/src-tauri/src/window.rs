@@ -12,7 +12,7 @@ use cmux_core::window_display::{
     resolve_window_selector, WindowControlIdentity,
 };
 use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewWindow, WindowEvent,
+    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewWindow, Window, WindowEvent,
 };
 
 const MAIN_WINDOW_LABEL: &str = "main";
@@ -172,8 +172,8 @@ pub fn focus_control_window(app: &AppHandle, selector: &str) -> Result<(), Strin
     window.set_focus().map_err(|error| error.to_string())
 }
 
-fn ordered_control_windows(app: &AppHandle) -> Vec<(WindowControlIdentity, WebviewWindow)> {
-    let mut windows = app.webview_windows();
+fn ordered_control_windows(app: &AppHandle) -> Vec<(WindowControlIdentity, Window)> {
+    let mut windows = app.windows();
     ordered_window_identities(windows.keys().cloned())
         .into_iter()
         .filter_map(|identity| {
@@ -184,7 +184,7 @@ fn ordered_control_windows(app: &AppHandle) -> Vec<(WindowControlIdentity, Webvi
         .collect()
 }
 
-fn move_window_to_display(window: &WebviewWindow, query: &str) -> Result<(), String> {
+fn move_window_to_display(window: &Window, query: &str) -> Result<(), String> {
     let monitors = window
         .available_monitors()
         .map_err(|error| error.to_string())?;
@@ -223,7 +223,7 @@ fn apply_default_display(window: &WebviewWindow) -> Result<(), String> {
     else {
         return Ok(());
     };
-    move_window_to_display(window, &query).or_else(|error| {
+    move_window_to_display(&window.as_ref().window(), &query).or_else(|error| {
         if error.starts_with("Display not found:") {
             Ok(())
         } else {
