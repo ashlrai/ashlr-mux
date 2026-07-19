@@ -7,7 +7,7 @@
     "Window bookkeeping: session_setup creates windows A (fixture workspace host) and B; every case that creates a window closes it in its own state probe EXCEPT the two cli new-window cases, which cannot parse the created uuid from stdout and deliberately leak. A successful canonical close removes the live registry entry but retains an invisible recoverable window.list route until restart. The restart in surface_resume.persists_across_restart clears that in-process history and restores exactly boot + A + B, so the finale closes A and B, lists the remaining live window, then exercises last-window close. If cases are added after the restart or the restart is removed, this drain must be re-derived.",
     "surface.resume set cases pass explicit cwd=/tmp/parity-cwd and source so binding payloads stay platform-neutral; resume_binding.updated_at is a wall-clock stamp (run-scoped timing nondeterminism, same class as the sanctioned events timing normalization) and is approved per case by JSON pointer.",
     "cli window displays stdout and display-not-found stderr embed physical display names (platform hardware) and are approved by pointer; exit codes stay strict.",
-    "NOT ENCODED (with reason): surface.refresh dock branch (canonical fixture pins 'Dock placement is disabled' - no public op constructs a Dock); window.close notification-clear side effects (no public read exposes notification state); closed-window-history suppression-only variant (no public route requests recordHistory:false); window geometry/cascade/styleMask defaults (not socket-observable); real key-window OS foregrounding and window.keyed/unkeyed on true key transfer (platform_equivalent per contract; captured only incidentally in events lanes); blocking resume-approval alert variants (canonical bypasses under test harnesses; only promptless paths encoded); remote-tmux window-close detach (no remote fixture); window.display happy move (needs a real display name; only error paths + listing encoded); snapshot-not-saved-during-termination adversarial (cannot deterministically order termination vs close; the persistence case forces a save via a scratch window close instead).",
+    "NOT ENCODED (with reason): surface.refresh dock branch (canonical fixture pins 'Dock placement is disabled' - no public op constructs a Dock); window.close notification-clear side effects (no public read exposes notification state); closed-window-history suppression-only variant (no public route requests recordHistory:false); window geometry/cascade/styleMask defaults (not socket-observable); real key-window OS foregrounding and window.keyed/unkeyed on true key transfer beyond the exact platform-equivalent window.list key leaves approved below; blocking resume-approval alert variants (canonical bypasses under test harnesses; only promptless paths encoded); remote-tmux window-close detach (no remote fixture); window.display happy move (needs a real display name; only error paths + listing encoded); snapshot-not-saved-during-termination adversarial (cannot deterministically order termination vs close; the persistence case forces a save via a scratch window close instead).",
     "INCIDENT (canonical run 29248166966): a surface.resume.set with source 'process-detected' (rewritten to 'manual') raised the BLOCKING resume-approval NSAlert on the canonical main actor (the XCTest bypass does not apply under CMUX_UI_TEST_MODE) and wedged every subsequent main-actor socket op (empty v2 replies, CLI timeouts) - the 13 PlaceholderErrors in that run were all downstream of this single wedge, not placeholder-shape bugs. REMOVED surface_resume.process_detected_rewritten_manual (the process-detected->manual rewrite quirk is not headlessly pinnable without the approval prompt) and surface_resume.auto_resume_agent_hook_honored (agent-hook + auto_resume:true is the auto-restore proposal path, the same blocking-prompt risk); the cli-source forced-false case remains (promptless CLI path). These join the approval-alert items in the not-encodable list.",
     "SETTLE (corrected 2026-07-19): canonical intentionally appends closed windows to window.list as invisible recoverable routes until restart. Cleanup probes therefore use until_window_not_visible for the just-closed id (10s timeout, 0.5s poll), which accepts either visible:false or absence; the finale uses stable-mode because the last-window outcome is itself the pin. The final snapshot remains strict, including every recoverable row and its payload. This distinguishes completed close teardown from an incorrect assumption that canonical must remove the row. Captures made with until_absent are descriptive only and invalid for promotion."
   ],
@@ -94,7 +94,29 @@
             }
           }
         ]
-      }
+      },
+      "approved_differences": [
+        {
+          "path": "/state/1/result/response/result/windows/0/key",
+          "rationale": "headless AppKit versus Win32 key-window status is platform_equivalent per contract; identity, visibility, routing, and events stay strict"
+        },
+        {
+          "path": "/events/4/payload/cwd",
+          "rationale": "the isolated test profile home is platform-specific; ownership and every non-path event field stay strict"
+        },
+        {
+          "path": "/events/6/payload/cwd",
+          "rationale": "the isolated test profile home is platform-specific; ownership and every non-path event field stay strict"
+        },
+        {
+          "path": "/selectors/0/result/response/result/workspace/current_directory",
+          "rationale": "the isolated test profile home is platform-specific; selected workspace identity and all other fields stay strict"
+        },
+        {
+          "path": "/multiwindow/0/result/response/result/windows/0/key",
+          "rationale": "headless AppKit versus Win32 key-window status is platform_equivalent per contract; identity, visibility, and ordering stay strict"
+        }
+      ]
     },
     {
       "id": "window_create.created_window_usable_via_explicit_routing",
@@ -134,7 +156,17 @@
             }
           }
         ]
-      }
+      },
+      "approved_differences": [
+        {
+          "path": "/state/1/result/response/result/windows/0/key",
+          "rationale": "headless AppKit versus Win32 key-window status is platform_equivalent per contract; identity, visibility, routing, and events stay strict"
+        },
+        {
+          "path": "/selectors/0/result/response/result/workspaces/0/current_directory",
+          "rationale": "the isolated test profile home is platform-specific; selected workspace identity and all other fields stay strict"
+        }
+      ]
     },
     {
       "id": "window_close.happy_non_active_multiwindow",
@@ -220,7 +252,13 @@
             "params": {}
           }
         ]
-      }
+      },
+      "approved_differences": [
+        {
+          "path": "/state/0/result/response/result/windows/0/key",
+          "rationale": "headless AppKit versus Win32 key-window status is platform_equivalent per contract; repeat-close response, errors, identity, visibility, and ordering stay strict"
+        }
+      ]
     },
     {
       "id": "window_close.missing_window_id",
@@ -821,7 +859,17 @@
             }
           }
         ]
-      }
+      },
+      "approved_differences": [
+        {
+          "path": "/state/1/result/response/result/windows/2/key",
+          "rationale": "headless AppKit versus Win32 key-window status is platform_equivalent per contract; CLI routing, identity, visibility, and ordering stay strict"
+        },
+        {
+          "path": "/state/1/result/response/result/windows/10/key",
+          "rationale": "recoverable history records the platform-derived key state at close; CLI routing, identity, workspace linkage, visibility, and ordering stay strict"
+        }
+      ]
     },
     {
       "id": "cli.focus_window_by_ref",
@@ -862,7 +910,17 @@
             }
           }
         ]
-      }
+      },
+      "approved_differences": [
+        {
+          "path": "/state/1/result/response/result/windows/2/key",
+          "rationale": "headless AppKit versus Win32 key-window status is platform_equivalent per contract; CLI routing, identity, visibility, and ordering stay strict"
+        },
+        {
+          "path": "/state/1/result/response/result/windows/10/key",
+          "rationale": "recoverable history records the platform-derived key state at close; CLI routing, identity, workspace linkage, visibility, and ordering stay strict"
+        }
+      ]
     },
     {
       "id": "cli.focus_window_by_index_zero",
@@ -927,7 +985,17 @@
             }
           }
         ]
-      }
+      },
+      "approved_differences": [
+        {
+          "path": "/state/0/result/response/result/windows/2/key",
+          "rationale": "headless AppKit versus Win32 key-window status is platform_equivalent per contract; CLI routing, identity, visibility, and ordering stay strict"
+        },
+        {
+          "path": "/state/0/result/response/result/windows/9/key",
+          "rationale": "recoverable history records the platform-derived key state at close; CLI routing, identity, workspace linkage, visibility, and ordering stay strict"
+        }
+      ]
     },
     {
       "id": "cli.close_window_requires_window_flag",
