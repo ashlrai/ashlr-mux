@@ -490,6 +490,47 @@ fn workspace_list_payload_matches_control_shape() {
     assert_eq!(payload["workspaces"][0]["title"], json!("Phoenix"));
     assert_eq!(payload["workspaces"][0]["selected"], json!(true));
     assert_eq!(
+        payload["workspaces"][0]["remote"],
+        json!({
+            "enabled": false,
+            "state": "disconnected",
+            "connected": false,
+            "active_terminal_sessions": 0,
+            "daemon": {
+                "state": "unavailable",
+                "capabilities": [],
+                "detail": null,
+                "name": null,
+                "remote_path": null,
+                "version": null,
+            },
+            "detected_ports": [],
+            "forwarded_ports": [],
+            "conflicted_ports": [],
+            "detail": null,
+            "transport": null,
+            "destination": null,
+            "port": null,
+            "local_proxy_port": null,
+            "persistent_daemon_slot": null,
+            "has_identity_file": false,
+            "has_ssh_options": false,
+            "heartbeat": {
+                "age_seconds": null,
+                "count": 0,
+                "last_seen_at": null,
+            },
+            "proxy": {
+                "state": "unavailable",
+                "host": null,
+                "port": null,
+                "schemes": ["socks5", "http_connect"],
+                "url": null,
+                "error_code": null,
+            },
+        })
+    );
+    assert_eq!(
         payload["workspaces"][0]["current_directory"],
         json!("C:/repo")
     );

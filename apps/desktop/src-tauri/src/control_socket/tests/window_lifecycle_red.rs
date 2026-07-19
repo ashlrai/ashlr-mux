@@ -305,6 +305,18 @@ fn window_create_appends_a_window_with_one_initial_workspace() {
     assert_eq!(created.tab_manager.selected_workspace_index, Some(0));
     let workspace = &created.tab_manager.workspaces[0];
     assert_eq!(workspace.focused_panel_id.as_deref(), Some("surface-9"));
+    let directory = workspace
+        .current_directory
+        .as_deref()
+        .expect("fresh window workspace must inherit the platform home directory");
+    assert!(!directory.trim().is_empty());
+    assert_eq!(
+        workspace.surfaces.as_deref().unwrap()[0]
+            .terminal_startup
+            .as_ref()
+            .and_then(|startup| startup.working_directory.as_deref()),
+        Some(directory)
+    );
     let Some(SessionWorkspaceLayoutSnapshot::Pane(pane)) = workspace.layout.as_ref() else {
         panic!("created workspace must hold a single pane layout");
     };

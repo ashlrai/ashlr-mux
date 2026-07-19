@@ -147,6 +147,18 @@ async fn run_process_proof() -> Result<(), String> {
             "moved/closed state drifted: source={source_surfaces:?}, target={target_surfaces:?}"
         ));
     }
+    for surface in &target_surfaces {
+        if surface.get("title").and_then(Value::as_str) != Some("Terminal")
+            || surface
+                .get("requested_working_directory")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+        {
+            return Err(format!(
+                "restored terminal omitted canonical title/cwd defaults: {surface}"
+            ));
+        }
+    }
     let target_refs = target_surfaces
         .iter()
         .map(|surface| field(surface, "ref"))
