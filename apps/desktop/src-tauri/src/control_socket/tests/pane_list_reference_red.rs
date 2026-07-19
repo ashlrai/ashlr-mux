@@ -87,6 +87,7 @@ fn pane_list_reports_logical_points_instead_of_physical_dpi_pixels() {
 #[test]
 fn pane_list_prefers_the_rendered_workspace_frame_over_the_native_window() {
     use crate::pane_geometry::PaneGeometryAuthority;
+    use std::cell::Cell;
 
     let observed = PanePixelFrame {
         x: 240.0,
@@ -101,6 +102,7 @@ fn pane_list_prefers_the_rendered_workspace_frame_over_the_native_window() {
         height: 700.0,
     };
 
+    let native_reads = Cell::new(0);
     assert_eq!(
         pane_surface_control::pane_list::pane_list_root_frame(
             PaneGeometryAuthority::Rendered(crate::pane_geometry::WorkspacePaneGeometry {
@@ -109,15 +111,24 @@ fn pane_list_prefers_the_rendered_workspace_frame_over_the_native_window() {
                 width: observed.width,
                 height: observed.height,
             }),
-            native_window,
+            || {
+                native_reads.set(native_reads.get() + 1);
+                native_window
+            },
         ),
         observed
+    );
+    assert_eq!(
+        native_reads.get(),
+        0,
+        "rendered geometry must not wait on native window state"
     );
 }
 
 #[test]
 fn pane_list_uses_zero_frames_only_after_the_window_has_rendered_another_workspace() {
     use crate::pane_geometry::PaneGeometryAuthority;
+    use std::cell::Cell;
 
     let native_window = PanePixelFrame {
         x: 0.0,
@@ -132,19 +143,32 @@ fn pane_list_uses_zero_frames_only_after_the_window_has_rendered_another_workspa
         height: 0.0,
     };
 
+    let native_reads = Cell::new(0);
     assert_eq!(
         pane_surface_control::pane_list::pane_list_root_frame(
             PaneGeometryAuthority::Uninitialized,
-            native_window,
+            || {
+                native_reads.set(native_reads.get() + 1);
+                native_window
+            },
         ),
         native_window
     );
+    assert_eq!(native_reads.get(), 1);
     assert_eq!(
         pane_surface_control::pane_list::pane_list_root_frame(
             PaneGeometryAuthority::WorkspaceUnrendered,
-            native_window,
+            || {
+                native_reads.set(native_reads.get() + 1);
+                native_window
+            },
         ),
         zero
+    );
+    assert_eq!(
+        native_reads.get(),
+        1,
+        "unrendered workspace authority must not read native window state"
     );
 }
 
