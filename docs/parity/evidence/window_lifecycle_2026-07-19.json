@@ -11,7 +11,7 @@
     "capture_errors": 0
   },
   "windows": {
-    "behavior_commit": "b0d9e0a7174c852908b63b54e323e1dfee242e96",
+    "behavior_commit": "2e280b9fb9b971ce0182b30bcfa7706c14c0b2e5",
     "cases": 68,
     "capture_errors": 0,
     "profile_mode": "isolated",
@@ -86,16 +86,70 @@
     },
     "overall_count_note": "The comparison remains 38 identical and 30 delta cases because the identity-affected cases also retain independent event, state, or payload mismatches."
   },
+  "event_publication": {
+    "status": "canonical_sequence_exact_with_platform_path_equivalence",
+    "full_capture_runs": 2,
+    "cases_per_full_run": 68,
+    "capture_errors": 0,
+    "exercised_sequence": [
+      "ack",
+      "surface.selected",
+      "pane.focused",
+      "surface.focused",
+      "workspace.created",
+      "surface.created",
+      "workspace.selected",
+      "window.created",
+      "window.closed"
+    ],
+    "exact_fields": [
+      "event names and order",
+      "window, workspace, pane, and surface identities",
+      "payload keys and values",
+      "origins",
+      "key and main window flags"
+    ],
+    "platform_equivalences": [
+      "The workspace cwd is /Users/runner on canonical and the isolated Windows profile home on Windows."
+    ],
+    "publication_model": [
+      "The transition mints the prepared window, workspace, pane, and surface identities before publication.",
+      "The platform executor registers that exact prepared snapshot rather than generating a second model.",
+      "Socket-managed create and close suppress duplicate derived session events; normal UI operations retain derived publication."
+    ],
+    "lane_changes": {
+      "window_create.created_window_usable_via_explicit_routing": {
+        "removed": [
+          "response"
+        ],
+        "remaining": [
+          "state",
+          "selectors"
+        ]
+      },
+      "window_close.happy_non_active_multiwindow": {
+        "removed": [
+          "response"
+        ],
+        "remaining": [
+          "state",
+          "multiwindow"
+        ]
+      }
+    },
+    "overall_count_note": "The comparison remains 38 identical and 30 delta cases because the affected cases retain independent platform path, native teardown timing, window ordering/focus, or multiwindow state differences."
+  },
   "closed_capture_blockers": [
     "The final canonical close may legitimately disconnect; the manifest now models it as the final may_disconnect case without an impossible post-close probe.",
     "Windows control commits no longer synchronously query native window state while a child WebView is attached.",
     "Selector-less routing uses the initialized active-window pointer without a redundant native focus query.",
     "The 17-case browser/resume prefix passed twice after simplification, and the full 68-case Windows capture completed with zero capture errors.",
-    "Socket-created windows now use UUID identities, selector-less window.current returns the active session UUID, and CLI focus/close-by-UUID reach the backend."
+    "Socket-created windows now use UUID identities, selector-less window.current returns the active session UUID, and CLI focus/close-by-UUID reach the backend.",
+    "Socket-created windows publish the canonical initial workspace/pane/surface/window event sequence from one prepared identity snapshot without duplicate derived session events."
   ],
   "test_gate": {
     "desktop_library_excluding_known_baseline_failures": {
-      "passed": 1039,
+      "passed": 1042,
       "ignored": 1,
       "excluded": 4,
       "runs": 2

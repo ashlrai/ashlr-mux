@@ -44,10 +44,10 @@
     "status": "not_measured"
   },
   "windows": {
-    "commit": "b0d9e0a7174c852908b63b54e323e1dfee242e96",
-    "commit_date": "2026-07-19T05:21:04-04:00",
-    "commit_subject": "fix(desktop): use canonical window UUIDs",
-    "commits_ahead_of_tracked_evidence": 100,
+    "commit": "2e280b9fb9b971ce0182b30bcfa7706c14c0b2e5",
+    "commit_date": "2026-07-19T05:52:35-04:00",
+    "commit_subject": "fix(desktop): align window creation event publication",
+    "commits_ahead_of_tracked_evidence": 103,
     "source_evidence": {
       "advertised_and_routed_count": 267,
       "advertised_method_count": 270,
