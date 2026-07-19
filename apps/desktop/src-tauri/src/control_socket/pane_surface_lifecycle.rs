@@ -1957,12 +1957,7 @@ fn surface_create(
     // (Workspace.swift:7480) — the create keeps the new tab selected when the
     // target pane is the bonsplit-focused pane; otherwise the transient
     // selection reverts (the terminal_happy flip).
-    let pane_is_focused = workspace.focused_pane_id.as_deref() == Some(pane_id.as_str())
-        || workspace
-            .focused_panel_id
-            .as_deref()
-            .and_then(|id| session_ops::pane_id_containing_surface(workspace, id))
-            == Some(pane_id.as_str());
+    let pane_is_focused = workspace.focused_pane_id.as_deref() == Some(pane_id.as_str());
     let keep_new_selected = super::bool_param(params, &["focus"]).unwrap_or(pane_is_focused);
     if !keep_new_selected {
         if let (Some(previous), Some(layout)) =
