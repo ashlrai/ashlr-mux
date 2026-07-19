@@ -997,6 +997,14 @@ fn pane_focus_and_surface_split_regressions_mutate_authoritative_records() {
         json!({"workspace_id": "workspace-1", "pane_id": "pane-right"}),
     );
     assert_eq!(
+        ok_value(&focused),
+        json!({
+            "window_id": "window-1",
+            "workspace_id": "workspace-1",
+            "pane_id": "pane-right",
+        })
+    );
+    assert_eq!(
         focused.snapshot.windows[0].tab_manager.workspaces[0]
             .focused_panel_id
             .as_deref(),
@@ -1021,6 +1029,27 @@ fn pane_focus_and_surface_split_regressions_mutate_authoritative_records() {
     ));
     assert_eq!(model.focused_surface("workspace-1"), Some(created_id));
     model.validate_indexes().unwrap();
+}
+
+#[test]
+fn pane_focus_rejects_a_pane_outside_the_resolved_scope() {
+    let snapshot = two_window_snapshot();
+    let focused = transition(
+        &snapshot,
+        "pane.focus",
+        json!({
+            "window_id": "window-1",
+            "workspace_id": "workspace-1",
+            "pane_id": "pane-2",
+        }),
+    );
+
+    assert_eq!(
+        assert_error(&focused, "not_found", "Pane not found"),
+        json!({"pane_id": "pane-2"})
+    );
+    assert_eq!(focused.snapshot, snapshot);
+    assert!(!focused.changed);
 }
 
 #[test]
