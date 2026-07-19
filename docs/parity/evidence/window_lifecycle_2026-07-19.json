@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "family": "window_lifecycle",
-  "status": "valid_captures_with_open_deltas",
+  "status": "complete_captures_invalid_for_promotion",
   "canonical": {
     "source_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
     "harness_commit": "d309cf0ceb44cda59d755d557f91189848c98357",
@@ -20,6 +20,7 @@
     "ui_test_mode": true
   },
   "comparison": {
+    "comparator_commit": "b2e5ba3d83586bcfeab1bf0ef58260427fbe9fb2",
     "cases": 68,
     "identical": 40,
     "deltas": 28,
@@ -52,7 +53,27 @@
       "cli.surface_resume_set_shell",
       "surface_resume.persists_across_restart",
       "window_close.last_window_may_exit_ui_test_mode"
-    ]
+    ],
+    "capture_integrity": {
+      "valid_for_promotion": false,
+      "canonical_unsatisfied_settle_cases": [
+        "window_create.params_ignored_junk",
+        "window_create.created_window_usable_via_explicit_routing",
+        "window_close.happy_non_active_multiwindow",
+        "window_close.repeat_close_not_found_minted_ref",
+        "window_focus.happy_routes_selectorless_afterwards",
+        "window_focus.already_key_still_emits",
+        "cli.focus_window_by_uuid",
+        "cli.focus_window_by_ref",
+        "cli.close_window_by_uuid"
+      ],
+      "windows_unsatisfied_settle_cases": [],
+      "impact": "Canonical retained recoverable or zombie windows after bounded cleanup expired, so later shared-session window counts and global UUID numbering are contaminated. The 40/28 result is descriptive only and cannot promote or independently classify the 28 delta cases."
+    },
+    "normalization": {
+      "window_list_order": "Valid v2:window.list probe rows are paired by stable numeric window ref and positional indices are recomputed. Every row identity and field remains strict; malformed or duplicate refs are not normalized.",
+      "reason": "Both native implementations enumerate unordered registries and the contract defines numeric list indices as positional and racy."
+    }
   },
   "identity_boundary": {
     "status": "repaired_with_downstream_deltas_remaining",

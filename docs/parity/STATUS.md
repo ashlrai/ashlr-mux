@@ -7,16 +7,17 @@ Checkpoint commits:
 - Windows behavior: `4e6e2fc6dc9b71bdc4c2847d3eea7eefc6aa365e`
 - Latest Windows code checkpoint: `cb94cf02e2aa326107e8fe8c931ef08521797b53`
 - Latest exact startup differential evidence: `parity/diff-lane@215737999ac0579682b6b2a2d230d7a0d064a51d`
-- Latest window harness checkpoint: `parity/diff-lane@d309cf0ceb44cda59d755d557f91189848c98357`
+- Latest window harness checkpoint: `parity/diff-lane@b2e5ba3d83586bcfeab1bf0ef58260427fbe9fb2`
 - Latest canonical window capture: workflow run `29678884486`
 
 The Windows desktop and CLI build successfully. The retained pane/surface and
-startup-restore evidence remains valid. A fresh window-family capture now
-completes on both platforms: canonical and Windows each emitted all 68 cases
-with zero capture errors. Their normalized comparison has 40 identical cases
-and 28 cases with semantic deltas, so the lane is valid diagnostic evidence but
-does not yet promote window-family rows to verified. See
-`evidence/window_lifecycle_2026-07-19.json`.
+startup-restore evidence remains valid. The latest window-family files each
+contain all 68 cases with zero transport capture errors, and their descriptive
+comparison is 40 identical / 28 delta cases. The canonical file exhausted nine
+bounded close-settle predicates, however, retaining recoverable/zombie windows
+that contaminate later shared-session identities. The comparator now reports
+this explicitly and marks the pair invalid for promotion. The 28 rows are not
+28 independent product defects. See `evidence/window_lifecycle_2026-07-19.json`.
 
 The shared window identity boundary is now repaired. Socket-created windows
 use canonical UUID identities end to end, selector-less `window.current`
@@ -33,10 +34,9 @@ one prepared snapshot: `surface.selected`, `pane.focused`, `surface.focused`,
 case. Event names, ordering, identities, payloads, and key/main flags match the
 canonical capture exactly after normalizing only the platform home-directory
 path. Duplicate derived session events are suppressed for socket-managed
-create/close, while normal UI window operations retain them. The overall
-comparison remains 40 identical and 28 delta cases because independent native
-teardown timing, window-list ordering/focus, path, and resume payload deltas
-remain.
+create/close, while normal UI window operations retain them. The descriptive
+comparison remains 40 identical and 28 delta cases, but later topology and
+identity deltas are not promotable while canonical cleanup is unsettled.
 
 Window focus and key-window close now publish the canonical AppKit lifecycle
 sequence. A focus transfer emits `window.unkeyed`, `window.keyed`, then
@@ -56,11 +56,11 @@ session state. Malformed resume selectors are rejected in canonical key order
 before routing. Two post-simplification 31-case runs were identical for all 15
 resume cases on Windows; the full differential moved from 38/30 to 40/28.
 Eight approval-bearing cases now match every non-identity leaf. Nine resume
-cases remain strict deltas only because earlier native window topology assigns
-the retained fixture workspace, pane, and surface different global normalized
-UUID labels; even the no-binding clear case carries that same offset. This is
-recorded as an upstream identity/topology dependency, not as completed strict
-parity.
+cases retain UUID-label deltas after failed canonical close settles leave extra
+recoverable windows in the shared capture session. The payload leaves match,
+but the contaminated global identity sequence cannot prove that the residuals
+are product defects or parity. This is an evidence-isolation blocker, not
+completed strict parity.
 
 ## What the current audit says
 
@@ -81,13 +81,12 @@ baseline, not "222 of 496 complete" and not the rolling catalog.
 ## Known acceptance blockers
 
 1. The window-lifecycle transport, public UUID routing, resume approval fields,
-   and selector validation blockers are closed, but 28 of 68 cases still
-   differ. The largest shared cause is now initial/native window topology and
-   ordering, which shifts fixture workspace/pane/surface identities through
-   refresh, resume, CLI state, and restart observations. AppKit's asynchronous
-   closed-window rows, native key/fallback choice, and platform paths remain
-   separate equivalences; preserve those distinctions instead of changing
-   Windows behavior merely to reduce the case count.
+   and selector validation blockers are closed. The current 40/28 differential
+   is invalid for promotion because nine canonical close-settle predicates
+   failed and the shared session leaked those windows into later cases. Repair
+   case isolation and recapture canonical before classifying the residuals.
+   Window-list order is non-contractual on both implementations; the comparator
+   now pairs valid rows by stable ref while keeping every row field strict.
 2. Four differential-remediation unit tests fail unchanged at both pushed
    baseline `0ea973d28d` and behavior checkpoint `286b2d7b67`:
    `closing_an_unselected_tab_suppresses_the_noop_pair`,
@@ -164,12 +163,10 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
 
 ## Next efficient slice
 
-Trace the earliest initial-window topology divergence before changing more
-resume code. Start from the first `window.list` in
-`window_create.params_ignored_junk`: canonical orders refs `window:3,1,2`
-before the temporary window while isolated Windows orders `window:1,3,2`.
-Identify the smallest ownership/order boundary that also explains the fixture
-workspace UUID offset seen by both `surface.refresh` cases and the nine residual
-resume cases. Require a strict improvement in the earliest affected case and
-no regression in the now-canonical resume payload leaves. Keep AppKit zombie
-rows and real OS key selection explicitly outside that implementation slice.
+Repair the window differential's case isolation before changing production
+behavior. A failed cleanup settle must not poison later case identities, and
+the immediate repeat-close race must not be treated as a deterministic
+contract. Recapture canonical and Windows with zero capture errors and zero
+unsatisfied settles, then select the earliest remaining semantic delta. Keep
+native key-window choice and platform paths explicit; do not hard-code one
+dictionary iteration order or copy a contaminated canonical snapshot.
