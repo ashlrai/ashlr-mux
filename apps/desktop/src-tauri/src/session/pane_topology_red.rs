@@ -228,6 +228,7 @@ fn break_surface_moves_persisted_owner_to_the_new_pane() {
     let workspace = &mut before.windows[0].tab_manager.workspaces[0];
     let mut source_panes = Vec::new();
     pane_ids(workspace.layout.as_ref().unwrap(), &mut source_panes);
+    let source_pane_id = source_panes[1].clone();
     workspace.surfaces.get_or_insert_with(Vec::new).push(
         serde_json::from_value(serde_json::json!({
             "surface_id": "surface-2",
@@ -268,6 +269,10 @@ fn break_surface_moves_persisted_owner_to_the_new_pane() {
     let destination = &workspaces[broken.workspace_index];
     let mut destination_panes = Vec::new();
     pane_ids(destination.layout.as_ref().unwrap(), &mut destination_panes);
+    assert_ne!(
+        destination_panes[0], source_pane_id,
+        "breaking a surface mints a fresh destination pane identity"
+    );
     let moved = destination
         .surfaces
         .as_deref()
