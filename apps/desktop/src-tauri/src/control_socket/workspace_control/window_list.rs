@@ -85,6 +85,11 @@ fn window_list_rows(
                 (window.identity.label == "main")
                     .then(|| session.windows.first())
                     .flatten()
+            })
+            .or_else(|| {
+                recoverable.iter().find(|candidate| {
+                    candidate.window_id.as_deref() == Some(window.identity.id.as_str())
+                })
             });
         let window_id = session_window
             .and_then(|window| window.window_id.as_deref())
@@ -212,10 +217,11 @@ mod tests {
     }
 
     #[test]
-    fn live_identity_wins_over_duplicate_history_entry() {
-        let window = session_window("same-id", "workspace-id");
+    fn live_session_payload_and_visibility_win_over_duplicate_history() {
+        let live_window = session_window("same-id", "live-workspace");
+        let recoverable = session_window("same-id", "closed-workspace");
         let session = AppSessionSnapshot {
-            windows: vec![window.clone()],
+            windows: vec![live_window],
             ..Default::default()
         };
         let live = vec![crate::window::WindowControlSummary {
@@ -227,9 +233,35 @@ mod tests {
             is_key: false,
             is_visible: true,
         }];
-        let rows = window_list_rows(live, &session, &[window], |kind, id| format!("{kind}:{id}"));
+        let rows = window_list_rows(live, &session, &[recoverable], |kind, id| {
+            format!("{kind}:{id}")
+        });
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["visible"], true);
+        assert_eq!(rows[0]["selected_workspace_id"], "live-workspace");
+    }
+
+    #[test]
+    fn lingering_native_row_uses_recoverable_payload() {
+        let closed = session_window("closed-id", "closed-workspace");
+        let session = AppSessionSnapshot {
+            windows: vec![session_window("live-id", "live-workspace")],
+            ..Default::default()
+        };
+        let live = vec![crate::window::WindowControlSummary {
+            identity: WindowControlIdentity {
+                label: "closed-id".into(),
+                id: "closed-id".into(),
+                reference: "window:closed-id".into(),
+            },
+            is_key: false,
+            is_visible: false,
+        }];
+        let rows = window_list_rows(live, &session, &[closed], |kind, id| format!("{kind}:{id}"));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["workspace_count"], 1);
+        assert_eq!(rows[0]["selected_workspace_id"], "closed-workspace");
+        assert_eq!(rows[0]["visible"], false);
     }
 
     #[test]
