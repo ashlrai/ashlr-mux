@@ -127,6 +127,9 @@ async fn read_json_frame(pipe: &mut NamedPipeClient, context: &str) -> Result<Va
     serde_json::from_str(&raw).map_err(|error| format!("invalid {context}: {error}; raw={raw}"))
 }
 
+// Each integration-test crate compiles this shared module independently; only
+// the startup-restore process proof reads the restart-specific members.
+#[allow(dead_code)]
 pub struct DesktopFixture {
     child: Child,
     _profile: TempDir,
@@ -186,6 +189,7 @@ impl DesktopFixture {
         })
     }
 
+    #[allow(dead_code)]
     pub fn restart(&mut self) -> Result<(), String> {
         self.stop()?;
         self.launch_index += 1;
