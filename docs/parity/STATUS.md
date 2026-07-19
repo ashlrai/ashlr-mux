@@ -4,37 +4,33 @@ Checkpoint commits:
 
 - Current canonical audit: `ecebdbb64b3532b0308650280ae4b83f30becf2a`
 - Frozen differential canonical: `e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452`
-- Windows behavior captured: `55f0afaf4e957a7fd56fe1e7a291492d039edf9f`
-- Latest Windows code checkpoint: `1df21ddaf6a1173de84cde12953f547eaacd799a`
+- Windows behavior captured: `1717704e09e47cca8aeb7b4671ecc7e4fc51be52`
+- Latest Windows code checkpoint: `1717704e09e47cca8aeb7b4671ecc7e4fc51be52`
 - Latest exact startup differential evidence: `parity/diff-lane@215737999ac0579682b6b2a2d230d7a0d064a51d`
 - Latest window harness checkpoint: `parity/diff-lane@e23cd72b7807f700a5961b2d8ae44919c810911c`
-- Latest completed canonical window capture: workflow run `29685067632`
-- Matching replacement canonical capture: workflow run `29686515273` (pending)
+- Latest canonical window capture: workflow run `29686515273`
 
 The Windows desktop and CLI build successfully. The retained pane/surface and
-startup-restore evidence remains valid. The published 57-identical/11-delta
-window comparison is diagnostic only: its canonical capture used UI test mode,
-but its Windows capture did not. It must not promote parity rows or drive
-platform-equivalence decisions. A matching UI-test Windows recapture at harness
-`e23cd72b78` completed all 68 cases twice with zero capture errors; exact
-canonical workflow run `29686515273` is pending. See
-`evidence/window_lifecycle_2026-07-19.json` for hashes and provenance.
+startup-restore evidence remains valid. The exact environment-matched window
+pair contains all 68 cases with zero capture errors, zero missing cases, and
+zero unsatisfied settles. Its normalized comparison is valid: 58 identical and
+10 delta cases. See `evidence/window_lifecycle_2026-07-19.json` for hashes,
+strict lanes, and provenance.
 
-Closed windows now match canonical recoverable-route behavior. A successful
-close appends a strict `visible:false` `window.list` row with stable window and
+Closed windows now retain canonical recoverable routes. A socket-managed close
+appends a strict `visible:false` `window.list` row with stable window and
 workspace identity; failed native closes discard staged history, live rows win
 identity collisions, and restart clears the in-process history. The harness now
-settles on non-visibility rather than incorrectly requiring row absence. This
-removed the old 40/28 settle defect, but the resulting 57/11 pair remains
-non-authoritative because of the environment mismatch above.
+settles on non-visibility rather than incorrectly requiring row absence. The
+remaining CLI-created closed-window linkage difference is recorded explicitly.
 
 The shared window identity boundary is now repaired. Socket-created windows
 use canonical UUID identities end to end, selector-less `window.current`
 returns the active session UUID, and CLI focus/close-by-UUID reach the backend
 instead of failing transport. Across two full Windows captures, normalized
 `window-N` identity occurrences fell from 153 to zero. The remaining CLI state
-deltas share one upstream topology loss (`window:2` disappears on Windows
-before those probes); they are not three separate CLI implementations to patch.
+deltas are not three separate CLI implementations to patch: they share native
+key selection and closed-history workspace/identity projection.
 
 Window creation now publishes the canonical initial lifecycle sequence from
 one prepared snapshot: `surface.selected`, `pane.focused`, `surface.focused`,
@@ -83,13 +79,13 @@ baseline, not "222 of 496 complete" and not the rolling catalog.
 
 ## Known acceptance blockers
 
-1. The published window pair is not promotable because its UI-test modes differ.
-   The repeat-close manifest race is fixed at `65fe6a0242`, and event-reader
-   teardown no longer hangs the final Windows case at `e23cd72b78`. Wait for the
-   exact matching canonical capture, then regenerate the comparison. Diagnostic
-   prefixes locate the earliest live-`window:2` loss near browser-only refresh,
-   but that is not yet sufficient evidence for a production change. Restart
-   binding ownership and last-window behavior remain candidate semantic gaps.
+1. The valid window pair is 58/10. UI-test matching removed the apparent restart
+   resume gap entirely. Browser child attachment was proven to remove live
+   `window:2` from `webview_windows()` and is fixed at `1717704e09` by enumerating
+   native windows; two full captures retain it. The three CLI cases still differ
+   in key selection and recoverable workspace linkage. Canonical repeat-close
+   deterministically succeeds after `visible:false`, while Windows returns
+   `not_found`; last-window close still disconnects only on canonical.
 2. Four differential-remediation unit tests fail unchanged at both pushed
    baseline `0ea973d28d` and behavior checkpoint `286b2d7b67`:
    `closing_an_unselected_tab_suppresses_the_noop_pair`,
@@ -169,6 +165,10 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
   5 right-sidebar tests pass twice after visibility simplification, and the
   desktop all-target check is clean. The extraction commit is +500/-495: five
   net ownership lines, no behavior rewrite.
+- Control window enumeration now uses native top-level windows, so adding a
+  child browser WebView cannot erase its owning window from socket state. The
+  isolated before/after capture retains refs `window:1,2,3`; two 68-case runs
+  complete without capture errors and retain `window:2` through the CLI probes.
 - Seventy source-text tests that asserted filenames, function spelling, or
   substring order were removed. The retained suites execute behavior.
 - CI now caps new Windows-owned Rust and TypeScript files at 1,500 lines and
@@ -180,10 +180,10 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
 
 ## Next efficient slice
 
-Finish exact environment-matched window evidence: retain the completed 68-case
-Windows UI-test capture, download canonical run `29686515273`, and regenerate
-the strict normalized comparison. Only then classify path/key equivalences and
-instrument the browser-only refresh boundary that first appears to lose live
-`window:2`. Change the earliest demonstrated production owner, not the three
-downstream CLI probes. Keep native key-window choice and platform paths explicit;
-do not hard-code dictionary iteration order.
+Diagnose the shared recoverable-window projection for the three CLI state cases:
+preserve selected workspace identity/count for CLI-created windows without
+hard-coding native key choice. In parallel evidence terms, enumerate exact JSON
+pointers for isolated profile paths and AppKit/noninteractive-Windows key choice
+before approving any platform equivalence. Then implement deterministic repeat
+close against recoverable routes. Do not patch the three CLI commands
+independently or normalize real identity fields.

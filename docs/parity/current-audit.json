@@ -44,10 +44,10 @@
     "status": "not_measured"
   },
   "windows": {
-    "commit": "1df21ddaf6a1173de84cde12953f547eaacd799a",
-    "commit_date": "2026-07-19T07:41:20-04:00",
-    "commit_subject": "refactor(desktop): extract activity controls",
-    "commits_ahead_of_tracked_evidence": 6,
+    "commit": "1717704e09e47cca8aeb7b4671ecc7e4fc51be52",
+    "commit_date": "2026-07-19T08:30:07-04:00",
+    "commit_subject": "fix(desktop): enumerate native control windows",
+    "commits_ahead_of_tracked_evidence": 10,
     "source_evidence": {
       "advertised_and_routed_count": 267,
       "advertised_method_count": 270,

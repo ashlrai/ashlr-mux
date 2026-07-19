@@ -1,35 +1,35 @@
 {
   "schema_version": 2,
   "family": "window_lifecycle",
-  "status": "diagnostic_environment_mismatch_replacement_pending",
+  "status": "valid_complete_capture_with_residual_deltas",
   "canonical": {
     "source_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
-    "harness_commit": "9f89ed01ee1db8a651d798d2f0a3727a0ea025a0",
-    "workflow_run": 29685067632,
+    "harness_commit": "e23cd72b7807f700a5961b2d8ae44919c810911c",
+    "workflow_run": 29686515273,
     "artifact": "canonical-capture-window_lifecycle",
-    "sha256": "99008569D893B125AA75E76D3667E2F0D4416CB572DCF5150CC2C21D6358FA84",
+    "sha256": "7DBD258F72A5A4F8F37E973332436ADB754632506750C95D7AD94975A6A69288",
     "cases": 68,
     "capture_errors": 0,
     "unsatisfied_settles": 0
   },
   "windows": {
-    "behavior_commit": "55f0afaf4e957a7fd56fe1e7a291492d039edf9f",
-    "sha256": "0FBC4E4B84220E0E66721C30163C6D70008B8F86C2C4DF2C096798210459FD44",
+    "behavior_commit": "1717704e09e47cca8aeb7b4671ecc7e4fc51be52",
+    "harness_commit": "e23cd72b7807f700a5961b2d8ae44919c810911c",
+    "sha256": "56109C96FF29F1C75BED795AFD6200F6BF6E1E204966D1A415DB6538B8BD1009",
     "cases": 68,
     "capture_errors": 0,
     "unsatisfied_settles": 0,
     "profile_mode": "isolated",
-    "ui_test_mode": false
+    "ui_test_mode": true
   },
   "comparison": {
-    "comparator_commit": "9f89ed01ee1db8a651d798d2f0a3727a0ea025a0",
-    "sha256": "F91E99D8716C621FD12EFE1FCC8A6EE459F1E4C5A7824E4D1958BC932CD3983E",
+    "comparator_commit": "e23cd72b7807f700a5961b2d8ae44919c810911c",
+    "sha256": "6372C18F392B12A75188B0CFD57B173AB5FFC7808E767ED0A21DE7D9C6F4D517",
     "cases": 68,
-    "identical": 57,
-    "deltas": 11,
+    "identical": 58,
+    "deltas": 10,
     "capture_integrity": {
-      "valid_for_promotion": false,
-      "invalid_reason": "Canonical used UI test mode while Windows did not; the 57/11 result is diagnostic only.",
+      "valid_for_promotion": true,
       "canonical_capture_errors": [],
       "windows_capture_errors": [],
       "canonical_unsatisfied_settles": [],
@@ -46,7 +46,6 @@
       "cli.focus_window_by_uuid": ["state"],
       "cli.focus_window_by_ref": ["state"],
       "cli.close_window_by_uuid": ["state"],
-      "surface_resume.persists_across_restart": ["response", "persistence"],
       "window_close.last_window_may_exit_ui_test_mode": ["error", "response", "events"]
     },
     "normalization": {
@@ -54,39 +53,18 @@
       "reason": "Both native implementations enumerate unordered window registries; dictionary iteration order is not product behavior."
     }
   },
-  "matching_replacement": {
-    "harness_commit": "e23cd72b7807f700a5961b2d8ae44919c810911c",
-    "windows": {
-      "behavior_commit": "55f0afaf4e957a7fd56fe1e7a291492d039edf9f",
-      "sha256": "7C3F996B7EEC6A5A2B01547914007E8700E7C4E6F088DCD0EFA2224A38B42116",
-      "cases": 68,
-      "capture_errors": 0,
-      "unsatisfied_settles": 0,
-      "profile_mode": "isolated",
-      "ui_test_mode": true,
-      "post_simplification_runs": 2
-    },
-    "canonical": {
-      "workflow_run": 29686515273,
-      "status": "pending"
-    },
-    "comparison": {
-      "status": "blocked_until_canonical_capture_completes",
-      "valid_for_promotion": false
-    }
-  },
   "closed_window_history": {
     "status": "implemented_and_live_observed",
     "behavior_commit": "55f0afaf4e957a7fd56fe1e7a291492d039edf9f",
-    "harness_commit": "9f89ed01ee1db8a651d798d2f0a3727a0ea025a0",
+    "harness_commit": "e23cd72b7807f700a5961b2d8ae44919c810911c",
     "behavior": [
-      "A successful close appends an invisible recoverable window.list row with stable window/workspace ids, refs, selection, and workspace count.",
+      "A socket-managed close appends an invisible recoverable window.list row with stable window/workspace ids, refs, selection, and workspace count; CLI-created window linkage remains a recorded residual.",
       "Live native rows precede recoverable rows and win identity collisions.",
       "A failed native close discards staged history; successful close commits it atomically.",
       "Restart clears the in-process recoverable history."
     ],
     "measurement_correction": "Canonical intentionally retains closed windows as invisible recoverable routes. The previous until_absent predicate incorrectly classified this product behavior as failed cleanup. until_window_not_visible now accepts visible:false or absence while keeping the final row payload strict.",
-    "result": "Both diagnostic captures have zero unsatisfied settles, but their different UI-test modes make the 57/11 comparison non-promotable."
+    "result": "The environment-matched 68-case pair has zero unsatisfied settles and a valid 58-identical/10-delta comparison."
   },
   "residual_clusters": [
     {
@@ -105,19 +83,14 @@
       "evidence": "After close settles non-visible, canonical selector-less workspace.list still reports the closed target while Windows reports its fallback window. Determine whether the retained TabManager route is contractual before changing production."
     },
     {
-      "name": "immediate_repeat_close_race",
+      "name": "recoverable_repeat_close",
       "cases": ["window_close.repeat_close_not_found_minted_ref"],
-      "evidence": "The fresh canonical action returned success because the immediate second performClose raced unregister; Windows returned not_found. The manifest must settle the first close before asserting deterministic repeat-close behavior."
+      "evidence": "After the first close settles to visible:false, canonical deterministically accepts a second close of the recoverable route while Windows returns not_found. This is no longer a timing race."
     },
     {
-      "name": "cumulative_window_topology",
+      "name": "cli_window_state_projection",
       "cases": ["cli.focus_window_by_uuid", "cli.focus_window_by_ref", "cli.close_window_by_uuid"],
-      "evidence": "All three cases share one upstream topology difference: canonical retains live window:2 while Windows no longer lists it before the CLI probes. Locate the earliest case that loses that live window; do not patch the three CLI commands independently."
-    },
-    {
-      "name": "restart_resume_binding",
-      "cases": ["surface_resume.persists_across_restart"],
-      "evidence": "After restart canonical returns Surface not found for the original surface while Windows restores the binding and target. The approval-record UUID difference is downstream of this ownership mismatch."
+      "evidence": "Native enumeration now retains live window:2 after browser child attachment. The three cases still differ in native key-window choice and recoverable rows' workspace linkage/identity ordering; diagnose that shared close-history projection rather than patching CLI routes."
     },
     {
       "name": "last_window_close",
@@ -134,10 +107,12 @@
     "desktop_and_cli_build_runs": 1,
     "capture_harness_tests": 113,
     "capture_harness_post_simplification_runs": 2,
+    "native_window_unit_tests": 3,
+    "native_window_full_capture_runs": 2,
     "file_length_budget": "39 tracked oversized files; all frozen at current-or-smaller size"
   },
   "promotion": {
     "rows_promoted": [],
-    "reason": "No window rows may be promoted from an environment-mismatched pair. Wait for matching canonical workflow run 29686515273 and regenerate the comparison."
+    "reason": "The pair is valid evidence, but ten cases retain strict deltas. Promote only mapped capabilities whose applicable lanes are identical or explicitly platform-equivalent."
   }
 }
