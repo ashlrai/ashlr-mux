@@ -45,10 +45,10 @@
     "status": "not_measured"
   },
   "windows": {
-    "commit": "5bd9bdcc7995e89bd04b700faebd0af9e598bbc1",
-    "commit_date": "2026-07-19T09:49:13-04:00",
-    "commit_subject": "refactor(cli): extract shared argument parsing",
-    "commits_ahead_of_tracked_evidence": 27,
+    "commit": "025efd5733140e533ac706874ae03b09ad5f1f51",
+    "commit_date": "2026-07-19T09:55:38-04:00",
+    "commit_subject": "refactor(web): extract Swift syntax reader",
+    "commits_ahead_of_tracked_evidence": 29,
     "source_evidence": {
       "advertised_and_routed_count": 267,
       "advertised_method_count": 270,

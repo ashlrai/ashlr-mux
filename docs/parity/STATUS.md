@@ -5,7 +5,7 @@ Checkpoint commits:
 - Current canonical audit: `41756f7285a02d2592751438793647f7d4ba9b71`
 - Frozen differential canonical: `e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452`
 - Windows behavior captured: `a51ddd28763bad2549d3903de78bc7b59b988e36`
-- Latest Windows code checkpoint: `5bd9bdcc7995e89bd04b700faebd0af9e598bbc1`
+- Latest Windows code checkpoint: `025efd5733140e533ac706874ae03b09ad5f1f51`
 - Latest exact startup differential evidence: `parity/diff-lane@215737999ac0579682b6b2a2d230d7a0d064a51d`
 - Latest window harness checkpoint: `parity/diff-lane@9257db511b975335e2ee79bc4bb143c04bfa95f8`
 - Latest canonical window capture: workflow run `29686515273`
@@ -183,6 +183,16 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
   ownership line with no visibility changes. The 251-test CLI suite passes
   before the move and twice after it, and the full all-target matrix and compile
   check are green.
+- `customSidebarSwiftParser.ts` is now 5,152 physical lines (from 5,417 at the
+  previous checkpoint). Balanced call, closure, delimiter, ternary, and
+  top-level operator scanning now lives in the 270-line abstract
+  `SwiftSyntaxReader.ts` base. The 268 moved method-body lines are exact after
+  normalizing `private` to the required `protected` inheritance boundary; the
+  only parent changes are its import, inheritance, and `super()` call. The
+  92-test custom-sidebar suite passes before and twice after the extraction,
+  the full web suite passes 1,253 tests across 81 files, and typecheck, web
+  production build, whitespace, and the 39-file Windows length budget are
+  clean. No user-facing strings or localization resources changed.
 - CLI `main.rs` is now 3,081 physical lines (from 4,059). Control-result text,
   JSON projection, id formatting, and tmux-state pruning live in the 997-line
   `control_output.rs` child module with 11 explicit parent-visible functions.
@@ -206,14 +216,16 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
 - CI now caps new Windows-owned Rust and TypeScript files at 1,500 lines and
   freezes 39 existing oversized files at their current-or-smaller sizes.
 - The next structural priorities are
-  the 5,419-line custom-sidebar component, its 5,417-line Swift parser and
-  5,975-line test file, followed by the remaining session/control and terminal
-  domains. Split them in isolated maintenance commits, not inside feature
-  slices.
+  the 5,419-line custom-sidebar component, the remaining 5,152-line Swift
+  parser, and their 5,975-line test file, followed by the remaining
+  session/control and terminal domains. Split one coherent responsibility per
+  isolated maintenance commit; do not mix those moves with feature slices.
 
 ## Next efficient slice
 
-Split one coherent parsing/runtime domain from the 5,417-line custom-sidebar
-Swift parser in a behavior-neutral commit. Run its focused Bun suite before and
-after, keep each new file below 1,500 lines, and do not mix the move with parity
-behavior changes.
+Extract one coherent render/runtime responsibility from the 5,419-line
+custom-sidebar component in a behavior-neutral commit. First identify a
+self-contained boundary whose moved implementation remains below 1,500 lines;
+run the focused Bun suite before and twice after simplification, then the full
+web suite, typecheck, build, and file-length gate. Do not mix the move with
+parity behavior changes or generated catalog churn.
