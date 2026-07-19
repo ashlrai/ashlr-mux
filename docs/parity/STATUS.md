@@ -5,7 +5,7 @@ Checkpoint commits:
 - Current canonical audit: `41756f7285a02d2592751438793647f7d4ba9b71`
 - Frozen differential canonical: `e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452`
 - Windows behavior captured: `a51ddd28763bad2549d3903de78bc7b59b988e36`
-- Latest Windows code checkpoint: `025efd5733140e533ac706874ae03b09ad5f1f51`
+- Latest Windows code checkpoint: `ad795a225ad5c0df525eb5d4154efed25816e750`
 - Latest exact startup differential evidence: `parity/diff-lane@215737999ac0579682b6b2a2d230d7a0d064a51d`
 - Latest window harness checkpoint: `parity/diff-lane@9257db511b975335e2ee79bc4bb143c04bfa95f8`
 - Latest canonical window capture: workflow run `29686515273`
@@ -193,6 +193,16 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
   the full web suite passes 1,253 tests across 81 files, and typecheck, web
   production build, whitespace, and the 39-file Windows length budget are
   clean. No user-facing strings or localization resources changed.
+- `CustomSidebarSurface.tsx` is now 5,151 physical lines (from 5,419 at the
+  previous checkpoint). Its JSON block renderer, workspace filtering, row
+  actions, and limits now live in the 278-line `CustomSidebarJsonView.tsx`
+  child. All 266 moved implementation lines are exact after normalizing the
+  child export; the parent change is one import and two retired type imports.
+  The 92-test custom-sidebar suite passes before and twice after simplification,
+  the full web suite passes 1,253 tests across 81 files, and typecheck, web
+  production build, whitespace, and the 39-file Windows length budget are
+  clean. All rendered strings moved unchanged, so no localization resources
+  changed.
 - CLI `main.rs` is now 3,081 physical lines (from 4,059). Control-result text,
   JSON projection, id formatting, and tmux-state pruning live in the 997-line
   `control_output.rs` child module with 11 explicit parent-visible functions.
@@ -223,9 +233,9 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
 
 ## Next efficient slice
 
-Extract one coherent render/runtime responsibility from the 5,419-line
-custom-sidebar component in a behavior-neutral commit. First identify a
-self-contained boundary whose moved implementation remains below 1,500 lines;
-run the focused Bun suite before and twice after simplification, then the full
-web suite, typecheck, build, and file-length gate. Do not mix the move with
-parity behavior changes or generated catalog churn.
+Extract the self-contained accessibility/data-attribute projection from the
+remaining 5,151-line custom-sidebar component in a behavior-neutral commit.
+Keep the new module below 1,500 lines, preserve the returned attribute mapping
+exactly, and run the focused Bun suite before and twice after simplification,
+then the full web suite, typecheck, build, and file-length gate. Do not mix the
+move with parity behavior changes or generated catalog churn.

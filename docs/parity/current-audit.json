@@ -45,10 +45,10 @@
     "status": "not_measured"
   },
   "windows": {
-    "commit": "025efd5733140e533ac706874ae03b09ad5f1f51",
-    "commit_date": "2026-07-19T09:55:38-04:00",
-    "commit_subject": "refactor(web): extract Swift syntax reader",
-    "commits_ahead_of_tracked_evidence": 29,
+    "commit": "ad795a225ad5c0df525eb5d4154efed25816e750",
+    "commit_date": "2026-07-19T09:59:34-04:00",
+    "commit_subject": "refactor(web): extract custom sidebar JSON view",
+    "commits_ahead_of_tracked_evidence": 31,
     "source_evidence": {
       "advertised_and_routed_count": 267,
       "advertised_method_count": 270,
