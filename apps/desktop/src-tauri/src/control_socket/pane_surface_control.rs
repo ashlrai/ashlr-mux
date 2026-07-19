@@ -1197,7 +1197,7 @@ pub(super) fn pane_focus(
     }))
 }
 
-fn pane_response_window_identity(
+pub(super) fn pane_response_window_identity(
     _window: &SessionWindowSnapshot,
     _window_index: usize,
     native_identity: Option<&cmux_core::window_display::WindowControlIdentity>,
