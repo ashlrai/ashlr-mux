@@ -76,6 +76,24 @@
       "The state lane also contains unapproved platform/runtime payload differences in working directories, terminal titles, and remote-detail fields."
     ]
   },
+  "windows_remediation": {
+    "test_commit": "39cdb1f69d",
+    "behavior_commit": "f132a7ac4cb0feb678e55149c716b59d2884ae2f",
+    "fixed_in_process_proof": [
+      "The first restored native window exposes its owning session UUID and reuses window:1 instead of minting window:3 for the main webview label.",
+      "The second restored window retains window:2.",
+      "Selectorless workspace routing resolves through the restored active context while a currently focused window remains authoritative."
+    ],
+    "gates": [
+      "cargo test -p cmux-desktop --test session_startup_restore_process: passed twice after simplification",
+      "cargo test -p cmux-desktop workspace_ --lib: 177 passed",
+      "cargo test -p cmux-desktop window_lifecycle --lib: 73 passed",
+      "cargo check -p cmux-desktop --all-targets: passed",
+      "cargo fmt --all -- --check: passed",
+      "git diff --check: passed"
+    ],
+    "remaining_delta": "The retained exact capture still differs in restored target surface order; defer differential refresh and promotion until that known product gap is corrected."
+  },
   "promotion_decision": {
     "matrix_changes": 0,
     "status": "implemented_unverified",
