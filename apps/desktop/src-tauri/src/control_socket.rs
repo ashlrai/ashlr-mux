@@ -28,7 +28,6 @@ mod lifecycle_dispatch;
 mod pane_surface_control;
 mod pane_surface_lifecycle;
 mod payloads;
-mod resume_approval;
 mod terminal_runtime_v2;
 #[cfg(test)]
 #[path = "control_socket/unit_tests.rs"]
@@ -4395,3 +4394,5 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
         self.rollback_resources()
     }
 }
+
+mod resume_approval;
