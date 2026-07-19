@@ -34,7 +34,6 @@ mod terminal_runtime_v2;
 mod tests;
 mod window_lifecycle;
 mod workspace_control;
-
 use browser_control::*;
 use event_stream::*;
 pub(crate) use event_stream::{
@@ -42,16 +41,13 @@ pub(crate) use event_stream::{
     record_session_changed_event, replace_session_event_baseline,
 };
 use lifecycle_dispatch::*;
-pub(crate) use lifecycle_dispatch::{note_window_focused, ControlActiveWindowState};
+pub(crate) use lifecycle_dispatch::{
+    note_window_focused, ControlActiveWindowState, ControlClosedWindowHistoryState,
+};
 use pane_surface_control::*;
 pub(crate) use payloads::resolve_custom_sidebar_asset_request;
 use payloads::*;
 use workspace_control::*;
-
-use terminal_runtime_v2::{
-    plan_terminal_request_with_active_window, plan_terminal_set_font_request,
-    terminal_create_response_terminal_id, TerminalRequestPlan,
-};
 
 #[cfg(test)]
 use crate::browser::strict_browser_runtime_teardown_transaction;
@@ -124,6 +120,10 @@ use crate::terminal::{
     TerminalState,
 };
 use proxy_runtime::{ProxyTarget, RemoteProxyBrokerState};
+use terminal_runtime_v2::{
+    plan_terminal_request_with_active_window, plan_terminal_set_font_request,
+    terminal_create_response_terminal_id, TerminalRequestPlan,
+};
 
 const CONTROL_PIPE_BASE_NAME: &str = "cmux";
 const CONTROL_EVENTS_CHANGED_EVENT: &str = "cmux://events-changed";

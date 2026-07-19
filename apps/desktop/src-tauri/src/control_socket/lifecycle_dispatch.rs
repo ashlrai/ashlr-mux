@@ -1,5 +1,9 @@
 use super::*;
 
+#[path = "lifecycle_dispatch/closed_window_history.rs"]
+mod closed_window_history;
+pub(crate) use closed_window_history::ControlClosedWindowHistoryState;
+
 #[path = "resume_approval.rs"]
 mod resume_approval;
 
@@ -685,8 +689,15 @@ pub(super) fn apply_window_lifecycle_effect(
         } => {
             let label = webview_label_for_session_window(app, current, window_id);
             let active_state = app.try_state::<ControlActiveWindowState>();
-            crate::window::close_socket_window(app, &label)
-                .map_err(|error| ("internal_error", error))?;
+            if let Err(error) = crate::window::close_socket_window(app, &label) {
+                if let Some(history) = app.try_state::<ControlClosedWindowHistoryState>() {
+                    history.discard(window_id);
+                }
+                return Err(("internal_error", error));
+            }
+            if let Some(history) = app.try_state::<ControlClosedWindowHistoryState>() {
+                history.commit(window_id);
+            }
             if let Some(state) = active_state {
                 state.close_key(window_id, next_key_window_id.as_deref());
             }
@@ -735,10 +746,8 @@ pub(super) fn apply_window_lifecycle_effect(
             }
             Ok(())
         }
-        // The session commit paths persist; closed-window history, per-window
-        // geometry persistence, remote detach, and the resume approval store
-        // are platform-equivalence/deferred-subsystem candidates pinned by
-        // the transition tests until their subsystems land.
+        // The session commit paths persist; per-window geometry persistence,
+        // remote detach, and the resume approval store remain deferred seams.
         // Canonical unregisterMainWindow notification clearing
         // (AppDelegate.swift:16274-16280). Best-effort like the rest of the
         // teardown: a poisoned store must not fail an already-closed window.
@@ -757,8 +766,19 @@ pub(super) fn apply_window_lifecycle_effect(
             }
             Ok(())
         }
-        Effect::RecordClosedWindowHistory { .. }
-        | Effect::PersistWindowGeometry { .. }
+        Effect::RecordClosedWindowHistory { window_id } => {
+            if let (Some(history), Some(window)) = (
+                app.try_state::<ControlClosedWindowHistoryState>(),
+                current
+                    .windows
+                    .iter()
+                    .find(|window| window.window_id.as_deref() == Some(window_id)),
+            ) {
+                history.stage(window.clone());
+            }
+            Ok(())
+        }
+        Effect::PersistWindowGeometry { .. }
         | Effect::RemoteWorkspaceDetach { .. }
         | Effect::ResumeApprovalPrompt { .. }
         | Effect::PersistSession => Ok(()),

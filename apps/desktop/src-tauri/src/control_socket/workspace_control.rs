@@ -1,5 +1,9 @@
 use super::*;
 
+#[path = "workspace_control/window_list.rs"]
+mod window_list;
+pub(super) use window_list::window_list;
+
 pub(super) fn workspace_create(
     app: &AppHandle,
     params: &serde_json::Map<String, Value>,
@@ -382,51 +386,6 @@ pub(super) fn config_reload(app: &AppHandle) -> ControlCallResult {
             data: None,
         },
     }
-}
-
-pub(super) fn window_list(app: &AppHandle) -> ControlCallResult {
-    let session = snapshot(app);
-    let windows = crate::window::control_window_summaries(app);
-    ok(json!({"windows": windows
-        .into_iter()
-        .enumerate()
-        .map(|(index, window)| {
-            let session_window = session.windows.iter().find(|session_window| {
-                session_window.window_id.as_deref() == Some(window.identity.label.as_str())
-            }).or_else(|| {
-                if window.identity.label == "main" {
-                    session.windows.first()
-                } else {
-                    None
-                }
-            });
-            let tab_manager = session_window.map(|window| &window.tab_manager);
-            let selected_index = tab_manager
-                .and_then(|tab_manager| tab_manager.selected_workspace_index)
-                .unwrap_or_default()
-                .max(0) as usize;
-            let selected_workspace_id = tab_manager
-                .and_then(|tab_manager| tab_manager.workspaces.get(selected_index))
-                .and_then(|workspace| workspace.workspace_id.clone());
-            let window_id = session_window
-                .and_then(|window| window.window_id.as_deref())
-                .unwrap_or(window.identity.id.as_str());
-            let window_reference = control_handle_ref(app, "window", window_id);
-            let selected_workspace_reference = selected_workspace_id
-                .as_deref()
-                .map(|id| control_handle_ref(app, "workspace", id));
-            json!({
-                "index": index,
-                "id": window_id,
-                "ref": window_reference,
-                "key": window.is_key,
-                "visible": window.is_visible,
-                "workspace_count": tab_manager.map_or(0, |tab_manager| tab_manager.workspaces.len()),
-                "selected_workspace_id": selected_workspace_id,
-                "selected_workspace_ref": selected_workspace_reference,
-            })
-        })
-        .collect::<Vec<_>>() }))
 }
 
 pub(super) fn window_current(
