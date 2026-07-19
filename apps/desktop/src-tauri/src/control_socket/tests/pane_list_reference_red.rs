@@ -115,7 +115,7 @@ fn pane_list_container_size_uses_the_rendered_workspace_dimensions() {
     };
 
     assert_eq!(
-        pane_surface_control::pane_list::pane_list_container_size(rendered, 1000.0, 700.0),
+        pane_surface_control::pane_list::pane_list_container_size(rendered),
         (760.0, 672.0)
     );
 }

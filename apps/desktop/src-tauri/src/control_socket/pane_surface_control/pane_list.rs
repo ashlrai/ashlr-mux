@@ -62,11 +62,9 @@ pub(in crate::control_socket) fn pane_list_root_frame(
 }
 
 pub(in crate::control_socket) fn pane_list_container_size(
-    _root_frame: PanePixelFrame,
-    native_width: f64,
-    native_height: f64,
+    root_frame: PanePixelFrame,
 ) -> (f64, f64) {
-    (native_width, native_height)
+    (root_frame.width, root_frame.height)
 }
 
 pub(in crate::control_socket) fn pane_list(
@@ -149,7 +147,7 @@ pub(in crate::control_socket) fn pane_list(
             height,
         },
     );
-    let container_size = pane_list_container_size(root_frame, width, height);
+    let container_size = pane_list_container_size(root_frame);
     pane_frames(layout, root_frame, &mut pane_rows);
     let terminal_state = app.state::<TerminalState>();
     let panes = pane_rows
