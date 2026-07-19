@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use tauri::State;
+use tauri::{State, WebviewWindow};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct WorkspacePaneGeometry {
@@ -11,13 +11,28 @@ pub(crate) struct WorkspacePaneGeometry {
     pub(crate) height: f64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum PaneGeometryAuthority {
+    Uninitialized,
+    WorkspaceUnrendered,
+    Rendered(WorkspacePaneGeometry),
+}
+
 #[derive(Default)]
 pub struct PaneGeometryState {
-    by_workspace: Mutex<HashMap<String, WorkspacePaneGeometry>>,
+    by_window: Mutex<HashMap<String, HashMap<String, WorkspacePaneGeometry>>>,
 }
 
 impl PaneGeometryState {
-    fn report(&self, workspace_id: &str, geometry: WorkspacePaneGeometry) -> Result<(), String> {
+    fn report(
+        &self,
+        window_label: &str,
+        workspace_id: &str,
+        geometry: WorkspacePaneGeometry,
+    ) -> Result<(), String> {
+        if window_label.trim().is_empty() {
+            return Err("window label must not be empty".to_string());
+        }
         if workspace_id.trim().is_empty() {
             return Err("workspaceId must not be empty".to_string());
         }
@@ -31,24 +46,34 @@ impl PaneGeometryState {
                 "pane geometry must contain finite coordinates and positive dimensions".to_string(),
             );
         }
-        self.by_workspace
+        self.by_window
             .lock()
             .expect("pane geometry mutex poisoned")
+            .entry(window_label.to_string())
+            .or_default()
             .insert(workspace_id.to_string(), geometry);
         Ok(())
     }
 
-    pub(crate) fn geometry_for(&self, workspace_id: &str) -> Option<WorkspacePaneGeometry> {
-        self.by_workspace
-            .lock()
-            .expect("pane geometry mutex poisoned")
-            .get(workspace_id)
-            .copied()
+    pub(crate) fn authority_for(
+        &self,
+        window_label: &str,
+        workspace_id: &str,
+    ) -> PaneGeometryAuthority {
+        let by_window = self.by_window.lock().expect("pane geometry mutex poisoned");
+        let Some(by_workspace) = by_window.get(window_label) else {
+            return PaneGeometryAuthority::Uninitialized;
+        };
+        by_workspace.get(workspace_id).copied().map_or(
+            PaneGeometryAuthority::WorkspaceUnrendered,
+            PaneGeometryAuthority::Rendered,
+        )
     }
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub fn pane_report_geometry(
+    window: WebviewWindow,
     state: State<'_, PaneGeometryState>,
     workspace_id: String,
     x: f64,
@@ -57,6 +82,7 @@ pub fn pane_report_geometry(
     height: f64,
 ) -> Result<(), String> {
     state.report(
+        window.label(),
         &workspace_id,
         WorkspacePaneGeometry {
             x,

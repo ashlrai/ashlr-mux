@@ -1,5 +1,5 @@
 use super::*;
-use crate::pane_geometry::{PaneGeometryState, WorkspacePaneGeometry};
+use crate::pane_geometry::{PaneGeometryAuthority, PaneGeometryState};
 
 pub(in crate::control_socket) fn pane_list_reference_fields_with(
     pane: &SessionPaneLayoutSnapshot,
@@ -25,7 +25,15 @@ pub(in crate::control_socket) fn pane_list_window_size_with(
     window_id: &str,
     mut inner_size_for_label: impl FnMut(&str) -> Option<(f64, f64)>,
 ) -> (f64, f64) {
-    let label = if snapshot
+    let label = pane_list_window_label(snapshot, window_id);
+    inner_size_for_label(label).unwrap_or((1.0, 1.0))
+}
+
+pub(in crate::control_socket) fn pane_list_window_label<'a>(
+    snapshot: &AppSessionSnapshot,
+    window_id: &'a str,
+) -> &'a str {
+    if snapshot
         .windows
         .first()
         .and_then(|window| window.window_id.as_deref())
@@ -34,8 +42,7 @@ pub(in crate::control_socket) fn pane_list_window_size_with(
         "main"
     } else {
         window_id
-    };
-    inner_size_for_label(label).unwrap_or((1.0, 1.0))
+    }
 }
 
 pub(in crate::control_socket) fn pane_list_logical_size(
@@ -55,10 +62,24 @@ pub(in crate::control_socket) fn pane_list_logical_size(
 }
 
 pub(in crate::control_socket) fn pane_list_root_frame(
-    observed: Option<PanePixelFrame>,
+    authority: PaneGeometryAuthority,
     native_fallback: PanePixelFrame,
 ) -> PanePixelFrame {
-    observed.unwrap_or(native_fallback)
+    match authority {
+        PaneGeometryAuthority::Uninitialized => native_fallback,
+        PaneGeometryAuthority::WorkspaceUnrendered => PanePixelFrame {
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            height: 0.0,
+        },
+        PaneGeometryAuthority::Rendered(geometry) => PanePixelFrame {
+            x: geometry.x,
+            y: geometry.y,
+            width: geometry.width,
+            height: geometry.height,
+        },
+    }
 }
 
 pub(in crate::control_socket) fn pane_list_container_size(
@@ -110,6 +131,7 @@ pub(in crate::control_socket) fn pane_list(
         };
     };
     let window_id = window.window_id.as_deref().unwrap_or("main");
+    let window_label = pane_list_window_label(&current, window_id);
     let (width, height) = pane_list_window_size_with(&current, window_id, |label| {
         let window = app.get_webview_window(label)?;
         let size = window.inner_size().ok()?;
@@ -128,18 +150,15 @@ pub(in crate::control_socket) fn pane_list(
         };
     };
     let mut pane_rows = Vec::new();
-    let observed_frame = workspace
-        .workspace_id
-        .as_deref()
-        .and_then(|workspace_id| app.state::<PaneGeometryState>().geometry_for(workspace_id))
-        .map(|geometry: WorkspacePaneGeometry| PanePixelFrame {
-            x: geometry.x,
-            y: geometry.y,
-            width: geometry.width,
-            height: geometry.height,
-        });
+    let geometry_authority = workspace.workspace_id.as_deref().map_or(
+        PaneGeometryAuthority::Uninitialized,
+        |workspace_id| {
+            app.state::<PaneGeometryState>()
+                .authority_for(window_label, workspace_id)
+        },
+    );
     let root_frame = pane_list_root_frame(
-        observed_frame,
+        geometry_authority,
         PanePixelFrame {
             x: 0.0,
             y: 0.0,
