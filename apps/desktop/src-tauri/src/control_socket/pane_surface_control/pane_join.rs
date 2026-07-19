@@ -76,13 +76,13 @@ pub(in crate::control_socket) fn pane_join_move_params(
         "workspace_ref",
         "window_id",
         "window_ref",
-        "focus",
     ] {
         if let Some(value) = params.get(key) {
             let move_key = key.strip_prefix("target_").unwrap_or(key);
             move_params.insert(move_key.to_string(), value.clone());
         }
     }
+    move_params.insert("focus".to_string(), json!(true));
     move_params
 }
 
