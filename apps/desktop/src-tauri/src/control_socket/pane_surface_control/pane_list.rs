@@ -63,10 +63,10 @@ pub(in crate::control_socket) fn pane_list_logical_size(
 
 pub(in crate::control_socket) fn pane_list_root_frame(
     authority: PaneGeometryAuthority,
-    native_fallback: PanePixelFrame,
+    native_fallback: impl FnOnce() -> PanePixelFrame,
 ) -> PanePixelFrame {
     match authority {
-        PaneGeometryAuthority::Uninitialized => native_fallback,
+        PaneGeometryAuthority::Uninitialized => native_fallback(),
         PaneGeometryAuthority::WorkspaceUnrendered => PanePixelFrame {
             x: 0.0,
             y: 0.0,
@@ -132,16 +132,6 @@ pub(in crate::control_socket) fn pane_list(
     };
     let window_id = window.window_id.as_deref().unwrap_or("main");
     let window_label = pane_list_window_label(&current, window_id);
-    let (width, height) = pane_list_window_size_with(&current, window_id, |label| {
-        let window = app.get_webview_window(label)?;
-        let size = window.inner_size().ok()?;
-        let scale_factor = window.scale_factor().ok()?;
-        Some(pane_list_logical_size(
-            size.width,
-            size.height,
-            scale_factor,
-        ))
-    });
     let Some(layout) = workspace.layout.as_ref() else {
         return ControlCallResult::Err {
             code: "not_found".to_string(),
@@ -157,15 +147,24 @@ pub(in crate::control_socket) fn pane_list(
                 .authority_for(window_label, workspace_id)
         },
     );
-    let root_frame = pane_list_root_frame(
-        geometry_authority,
+    let root_frame = pane_list_root_frame(geometry_authority, || {
+        let (width, height) = pane_list_window_size_with(&current, window_id, |label| {
+            let window = app.get_webview_window(label)?;
+            let size = window.inner_size().ok()?;
+            let scale_factor = window.scale_factor().ok()?;
+            Some(pane_list_logical_size(
+                size.width,
+                size.height,
+                scale_factor,
+            ))
+        });
         PanePixelFrame {
             x: 0.0,
             y: 0.0,
             width,
             height,
-        },
-    );
+        }
+    });
     let container_size = pane_list_container_size(root_frame);
     pane_frames(layout, root_frame, &mut pane_rows);
     let terminal_state = app.state::<TerminalState>();
