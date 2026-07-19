@@ -230,6 +230,90 @@ class CompareCapturesTests(unittest.TestCase):
         report = compare_captures(left, right)
         self.assertEqual(report["deltas"], 0)
 
+    def test_stable_refs_align_entity_uuids_despite_earlier_platform_only_ids(self):
+        left = {
+            "a": case_record(
+                "a",
+                observation(events=[{"boot_id": "<uuid-1>"}, {"noise": "<uuid-2>"}]),
+            ),
+            "b": case_record(
+                "b",
+                observation(
+                    response={
+                        "window_id": "<uuid-4>",
+                        "window_ref": "window:3",
+                        "workspace_id": "<uuid-5>",
+                        "workspace_ref": "workspace:7",
+                    }
+                ),
+            ),
+        }
+        right = {
+            "a": case_record(
+                "a",
+                observation(events=[{"boot_id": "<uuid-8>"}]),
+            ),
+            "b": case_record(
+                "b",
+                observation(
+                    response={
+                        "window_id": "<uuid-2>",
+                        "window_ref": "window:3",
+                        "workspace_id": "<uuid-3>",
+                        "workspace_ref": "workspace:7",
+                    }
+                ),
+            ),
+        }
+
+        report = compare_captures(left, right)
+
+        self.assertEqual(report["deltas"], 1)
+        by_id = {result["id"]: result for result in report["results"]}
+        self.assertFalse(by_id["a"]["identical"])
+        self.assertTrue(by_id["b"]["identical"])
+
+    def test_event_ref_conflicts_do_not_poison_response_identity(self):
+        left = {
+            "a": case_record(
+                "a",
+                observation(
+                    response={
+                        "workspace_id": "<uuid-9>",
+                        "workspace_ref": "workspace:7",
+                    },
+                    events=[
+                        {
+                            "workspace_id": "<uuid-9>",
+                            "workspace_ref": "workspace:2",
+                        }
+                    ],
+                ),
+            )
+        }
+        right = {
+            "a": case_record(
+                "a",
+                observation(
+                    response={
+                        "workspace_id": "<uuid-2>",
+                        "workspace_ref": "workspace:7",
+                    },
+                    events=[
+                        {
+                            "workspace_id": "<uuid-2>",
+                            "workspace_ref": "workspace:7",
+                        }
+                    ],
+                ),
+            )
+        }
+
+        result = compare_captures(left, right)["results"][0]
+
+        self.assertEqual(result["mismatches"], ["events"])
+        self.assertNotIn("response", result["detail"])
+
     def test_window_list_order_and_positional_indices_are_normalized_by_ref(self):
         left_rows = [
             window_row("window:3", 0, "<uuid-1>"),

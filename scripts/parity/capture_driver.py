@@ -521,6 +521,65 @@ class TimingSymbolizer:
         return self._walk(value)
 
 
+class UuidRefCanonicalizer:
+    """Names entity UUID symbols by their stable public ``kind:N`` refs.
+
+    Event families can legitimately encounter the same entities in different
+    orders before their strict event streams converge. Creation-order UUID
+    numbering would then cascade a false mismatch into later responses. A
+    co-located ``id``/``ref`` or ``*_id``/``*_ref`` pair is authoritative
+    identity evidence, so this pass rewrites that UUID everywhere to a stable
+    ``<ref:kind:N>`` token. Conflicting evidence stays unmodified and strict.
+    """
+
+    _TOKEN_RE = re.compile(r"<uuid-\d+>")
+    _REF_RE = re.compile(r"(?:window|workspace|workspace_group|pane|surface|terminal|tab):\d+")
+
+    def __init__(self) -> None:
+        self._table: dict[str, str] = {}
+        self._ambiguous: set[str] = set()
+
+    def register(self, value: Any) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key == "id":
+                    ref_key = "ref"
+                elif key.endswith("_id"):
+                    ref_key = f"{key[:-3]}_ref"
+                else:
+                    ref_key = None
+                if ref_key is not None:
+                    self._register_pair(item, value.get(ref_key))
+                self.register(item)
+        elif isinstance(value, list):
+            for item in value:
+                self.register(item)
+
+    def _register_pair(self, entity_id: Any, entity_ref: Any) -> None:
+        if not isinstance(entity_id, str) or not self._TOKEN_RE.fullmatch(entity_id):
+            return
+        if not isinstance(entity_ref, str) or not self._REF_RE.fullmatch(entity_ref):
+            return
+        replacement = f"<ref:{entity_ref}>"
+        existing = self._table.get(entity_id)
+        if existing is not None and existing != replacement:
+            self._table.pop(entity_id, None)
+            self._ambiguous.add(entity_id)
+        elif entity_id not in self._ambiguous:
+            self._table[entity_id] = replacement
+
+    def apply(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {self.apply(key): self.apply(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [self.apply(item) for item in value]
+        if isinstance(value, str):
+            return self._TOKEN_RE.sub(
+                lambda match: self._table.get(match.group(0), match.group(0)), value
+            )
+        return value
+
+
 class UuidRenumberer:
     """Deterministic compare-time renumbering of ``<uuid-N>`` symbols.
 

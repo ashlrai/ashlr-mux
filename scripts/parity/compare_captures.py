@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from capture_driver import TimingSymbolizer, UuidRenumberer
+from capture_driver import TimingSymbolizer, UuidRefCanonicalizer, UuidRenumberer
 from differential_harness import compare_observations, remove_pointer
 
 
@@ -178,6 +178,22 @@ def compare_captures(
             record["observation"] = normalize_racy_window_list_order(
                 record["observation"]
             )
+        ref_canonicalizer = UuidRefCanonicalizer()
+        for case_id in ordered_ids:
+            record = side.get(case_id)
+            if record is None:
+                continue
+            normalized = copy.deepcopy(record["observation"])
+            for difference in case_approved(case_id, record):
+                remove_pointer(normalized, difference["path"])
+            # Entity refs in response/state probes come from the public handle
+            # registry. Event payload refs are themselves under comparison and
+            # may be the bug being measured; never let a bad derived-event ref
+            # poison otherwise authoritative identity evidence.
+            normalized.pop("events", None)
+            ref_canonicalizer.register(normalized)
+        for record in side.values():
+            record["observation"] = ref_canonicalizer.apply(record["observation"])
         renumber = UuidRenumberer()
         for case_id in ordered_ids:
             record = side.get(case_id)

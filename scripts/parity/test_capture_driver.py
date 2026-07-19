@@ -5,6 +5,7 @@ import unittest
 from capture_driver import (
     OBSERVATION_KEYS,
     TimingSymbolizer,
+    UuidRefCanonicalizer,
     UuidRenumberer,
     ManifestError,
     PlaceholderError,
@@ -447,6 +448,47 @@ class UuidRenumbererTests(unittest.TestCase):
             renumber.apply({"ref": "surface:4", "id": "surface-2"}),
             {"ref": "surface:4", "id": "surface-2"},
         )
+
+
+class UuidRefCanonicalizerTests(unittest.TestCase):
+    def test_entity_tokens_are_canonicalized_by_their_stable_refs(self):
+        left = {
+            "window_id": "<uuid-9>",
+            "window_ref": "window:3",
+            "workspace": {"id": "<uuid-4>", "ref": "workspace:7"},
+        }
+        right = {
+            "window_id": "<uuid-2>",
+            "window_ref": "window:3",
+            "workspace": {"id": "<uuid-8>", "ref": "workspace:7"},
+        }
+        canonicalizers = [UuidRefCanonicalizer(), UuidRefCanonicalizer()]
+        for canonicalizer, value in zip(canonicalizers, [left, right], strict=True):
+            canonicalizer.register(value)
+        self.assertEqual(
+            canonicalizers[0].apply(left),
+            canonicalizers[1].apply(right),
+        )
+        self.assertEqual(
+            canonicalizers[0].apply("owner=<uuid-4>"),
+            "owner=<ref:workspace:7>",
+        )
+
+    def test_conflicting_ref_evidence_leaves_the_uuid_token_strict(self):
+        canonicalizer = UuidRefCanonicalizer()
+        canonicalizer.register(
+            [
+                {"id": "<uuid-4>", "ref": "workspace:7"},
+                {"workspace_id": "<uuid-4>", "workspace_ref": "workspace:8"},
+            ]
+        )
+        self.assertEqual(canonicalizer.apply("<uuid-4>"), "<uuid-4>")
+
+    def test_non_entity_refs_and_non_uuid_ids_are_untouched(self):
+        value = {"id": "surface-2", "ref": "surface:4", "note": "workspace:7"}
+        canonicalizer = UuidRefCanonicalizer()
+        canonicalizer.register(value)
+        self.assertEqual(canonicalizer.apply(value), value)
 
 
 class ObservationShapingTests(unittest.TestCase):
