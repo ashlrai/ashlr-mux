@@ -33,10 +33,8 @@ mod rename;
 pub(super) use rename::workspace_rename;
 
 #[path = "workspace_control/navigation.rs"]
-mod navigation;
+pub(super) mod navigation;
 pub(super) use navigation::{workspace_last, workspace_select_relative};
-#[cfg(test)]
-pub(super) use navigation::{workspace_relative_target, WorkspaceNavigationTargetError};
 
 pub(super) fn workspace_create(
     app: &AppHandle,

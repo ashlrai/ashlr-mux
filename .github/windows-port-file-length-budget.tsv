@@ -13,7 +13,7 @@
 3071	crates/cmux-cli/src/main.rs
 3997	crates/cmux-cli/src/hooks_installer.rs
 3922	crates/cmux-config/src/lib.rs
-2941	apps/desktop/src-tauri/src/control_socket/workspace_control.rs
+2939	apps/desktop/src-tauri/src/control_socket/workspace_control.rs
 3522	apps/desktop/src-tauri/src/control_socket/pane_surface_control.rs
 3412	apps/desktop/src-tauri/src/session/unit_tests.rs
 3284	apps/desktop/src-tauri/src/browser.rs

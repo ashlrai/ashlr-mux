@@ -1550,8 +1550,7 @@ fn emit_session_changed(app: &AppHandle, snapshot: &AppSessionSnapshot) {
 fn notify_session_changed(app: &AppHandle, snapshot: &AppSessionSnapshot) {
     notify_session_changed_with_event_policy(app, snapshot, DerivedEventPolicy::Record);
 }
-
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DerivedEventPolicy {
     Record,
     Suppress,
@@ -4353,6 +4352,7 @@ pub(crate) fn select_last_workspace_for_control(
     app: &AppHandle,
     state: &SessionState,
     window_index: usize,
+    event_policy: DerivedEventPolicy,
 ) -> Result<(String, AppSessionSnapshot), WorkspaceLastControlError> {
     let (workspace_id, snapshot) = {
         let mut guard = state
@@ -4390,7 +4390,7 @@ pub(crate) fn select_last_workspace_for_control(
         sync_window_selected_workspace_id(window);
         (workspace_id, guard.clone())
     };
-    notify_session_changed(app, &snapshot);
+    notify_session_changed_with_event_policy(app, &snapshot, event_policy);
     Ok((workspace_id, snapshot))
 }
 

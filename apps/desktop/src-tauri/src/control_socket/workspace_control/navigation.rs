@@ -13,6 +13,10 @@ pub(in crate::control_socket) enum WorkspaceNavigationTargetError {
     NoWorkspaceSelected,
 }
 
+pub(in crate::control_socket) fn workspace_navigation_event_policy() -> DerivedEventPolicy {
+    DerivedEventPolicy::Suppress
+}
+
 pub(in crate::control_socket) fn workspace_relative_target(
     snapshot: &AppSessionSnapshot,
     params: &serde_json::Map<String, Value>,
@@ -72,6 +76,17 @@ pub(in crate::control_socket) fn workspace_select_relative(
             Ok(target) => target,
             Err(error) => return navigation_error(error),
         };
+    let previous_workspace_id = current.windows[target.window_index]
+        .tab_manager
+        .selected_workspace_index
+        .and_then(|index| usize::try_from(index).ok())
+        .and_then(|index| {
+            current.windows[target.window_index]
+                .tab_manager
+                .workspaces
+                .get(index)
+        })
+        .and_then(|workspace| workspace.workspace_id.clone());
     if let Some(window_id) = workspace_select_focus_selector(&current, target.window_index) {
         let _ = handle_window_lifecycle_request(
             app,
@@ -85,13 +100,24 @@ pub(in crate::control_socket) fn workspace_select_relative(
         &state,
         target.window_index,
         target.workspace_index,
-        DerivedEventPolicy::Record,
+        workspace_navigation_event_policy(),
     ) {
-        Ok(result) => ok(workspace_identity_payload(
-            app,
-            &result.windows[target.window_index],
-            &target.workspace_id,
-        )),
+        Ok(result) => {
+            if previous_workspace_id.as_deref() != Some(target.workspace_id.as_str()) {
+                record_workspace_selected_event(
+                    app,
+                    &result,
+                    target.window_index,
+                    target.workspace_index,
+                    previous_workspace_id.as_deref(),
+                );
+            }
+            ok(workspace_identity_payload(
+                app,
+                &result.windows[target.window_index],
+                &target.workspace_id,
+            ))
+        }
         Err(PaneTopologyControlError::Operation(WorkspaceSelectControlError::WindowNotFound)) => {
             navigation_error(WorkspaceNavigationTargetError::TabManagerUnavailable)
         }
@@ -111,9 +137,31 @@ pub(in crate::control_socket) fn workspace_last(
     let Some(window_index) = workspace_routed_window_index_for_app(app, &current, params) else {
         return navigation_error(WorkspaceNavigationTargetError::TabManagerUnavailable);
     };
+    let previous_workspace_id = current.windows[window_index]
+        .tab_manager
+        .selected_workspace_index
+        .and_then(|index| usize::try_from(index).ok())
+        .and_then(|index| {
+            current.windows[window_index]
+                .tab_manager
+                .workspaces
+                .get(index)
+        })
+        .and_then(|workspace| workspace.workspace_id.clone());
+    if let Some(window_id) = workspace_select_focus_selector(&current, window_index) {
+        let _ = handle_window_lifecycle_request(
+            app,
+            "window.focus",
+            serde_json::Map::from_iter([("window_id".to_string(), json!(window_id))]),
+        );
+    }
     let state = app.state::<SessionState>();
-    let (workspace_id, result) = match select_last_workspace_for_control(app, &state, window_index)
-    {
+    let (workspace_id, result) = match select_last_workspace_for_control(
+        app,
+        &state,
+        window_index,
+        workspace_navigation_event_policy(),
+    ) {
         Ok(result) => result,
         Err(WorkspaceLastControlError::TabManagerUnavailable) => {
             return navigation_error(WorkspaceNavigationTargetError::TabManagerUnavailable);
@@ -127,8 +175,18 @@ pub(in crate::control_socket) fn workspace_last(
         }
     };
     let window = &result.windows[window_index];
-    if let Some(window_id) = window.window_id.as_deref() {
-        let _ = crate::window::focus_control_window(app, window_id);
-    }
+    let workspace_index = window
+        .tab_manager
+        .workspaces
+        .iter()
+        .position(|workspace| workspace.workspace_id.as_deref() == Some(workspace_id.as_str()))
+        .unwrap_or(0);
+    record_workspace_selected_event(
+        app,
+        &result,
+        window_index,
+        workspace_index,
+        previous_workspace_id.as_deref(),
+    );
     ok(workspace_identity_payload(app, window, &workspace_id))
 }

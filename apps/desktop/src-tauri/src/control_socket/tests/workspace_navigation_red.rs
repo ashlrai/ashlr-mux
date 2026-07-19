@@ -4,6 +4,9 @@
 //! routing selectors before navigating. These tests keep two windows alive so
 //! accidentally navigating `snapshot.windows.first()` is observable.
 
+use super::workspace_control::navigation::{
+    workspace_navigation_event_policy, workspace_relative_target, WorkspaceNavigationTargetError,
+};
 use super::*;
 
 fn navigation_snapshot() -> AppSessionSnapshot {
