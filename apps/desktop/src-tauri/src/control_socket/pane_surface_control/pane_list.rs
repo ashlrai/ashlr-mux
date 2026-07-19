@@ -19,6 +19,14 @@ pub(in crate::control_socket) fn pane_list_reference_fields_with(
     )
 }
 
+pub(in crate::control_socket) fn pane_list_window_size_with(
+    _snapshot: &AppSessionSnapshot,
+    window_id: &str,
+    mut inner_size_for_label: impl FnMut(&str) -> Option<(f64, f64)>,
+) -> (f64, f64) {
+    inner_size_for_label(window_id).unwrap_or((1.0, 1.0))
+}
+
 pub(in crate::control_socket) fn pane_list(
     app: &AppHandle,
     params: &serde_json::Map<String, Value>,
@@ -61,12 +69,12 @@ pub(in crate::control_socket) fn pane_list(
             data: None,
         };
     };
-    let window_label = window.window_id.as_deref().unwrap_or("main");
-    let (width, height) = app
-        .get_webview_window(window_label)
-        .and_then(|window| window.inner_size().ok())
-        .map(|size| (f64::from(size.width), f64::from(size.height)))
-        .unwrap_or((1.0, 1.0));
+    let window_id = window.window_id.as_deref().unwrap_or("main");
+    let (width, height) = pane_list_window_size_with(&current, window_id, |label| {
+        app.get_webview_window(label)
+            .and_then(|window| window.inner_size().ok())
+            .map(|size| (f64::from(size.width), f64::from(size.height)))
+    });
     let Some(layout) = workspace.layout.as_ref() else {
         return ControlCallResult::Err {
             code: "not_found".to_string(),
