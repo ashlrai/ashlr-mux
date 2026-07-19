@@ -41,6 +41,7 @@ use uuid::Uuid;
 
 mod commands;
 mod control_window_registration;
+mod pane_topology;
 mod workspace_ordering;
 use commands::collapse_infallible_publication_error;
 pub use commands::*;
@@ -50,6 +51,7 @@ use control_window_registration::transact_register_window;
 pub(crate) use control_window_registration::{
     register_prepared_window_for_control, unregister_window_for_control_suppressing_events,
 };
+pub(crate) use pane_topology::break_pane_for_control;
 pub(crate) use workspace_ordering::{
     reorder_workspaces_in_window_for_control, reorder_workspaces_many_in_window_for_control,
     transact_value_if_changed_suppressing_derived_events, ReorderWorkspacesManyControlError,
@@ -4242,31 +4244,6 @@ pub(crate) fn swap_panes_for_control(
             sync_window_selected_workspace_id(&mut snapshot.windows[window_index]);
         }
         Ok(swap)
-    })
-}
-
-pub(crate) fn break_pane_for_control(
-    app: &AppHandle,
-    state: &SessionState,
-    window_index: usize,
-    workspace_index: usize,
-    panel_id: &str,
-    focus: bool,
-) -> Result<
-    (session_ops::PaneBreakResult, AppSessionSnapshot),
-    PaneTopologyControlError<session_ops::PaneBreakError>,
-> {
-    state.transact_pane_topology(app, |snapshot| {
-        let tabs = &mut snapshot
-            .windows
-            .get_mut(window_index)
-            .ok_or(session_ops::PaneBreakError::WorkspaceNotFound)?
-            .tab_manager;
-        let broken =
-            session_ops::break_surface_to_new_workspace(tabs, workspace_index, panel_id, focus)?;
-        ensure_workspace_ids(snapshot);
-        ensure_pane_ids(snapshot);
-        Ok(broken)
     })
 }
 

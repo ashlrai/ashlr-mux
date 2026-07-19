@@ -610,6 +610,55 @@ pub(super) fn sync_window_selected_workspace_id(window: &mut SessionWindowSnapsh
     }
 }
 
+pub(super) fn remint_broken_pane_identity(
+    snapshot: &mut AppSessionSnapshot,
+    window_index: usize,
+    broken: &session_ops::PaneBreakResult,
+) -> bool {
+    fn assign(
+        layout: &mut SessionWorkspaceLayoutSnapshot,
+        surface_id: &str,
+        pane_id: &str,
+    ) -> bool {
+        match layout {
+            SessionWorkspaceLayoutSnapshot::Pane(pane) => {
+                if pane.panel_ids.iter().any(|id| id == surface_id) {
+                    pane.pane_id = Some(pane_id.to_string());
+                    true
+                } else {
+                    false
+                }
+            }
+            SessionWorkspaceLayoutSnapshot::Split(split) => {
+                assign(&mut split.first, surface_id, pane_id)
+                    || assign(&mut split.second, surface_id, pane_id)
+            }
+        }
+    }
+
+    let Some(workspace) = snapshot.windows.get_mut(window_index).and_then(|window| {
+        window
+            .tab_manager
+            .workspaces
+            .get_mut(broken.workspace_index)
+    }) else {
+        return false;
+    };
+    let pane_id = Uuid::new_v4().to_string();
+    let assigned = workspace
+        .layout
+        .as_mut()
+        .is_some_and(|layout| assign(layout, &broken.surface_id, &pane_id));
+    if assigned {
+        for surface in workspace.surfaces.as_deref_mut().unwrap_or_default() {
+            if surface.surface_id == broken.surface_id {
+                surface.pane_id.clone_from(&pane_id);
+            }
+        }
+    }
+    assigned
+}
+
 /// Mint stable pane and split identities for every layout node that lacks one. This mirrors the
 /// workspace-id rule above: older snapshots decode without pane ids, and the
 /// stateful desktop layer synthesizes them exactly once so downstream pure/UI

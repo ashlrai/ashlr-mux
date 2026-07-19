@@ -193,6 +193,7 @@ fn successful_topology_matrix_publishes_exact_results_metadata_focus_and_uuids()
                 "surface-2",
                 true,
             )?;
+            assert!(remint_broken_pane_identity(candidate, 0, &result));
             ensure_workspace_ids(candidate);
             ensure_pane_ids(candidate);
             Ok(result)
@@ -252,6 +253,7 @@ fn break_surface_moves_persisted_owner_to_the_new_pane() {
                 "surface-2",
                 true,
             )?;
+            assert!(remint_broken_pane_identity(candidate, 0, &result));
             ensure_workspace_ids(candidate);
             ensure_pane_ids(candidate);
             Ok(result)
@@ -348,12 +350,13 @@ fn persistence_failure_matrix_only_persists_and_leaks_no_candidate_uuid() {
         Ok::<_, session_ops::PaneSwapError>(())
     });
     assert_persist_failure(split(), |candidate| {
-        session_ops::break_surface_to_new_workspace(
+        let broken = session_ops::break_surface_to_new_workspace(
             &mut candidate.windows[0].tab_manager,
             0,
             "surface-2",
             true,
         )?;
+        assert!(remint_broken_pane_identity(candidate, 0, &broken));
         ensure_workspace_ids(candidate);
         ensure_pane_ids(candidate);
         Ok::<_, session_ops::PaneBreakError>(())
