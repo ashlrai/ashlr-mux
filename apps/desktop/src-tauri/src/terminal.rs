@@ -2767,7 +2767,7 @@ pub(crate) fn terminal_grid_size_for_panel(
     state: &TerminalState,
     panel_id: &str,
 ) -> Option<GridSize> {
-    let registry = state.registry.lock().ok()?;
+    let registry = state.registry.try_lock().ok()?;
     if registry.reserved_panel_ids.contains(panel_id) {
         return None;
     }
@@ -2778,7 +2778,7 @@ pub(crate) fn terminal_grid_size_for_panel(
         .grid
         .clone();
     drop(registry);
-    grid.lock().ok().map(|grid| grid.size())
+    grid.try_lock().ok().map(|grid| grid.size())
 }
 
 /// Resize a session's pseudo console (the explicit Windows analogue of SIGWINCH).
