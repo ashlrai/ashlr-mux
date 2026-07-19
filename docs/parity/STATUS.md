@@ -5,7 +5,7 @@ Checkpoint commits:
 - Current canonical audit: `c9f2d8c4382e29db89a030d80d02d8174ef7f2ac`
 - Frozen differential canonical: `e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452`
 - Windows behavior: `c520128265` (normal-startup session restore)
-- Latest pushed Windows checkpoint: `2c1aaf5fcbbb38ed24906c2ba20e6a78cd0ae788`
+- Latest pushed Windows code checkpoint: `2c1aaf5fcbbb38ed24906c2ba20e6a78cd0ae788`
 - Latest strict differential checkpoint: `637d63acb0e82a618fdaee64644a7ac75b2b8a05`
 
 The Windows desktop and CLI build successfully. The broad desktop, web, IPC,
