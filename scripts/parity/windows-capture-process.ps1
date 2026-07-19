@@ -105,6 +105,7 @@ function Start-WindowSupervisor([System.Diagnostics.Process]$process, [hashtable
     $powershellPath = (Get-Command powershell.exe -ErrorAction Stop).Source
     $watchdogStdoutPath = Join-Path $profilePath 'cmux-capture-window-watchdog.stdout.log'
     $watchdogStderrPath = Join-Path $profilePath 'cmux-capture-window-watchdog.stderr.log'
+    $violationLogPath = Join-Path $profilePath 'cmux-capture-window-violation.json'
     $arguments = @(
         '-NoProfile',
         '-NonInteractive',
@@ -117,7 +118,9 @@ function Start-WindowSupervisor([System.Diagnostics.Process]$process, [hashtable
         '-TargetStartTimeUtcTicks',
         [string]$process.StartTime.ToUniversalTime().Ticks,
         '-TargetExecutable',
-        "`"$($process.Path)`""
+        "`"$($process.Path)`"",
+        '-ViolationLogPath',
+        "`"$violationLogPath`""
     )
     $supervisor = Start-Process -FilePath $powershellPath -ArgumentList $arguments -PassThru `
         -WindowStyle Hidden -RedirectStandardOutput $watchdogStdoutPath `
@@ -134,47 +137,6 @@ function Test-PipeReady {
         return [System.IO.Directory]::GetFiles('\\.\pipe\') -contains $pipePath
     } catch {
         return $false
-    }
-}
-
-function Hide-VisibleOwnedWindow([System.Diagnostics.Process]$process) {
-    $process.Refresh()
-    $handle = $process.MainWindowHandle
-    if ($handle -eq [IntPtr]::Zero -or [string]::IsNullOrWhiteSpace($process.MainWindowTitle)) {
-        return $false
-    }
-    if ($null -eq ('Cmux.CaptureWindowNativeMethods' -as [type])) {
-        Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-
-namespace Cmux
-{
-    public static class CaptureWindowNativeMethods
-    {
-        [DllImport("user32.dll")]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        public static extern bool IsWindowVisible(IntPtr window);
-
-        [DllImport("user32.dll")]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        public static extern bool ShowWindowAsync(IntPtr window, int command);
-    }
-}
-'@
-    }
-    if (-not [Cmux.CaptureWindowNativeMethods]::IsWindowVisible($handle)) {
-        return $false
-    }
-    [Cmux.CaptureWindowNativeMethods]::ShowWindowAsync($handle, 0) | Out-Null
-    return $true
-}
-
-function Assert-OwnedProcessHeadless([System.Diagnostics.Process]$process) {
-    if (Hide-VisibleOwnedWindow $process) {
-        $processId = $process.Id
-        Stop-OwnedProcess
-        throw "Capture-owned process PID $processId exposed a visible window; it was hidden and stopped."
     }
 }
 
@@ -224,29 +186,39 @@ function Start-OwnedProcess {
         profile_root = $profilePath
     }
     $state | ConvertTo-Json | Set-Content -LiteralPath $statePath -Encoding UTF8
+    Start-WindowSupervisor $process $state
 
     $deadline = [DateTime]::UtcNow.AddSeconds($StartupTimeoutSeconds)
     while ([DateTime]::UtcNow -lt $deadline) {
         $process.Refresh()
         if ($process.HasExited) {
             $process.WaitForExit()
-            Remove-Item -LiteralPath $statePath -ErrorAction SilentlyContinue
+            $visibleWindowWasRejected = Test-Path -LiteralPath (
+                Join-Path $profilePath 'cmux-capture-window-violation.json'
+            ) -PathType Leaf
+            Stop-OwnedProcess
+            if ($visibleWindowWasRejected) {
+                throw "Capture-owned process PID $($process.Id) exposed a visible window; it was hidden and stopped."
+            }
             throw "Capture-owned cmux-desktop exited with code $($process.ExitCode) before $pipePath became ready."
         }
-        Assert-OwnedProcessHeadless $process
         if (Test-PipeReady) {
             $stabilityDeadline = [DateTime]::UtcNow.AddMilliseconds(750)
             while ([DateTime]::UtcNow -lt $stabilityDeadline) {
                 $process.Refresh()
                 if ($process.HasExited) {
                     $process.WaitForExit()
-                    Remove-Item -LiteralPath $statePath -ErrorAction SilentlyContinue
+                    $visibleWindowWasRejected = Test-Path -LiteralPath (
+                        Join-Path $profilePath 'cmux-capture-window-violation.json'
+                    ) -PathType Leaf
+                    Stop-OwnedProcess
+                    if ($visibleWindowWasRejected) {
+                        throw "Capture-owned process PID $($process.Id) exposed a visible window; it was hidden and stopped."
+                    }
                     throw "Capture-owned cmux-desktop exited with code $($process.ExitCode) after $pipePath became ready."
                 }
-                Assert-OwnedProcessHeadless $process
                 Start-Sleep -Milliseconds 50
             }
-            Start-WindowSupervisor $process $state
             return
         }
         Start-Sleep -Milliseconds 50

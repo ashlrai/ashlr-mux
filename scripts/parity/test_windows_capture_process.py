@@ -73,9 +73,11 @@ class WindowsCaptureProcessTests(unittest.TestCase):
         *,
         show_delay_ms: int = 50,
         offscreen: bool = False,
+        window_size_px: int | None = None,
     ) -> Path:
         placement = "offscreen" if offscreen else "onscreen"
-        stem = f"visible-capture-fixture-{show_delay_ms}-{placement}"
+        size = window_size_px or "default"
+        stem = f"visible-capture-fixture-{show_delay_ms}-{placement}-{size}"
         executable = directory / f"{stem}.exe"
         source = directory / f"{stem}.cs"
         source.write_text(
@@ -107,6 +109,7 @@ internal static class Program
                 Text = "cmux visible capture fixture",
                 Opacity = 0.0,
                 __FORM_PLACEMENT__
+                __FORM_SIZE__
             };
             var timer = new Timer { Interval = __SHOW_DELAY_MS__ };
             timer.Tick += (_, __) =>
@@ -125,9 +128,19 @@ internal static class Program
                 "__FORM_PLACEMENT__",
                 (
                     "StartPosition = FormStartPosition.Manual,\n"
-                    "                Location = new Point(-32000, -32000)"
+                    "                Location = new Point(-32000, -32000),"
                     if offscreen
-                    else "StartPosition = FormStartPosition.CenterScreen"
+                    else "StartPosition = FormStartPosition.CenterScreen,"
+                ),
+            )
+            .replace(
+                "__FORM_SIZE__",
+                (
+                    "FormBorderStyle = FormBorderStyle.None,\n"
+                    f"                Width = {window_size_px},\n"
+                    f"                Height = {window_size_px},"
+                    if window_size_px is not None
+                    else ""
                 ),
             )
             .strip(),
@@ -153,6 +166,33 @@ internal static class Program
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(executable.is_file())
         return executable
+
+    def assert_supervisor_preserves_window(
+        self, pipe_name: str, **fixture_options: object
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            profile = Path(directory)
+            executable = self.build_visible_window_fixture(
+                profile, show_delay_ms=1500, **fixture_options
+            )
+            try:
+                result = self.run_script(
+                    profile,
+                    action="Start",
+                    pipe_name=pipe_name,
+                    app_binary=executable,
+                    startup_timeout_seconds=3,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                state = json.loads(
+                    (profile / "cmux-capture-process.json").read_text(
+                        encoding="utf-8-sig"
+                    )
+                )
+                time.sleep(2.0)
+                self.assertTrue(windows_process_exists(int(state["pid"])))
+            finally:
+                self.run_script(profile, pipe_name=pipe_name)
 
     def test_rejects_namespace_separator_in_pipe_name(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -259,36 +299,14 @@ internal static class Program
                 self.run_script(profile, pipe_name=pipe_name)
 
     def test_supervisor_allows_rendering_entirely_offscreen(self):
-        with tempfile.TemporaryDirectory() as directory:
-            profile = Path(directory)
-            executable = self.build_visible_window_fixture(
-                profile, show_delay_ms=1500, offscreen=True
-            )
-            pipe_name = "cmux-offscreen-capture-test"
+        self.assert_supervisor_preserves_window(
+            "cmux-offscreen-capture-test", offscreen=True
+        )
 
-            try:
-                result = self.run_script(
-                    profile,
-                    action="Start",
-                    pipe_name=pipe_name,
-                    app_binary=executable,
-                    startup_timeout_seconds=3,
-                )
-                self.assertEqual(result.returncode, 0, result.stderr)
-                state = json.loads(
-                    (profile / "cmux-capture-process.json").read_text(
-                        encoding="utf-8-sig"
-                    )
-                )
-
-                time.sleep(2.0)
-
-                self.assertTrue(
-                    windows_process_exists(int(state["pid"])),
-                    "offscreen capture rendering was incorrectly terminated",
-                )
-            finally:
-                self.run_script(profile, pipe_name=pipe_name)
+    def test_supervisor_ignores_tiny_framework_helper_windows(self):
+        self.assert_supervisor_preserves_window(
+            "cmux-tiny-window-capture-test", window_size_px=14
+        )
 
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ use tauri::{
 
 const MAIN_WINDOW_LABEL: &str = "main";
 const CAPTURE_HEADLESS_ENV: &str = "CMUX_PARITY_CAPTURE_HEADLESS";
+const CAPTURE_PARK_COORDINATE: i32 = -32_000;
 const AUX_WINDOW_LABEL_PREFIX: &str = "window-";
 const WINDOW_STATE_CHANGED_EVENT: &str = "cmux://window-state-changed";
 static NEXT_WINDOW_NUMBER: AtomicU64 = AtomicU64::new(2);
@@ -54,9 +55,19 @@ fn run_capture_window_hiding(
     }
 }
 
+fn park_capture_window(window: &WebviewWindow) -> Result<(), String> {
+    window
+        .set_position(PhysicalPosition::new(
+            CAPTURE_PARK_COORDINATE,
+            CAPTURE_PARK_COORDINATE,
+        ))
+        .map_err(|error| error.to_string())
+}
+
 pub(crate) fn hide_capture_windows_at_startup(app: &AppHandle) -> Result<(), String> {
     run_capture_window_hiding(capture_windows_hidden(), || {
         for window in app.webview_windows().into_values() {
+            park_capture_window(&window)?;
             window.hide().map_err(|error| error.to_string())?;
         }
         Ok(())
@@ -297,7 +308,12 @@ fn apply_default_display(_window: &WebviewWindow) -> Result<(), String> {
 
 pub fn apply_default_display_to_existing_windows(app: &AppHandle) {
     for window in app.webview_windows().into_values() {
-        if let Err(error) = apply_default_display(&window) {
+        let result = if capture_windows_hidden() {
+            park_capture_window(&window)
+        } else {
+            apply_default_display(&window)
+        };
+        if let Err(error) = result {
             eprintln!("[window] failed to apply default display: {error}");
         }
     }
@@ -588,7 +604,9 @@ fn build_hidden_window(
         ))
         .build()
         .map_err(|error| error.to_string())?;
-    if let Err(error) = apply_default_display(&new_window) {
+    if capture_windows_hidden() {
+        park_capture_window(&new_window)?;
+    } else if let Err(error) = apply_default_display(&new_window) {
         eprintln!("[window] failed to apply default display: {error}");
     }
     Ok(new_window)
