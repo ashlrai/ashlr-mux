@@ -5,7 +5,7 @@ Checkpoint commits:
 - Current canonical audit: `41756f7285a02d2592751438793647f7d4ba9b71`
 - Frozen differential canonical: `e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452`
 - Windows behavior captured: `a51ddd28763bad2549d3903de78bc7b59b988e36`
-- Latest Windows code checkpoint: `2c4a5650b383665441d8d916f7137eddb309a68e`
+- Latest Windows code checkpoint: `03913b71bc294a5ef912b1eac243af595571af58`
 - Latest exact startup differential evidence: `parity/diff-lane@215737999ac0579682b6b2a2d230d7a0d064a51d`
 - Latest window harness checkpoint: `parity/diff-lane@9257db511b975335e2ee79bc4bb143c04bfa95f8`
 - Latest canonical window capture: workflow run `29686515273`
@@ -183,12 +183,18 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
   ownership line with no visibility changes. The 251-test CLI suite passes
   before the move and twice after it, and the full all-target matrix and compile
   check are green.
-- `customSidebarSwiftParser.ts` is now 5,152 physical lines (from 5,417 at the
+- `customSidebarSwiftParser.ts` is now 3,719 physical lines (from 5,417 at the
   previous checkpoint). Balanced call, closure, delimiter, ternary, and
   top-level operator scanning now lives in the 270-line abstract
   `SwiftSyntaxReader.ts` base. The 268 moved method-body lines are exact after
   normalizing `private` to the required `protected` inheritance boundary; the
-  only parent changes are its import, inheritance, and `super()` call. The
+  only parent changes are its import, inheritance, and `super()` call.
+  Expression evaluation, collection transforms, formatting, date/measurement
+  handling, and geometry built-ins now live in the 1,466-line abstract
+  `SwiftExpressionEvaluator.ts` base. Its 1,426 moved implementation lines are
+  exact after normalizing `protected` back to `private`; eight explicit hooks
+  retain the parser-owned view/function helpers, and seven obsolete parent type
+  imports were removed. The
   92-test custom-sidebar suite passes before and twice after the extraction,
   the full web suite passes 1,253 tests across 81 files, and typecheck, web
   production build, whitespace, and the 39-file Windows length budget are
@@ -230,17 +236,17 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
 - CI now caps new Windows-owned Rust and TypeScript files at 1,500 lines and
   freezes 39 existing oversized files at their current-or-smaller sizes.
 - The next structural priorities are
-  the remaining 5,152-line Swift parser, the 4,795-line custom-sidebar
-  component, and their 5,975-line test file, followed by the remaining
-  session/control and terminal domains. Split one coherent responsibility per
-  isolated maintenance commit; do not mix those moves with feature slices.
+  the 5,975-line custom-sidebar test file, 5,134-line session root,
+  4,795-line custom-sidebar component, and 4,660-line pane/surface lifecycle
+  module. The Swift parser is now 3,719 lines. Split one coherent
+  responsibility per isolated maintenance commit only when it unblocks feature
+  work; do not turn structural cleanup into the parity metric.
 
 ## Next efficient slice
 
-Map the remaining 5,152-line Swift parser methods and extract one coherent
-expression-evaluation responsibility in a behavior-neutral commit. Keep the
-new module below 1,500 lines, preserve moved bodies exactly apart from the
-smallest required visibility boundary, and run the focused Bun suite before
-and twice after simplification, then the full web suite, typecheck, build, and
-file-length gate. Do not mix the move with parity behavior changes or generated
-catalog churn.
+Return to observable parity work. Select the next capability from retained
+runtime/differential evidence, preferring an implemented-but-unverified batch
+that can be promoted without new production code; otherwise take the earliest
+reproducible behavioral delta and implement the smallest fix. Keep any further
+file split in its own checkpoint and perform it only when the owning boundary
+would otherwise make that feature slice unsafe.

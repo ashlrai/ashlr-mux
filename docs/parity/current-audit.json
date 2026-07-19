@@ -45,10 +45,10 @@
     "status": "not_measured"
   },
   "windows": {
-    "commit": "2c4a5650b383665441d8d916f7137eddb309a68e",
-    "commit_date": "2026-07-19T10:02:24-04:00",
-    "commit_subject": "refactor(web): extract Swift accessibility props",
-    "commits_ahead_of_tracked_evidence": 33,
+    "commit": "03913b71bc294a5ef912b1eac243af595571af58",
+    "commit_date": "2026-07-19T10:08:41-04:00",
+    "commit_subject": "refactor(web): extract Swift expression evaluator",
+    "commits_ahead_of_tracked_evidence": 35,
     "source_evidence": {
       "advertised_and_routed_count": 267,
       "advertised_method_count": 270,
