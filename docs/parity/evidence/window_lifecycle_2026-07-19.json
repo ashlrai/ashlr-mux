@@ -58,7 +58,7 @@
     "behavior_commit": "55f0afaf4e957a7fd56fe1e7a291492d039edf9f",
     "harness_commit": "e23cd72b7807f700a5961b2d8ae44919c810911c",
     "behavior": [
-      "A socket-managed close appends an invisible recoverable window.list row with stable window/workspace ids, refs, selection, and workspace count; CLI-created window linkage remains a recorded residual.",
+      "A close appends an invisible recoverable window.list row with stable window/workspace ids, refs, selection, and workspace count, including the matched CLI-created rows.",
       "Live native rows precede recoverable rows and win identity collisions.",
       "A failed native close discards staged history; successful close commits it atomically.",
       "Restart clears the in-process recoverable history."
@@ -88,9 +88,9 @@
       "evidence": "After the first close settles to visible:false, canonical deterministically accepts a second close of the recoverable route while Windows returns not_found. This is no longer a timing race."
     },
     {
-      "name": "cli_window_state_projection",
+      "name": "cli_native_key_projection",
       "cases": ["cli.focus_window_by_uuid", "cli.focus_window_by_ref", "cli.close_window_by_uuid"],
-      "evidence": "Native enumeration now retains live window:2 after browser child attachment. The three cases still differ in native key-window choice and recoverable rows' workspace linkage/identity ordering; diagnose that shared close-history projection rather than patching CLI routes."
+      "evidence": "Native enumeration now retains live window:2 after browser child attachment. Recursive leaf comparison of the exact matched pair finds only the live native windows' key booleans in all three cases; recoverable workspace ids, refs, selection, counts, and ordering match. Determine whether this AppKit versus noninteractive-Windows key choice is a platform equivalence rather than patching CLI routes."
     },
     {
       "name": "last_window_close",

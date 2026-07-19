@@ -22,15 +22,15 @@ appends a strict `visible:false` `window.list` row with stable window and
 workspace identity; failed native closes discard staged history, live rows win
 identity collisions, and restart clears the in-process history. The harness now
 settles on non-visibility rather than incorrectly requiring row absence. The
-remaining CLI-created closed-window linkage difference is recorded explicitly.
+matched CLI-created rows preserve their selected workspace identity and count.
 
 The shared window identity boundary is now repaired. Socket-created windows
 use canonical UUID identities end to end, selector-less `window.current`
 returns the active session UUID, and CLI focus/close-by-UUID reach the backend
 instead of failing transport. Across two full Windows captures, normalized
 `window-N` identity occurrences fell from 153 to zero. The remaining CLI state
-deltas are not three separate CLI implementations to patch: they share native
-key selection and closed-history workspace/identity projection.
+deltas are not three separate CLI implementations to patch: their only exact
+leaf difference is which live native window is marked `key`.
 
 Window creation now publishes the canonical initial lifecycle sequence from
 one prepared snapshot: `surface.selected`, `pane.focused`, `surface.focused`,
@@ -82,8 +82,8 @@ baseline, not "222 of 496 complete" and not the rolling catalog.
 1. The valid window pair is 58/10. UI-test matching removed the apparent restart
    resume gap entirely. Browser child attachment was proven to remove live
    `window:2` from `webview_windows()` and is fixed at `1717704e09` by enumerating
-   native windows; two full captures retain it. The three CLI cases still differ
-   in key selection and recoverable workspace linkage. Canonical repeat-close
+   native windows; two full captures retain it. The three CLI cases now differ
+   only in native key selection. Canonical repeat-close
    deterministically succeeds after `visible:false`, while Windows returns
    `not_found`; last-window close still disconnects only on canonical.
 2. Four differential-remediation unit tests fail unchanged at both pushed
@@ -180,10 +180,8 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
 
 ## Next efficient slice
 
-Diagnose the shared recoverable-window projection for the three CLI state cases:
-preserve selected workspace identity/count for CLI-created windows without
-hard-coding native key choice. In parallel evidence terms, enumerate exact JSON
-pointers for isolated profile paths and AppKit/noninteractive-Windows key choice
-before approving any platform equivalence. Then implement deterministic repeat
-close against recoverable routes. Do not patch the three CLI commands
-independently or normalize real identity fields.
+Determine whether the three CLI cases' native `key` leaf is an AppKit versus
+noninteractive-Windows platform equivalence; do not hard-code macOS key choice
+or patch the CLI commands independently. Then implement deterministic repeat
+close against recoverable routes. Keep the next oversized-file split isolated
+from that behavior change.
