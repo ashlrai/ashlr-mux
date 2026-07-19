@@ -138,6 +138,36 @@
       ]
     },
     {
+      "id": "cli_next_window.uses_active_window",
+      "setup": [
+        {"op": "v2", "method": "workspace.select", "params": {"window_id": "${session.0.result.window_id}", "workspace_id": "${session.2.result.workspaces.0.id}"}}
+      ],
+      "action": {"op": "cli", "argv": ["next-window"]},
+      "probes": {
+        "state": [
+          {"op": "v2", "method": "workspace.current", "params": {"window_id": "${session.0.result.window_id}"}}
+        ]
+      },
+      "approved_differences": [
+        {"path": "/state/0/result/response/result/workspace/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."}
+      ]
+    },
+    {
+      "id": "cli_previous_window.uses_active_window",
+      "setup": [
+        {"op": "v2", "method": "workspace.select", "params": {"window_id": "${session.0.result.window_id}", "workspace_id": "${session.4.result.workspace_id}"}}
+      ],
+      "action": {"op": "cli", "argv": ["previous-window"]},
+      "probes": {
+        "state": [
+          {"op": "v2", "method": "workspace.current", "params": {"window_id": "${session.0.result.window_id}"}}
+        ]
+      },
+      "approved_differences": [
+        {"path": "/state/0/result/response/result/workspace/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."}
+      ]
+    },
+    {
       "id": "cli_last_window.explicit_window",
       "setup": [
         {"op": "v2", "method": "workspace.select", "params": {"window_id": "${session.0.result.window_id}", "workspace_id": "${session.2.result.workspaces.0.id}"}},
