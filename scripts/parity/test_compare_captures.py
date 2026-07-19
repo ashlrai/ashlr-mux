@@ -107,6 +107,11 @@ class CompareCapturesTests(unittest.TestCase):
         by_id = {r["id"]: r for r in report["results"]}
         self.assertEqual(by_id["only-canonical"]["mismatches"], ["missing_windows"])
         self.assertEqual(by_id["only-windows"]["mismatches"], ["missing_canonical"])
+        self.assertFalse(report["capture_integrity"]["valid_for_promotion"])
+        self.assertEqual(
+            report["capture_integrity"]["missing_cases"],
+            ["only-canonical", "only-windows"],
+        )
 
     def test_approved_difference_covers_platform_scoped_delta(self):
         approved = [{"path": "/response/title", "rationale": "platform shell name"}]
@@ -142,6 +147,11 @@ class CompareCapturesTests(unittest.TestCase):
         self.assertIn("capture_error", result["mismatches"])
         summary = render_summary(report)
         self.assertIn("capture_error[windows]: TransportError: boom", summary)
+        self.assertFalse(report["capture_integrity"]["valid_for_promotion"])
+        self.assertEqual(
+            report["capture_integrity"]["capture_error_cases"],
+            {"canonical": [], "windows": ["a"]},
+        )
 
     def test_timing_symbolization_applied_at_load_covers_timestamp_noise(self):
         boot_c = "aaaaaaaa-1111-2222-3333-444444444444"
@@ -271,6 +281,32 @@ class CompareCapturesTests(unittest.TestCase):
             normalized["multiwindow"][0]["result"]["response"]["result"]["windows"],
             probe["result"]["response"]["result"]["windows"],
         )
+
+    def test_unsatisfied_settle_invalidates_capture_for_promotion(self):
+        probe = window_list_probe([])
+        probe["result"]["settle"] = {"satisfied": False}
+        left = {"a": case_record("a", observation(state=[probe]))}
+        right = {"a": case_record("a", observation(state=[probe]))}
+
+        report = compare_captures(left, right)
+
+        self.assertEqual(report["deltas"], 0)
+        self.assertFalse(report["capture_integrity"]["valid_for_promotion"])
+        self.assertEqual(
+            report["capture_integrity"]["unsettled_cases"],
+            {"canonical": ["a"], "windows": ["a"]},
+        )
+        self.assertIn("INVALID FOR PROMOTION", render_summary(report))
+
+    def test_satisfied_settle_keeps_capture_promotion_eligible(self):
+        probe = window_list_probe([])
+        probe["result"]["settle"] = {"satisfied": True}
+        left = {"a": case_record("a", observation(state=[probe]))}
+        right = {"a": case_record("a", observation(state=[probe]))}
+
+        report = compare_captures(left, right)
+
+        self.assertTrue(report["capture_integrity"]["valid_for_promotion"])
 
     def test_manifest_overrides_recorded_approved_differences(self):
         left = {"a": case_record("a", observation(response={"title": "zsh"}), approved=[])}

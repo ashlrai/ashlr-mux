@@ -77,6 +77,18 @@ def normalize_racy_window_list_order(observation: dict[str, Any]) -> dict[str, A
     return normalized
 
 
+def has_unsatisfied_settle(value: Any) -> bool:
+    """Whether a recorded probe exhausted a bounded settle predicate."""
+    if isinstance(value, dict):
+        settle = value.get("settle")
+        if isinstance(settle, dict) and settle.get("satisfied") is False:
+            return True
+        return any(has_unsatisfied_settle(item) for item in value.values())
+    if isinstance(value, list):
+        return any(has_unsatisfied_settle(item) for item in value)
+    return False
+
+
 def load_capture(text: str, label: str) -> dict[str, dict[str, Any]]:
     """Parse one NDJSON capture into {case_id: record}. Session lines are
     validated and skipped; duplicate case ids are rejected.
@@ -250,10 +262,38 @@ def compare_captures(
         )
 
     deltas = [r for r in results if not r["identical"]]
+    unsettled_cases = {
+        label: [
+            case_id
+            for case_id, record in side.items()
+            if has_unsatisfied_settle(record["observation"])
+        ]
+        for label, side in (("canonical", canonical), ("windows", windows))
+    }
+    capture_error_cases = {
+        label: [case_id for case_id, record in side.items() if record.get("capture_error")]
+        for label, side in (("canonical", canonical), ("windows", windows))
+    }
+    missing_cases = [
+        result["id"]
+        for result in results
+        if "missing_canonical" in result["mismatches"]
+        or "missing_windows" in result["mismatches"]
+    ]
     return {
         "cases": len(results),
         "identical": len(results) - len(deltas),
         "deltas": len(deltas),
+        "capture_integrity": {
+            "valid_for_promotion": not (
+                any(unsettled_cases.values())
+                or any(capture_error_cases.values())
+                or missing_cases
+            ),
+            "unsettled_cases": unsettled_cases,
+            "capture_error_cases": capture_error_cases,
+            "missing_cases": missing_cases,
+        },
         "results": results,
     }
 
@@ -269,6 +309,11 @@ def render_summary(report: dict[str, Any]) -> str:
         for side, error in result["capture_errors"].items():
             if error:
                 lines.append(f"  capture_error[{side}]: {error}")
+    integrity = report.get("capture_integrity", {})
+    if not integrity.get("valid_for_promotion", True):
+        unsettled = integrity["unsettled_cases"]
+        counts = ", ".join(f"{side}={len(cases)}" for side, cases in unsettled.items())
+        lines.append(f"INVALID FOR PROMOTION: unsatisfied settle predicates ({counts})")
     if report["deltas"] == 0:
         lines.append("PASS: zero deltas")
     return "\n".join(lines)
