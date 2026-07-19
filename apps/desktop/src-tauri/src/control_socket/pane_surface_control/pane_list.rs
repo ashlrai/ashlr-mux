@@ -37,6 +37,14 @@ pub(in crate::control_socket) fn pane_list_window_size_with(
     inner_size_for_label(label).unwrap_or((1.0, 1.0))
 }
 
+pub(in crate::control_socket) fn pane_list_logical_size(
+    physical_width: u32,
+    physical_height: u32,
+    _scale_factor: f64,
+) -> (f64, f64) {
+    (f64::from(physical_width), f64::from(physical_height))
+}
+
 pub(in crate::control_socket) fn pane_list(
     app: &AppHandle,
     params: &serde_json::Map<String, Value>,
@@ -81,9 +89,14 @@ pub(in crate::control_socket) fn pane_list(
     };
     let window_id = window.window_id.as_deref().unwrap_or("main");
     let (width, height) = pane_list_window_size_with(&current, window_id, |label| {
-        app.get_webview_window(label)
-            .and_then(|window| window.inner_size().ok())
-            .map(|size| (f64::from(size.width), f64::from(size.height)))
+        let window = app.get_webview_window(label)?;
+        let size = window.inner_size().ok()?;
+        let scale_factor = window.scale_factor().ok()?;
+        Some(pane_list_logical_size(
+            size.width,
+            size.height,
+            scale_factor,
+        ))
     });
     let Some(layout) = workspace.layout.as_ref() else {
         return ControlCallResult::Err {

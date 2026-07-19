@@ -71,3 +71,11 @@ fn pane_list_resolves_the_first_session_window_through_the_main_webview() {
     assert_eq!(requested_labels, ["window-2"]);
     assert_eq!(auxiliary_size, (800.0, 600.0));
 }
+
+#[test]
+fn pane_list_reports_logical_points_instead_of_physical_dpi_pixels() {
+    assert_eq!(
+        pane_surface_control::pane_list::pane_list_logical_size(1600, 1050, 1.25),
+        (1280.0, 840.0)
+    );
+}
