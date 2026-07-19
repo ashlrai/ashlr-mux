@@ -2448,7 +2448,7 @@ mod control_result_tests {
         });
         assert_eq!(
             format_control_result("workspace.move_to_window", &result),
-            "OK workspace=workspace:2 window=window:3"
+            "OK workspace:2 window:3"
         );
     }
 

@@ -608,7 +608,7 @@ fn executable_routes_move_workspace_to_window_and_formats_result() {
     );
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
-        "OK workspace=workspace:1 window=window:2\n"
+        "OK workspace:1 window:2\n"
     );
     let (method, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
     assert_eq!(method, "workspace.move_to_window");

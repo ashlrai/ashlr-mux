@@ -15,3 +15,4 @@ mod window_lifecycle_red;
 mod workspace_action_red;
 mod workspace_group_red;
 mod workspace_navigation_red;
+mod workspace_ordering_red;
