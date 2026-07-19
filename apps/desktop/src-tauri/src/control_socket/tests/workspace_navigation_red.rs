@@ -87,3 +87,32 @@ fn workspace_navigation_distinguishes_unavailable_from_no_selection() {
         Err(WorkspaceNavigationTargetError::NoWorkspaceSelected)
     );
 }
+
+#[test]
+fn workspace_navigation_publishes_only_the_exact_lifecycle_selection_event() {
+    assert_eq!(
+        workspace_navigation_event_policy(),
+        DerivedEventPolicy::Suppress,
+        "navigation must not emit generic session.changed events"
+    );
+
+    let snapshot = navigation_snapshot();
+    let event = workspace_selected_event_spec(&snapshot, 1, 0, Some("workspace-b3"))
+        .expect("selected workspace event");
+    assert_eq!(event.name, "workspace.selected");
+    assert_eq!(event.source, "workspace.lifecycle");
+    assert_eq!(event.window_id, None);
+    assert_eq!(
+        event.payload,
+        json!({
+            "workspace_id": "workspace-b1",
+            "title": "Phoenix",
+            "custom_title": "Phoenix",
+            "cwd": "C:/repo",
+            "index": 0,
+            "selected": true,
+            "tab_count": 3,
+            "previous_workspace_id": "workspace-b3",
+        })
+    );
+}
