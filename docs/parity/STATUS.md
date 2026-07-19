@@ -5,7 +5,7 @@ Checkpoint commits:
 - Current canonical audit: `41756f7285a02d2592751438793647f7d4ba9b71`
 - Frozen differential canonical: `e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452`
 - Windows behavior captured: `78825bba260a57e9c7d90b82d4eeb5a36789e5ff`
-- Latest Windows code checkpoint: `78825bba260a57e9c7d90b82d4eeb5a36789e5ff`
+- Latest Windows code checkpoint: `5ad6d47b24a3421d3c202f37e757f8795febd301`
 - Latest exact startup differential evidence: `parity/diff-lane@215737999ac0579682b6b2a2d230d7a0d064a51d`
 - Latest window harness checkpoint: `parity/diff-lane@9257db511b975335e2ee79bc4bb143c04bfa95f8`
 - Latest canonical window capture: workflow run `29686515273`
@@ -139,10 +139,16 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
   publication executor share prepared window identities and key history.
 - `browser.rs` is now 3,284 physical lines. Its control-runtime presence checks
   live in the 37-line `browser/control_state.rs` child module.
-- `terminal.rs` is now 5,672 measured lines (from 5,709). Process-tree
-  snapshots, listening-port discovery, and terminal output pumping now live in
-  the 454-line `terminal/process_runtime.rs` child module; the Tauri command
-  entry point remains in `terminal.rs`.
+- `terminal.rs` is now 2,902 measured lines (from 5,672 at the previous
+  checkpoint). Its unchanged 2,772-line inline test body now remains in the
+  same `terminal::tests::*` namespace through two include files of 1,425 and
+  1,347 lines. Logical reconstruction matches the former file exactly; the
+  68-test terminal-filtered run passes before and three times after the move,
+  and the desktop all-target check is clean. The commit is +2 net ownership
+  lines, with no behavior rewrite. Process-tree snapshots, listening-port
+  discovery, and terminal output pumping already live in the 454-line
+  `terminal/process_runtime.rs` child module; the Tauri command entry point
+  remains in `terminal.rs`.
 - `session_ops.rs` is now 1,316 physical lines (from 6,306 before its staged
   extractions). Browser history,
   navigation, developer-tools state, and zoom mutations live behind the
