@@ -679,9 +679,26 @@ class SettleTests(unittest.TestCase):
                        "settle": {"until_absent": ["x"], "timeout_s": 5}},
         }
         parse_manifest({"family": "f", "cases": [ok]})
+        parse_manifest(
+            {
+                "family": "f",
+                "cases": [
+                    {
+                        "id": "a",
+                        "action": {
+                            "op": "v2",
+                            "method": "window.list",
+                            "params": {},
+                            "settle": {"until_window_not_visible": ["x"]},
+                        },
+                    }
+                ],
+            }
+        )
         for bad_settle, why in [
             ({}, "requires at least one predicate"),
             ({"until_absent": []}, "non-empty list"),
+            ({"until_window_not_visible": []}, "non-empty list"),
             ({"stable": False}, "must be true"),
             ({"until_present": ["x"], "timeout_s": 0}, "positive number"),
             ({"until_absent": ["x"], "bogus": 1}, "unknown settle keys"),
@@ -709,6 +726,33 @@ class SettleTests(unittest.TestCase):
         # Combined: every specified predicate must hold.
         self.assertFalse(
             evaluate_settle({"until_absent": ["zombie-2"], "stable": True}, response, dict(response))
+        )
+
+    def test_window_not_visible_accepts_hidden_or_absent_and_rejects_visible(self):
+        from capture_driver import evaluate_settle
+
+        response = {
+            "ok": True,
+            "result": {"windows": [
+                {"id": "visible", "visible": True},
+                {"id": "hidden", "visible": False},
+            ]},
+        }
+        self.assertFalse(
+            evaluate_settle({"until_window_not_visible": ["visible"]}, response, None)
+        )
+        self.assertTrue(
+            evaluate_settle({"until_window_not_visible": ["hidden"]}, response, None)
+        )
+        self.assertTrue(
+            evaluate_settle({"until_window_not_visible": ["absent"]}, response, None)
+        )
+        self.assertFalse(
+            evaluate_settle(
+                {"until_window_not_visible": ["hidden"]},
+                {"ok": True, "result": {}},
+                None,
+            )
         )
 
     class ScriptedDriver:

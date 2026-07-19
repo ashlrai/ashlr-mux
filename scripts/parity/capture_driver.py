@@ -82,8 +82,16 @@ class ManifestError(ValueError):
 
 
 #: Settle config keys (root-sanctioned bounded settle semantics for reads that
-#: race asynchronous UI teardown; see canonical run 29252718573 zombie rows).
-SETTLE_KEYS = ("until_absent", "until_present", "stable", "timeout_s", "poll_interval_s")
+#: race asynchronous UI teardown. Canonical retains closed windows as invisible,
+#: recoverable routes, so lifecycle cleanup waits for non-visibility, not absence.
+SETTLE_KEYS = (
+    "until_absent",
+    "until_present",
+    "until_window_not_visible",
+    "stable",
+    "timeout_s",
+    "poll_interval_s",
+)
 SETTLE_DEFAULT_TIMEOUT_S = 10.0
 SETTLE_DEFAULT_POLL_INTERVAL_S = 0.5
 
@@ -94,7 +102,7 @@ def _validate_settle(settle: Any, where: str) -> None:
     unknown = [key for key in settle if key not in SETTLE_KEYS]
     if unknown:
         raise ManifestError(f"{where}: unknown settle keys {unknown} (expected {SETTLE_KEYS})")
-    for key in ("until_absent", "until_present"):
+    for key in ("until_absent", "until_present", "until_window_not_visible"):
         if key in settle and (
             not isinstance(settle[key], list)
             or not settle[key]
@@ -103,9 +111,11 @@ def _validate_settle(settle: Any, where: str) -> None:
             raise ManifestError(f"{where}: settle '{key}' must be a non-empty list of strings")
     if "stable" in settle and settle["stable"] is not True:
         raise ManifestError(f"{where}: settle 'stable' must be true when present")
-    if not any(key in settle for key in ("until_absent", "until_present", "stable")):
+    predicate_keys = ("until_absent", "until_present", "until_window_not_visible", "stable")
+    if not any(key in settle for key in predicate_keys):
         raise ManifestError(
-            f"{where}: settle requires at least one predicate (until_absent/until_present/stable)"
+            f"{where}: settle requires at least one predicate "
+            "(until_absent/until_present/until_window_not_visible/stable)"
         )
     for key in ("timeout_s", "poll_interval_s"):
         if key in settle and (not isinstance(settle[key], (int, float)) or settle[key] <= 0):
@@ -792,6 +802,8 @@ def evaluate_settle(
     - ``until_absent``: none of the (placeholder-resolved) needle strings occur
       anywhere in the serialized reply;
     - ``until_present``: all needles occur;
+    - ``until_window_not_visible``: every listed window id is absent or has
+      ``visible:false`` in a well-formed ``window.list`` result;
     - ``stable``: the parsed reply equals the previous poll's parsed reply
       (needs at least two polls).
     """
@@ -802,6 +814,18 @@ def evaluate_settle(
     for needle in settle.get("until_present", []):
         if needle not in serialized:
             return False
+    not_visible_ids = settle.get("until_window_not_visible", [])
+    if not_visible_ids:
+        result = response.get("result") if isinstance(response, dict) else None
+        windows = result.get("windows") if isinstance(result, dict) else None
+        if not isinstance(windows, list) or not all(isinstance(row, dict) for row in windows):
+            return False
+        for window_id in not_visible_ids:
+            if any(
+                row.get("id") == window_id and row.get("visible") is not False
+                for row in windows
+            ):
+                return False
     if settle.get("stable") and (previous_response is None or response != previous_response):
         return False
     return True
@@ -910,7 +934,12 @@ class Driver:
         result["settle"] = {
             "predicate": {
                 key: settle[key]
-                for key in ("until_absent", "until_present", "stable")
+                for key in (
+                    "until_absent",
+                    "until_present",
+                    "until_window_not_visible",
+                    "stable",
+                )
                 if key in settle
             },
             "timeout_s": timeout_s,
