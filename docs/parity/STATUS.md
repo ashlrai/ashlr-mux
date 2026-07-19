@@ -5,7 +5,7 @@ Checkpoint commits:
 - Current canonical audit: `ecebdbb64b3532b0308650280ae4b83f30becf2a`
 - Frozen differential canonical: `e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452`
 - Windows behavior: `4e6e2fc6dc9b71bdc4c2847d3eea7eefc6aa365e`
-- Latest Windows code checkpoint: `482debb406369546f51a29a2fe06c5c4787a504d`
+- Latest Windows code checkpoint: `cb94cf02e2aa326107e8fe8c931ef08521797b53`
 - Latest exact startup differential evidence: `parity/diff-lane@215737999ac0579682b6b2a2d230d7a0d064a51d`
 - Latest window harness checkpoint: `parity/diff-lane@d309cf0ceb44cda59d755d557f91189848c98357`
 - Latest canonical window capture: workflow run `29678884486`
@@ -134,15 +134,18 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
   snapshots, listening-port discovery, and terminal output pumping now live in
   the 454-line `terminal/process_runtime.rs` child module; the Tauri command
   entry point remains in `terminal.rs`.
-- `session_ops.rs` is now 6,306 physical lines. Browser history,
+- `session_ops.rs` is now 4,991 physical lines (from 6,306 in the prior
+  checkpoint). Browser history,
   navigation, developer-tools state, and zoom mutations live behind the
   unchanged public API in the 325-line `session_ops/browser.rs` child module;
   canvas layout and persisted geometry mutations now live behind the same API
   in the 526-line `session_ops/canvas.rs` child module. Workspace grouping and
   reorder operations now live in the 1,116-line
-  `session_ops/workspace_ordering.rs` child module. The extraction is a
-  behavior-preserving move; 331 core tests pass twice, core Clippy is clean,
-  and desktop/CLI dependent targets compile.
+  `session_ops/workspace_ordering.rs` child module. Pane-tree mutation,
+  resizing, surface-tab movement, and pane metadata transfer now live in the
+  1,320-line `session_ops/pane_layout.rs` child module. The latest extraction
+  is a behavior-preserving move with five net lines: 297 core tests pass twice,
+  core Clippy is clean, and desktop/CLI dependent targets compile.
 - `command_forward.rs` is now 4,550 physical lines (from 7,026). Browser
   routing and parameter construction live in the 1,211-line
   `command_forward/browser.rs` child module; workspace routing, selectors,
@@ -153,8 +156,8 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
   substring order were removed. The retained suites execute behavior.
 - CI now caps new Windows-owned Rust and TypeScript files at 1,500 lines and
   freezes 40 existing oversized files at their current-or-smaller sizes.
-- The next structural priorities are the remaining pane/layout domain and the
-  large in-file test module in `crates/cmux-core/src/session_ops.rs`,
+- The next structural priorities are the large in-file test module in
+  `crates/cmux-core/src/session_ops.rs`,
   `crates/cmux-cli/src/command_forward.rs`, the remaining terminal
   materialization/input domains, and the custom sidebar Swift parser. Split
   them in isolated maintenance commits, not inside feature slices.
