@@ -615,55 +615,99 @@ pub(super) fn sync_window_selected_workspace_id(window: &mut SessionWindowSnapsh
 /// stateful desktop layer synthesizes them exactly once so downstream pure/UI
 /// consumers can treat pane identity as stable.
 pub(super) fn ensure_pane_ids(snapshot: &mut AppSessionSnapshot) {
+    fn collect_pane_ids(layout: &SessionWorkspaceLayoutSnapshot, used: &mut HashSet<String>) {
+        match layout {
+            SessionWorkspaceLayoutSnapshot::Pane(pane) => {
+                if let Some(pane_id) = &pane.pane_id {
+                    used.insert(pane_id.clone());
+                }
+            }
+            SessionWorkspaceLayoutSnapshot::Split(split) => {
+                collect_pane_ids(&split.first, used);
+                collect_pane_ids(&split.second, used);
+            }
+        }
+    }
+
     fn ensure_layout_pane_ids(
         layout: &mut SessionWorkspaceLayoutSnapshot,
-        surfaces: &[cmux_core::session::SessionSurfaceSnapshot],
+        surfaces: &mut [cmux_core::session::SessionSurfaceSnapshot],
+        used: &mut HashSet<String>,
     ) {
         match layout {
             SessionWorkspaceLayoutSnapshot::Pane(pane) => {
                 if pane.pane_id.is_none() {
-                    let mut referenced_owner = None;
+                    let mut referenced_owner: Option<String> = None;
                     let mut conflicting_owners = false;
                     for panel_id in &pane.panel_ids {
                         let Some(owner) = surfaces
                             .iter()
                             .find(|surface| surface.surface_id == *panel_id)
-                            .map(|surface| surface.pane_id.as_str())
+                            .map(|surface| surface.pane_id.clone())
                         else {
                             continue;
                         };
-                        match referenced_owner {
+                        match referenced_owner.as_deref() {
                             None => referenced_owner = Some(owner),
                             Some(existing) if existing == owner => {}
                             Some(_) => conflicting_owners = true,
                         }
                     }
-                    pane.pane_id = Some(
-                        referenced_owner
-                            .filter(|_| !conflicting_owners)
-                            .map_or_else(|| Uuid::new_v4().to_string(), str::to_string),
-                    );
+                    let reusable = referenced_owner
+                        .filter(|owner| !conflicting_owners && !used.contains(owner));
+                    let pane_id = reusable.unwrap_or_else(|| loop {
+                        let candidate = Uuid::new_v4().to_string();
+                        if !used.contains(&candidate) {
+                            break candidate;
+                        }
+                    });
+                    pane.pane_id = Some(pane_id);
+                }
+                let pane_id = pane.pane_id.as_ref().expect("pane id assigned").clone();
+                used.insert(pane_id.clone());
+                for panel_id in &pane.panel_ids {
+                    if let Some(surface) = surfaces
+                        .iter_mut()
+                        .find(|surface| surface.surface_id == *panel_id)
+                    {
+                        surface.pane_id.clone_from(&pane_id);
+                    }
                 }
             }
             SessionWorkspaceLayoutSnapshot::Split(split) => {
                 if split.split_id.is_none() {
                     split.split_id = Some(Uuid::new_v4().to_string());
                 }
-                ensure_layout_pane_ids(&mut split.first, surfaces);
-                ensure_layout_pane_ids(&mut split.second, surfaces);
+                ensure_layout_pane_ids(&mut split.first, surfaces, used);
+                ensure_layout_pane_ids(&mut split.second, surfaces, used);
             }
         }
     }
 
+    let mut used = HashSet::new();
+    for window in &snapshot.windows {
+        for workspace in &window.tab_manager.workspaces {
+            if let Some(layout) = &workspace.layout {
+                collect_pane_ids(layout, &mut used);
+            }
+        }
+        if let Some(layout) = window.dock.as_ref().and_then(|dock| dock.layout.as_ref()) {
+            collect_pane_ids(layout, &mut used);
+        }
+    }
     for window in &mut snapshot.windows {
         for workspace in &mut window.tab_manager.workspaces {
             if let Some(layout) = workspace.layout.as_mut() {
-                ensure_layout_pane_ids(layout, workspace.surfaces.as_deref().unwrap_or_default());
+                ensure_layout_pane_ids(
+                    layout,
+                    workspace.surfaces.as_deref_mut().unwrap_or_default(),
+                    &mut used,
+                );
             }
         }
         if let Some(dock) = window.dock.as_mut() {
             if let Some(layout) = dock.layout.as_mut() {
-                ensure_layout_pane_ids(layout, &dock.surfaces);
+                ensure_layout_pane_ids(layout, &mut dock.surfaces, &mut used);
             }
         }
     }

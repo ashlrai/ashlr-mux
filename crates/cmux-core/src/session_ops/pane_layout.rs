@@ -1209,6 +1209,21 @@ fn take_panel_shell_activity(
     Some(entry)
 }
 
+fn take_surface_record(
+    surfaces: &mut Option<Vec<crate::session::SessionSurfaceSnapshot>>,
+    panel_id: &str,
+) -> Option<crate::session::SessionSurfaceSnapshot> {
+    let entries = surfaces.as_mut()?;
+    let index = entries
+        .iter()
+        .position(|entry| entry.surface_id == panel_id)?;
+    let entry = entries.remove(index);
+    if entries.is_empty() {
+        *surfaces = None;
+    }
+    Some(entry)
+}
+
 #[derive(Default)]
 pub(super) struct DetachedPanelMetadata {
     pub(super) title: Option<SessionPanelTitleSnapshot>,
@@ -1219,6 +1234,7 @@ pub(super) struct DetachedPanelMetadata {
     listening_ports: Option<SessionPanelListeningPortsSnapshot>,
     tty: Option<SessionPanelTtySnapshot>,
     shell_activity: Option<SessionPanelShellActivitySnapshot>,
+    surface: Option<crate::session::SessionSurfaceSnapshot>,
 }
 
 pub(super) fn detach_panel_metadata(
@@ -1240,6 +1256,7 @@ pub(super) fn detach_panel_metadata(
         listening_ports: take_panel_listening_ports(&mut workspace.panel_listening_ports, panel_id),
         tty: take_panel_tty(&mut workspace.panel_ttys, panel_id),
         shell_activity: take_panel_shell_activity(&mut workspace.panel_shell_activity, panel_id),
+        surface: take_surface_record(&mut workspace.surfaces, panel_id),
     };
     if metadata.listening_ports.is_some() {
         recompute_workspace_listening_ports(workspace);
@@ -1299,6 +1316,9 @@ pub(super) fn attach_panel_metadata(
             .panel_shell_activity
             .get_or_insert_with(Vec::new)
             .push(entry);
+    }
+    if let Some(entry) = metadata.surface {
+        workspace.surfaces.get_or_insert_with(Vec::new).push(entry);
     }
 }
 
