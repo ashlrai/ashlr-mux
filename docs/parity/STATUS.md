@@ -4,11 +4,14 @@ Checkpoint commits:
 
 - Current canonical audit: `41756f7285a02d2592751438793647f7d4ba9b71`
 - Frozen differential canonical: `e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452`
-- Windows behavior captured: `a51ddd28763bad2549d3903de78bc7b59b988e36`
-- Latest Windows code checkpoint: `03913b71bc294a5ef912b1eac243af595571af58`
+- Latest complete window behavior captured: `a51ddd28763bad2549d3903de78bc7b59b988e36`
+- Latest workspace behavior captured: `2cebeb189bcc5f46f54af0f57faedf926400cffc`
+- Latest Windows code checkpoint: `c06fee518c4b85c2dbd428a53700abab195ecfd5`
 - Latest exact startup differential evidence: `parity/diff-lane@215737999ac0579682b6b2a2d230d7a0d064a51d`
 - Latest window harness checkpoint: `parity/diff-lane@9257db511b975335e2ee79bc4bb143c04bfa95f8`
 - Latest canonical window capture: workflow run `29686515273`
+- Latest workspace harness/manifest checkpoint: `parity/diff-lane@56c9a6c419198b2d56af32da55ce028919aef275`
+- Latest canonical workspace capture: workflow run `29690475786`
 
 The Windows desktop and CLI build successfully. The retained pane/surface and
 startup-restore evidence remains valid. The exact environment-matched window
@@ -73,6 +76,18 @@ before routing. The approval and selector payload repairs remain exact. Under
 matched UI-test mode, the restart case is also exact; the earlier apparent
 resume delta came from comparing unlike environments and is not a product gap.
 
+The retained workspace-lifecycle lane now covers 19 public v2 and CLI cases.
+Capture integrity is clean on both platforms: zero capture errors, missing
+cases, or unsatisfied settles. After stable entity normalization and explicit
+review of native inherited-directory leaves, 14 cases are exact. List/current
+routing, invalid selectors, invalid create directories, cross-window and
+already-selected selection, CLI list/current/create/select, and the legacy
+required-flag failure have no unexplained semantic differences. Five cases
+remain different only in their event lanes: focused create, v2 rename, v2
+close, CLI rename, and CLI close. No rolling-catalog row is promoted from this
+partial family; the strict resolved count remains 25 until each promoted row
+has complete retained evidence.
+
 ## What the current audit says
 
 The rolling catalog contains 503 rows: 159 public CLI commands, 16 internal CLI
@@ -132,7 +147,7 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
   `docs/archive/windows-port-legacy/`; they are preserved evidence, not active
   instructions.
 - The previously monolithic files remain split: `control_socket.rs` is now
-  4,396 measured lines (from 23,219), `session.rs` is 5,134 (from 12,059), and
+  3,874 physical lines (from 23,219), `session.rs` is 5,130 (from 12,059), and
   `CustomSidebarSurface.tsx` is 4,795 (from 12,003). Extracted modules retain
   the same public entry points. The 84-line `session/control_snapshot.rs` owns
   control-worker lifecycle publication policy, and the 85-line
@@ -141,6 +156,24 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
   routing; its moved body is byte-equivalent after four scope-preserving
   visibility annotations, and 308 session-scoped tests cover the unchanged API
   boundary.
+- Custom-sidebar action policy, schema validation, and native bridge reply
+  shaping now live in the 554-line
+  `control_socket/custom_sidebar_action.rs` module. The control-socket root
+  retains only the Tauri command wrapper. Six focused behavior tests pass
+  before and twice after extraction; the full desktop library remains 1,059
+  passed and 1 ignored, and the all-target check is green.
+- Workspace lifecycle event construction/publication now lives in the
+  105-line `control_socket/workspace_control/events.rs` child. This restores
+  `event_stream.rs` to its 1,558-line ceiling and lowers
+  `workspace_control.rs` to 3,173 lines. Workspace selection's pure transaction
+  candidate lives in the 25-line `session/workspace_selection.rs` child, and
+  its payload test moved from the catch-all control-socket test root into the
+  existing workspace-action suite. The focused selection tests pass twice,
+  the full desktop library remains green, and no behavior path changed.
+- The legacy workspace-alias notice now lives in the 21-line CLI
+  `legacy_alias.rs` module while retaining the same broken-pipe-safe stderr
+  writer. `main.rs` is 3,071 lines; the exact executable notice test passes
+  twice, all CLI targets pass, and the file-length guard is green.
 - Canonical window-event construction now lives in the 319-line
   `control_socket/window_lifecycle/events.rs` child module. The parent remains
   below its frozen file-length ceiling, and the production transition and
@@ -213,12 +246,12 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
   production build, whitespace, and the 39-file Windows length budget are
   clean. All rendered strings moved unchanged, so no localization resources
   changed.
-- CLI `main.rs` is now 3,081 physical lines (from 4,059). Control-result text,
+- CLI `main.rs` is now 3,071 physical lines (from 4,059). Control-result text,
   JSON projection, id formatting, and tmux-state pruning live in the 997-line
   `control_output.rs` child module with 11 explicit parent-visible functions.
   The move adds 19 net module/import/visibility lines; the full CLI all-target suite
   passes before the move, after extraction, and after visibility tightening.
-- `workspace_control.rs` is now 3,180 physical lines (from 3,711 at this
+- `workspace_control.rs` is now 3,173 physical lines (from 3,711 at this
   checkpoint). Strict live/recoverable `window.list` projection and read-only
   recoverable active routing live in the 299-line
   `workspace_control/window_list.rs` child. Right-sidebar, feed, and
@@ -236,7 +269,7 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
 - CI now caps new Windows-owned Rust and TypeScript files at 1,500 lines and
   freezes 39 existing oversized files at their current-or-smaller sizes.
 - The next structural priorities are
-  the 5,975-line custom-sidebar test file, 5,134-line session root,
+  the 5,975-line custom-sidebar test file, 5,130-line session root,
   4,795-line custom-sidebar component, and 4,660-line pane/surface lifecycle
   module. The Swift parser is now 3,719 lines. Split one coherent
   responsibility per isolated maintenance commit only when it unblocks feature
@@ -244,9 +277,10 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
 
 ## Next efficient slice
 
-Return to observable parity work. Select the next capability from retained
-runtime/differential evidence, preferring an implemented-but-unverified batch
-that can be promoted without new production code; otherwise take the earliest
-reproducible behavioral delta and implement the smallest fix. Keep any further
-file split in its own checkpoint and perform it only when the owning boundary
-would otherwise make that feature slice unsafe.
+Fix workspace rename lifecycle publication through the shared v2/CLI action
+path. Canonical emits the acknowledgement plus exactly one
+`workspace.renamed` event from `socket.v2`, whose payload contains the resolved
+request params and response result. Windows state and responses are already
+exact after native-path review; suppress the generic derived-session noise and
+publish the canonical event once for both raw v2 and legacy CLI entry points.
+Keep create and close event remediation out of that commit.
