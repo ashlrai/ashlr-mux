@@ -11,7 +11,7 @@
     "capture_errors": 0
   },
   "windows": {
-    "behavior_commit": "286b2d7b674710ae60573ca8250df60cfd4ebcfc",
+    "behavior_commit": "b0d9e0a7174c852908b63b54e323e1dfee242e96",
     "cases": 68,
     "capture_errors": 0,
     "profile_mode": "isolated",
@@ -54,11 +54,44 @@
       "window_close.last_window_may_exit_ui_test_mode"
     ]
   },
+  "identity_boundary": {
+    "status": "repaired_with_downstream_deltas_remaining",
+    "full_capture_runs": 2,
+    "post_simplification_prefix_runs": 2,
+    "cases_per_full_run": 68,
+    "capture_errors": 0,
+    "normalized_window_label_occurrences": {
+      "before": 153,
+      "after": 0
+    },
+    "cli_uuid_cases": {
+      "focus_before_lanes": [
+        "exit_status",
+        "stdout",
+        "stderr",
+        "state"
+      ],
+      "focus_after_lanes": [
+        "state"
+      ],
+      "close_before_lanes": [
+        "exit_status",
+        "stdout",
+        "stderr",
+        "state"
+      ],
+      "close_after_lanes": [
+        "state"
+      ]
+    },
+    "overall_count_note": "The comparison remains 38 identical and 30 delta cases because the identity-affected cases also retain independent event, state, or payload mismatches."
+  },
   "closed_capture_blockers": [
     "The final canonical close may legitimately disconnect; the manifest now models it as the final may_disconnect case without an impossible post-close probe.",
     "Windows control commits no longer synchronously query native window state while a child WebView is attached.",
     "Selector-less routing uses the initialized active-window pointer without a redundant native focus query.",
-    "The 17-case browser/resume prefix passed twice after simplification, and the full 68-case Windows capture completed with zero capture errors."
+    "The 17-case browser/resume prefix passed twice after simplification, and the full 68-case Windows capture completed with zero capture errors.",
+    "Socket-created windows now use UUID identities, selector-less window.current returns the active session UUID, and CLI focus/close-by-UUID reach the backend."
   ],
   "test_gate": {
     "desktop_library_excluding_known_baseline_failures": {

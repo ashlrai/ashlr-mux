@@ -4,8 +4,8 @@ Checkpoint commits:
 
 - Current canonical audit: `ecebdbb64b3532b0308650280ae4b83f30becf2a`
 - Frozen differential canonical: `e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452`
-- Windows behavior: `286b2d7b674710ae60573ca8250df60cfd4ebcfc`
-- Latest Windows code checkpoint: `39e71d0246e5913b2eaea4f1681c63cf6d85a43d`
+- Windows behavior: `b0d9e0a7174c852908b63b54e323e1dfee242e96`
+- Latest Windows code checkpoint: `b0d9e0a7174c852908b63b54e323e1dfee242e96`
 - Latest exact startup differential evidence: `parity/diff-lane@215737999ac0579682b6b2a2d230d7a0d064a51d`
 - Latest window harness checkpoint: `parity/diff-lane@d309cf0ceb44cda59d755d557f91189848c98357`
 - Latest canonical window capture: workflow run `29678884486`
@@ -17,6 +17,14 @@ with zero capture errors. Their normalized comparison has 38 identical cases
 and 30 cases with semantic deltas, so the lane is valid diagnostic evidence but
 does not yet promote window-family rows to verified. See
 `evidence/window_lifecycle_2026-07-19.json`.
+
+The shared window identity boundary is now repaired. Socket-created windows
+use canonical UUID identities end to end, selector-less `window.current`
+returns the active session UUID, and CLI focus/close-by-UUID reach the backend
+instead of failing transport. Across two full Windows captures, normalized
+`window-N` identity occurrences fell from 153 to zero. The overall 38/30 count
+did not move because all affected cases also contain independent event, state,
+or payload deltas; it must not be used to erase this narrower verified gain.
 
 ## What the current audit says
 
@@ -36,13 +44,14 @@ baseline, not "222 of 496 complete" and not the rolling catalog.
 
 ## Known acceptance blockers
 
-1. The window-lifecycle transport blocker is closed, but 30 of 68 cases still
-   differ. The largest clusters are window identity/CLI UUID handling,
-   create-close-focus response/state/event shapes, and resume-binding payloads.
-   Fix these from the recorded normalized lanes; do not infer parity from route
+1. The window-lifecycle transport and public UUID-routing blockers are closed,
+   but 30 of 68 cases still differ. The largest clusters are generic
+   `session.model` events versus canonical lifecycle events,
+   create-close-focus state/event shapes, and resume-binding payloads. Fix
+   these from the recorded normalized lanes; do not infer parity from route
    presence.
 2. Four differential-remediation unit tests fail unchanged at both pushed
-   baseline `0ea973d28d` and current behavior `286b2d7b67`:
+   baseline `0ea973d28d` and behavior checkpoint `286b2d7b67`:
    `closing_an_unselected_tab_suppresses_the_noop_pair`,
    `create_after_explicit_focus_keeps_the_new_tab_selected`,
    `surface_create_without_focus_emits_the_canonical_selection_flip`, and
@@ -109,10 +118,12 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
 
 ## Next efficient slice
 
-Use the valid 68-case comparison to fix the highest-fan-out identity boundary
-first: canonical returns UUID window identities where Windows still exposes
-`window-N` labels, which also breaks CLI focus/close-by-UUID cases. Add a
-focused red case, repair the shared identity seam, rerun the affected window
-prefix twice, simplify, rerun twice, then run all 68 cases. Keep the next
-structural slice separate. Test-only giants should be split by behavior family,
-not mixed into a production extraction.
+Use the valid 68-case comparison to repair the highest-fan-out remaining event
+publication seam. Window create/close currently publish generic
+`session.model` change events in addition to differently shaped lifecycle
+events, while canonical publishes the specific workspace/pane/surface/window
+sequence. Start with one create case and one close case, suppress only proven
+duplicate generic publication, and make the canonical lifecycle payload shape
+exact. Rerun the focused prefix twice, simplify, rerun twice, then run all 68
+cases. Keep structural extraction separate. Test-only giants should be split by
+behavior family, not mixed into a production change.
