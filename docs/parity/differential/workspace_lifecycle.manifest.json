@@ -1,0 +1,463 @@
+{
+  "family": "workspace_lifecycle",
+  "contract": "docs/parity/contracts/workspace_lifecycle.json",
+  "canonical_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+  "notes": [
+    "Exercises the six workspace v2 methods and their six legacy CLI facades.",
+    "The two-window fixture keeps non-selected workspaces in each window so routing and selection semantics remain distinct.",
+    "No platform differences are pre-approved; classify exact capture pointers only after the first matched run."
+  ],
+  "session_setup": [
+    {
+      "op": "v2",
+      "method": "window.create",
+      "params": {}
+    },
+    {
+      "op": "v2",
+      "method": "window.create",
+      "params": {}
+    },
+    {
+      "op": "v2",
+      "method": "workspace.list",
+      "params": {
+        "window_id": "${session.0.result.window_id}"
+      }
+    },
+    {
+      "op": "v2",
+      "method": "workspace.list",
+      "params": {
+        "window_id": "${session.1.result.window_id}"
+      }
+    },
+    {
+      "op": "v2",
+      "method": "workspace.create",
+      "params": {
+        "window_id": "${session.0.result.window_id}",
+        "title": "workspace-alpha",
+        "description": "alpha-description"
+      }
+    },
+    {
+      "op": "v2",
+      "method": "workspace.create",
+      "params": {
+        "window_id": "${session.0.result.window_id}",
+        "title": "workspace-beta"
+      }
+    },
+    {
+      "op": "v2",
+      "method": "workspace.create",
+      "params": {
+        "window_id": "${session.1.result.window_id}",
+        "title": "workspace-gamma"
+      }
+    }
+  ],
+  "cases": [
+    {
+      "id": "workspace_list.explicit_window",
+      "action": {
+        "op": "v2",
+        "method": "workspace.list",
+        "params": {
+          "window_id": "${session.0.result.window_id}"
+        }
+      }
+    },
+    {
+      "id": "workspace_list.routes_by_nonselected_workspace",
+      "action": {
+        "op": "v2",
+        "method": "workspace.list",
+        "params": {
+          "workspace_id": "${session.5.result.workspace_id}"
+        }
+      }
+    },
+    {
+      "id": "workspace_list.invalid_window_does_not_fall_through",
+      "action": {
+        "op": "v2",
+        "method": "workspace.list",
+        "params": {
+          "window_id": "00000000-0000-0000-0000-000000000001",
+          "workspace_id": "${session.5.result.workspace_id}"
+        }
+      }
+    },
+    {
+      "id": "workspace_current.explicit_window",
+      "action": {
+        "op": "v2",
+        "method": "workspace.current",
+        "params": {
+          "window_id": "${session.0.result.window_id}"
+        }
+      }
+    },
+    {
+      "id": "workspace_current.routes_by_nonselected_workspace",
+      "action": {
+        "op": "v2",
+        "method": "workspace.current",
+        "params": {
+          "workspace_id": "${session.5.result.workspace_id}"
+        }
+      }
+    },
+    {
+      "id": "workspace_current.invalid_window_does_not_fall_through",
+      "action": {
+        "op": "v2",
+        "method": "workspace.current",
+        "params": {
+          "window_id": "00000000-0000-0000-0000-000000000001",
+          "workspace_id": "${session.5.result.workspace_id}"
+        }
+      }
+    },
+    {
+      "id": "workspace_create.background_focus_is_suppressed",
+      "events": true,
+      "action": {
+        "op": "v2",
+        "method": "workspace.create",
+        "params": {
+          "window_id": "${session.1.result.window_id}",
+          "title": "created-background",
+          "description": "created-description",
+          "focus": true
+        }
+      },
+      "probes": {
+        "state": [
+          {
+            "op": "v2",
+            "method": "workspace.list",
+            "params": {
+              "window_id": "${session.1.result.window_id}"
+            }
+          }
+        ],
+        "selectors": [
+          {
+            "op": "v2",
+            "method": "workspace.current",
+            "params": {
+              "window_id": "${session.1.result.window_id}"
+            }
+          }
+        ],
+        "multiwindow": [
+          {
+            "op": "v2",
+            "method": "window.current",
+            "params": {}
+          }
+        ]
+      }
+    },
+    {
+      "id": "workspace_create.invalid_cwd_fails_before_mutation",
+      "action": {
+        "op": "v2",
+        "method": "workspace.create",
+        "params": {
+          "window_id": "${session.0.result.window_id}",
+          "cwd": 7
+        }
+      },
+      "probes": {
+        "state": [
+          {
+            "op": "v2",
+            "method": "workspace.list",
+            "params": {
+              "window_id": "${session.0.result.window_id}"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "workspace_select.cross_window",
+      "events": true,
+      "action": {
+        "op": "v2",
+        "method": "workspace.select",
+        "params": {
+          "window_id": "${session.1.result.window_id}",
+          "workspace_id": "${session.6.result.workspace_id}"
+        }
+      },
+      "probes": {
+        "state": [
+          {
+            "op": "v2",
+            "method": "workspace.current",
+            "params": {
+              "window_id": "${session.1.result.window_id}"
+            }
+          }
+        ],
+        "multiwindow": [
+          {
+            "op": "v2",
+            "method": "window.current",
+            "params": {}
+          }
+        ]
+      }
+    },
+    {
+      "id": "workspace_select.already_selected",
+      "setup": [
+        {
+          "op": "v2",
+          "method": "workspace.select",
+          "params": {
+            "window_id": "${session.1.result.window_id}",
+            "workspace_id": "${session.6.result.workspace_id}"
+          }
+        }
+      ],
+      "events": true,
+      "action": {
+        "op": "v2",
+        "method": "workspace.select",
+        "params": {
+          "window_id": "${session.1.result.window_id}",
+          "workspace_id": "${session.6.result.workspace_id}"
+        }
+      }
+    },
+    {
+      "id": "workspace_rename.background_workspace",
+      "events": true,
+      "action": {
+        "op": "v2",
+        "method": "workspace.rename",
+        "params": {
+          "window_id": "${session.0.result.window_id}",
+          "workspace_id": "${session.5.result.workspace_id}",
+          "title": "workspace-beta-renamed"
+        }
+      },
+      "probes": {
+        "state": [
+          {
+            "op": "v2",
+            "method": "workspace.list",
+            "params": {
+              "window_id": "${session.0.result.window_id}"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "workspace_close.normal_workspace",
+      "setup": [
+        {
+          "op": "v2",
+          "method": "workspace.create",
+          "params": {
+            "window_id": "${session.0.result.window_id}",
+            "title": "workspace-close-target"
+          }
+        }
+      ],
+      "events": true,
+      "action": {
+        "op": "v2",
+        "method": "workspace.close",
+        "params": {
+          "window_id": "${session.0.result.window_id}",
+          "workspace_id": "${setup.0.result.workspace_id}"
+        }
+      },
+      "probes": {
+        "state": [
+          {
+            "op": "v2",
+            "method": "workspace.list",
+            "params": {
+              "window_id": "${session.0.result.window_id}"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "cli_list_workspaces.explicit_window",
+      "action": {
+        "op": "cli",
+        "argv": [
+          "list-workspaces",
+          "--window",
+          "${session.0.result.window_ref}"
+        ]
+      }
+    },
+    {
+      "id": "cli_current_workspace.explicit_window",
+      "action": {
+        "op": "cli",
+        "argv": [
+          "current-workspace",
+          "--window",
+          "${session.1.result.window_ref}"
+        ]
+      }
+    },
+    {
+      "id": "cli_new_workspace.explicit_window",
+      "action": {
+        "op": "cli",
+        "argv": [
+          "new-workspace",
+          "--window",
+          "${session.0.result.window_ref}",
+          "--name",
+          "cli-created-workspace",
+          "--description",
+          "cli-created-description",
+          "--focus",
+          "false"
+        ]
+      },
+      "probes": {
+        "state": [
+          {
+            "op": "v2",
+            "method": "workspace.list",
+            "params": {
+              "window_id": "${session.0.result.window_id}"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "cli_select_workspace.explicit_window",
+      "setup": [
+        {
+          "op": "v2",
+          "method": "workspace.create",
+          "params": {
+            "window_id": "${session.0.result.window_id}",
+            "title": "cli-select-target"
+          }
+        }
+      ],
+      "events": true,
+      "action": {
+        "op": "cli",
+        "argv": [
+          "select-workspace",
+          "--workspace",
+          "${setup.0.result.workspace_ref}",
+          "--window",
+          "${session.0.result.window_ref}"
+        ]
+      },
+      "probes": {
+        "state": [
+          {
+            "op": "v2",
+            "method": "workspace.current",
+            "params": {
+              "window_id": "${session.0.result.window_id}"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "cli_rename_workspace.explicit_target",
+      "setup": [
+        {
+          "op": "v2",
+          "method": "workspace.create",
+          "params": {
+            "window_id": "${session.0.result.window_id}",
+            "title": "cli-rename-target"
+          }
+        }
+      ],
+      "events": true,
+      "action": {
+        "op": "cli",
+        "argv": [
+          "rename-workspace",
+          "--workspace",
+          "${setup.0.result.workspace_ref}",
+          "renamed",
+          "from",
+          "cli"
+        ]
+      },
+      "probes": {
+        "state": [
+          {
+            "op": "v2",
+            "method": "workspace.list",
+            "params": {
+              "window_id": "${session.0.result.window_id}"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "cli_close_workspace.explicit_window",
+      "setup": [
+        {
+          "op": "v2",
+          "method": "workspace.create",
+          "params": {
+            "window_id": "${session.0.result.window_id}",
+            "title": "cli-close-target"
+          }
+        }
+      ],
+      "events": true,
+      "action": {
+        "op": "cli",
+        "argv": [
+          "close-workspace",
+          "--workspace",
+          "${setup.0.result.workspace_ref}",
+          "--window",
+          "${session.0.result.window_ref}"
+        ]
+      },
+      "probes": {
+        "state": [
+          {
+            "op": "v2",
+            "method": "workspace.list",
+            "params": {
+              "window_id": "${session.0.result.window_id}"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "cli_select_workspace.requires_flag",
+      "action": {
+        "op": "cli",
+        "argv": [
+          "select-workspace",
+          "${session.5.result.workspace_ref}"
+        ]
+      }
+    }
+  ]
+}
