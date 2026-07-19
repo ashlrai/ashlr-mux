@@ -313,7 +313,7 @@ class TimingSymbolizerTests(unittest.TestCase):
         # events is nondeterministic and deliberately not preserved.
         self.assertEqual(out[2]["occurred_at"], "<ts-2>")
         out2 = timing.apply([{"occurred_at": "2026-07-13T09:09:31.000Z"}])
-        self.assertEqual(out2[0]["occurred_at"], "<ts-3>")
+        self.assertEqual(out2[0]["occurred_at"], "<ts-1>")
 
     def test_symbolizes_seq_derived_event_ids_raw_and_uuid_symbolized(self):
         timing = TimingSymbolizer()
@@ -323,7 +323,7 @@ class TimingSymbolizerTests(unittest.TestCase):
         # The same pattern with an already-uuid-symbolized boot part (archived
         # captures) also matches.
         out2 = timing.apply([{"id": "<uuid-8>-31", "name": "x"}])
-        self.assertEqual(out2[0]["id"], "<event-id-3>")
+        self.assertEqual(out2[0]["id"], "<event-id-1>")
 
     def test_strict_fields_untouched(self):
         out = TimingSymbolizer().apply(self.frames())
@@ -352,6 +352,13 @@ class TimingSymbolizerTests(unittest.TestCase):
 
     def test_none_lane_passes_through(self):
         self.assertIsNone(TimingSymbolizer().apply(None))
+
+    def test_subscription_ids_are_local_symbols_for_each_apply(self):
+        timing = TimingSymbolizer()
+        first = timing.apply([{"subscription_id": self.BOOT}])
+        second = timing.apply([{"subscription_id": "<uuid-9>"}])
+        self.assertEqual(first[0]["subscription_id"], "<subscription-id>")
+        self.assertEqual(second[0]["subscription_id"], "<subscription-id>")
 
 
 class SeqRebaseTests(unittest.TestCase):

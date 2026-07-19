@@ -195,6 +195,48 @@ class CompareCapturesTests(unittest.TestCase):
         self.assertEqual(report["deltas"], 1)
         self.assertEqual(report["results"][0]["mismatches"], ["events"])
 
+    def test_later_exact_event_case_is_not_shifted_by_earlier_event_count_delta(self):
+        boot_c = "<uuid-1>"
+        boot_w = "<uuid-8>"
+
+        def event(boot, seq, name):
+            return {
+                "boot_id": boot,
+                "id": f"{boot}-{seq}",
+                "name": name,
+                "occurred_at": f"2026-07-19T00:00:{seq:02d}Z",
+            }
+
+        left = load_capture(
+            capture_text(
+                [
+                    case_record(
+                        "a",
+                        observation(
+                            events=[event(boot_c, 1, "one"), event(boot_c, 2, "extra")]
+                        ),
+                    ),
+                    case_record("b", observation(events=[event(boot_c, 3, "same")])),
+                ]
+            ),
+            "canonical",
+        )
+        right = load_capture(
+            capture_text(
+                [
+                    case_record("a", observation(events=[event(boot_w, 1, "one")])),
+                    case_record("b", observation(events=[event(boot_w, 2, "same")])),
+                ]
+            ),
+            "windows",
+        )
+
+        report = compare_captures(left, right)
+
+        by_id = {result["id"]: result for result in report["results"]}
+        self.assertFalse(by_id["a"]["identical"])
+        self.assertTrue(by_id["b"]["identical"])
+
     def test_renumbering_ignores_uuids_inside_approved_regions(self):
         # An approved-away probe blob contains platform-different uuid sets;
         # they must not desynchronize the symbol tables for later values.

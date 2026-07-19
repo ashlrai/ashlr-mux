@@ -455,7 +455,10 @@ class TimingSymbolizer:
         r"(?:<uuid-\d+>|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}"
         r"-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})-\d+$"
     )
-    _TS_SYMBOL_RE = re.compile(r"<ts-\d+>$")
+    _SUBSCRIPTION_ID_RE = re.compile(
+        r"(?:<uuid-\d+>|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}"
+        r"-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
+    )
     _EVENT_ID_SYMBOL_RE = re.compile(r"<event-id-\d+>$")
 
     def __init__(self) -> None:
@@ -484,6 +487,8 @@ class TimingSymbolizer:
         """Symbolize the events lane; None (lane not captured) passes through."""
         if events is None:
             return None
+        self._ts_counter = 0
+        self._id_table.clear()
         self._seq_base = self._subscription_base(events)
         return self._walk(events)
 
@@ -495,9 +500,13 @@ class TimingSymbolizer:
         return value
 
     def _map(self, key: str, value: Any) -> Any:
+        if (
+            key == "subscription_id"
+            and isinstance(value, str)
+            and self._SUBSCRIPTION_ID_RE.fullmatch(value)
+        ):
+            return "<subscription-id>"
         if key == "occurred_at" and isinstance(value, str):
-            if self._TS_SYMBOL_RE.fullmatch(value):
-                return value
             # Per-OCCURRENCE, not per-value: whether two adjacent events share
             # the same wall-clock millisecond is itself nondeterministic (a
             # canonical run had surface.created/surface.selected coincide while
@@ -508,7 +517,9 @@ class TimingSymbolizer:
             return f"<ts-{self._ts_counter}>"
         if key == "id" and isinstance(value, str):
             if self._EVENT_ID_SYMBOL_RE.fullmatch(value):
-                return value
+                if value not in self._id_table:
+                    self._id_table[value] = f"<event-id-{len(self._id_table) + 1}>"
+                return self._id_table[value]
             if self._EVENT_SEQ_ID_RE.fullmatch(value):
                 if value not in self._id_table:
                     self._id_table[value] = f"<event-id-{len(self._id_table) + 1}>"
