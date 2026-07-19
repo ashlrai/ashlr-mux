@@ -18,6 +18,10 @@
       "rationale": "CLI routing, selector normalization, output, and events are exact. Native key-window ownership follows the tested Win32 foreground equivalent documented by the retained differential manifest.",
       "status": "platform_equivalent"
     },
+    "cli:last-window": {
+      "latest_verifying_commit": "aa3f74c799079290f25441e950761c67c3c56026",
+      "status": "verified"
+    },
     "cli:list-workspaces": {
       "latest_verifying_commit": "4cfbc03030967813dcd23a1637ec2832c363e46a",
       "status": "verified"
@@ -28,6 +32,14 @@
     },
     "cli:new-workspace": {
       "latest_verifying_commit": "4cfbc03030967813dcd23a1637ec2832c363e46a",
+      "status": "verified"
+    },
+    "cli:next-window": {
+      "latest_verifying_commit": "aa3f74c799079290f25441e950761c67c3c56026",
+      "status": "verified"
+    },
+    "cli:previous-window": {
+      "latest_verifying_commit": "aa3f74c799079290f25441e950761c67c3c56026",
       "status": "verified"
     },
     "cli:rename-workspace": {
@@ -47,7 +59,7 @@
       "status": "implemented_unverified"
     },
     "product.workspace_lifecycle": {
-      "rationale": "The basic list/current/create/select/rename/close v2 and CLI entry points are exact across the retained 19-case differential. The broad umbrella also includes navigation, ordering, groups, restore, persistence, remote workspaces, and workspace.action semantics that this lane does not yet verify.",
+      "rationale": "The basic list/current/create/select/rename/close and next/previous/last v2 and CLI entry points are exact across retained differentials. The broad umbrella still includes ordering, groups, restore, persistence, remote workspaces, and workspace.action semantics that these lanes do not yet verify.",
       "status": "implemented_unverified"
     },
     "v2:surface.refresh": {
@@ -94,6 +106,18 @@
     },
     "v2:workspace.list": {
       "latest_verifying_commit": "4cfbc03030967813dcd23a1637ec2832c363e46a",
+      "status": "verified"
+    },
+    "v2:workspace.last": {
+      "latest_verifying_commit": "aa3f74c799079290f25441e950761c67c3c56026",
+      "status": "verified"
+    },
+    "v2:workspace.next": {
+      "latest_verifying_commit": "aa3f74c799079290f25441e950761c67c3c56026",
+      "status": "verified"
+    },
+    "v2:workspace.previous": {
+      "latest_verifying_commit": "aa3f74c799079290f25441e950761c67c3c56026",
       "status": "verified"
     },
     "v2:workspace.rename": {

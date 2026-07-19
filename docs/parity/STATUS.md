@@ -6,12 +6,15 @@ Checkpoint commits:
 - Frozen differential canonical: `e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452`
 - Latest complete window behavior captured: `a51ddd28763bad2549d3903de78bc7b59b988e36`
 - Latest workspace behavior captured: `4cfbc03030967813dcd23a1637ec2832c363e46a`
-- Latest Windows code checkpoint: `598eeb55d633e9d43a65116ff7c73f4ad3043872`
+- Latest workspace-navigation behavior captured: `aa3f74c799079290f25441e950761c67c3c56026`
+- Latest Windows code checkpoint: `6652c4971f27d325f246e670523fd596eaec4a8b`
 - Latest exact startup differential evidence: `parity/diff-lane@215737999ac0579682b6b2a2d230d7a0d064a51d`
 - Latest window harness checkpoint: `parity/diff-lane@9257db511b975335e2ee79bc4bb143c04bfa95f8`
 - Latest canonical window capture: workflow run `29686515273`
 - Latest workspace harness/manifest checkpoint: `parity/diff-lane@3ff4aee606b6f129df017694b6af2309775f6fe2`
 - Latest canonical workspace capture: workflow run `29690475786`
+- Latest navigation evidence: `parity/diff-lane@2ff911b7699ac07c3186cff37d3962a7caadfecd`
+- Latest canonical navigation capture: workflow run `29694877733`
 
 The Windows desktop and CLI build successfully. The retained pane/surface and
 startup-restore evidence remains valid. The exact environment-matched window
@@ -90,13 +93,22 @@ The canonical capture, Windows capture, normalized comparison, manifest, and
 provenance are retained at `parity/diff-lane@3ff4aee606`; see
 `evidence/workspace_lifecycle_2026-07-19.json`.
 
+Workspace next, previous, and last navigation are now exact across ten retained
+v2 and CLI cases. The lane covers explicit-window, workspace-owner, and active
+window routing; wraparound; invalid selectors; history and fresh-window
+behavior; canonical CLI summaries; and exact lifecycle event order. Both
+captures have zero errors, and the normalized comparison is 10/10 exact after
+three reviewed native-directory pointers. The Windows capture ran in isolated
+headless mode: four Tauri windows were created and none became visible. See
+`evidence/workspace_navigation_2026-07-19.json`.
+
 ## What the current audit says
 
 The rolling catalog contains 503 rows: 159 public CLI commands, 16 internal CLI
 contracts, 263 release socket methods, 46 debug socket methods, and 19 coarse
-product umbrellas. It currently classifies 34 rows as verified, 3 as reviewed
-platform equivalents, 244 as implemented but unverified, and 222 as missing.
-The strict resolved count is 37.
+product umbrellas. It currently classifies 40 rows as verified, 3 as reviewed
+platform equivalents, 240 as implemented but unverified, and 220 as missing.
+The strict resolved count is 43.
 
 The zero-delta window lane promotes 11 entry-point rows. `window.create`,
 `window.close`, the three resume methods, their covered CLI commands, and
@@ -108,11 +120,12 @@ physical display move. These current decisions live in
 `current-overrides.json`; the frozen matrix and its 14 historical promotions
 remain unchanged.
 
-The zero-delta workspace lane promotes its 12 exercised public entry points:
-the v2 and CLI list/current/create/select/rename/close pairs. The broad
-`product.workspace_lifecycle` umbrella remains implemented but unverified
-because navigation, ordering, groups, restore, persistence, remote workspaces,
-and `workspace.action` semantics are outside this retained family.
+The zero-delta workspace lanes promote 18 exercised public entry points: the
+v2 and CLI list/current/create/select/rename/close pairs plus next, previous,
+and last navigation. The broad `product.workspace_lifecycle` umbrella remains
+implemented but unverified because ordering, groups, restore, persistence,
+remote workspaces, and `workspace.action` semantics remain outside the retained
+families.
 
 Those numbers are useful for finding API gaps. They are not a percentage of the
 user experience. The catalog still needs a deduplicated user-capability layer

@@ -30,12 +30,12 @@
       "v2_method": 309
     },
     "by_status": {
-      "implemented_unverified": 244,
-      "missing": 222,
+      "implemented_unverified": 240,
+      "missing": 220,
       "platform_equivalent": 3,
-      "verified": 34
+      "verified": 40
     },
-    "strict_verified": 37,
+    "strict_verified": 43,
     "total": 503,
     "warning": "Rows mix CLI commands, socket methods, debug endpoints, and broad product umbrellas. They are neither deduplicated user capabilities nor effort-weighted."
   },
@@ -45,18 +45,18 @@
     "status": "not_measured"
   },
   "windows": {
-    "commit": "598eeb55d633e9d43a65116ff7c73f4ad3043872",
-    "commit_date": "2026-07-19T12:01:52-04:00",
-    "commit_subject": "fix(parity): align tracked Windows evidence pin",
-    "commits_ahead_of_tracked_evidence": 54,
+    "commit": "6652c4971f27d325f246e670523fd596eaec4a8b",
+    "commit_date": "2026-07-19T13:01:11-04:00",
+    "commit_subject": "refactor(cli): isolate navigation regressions",
+    "commits_ahead_of_tracked_evidence": 67,
     "source_evidence": {
       "advertised_and_routed_count": 267,
       "advertised_method_count": 270,
       "advertised_only_count": 3,
-      "cli_any_control_mapping_count": 121,
+      "cli_any_control_mapping_count": 123,
       "cli_concrete_help_count": 121,
-      "cli_direct_control_mapped_count": 110,
-      "cli_explicit_socket_not_ported_count": 53,
+      "cli_direct_control_mapped_count": 109,
+      "cli_explicit_socket_not_ported_count": 51,
       "explicit_not_supported_method_count": 12,
       "guarded_not_supported_path_count": 1,
       "routed_method_count": 308,

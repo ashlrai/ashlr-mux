@@ -1,0 +1,73 @@
+{
+  "schema_version": 2,
+  "family": "workspace_navigation",
+  "status": "valid_complete_capture",
+  "canonical": {
+    "source_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+    "workflow_run": 29694877733,
+    "artifact": "canonical-capture-workspace_lifecycle",
+    "sha256": "934894BC8BBFFFD76DBDCFE38ADC979305BCD02F9D57A8D4492B1AB2A9E1FA28",
+    "cases": 10,
+    "capture_errors": 0
+  },
+  "windows": {
+    "test_commit": "6652c4971f27d325f246e670523fd596eaec4a8b",
+    "behavior_commit": "aa3f74c799079290f25441e950761c67c3c56026",
+    "capture_support_commit": "dac88652f685c486a8ec7df2b9b3c8c1a5786c7d",
+    "sha256": "D8DC03E3796B50F50D41E7297D8D6D80D11E07701F9AF2709B3350A1B22C9378",
+    "cases": 10,
+    "capture_errors": 0,
+    "profile_mode": "isolated_headless",
+    "visible_tauri_windows": 0
+  },
+  "comparison": {
+    "harness_commit": "1654885116f3101f7cf2448625095f10c090466c",
+    "manifest_and_archive_commit": "2ff911b7699ac07c3186cff37d3962a7caadfecd",
+    "sha256": "779A728147D2E47F4F2ADE98032642BDB7A1F0B92B3E7D33BE80A9F134B50F01",
+    "cases": 10,
+    "identical": 10,
+    "deltas": 0,
+    "capture_integrity": {
+      "valid_for_promotion": true,
+      "canonical_capture_errors": [],
+      "windows_capture_errors": [],
+      "missing_cases": []
+    },
+    "archived_at": {
+      "canonical": "parity/diff-lane@2ff911b769:docs/parity/differential/captures/workspace_navigation.canonical.e1825d40d.run-29694877733.ndjson",
+      "windows": "parity/diff-lane@2ff911b769:docs/parity/differential/captures/workspace_navigation.windows.6652c4971f.ndjson",
+      "normalized": "parity/diff-lane@2ff911b769:docs/parity/differential/captures/workspace_navigation.normalized-diff.e1825d40d-vs-6652c4971f.json"
+    }
+  },
+  "platform_equivalences": {
+    "status": "reviewed_exact_json_pointers",
+    "category": "canonical macOS checkout directory versus isolated Windows profile home",
+    "strict_guards": "All responses, errors, CLI output, routing, event names/order/origins/counts, identity relationships, and non-approved fields remain strict."
+  },
+  "verification": {
+    "focused_navigation_tests": 5,
+    "desktop_library": "1069 passed, 1 ignored, 0 failed",
+    "desktop_all_targets_check_runs": 1,
+    "cli_library_and_integration_tests": "all passed",
+    "capture_harness_tests": 120,
+    "successful_full_capture_runs": 1,
+    "native_visibility_audit": "four Tauri windows created; zero visible",
+    "file_length_budget": "39 tracked oversized files; all frozen at current-or-smaller size"
+  },
+  "promotion": {
+    "latest_verifying_commit": "aa3f74c799079290f25441e950761c67c3c56026",
+    "status": "verified",
+    "rows_promoted": [
+      "cli:last-window",
+      "cli:next-window",
+      "cli:previous-window",
+      "v2:workspace.last",
+      "v2:workspace.next",
+      "v2:workspace.previous"
+    ],
+    "rows_deferred": {
+      "product.workspace_lifecycle": "The product umbrella additionally covers ordering, groups, restore, persistence, remote workspaces, and workspace.action semantics outside the retained lifecycle and navigation lanes."
+    },
+    "reason": "All six exercised public entry points have retained exact behavioral evidence across routing, wraparound, history, errors, state, CLI output, and lifecycle events."
+  }
+}
