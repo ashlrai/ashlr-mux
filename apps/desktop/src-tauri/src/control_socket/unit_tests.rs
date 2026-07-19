@@ -4124,3 +4124,6 @@ mod terminal_create_input_red;
 
 #[path = "tests/terminal_set_font_red.rs"]
 mod terminal_set_font_red;
+
+#[path = "tests/workspace_navigation_red.rs"]
+mod workspace_navigation_red;
