@@ -18,6 +18,32 @@ const WORKSPACES: [&str; 5] = [
 ];
 
 #[test]
+fn workspace_selected_event_spec_matches_the_canonical_lifecycle_payload() {
+    let snapshot = test_snapshot();
+
+    let event = workspace_selected_event_spec(&snapshot, 0, 0, Some("workspace-before")).unwrap();
+
+    assert_eq!(event.name, "workspace.selected");
+    assert_eq!(event.category, "workspace");
+    assert_eq!(event.source, "workspace.lifecycle");
+    assert_eq!(event.window_id, None);
+    assert_eq!(event.workspace_id.as_deref(), Some("workspace-1"));
+    assert_eq!(
+        event.payload,
+        json!({
+            "workspace_id": "workspace-1",
+            "title": "Phoenix",
+            "custom_title": "Phoenix",
+            "cwd": "C:/repo",
+            "index": 0,
+            "selected": true,
+            "tab_count": 1,
+            "previous_workspace_id": "workspace-before",
+        })
+    );
+}
+
+#[test]
 fn notification_removal_lifecycle_events_match_canonical_read_and_clear_shapes() {
     let row = |id: &str, surface_id: &str| cmux_core::notifications::TerminalNotification {
         id: id.into(),

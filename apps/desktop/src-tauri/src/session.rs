@@ -210,6 +210,7 @@ mod startup_restore;
 #[cfg(test)]
 #[path = "session/unit_tests.rs"]
 mod tests;
+mod workspace_selection;
 
 pub(crate) use control_snapshot::{
     commit_lifecycle_snapshot_for_control, commit_lifecycle_snapshot_for_control_if_current,
@@ -223,6 +224,7 @@ use runtime_facts::*;
 pub(crate) use runtime_facts::{record_started_agent_session, StartedAgentSessionSnapshot};
 use snapshot_mutations::*;
 pub(crate) use startup_restore::bootstrap_session_persistence;
+use workspace_selection::select_workspace_in_window_candidate;
 
 impl Default for SessionState {
     fn default() -> Self {
@@ -2985,30 +2987,6 @@ pub(crate) fn select_workspace_for_control(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WorkspaceSelectControlError {
     WindowNotFound,
-}
-
-fn select_workspace_in_window_candidate(
-    snapshot: &mut AppSessionSnapshot,
-    window_index: usize,
-    workspace_index: usize,
-) -> Result<((), bool), WorkspaceSelectControlError> {
-    let window = snapshot
-        .windows
-        .get_mut(window_index)
-        .ok_or(WorkspaceSelectControlError::WindowNotFound)?;
-    if workspace_index >= window.tab_manager.workspaces.len() {
-        return Ok(((), false));
-    }
-    let target_workspace_id = window.tab_manager.workspaces[workspace_index]
-        .workspace_id
-        .as_deref();
-    let changed = window.tab_manager.selected_workspace_index != Some(workspace_index as i64)
-        || window.selected_workspace_id.as_deref() != target_workspace_id;
-    if changed {
-        session_ops::select_workspace(&mut window.tab_manager, workspace_index as i64);
-        sync_window_selected_workspace_id(window);
-    }
-    Ok(((), changed))
 }
 
 pub(crate) fn select_workspace_in_window_for_control(

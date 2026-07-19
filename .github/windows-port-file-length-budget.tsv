@@ -1,7 +1,7 @@
 # Windows-port source file length budget.
 # Format: max_lines<TAB>relative path
 # New files may not exceed 1500 lines. Reduce entries as files shrink.
-5134	apps/desktop/src-tauri/src/session.rs
+5130	apps/desktop/src-tauri/src/session.rs
 5975	apps/desktop/web/src/components/CustomSidebarSurface.test.tsx
 2902	apps/desktop/src-tauri/src/terminal.rs
 4795	apps/desktop/web/src/components/CustomSidebarSurface.tsx
