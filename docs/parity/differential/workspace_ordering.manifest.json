@@ -1,0 +1,106 @@
+{
+  "family": "workspace_ordering",
+  "canonical_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+  "notes": [
+    "Exercises single and batch workspace ordering plus cross-window movement through v2 and canonical CLI entry points.",
+    "Four auxiliary windows make first-window fallthrough, workspace-owner routing, target-window routing, focus intent, and source/destination state observable.",
+    "No platform differences are pre-approved; classify exact capture pointers only after the first matched run."
+  ],
+  "session_setup": [
+    {"op": "v2", "method": "window.create", "params": {}},
+    {"op": "v2", "method": "window.create", "params": {}},
+    {"op": "v2", "method": "window.create", "params": {}},
+    {"op": "v2", "method": "window.create", "params": {}},
+    {"op": "v2", "method": "workspace.list", "params": {"window_id": "${session.0.result.window_id}"}},
+    {"op": "v2", "method": "workspace.list", "params": {"window_id": "${session.1.result.window_id}"}},
+    {"op": "v2", "method": "workspace.list", "params": {"window_id": "${session.2.result.window_id}"}},
+    {"op": "v2", "method": "workspace.list", "params": {"window_id": "${session.3.result.window_id}"}},
+    {"op": "v2", "method": "workspace.create", "params": {"window_id": "${session.0.result.window_id}", "title": "alpha-two", "focus": false}},
+    {"op": "v2", "method": "workspace.create", "params": {"window_id": "${session.0.result.window_id}", "title": "alpha-three", "focus": false}},
+    {"op": "v2", "method": "workspace.create", "params": {"window_id": "${session.1.result.window_id}", "title": "beta-two", "focus": false}},
+    {"op": "v2", "method": "workspace.create", "params": {"window_id": "${session.1.result.window_id}", "title": "beta-three", "focus": false}},
+    {"op": "v2", "method": "workspace.create", "params": {"window_id": "${session.2.result.window_id}", "title": "gamma-two", "focus": false}},
+    {"op": "v2", "method": "workspace.create", "params": {"window_id": "${session.2.result.window_id}", "title": "gamma-three", "focus": false}}
+  ],
+  "cases": [
+    {
+      "id": "workspace_reorder.explicit_window_dry_run",
+      "action": {"op": "v2", "method": "workspace.reorder", "params": {"window_id": "${session.0.result.window_id}", "workspace_id": "${session.9.result.workspace_id}", "index": 0, "dry_run": true}},
+      "probes": {"state": [{"op": "v2", "method": "workspace.list", "params": {"window_id": "${session.0.result.window_id}"}}]}
+    },
+    {
+      "id": "workspace_reorder.routes_by_workspace_owner",
+      "events": true,
+      "action": {"op": "v2", "method": "workspace.reorder", "params": {"workspace_id": "${session.9.result.workspace_id}", "index": 0}},
+      "probes": {"state": [{"op": "v2", "method": "workspace.list", "params": {"window_id": "${session.0.result.window_id}"}}]}
+    },
+    {
+      "id": "workspace_reorder.rejects_multiple_targets",
+      "action": {"op": "v2", "method": "workspace.reorder", "params": {"window_id": "${session.0.result.window_id}", "workspace_id": "${session.8.result.workspace_id}", "index": 0, "before_workspace_id": "${session.4.result.workspaces.0.id}"}}
+    },
+    {
+      "id": "workspace_reorder.noop_has_no_events",
+      "events": true,
+      "action": {"op": "v2", "method": "workspace.reorder", "params": {"window_id": "${session.0.result.window_id}", "workspace_id": "${session.9.result.workspace_id}", "index": 0}}
+    },
+    {
+      "id": "workspace_reorder_many.explicit_window_dry_run",
+      "action": {"op": "v2", "method": "workspace.reorder_many", "params": {"window_id": "${session.1.result.window_id}", "workspace_ids": ["${session.11.result.workspace_id}", "${session.5.result.workspaces.0.id}"], "dry_run": true}},
+      "probes": {"state": [{"op": "v2", "method": "workspace.list", "params": {"window_id": "${session.1.result.window_id}"}}]}
+    },
+    {
+      "id": "workspace_reorder_many.routes_by_workspace_owner",
+      "events": true,
+      "action": {"op": "v2", "method": "workspace.reorder_many", "params": {"workspace_ids": ["${session.11.result.workspace_id}"]}},
+      "probes": {"state": [{"op": "v2", "method": "workspace.list", "params": {"window_id": "${session.1.result.window_id}"}}]}
+    },
+    {
+      "id": "workspace_reorder_many.rejects_duplicate",
+      "action": {"op": "v2", "method": "workspace.reorder_many", "params": {"window_id": "${session.1.result.window_id}", "workspace_ids": ["${session.11.result.workspace_id}", "${session.11.result.workspace_id}"]}}
+    },
+    {
+      "id": "workspace_reorder_many.requires_order",
+      "action": {"op": "v2", "method": "workspace.reorder_many", "params": {"window_id": "${session.1.result.window_id}"}}
+    },
+    {
+      "id": "workspace_move_to_window.cross_window_without_focus",
+      "events": true,
+      "action": {"op": "v2", "method": "workspace.move_to_window", "params": {"workspace_id": "${session.12.result.workspace_id}", "window_id": "${session.3.result.window_id}", "focus": false}},
+      "probes": {
+        "state": [
+          {"op": "v2", "method": "workspace.list", "params": {"window_id": "${session.2.result.window_id}"}},
+          {"op": "v2", "method": "workspace.list", "params": {"window_id": "${session.3.result.window_id}"}}
+        ],
+        "multiwindow": [{"op": "v2", "method": "window.current", "params": {}}]
+      }
+    },
+    {
+      "id": "workspace_move_to_window.invalid_target_does_not_mutate",
+      "action": {"op": "v2", "method": "workspace.move_to_window", "params": {"workspace_id": "${session.13.result.workspace_id}", "window_id": "00000000-0000-0000-0000-000000000001"}},
+      "probes": {"state": [{"op": "v2", "method": "workspace.list", "params": {"window_id": "${session.2.result.window_id}"}}]}
+    },
+    {
+      "id": "cli_reorder_workspace.explicit_window",
+      "events": true,
+      "action": {"op": "cli", "argv": ["reorder-workspace", "--workspace", "${session.8.result.workspace_id}", "--after", "${session.9.result.workspace_id}", "--window", "${session.0.result.window_id}"]},
+      "probes": {"state": [{"op": "v2", "method": "workspace.list", "params": {"window_id": "${session.0.result.window_id}"}}]}
+    },
+    {
+      "id": "cli_reorder_workspaces.explicit_window",
+      "events": true,
+      "action": {"op": "cli", "argv": ["reorder-workspaces", "--order", "${session.5.result.workspaces.0.id},${session.10.result.workspace_id},${session.11.result.workspace_id}", "--window", "${session.1.result.window_id}"]},
+      "probes": {"state": [{"op": "v2", "method": "workspace.list", "params": {"window_id": "${session.1.result.window_id}"}}]}
+    },
+    {
+      "id": "cli_move_workspace_to_window.cross_window",
+      "events": true,
+      "action": {"op": "cli", "argv": ["move-workspace-to-window", "--workspace", "${session.13.result.workspace_id}", "--window", "${session.3.result.window_id}"]},
+      "probes": {
+        "state": [
+          {"op": "v2", "method": "workspace.list", "params": {"window_id": "${session.2.result.window_id}"}},
+          {"op": "v2", "method": "workspace.list", "params": {"window_id": "${session.3.result.window_id}"}}
+        ]
+      }
+    }
+  ]
+}
