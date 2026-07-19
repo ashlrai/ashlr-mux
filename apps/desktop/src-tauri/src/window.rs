@@ -793,6 +793,16 @@ mod tests {
     }
 
     #[test]
+    fn configured_main_window_matches_the_canonical_default_content_size() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("valid Tauri config");
+        let main = &config["app"]["windows"][0];
+
+        assert_eq!(main["width"], 1_000);
+        assert_eq!(main["height"], 700);
+    }
+
+    #[test]
     fn window_state_snapshot_serializes_with_camel_case_keys() {
         let value = serde_json::to_value(WindowStateSnapshot {
             is_maximized: true,
