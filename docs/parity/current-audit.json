@@ -44,10 +44,10 @@
     "status": "not_measured"
   },
   "windows": {
-    "commit": "c520128265dc5719f5694b28599fe61bad2a7757",
-    "commit_date": "2026-07-18T23:54:22-04:00",
-    "commit_subject": "fix(session): restore normal startup snapshot",
-    "commits_ahead_of_tracked_evidence": 73,
+    "commit": "2c1aaf5fcbbb38ed24906c2ba20e6a78cd0ae788",
+    "commit_date": "2026-07-19T01:10:00-04:00",
+    "commit_subject": "refactor(session): extract browser operations",
+    "commits_ahead_of_tracked_evidence": 77,
     "source_evidence": {
       "advertised_and_routed_count": 267,
       "advertised_method_count": 270,

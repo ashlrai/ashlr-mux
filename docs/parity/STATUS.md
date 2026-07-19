@@ -5,6 +5,7 @@ Checkpoint commits:
 - Current canonical audit: `c9f2d8c4382e29db89a030d80d02d8174ef7f2ac`
 - Frozen differential canonical: `e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452`
 - Windows behavior: `c520128265` (normal-startup session restore)
+- Latest pushed Windows checkpoint: `2c1aaf5fcbbb38ed24906c2ba20e6a78cd0ae788`
 - Latest strict differential checkpoint: `637d63acb0e82a618fdaee64644a7ac75b2b8a05`
 
 The Windows desktop and CLI build successfully. The broad desktop, web, IPC,
@@ -32,11 +33,14 @@ before a defensible product-completion percentage exists. See
    fix that must await accepted-handler cancellation before integration.
 2. Implemented behavior needs evidence promotion in coherent capability batches;
    raw route or help-text presence is not verification.
-3. The normal-startup restore lane is not promotable yet. Windows restored the
-   complete two-window fixture at `c520128265`, but canonical hosted run
-   `29673585795` saved two windows and restarted into a new one-window session.
-   No canonical restore-start event appeared during the ten-second settle.
-   See `evidence/startup_restore_2026-07-19.json`.
+3. The normal-startup restore lane is not promotable yet. Hosted run
+   `29674972316` proved canonical normal-quit restore after the harness began
+   terminating the exact app PID through AppKit. Both platforms restore two
+   windows and focus `surface:6`, but the exact comparison still has one state
+   delta: Windows remints the first window as `window:3`, routes an unscoped
+   workspace list to window 1 instead of canonical's selected window 2, and
+   restores target surfaces as `4,5,6` instead of canonical's `5,6,4`. See
+   `evidence/startup_restore_2026-07-19.json`.
 
 ## Maintenance checkpoint
 
@@ -65,9 +69,11 @@ before a defensible product-completion percentage exists. See
 
 ## Next efficient slice
 
-Diagnose the canonical hosted restore precondition without changing the Windows
-implementation or repeatedly rebuilding canonical. Reuse the captured run and
-the small normal-startup manifest on `parity/diff-lane`. Promote surface.list,
-surface.close, surface.focus, surface.move, and the product lifecycle invariant
-only after canonical produces a restored two-window observation and the exact
-Windows/canonical comparison has no unexplained deltas.
+Fix the highest-coupled restore divergence first: preserve restored window refs
+and route unscoped commands through the selected/focused window. One focused
+regression slice should explain both the `window:3` remint and the wrong-window
+surface probe. Then fix restored surface ordering as a separate slice. Reuse
+the archived captures and rerun the small startup manifest only after focused
+Windows process tests pass before and after simplification. Promote
+surface.list, surface.close, surface.focus, surface.move, and the product
+lifecycle invariant only when the exact comparison has no unexplained deltas.

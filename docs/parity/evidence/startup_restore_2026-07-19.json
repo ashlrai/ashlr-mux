@@ -42,19 +42,43 @@
     ]
   },
   "canonical_verification": {
-    "workflow_run": "https://github.com/ashlrai/ashlr-mux/actions/runs/29673585795",
-    "harness_commit": "f787fd6863798ce90c50cb1073c5302a96c26433",
     "restore_mode": "normal",
-    "result": "inconclusive_for_parity",
-    "capture_sha256": "D0A1D69E3D5675B05D19803E00228A5C3E065E616022DFC5B2CB8B924945F408",
-    "archived_at": "parity/diff-lane@45bacaabec5ac791065626dbbb59a4c894e0ba57:docs/parity/differential/captures/startup_restore.canonical.e1825d40d.run-29673585795.ndjson",
-    "observed": "Canonical logged a two-window session.save immediately before restart, then registered one new window, saved a one-window session, and never logged session.restore.start during the bounded ten-second settle.",
-    "driver_error": "PlaceholderError: cannot resolve 'state.0.result.windows.1.ref' at token '1'",
-    "rerun_policy": "Do not repeat hosted builds until the restore precondition or persistence location is identified from the retained run evidence and canonical source."
+    "termination_contract": "Terminate the exact app PID through NSRunningApplication.terminate so canonical applicationShouldTerminate performs its synchronous session write before relaunch.",
+    "harness_commits": {
+      "normal_termination": "3315f56425ce2c477a9d7d6de6ebef3ce85314b8",
+      "swift_compile_correction": "e861bdf4c7136a9461b67fa10f9578debadbfb83"
+    },
+    "runs": [
+      {
+        "workflow_run": "https://github.com/ashlrai/ashlr-mux/actions/runs/29674546543",
+        "result": "harness_compile_failed",
+        "error": "swiftc required -parse-as-library for the @main termination helper; canonical did not launch"
+      },
+      {
+        "workflow_run": "https://github.com/ashlrai/ashlr-mux/actions/runs/29674972316",
+        "result": "pass",
+        "capture_sha256": "BAA70ADCABFF700573FF7F91D0C4EC152E0D08976CFF760E0EC323C468EBC7F6"
+      }
+    ],
+    "observed": "Canonical restored two windows, retained the target workspace as selected, retained three target surfaces, and restored surface:6 as focused.",
+    "archived_at": "parity/diff-lane@0a45acb3ee3b263bbdab03012e45c6cc6ea6ca3f:docs/parity/differential/captures/startup_restore.canonical.e1825d40d.run-29674972316.ndjson"
+  },
+  "differential": {
+    "result": "delta",
+    "identical_cases": 0,
+    "delta_cases": 1,
+    "normalized_diff_sha256": "F253CC23C2CE98CC39DF59481A1EEDBEEBC7BF17281B9F53DC41A6024C2ECED3",
+    "archived_at": "parity/diff-lane@0a45acb3ee3b263bbdab03012e45c6cc6ea6ca3f:docs/parity/differential/captures/startup_restore.normalized-diff.e1825d40d-vs-c520128265.json",
+    "behavioral_deltas": [
+      "Canonical preserves the first restored window as window:1; Windows exposes it as window:3 in window.list.",
+      "The unscoped post-restore workspace.list routes to selected window:2 on canonical but window:1 on Windows.",
+      "Canonical target surface order is surface:5, surface:6, surface:4; Windows order is surface:4, surface:5, surface:6. Both focus surface:6.",
+      "The state lane also contains unapproved platform/runtime payload differences in working directories, terminal titles, and remote-detail fields."
+    ]
   },
   "promotion_decision": {
     "matrix_changes": 0,
     "status": "implemented_unverified",
-    "reason": "Windows behavior is executable and passing, but the canonical run did not produce a post-restart two-window observation. No exact cross-platform comparison exists for the broader restore/multiwindow acceptance surface."
+    "reason": "Both platforms restore the two-window fixture, but the exact comparison has one state-lane delta with unexplained window-ref continuity, default routing, and target surface-order differences."
   }
 }
