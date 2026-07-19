@@ -29,6 +29,27 @@ fn break_surface_to_new_workspace_transfers_state_without_forcing_focus() {
 }
 
 #[test]
+fn break_surface_transfers_workspace_focus_to_live_surfaces() {
+    let mut tabs = one_workspace_tabs("a");
+    let Layout::Pane(pane) = tabs.workspaces[0].layout.as_mut().unwrap() else {
+        unreachable!();
+    };
+    pane.panel_ids.push("b".into());
+    pane.selected_panel_id = Some("b".into());
+    tabs.workspaces[0].focused_panel_id = Some("b".into());
+
+    let result = break_surface_to_new_workspace(&mut tabs, 0, "b", false).unwrap();
+
+    assert_eq!(tabs.workspaces[0].focused_panel_id.as_deref(), Some("a"));
+    assert_eq!(
+        tabs.workspaces[result.workspace_index]
+            .focused_panel_id
+            .as_deref(),
+        Some("b")
+    );
+}
+
+#[test]
 fn break_surface_to_new_workspace_is_atomic_for_missing_surface() {
     let mut tabs = one_workspace_tabs("a");
     let before = tabs.clone();
