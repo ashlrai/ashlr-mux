@@ -9,7 +9,8 @@ mod events;
 use events::record_workspace_selected_event;
 #[cfg(test)]
 pub(super) use events::{
-    workspace_close_event_specs, workspace_rename_event_spec, workspace_selected_event_spec,
+    workspace_close_event_specs, workspace_create_event_specs, workspace_rename_event_spec,
+    workspace_selected_event_spec,
 };
 
 #[path = "workspace_control/close.rs"]

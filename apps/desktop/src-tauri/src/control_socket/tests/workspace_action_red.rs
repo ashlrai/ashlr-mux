@@ -116,6 +116,93 @@ fn workspace_close_event_specs_match_the_canonical_lifecycle_payloads() {
 }
 
 #[test]
+fn workspace_create_event_specs_match_the_canonical_selected_sequence() {
+    let snapshot = test_snapshot();
+
+    let events =
+        workspace_create_event_specs(&snapshot, 0, 0, true, Some("workspace-before")).unwrap();
+
+    assert_eq!(
+        events.iter().map(|event| event.name).collect::<Vec<_>>(),
+        [
+            "surface.selected",
+            "pane.focused",
+            "surface.focused",
+            "workspace.created",
+            "surface.created",
+            "workspace.selected",
+        ]
+    );
+    assert!(events
+        .iter()
+        .all(|event| event.source == "workspace.lifecycle" && event.window_id.is_none()));
+    assert_eq!(
+        events[0].payload,
+        json!({
+            "surface_id": "surface-1",
+            "pane_id": "pane-1",
+            "kind": "terminal",
+            "focused": true,
+            "previous_surface_id": null,
+            "origin": "bonsplit_selection",
+        })
+    );
+    assert_eq!(
+        events[1].payload,
+        json!({
+            "pane_id": "pane-1",
+            "selected_surface_id": "surface-1",
+            "origin": "bonsplit_selection",
+        })
+    );
+    assert_eq!(
+        events[2].payload,
+        json!({
+            "surface_id": "surface-1",
+            "pane_id": "pane-1",
+            "kind": "terminal",
+            "origin": "bonsplit_selection",
+        })
+    );
+    assert_eq!(
+        events[3].payload,
+        json!({
+            "workspace_id": "workspace-1",
+            "title": "Phoenix",
+            "custom_title": "Phoenix",
+            "cwd": "C:/repo",
+            "index": 0,
+            "selected": true,
+            "tab_count": 1,
+            "previous_workspace_id": null,
+        })
+    );
+    assert_eq!(
+        events[4].payload,
+        json!({
+            "surface_id": "surface-1",
+            "pane_id": "pane-1",
+            "kind": "terminal",
+            "focused": true,
+            "origin": "workspace_initial",
+        })
+    );
+    assert_eq!(
+        events[5].payload,
+        json!({
+            "workspace_id": "workspace-1",
+            "title": "Phoenix",
+            "custom_title": "Phoenix",
+            "cwd": "C:/repo",
+            "index": 0,
+            "selected": true,
+            "tab_count": 1,
+            "previous_workspace_id": "workspace-before",
+        })
+    );
+}
+
+#[test]
 fn notification_removal_lifecycle_events_match_canonical_read_and_clear_shapes() {
     let row = |id: &str, surface_id: &str| cmux_core::notifications::TerminalNotification {
         id: id.into(),
