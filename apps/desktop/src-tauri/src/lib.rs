@@ -320,6 +320,7 @@ pub fn run() {
             use tauri_plugin_deep_link::DeepLinkExt;
 
             let handle = app.handle().clone();
+            window::hide_capture_windows_at_startup(&handle)?;
             app.manage(diff::DiffState::new(&handle)?);
             right_sidebar::bootstrap_beta_settings(
                 &handle,

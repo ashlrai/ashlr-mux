@@ -43,6 +43,26 @@ fn run_control_window_activation(
     }
 }
 
+fn run_capture_window_hiding(
+    capture_windows_hidden: bool,
+    hide: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    if capture_windows_hidden {
+        hide()
+    } else {
+        Ok(())
+    }
+}
+
+pub(crate) fn hide_capture_windows_at_startup(app: &AppHandle) -> Result<(), String> {
+    run_capture_window_hiding(capture_windows_hidden(), || {
+        for window in app.webview_windows().into_values() {
+            window.hide().map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    })
+}
+
 fn capture_window_starts_focused(capture_windows_hidden: bool, requested: bool) -> bool {
     requested && !capture_windows_hidden
 }
@@ -645,9 +665,8 @@ pub fn window_open_task_manager() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        capture_window_starts_focused, capture_windows_hidden_for_value,
-        run_capture_window_hiding, run_control_window_activation, task_manager_command,
-        WindowStateSnapshot,
+        capture_window_starts_focused, capture_windows_hidden_for_value, run_capture_window_hiding,
+        run_control_window_activation, task_manager_command, WindowStateSnapshot,
         AUX_WINDOW_LABEL_PREFIX,
     };
     use std::cell::Cell;
