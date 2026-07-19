@@ -21,6 +21,14 @@ use super::payloads::{panel_title, surfaces_for_workspace, workspace_display_nam
 mod pane_focus;
 use pane_focus::pane_focus;
 
+#[path = "pane_surface_lifecycle/pane_last.rs"]
+mod pane_last;
+use pane_last::pane_last;
+
+#[path = "pane_surface_lifecycle/selection_events.rs"]
+mod selection_events;
+use selection_events::{focus_selection_events, selection_events};
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub(super) struct LifecycleEvent {
     pub name: &'static str,
@@ -587,6 +595,7 @@ pub(super) fn dispatch_lifecycle_request(
         "surface.move" => surface_move(snapshot, params, context),
         "pane.resize" => pane_resize(snapshot, params, context),
         "pane.focus" => pane_focus(snapshot, params, context),
+        "pane.last" => pane_last(snapshot, params, context),
         "pane.create" | "surface.split" => pane_create(snapshot, method, params, context),
         _ => error(
             snapshot,
@@ -1184,52 +1193,6 @@ fn reconcile_closed_published_selection(
             .remove(index);
     }
     pointer
-}
-
-/// The canonical bonsplit selection pair: surface.selected (with
-/// previous_surface_id) followed by surface.focused, origin
-/// "bonsplit_selection" (live capture surface_create.terminal_happy /
-/// surface_close.happy frames).
-#[allow(clippy::too_many_arguments)]
-fn selection_events(
-    window_id: &str,
-    workspace_id: &str,
-    pane_id: &str,
-    surface_id: &str,
-    previous_surface_id: Option<&str>,
-    kind: &str,
-    focused: bool,
-) -> [LifecycleEvent; 2] {
-    [
-        owned_event(
-            "surface.selected",
-            window_id,
-            workspace_id,
-            Some(pane_id),
-            Some(surface_id),
-            json!({
-                "focused": focused,
-                "kind": kind,
-                "origin": "bonsplit_selection",
-                "pane_id": pane_id,
-                "previous_surface_id": previous_surface_id,
-                "surface_id": surface_id,
-            }),
-        ),
-        owned_event(
-            "surface.focused",
-            window_id,
-            workspace_id,
-            Some(pane_id),
-            Some(surface_id),
-            json!({
-                "kind": kind,
-                "origin": "bonsplit_selection",
-                "pane_id": pane_id,
-                "surface_id": surface_id,
-            }),
-        ),
-    ]
 }
 
 fn socket_completion_event(

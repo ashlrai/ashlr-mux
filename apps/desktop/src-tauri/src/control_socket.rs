@@ -799,10 +799,10 @@ enum ControlRequestRoute {
 
 fn control_request_route_for_method(method: &str) -> ControlRequestRoute {
     match method {
-        "pane.create" | "pane.resize" | "pane.focus" | "surface.action" | "tab.action"
-        | "surface.create" | "surface.current" | "surface.list" | "surface.report_pwd"
-        | "surface.respawn" | "surface.close" | "surface.focus" | "surface.move"
-        | "surface.split" => ControlRequestRoute::PaneSurfaceLifecycle,
+        "pane.create" | "pane.resize" | "pane.focus" | "pane.last" | "surface.action"
+        | "tab.action" | "surface.create" | "surface.current" | "surface.list"
+        | "surface.report_pwd" | "surface.respawn" | "surface.close" | "surface.focus"
+        | "surface.move" | "surface.split" => ControlRequestRoute::PaneSurfaceLifecycle,
         "workspace.action" => ControlRequestRoute::WorkspaceAction,
         "window.create"
         | "window.close"

@@ -13,9 +13,8 @@ use cmux_core::{
     surface_lifecycle::ContainerKind,
 };
 
-const V2_LIFECYCLE_METHODS: [&str; 12] = [
+const V2_LIFECYCLE_METHODS: [&str; 11] = [
     "pane.create",
-    "pane.last",
     "pane.resize",
     "surface.action",
     "surface.create",
@@ -283,7 +282,7 @@ fn lifecycle_registry_binds_every_public_method_to_the_production_route() {
             "{method} bypasses the shared production lifecycle dispatcher"
         );
     }
-    for dependency in ["pane.focus", "surface.split", "tab.action"] {
+    for dependency in ["pane.focus", "pane.last", "surface.split", "tab.action"] {
         assert_eq!(
             control_request_route_for_method(dependency),
             ControlRequestRoute::PaneSurfaceLifecycle,

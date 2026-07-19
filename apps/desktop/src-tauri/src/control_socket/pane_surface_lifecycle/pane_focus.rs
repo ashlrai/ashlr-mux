@@ -62,28 +62,13 @@ fn focus_events(
             previous_workspace_id,
         ));
     }
-    let [selected, focused] = selection_events(
+    events.extend(focus_selection_events(
         &scope.window_id,
         &scope.workspace_id,
         pane_id,
         surface_id,
-        None,
         kind,
-        true,
-    );
-    let pane_focused = owned_event(
-        "pane.focused",
-        &scope.window_id,
-        &scope.workspace_id,
-        Some(pane_id),
-        Some(surface_id),
-        json!({
-            "origin": "bonsplit_selection",
-            "pane_id": pane_id,
-            "selected_surface_id": surface_id,
-        }),
-    );
-    events.extend([selected, pane_focused, focused]);
+    ));
     events
 }
 
