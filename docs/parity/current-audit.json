@@ -45,10 +45,10 @@
     "status": "not_measured"
   },
   "windows": {
-    "commit": "c06fee518c4b85c2dbd428a53700abab195ecfd5",
-    "commit_date": "2026-07-19T11:12:00-04:00",
-    "commit_subject": "refactor(cli): isolate workspace alias notice",
-    "commits_ahead_of_tracked_evidence": 44,
+    "commit": "535185d0d244f7616f0194066779904cbd965e9b",
+    "commit_date": "2026-07-19T11:24:56-04:00",
+    "commit_subject": "fix(workspace): match rename lifecycle event",
+    "commits_ahead_of_tracked_evidence": 47,
     "source_evidence": {
       "advertised_and_routed_count": 267,
       "advertised_method_count": 270,
