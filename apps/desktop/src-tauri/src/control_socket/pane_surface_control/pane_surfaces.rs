@@ -1,5 +1,13 @@
 use super::*;
 
+pub(in crate::control_socket) fn pane_surface_default_title(
+    _workspace: &SessionWorkspaceSnapshot,
+    _panel_id: &str,
+    surface_type: &str,
+) -> String {
+    surface_type.to_string()
+}
+
 pub(in crate::control_socket) fn pane_surfaces(
     app: &AppHandle,
     params: &serde_json::Map<String, Value>,
@@ -69,11 +77,16 @@ pub(in crate::control_socket) fn pane_surfaces(
                 workspace_surface_ids.iter().position(|id| id == panel_id),
                 &mut |kind, id| control_handle_ref(app, kind, id),
             );
+            let title = lifecycle
+                .surface(panel_id)
+                .and_then(|surface| surface.metadata.custom_title.clone())
+                .or_else(|| panel_title(&workspace.panel_titles, panel_id))
+                .unwrap_or_else(|| pane_surface_default_title(workspace, panel_id, surface_type));
             json!({
                 "id": panel_id,
                 "ref": reference,
                 "index": index,
-                "title": lifecycle.surface(panel_id).and_then(|surface| surface.metadata.custom_title.clone()).or_else(|| panel_title(&workspace.panel_titles, panel_id)).unwrap_or_else(|| surface_type.to_string()),
+                "title": title,
                 "type": surface_type,
                 "selected": pane.selected_panel_id.as_deref() == Some(panel_id.as_str()),
             })
