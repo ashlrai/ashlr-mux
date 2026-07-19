@@ -15,7 +15,7 @@ use crate::dock::{
     DockCreateRequest, DockPlacement, DockRuntimeIntent, DockStore, DockSurfaceKind,
 };
 
-use super::payloads::{panel_title, surfaces_for_workspace};
+use super::payloads::{panel_title, surfaces_for_workspace, workspace_display_name};
 
 #[path = "pane_surface_lifecycle/pane_focus.rs"]
 mod pane_focus;
