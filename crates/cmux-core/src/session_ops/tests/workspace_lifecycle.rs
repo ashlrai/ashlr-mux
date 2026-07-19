@@ -844,6 +844,10 @@ fn move_surface_cross_workspace_transfers_metadata_and_focuses_destination() {
     assert_eq!(target.panel_ids, ["b", "c"]);
     assert_eq!(target.selected_panel_id.as_deref(), Some("b"));
     assert_eq!(
+        tabs.workspaces[1].focused_panel_id.as_deref(),
+        Some("b")
+    );
+    assert_eq!(
         tabs.workspaces[1].panel_titles.as_ref().unwrap()[0]
             .custom_title
             .as_deref(),
