@@ -21,8 +21,8 @@
 //! was unresolvable, which canonical rejects as invalid_params.
 
 mod events;
-use events::initial_workspace_events;
 pub(super) use events::window_lifecycle_event;
+use events::{initial_workspace_events, termination_events};
 
 use cmux_core::session::{
     AppSessionSnapshot, SessionSurfaceKindSnapshot, SessionSurfaceResumeBindingRecordSnapshot,
@@ -373,19 +373,25 @@ fn window_close(
     };
     let success = json!({ "window_id": window_id });
     if snapshot.windows.len() == 1 {
-        // Last-window close is app-quit-or-veto, never a plain window close
-        // (AppDelegate.swift:16232-16239,12831-12856). The reply is success:
-        // it means performClose was INVOKED, not that the window closed.
-        let effect = if context.quit_confirmation_required {
-            WindowLifecycleEffect::QuitConfirmation {
-                window_id: window_id.clone(),
-            }
+        // Last-window close enters quit-or-veto; success means performClose
+        // was invoked. DEV termination later publishes normal close events.
+        let (effect, events) = if context.quit_confirmation_required {
+            (
+                WindowLifecycleEffect::QuitConfirmation {
+                    window_id: window_id.clone(),
+                },
+                vec![],
+            )
         } else {
-            WindowLifecycleEffect::AppTerminate {
-                window_id: window_id.clone(),
-            }
+            let was_key = context.key_window_id.as_deref() == Some(window_id.as_str());
+            (
+                WindowLifecycleEffect::AppTerminate {
+                    window_id: window_id.clone(),
+                },
+                termination_events(&snapshot.windows[index], &window_id, was_key),
+            )
         };
-        return ok_transition(snapshot.clone(), success, vec![], vec![effect]);
+        return ok_transition(snapshot.clone(), success, events, vec![effect]);
     }
     let mut next = snapshot.clone();
     let closed = next.windows.remove(index);

@@ -294,11 +294,15 @@ pub(super) const WINDOW_QUIT_CONFIRMATION_EVENT: &str = "cmux://window-quit-conf
 /// (the default when the key is absent/unrecognized) confirms, `never`
 /// terminates immediately. `dirtyOnly` degrades to `always` on this port
 /// until dirty-workspace tracking exists (canonical consults
-/// `hasDirtyWorkspaces`); the dev-build and in-session-confirmed skips are
-/// terminate-flow concerns outside this socket path.
+/// `hasDirtyWorkspaces`). `is_dev_build` mirrors canonical `BuildFlavor.dev`;
+/// the in-session-confirmed skip remains outside this socket path.
 pub(super) fn window_quit_confirmation_required(
     settings: Option<&crate::app_settings::SettingsStore>,
+    is_dev_build: bool,
 ) -> bool {
+    if is_dev_build {
+        return false;
+    }
     settings
         .and_then(|store| store.get_string(CONFIRM_QUIT_SETTING_KEY))
         .is_none_or(|mode| mode != "never")
@@ -322,8 +326,8 @@ pub(super) fn control_settings_store(
 /// parity); cancel is the veto. Non-blocking, mirroring canonical's async
 /// sheet — the reply already went out ("performClose invoked"). The
 /// suppression checkbox ("Don't warn again for Cmd+Q") has no Tauri dialog
-/// equivalent; users set `app.confirmQuit` to `never` instead. Live-verify
-/// only: canonical bypasses the alert under XCTest.
+/// equivalent; users set `app.confirmQuit` to `never` instead. Stable/nightly
+/// live-verify only: canonical bypasses the alert in DEV and XCTest paths.
 pub(super) fn present_quit_confirmation_dialog(app: &AppHandle) {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
     let exit_app = app.clone();
@@ -588,6 +592,7 @@ pub(super) fn handle_window_lifecycle_request(
         resume_approval: None,
         quit_confirmation_required: window_quit_confirmation_required(
             control_settings_store(app).as_ref(),
+            cfg!(debug_assertions),
         ),
         now_epoch_seconds: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -635,6 +640,15 @@ pub(super) fn handle_window_lifecycle_request(
             };
         }
     }
+    let terminates = transition.effects.iter().any(|effect| {
+        matches!(
+            effect,
+            window_lifecycle::WindowLifecycleEffect::AppTerminate { .. }
+        )
+    });
+    if terminates {
+        publish_window_lifecycle_events(app, std::mem::take(&mut transition.events));
+    }
     for effect in &transition.effects {
         if let Err((code, message)) =
             apply_window_lifecycle_effect(app, &current, &transition.snapshot, effect)
@@ -646,7 +660,15 @@ pub(super) fn handle_window_lifecycle_request(
             };
         }
     }
-    for event in transition.events {
+    publish_window_lifecycle_events(app, transition.events);
+    transition.result
+}
+
+fn publish_window_lifecycle_events(
+    app: &AppHandle,
+    events: impl IntoIterator<Item = pane_surface_lifecycle::LifecycleEvent>,
+) {
+    for event in events {
         record_event(
             app,
             event.name,
@@ -659,7 +681,30 @@ pub(super) fn handle_window_lifecycle_request(
             event.payload,
         );
     }
-    transition.result
+}
+
+pub(super) fn window_close_terminates_without_response(
+    app: &AppHandle,
+    request: &ControlRequest,
+    result: &ControlCallResult,
+) -> bool {
+    if request.method != "window.close" {
+        return false;
+    }
+    let ControlCallResult::Ok(payload) = result else {
+        return false;
+    };
+    let value = Value::from(payload.clone());
+    let Some(closed_id) = value.get("window_id").and_then(Value::as_str) else {
+        return false;
+    };
+    let current = snapshot(app);
+    current.windows.len() == 1
+        && current.windows[0].window_id.as_deref() == Some(closed_id)
+        && !window_quit_confirmation_required(
+            control_settings_store(app).as_ref(),
+            cfg!(debug_assertions),
+        )
 }
 
 /// Canonical keeps recently closed tab managers routable until restart. A

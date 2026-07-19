@@ -1342,15 +1342,18 @@ impl cmux_ipc::ControlRequestHandler for DesktopControlHandler {
         handle_control_request(&self.app, request)
     }
 
+    fn close_without_response(
+        &mut self,
+        request: &ControlRequest,
+        result: &ControlCallResult,
+    ) -> bool {
+        window_close_terminates_without_response(&self.app, request, result)
+    }
+
     fn handle_stream(&mut self, request: ControlRequest) -> Option<ControlStream> {
         (request.method == "events.stream").then(|| events_live_stream(&self.app, &request.params))
     }
 
-    /// v1 line-protocol commands the CLI contract depends on: `new_window`
-    /// (reply `OK <window-id>`), `focus_window <id>` / `close_window <id>`
-    /// (reply `OK`), with byte-frozen `ERROR:` lines
-    /// (TerminalController.swift:11899-11928 at pinned e1825d40d). Other v1
-    /// lines fall through to the JSON parse-error path.
     fn handle_v1_line(&mut self, line: &str) -> Option<String> {
         let command = window_lifecycle::parse_v1_window_command(line)?;
         Some(match window_lifecycle::v1_window_request(&command) {
@@ -1381,15 +1384,12 @@ fn run_after_control_mutation_gate<T>(
 }
 
 fn handle_control_request(app: &AppHandle, mut request: ControlRequest) -> ControlCallResult {
-    // Canonical runs this event-only route on the worker lane. Dispatch before
-    // handle normalization and the model mutation gate so optional scopes stay
-    // raw and the request cannot acquire session authority.
+    // Keep this event-only route outside normalization and the mutation gate.
     if request.method == "mobile.terminal.set_font" {
         return terminal_set_font_control(app, &request.params);
     }
     let session_state = app.state::<SessionState>();
-    // Declared before the guard so reverse drop order releases the request-wide
-    // mutation gate before any deferred SSH process is created.
+    // Drop order releases the mutation gate before deferred SSH creation.
     let _remote_workspace_rename_flush = DeferredRemoteWorkspaceRenameFlush(session_state.inner());
     let control_guard = match session_state.lock_control_mutation() {
         Ok(guard) => guard,

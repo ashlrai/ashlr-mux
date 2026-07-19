@@ -47,6 +47,16 @@ pub trait ControlRequestHandler {
     /// Dispatch `request` and return its result.
     fn handle(&mut self, request: ControlRequest) -> ControlCallResult;
 
+    /// Close the connection without encoding `result`. Application-termination
+    /// requests use this after completing their observable side effects.
+    fn close_without_response(
+        &mut self,
+        _request: &ControlRequest,
+        _result: &ControlCallResult,
+    ) -> bool {
+        false
+    }
+
     /// Optionally take over the connection and emit raw NDJSON frames. Most
     /// methods are single-response RPCs; streaming methods such as
     /// `events.stream` use this hook so the transport does not wrap each frame
@@ -151,7 +161,11 @@ where
                                     return Ok(());
                                 }
                                 let id = request.id.clone();
-                                encoder.response(id, handler.handle(request))
+                                let result = handler.handle(request.clone());
+                                if handler.close_without_response(&request, &result) {
+                                    return Ok(());
+                                }
+                                encoder.response(id, result)
                             }
                             Err(error) => encoder.response_for_parse_error(error),
                         },
@@ -355,6 +369,29 @@ mod tests {
 
     fn echo_handler(request: ControlRequest) -> ControlCallResult {
         ControlCallResult::Ok(JsonValue::String(request.method))
+    }
+
+    struct ClosingHandler;
+
+    impl ControlRequestHandler for ClosingHandler {
+        fn handle(&mut self, request: ControlRequest) -> ControlCallResult {
+            ControlCallResult::Ok(JsonValue::String(request.method))
+        }
+
+        fn close_without_response(
+            &mut self,
+            request: &ControlRequest,
+            result: &ControlCallResult,
+        ) -> bool {
+            request.method == "quit" && matches!(result, ControlCallResult::Ok(_))
+        }
+    }
+
+    #[tokio::test]
+    async fn handler_can_close_a_connection_without_a_response_frame() {
+        assert!(round_trip(ClosingHandler, &[r#"{"id":1,"method":"quit"}"#])
+            .await
+            .is_empty());
     }
 
     struct StreamHandler;

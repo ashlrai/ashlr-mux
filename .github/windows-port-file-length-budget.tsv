@@ -31,7 +31,7 @@
 1843	crates/cmux-core/src/surface_lifecycle.rs
 1777	apps/desktop/web/src/palette/useCommandPalette.ts
 1775	apps/desktop/web/src/palette/commandCatalog.ts
-1755	apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs
+1754	apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs
 1732	apps/desktop/web/src/components/Workspace.tsx
 1728	apps/desktop/src-tauri/src/dock.rs
 1697	crates/cmux-core/src/session.rs

@@ -613,8 +613,6 @@ fn last_window_close_is_success_but_routes_into_quit_confirmation() {
 
 #[test]
 fn last_window_close_terminates_when_confirmation_not_required() {
-    // handleQuitShortcutWarning: quit confirmation not required ->
-    // NSApp.terminate immediately (AppDelegate.swift:12831-12856).
     let snapshot = test_snapshot();
     let context = WindowLifecycleContext {
         quit_confirmation_required: false,
@@ -734,34 +732,35 @@ fn quit_confirmation_setting_defaults_always_and_never_disables() {
     // at pinned e1825d40d; handleQuitShortcutWarning AppDelegate.swift:
     // 12831-12856). `dirtyOnly` degrades to always on this port until
     // dirty-workspace tracking exists (documented adaptation). The actual
-    // native dialog is live-verify only (canonical bypasses it under XCTest).
+    // native dialog is live-verify only.
     let dir = tempfile::tempdir().expect("tempdir");
     let store = crate::app_settings::SettingsStore::new(dir.path().join("settings.json"));
     assert!(
-        window_quit_confirmation_required(None),
+        window_quit_confirmation_required(None, false),
         "no settings surface -> canonical default (always)"
     );
     assert!(
-        window_quit_confirmation_required(Some(&store)),
+        window_quit_confirmation_required(Some(&store), false),
         "absent key -> canonical default (always)"
     );
     store.set_string(CONFIRM_QUIT_SETTING_KEY, "never");
     assert!(
-        !window_quit_confirmation_required(Some(&store)),
+        !window_quit_confirmation_required(Some(&store), false),
         "never -> terminate immediately (AppTerminate effect path)"
     );
     store.set_string(CONFIRM_QUIT_SETTING_KEY, "always");
-    assert!(window_quit_confirmation_required(Some(&store)));
+    assert!(window_quit_confirmation_required(Some(&store), false));
     store.set_string(CONFIRM_QUIT_SETTING_KEY, "dirtyOnly");
     assert!(
-        window_quit_confirmation_required(Some(&store)),
+        window_quit_confirmation_required(Some(&store), false),
         "dirtyOnly degrades to always on the port"
     );
     store.set_string(CONFIRM_QUIT_SETTING_KEY, "garbage");
     assert!(
-        window_quit_confirmation_required(Some(&store)),
+        window_quit_confirmation_required(Some(&store), false),
         "unrecognized mode -> canonical default"
     );
+    assert!(!window_quit_confirmation_required(Some(&store), true));
 }
 
 #[test]

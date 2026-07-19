@@ -39,6 +39,32 @@ pub(crate) fn window_lifecycle_event(
     }
 }
 
+pub(crate) fn termination_events(
+    window: &SessionWindowSnapshot,
+    window_id: &str,
+    was_key: bool,
+) -> Vec<LifecycleEvent> {
+    let mut events = vec![window_lifecycle_event(
+        "window.closed",
+        "appkit_close",
+        window,
+        window_id,
+        was_key,
+        was_key,
+    )];
+    if was_key {
+        events.push(window_lifecycle_event(
+            "window.unkeyed",
+            "appkit_key",
+            window,
+            window_id,
+            false,
+            false,
+        ));
+    }
+    events
+}
+
 pub(super) fn initial_workspace_events(window: &SessionWindowSnapshot) -> Vec<LifecycleEvent> {
     let workspace = &window.tab_manager.workspaces[0];
     let workspace_id = workspace
@@ -317,5 +343,19 @@ mod tests {
         );
         assert_eq!(transition.events[2].payload["is_key_window"], true);
         assert_eq!(transition.events[2].payload["is_main_window"], false);
+    }
+
+    #[test]
+    fn termination_emits_close_before_final_key_resignation() {
+        let window = two_window_snapshot().windows.remove(0);
+        let events = termination_events(&window, "key-window", true);
+        assert_eq!(
+            events.iter().map(|event| event.name).collect::<Vec<_>>(),
+            ["window.closed", "window.unkeyed"]
+        );
+        assert_eq!(events[0].payload["is_key_window"], true);
+        assert_eq!(events[0].payload["is_main_window"], true);
+        assert_eq!(events[1].payload["is_key_window"], false);
+        assert_eq!(events[1].payload["is_main_window"], false);
     }
 }
