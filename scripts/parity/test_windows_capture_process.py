@@ -167,6 +167,91 @@ internal static class Program
         self.assertTrue(executable.is_file())
         return executable
 
+    def build_descendant_window_fixture(self, directory: Path) -> Path:
+        executable = directory / "descendant-window-capture-fixture.exe"
+        source = directory / "descendant-window-capture-fixture.cs"
+        source.write_text(
+            r"""
+using System;
+using System.Diagnostics;
+using System.Drawing;
+using System.IO.Pipes;
+using System.Windows.Forms;
+
+internal static class Program
+{
+    [STAThread]
+    private static void Main(string[] args)
+    {
+        Application.EnableVisualStyles();
+        if (args.Length == 2 && args[0] == "--child")
+        {
+            var parent = Process.GetProcessById(int.Parse(args[1]));
+            var form = new Form
+            {
+                Text = "cmux descendant capture fixture",
+                Opacity = 0.0,
+                StartPosition = FormStartPosition.CenterScreen,
+                Width = 640,
+                Height = 480,
+            };
+            var context = new ApplicationContext();
+            var showTimer = new Timer { Interval = 1500 };
+            showTimer.Tick += (_, __) =>
+            {
+                showTimer.Stop();
+                form.Show();
+            };
+            var parentMonitor = new Timer { Interval = 100 };
+            parentMonitor.Tick += (_, __) =>
+            {
+                if (parent.HasExited)
+                {
+                    context.ExitThread();
+                }
+            };
+            showTimer.Start();
+            parentMonitor.Start();
+            Application.Run(context);
+            return;
+        }
+
+        using (var pipe = new NamedPipeServerStream(
+            Environment.GetEnvironmentVariable("CMUX_CONTROL_PIPE_NAME"),
+            PipeDirection.InOut,
+            1,
+            PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous))
+        {
+            Process.Start(Application.ExecutablePath, "--child " + Process.GetCurrentProcess().Id);
+            Application.Run(new ApplicationContext());
+        }
+    }
+}
+""".strip(),
+            encoding="utf-8",
+        )
+        result = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                (
+                    f"Add-Type -Path '{str(source).replace(chr(39), chr(39) * 2)}' "
+                    "-ReferencedAssemblies System.Windows.Forms,System.Drawing "
+                    f"-OutputAssembly '{str(executable).replace(chr(39), chr(39) * 2)}' "
+                    "-OutputType WindowsApplication"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(executable.is_file())
+        return executable
+
     def assert_supervisor_preserves_window(
         self, pipe_name: str, **fixture_options: object
     ) -> None:
@@ -297,6 +382,41 @@ internal static class Program
                 )
             finally:
                 self.run_script(profile, pipe_name=pipe_name)
+
+    def test_supervisor_rejects_a_window_owned_by_a_descendant_process(self):
+        with tempfile.TemporaryDirectory() as directory:
+            profile = Path(directory)
+            executable = self.build_descendant_window_fixture(profile)
+            pipe_name = "cmux-descendant-window-capture-test"
+
+            try:
+                result = self.run_script(
+                    profile,
+                    action="Start",
+                    pipe_name=pipe_name,
+                    app_binary=executable,
+                    startup_timeout_seconds=3,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+                state = json.loads(
+                    (profile / "cmux-capture-process.json").read_text(
+                        encoding="utf-8-sig"
+                    )
+                )
+                process_id = int(state["pid"])
+                for _ in range(50):
+                    if not windows_process_exists(process_id):
+                        break
+                    time.sleep(0.1)
+
+                self.assertFalse(
+                    windows_process_exists(process_id),
+                    "capture process remained alive after its child exposed a window",
+                )
+            finally:
+                self.run_script(profile, pipe_name=pipe_name)
+                time.sleep(0.5)
 
     def test_supervisor_allows_rendering_entirely_offscreen(self):
         self.assert_supervisor_preserves_window(
