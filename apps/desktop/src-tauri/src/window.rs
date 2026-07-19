@@ -707,7 +707,7 @@ mod tests {
         run_control_window_activation, task_manager_command, WindowStateSnapshot,
         AUX_WINDOW_LABEL_PREFIX,
     };
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
     use std::ffi::OsStr;
 
     #[test]
@@ -756,25 +756,23 @@ mod tests {
     }
 
     #[test]
-    fn capture_headless_mode_parks_then_renders_the_bootstrap_window() {
-        let park_count = Cell::new(0);
-        let show_count = Cell::new(0);
+    fn capture_headless_mode_keeps_the_rendered_bootstrap_window_parked() {
+        let actions = RefCell::new(Vec::new());
 
         run_bootstrap_window_presentation(
             true,
             || {
-                park_count.set(park_count.get() + 1);
+                actions.borrow_mut().push("park");
                 Ok(())
             },
             || {
-                show_count.set(show_count.get() + 1);
+                actions.borrow_mut().push("show");
                 Ok(())
             },
         )
         .expect("offscreen capture presentation succeeds");
 
-        assert_eq!(park_count.get(), 1);
-        assert_eq!(show_count.get(), 1);
+        assert_eq!(*actions.borrow(), ["park", "show", "park"]);
     }
 
     #[test]
