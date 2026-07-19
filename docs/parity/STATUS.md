@@ -4,8 +4,8 @@ Checkpoint commits:
 
 - Current canonical audit: `41756f7285a02d2592751438793647f7d4ba9b71`
 - Frozen differential canonical: `e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452`
-- Windows behavior captured: `78825bba260a57e9c7d90b82d4eeb5a36789e5ff`
-- Latest Windows code checkpoint: `5ad6d47b24a3421d3c202f37e757f8795febd301`
+- Windows behavior captured: `a51ddd28763bad2549d3903de78bc7b59b988e36`
+- Latest Windows code checkpoint: `a51ddd28763bad2549d3903de78bc7b59b988e36`
 - Latest exact startup differential evidence: `parity/diff-lane@215737999ac0579682b6b2a2d230d7a0d064a51d`
 - Latest window harness checkpoint: `parity/diff-lane@9257db511b975335e2ee79bc4bb143c04bfa95f8`
 - Latest canonical window capture: workflow run `29686515273`
@@ -13,8 +13,8 @@ Checkpoint commits:
 The Windows desktop and CLI build successfully. The retained pane/surface and
 startup-restore evidence remains valid. The exact environment-matched window
 pair contains all 68 cases with zero capture errors, zero missing cases, and
-zero unsatisfied settles. Its normalized comparison is valid: 67 exact or
-platform-equivalent and 1 strict delta case. See
+zero unsatisfied settles. Its normalized comparison is valid: all 68 cases are
+exact or reviewed platform-equivalences, with zero strict deltas. See
 `evidence/window_lifecycle_2026-07-19.json` for hashes,
 strict lanes, and provenance.
 
@@ -31,6 +31,11 @@ leaf is now an exact reviewed platform equivalence.
 Selector-less `workspace.list` also remains routed to the active recoverable
 TabManager after its native window closes. Explicit selectors and live active
 windows retain their existing routes; no closed window is resurrected.
+Transient invisible native rows now retain native visibility/key state while
+using the committed recoverable workspace payload, so teardown timing cannot
+produce empty `window.list` rows. DEV last-window close publishes the canonical
+`window.closed`/`window.unkeyed` sequence, closes the request connection without
+a response frame, and terminates the app. The full 68-case family is green.
 
 The shared window identity boundary is now repaired. Socket-created windows
 use canonical UUID identities end to end, selector-less `window.current`
@@ -86,14 +91,7 @@ baseline, not "222 of 496 complete" and not the rolling catalog.
 
 ## Known acceptance blockers
 
-1. The valid window pair is 67/1 after exact platform-pointer review. UI-test matching removed the apparent restart
-   resume gap entirely. Browser child attachment was proven to remove live
-   `window:2` from `webview_windows()` and is fixed at `1717704e09` by enumerating
-   native windows; two full captures retain it. The three CLI cases now differ
-   only in native key selection and are now platform-equivalent. Recoverable
-   repeat-close and post-close selector-less active routing are exact. The only
-   strict gap is last-window close, which disconnects only on canonical.
-2. Four differential-remediation unit tests fail unchanged at both pushed
+1. Four differential-remediation unit tests fail unchanged at both pushed
    baseline `0ea973d28d` and behavior checkpoint `286b2d7b67`:
    `closing_an_unselected_tab_suppresses_the_noop_pair`,
    `create_after_explicit_focus_keeps_the_new_tab_selected`,
@@ -102,10 +100,10 @@ baseline, not "222 of 496 complete" and not the rolling catalog.
    desktop library gate is 1,045 passed, 1 ignored, and 4 explicitly excluded;
    the full gate is red until these expectations and implementation are
    reconciled.
-3. Unintegrated terminal/mobile viewport work remains quarantined and is not
+2. Unintegrated terminal/mobile viewport work remains quarantined and is not
    counted as parity progress until its cancellation and runtime behavior are
    re-audited on `windows-port`.
-4. Implemented behavior needs evidence promotion in coherent capability batches;
+3. Implemented behavior needs evidence promotion in coherent capability batches;
    raw route or help-text presence is not verification.
 
 The normal-startup restore blocker is closed. Exact Windows capture
@@ -177,7 +175,7 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
   passes before the move, after extraction, and after visibility tightening.
 - `workspace_control.rs` is now 3,180 physical lines (from 3,711 at this
   checkpoint). Strict live/recoverable `window.list` projection and read-only
-  recoverable active routing live in the 267-line
+  recoverable active routing live in the 299-line
   `workspace_control/window_list.rs` child. Right-sidebar, feed, and
   notification socket controls moved mechanically to the 495-line
   `workspace_control/activity_controls.rs` child; 21 notification, 5 feed, and
@@ -199,7 +197,7 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
 
 ## Next efficient slice
 
-Determine whether canonical last-window disconnect/termination is a required
-product behavior under Windows UI-test mode or an explicit platform
-equivalence, then resolve and recapture that single strict case. Keep the next
-oversized-file split isolated from behavior changes.
+Promote the window-lifecycle catalog rows supported by the zero-delta 68-case
+evidence in a verification-only slice, without regenerating the frozen matrix.
+Then reconcile the four pre-existing differential-remediation failures. Keep
+the next oversized-file split isolated from behavior changes.
