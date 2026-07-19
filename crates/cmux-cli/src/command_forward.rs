@@ -3114,6 +3114,28 @@ mod tests {
     }
 
     #[test]
+    fn focus_panel_normalizes_a_raw_panel_handle_to_surface_id() {
+        let command = mapped(
+            "focus-panel",
+            &[
+                "--panel",
+                "4dc88e7e-402e-472e-b699-8a18aa011633",
+                "--workspace",
+                "workspace:2",
+            ],
+        );
+
+        assert_eq!(command.method, "surface.focus");
+        assert_eq!(
+            command.params,
+            serde_json::json!({
+                "surface_id": "4dc88e7e-402e-472e-b699-8a18aa011633",
+                "workspace_ref": "workspace:2",
+            })
+        );
+    }
+
+    #[test]
     fn maps_send_commands() {
         assert_eq!(
             mapped("send", &["hello\\nthere"]).params,
