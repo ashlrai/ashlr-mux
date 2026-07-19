@@ -1,0 +1,898 @@
+{
+  "cases": 1,
+  "deltas": 1,
+  "identical": 0,
+  "results": [
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {
+        "state": {
+          "canonical": [
+            {
+              "op": "v2:window.list",
+              "result": {
+                "error": null,
+                "kind": "v2",
+                "method": "window.list",
+                "ok": true,
+                "response": {
+                  "id": 1,
+                  "ok": true,
+                  "result": {
+                    "windows": [
+                      {
+                        "id": "<uuid-1>",
+                        "index": 0,
+                        "key": false,
+                        "ref": "window:1",
+                        "selected_workspace_id": "<uuid-2>",
+                        "selected_workspace_ref": "workspace:1",
+                        "visible": true,
+                        "workspace_count": 2
+                      },
+                      {
+                        "id": "<uuid-3>",
+                        "index": 1,
+                        "key": false,
+                        "ref": "window:2",
+                        "selected_workspace_id": "<uuid-4>",
+                        "selected_workspace_ref": "workspace:4",
+                        "visible": true,
+                        "workspace_count": 2
+                      }
+                    ]
+                  }
+                },
+                "settle": {
+                  "poll_interval_s": 0.25,
+                  "predicate": {
+                    "until_present": [
+                      "window:2"
+                    ]
+                  },
+                  "satisfied": true,
+                  "timeout_s": 10.0
+                }
+              }
+            },
+            {
+              "op": "v2:workspace.list",
+              "result": {
+                "error": null,
+                "kind": "v2",
+                "method": "workspace.list",
+                "ok": true,
+                "response": {
+                  "id": 1,
+                  "ok": true,
+                  "result": {
+                    "window_id": "<uuid-3>",
+                    "window_ref": "window:2",
+                    "workspaces": [
+                      {
+                        "current_directory": "/Users/runner/work/ashlr-mux/ashlr-mux",
+                        "custom_color": null,
+                        "custom_title": null,
+                        "description": null,
+                        "has_custom_title": false,
+                        "id": "<uuid-5>",
+                        "index": 0,
+                        "latest_conversation_message": null,
+                        "latest_submitted_at": null,
+                        "latest_submitted_message": null,
+                        "listening_ports": [],
+                        "pinned": false,
+                        "ref": "workspace:3",
+                        "remote": {
+                          "active_terminal_sessions": 0,
+                          "conflicted_ports": [],
+                          "connected": false,
+                          "daemon": {
+                            "capabilities": [],
+                            "detail": null,
+                            "name": null,
+                            "remote_path": null,
+                            "state": "unavailable",
+                            "version": null
+                          },
+                          "destination": null,
+                          "detail": null,
+                          "detected_ports": [],
+                          "enabled": false,
+                          "forwarded_ports": [],
+                          "has_identity_file": false,
+                          "has_ssh_options": false,
+                          "heartbeat": {
+                            "age_seconds": null,
+                            "count": 0,
+                            "last_seen_at": null
+                          },
+                          "local_proxy_port": null,
+                          "persistent_daemon_slot": null,
+                          "port": null,
+                          "proxy": {
+                            "error_code": null,
+                            "host": null,
+                            "port": null,
+                            "schemes": [
+                              "socks5",
+                              "http_connect"
+                            ],
+                            "state": "unavailable",
+                            "url": null
+                          },
+                          "state": "disconnected",
+                          "transport": null
+                        },
+                        "selected": false,
+                        "title": "Terminal"
+                      },
+                      {
+                        "current_directory": "/Users/runner",
+                        "custom_color": null,
+                        "custom_title": "startup-restore-target",
+                        "description": null,
+                        "has_custom_title": true,
+                        "id": "<uuid-4>",
+                        "index": 1,
+                        "latest_conversation_message": null,
+                        "latest_submitted_at": null,
+                        "latest_submitted_message": null,
+                        "listening_ports": [],
+                        "pinned": false,
+                        "ref": "workspace:4",
+                        "remote": {
+                          "active_terminal_sessions": 0,
+                          "conflicted_ports": [],
+                          "connected": false,
+                          "daemon": {
+                            "capabilities": [],
+                            "detail": null,
+                            "name": null,
+                            "remote_path": null,
+                            "state": "unavailable",
+                            "version": null
+                          },
+                          "destination": null,
+                          "detail": null,
+                          "detected_ports": [],
+                          "enabled": false,
+                          "forwarded_ports": [],
+                          "has_identity_file": false,
+                          "has_ssh_options": false,
+                          "heartbeat": {
+                            "age_seconds": null,
+                            "count": 0,
+                            "last_seen_at": null
+                          },
+                          "local_proxy_port": null,
+                          "persistent_daemon_slot": null,
+                          "port": null,
+                          "proxy": {
+                            "error_code": null,
+                            "host": null,
+                            "port": null,
+                            "schemes": [
+                              "socks5",
+                              "http_connect"
+                            ],
+                            "state": "unavailable",
+                            "url": null
+                          },
+                          "state": "disconnected",
+                          "transport": null
+                        },
+                        "selected": true,
+                        "title": "startup-restore-target"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "op": "v2:workspace.list",
+              "result": {
+                "error": null,
+                "kind": "v2",
+                "method": "workspace.list",
+                "ok": true,
+                "response": {
+                  "id": 1,
+                  "ok": true,
+                  "result": {
+                    "window_id": "<uuid-3>",
+                    "window_ref": "window:2",
+                    "workspaces": [
+                      {
+                        "current_directory": "/Users/runner/work/ashlr-mux/ashlr-mux",
+                        "custom_color": null,
+                        "custom_title": null,
+                        "description": null,
+                        "has_custom_title": false,
+                        "id": "<uuid-5>",
+                        "index": 0,
+                        "latest_conversation_message": null,
+                        "latest_submitted_at": null,
+                        "latest_submitted_message": null,
+                        "listening_ports": [],
+                        "pinned": false,
+                        "ref": "workspace:3",
+                        "remote": {
+                          "active_terminal_sessions": 0,
+                          "conflicted_ports": [],
+                          "connected": false,
+                          "daemon": {
+                            "capabilities": [],
+                            "detail": null,
+                            "name": null,
+                            "remote_path": null,
+                            "state": "unavailable",
+                            "version": null
+                          },
+                          "destination": null,
+                          "detail": null,
+                          "detected_ports": [],
+                          "enabled": false,
+                          "forwarded_ports": [],
+                          "has_identity_file": false,
+                          "has_ssh_options": false,
+                          "heartbeat": {
+                            "age_seconds": null,
+                            "count": 0,
+                            "last_seen_at": null
+                          },
+                          "local_proxy_port": null,
+                          "persistent_daemon_slot": null,
+                          "port": null,
+                          "proxy": {
+                            "error_code": null,
+                            "host": null,
+                            "port": null,
+                            "schemes": [
+                              "socks5",
+                              "http_connect"
+                            ],
+                            "state": "unavailable",
+                            "url": null
+                          },
+                          "state": "disconnected",
+                          "transport": null
+                        },
+                        "selected": false,
+                        "title": "Terminal"
+                      },
+                      {
+                        "current_directory": "/Users/runner",
+                        "custom_color": null,
+                        "custom_title": "startup-restore-target",
+                        "description": null,
+                        "has_custom_title": true,
+                        "id": "<uuid-4>",
+                        "index": 1,
+                        "latest_conversation_message": null,
+                        "latest_submitted_at": null,
+                        "latest_submitted_message": null,
+                        "listening_ports": [],
+                        "pinned": false,
+                        "ref": "workspace:4",
+                        "remote": {
+                          "active_terminal_sessions": 0,
+                          "conflicted_ports": [],
+                          "connected": false,
+                          "daemon": {
+                            "capabilities": [],
+                            "detail": null,
+                            "name": null,
+                            "remote_path": null,
+                            "state": "unavailable",
+                            "version": null
+                          },
+                          "destination": null,
+                          "detail": null,
+                          "detected_ports": [],
+                          "enabled": false,
+                          "forwarded_ports": [],
+                          "has_identity_file": false,
+                          "has_ssh_options": false,
+                          "heartbeat": {
+                            "age_seconds": null,
+                            "count": 0,
+                            "last_seen_at": null
+                          },
+                          "local_proxy_port": null,
+                          "persistent_daemon_slot": null,
+                          "port": null,
+                          "proxy": {
+                            "error_code": null,
+                            "host": null,
+                            "port": null,
+                            "schemes": [
+                              "socks5",
+                              "http_connect"
+                            ],
+                            "state": "unavailable",
+                            "url": null
+                          },
+                          "state": "disconnected",
+                          "transport": null
+                        },
+                        "selected": true,
+                        "title": "startup-restore-target"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "op": "v2:surface.list",
+              "result": {
+                "error": null,
+                "kind": "v2",
+                "method": "surface.list",
+                "ok": true,
+                "response": {
+                  "id": 1,
+                  "ok": true,
+                  "result": {
+                    "surfaces": [
+                      {
+                        "focused": false,
+                        "id": "<uuid-6>",
+                        "index": 0,
+                        "index_in_pane": 0,
+                        "initial_command": null,
+                        "pane_id": "<uuid-7>",
+                        "pane_ref": "pane:4",
+                        "ref": "surface:5",
+                        "requested_working_directory": "/Users/runner",
+                        "resume_binding": null,
+                        "selected_in_pane": false,
+                        "title": "Terminal",
+                        "tmux_start_command": null,
+                        "type": "terminal"
+                      },
+                      {
+                        "focused": true,
+                        "id": "<uuid-8>",
+                        "index": 1,
+                        "index_in_pane": 1,
+                        "initial_command": null,
+                        "pane_id": "<uuid-7>",
+                        "pane_ref": "pane:4",
+                        "ref": "surface:6",
+                        "requested_working_directory": "/Users/runner",
+                        "resume_binding": null,
+                        "selected_in_pane": true,
+                        "title": "Terminal",
+                        "tmux_start_command": null,
+                        "type": "terminal"
+                      },
+                      {
+                        "focused": false,
+                        "id": "<uuid-9>",
+                        "index": 2,
+                        "index_in_pane": 2,
+                        "initial_command": null,
+                        "pane_id": "<uuid-7>",
+                        "pane_ref": "pane:4",
+                        "ref": "surface:4",
+                        "requested_working_directory": "/Users/runner",
+                        "resume_binding": null,
+                        "selected_in_pane": false,
+                        "title": "Terminal",
+                        "tmux_start_command": null,
+                        "type": "terminal"
+                      }
+                    ],
+                    "window_id": "<uuid-3>",
+                    "window_ref": "window:2",
+                    "workspace_id": "<uuid-4>",
+                    "workspace_ref": "workspace:4"
+                  }
+                }
+              }
+            },
+            {
+              "op": "v2:surface.list",
+              "result": {
+                "error": null,
+                "kind": "v2",
+                "method": "surface.list",
+                "ok": true,
+                "response": {
+                  "id": 1,
+                  "ok": true,
+                  "result": {
+                    "surfaces": [
+                      {
+                        "focused": false,
+                        "id": "<uuid-6>",
+                        "index": 0,
+                        "index_in_pane": 0,
+                        "initial_command": null,
+                        "pane_id": "<uuid-7>",
+                        "pane_ref": "pane:4",
+                        "ref": "surface:5",
+                        "requested_working_directory": "/Users/runner",
+                        "resume_binding": null,
+                        "selected_in_pane": false,
+                        "title": "Terminal",
+                        "tmux_start_command": null,
+                        "type": "terminal"
+                      },
+                      {
+                        "focused": true,
+                        "id": "<uuid-8>",
+                        "index": 1,
+                        "index_in_pane": 1,
+                        "initial_command": null,
+                        "pane_id": "<uuid-7>",
+                        "pane_ref": "pane:4",
+                        "ref": "surface:6",
+                        "requested_working_directory": "/Users/runner",
+                        "resume_binding": null,
+                        "selected_in_pane": true,
+                        "title": "Terminal",
+                        "tmux_start_command": null,
+                        "type": "terminal"
+                      },
+                      {
+                        "focused": false,
+                        "id": "<uuid-9>",
+                        "index": 2,
+                        "index_in_pane": 2,
+                        "initial_command": null,
+                        "pane_id": "<uuid-7>",
+                        "pane_ref": "pane:4",
+                        "ref": "surface:4",
+                        "requested_working_directory": "/Users/runner",
+                        "resume_binding": null,
+                        "selected_in_pane": false,
+                        "title": "Terminal",
+                        "tmux_start_command": null,
+                        "type": "terminal"
+                      }
+                    ],
+                    "window_id": "<uuid-3>",
+                    "window_ref": "window:2",
+                    "workspace_id": "<uuid-4>",
+                    "workspace_ref": "workspace:4"
+                  }
+                }
+              }
+            },
+            {
+              "op": "v2:surface.current",
+              "result": {
+                "error": null,
+                "kind": "v2",
+                "method": "surface.current",
+                "ok": true,
+                "response": {
+                  "id": 1,
+                  "ok": true,
+                  "result": {
+                    "pane_id": "<uuid-7>",
+                    "pane_ref": "pane:4",
+                    "surface_id": "<uuid-8>",
+                    "surface_ref": "surface:6",
+                    "surface_type": "terminal",
+                    "window_id": "<uuid-3>",
+                    "window_ref": "window:2",
+                    "workspace_id": "<uuid-4>",
+                    "workspace_ref": "workspace:4"
+                  }
+                }
+              }
+            }
+          ],
+          "windows": [
+            {
+              "op": "v2:window.list",
+              "result": {
+                "error": null,
+                "kind": "v2",
+                "method": "window.list",
+                "ok": true,
+                "response": {
+                  "id": 1,
+                  "ok": true,
+                  "result": {
+                    "windows": [
+                      {
+                        "id": "window-1",
+                        "index": 0,
+                        "key": false,
+                        "ref": "window:3",
+                        "selected_workspace_id": "<uuid-1>",
+                        "selected_workspace_ref": "workspace:1",
+                        "visible": true,
+                        "workspace_count": 2
+                      },
+                      {
+                        "id": "<uuid-2>",
+                        "index": 1,
+                        "key": false,
+                        "ref": "window:2",
+                        "selected_workspace_id": "<uuid-3>",
+                        "selected_workspace_ref": "workspace:4",
+                        "visible": true,
+                        "workspace_count": 2
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "op": "v2:workspace.list",
+              "result": {
+                "error": null,
+                "kind": "v2",
+                "method": "workspace.list",
+                "ok": true,
+                "response": {
+                  "id": 1,
+                  "ok": true,
+                  "result": {
+                    "window_id": "<uuid-4>",
+                    "window_ref": "window:1",
+                    "workspaces": [
+                      {
+                        "current_directory": "C:\\tmp\\ashlr-startup-capture4-c520\\home",
+                        "custom_color": null,
+                        "custom_title": null,
+                        "description": null,
+                        "has_custom_title": false,
+                        "id": "<uuid-1>",
+                        "index": 0,
+                        "latest_conversation_message": null,
+                        "latest_submitted_at": null,
+                        "latest_submitted_message": null,
+                        "listening_ports": [],
+                        "pinned": false,
+                        "ref": "workspace:1",
+                        "remote": {
+                          "active_terminal_sessions": 0,
+                          "conflicted_ports": [],
+                          "connected": false,
+                          "daemon": {
+                            "capabilities": [],
+                            "state": "unavailable"
+                          },
+                          "destination": null,
+                          "detail": null,
+                          "detected_ports": [],
+                          "enabled": false,
+                          "forwarded_ports": [],
+                          "local_proxy_port": null,
+                          "persistent_daemon_slot": null,
+                          "port": null,
+                          "proxy": {
+                            "error_code": null,
+                            "host": null,
+                            "port": null,
+                            "schemes": [
+                              "socks5",
+                              "http_connect"
+                            ],
+                            "state": "unavailable",
+                            "url": null
+                          },
+                          "state": "disconnected",
+                          "transport": null
+                        },
+                        "selected": true,
+                        "title": "Terminal"
+                      },
+                      {
+                        "current_directory": "C:\\tmp\\ashlr-startup-capture4-c520\\home",
+                        "custom_color": null,
+                        "custom_title": "startup-restore-source",
+                        "description": null,
+                        "has_custom_title": true,
+                        "id": "<uuid-5>",
+                        "index": 1,
+                        "latest_conversation_message": null,
+                        "latest_submitted_at": null,
+                        "latest_submitted_message": null,
+                        "listening_ports": [],
+                        "pinned": false,
+                        "ref": "workspace:2",
+                        "remote": {
+                          "active_terminal_sessions": 0,
+                          "conflicted_ports": [],
+                          "connected": false,
+                          "daemon": {
+                            "capabilities": [],
+                            "state": "unavailable"
+                          },
+                          "destination": null,
+                          "detail": null,
+                          "detected_ports": [],
+                          "enabled": false,
+                          "forwarded_ports": [],
+                          "local_proxy_port": null,
+                          "persistent_daemon_slot": null,
+                          "port": null,
+                          "proxy": {
+                            "error_code": null,
+                            "host": null,
+                            "port": null,
+                            "schemes": [
+                              "socks5",
+                              "http_connect"
+                            ],
+                            "state": "unavailable",
+                            "url": null
+                          },
+                          "state": "disconnected",
+                          "transport": null
+                        },
+                        "selected": false,
+                        "title": "startup-restore-source"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "op": "v2:workspace.list",
+              "result": {
+                "error": null,
+                "kind": "v2",
+                "method": "workspace.list",
+                "ok": true,
+                "response": {
+                  "id": 1,
+                  "ok": true,
+                  "result": {
+                    "window_id": "<uuid-2>",
+                    "window_ref": "window:2",
+                    "workspaces": [
+                      {
+                        "current_directory": null,
+                        "custom_color": null,
+                        "custom_title": null,
+                        "description": null,
+                        "has_custom_title": false,
+                        "id": "<uuid-6>",
+                        "index": 0,
+                        "latest_conversation_message": null,
+                        "latest_submitted_at": null,
+                        "latest_submitted_message": null,
+                        "listening_ports": [],
+                        "pinned": false,
+                        "ref": "workspace:3",
+                        "remote": {
+                          "active_terminal_sessions": 0,
+                          "conflicted_ports": [],
+                          "connected": false,
+                          "daemon": {
+                            "capabilities": [],
+                            "state": "unavailable"
+                          },
+                          "destination": null,
+                          "detail": null,
+                          "detected_ports": [],
+                          "enabled": false,
+                          "forwarded_ports": [],
+                          "local_proxy_port": null,
+                          "persistent_daemon_slot": null,
+                          "port": null,
+                          "proxy": {
+                            "error_code": null,
+                            "host": null,
+                            "port": null,
+                            "schemes": [
+                              "socks5",
+                              "http_connect"
+                            ],
+                            "state": "unavailable",
+                            "url": null
+                          },
+                          "state": "disconnected",
+                          "transport": null
+                        },
+                        "selected": false,
+                        "title": "Terminal"
+                      },
+                      {
+                        "current_directory": null,
+                        "custom_color": null,
+                        "custom_title": "startup-restore-target",
+                        "description": null,
+                        "has_custom_title": true,
+                        "id": "<uuid-3>",
+                        "index": 1,
+                        "latest_conversation_message": null,
+                        "latest_submitted_at": null,
+                        "latest_submitted_message": null,
+                        "listening_ports": [],
+                        "pinned": false,
+                        "ref": "workspace:4",
+                        "remote": {
+                          "active_terminal_sessions": 0,
+                          "conflicted_ports": [],
+                          "connected": false,
+                          "daemon": {
+                            "capabilities": [],
+                            "state": "unavailable"
+                          },
+                          "destination": null,
+                          "detail": null,
+                          "detected_ports": [],
+                          "enabled": false,
+                          "forwarded_ports": [],
+                          "local_proxy_port": null,
+                          "persistent_daemon_slot": null,
+                          "port": null,
+                          "proxy": {
+                            "error_code": null,
+                            "host": null,
+                            "port": null,
+                            "schemes": [
+                              "socks5",
+                              "http_connect"
+                            ],
+                            "state": "unavailable",
+                            "url": null
+                          },
+                          "state": "disconnected",
+                          "transport": null
+                        },
+                        "selected": true,
+                        "title": "startup-restore-target"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "op": "v2:surface.list",
+              "result": {
+                "error": null,
+                "kind": "v2",
+                "method": "surface.list",
+                "ok": true,
+                "response": {
+                  "id": 1,
+                  "ok": true,
+                  "result": {
+                    "surfaces": [
+                      {
+                        "focused": true,
+                        "id": "<uuid-7>",
+                        "index": 0,
+                        "index_in_pane": 0,
+                        "initial_command": null,
+                        "pane_id": "<uuid-8>",
+                        "pane_ref": "pane:2",
+                        "ref": "surface:2",
+                        "requested_working_directory": "C:\\tmp\\ashlr-startup-capture4-c520\\home",
+                        "resume_binding": null,
+                        "selected_in_pane": true,
+                        "title": null,
+                        "tmux_start_command": null,
+                        "type": "terminal"
+                      }
+                    ],
+                    "window_id": "<uuid-4>",
+                    "window_ref": "window:1",
+                    "workspace_id": "<uuid-5>",
+                    "workspace_ref": "workspace:2"
+                  }
+                }
+              }
+            },
+            {
+              "op": "v2:surface.list",
+              "result": {
+                "error": null,
+                "kind": "v2",
+                "method": "surface.list",
+                "ok": true,
+                "response": {
+                  "id": 1,
+                  "ok": true,
+                  "result": {
+                    "surfaces": [
+                      {
+                        "focused": false,
+                        "id": "<uuid-9>",
+                        "index": 0,
+                        "index_in_pane": 0,
+                        "initial_command": null,
+                        "pane_id": "<uuid-10>",
+                        "pane_ref": "pane:4",
+                        "ref": "surface:4",
+                        "requested_working_directory": null,
+                        "resume_binding": null,
+                        "selected_in_pane": false,
+                        "title": null,
+                        "tmux_start_command": null,
+                        "type": "terminal"
+                      },
+                      {
+                        "focused": false,
+                        "id": "<uuid-11>",
+                        "index": 1,
+                        "index_in_pane": 1,
+                        "initial_command": null,
+                        "pane_id": "<uuid-10>",
+                        "pane_ref": "pane:4",
+                        "ref": "surface:5",
+                        "requested_working_directory": null,
+                        "resume_binding": null,
+                        "selected_in_pane": false,
+                        "title": null,
+                        "tmux_start_command": null,
+                        "type": "terminal"
+                      },
+                      {
+                        "focused": true,
+                        "id": "<uuid-12>",
+                        "index": 2,
+                        "index_in_pane": 2,
+                        "initial_command": null,
+                        "pane_id": "<uuid-10>",
+                        "pane_ref": "pane:4",
+                        "ref": "surface:6",
+                        "requested_working_directory": "C:\\tmp\\ashlr-startup-capture4-c520\\home",
+                        "resume_binding": null,
+                        "selected_in_pane": true,
+                        "title": null,
+                        "tmux_start_command": null,
+                        "type": "terminal"
+                      }
+                    ],
+                    "window_id": "<uuid-2>",
+                    "window_ref": "window:2",
+                    "workspace_id": "<uuid-3>",
+                    "workspace_ref": "workspace:4"
+                  }
+                }
+              }
+            },
+            {
+              "op": "v2:surface.current",
+              "result": {
+                "error": null,
+                "kind": "v2",
+                "method": "surface.current",
+                "ok": true,
+                "response": {
+                  "id": 1,
+                  "ok": true,
+                  "result": {
+                    "pane_id": "<uuid-10>",
+                    "pane_ref": "pane:4",
+                    "surface_id": "<uuid-12>",
+                    "surface_ref": "surface:6",
+                    "surface_type": "terminal",
+                    "window_id": "<uuid-2>",
+                    "window_ref": "window:2",
+                    "workspace_id": "<uuid-3>",
+                    "workspace_ref": "workspace:4"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "id": "startup_restore.multiwindow_move_close_focus",
+      "identical": false,
+      "mismatches": [
+        "state"
+      ]
+    }
+  ]
+}
