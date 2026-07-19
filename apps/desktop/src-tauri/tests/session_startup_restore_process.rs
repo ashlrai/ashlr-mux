@@ -160,12 +160,26 @@ async fn run_process_proof() -> Result<(), String> {
         .call("surface.current", json!({"workspace_id":target_id}))
         .await?;
     let focused_id = field(&current, "surface_id")?;
+    if focused_id != moved_surface_id {
+        return Err(format!(
+            "restored focus changed semantic surface: expected moved {moved_surface_id}, current={current}"
+        ));
+    }
+    let focused_ref = field(&current, "surface_ref")?;
+    if focused_ref != "surface:6" {
+        return Err(format!(
+            "restored focus ref drifted: expected surface:6, current={current}, target={target_surfaces:?}"
+        ));
+    }
     let focused = target_surfaces
         .iter()
         .find(|surface| surface.get("id").and_then(Value::as_str) == Some(&focused_id))
         .ok_or_else(|| format!("focused surface missing from target list: {current}"))?;
-    if focused.get("focused").and_then(Value::as_bool) != Some(true) {
-        return Err(format!("focus did not follow moved surface: {focused}"));
+    if focused.get("ref").and_then(Value::as_str) != Some("surface:6")
+        || focused.get("focused").and_then(Value::as_bool) != Some(true)
+        || focused.get("selected_in_pane").and_then(Value::as_bool) != Some(true)
+    {
+        return Err(format!("restored focus/selection drifted: {focused}"));
     }
 
     drop(rpc);
