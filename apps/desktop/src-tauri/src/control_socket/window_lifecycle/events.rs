@@ -8,6 +8,7 @@ pub(crate) fn window_lifecycle_event(
     window: &SessionWindowSnapshot,
     window_id: &str,
     is_key: bool,
+    is_main: bool,
 ) -> LifecycleEvent {
     let selected_index =
         usize::try_from(window.tab_manager.selected_workspace_index.unwrap_or(0)).unwrap_or(0);
@@ -32,7 +33,7 @@ pub(crate) fn window_lifecycle_event(
             "workspace_count": window.tab_manager.workspaces.len(),
             "selected_workspace_index": selected_index,
             "is_key_window": is_key,
-            "is_main_window": is_key,
+            "is_main_window": is_main,
             "origin": origin,
         }),
     }
@@ -156,6 +157,41 @@ pub(super) fn initial_workspace_events(window: &SessionWindowSnapshot) -> Vec<Li
 mod tests {
     use super::*;
 
+    fn two_window_snapshot() -> AppSessionSnapshot {
+        let window = |window_id: &str, surface_id: &str| {
+            let workspace = crate::session::fresh_control_window_workspace(surface_id);
+            SessionWindowSnapshot {
+                window_id: Some(window_id.into()),
+                selected_workspace_id: workspace.workspace_id.clone(),
+                dock: None,
+                tab_manager: SessionTabManagerSnapshot {
+                    selected_workspace_index: Some(0),
+                    workspaces: vec![workspace],
+                    workspace_groups: None,
+                },
+            }
+        };
+        AppSessionSnapshot {
+            windows: vec![
+                window("key-window", "surface-1"),
+                window("other-window", "surface-2"),
+            ],
+            ..Default::default()
+        }
+    }
+
+    fn context(key: &str, previous_key: Option<&str>) -> WindowLifecycleContext {
+        WindowLifecycleContext {
+            active_window_id: Some(key.into()),
+            key_window_id: Some(key.into()),
+            previous_key_window_id: previous_key.map(str::to_owned),
+            quit_confirmation_required: true,
+            now_epoch_seconds: 0.0,
+            new_window_id: None,
+            new_surface_id: None,
+        }
+    }
+
     #[test]
     fn fresh_window_events_match_the_canonical_initial_sequence() {
         let workspace = crate::session::fresh_control_window_workspace("surface-test");
@@ -215,6 +251,7 @@ mod tests {
             &WindowLifecycleContext {
                 active_window_id: Some("active-window".into()),
                 key_window_id: Some("key-window".into()),
+                previous_key_window_id: None,
                 quit_confirmation_required: true,
                 now_epoch_seconds: 0.0,
                 new_window_id: None,
@@ -222,5 +259,61 @@ mod tests {
             },
         );
         assert_eq!(transition.events[0].payload["is_key_window"], false);
+    }
+
+    #[test]
+    fn focus_emits_key_transition_before_focused() {
+        let snapshot = two_window_snapshot();
+        let params = serde_json::Map::from_iter([("window_id".into(), json!("other-window"))]);
+        let transition = super::window_focus(&snapshot, &params, &context("key-window", None));
+        assert_eq!(
+            transition
+                .events
+                .iter()
+                .map(|event| event.name)
+                .collect::<Vec<_>>(),
+            ["window.unkeyed", "window.keyed", "window.focused"]
+        );
+        assert_eq!(
+            transition.events[0].window_id.as_deref(),
+            Some("key-window")
+        );
+        assert_eq!(transition.events[0].payload["is_key_window"], false);
+        assert_eq!(transition.events[0].payload["is_main_window"], true);
+        assert_eq!(
+            transition.events[1].window_id.as_deref(),
+            Some("other-window")
+        );
+        assert_eq!(transition.events[1].payload["is_key_window"], true);
+        assert_eq!(transition.events[1].payload["is_main_window"], false);
+        assert_eq!(transition.events[2].payload["is_main_window"], true);
+    }
+
+    #[test]
+    fn close_key_emits_resign_and_restores_the_previous_key() {
+        let snapshot = two_window_snapshot();
+        let params = serde_json::Map::from_iter([("window_id".into(), json!("other-window"))]);
+        let transition = super::window_close(
+            &snapshot,
+            &params,
+            &context("other-window", Some("key-window")),
+        );
+        assert_eq!(
+            transition
+                .events
+                .iter()
+                .map(|event| event.name)
+                .collect::<Vec<_>>(),
+            ["window.closed", "window.unkeyed", "window.keyed"]
+        );
+        assert_eq!(transition.events[0].payload["is_main_window"], true);
+        assert_eq!(transition.events[1].payload["is_key_window"], false);
+        assert_eq!(transition.events[1].payload["is_main_window"], false);
+        assert_eq!(
+            transition.events[2].window_id.as_deref(),
+            Some("key-window")
+        );
+        assert_eq!(transition.events[2].payload["is_key_window"], true);
+        assert_eq!(transition.events[2].payload["is_main_window"], false);
     }
 }

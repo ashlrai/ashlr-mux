@@ -28,6 +28,7 @@ pub(crate) fn record_manual_restore_window_created(
         window,
         window_id,
         false,
+        false,
     );
     record_event(
         app,
@@ -1477,11 +1478,8 @@ pub(super) fn events_parts_from_retained(
     categories: Vec<String>,
 ) -> (Value, Vec<Value>, Value) {
     let latest_seq = next_seq.saturating_sub(1);
-    // D8a: canonical subscribes at the latest sequence when the caller omits
-    // after_seq — no default replay (capture ack: after_seq null,
-    // requested_after_seq == latest_seq, replay_count 0). The ack echoes the
-    // RAW param as resume.after_seq and the resolved value as
-    // requested_after_seq.
+    // D8a: omitted after_seq subscribes at latest with no default replay.
+    // The ack echoes the raw param and the resolved requested_after_seq.
     let requested_after_seq = after_seq_param.unwrap_or(latest_seq);
     let oldest_seq = retained_events
         .first()

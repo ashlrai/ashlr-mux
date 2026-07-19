@@ -8,10 +8,8 @@
 //! - Production session window ids are canonical UUIDs. Deterministic fixtures
 //!   use readable labels; selector rejection is therefore pinned as shape
 //!   validation (non-empty string that is not an unresolved `kind:N` ref).
-//! - OS key-window state is modeled deterministically: `is_key_window` in the
-//!   lifecycle event payload reflects the injected `active_window_id`, and
-//!   real foregrounding/quit dialogs/redraws are pinned as effects (contract
-//!   `headless_impossibility_flags`).
+//! - Lifecycle key state uses the injected key-window history; native
+//!   foregrounding, dialogs, and redraws remain pinned as effects.
 
 use super::pane_surface_lifecycle::{dispatch_lifecycle_request, LifecycleDispatchContext};
 use super::window_lifecycle::{
@@ -41,6 +39,7 @@ fn test_context() -> WindowLifecycleContext {
     WindowLifecycleContext {
         active_window_id: Some("window-1".to_string()),
         key_window_id: Some("window-1".to_string()),
+        previous_key_window_id: None,
         quit_confirmation_required: true,
         now_epoch_seconds: 1_700_000_000.5,
         new_window_id: Some("window-9".to_string()),
@@ -479,6 +478,7 @@ fn window_close_runs_the_unregister_sequence_without_focus_mutation() {
             },
             WindowLifecycleEffect::WindowCloseCommit {
                 window_id: "window-2".into(),
+                next_key_window_id: None,
             },
             WindowLifecycleEffect::ClearWindowNotifications {
                 window_id: "window-2".into(),

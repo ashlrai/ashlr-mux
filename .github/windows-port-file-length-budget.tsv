@@ -37,7 +37,7 @@
 1728	apps/desktop/src-tauri/src/dock.rs
 1697	crates/cmux-core/src/session.rs
 1696	crates/cmux-core/src/notifications.rs
-1560	apps/desktop/src-tauri/src/control_socket/event_stream.rs
+1558	apps/desktop/src-tauri/src/control_socket/event_stream.rs
 1555	crates/cmux-cli/src/dispatch.rs
 1547	crates/cmux-cli/src/feed_hook.rs
 1530	apps/desktop/web/src/components/SettingsPane.test.tsx

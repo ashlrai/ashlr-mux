@@ -350,6 +350,7 @@ pub struct ControlActiveWindowState {
 struct ControlActiveWindow {
     current: Option<String>,
     key: Option<String>,
+    previous_key: Option<String>,
     startup_fallback: Option<String>,
 }
 
@@ -367,15 +368,29 @@ impl ControlActiveWindowState {
             .lock()
             .expect("active window pointer mutex poisoned");
         active.current = Some(window_id.to_owned());
-        active.key = Some(window_id.to_owned());
+        if active.key.as_deref() != Some(window_id) {
+            active.previous_key = active.key.replace(window_id.to_owned());
+        }
     }
 
-    pub(super) fn key(&self) -> Option<String> {
-        self.inner
+    pub(super) fn key_history(&self) -> (Option<String>, Option<String>) {
+        let active = self
+            .inner
             .lock()
-            .expect("active window pointer mutex poisoned")
-            .key
-            .clone()
+            .expect("active window pointer mutex poisoned");
+        (active.key.clone(), active.previous_key.clone())
+    }
+
+    pub(super) fn close_key(&self, window_id: &str, next_key_window_id: Option<&str>) {
+        let mut active = self
+            .inner
+            .lock()
+            .expect("active window pointer mutex poisoned");
+        if active.key.as_deref() == Some(window_id) {
+            active.key = next_key_window_id.map(str::to_owned);
+            active.current = active.key.clone();
+            active.previous_key = None;
+        }
     }
 
     #[cfg(test)]
@@ -416,6 +431,7 @@ impl ControlActiveWindowState {
         if let Some(startup_fallback) = active.startup_fallback.take() {
             active.current = focused_window_id.or(Some(startup_fallback));
             active.key = active.current.clone();
+            active.previous_key = None;
         }
         active.current.clone()
     }
@@ -544,12 +560,14 @@ pub(super) fn handle_window_lifecycle_request(
     let current = snapshot(app);
     normalize_window_identity_selector(app, &current, &mut params);
     let active_window_id = control_active_window_id(app);
-    let key_window_id = app
+    let (key_window_id, previous_key_window_id) = app
         .try_state::<ControlActiveWindowState>()
-        .and_then(|state| state.key());
+        .map(|state| state.key_history())
+        .unwrap_or_default();
     let context = window_lifecycle::WindowLifecycleContext {
         active_window_id,
         key_window_id,
+        previous_key_window_id,
         quit_confirmation_required: window_quit_confirmation_required(
             control_settings_store(app).as_ref(),
         ),
@@ -647,25 +665,16 @@ pub(super) fn apply_window_lifecycle_effect(
                 (*failure_code, (*failure_message).to_string())
             })
         }
-        Effect::WindowCloseCommit { window_id } => {
+        Effect::WindowCloseCommit {
+            window_id,
+            next_key_window_id,
+        } => {
             let label = webview_label_for_session_window(app, current, window_id);
             let active_state = app.try_state::<ControlActiveWindowState>();
-            let was_key = active_state
-                .as_ref()
-                .and_then(|state| state.key())
-                .as_deref()
-                == Some(window_id);
             crate::window::close_socket_window(app, &label)
                 .map_err(|error| ("internal_error", error))?;
-            if was_key {
-                if let (Some(state), Some(next_window_id)) = (
-                    active_state,
-                    next.windows
-                        .first()
-                        .and_then(|window| window.window_id.as_deref()),
-                ) {
-                    state.set_key(next_window_id);
-                }
+            if let Some(state) = active_state {
+                state.close_key(window_id, next_key_window_id.as_deref());
             }
             Ok(())
         }

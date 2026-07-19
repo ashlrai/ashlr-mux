@@ -78,6 +78,7 @@ pub(super) enum WindowLifecycleEffect {
     },
     WindowCloseCommit {
         window_id: String,
+        next_key_window_id: Option<String>,
     },
     RecordClosedWindowHistory {
         window_id: String,
@@ -120,6 +121,7 @@ pub(super) enum WindowLifecycleEffect {
 pub(super) struct WindowLifecycleContext {
     pub active_window_id: Option<String>,
     pub key_window_id: Option<String>,
+    pub previous_key_window_id: Option<String>,
     /// Canonical handleQuitShortcutWarning: quit-confirmation not required ->
     /// NSApp.terminate immediately; required -> async confirmation alert
     /// (AppDelegate.swift:12831-12856).
@@ -314,6 +316,7 @@ fn window_create(
         created,
         &window_id,
         false,
+        false,
     ));
     // orderFront-only + defensive setActiveTabManager; persistence happens on
     // the NEXT session snapshot save, not immediately (contract
@@ -382,13 +385,55 @@ fn window_close(
     // unregisterMainWindow sequence (AppDelegate.swift:16241-16305): closed
     // history, geometry persist, window.closed publish, remote detach,
     // active-pointer repoint (key window else first remaining), session save.
-    let events = vec![window_lifecycle_event(
+    let next_key_window_id = if was_key {
+        context
+            .previous_key_window_id
+            .as_ref()
+            .filter(|candidate| {
+                next.windows
+                    .iter()
+                    .any(|window| window.window_id.as_ref() == Some(candidate))
+            })
+            .cloned()
+            .or_else(|| {
+                next.windows
+                    .first()
+                    .and_then(|window| window.window_id.clone())
+            })
+    } else {
+        None
+    };
+    let mut events = vec![window_lifecycle_event(
         "window.closed",
         "appkit_close",
         &closed,
         &window_id,
         was_key,
+        was_key,
     )];
+    if let Some(next_key_window_id) = next_key_window_id.as_deref() {
+        events.push(window_lifecycle_event(
+            "window.unkeyed",
+            "appkit_key",
+            &closed,
+            &window_id,
+            false,
+            false,
+        ));
+        let next_key_window = next
+            .windows
+            .iter()
+            .find(|window| window.window_id.as_deref() == Some(next_key_window_id))
+            .expect("next key window selected from remaining windows");
+        events.push(window_lifecycle_event(
+            "window.keyed",
+            "appkit_key",
+            next_key_window,
+            next_key_window_id,
+            true,
+            false,
+        ));
+    }
     let mut effects = vec![
         WindowLifecycleEffect::RecordClosedWindowHistory {
             window_id: window_id.clone(),
@@ -413,6 +458,7 @@ fn window_close(
     }
     effects.push(WindowLifecycleEffect::WindowCloseCommit {
         window_id: window_id.clone(),
+        next_key_window_id: next_key_window_id.clone(),
     });
     // Drop stale notifications for the closing window and each of its
     // workspaces, before the repoint/save (AppDelegate.swift:16274-16280).
@@ -425,14 +471,8 @@ fn window_close(
             .filter_map(|workspace| workspace.workspace_id.clone())
             .collect(),
     });
-    if was_key {
-        if let Some(repoint) = next
-            .windows
-            .first()
-            .and_then(|window| window.window_id.clone())
-        {
-            effects.push(WindowLifecycleEffect::SetActiveWindow { window_id: repoint });
-        }
+    if let Some(repoint) = next_key_window_id {
+        effects.push(WindowLifecycleEffect::SetActiveWindow { window_id: repoint });
     }
     effects.push(WindowLifecycleEffect::PersistSession);
     ok_transition(next, success, events, effects)
@@ -468,15 +508,45 @@ fn window_focus(
     // published whenever the id resolves, even when already key
     // (AppDelegate.swift:5693-5700). v2 does NOT move the active TabManager
     // pointer itself — it relies on becoming key (contract adversarial note).
-    let is_key = context.active_window_id.as_deref() == Some(window_id.as_str());
     let window = &snapshot.windows[index];
-    let events = vec![window_lifecycle_event(
+    let mut events = Vec::new();
+    if context.key_window_id.as_deref() != Some(window_id.as_str()) {
+        if let Some(previous_key) = context.key_window_id.as_deref().and_then(|key_window_id| {
+            snapshot
+                .windows
+                .iter()
+                .find(|window| window.window_id.as_deref() == Some(key_window_id))
+        }) {
+            let previous_key_id = previous_key
+                .window_id
+                .as_deref()
+                .expect("matched key window identity");
+            events.push(window_lifecycle_event(
+                "window.unkeyed",
+                "appkit_key",
+                previous_key,
+                previous_key_id,
+                false,
+                true,
+            ));
+        }
+        events.push(window_lifecycle_event(
+            "window.keyed",
+            "appkit_key",
+            window,
+            &window_id,
+            true,
+            false,
+        ));
+    }
+    events.push(window_lifecycle_event(
         "window.focused",
         "focus_request",
         window,
         &window_id,
-        is_key,
-    )];
+        true,
+        true,
+    ));
     let effects = vec![WindowLifecycleEffect::WindowFocus {
         window_id: window_id.clone(),
     }];
