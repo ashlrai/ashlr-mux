@@ -1081,6 +1081,9 @@ pub fn move_surface(
     ) {
         return None;
     }
+    if focus {
+        target.focused_panel_id = Some(panel_id.to_string());
+    }
     if let Some(metadata) = metadata {
         attach_panel_metadata(target, metadata);
     }
