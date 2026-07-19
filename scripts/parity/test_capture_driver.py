@@ -95,6 +95,53 @@ class ManifestParsingTests(unittest.TestCase):
         with self.assertRaisesRegex(ManifestError, "requires an 'action'"):
             parse_manifest(manifest(cases=[{"id": "x"}]))
 
+    def test_accepts_final_case_that_may_disconnect(self):
+        payload = manifest(
+            cases=[
+                {
+                    "id": "x",
+                    "events": True,
+                    "may_disconnect": True,
+                    "action": {"op": "v2", "method": "window.close", "params": {}},
+                }
+            ]
+        )
+        self.assertIs(parse_manifest(payload), payload)
+
+    def test_rejects_non_boolean_may_disconnect(self):
+        case = {
+            "id": "x",
+            "may_disconnect": "yes",
+            "action": {"op": "v2", "method": "window.close", "params": {}},
+        }
+        with self.assertRaisesRegex(ManifestError, "'may_disconnect' must be a boolean"):
+            parse_manifest(manifest(cases=[case]))
+
+    def test_rejects_nonfinal_case_that_may_disconnect(self):
+        terminating_case = {
+            "id": "terminating",
+            "may_disconnect": True,
+            "action": {"op": "v2", "method": "window.close", "params": {}},
+        }
+        ordinary_case = {
+            "id": "ordinary",
+            "action": {"op": "v2", "method": "window.list", "params": {}},
+        }
+        with self.assertRaisesRegex(ManifestError, "must be the final case"):
+            parse_manifest(manifest(cases=[terminating_case, ordinary_case]))
+
+    def test_rejects_probes_after_case_that_may_disconnect(self):
+        case = {
+            "id": "x",
+            "may_disconnect": True,
+            "action": {"op": "v2", "method": "window.close", "params": {}},
+            "probes": {
+                "state": [{"op": "v2", "method": "window.list", "params": {}}]
+            },
+        }
+        with self.assertRaisesRegex(ManifestError, "cannot define post-action probes"):
+            parse_manifest(manifest(cases=[case]))
+
     def test_detects_restart_ops_anywhere(self):
         self.assertFalse(manifest_needs_restart(parse_manifest(manifest())))
         case = {

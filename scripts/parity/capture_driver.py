@@ -163,6 +163,8 @@ def parse_manifest(payload: Any) -> dict[str, Any]:
             "id": str (unique),
             "events": bool,                   # optional: collect event frames
             "events_params": {...},           # optional events.stream params
+            "may_disconnect": bool,           # optional: action may end the app;
+                                              # only valid on the final case
             "setup": [op, ...],               # optional
             "action": op,                     # required
             "probes": {lane: [op, ...]},      # optional, lanes from PROBE_LANES
@@ -191,6 +193,13 @@ def parse_manifest(payload: Any) -> dict[str, Any]:
         if case_id in seen_ids:
             raise ManifestError(f"{where}: duplicate case id {case_id!r}")
         seen_ids.add(case_id)
+        may_disconnect = case.get("may_disconnect", False)
+        if not isinstance(may_disconnect, bool):
+            raise ManifestError(f"{where}: 'may_disconnect' must be a boolean")
+        if may_disconnect and position != len(cases) - 1:
+            raise ManifestError(
+                f"{where}: a case that may disconnect must be the final case"
+            )
         for index, op in enumerate(case.get("setup", [])):
             _validate_op(op, f"{where}.setup[{index}]")
         if "action" not in case:
@@ -199,6 +208,10 @@ def parse_manifest(payload: Any) -> dict[str, Any]:
         probes = case.get("probes", {})
         if not isinstance(probes, dict):
             raise ManifestError(f"{where}: 'probes' must be an object")
+        if may_disconnect and probes:
+            raise ManifestError(
+                f"{where}: a case that may disconnect cannot define post-action probes"
+            )
         for lane, ops in probes.items():
             if lane not in PROBE_LANES:
                 raise ManifestError(

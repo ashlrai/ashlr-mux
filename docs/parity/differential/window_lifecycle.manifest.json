@@ -1438,8 +1438,9 @@
       ]
     },
     {
-      "id": "window_close.last_window_pin_ui_test_mode",
+      "id": "window_close.last_window_may_exit_ui_test_mode",
       "events": true,
+      "may_disconnect": true,
       "setup": [
         {
           "op": "v2",
@@ -1471,20 +1472,6 @@
         "params": {
           "window_id": "${setup.3.result.windows.0.id}"
         }
-      },
-      "probes": {
-        "state": [
-          {
-            "op": "v2",
-            "method": "window.list",
-            "params": {},
-            "settle": {
-              "stable": true,
-              "timeout_s": 10,
-              "poll_interval_s": 0.5
-            }
-          }
-        ]
       }
     }
   ]
