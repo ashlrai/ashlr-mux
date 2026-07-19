@@ -566,6 +566,16 @@ pub(super) fn handle_window_lifecycle_request(
 ) -> ControlCallResult {
     let current = snapshot(app);
     normalize_window_identity_selector(app, &current, &mut params);
+    if let Some(history) = app.try_state::<ControlClosedWindowHistoryState>() {
+        if let Some(window_id) = recoverable_window_close_id(&current, method, &params, &history) {
+            let mut result = ControlCallResult::Ok(
+                JsonValue::try_from(json!({ "window_id": window_id }))
+                    .expect("window close success payload is representable"),
+            );
+            decorate_lifecycle_result_refs(app, method, &mut result);
+            return result;
+        }
+    }
     let active_window_id = control_active_window_id(app);
     let (key_window_id, previous_key_window_id) = app
         .try_state::<ControlActiveWindowState>()
@@ -650,6 +660,30 @@ pub(super) fn handle_window_lifecycle_request(
         );
     }
     transition.result
+}
+
+/// Canonical keeps recently closed tab managers routable until restart. A
+/// repeated close invokes `performClose` again and succeeds without another
+/// state transition or event. Keep that idempotence at the stateful dispatch
+/// seam; the pure live-window transition still reports unknown ids normally.
+pub(super) fn recoverable_window_close_id(
+    current: &AppSessionSnapshot,
+    method: &str,
+    params: &serde_json::Map<String, Value>,
+    history: &ControlClosedWindowHistoryState,
+) -> Option<String> {
+    if method != "window.close" {
+        return None;
+    }
+    let window_id = params.get("window_id").and_then(Value::as_str)?;
+    if current
+        .windows
+        .iter()
+        .any(|window| window.window_id.as_deref() == Some(window_id))
+    {
+        return None;
+    }
+    history.contains(window_id).then(|| window_id.to_owned())
 }
 
 pub(super) fn apply_window_lifecycle_effect(

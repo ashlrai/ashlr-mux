@@ -50,6 +50,15 @@ impl ControlClosedWindowHistoryState {
             .remove(window_id);
     }
 
+    pub(crate) fn contains(&self, window_id: &str) -> bool {
+        self.inner
+            .lock()
+            .expect("closed-window history poisoned")
+            .committed
+            .iter()
+            .any(|window| window.window_id.as_deref() == Some(window_id))
+    }
+
     pub(crate) fn snapshots(&self) -> Vec<SessionWindowSnapshot> {
         self.inner
             .lock()
@@ -61,7 +70,10 @@ impl ControlClosedWindowHistoryState {
 
 #[cfg(test)]
 mod tests {
+    use super::super::recoverable_window_close_id;
     use super::*;
+    use cmux_core::session::AppSessionSnapshot;
+    use serde_json::json;
 
     fn window(id: &str) -> SessionWindowSnapshot {
         SessionWindowSnapshot {
@@ -97,9 +109,44 @@ mod tests {
     fn pending_history_is_invisible_and_can_be_discarded() {
         let history = ControlClosedWindowHistoryState::default();
         history.stage(window("window-a"));
+        assert!(!history.contains("window-a"));
         assert!(history.snapshots().is_empty());
         history.discard("window-a");
         history.commit("window-a");
+        assert!(!history.contains("window-a"));
         assert!(history.snapshots().is_empty());
+    }
+
+    #[test]
+    fn repeat_close_resolves_only_committed_recoverable_windows() {
+        let current = AppSessionSnapshot {
+            windows: vec![window("window-a"), window("window-b")],
+            ..Default::default()
+        };
+        let history = ControlClosedWindowHistoryState::default();
+        history.stage(current.windows[1].clone());
+        let params = serde_json::Map::from_iter([("window_id".into(), json!("window-b"))]);
+
+        assert_eq!(
+            recoverable_window_close_id(&current, "window.close", &params, &history),
+            None
+        );
+        history.commit("window-b");
+        assert_eq!(
+            recoverable_window_close_id(&current, "window.close", &params, &history),
+            None,
+            "a live window must still use the normal transition"
+        );
+
+        let mut after_close = current;
+        after_close.windows.pop();
+        assert_eq!(
+            recoverable_window_close_id(&after_close, "window.close", &params, &history).as_deref(),
+            Some("window-b")
+        );
+        assert_eq!(
+            recoverable_window_close_id(&after_close, "window.focus", &params, &history),
+            None
+        );
     }
 }

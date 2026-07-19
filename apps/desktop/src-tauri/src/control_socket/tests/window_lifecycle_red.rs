@@ -765,7 +765,7 @@ fn quit_confirmation_setting_defaults_always_and_never_disables() {
 }
 
 #[test]
-fn repeated_window_close_reports_not_found() {
+fn pure_repeat_close_without_history_reports_not_found() {
     let snapshot = two_window_snapshot();
     let first = dispatch(&snapshot, "window.close", json!({"window_id": "window-2"}));
     expect_ok(&first.result);
