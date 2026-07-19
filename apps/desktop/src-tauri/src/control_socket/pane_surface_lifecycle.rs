@@ -1964,8 +1964,7 @@ fn surface_create(
             .as_deref()
             .and_then(|id| session_ops::pane_id_containing_surface(workspace, id))
             == Some(pane_id.as_str());
-    let keep_new_selected =
-        super::bool_param(params, &["focus"]).unwrap_or(pane_is_focused);
+    let keep_new_selected = super::bool_param(params, &["focus"]).unwrap_or(pane_is_focused);
     if !keep_new_selected {
         if let (Some(previous), Some(layout)) =
             (inherit_source.as_deref(), workspace.layout.as_mut())
