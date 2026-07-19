@@ -44,8 +44,7 @@ fn run_control_window_activation(
 }
 
 fn capture_window_starts_focused(capture_windows_hidden: bool, requested: bool) -> bool {
-    let _ = capture_windows_hidden;
-    requested
+    requested && !capture_windows_hidden
 }
 
 pub(crate) fn activate_control_window(app: &AppHandle, label: &str) -> Result<(), String> {
