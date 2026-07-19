@@ -29,6 +29,16 @@ use pane_last::pane_last;
 mod selection_events;
 use selection_events::{focus_selection_events, selection_events};
 
+#[path = "pane_surface_lifecycle/surface_focus.rs"]
+mod surface_focus;
+use surface_focus::surface_focus;
+
+const CLI_COMMAND_PARAM: &str = "__cmux_cli_command";
+
+fn called_from_cli(params: &Map<String, Value>, command: &str) -> bool {
+    params.get(CLI_COMMAND_PARAM).and_then(Value::as_str) == Some(command)
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub(super) struct LifecycleEvent {
     pub name: &'static str,
@@ -3627,115 +3637,6 @@ fn surface_close(
         next,
         json!({"window_id":window_id,"workspace_id":workspace_id,"surface_id":surface_id}),
         events,
-        effects,
-    )
-}
-
-fn surface_focus(
-    snapshot: &AppSessionSnapshot,
-    params: &Map<String, Value>,
-) -> LifecycleTransition {
-    let Some(surface_id) = params.get("surface_id").and_then(Value::as_str) else {
-        return error(
-            snapshot,
-            "invalid_params",
-            "Missing or invalid surface_id",
-            None,
-        );
-    };
-    let mut model = match SurfaceLifecycleModel::from_app_session(snapshot) {
-        Ok(model) => model,
-        Err(_) => {
-            return error(
-                snapshot,
-                "internal_error",
-                "Invalid surface lifecycle state",
-                None,
-            )
-        }
-    };
-    let Some(owner) = model.owner_of_surface(surface_id).cloned() else {
-        return error(
-            snapshot,
-            "not_found",
-            "Surface not found",
-            Some(json!({"surface_id":surface_id})),
-        );
-    };
-    // Round 5 item 2: an explicit workspace_id takes precedence and fails
-    // closed on mismatch (resolveSurfaceWorkspace, TerminalController+
-    // ControlSurfaceContext.swift:298-315; dock mismatch :286-292); owner
-    // resolution applies only when workspace_id is absent.
-    if params
-        .get("workspace_id")
-        .and_then(Value::as_str)
-        .is_some_and(|explicit| owner.workspace_id != explicit)
-    {
-        return error(
-            snapshot,
-            "not_found",
-            "Surface not found",
-            Some(json!({"surface_id":surface_id})),
-        );
-    }
-    let (window_id, workspace_id) = public_owner_ids(&model, &owner);
-    let is_dock = model
-        .pane(&owner.pane_id)
-        .is_some_and(|pane| pane.container == ContainerKind::Dock);
-    let _ = model.focus_surface(surface_id);
-    let mut next = model.to_app_session(snapshot).unwrap();
-    // R6b: canonical surface.focus also selects the owner workspace globally
-    // (capture surface_focus.happy selectors probe).
-    if !is_dock {
-        for window in &mut next.windows {
-            if window.window_id.as_deref() != Some(window_id.as_str()) {
-                continue;
-            }
-            if let Some(index) = window.tab_manager.workspaces.iter().position(|workspace| {
-                workspace.workspace_id.as_deref() == Some(workspace_id.as_str())
-            }) {
-                window.tab_manager.selected_workspace_index = index.try_into().ok();
-                window.selected_workspace_id = Some(workspace_id.clone());
-                // Round 6 item 1: explicit focus records the bonsplit-focused
-                // pane, the gate for create-keeps-selection.
-                window.tab_manager.workspaces[index].focused_pane_id = Some(owner.pane_id.clone());
-                // Round 7: focus goes through applyTabSelectionNow, a
-                // published selection transition, so the publisher pointer
-                // advances (CmuxLifecycleEventPublishing.swift:166-183).
-                set_published_selection(
-                    &mut window.tab_manager.workspaces[index],
-                    &owner.pane_id,
-                    surface_id,
-                );
-            }
-        }
-    }
-    let mut effects = vec![LifecycleEffect::ActivateWindow {
-        window_id: window_id.clone(),
-    }];
-    if is_dock {
-        effects.extend([
-            LifecycleEffect::DockReveal {
-                owner_id: window_id.clone(),
-            },
-            LifecycleEffect::DockChanged {
-                owner_id: window_id.clone(),
-                phase: "post_persist",
-            },
-        ]);
-    }
-    effects.push(LifecycleEffect::PersistSession);
-    ok_transition(
-        next,
-        json!({"window_id":window_id,"workspace_id":workspace_id,"surface_id":surface_id}),
-        vec![owned_event(
-            "surface.focused",
-            &window_id,
-            &workspace_id,
-            Some(&owner.pane_id),
-            Some(surface_id),
-            json!({}),
-        )],
         effects,
     )
 }

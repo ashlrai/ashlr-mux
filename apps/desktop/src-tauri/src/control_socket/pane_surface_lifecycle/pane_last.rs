@@ -61,14 +61,25 @@ pub(super) fn pane_last(
     let Ok(next) = model.to_app_session(snapshot) else {
         return invalid_state(snapshot);
     };
-    let events = focus_selection_events(
-        &scope.window_id,
-        &scope.workspace_id,
-        &focused.pane_id,
-        &surface_id,
-        kind,
-    )
-    .into();
+    let events = if called_from_cli(params, "last-pane") {
+        selection_events::focused_pane_events(
+            &scope.window_id,
+            &scope.workspace_id,
+            &focused.pane_id,
+            &surface_id,
+            kind,
+        )
+        .into()
+    } else {
+        focus_selection_events(
+            &scope.window_id,
+            &scope.workspace_id,
+            &focused.pane_id,
+            &surface_id,
+            kind,
+        )
+        .into()
+    };
     ok_transition(
         next,
         json!({

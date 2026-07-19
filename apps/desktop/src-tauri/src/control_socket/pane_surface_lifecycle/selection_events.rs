@@ -53,7 +53,7 @@ pub(super) fn focus_selection_events(
     surface_id: &str,
     kind: &str,
 ) -> [LifecycleEvent; 3] {
-    let [selected, focused] = selection_events(
+    let [selected, _] = selection_events(
         window_id,
         workspace_id,
         pane_id,
@@ -62,17 +62,43 @@ pub(super) fn focus_selection_events(
         kind,
         true,
     );
-    let pane_focused = owned_event(
-        "pane.focused",
-        window_id,
-        workspace_id,
-        Some(pane_id),
-        Some(surface_id),
-        json!({
-            "origin": "bonsplit_selection",
-            "pane_id": pane_id,
-            "selected_surface_id": surface_id,
-        }),
-    );
+    let [pane_focused, focused] =
+        focused_pane_events(window_id, workspace_id, pane_id, surface_id, kind);
     [selected, pane_focused, focused]
+}
+
+pub(super) fn focused_pane_events(
+    window_id: &str,
+    workspace_id: &str,
+    pane_id: &str,
+    surface_id: &str,
+    kind: &str,
+) -> [LifecycleEvent; 2] {
+    [
+        owned_event(
+            "pane.focused",
+            window_id,
+            workspace_id,
+            Some(pane_id),
+            Some(surface_id),
+            json!({
+                "origin": "bonsplit_selection",
+                "pane_id": pane_id,
+                "selected_surface_id": surface_id,
+            }),
+        ),
+        owned_event(
+            "surface.focused",
+            window_id,
+            workspace_id,
+            Some(pane_id),
+            Some(surface_id),
+            json!({
+                "kind": kind,
+                "origin": "bonsplit_selection",
+                "pane_id": pane_id,
+                "surface_id": surface_id,
+            }),
+        ),
+    ]
 }

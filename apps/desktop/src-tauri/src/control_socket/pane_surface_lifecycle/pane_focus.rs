@@ -44,18 +44,24 @@ fn focus_events(
     pane_id: &str,
     surface_id: &str,
     kind: &str,
+    called_from_cli: bool,
 ) -> Vec<LifecycleEvent> {
     let previous_window = &previous.windows[scope.window_index];
     let previous_workspace_id = selected_workspace_id(previous_window);
+    let event_window = if called_from_cli {
+        &current.windows[scope.window_index]
+    } else {
+        previous_window
+    };
     let mut events = vec![super::super::window_lifecycle::window_lifecycle_event(
         "window.focused",
         "focus_request",
-        previous_window,
+        event_window,
         &scope.window_id,
         true,
         true,
     )];
-    if previous_workspace_id != Some(scope.workspace_id.as_str()) {
+    if !called_from_cli && previous_workspace_id != Some(scope.workspace_id.as_str()) {
         events.push(workspace_selected_event(
             current,
             scope,
@@ -129,8 +135,21 @@ pub(super) fn pane_focus(
         );
     };
     let _ = model.focus_surface(&selected);
-    let next = model.to_app_session(snapshot).unwrap();
-    let events = focus_events(snapshot, &next, &focus_scope, pane_id, &selected, kind);
+    let mut next = model.to_app_session(snapshot).unwrap();
+    let window = &mut next.windows[focus_scope.window_index];
+    window.tab_manager.selected_workspace_index = focus_scope.workspace_index.try_into().ok();
+    window.selected_workspace_id = Some(focus_scope.workspace_id.clone());
+    window.tab_manager.workspaces[focus_scope.workspace_index].focused_pane_id =
+        Some(pane_id.to_owned());
+    let events = focus_events(
+        snapshot,
+        &next,
+        &focus_scope,
+        pane_id,
+        &selected,
+        kind,
+        called_from_cli(params, "focus-pane"),
+    );
     ok_transition(
         next,
         json!({"window_id":pane.window_id,"workspace_id":pane.workspace_id,"pane_id":pane_id}),
