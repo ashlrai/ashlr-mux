@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -115,6 +116,66 @@ internal static class Program
         self.assertTrue(executable.is_file())
         return executable
 
+    def build_delayed_visible_window_fixture(self, directory: Path) -> Path:
+        executable = directory / "delayed-visible-capture-fixture.exe"
+        source = directory / "delayed-visible-capture-fixture.cs"
+        source.write_text(
+            """
+using System;
+using System.IO.Pipes;
+using System.Windows.Forms;
+
+internal static class Program
+{
+    [STAThread]
+    private static void Main()
+    {
+        Application.EnableVisualStyles();
+        using (var pipe = new NamedPipeServerStream(
+            Environment.GetEnvironmentVariable("CMUX_CONTROL_PIPE_NAME"),
+            PipeDirection.InOut,
+            1,
+            PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous))
+        {
+            var context = new ApplicationContext();
+            var timer = new Timer { Interval = 1500 };
+            timer.Tick += (_, __) =>
+            {
+                timer.Stop();
+                var form = new Form { Text = "cmux delayed visible capture fixture" };
+                form.FormClosed += (___, ____) => context.ExitThread();
+                form.Show();
+            };
+            timer.Start();
+            Application.Run(context);
+        }
+    }
+}
+""".strip(),
+            encoding="utf-8",
+        )
+        result = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                (
+                    f"Add-Type -Path '{str(source).replace(chr(39), chr(39) * 2)}' "
+                    "-ReferencedAssemblies System.Windows.Forms,System.Drawing "
+                    f"-OutputAssembly '{str(executable).replace(chr(39), chr(39) * 2)}' "
+                    "-OutputType WindowsApplication"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(executable.is_file())
+        return executable
+
     def test_rejects_namespace_separator_in_pipe_name(self):
         with tempfile.TemporaryDirectory() as directory:
             result = self.run_script(Path(directory), pipe_name=r"bad\pipe")
@@ -182,6 +243,51 @@ internal static class Program
                 self.assertFalse((profile / "cmux-capture-process.json").exists())
             finally:
                 self.run_script(profile, pipe_name="cmux-visible-capture-test")
+
+    def test_supervisor_rejects_a_window_exposed_after_startup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            profile = Path(directory)
+            executable = self.build_delayed_visible_window_fixture(profile)
+            pipe_name = "cmux-delayed-visible-capture-test"
+
+            try:
+                result = self.run_script(
+                    profile,
+                    action="Start",
+                    pipe_name=pipe_name,
+                    app_binary=executable,
+                    startup_timeout_seconds=3,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+                state = json.loads(
+                    (profile / "cmux-capture-process.json").read_text(
+                        encoding="utf-8-sig"
+                    )
+                )
+                process_id = int(state["pid"])
+                for _ in range(50):
+                    probe = subprocess.run(
+                        [
+                            "powershell.exe",
+                            "-NoProfile",
+                            "-NonInteractive",
+                            "-Command",
+                            f"if (Get-Process -Id {process_id} -ErrorAction SilentlyContinue) {{ exit 1 }}",
+                        ],
+                        timeout=5,
+                    )
+                    if probe.returncode == 0:
+                        break
+                    time.sleep(0.1)
+
+                self.assertEqual(
+                    probe.returncode,
+                    0,
+                    "capture process remained alive after exposing a delayed window",
+                )
+            finally:
+                self.run_script(profile, pipe_name=pipe_name)
 
 
 if __name__ == "__main__":
