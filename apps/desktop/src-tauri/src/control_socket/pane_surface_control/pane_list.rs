@@ -1,5 +1,29 @@
 use super::*;
 
+pub(super) fn pane_list_reference_fields_with(
+    pane: &SessionPaneLayoutSnapshot,
+    pane_index: usize,
+    workspace_surface_ids: &[String],
+    selected: Option<&str>,
+    _mint: &mut impl FnMut(&'static str, &str) -> String,
+) -> (String, Vec<String>, Option<String>) {
+    (
+        pane_ref(pane_index),
+        pane.panel_ids
+            .iter()
+            .filter_map(|panel_id| {
+                workspace_surface_ids
+                    .iter()
+                    .position(|id| id == panel_id)
+                    .map(surface_ref)
+            })
+            .collect(),
+        selected
+            .and_then(|selected| workspace_surface_ids.iter().position(|id| id == selected))
+            .map(surface_ref),
+    )
+}
+
 pub(in crate::control_socket) fn pane_list(
     app: &AppHandle,
     params: &serde_json::Map<String, Value>,
@@ -84,15 +108,23 @@ pub(in crate::control_socket) fn pane_list(
                 .selected_panel_id
                 .as_deref()
                 .filter(|panel_id| pane.panel_ids.iter().any(|id| id == panel_id));
+            let (pane_reference, surface_refs, selected_surface_ref) =
+                pane_list_reference_fields_with(
+                    &pane,
+                    index,
+                    &workspace_surface_ids,
+                    selected,
+                    &mut |kind, id| control_handle_ref(app, kind, id),
+                );
             let mut row = json!({
                 "id": pane.pane_id,
-                "ref": pane_ref(index),
+                "ref": pane_reference,
                 "index": index,
                 "focused": workspace.focused_panel_id.as_ref().is_some_and(|focused| pane.panel_ids.contains(focused)),
                 "surface_ids": pane.panel_ids,
-                "surface_refs": pane.panel_ids.iter().filter_map(|panel_id| workspace_surface_ids.iter().position(|id| id == panel_id).map(surface_ref)).collect::<Vec<_>>(),
+                "surface_refs": surface_refs,
                 "selected_surface_id": selected,
-                "selected_surface_ref": selected.and_then(|selected| workspace_surface_ids.iter().position(|id| id == selected)).map(surface_ref),
+                "selected_surface_ref": selected_surface_ref,
                 "surface_count": pane.panel_ids.len(),
                 "pixel_frame": {"x": frame.x, "y": frame.y, "width": frame.width, "height": frame.height},
             });
