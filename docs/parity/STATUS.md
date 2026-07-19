@@ -5,7 +5,7 @@ Checkpoint commits:
 - Current canonical audit: `ecebdbb64b3532b0308650280ae4b83f30becf2a`
 - Frozen differential canonical: `e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452`
 - Windows behavior: `99bd001c6eddaf91c3460dd1114ffda5093f82a4`
-- Latest Windows code checkpoint: `d17b03aa08e6c66adea1cfe95f97c5bf5fff6bf7`
+- Latest Windows code checkpoint: `3e7eed5035eeedb7a17c5c67d8ef31df9fb44aad`
 - Latest exact startup differential evidence: `parity/diff-lane@215737999ac0579682b6b2a2d230d7a0d064a51d`
 
 The Windows desktop and CLI build successfully. The broad desktop, web, IPC,
@@ -73,10 +73,12 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
   unchanged public API in the 325-line `session_ops/browser.rs` child module;
   canvas layout and persisted geometry mutations now live behind the same API
   in the 526-line `session_ops/canvas.rs` child module.
-- `command_forward.rs` is now 5,830 physical lines (from 7,026). Its browser
-  command routing and parameter construction now live in the 1,211-line
-  `command_forward/browser.rs` child module. The parent-facing boundary is four
-  functions; the 251-test CLI suite and all-target compile check pass.
+- `command_forward.rs` is now 4,550 physical lines (from 7,026). Browser
+  routing and parameter construction live in the 1,211-line
+  `command_forward/browser.rs` child module; workspace routing, selectors,
+  metadata, grouping, and environment parsing live in the 1,299-line
+  `command_forward/workspace.rs` child module. The 251-test CLI suite and
+  all-target compile check pass after each boundary.
 - Seventy source-text tests that asserted filenames, function spelling, or
   substring order were removed. The retained suites execute behavior.
 - CI now caps new Windows-owned Rust and TypeScript files at 1,500 lines and
@@ -93,6 +95,6 @@ Repair the window-lifecycle capture boundary before changing its behavior:
 reproduce the canonical final-case restart failure and the Windows browser
 setup stall with bounded focused tests. Once both full captures are valid,
 compare all 68 cases and fix only proven deltas. Keep the next structural slice
-separate; the next CLI candidate is workspace parsing in
-`command_forward.rs`, while the next core candidate is the remaining
-layout/workspace domain in `session_ops.rs`.
+separate; the next core candidate is the remaining layout/workspace domain in
+`session_ops.rs`. Test-only giants should be split by behavior family, not
+mixed into a production extraction.

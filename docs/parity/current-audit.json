@@ -44,10 +44,10 @@
     "status": "not_measured"
   },
   "windows": {
-    "commit": "d17b03aa08e6c66adea1cfe95f97c5bf5fff6bf7",
-    "commit_date": "2026-07-19T03:41:07-04:00",
-    "commit_subject": "refactor(cli): extract browser command mapping",
-    "commits_ahead_of_tracked_evidence": 93,
+    "commit": "3e7eed5035eeedb7a17c5c67d8ef31df9fb44aad",
+    "commit_date": "2026-07-19T03:45:54-04:00",
+    "commit_subject": "refactor(cli): extract workspace command mapping",
+    "commits_ahead_of_tracked_evidence": 95,
     "source_evidence": {
       "advertised_and_routed_count": 267,
       "advertised_method_count": 270,
