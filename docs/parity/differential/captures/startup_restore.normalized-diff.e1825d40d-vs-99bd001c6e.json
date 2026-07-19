@@ -1,0 +1,17 @@
+{
+  "cases": 1,
+  "deltas": 0,
+  "identical": 1,
+  "results": [
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "startup_restore.multiwindow_move_close_focus",
+      "identical": true,
+      "mismatches": []
+    }
+  ]
+}

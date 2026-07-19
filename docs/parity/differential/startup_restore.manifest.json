@@ -107,7 +107,49 @@
             "params": {"workspace_id": "${state.2.result.workspaces.1.id}"}
           }
         ]
-      }
+      },
+      "approved_differences": [
+        {
+          "path": "/state/1/result/response/result/workspaces/0/current_directory",
+          "rationale": "restored workspace paths use platform-native home and process working-directory text"
+        },
+        {
+          "path": "/state/1/result/response/result/workspaces/1/current_directory",
+          "rationale": "restored workspace paths use platform-native home and process working-directory text"
+        },
+        {
+          "path": "/state/2/result/response/result/workspaces/0/current_directory",
+          "rationale": "restored workspace paths use platform-native home and process working-directory text"
+        },
+        {
+          "path": "/state/2/result/response/result/workspaces/1/current_directory",
+          "rationale": "restored workspace paths use platform-native home and process working-directory text"
+        },
+        {
+          "path": "/state/3/result/response/result/surfaces/0/requested_working_directory",
+          "rationale": "restored terminal startup paths use platform-native home-directory text"
+        },
+        {
+          "path": "/state/3/result/response/result/surfaces/1/requested_working_directory",
+          "rationale": "restored terminal startup paths use platform-native home-directory text"
+        },
+        {
+          "path": "/state/3/result/response/result/surfaces/2/requested_working_directory",
+          "rationale": "restored terminal startup paths use platform-native home-directory text"
+        },
+        {
+          "path": "/state/4/result/response/result/surfaces/0/requested_working_directory",
+          "rationale": "restored terminal startup paths use platform-native home-directory text"
+        },
+        {
+          "path": "/state/4/result/response/result/surfaces/1/requested_working_directory",
+          "rationale": "restored terminal startup paths use platform-native home-directory text"
+        },
+        {
+          "path": "/state/4/result/response/result/surfaces/2/requested_working_directory",
+          "rationale": "restored terminal startup paths use platform-native home-directory text"
+        }
+      ]
     }
   ]
 }
