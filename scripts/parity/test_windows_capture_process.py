@@ -68,9 +68,14 @@ class WindowsCaptureProcessTests(unittest.TestCase):
                 return result
 
     def build_visible_window_fixture(
-        self, directory: Path, *, show_delay_ms: int = 50
+        self,
+        directory: Path,
+        *,
+        show_delay_ms: int = 50,
+        offscreen: bool = False,
     ) -> Path:
-        stem = f"visible-capture-fixture-{show_delay_ms}"
+        placement = "offscreen" if offscreen else "onscreen"
+        stem = f"visible-capture-fixture-{show_delay_ms}-{placement}"
         executable = directory / f"{stem}.exe"
         source = directory / f"{stem}.cs"
         source.write_text(
@@ -100,8 +105,8 @@ internal static class Program
             var form = new Form
             {
                 Text = "cmux visible capture fixture",
-                StartPosition = FormStartPosition.Manual,
-                Location = new Point(-32000, -32000)
+                Opacity = 0.0,
+                __FORM_PLACEMENT__
             };
             var timer = new Timer { Interval = __SHOW_DELAY_MS__ };
             timer.Tick += (_, __) =>
@@ -114,7 +119,18 @@ internal static class Program
         }
     }
 }
-""".replace("__SHOW_DELAY_MS__", str(show_delay_ms)).strip(),
+"""
+            .replace("__SHOW_DELAY_MS__", str(show_delay_ms))
+            .replace(
+                "__FORM_PLACEMENT__",
+                (
+                    "StartPosition = FormStartPosition.Manual,\n"
+                    "                Location = new Point(-32000, -32000)"
+                    if offscreen
+                    else "StartPosition = FormStartPosition.CenterScreen"
+                ),
+            )
+            .strip(),
             encoding="utf-8",
         )
         result = subprocess.run(
@@ -238,6 +254,38 @@ internal static class Program
                 self.assertFalse(
                     windows_process_exists(process_id),
                     "capture process remained alive after exposing a delayed window",
+                )
+            finally:
+                self.run_script(profile, pipe_name=pipe_name)
+
+    def test_supervisor_allows_rendering_entirely_offscreen(self):
+        with tempfile.TemporaryDirectory() as directory:
+            profile = Path(directory)
+            executable = self.build_visible_window_fixture(
+                profile, show_delay_ms=1500, offscreen=True
+            )
+            pipe_name = "cmux-offscreen-capture-test"
+
+            try:
+                result = self.run_script(
+                    profile,
+                    action="Start",
+                    pipe_name=pipe_name,
+                    app_binary=executable,
+                    startup_timeout_seconds=3,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                state = json.loads(
+                    (profile / "cmux-capture-process.json").read_text(
+                        encoding="utf-8-sig"
+                    )
+                )
+
+                time.sleep(2.0)
+
+                self.assertTrue(
+                    windows_process_exists(int(state["pid"])),
+                    "offscreen capture rendering was incorrectly terminated",
                 )
             finally:
                 self.run_script(profile, pipe_name=pipe_name)
