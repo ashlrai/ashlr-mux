@@ -350,6 +350,7 @@ fn executable_routes_focus_pane_and_formats_result() {
     assert_eq!(
         serde_json::Value::Object(params),
         serde_json::json!({
+            "__cmux_cli_command": "focus-pane",
             "pane_ref": "pane:3",
             "workspace_ref": "workspace:2",
             "window_ref": "window:1",
@@ -871,7 +872,10 @@ fn executable_routes_last_pane_and_formats_result() {
     assert_eq!(method, "pane.last");
     assert_eq!(
         serde_json::Value::Object(params),
-        serde_json::json!({"workspace_ref": "workspace:2"})
+        serde_json::json!({
+            "__cmux_cli_command": "last-pane",
+            "workspace_ref": "workspace:2",
+        })
     );
 }
 

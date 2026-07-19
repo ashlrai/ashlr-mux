@@ -2843,6 +2843,7 @@ mod tests {
         assert_eq!(
             last.params,
             serde_json::json!({
+                "__cmux_cli_command": "last-pane",
                 "workspace_ref": "workspace:2",
                 "window_ref": "window:1",
             })
@@ -3063,6 +3064,7 @@ mod tests {
             )
             .params,
             serde_json::json!({
+                "__cmux_cli_command": "focus-pane",
                 "pane_ref": "pane:2",
                 "workspace_ref": "workspace:3",
                 "window_ref": "window:1",
@@ -3105,11 +3107,17 @@ mod tests {
         );
         assert_eq!(
             mapped("focus-panel", &["--panel", "surface:2"]).params,
-            serde_json::json!({"surface_ref": "surface:2"})
+            serde_json::json!({
+                "__cmux_cli_command": "focus-panel",
+                "surface_ref": "surface:2",
+            })
         );
         assert_eq!(
             mapped("focus-pane", &["surface-2"]).params,
-            serde_json::json!({"pane_id": "surface-2"})
+            serde_json::json!({
+                "__cmux_cli_command": "focus-pane",
+                "pane_id": "surface-2",
+            })
         );
     }
 

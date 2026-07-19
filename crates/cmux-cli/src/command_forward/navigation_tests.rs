@@ -37,6 +37,7 @@ fn focus_panel_normalizes_a_raw_panel_handle_to_surface_id() {
     assert_eq!(
         command.params,
         serde_json::json!({
+                "__cmux_cli_command": "focus-panel",
                 "surface_id": "4dc88e7e-402e-472e-b699-8a18aa011633",
                 "workspace_ref": "workspace:2",
                 "window_ref": "window:3",

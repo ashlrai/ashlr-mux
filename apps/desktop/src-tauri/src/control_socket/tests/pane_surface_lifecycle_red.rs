@@ -101,7 +101,7 @@ fn intended_mixed_surface_records() -> Value {
     ])
 }
 
-fn mixed_surface_snapshot() -> AppSessionSnapshot {
+pub(super) fn mixed_surface_snapshot() -> AppSessionSnapshot {
     let mut snapshot = test_snapshot();
     let workspace = &mut snapshot.windows[0].tab_manager.workspaces[0];
     workspace.focused_panel_id = Some("surface-terminal".into());

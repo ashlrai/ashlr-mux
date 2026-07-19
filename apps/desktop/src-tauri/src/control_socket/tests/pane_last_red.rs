@@ -107,3 +107,22 @@ fn pane_last_publishes_only_the_canonical_selection_sequence() {
         Some("surface-right")
     );
 }
+
+#[test]
+fn cli_last_pane_omits_the_direct_api_selection_callback() {
+    let last = transition(
+        &resizable_snapshot(),
+        json!({
+            "__cmux_cli_command": "last-pane",
+            "workspace_id": "workspace-1",
+        }),
+    );
+
+    assert_eq!(
+        last.events
+            .iter()
+            .map(|event| event.name)
+            .collect::<Vec<_>>(),
+        ["pane.focused", "surface.focused"]
+    );
+}

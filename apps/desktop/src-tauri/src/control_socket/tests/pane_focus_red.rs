@@ -224,3 +224,39 @@ fn pane_focus_omits_workspace_selection_when_the_workspace_is_already_selected()
         ]
     );
 }
+
+#[test]
+fn cli_focus_pane_reports_the_target_workspace_without_reselecting_it() {
+    let focused = transition(
+        &two_workspace_focus_snapshot(),
+        "pane.focus",
+        json!({
+            "__cmux_cli_command": "focus-pane",
+            "workspace_id": "workspace-target",
+            "pane_id": "pane-target",
+        }),
+    );
+
+    assert_eq!(
+        focused
+            .events
+            .iter()
+            .map(|event| event.name)
+            .collect::<Vec<_>>(),
+        [
+            "window.focused",
+            "surface.selected",
+            "pane.focused",
+            "surface.focused",
+        ]
+    );
+    assert_eq!(
+        focused.events[0].workspace_id.as_deref(),
+        Some("workspace-target")
+    );
+    assert_eq!(
+        focused.events[0].payload["workspace_id"],
+        json!("workspace-target")
+    );
+    assert_eq!(focused.events[0].payload["selected_workspace_index"], 1);
+}
