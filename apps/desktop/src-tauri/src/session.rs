@@ -3501,6 +3501,7 @@ pub(crate) fn close_workspace_in_window_for_control(
     state: &SessionState,
     window_index: usize,
     workspace_index: usize,
+    event_policy: DerivedEventPolicy,
 ) -> Option<(AppSessionSnapshot, bool)> {
     let (closed_browser_tabs, closed_workspace, teardown, changed, snapshot) = {
         let mut guard = state
@@ -3546,22 +3547,18 @@ pub(crate) fn close_workspace_in_window_for_control(
             .expect("closed browser history mutex poisoned");
         push_closed_browser_tabs(&mut history, closed_browser_tabs);
     }
-    if changed {
-        if let Some(closed_workspace) = closed_workspace {
-            state
-                .closed_workspaces
-                .lock()
-                .expect("closed workspace history mutex poisoned")
-                .push(closed_workspace);
-        }
+    if let (true, Some(closed_workspace)) = (changed, closed_workspace) {
+        state
+            .closed_workspaces
+            .lock()
+            .expect("closed workspace history mutex poisoned")
+            .push(closed_workspace);
+    }
+    if let (true, Some(teardown)) = (changed, teardown) {
+        apply_workspace_close_teardown(app, state, &teardown);
     }
     if changed {
-        if let Some(teardown) = teardown {
-            apply_workspace_close_teardown(app, state, &teardown);
-        }
-    }
-    if changed {
-        notify_session_changed(app, &snapshot);
+        notify_session_changed_with_event_policy(app, &snapshot, event_policy);
     }
     Some((snapshot, changed))
 }

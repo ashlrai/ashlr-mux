@@ -1,7 +1,7 @@
 # Windows-port source file length budget.
 # Format: max_lines<TAB>relative path
 # New files may not exceed 1500 lines. Reduce entries as files shrink.
-5125	apps/desktop/src-tauri/src/session.rs
+5122	apps/desktop/src-tauri/src/session.rs
 5975	apps/desktop/web/src/components/CustomSidebarSurface.test.tsx
 2902	apps/desktop/src-tauri/src/terminal.rs
 4795	apps/desktop/web/src/components/CustomSidebarSurface.tsx
@@ -13,7 +13,7 @@
 3071	crates/cmux-cli/src/main.rs
 3997	crates/cmux-cli/src/hooks_installer.rs
 3922	crates/cmux-config/src/lib.rs
-3122	apps/desktop/src-tauri/src/control_socket/workspace_control.rs
+3080	apps/desktop/src-tauri/src/control_socket/workspace_control.rs
 3522	apps/desktop/src-tauri/src/control_socket/pane_surface_control.rs
 3412	apps/desktop/src-tauri/src/session/unit_tests.rs
 3284	apps/desktop/src-tauri/src/browser.rs

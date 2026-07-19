@@ -109,7 +109,7 @@ fn workspace_close_event_specs_match_the_canonical_lifecycle_payloads() {
             "cwd": "C:/repo",
             "index": null,
             "selected": false,
-            "tab_count": 1,
+            "tab_count": 0,
             "previous_workspace_id": null,
         })
     );
