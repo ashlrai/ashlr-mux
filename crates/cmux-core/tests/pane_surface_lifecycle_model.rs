@@ -1090,11 +1090,39 @@ fn app_wide_authority_moves_across_windows_atomically_and_projects_both() {
             .iter()
             .map(|surface| surface["surface_id"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        ["surface-a", "surface-b"]
+        ["surface-b", "surface-a"]
     );
     assert_eq!(
-        projected["windows"][1]["tab_manager"]["workspaces"][0]["surfaces"][0]["metadata"]
+        projected["windows"][1]["tab_manager"]["workspaces"][0]["surfaces"][1]["metadata"]
             ["custom_title"],
         "api"
+    );
+}
+
+#[test]
+fn default_cross_workspace_attach_keeps_registry_and_visual_orders_independent() {
+    let base: AppSessionSnapshot = serde_json::from_value(serde_json::json!({
+        "version":1,"created_at":0,"windows":[
+            {"window_id":"window-a","tab_manager":{"workspaces":[{"workspace_id":"workspace-a","process_title":"a","focused_panel_id":"surface-a","layout":{"type":"pane","pane":{"pane_id":"pane-a","panel_ids":["surface-a"],"selected_panel_id":"surface-a"}},"surfaces":[{"surface_id":"surface-a","pane_id":"pane-a","generation":1,"kind":{"type":"terminal"},"metadata":{}}]}]}},
+            {"window_id":"window-b","tab_manager":{"workspaces":[{"workspace_id":"workspace-b","process_title":"b","focused_panel_id":"surface-c","layout":{"type":"pane","pane":{"pane_id":"pane-b","panel_ids":["surface-b","surface-c"],"selected_panel_id":"surface-c"}},"surfaces":[{"surface_id":"surface-b","pane_id":"pane-b","generation":1,"kind":{"type":"terminal"},"metadata":{}},{"surface_id":"surface-c","pane_id":"pane-b","generation":1,"kind":{"type":"terminal"},"metadata":{}}]}]}}
+        ]
+    })).unwrap();
+    let mut model = SurfaceLifecycleModel::from_app_session(&base).unwrap();
+
+    move_ok(&mut model, "surface-a", "pane-b", usize::MAX);
+    let projected = serde_json::to_value(model.to_app_session(&base).unwrap()).unwrap();
+    let workspace = &projected["windows"][1]["tab_manager"]["workspaces"][0];
+    assert_eq!(
+        workspace["layout"]["pane"]["panel_ids"],
+        serde_json::json!(["surface-c", "surface-a", "surface-b"])
+    );
+    assert_eq!(
+        workspace["surfaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|surface| surface["surface_id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["surface-b", "surface-c", "surface-a"]
     );
 }

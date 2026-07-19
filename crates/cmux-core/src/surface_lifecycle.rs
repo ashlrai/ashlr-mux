@@ -602,7 +602,22 @@ impl SurfaceLifecycleModel {
         }
         let source_became_empty = !same_pane && old_pane.surface_ids.is_empty();
         let destination = self.panes.get_mut(pane_id).unwrap();
-        let at = index.min(destination.surface_ids.len());
+        let default_cross_workspace_attach =
+            index == usize::MAX && old.workspace_id != destination.workspace_id;
+        let at = if default_cross_workspace_attach {
+            // Bonsplit's nil-index detached attach anchors the destination's
+            // selected tab at the front and inserts the arrival beside it.
+            if let Some(selected) = destination
+                .surface_ids
+                .iter()
+                .position(|id| id == &destination.selected_surface_id)
+            {
+                destination.surface_ids.rotate_left(selected);
+            }
+            usize::from(!destination.surface_ids.is_empty())
+        } else {
+            index.min(destination.surface_ids.len())
+        };
         destination.surface_ids.insert(at, surface_id.into());
         self.collapsed_panes.remove(pane_id);
         if destination.selected_surface_id.is_empty() || (same_pane && was_selected) {
@@ -612,6 +627,23 @@ impl SurfaceLifecycleModel {
             self.collapsed_panes.insert(old.pane_id.clone());
         }
         let destination_workspace = destination.workspace_id.clone();
+        if old.workspace_id != destination_workspace {
+            // Canonical keeps a workspace-level panel registry separate from
+            // bonsplit's visual tab order. Detach removes the old registry
+            // entry and cross-workspace attach inserts it after the
+            // destination's existing entries.
+            self.surface_order.retain(|id| id != surface_id);
+            let at = self
+                .surface_order
+                .iter()
+                .rposition(|id| {
+                    self.surface_owners
+                        .get(id)
+                        .is_some_and(|owner| owner.workspace_id == destination_workspace)
+                })
+                .map_or(self.surface_order.len(), |index| index + 1);
+            self.surface_order.insert(at, surface_id.into());
+        }
         let owner = self.surface_owners.get_mut(surface_id).unwrap();
         owner.window_id = destination.window_id.clone();
         owner.workspace_id = destination.workspace_id.clone();
