@@ -9,6 +9,7 @@ mod pane_focus_red;
 mod pane_list_reference_red;
 mod pane_response_identity_red;
 mod pane_surface_lifecycle_red;
+mod pane_surface_reference_red;
 mod remote_runtime_lifecycle_lease_red;
 mod surface_action_adversarial_red;
 mod surface_action_exhaustive_red;
