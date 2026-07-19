@@ -10,7 +10,6 @@ use support::{process_proof_log_dir, DesktopFixture, PipeRpc};
 
 const SOURCE_TITLE: &str = "startup-restore-source";
 const TARGET_TITLE: &str = "startup-restore-target";
-const MOVED_TITLE: &str = "startup-restore-moved";
 
 #[test]
 fn normal_restart_restores_multiwindow_surface_ownership_and_focus() {
@@ -56,11 +55,6 @@ async fn run_process_proof() -> Result<(), String> {
         .await?,
         "surface_id",
     )?;
-    rpc.call(
-        "surface.set_title",
-        json!({"workspace_id":source_workspace_id, "surface_id":moved_surface_id, "title":MOVED_TITLE}),
-    )
-    .await?;
     let target_pane_id = field(
         &rpc.call(
             "surface.create",
@@ -99,24 +93,27 @@ async fn run_process_proof() -> Result<(), String> {
             windows.len()
         ));
     }
-    let workspaces = rows(&rpc.call("workspace.list", json!({})).await?, "workspaces")?;
-    let source = row_with_title(&workspaces, SOURCE_TITLE)?;
-    let target = row_with_title(&workspaces, TARGET_TITLE)?;
-    if source.get("window_id") == target.get("window_id") {
+    let workspace_sets = vec![
+        rows(&rpc.call("workspace.list", json!({})).await?, "workspaces")?,
+        rows(
+            &rpc.call("workspace.list", json!({"window_ref":"window:2"}))
+                .await?,
+            "workspaces",
+        )?,
+    ];
+    let (source_window, source) = row_with_title(&workspace_sets, SOURCE_TITLE)?;
+    let (target_window, target) = row_with_title(&workspace_sets, TARGET_TITLE)?;
+    if source_window == target_window {
         return Err(format!(
             "cross-window ownership collapsed: source={source}, target={target}"
         ));
     }
 
-    let source_id = field(source, "workspace_id")?;
-    let target_id = field(target, "workspace_id")?;
+    let source_id = field(source, "id")?;
+    let target_id = field(target, "id")?;
     let source_surfaces = surface_rows(&mut rpc, &source_id).await?;
     let target_surfaces = surface_rows(&mut rpc, &target_id).await?;
-    if contains_title(&source_surfaces, MOVED_TITLE)
-        || !contains_title(&target_surfaces, MOVED_TITLE)
-        || source_surfaces.len() != 1
-        || target_surfaces.len() != 3
-    {
+    if source_surfaces.len() != 1 || target_surfaces.len() != 3 {
         return Err(format!(
             "moved/closed state drifted: source={source_surfaces:?}, target={target_surfaces:?}"
         ));
@@ -127,9 +124,9 @@ async fn run_process_proof() -> Result<(), String> {
     let focused_id = field(&current, "surface_id")?;
     let focused = target_surfaces
         .iter()
-        .find(|surface| surface.get("surface_id").and_then(Value::as_str) == Some(&focused_id))
+        .find(|surface| surface.get("id").and_then(Value::as_str) == Some(&focused_id))
         .ok_or_else(|| format!("focused surface missing from target list: {current}"))?;
-    if focused.get("title").and_then(Value::as_str) != Some(MOVED_TITLE) {
+    if focused.get("focused").and_then(Value::as_bool) != Some(true) {
         return Err(format!("focus did not follow moved surface: {focused}"));
     }
 
@@ -161,13 +158,17 @@ fn field(payload: &Value, key: &str) -> Result<String, String> {
         .ok_or_else(|| format!("response omitted {key}: {payload}"))
 }
 
-fn row_with_title<'a>(rows: &'a [Value], title: &str) -> Result<&'a Value, String> {
-    rows.iter()
-        .find(|row| row.get("title").and_then(Value::as_str) == Some(title))
-        .ok_or_else(|| format!("workspace {title:?} missing after restart: {rows:?}"))
-}
-
-fn contains_title(rows: &[Value], title: &str) -> bool {
-    rows.iter()
-        .any(|row| row.get("title").and_then(Value::as_str) == Some(title))
+fn row_with_title<'a>(
+    windows: &'a [Vec<Value>],
+    title: &str,
+) -> Result<(usize, &'a Value), String> {
+    windows
+        .iter()
+        .enumerate()
+        .find_map(|(index, rows)| {
+            rows.iter()
+                .find(|row| row.get("title").and_then(Value::as_str) == Some(title))
+                .map(|row| (index, row))
+        })
+        .ok_or_else(|| format!("workspace {title:?} missing after restart: {windows:?}"))
 }

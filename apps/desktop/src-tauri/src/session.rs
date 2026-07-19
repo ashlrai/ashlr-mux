@@ -194,17 +194,19 @@ mod persistence;
 mod restore;
 mod runtime_facts;
 mod snapshot_mutations;
+mod startup_restore;
 #[cfg(test)]
 #[path = "session/unit_tests.rs"]
 mod tests;
 
+pub(crate) use persistence::default_workspace_directory;
 use persistence::*;
-pub(crate) use persistence::{bootstrap_session_persistence, default_workspace_directory};
 use restore::*;
 pub(crate) use restore::{restore_previous_launch_for_control, RestorePreviousLaunchOutcome};
 use runtime_facts::*;
 pub(crate) use runtime_facts::{record_started_agent_session, StartedAgentSessionSnapshot};
 use snapshot_mutations::*;
+pub(crate) use startup_restore::bootstrap_session_persistence;
 
 impl Default for SessionState {
     fn default() -> Self {

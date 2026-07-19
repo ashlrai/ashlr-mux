@@ -759,33 +759,3 @@ pub(super) fn next_panel_counter(snapshot: &AppSessionSnapshot) -> u64 {
     }
     max_seen.saturating_add(1).max(1)
 }
-
-/// Rotate the last persisted live snapshot into the "previous launch" slot,
-/// then persist the current in-memory session as the new live snapshot. Called
-/// once during app setup before the web layer begins mutating the session.
-pub fn bootstrap_session_persistence(app: &AppHandle, state: State<'_, SessionState>) {
-    if let Some((current, previous)) = session_snapshot_paths(app) {
-        if current.exists() {
-            if let Some(parent) = previous.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            let _ = std::fs::copy(&current, &previous);
-        }
-    }
-
-    let snapshot = {
-        let mut guard = state
-            .snapshot
-            .lock()
-            .expect("session snapshot mutex poisoned");
-        ensure_workspace_ids(&mut guard);
-        ensure_pane_ids(&mut guard);
-        guard.clone()
-    };
-    *state
-        .workspace_focus_history
-        .lock()
-        .expect("workspace focus history mutex poisoned") =
-        workspace_focus_history_for_snapshot(&snapshot);
-    let _ = persist_current_snapshot(app, &snapshot);
-}
