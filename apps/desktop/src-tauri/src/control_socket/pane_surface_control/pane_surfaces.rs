@@ -1,11 +1,38 @@
 use super::*;
 
 pub(in crate::control_socket) fn pane_surface_default_title(
-    _workspace: &SessionWorkspaceSnapshot,
-    _panel_id: &str,
+    workspace: &SessionWorkspaceSnapshot,
+    panel_id: &str,
     surface_type: &str,
 ) -> String {
-    surface_type.to_string()
+    let anchor_matches = workspace
+        .surfaces
+        .as_deref()
+        .and_then(|surfaces| surfaces.first())
+        .map(|surface| surface.surface_id == panel_id)
+        .unwrap_or_else(|| {
+            surfaces_for_workspace(workspace)
+                .first()
+                .and_then(|surface| surface.get("id"))
+                .and_then(Value::as_str)
+                == Some(panel_id)
+        });
+    if anchor_matches {
+        if let Some(title) = workspace
+            .custom_title
+            .as_deref()
+            .filter(|title| !title.trim().is_empty())
+        {
+            return title.to_string();
+        }
+        if !workspace.process_title.trim().is_empty() {
+            return workspace.process_title.clone();
+        }
+    }
+    match surface_type {
+        "terminal" => "Terminal".into(),
+        _ => surface_type.to_string(),
+    }
 }
 
 pub(in crate::control_socket) fn pane_surfaces(
@@ -67,8 +94,8 @@ pub(in crate::control_socket) fn pane_surfaces(
         .iter()
         .enumerate()
         .map(|(index, panel_id)| {
-            let surface_type = lifecycle
-                .surface(panel_id)
+            let surface = lifecycle.surface(panel_id);
+            let surface_type = surface
                 .map(|surface| surface_kind_label(&surface.kind))
                 .unwrap_or_else(|| pane.surface_kind.as_deref().unwrap_or("terminal"));
             let reference = indexed_response_ref_with(
@@ -77,10 +104,10 @@ pub(in crate::control_socket) fn pane_surfaces(
                 workspace_surface_ids.iter().position(|id| id == panel_id),
                 &mut |kind, id| control_handle_ref(app, kind, id),
             );
-            let title = lifecycle
-                .surface(panel_id)
+            let title = surface
                 .and_then(|surface| surface.metadata.custom_title.clone())
                 .or_else(|| panel_title(&workspace.panel_titles, panel_id))
+                .or_else(|| surface.and_then(|surface| surface.metadata.runtime_title.clone()))
                 .unwrap_or_else(|| pane_surface_default_title(workspace, panel_id, surface_type));
             json!({
                 "id": panel_id,
