@@ -19,6 +19,17 @@ def windows_process_exists(process_id: int) -> bool:
     return True
 
 
+def terminate_windows_process(process_id: int) -> None:
+    process = ctypes.windll.kernel32.OpenProcess(0x0001, False, process_id)
+    if not process:
+        return
+    try:
+        ctypes.windll.kernel32.TerminateProcess(process, 1)
+        ctypes.windll.kernel32.WaitForSingleObject(process, 5_000)
+    finally:
+        ctypes.windll.kernel32.CloseHandle(process)
+
+
 @unittest.skipUnless(os.name == "nt", "Windows process supervisor")
 class WindowsCaptureProcessTests(unittest.TestCase):
     def run_script(
@@ -252,6 +263,66 @@ internal static class Program
         self.assertTrue(executable.is_file())
         return executable
 
+    def build_persistent_descendant_fixture(self, directory: Path) -> Path:
+        executable = directory / "persistent-descendant-capture-fixture.exe"
+        source = directory / "persistent-descendant-capture-fixture.cs"
+        source.write_text(
+            r"""
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.IO.Pipes;
+using System.Threading;
+
+internal static class Program
+{
+    private static void Main(string[] args)
+    {
+        if (args.Length == 1 && args[0] == "--child")
+        {
+            File.WriteAllText(
+                Path.Combine(Environment.CurrentDirectory, "persistent-descendant.pid"),
+                Process.GetCurrentProcess().Id.ToString());
+            Thread.Sleep(TimeSpan.FromSeconds(30));
+            return;
+        }
+
+        using (var pipe = new NamedPipeServerStream(
+            Environment.GetEnvironmentVariable("CMUX_CONTROL_PIPE_NAME"),
+            PipeDirection.InOut,
+            1,
+            PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous))
+        {
+            Process.Start(Process.GetCurrentProcess().MainModule.FileName, "--child");
+            Thread.Sleep(Timeout.Infinite);
+        }
+    }
+}
+"""
+            .strip(),
+            encoding="utf-8",
+        )
+        result = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                (
+                    f"Add-Type -Path '{str(source).replace(chr(39), chr(39) * 2)}' "
+                    f"-OutputAssembly '{str(executable).replace(chr(39), chr(39) * 2)}' "
+                    "-OutputType ConsoleApplication"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(executable.is_file())
+        return executable
+
     def assert_supervisor_preserves_window(
         self, pipe_name: str, **fixture_options: object
     ) -> None:
@@ -417,6 +488,43 @@ internal static class Program
             finally:
                 self.run_script(profile, pipe_name=pipe_name)
                 time.sleep(0.5)
+
+    def test_stop_terminates_a_persistent_owned_descendant(self):
+        with tempfile.TemporaryDirectory() as directory:
+            profile = Path(directory)
+            executable = self.build_persistent_descendant_fixture(profile)
+            pipe_name = "cmux-persistent-descendant-capture-test"
+            child_pid = None
+
+            try:
+                start = self.run_script(
+                    profile,
+                    action="Start",
+                    pipe_name=pipe_name,
+                    app_binary=executable,
+                    startup_timeout_seconds=3,
+                )
+                self.assertEqual(start.returncode, 0, start.stderr)
+                child_pid_path = profile / "persistent-descendant.pid"
+                for _ in range(30):
+                    if child_pid_path.is_file():
+                        break
+                    time.sleep(0.1)
+                self.assertTrue(child_pid_path.is_file())
+                child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+                self.assertTrue(windows_process_exists(child_pid))
+
+                stop = self.run_script(profile, pipe_name=pipe_name)
+
+                self.assertEqual(stop.returncode, 0, stop.stderr)
+                self.assertFalse(
+                    windows_process_exists(child_pid),
+                    "capture Stop left an owned descendant running",
+                )
+            finally:
+                self.run_script(profile, pipe_name=pipe_name)
+                if child_pid is not None:
+                    terminate_windows_process(child_pid)
 
     def test_supervisor_allows_rendering_entirely_offscreen(self):
         self.assert_supervisor_preserves_window(
