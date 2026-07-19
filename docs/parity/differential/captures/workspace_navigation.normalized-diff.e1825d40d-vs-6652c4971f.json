@@ -1,0 +1,119 @@
+{
+  "capture_integrity": {
+    "capture_error_cases": {
+      "canonical": [],
+      "windows": []
+    },
+    "missing_cases": [],
+    "unsettled_cases": {
+      "canonical": [],
+      "windows": []
+    },
+    "valid_for_promotion": true
+  },
+  "cases": 10,
+  "deltas": 0,
+  "identical": 10,
+  "results": [
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_next.explicit_window_wraps",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_previous.routes_by_workspace_owner",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_next.uses_active_window",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_previous.explicit_window_wraps",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_next.invalid_window_does_not_fall_through",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_last.explicit_window_history",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_last.fresh_window_has_no_history",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "cli_next_window.uses_active_window",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "cli_previous_window.uses_active_window",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "cli_last_window.explicit_window",
+      "identical": true,
+      "mismatches": []
+    }
+  ]
+}

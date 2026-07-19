@@ -30,7 +30,8 @@
         ]
       },
       "approved_differences": [
-        {"path": "/state/0/result/response/result/workspace/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."}
+        {"path": "/state/0/result/response/result/workspace/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."},
+        {"path": "/events/2/payload/cwd", "rationale": "The exact workspace.selected event carries the same native inherited directory."}
       ]
     },
     {
@@ -46,7 +47,8 @@
         ]
       },
       "approved_differences": [
-        {"path": "/state/0/result/response/result/workspace/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."}
+        {"path": "/state/0/result/response/result/workspace/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."},
+        {"path": "/events/2/payload/cwd", "rationale": "The exact workspace.selected event carries the same native inherited directory."}
       ]
     },
     {
@@ -97,7 +99,8 @@
         ]
       },
       "approved_differences": [
-        {"path": "/state/0/result/response/result/workspace/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."}
+        {"path": "/state/0/result/response/result/workspace/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."},
+        {"path": "/events/2/payload/cwd", "rationale": "The exact workspace.selected event carries the same native inherited directory."}
       ]
     },
     {
