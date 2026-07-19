@@ -10,11 +10,6 @@ const W2: &str = "22222222-2222-4222-8222-222222222222";
 const W3: &str = "33333333-3333-4333-8333-333333333333";
 const G1: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SelectionError {
-    WindowMissing,
-}
-
 struct RecordingPublication {
     calls: Vec<&'static str>,
     persist_error: Option<String>,
@@ -93,25 +88,6 @@ fn assert_persist_only(
     assert!(publication.events.is_empty());
 }
 
-fn select_in_window_candidate(
-    snapshot: &mut AppSessionSnapshot,
-    window_index: usize,
-    workspace_index: usize,
-) -> Result<((), bool), SelectionError> {
-    let window = snapshot
-        .windows
-        .get_mut(window_index)
-        .ok_or(SelectionError::WindowMissing)?;
-    if workspace_index >= window.tab_manager.workspaces.len() {
-        return Ok(((), false));
-    }
-    let changed = session_ops::select_workspace(&mut window.tab_manager, workspace_index as i64);
-    if changed {
-        sync_window_selected_workspace_id(window);
-    }
-    Ok(((), true))
-}
-
 fn reorder_many_candidate(
     snapshot: &mut AppSessionSnapshot,
     ordered: &[Uuid],
@@ -159,10 +135,10 @@ fn window_scoped_selection_distinguishes_missing_invalid_same_and_changed() {
     let mut publication = RecordingPublication::new(&missing);
     assert_eq!(
         transact_value_if_changed_snapshot(&authority, &mut publication, |candidate| {
-            select_in_window_candidate(candidate, 0, 0)
+            select_workspace_in_window_candidate(candidate, 0, 0)
         })
         .unwrap_err(),
-        PaneTopologyControlError::Operation(SelectionError::WindowMissing)
+        PaneTopologyControlError::Operation(WorkspaceSelectControlError::WindowNotFound)
     );
     assert_eq!(*authority.lock().unwrap(), missing);
     assert!(publication.calls.is_empty());
@@ -172,26 +148,31 @@ fn window_scoped_selection_distinguishes_missing_invalid_same_and_changed() {
     let mut publication = RecordingPublication::new(&before);
     let (_, returned) =
         transact_value_if_changed_snapshot(&authority, &mut publication, |candidate| {
-            select_in_window_candidate(candidate, 0, 99)
+            select_workspace_in_window_candidate(candidate, 0, 99)
         })
         .unwrap();
     assert_eq!(returned, before);
     assert!(publication.calls.is_empty());
 
-    for workspace_index in [0, 2] {
+    for (workspace_index, changed) in [(0, false), (2, true)] {
         let before = workspaces();
         let authority = GatedSnapshot::new(before.clone());
         let mut publication = RecordingPublication::new(&before);
         let (_, committed) =
             transact_value_if_changed_snapshot(&authority, &mut publication, |candidate| {
-                select_in_window_candidate(candidate, 0, workspace_index)
+                select_workspace_in_window_candidate(candidate, 0, workspace_index)
             })
             .unwrap();
         assert_eq!(
             committed.windows[0].tab_manager.selected_workspace_index,
             Some(workspace_index as i64)
         );
-        assert_publication(&publication, &committed);
+        if changed {
+            assert_publication(&publication, &committed);
+        } else {
+            assert_eq!(committed, before);
+            assert!(publication.calls.is_empty());
+        }
     }
 }
 
@@ -378,7 +359,7 @@ fn persistence_failures_leak_nothing_and_selection_reorder_writers_serialize() {
     publication.persist_error = Some("window selection persistence failure".into());
     assert!(matches!(
         transact_value_if_changed_snapshot(&authority, &mut publication, |candidate| {
-            select_in_window_candidate(candidate, 0, 2)
+            select_workspace_in_window_candidate(candidate, 0, 2)
         }),
         Err(PaneTopologyControlError::Publication(error))
             if error == "window selection persistence failure"

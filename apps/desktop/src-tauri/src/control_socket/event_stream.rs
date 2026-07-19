@@ -1,5 +1,23 @@
 use super::*;
 
+pub(super) fn record_derived_event(app: &AppHandle, event: DerivedEventSpec) {
+    record_event(
+        app,
+        event.name,
+        event.category,
+        event.source,
+        event.window_id,
+        event.workspace_id,
+        event
+            .payload
+            .get("pane_id")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        event.surface_id,
+        event.payload,
+    );
+}
+
 pub(crate) fn record_session_changed_event(app: &AppHandle, snapshot: &AppSessionSnapshot) {
     record_session_changed_event_suppressing(app, snapshot, &HashSet::new());
 }

@@ -208,17 +208,7 @@ pub(super) fn record_resolved_workspace_rename_event(
     else {
         return;
     };
-    record_event(
-        app,
-        event.name,
-        event.category,
-        event.source,
-        event.window_id,
-        event.workspace_id,
-        None,
-        event.surface_id,
-        event.payload,
-    );
+    record_derived_event(app, event);
 }
 
 pub(super) fn resolved_workspace_rename_event_spec(
@@ -245,6 +235,53 @@ pub(super) fn resolved_workspace_rename_event_spec(
         workspace,
         &workspace.title,
     ))
+}
+
+pub(super) fn workspace_selected_event_spec(
+    snapshot: &AppSessionSnapshot,
+    window_index: usize,
+    workspace_index: usize,
+    previous_workspace_id: Option<&str>,
+) -> Option<DerivedEventSpec> {
+    let window = snapshot.windows.get(window_index)?;
+    let workspace = window.tab_manager.workspaces.get(workspace_index)?;
+    let workspace_id = workspace.workspace_id.clone()?;
+    Some(DerivedEventSpec {
+        name: "workspace.selected",
+        category: "workspace",
+        source: "workspace.lifecycle",
+        window_id: None,
+        workspace_id: Some(workspace_id.clone()),
+        surface_id: None,
+        payload: json!({
+            "workspace_id": workspace_id,
+            "title": workspace_display_name(workspace),
+            "custom_title": workspace.custom_title,
+            "cwd": workspace.current_directory,
+            "index": workspace_index,
+            "selected": true,
+            "tab_count": window.tab_manager.workspaces.len(),
+            "previous_workspace_id": previous_workspace_id,
+        }),
+    })
+}
+
+pub(super) fn record_workspace_selected_event(
+    app: &AppHandle,
+    snapshot: &AppSessionSnapshot,
+    window_index: usize,
+    workspace_index: usize,
+    previous_workspace_id: Option<&str>,
+) {
+    let Some(event) = workspace_selected_event_spec(
+        snapshot,
+        window_index,
+        workspace_index,
+        previous_workspace_id,
+    ) else {
+        return;
+    };
+    record_derived_event(app, event);
 }
 
 pub(super) fn workspace_create_cwd_param(
@@ -686,8 +723,32 @@ pub(super) fn workspace_select(
         .workspace_id
         .clone()
         .unwrap_or_default();
+    let previous_workspace_id = current.windows[window_index]
+        .tab_manager
+        .selected_workspace_index
+        .and_then(|selected| usize::try_from(selected).ok())
+        .and_then(|selected| {
+            current.windows[window_index]
+                .tab_manager
+                .workspaces
+                .get(selected)
+        })
+        .and_then(|workspace| workspace.workspace_id.clone());
+    if let Some(window_id) = workspace_select_focus_selector(&current, window_index) {
+        let _ = handle_window_lifecycle_request(
+            app,
+            "window.focus",
+            serde_json::Map::from_iter([("window_id".to_string(), json!(window_id))]),
+        );
+    }
     let state = app.state::<SessionState>();
-    let result = match select_workspace_in_window_for_control(app, &state, window_index, index) {
+    let result = match select_workspace_in_window_for_control(
+        app,
+        &state,
+        window_index,
+        index,
+        DerivedEventPolicy::Suppress,
+    ) {
         Ok(result) => result,
         Err(PaneTopologyControlError::Operation(WorkspaceSelectControlError::WindowNotFound)) => {
             return ControlCallResult::Err {
@@ -704,8 +765,14 @@ pub(super) fn workspace_select(
             };
         }
     };
-    if let Some(window_id) = workspace_select_focus_selector(&result, window_index) {
-        let _ = crate::window::focus_control_window(app, window_id);
+    if previous_workspace_id.as_deref() != Some(workspace_id.as_str()) {
+        record_workspace_selected_event(
+            app,
+            &result,
+            window_index,
+            index,
+            previous_workspace_id.as_deref(),
+        );
     }
     ok(workspace_identity_payload(
         app,
@@ -3141,7 +3208,13 @@ pub(super) fn workspace_group_control(
                 let _ = crate::window::focus_control_window(app, window_id);
             }
             let state = app.state::<SessionState>();
-            match select_workspace_in_window_for_control(app, &state, window_index, anchor_index) {
+            match select_workspace_in_window_for_control(
+                app,
+                &state,
+                window_index,
+                anchor_index,
+                DerivedEventPolicy::Record,
+            ) {
                 Ok(_) => ok(json!({
                     "group_id": group_id,
                     "anchor_workspace_id": anchor_id,
