@@ -191,6 +191,18 @@
           "params": {
             "window_id": "${setup.0.result.window_id}"
           }
+        },
+        {
+          "op": "v2",
+          "method": "window.list",
+          "params": {},
+          "settle": {
+            "until_window_not_visible": [
+              "${setup.0.result.window_id}"
+            ],
+            "timeout_s": 10,
+            "poll_interval_s": 0.5
+          }
         }
       ],
       "action": {
@@ -205,14 +217,7 @@
           {
             "op": "v2",
             "method": "window.list",
-            "params": {},
-            "settle": {
-              "until_window_not_visible": [
-                "${setup.0.result.window_id}"
-              ],
-              "timeout_s": 10,
-              "poll_interval_s": 0.5
-            }
+            "params": {}
           }
         ]
       }
