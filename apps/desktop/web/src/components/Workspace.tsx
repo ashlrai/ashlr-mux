@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createDiffSession } from "../host/diffViewer";
 import { host } from "../host/host";
 import { recordWaitingInputNotification } from "../host/notifications";
+import { usePaneGeometryReporting } from "../hooks/usePaneGeometryReporting";
 import { useSession } from "../hooks/useSession";
 import {
   agentAttentionPanelForEvent,
@@ -41,35 +42,16 @@ import { FileSurface } from "./FileSurface";
 import { MarkdownSurface } from "./MarkdownSurface";
 import { TerminalSurface } from "./TerminalSurface";
 import type {
+  PaneBrowserState,
+  PaneDiffSession,
+  PaneTerminalStartup,
+} from "./workspaceSurfaceState";
+import type {
   CanvasConfig,
   MarkdownConfig,
   SessionCanvasPaneSnapshot,
   SessionWorkspaceSnapshot,
 } from "@cmux/core-types";
-
-interface PaneDiffSession {
-  token: string;
-  requestPath?: string;
-}
-
-interface PaneBrowserState {
-  url?: string;
-  proxyUrl?: string;
-  zoom?: number;
-  canGoBack: boolean;
-  canGoForward: boolean;
-  omnibarVisible: boolean;
-  focusModeActive: boolean;
-  developerToolsVisible: boolean;
-  developerToolsPanel?: string;
-}
-
-interface PaneTerminalStartup {
-  cwd?: string;
-  initialCommand?: string;
-  initialInput?: string;
-  environment?: Record<string, string>;
-}
 
 const PANEL_FLASH_EVENT = "cmux:panel-flash";
 const NATIVE_PANEL_FLASH_EVENT = "cmux://panel-flash";
@@ -382,10 +364,16 @@ export function Workspace({
   );
 
   const currentWorkspace = workspaces[selectedWorkspaceIndex];
+  const hasLayout = Boolean(layout);
   const isCurrentWorkspaceCanvas = currentWorkspace?.layout_mode === "canvas";
   const activePanelId = useFocusedPanelId(layout);
   const canvasSnapMetrics = canvasMetricsFromConfig(canvasConfig);
   const canvasSnappingEnabled = canvasConfig?.snappingEnabled ?? true;
+  usePaneGeometryReporting(
+    containerRef,
+    currentWorkspace?.workspace_id,
+    hasLayout,
+  );
 
   useEffect(() => {
     if (currentWorkspace?.focused_panel_id !== undefined) {

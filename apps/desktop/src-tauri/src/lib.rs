@@ -27,6 +27,7 @@ mod notifications;
 mod open_file;
 mod open_folder;
 mod opencode_http;
+mod pane_geometry;
 mod pick_files;
 mod remote_proxy;
 mod right_sidebar;
@@ -305,6 +306,7 @@ pub fn run() {
         .manage(control_socket::ControlHandleRegistryState::default())
         .manage(control_socket::ControlActiveWindowState::default())
         .manage(control_socket::ControlClosedWindowHistoryState::default())
+        .manage(pane_geometry::PaneGeometryState::default())
         .manage(control_socket::RemoteWindowDepartureRegistryState::default())
         .manage(control_socket::RemoteRuntimeLeaseRegistryState::default())
         .manage(agent_session::AgentSessionState::default())
@@ -470,6 +472,7 @@ pub fn run() {
             control_socket::restart_control_socket_listener,
             control_socket::sidebar_selection_update,
             control_socket::custom_sidebar_action_invoke,
+            pane_geometry::pane_report_geometry,
             right_sidebar::right_sidebar_update_state,
             right_sidebar::right_sidebar_beta_settings,
             right_sidebar::right_sidebar_set_beta_feature,

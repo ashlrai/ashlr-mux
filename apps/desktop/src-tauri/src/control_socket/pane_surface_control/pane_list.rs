@@ -1,4 +1,5 @@
 use super::*;
+use crate::pane_geometry::{PaneGeometryState, WorkspacePaneGeometry};
 
 pub(in crate::control_socket) fn pane_list_reference_fields_with(
     pane: &SessionPaneLayoutSnapshot,
@@ -54,10 +55,10 @@ pub(in crate::control_socket) fn pane_list_logical_size(
 }
 
 pub(in crate::control_socket) fn pane_list_root_frame(
-    _observed: Option<PanePixelFrame>,
+    observed: Option<PanePixelFrame>,
     native_fallback: PanePixelFrame,
 ) -> PanePixelFrame {
-    native_fallback
+    observed.unwrap_or(native_fallback)
 }
 
 pub(in crate::control_socket) fn pane_list(
@@ -121,8 +122,18 @@ pub(in crate::control_socket) fn pane_list(
         };
     };
     let mut pane_rows = Vec::new();
+    let observed_frame = workspace
+        .workspace_id
+        .as_deref()
+        .and_then(|workspace_id| app.state::<PaneGeometryState>().geometry_for(workspace_id))
+        .map(|geometry: WorkspacePaneGeometry| PanePixelFrame {
+            x: geometry.x,
+            y: geometry.y,
+            width: geometry.width,
+            height: geometry.height,
+        });
     let root_frame = pane_list_root_frame(
-        None,
+        observed_frame,
         PanePixelFrame {
             x: 0.0,
             y: 0.0,
