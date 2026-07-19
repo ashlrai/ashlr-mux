@@ -257,7 +257,7 @@ jobs:
           # Normal termination is part of the restore contract: canonical
           # forces a synchronous session write from applicationShouldTerminate,
           # while SIGTERM/pkill can race the ordinary asynchronous autosave.
-          xcrun swiftc -framework AppKit \
+          xcrun swiftc -parse-as-library -framework AppKit \
             harness/scripts/parity/terminate-macos-app.swift \
             -o /tmp/terminate-canonical-app
 
