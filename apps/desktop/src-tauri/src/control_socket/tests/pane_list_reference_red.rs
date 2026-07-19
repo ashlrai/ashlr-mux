@@ -111,6 +111,7 @@ fn pane_list_prefers_the_rendered_workspace_frame_over_the_native_window() {
                 width: observed.width,
                 height: observed.height,
             }),
+            None,
             || {
                 native_reads.set(native_reads.get() + 1);
                 native_window
@@ -147,6 +148,7 @@ fn pane_list_uses_zero_frames_only_after_the_window_has_rendered_another_workspa
     assert_eq!(
         pane_surface_control::pane_list::pane_list_root_frame(
             PaneGeometryAuthority::Uninitialized,
+            None,
             || {
                 native_reads.set(native_reads.get() + 1);
                 native_window
@@ -158,6 +160,7 @@ fn pane_list_uses_zero_frames_only_after_the_window_has_rendered_another_workspa
     assert_eq!(
         pane_surface_control::pane_list::pane_list_root_frame(
             PaneGeometryAuthority::WorkspaceUnrendered,
+            None,
             || {
                 native_reads.set(native_reads.get() + 1);
                 native_window
@@ -169,6 +172,37 @@ fn pane_list_uses_zero_frames_only_after_the_window_has_rendered_another_workspa
         native_reads.get(),
         1,
         "unrendered workspace authority must not read native window state"
+    );
+}
+
+#[test]
+fn pane_list_headless_capture_uses_configured_geometry_without_a_native_read() {
+    use crate::pane_geometry::PaneGeometryAuthority;
+    use std::cell::Cell;
+
+    let configured = PanePixelFrame {
+        x: 0.0,
+        y: 0.0,
+        width: 1000.0,
+        height: 700.0,
+    };
+    let native_reads = Cell::new(0);
+
+    assert_eq!(
+        pane_surface_control::pane_list::pane_list_root_frame(
+            PaneGeometryAuthority::Uninitialized,
+            Some(configured),
+            || {
+                native_reads.set(native_reads.get() + 1);
+                configured
+            },
+        ),
+        configured
+    );
+    assert_eq!(
+        native_reads.get(),
+        0,
+        "headless capture must not enter the native window actor"
     );
 }
 

@@ -63,6 +63,7 @@ pub(in crate::control_socket) fn pane_list_logical_size(
 
 pub(in crate::control_socket) fn pane_list_root_frame(
     authority: PaneGeometryAuthority,
+    _capture_fallback: Option<PanePixelFrame>,
     native_fallback: impl FnOnce() -> PanePixelFrame,
 ) -> PanePixelFrame {
     match authority {
@@ -147,7 +148,7 @@ pub(in crate::control_socket) fn pane_list(
                 .authority_for(window_label, workspace_id)
         },
     );
-    let root_frame = pane_list_root_frame(geometry_authority, || {
+    let root_frame = pane_list_root_frame(geometry_authority, None, || {
         let (width, height) = pane_list_window_size_with(&current, window_id, |label| {
             let window = app.get_webview_window(label)?;
             let size = window.inner_size().ok()?;
