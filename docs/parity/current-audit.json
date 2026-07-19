@@ -45,10 +45,10 @@
     "status": "not_measured"
   },
   "windows": {
-    "commit": "535185d0d244f7616f0194066779904cbd965e9b",
-    "commit_date": "2026-07-19T11:24:56-04:00",
-    "commit_subject": "fix(workspace): match rename lifecycle event",
-    "commits_ahead_of_tracked_evidence": 47,
+    "commit": "4e14e0d7314223cec2ea4c5cedd2af54378af794",
+    "commit_date": "2026-07-19T11:39:56-04:00",
+    "commit_subject": "fix(workspace): match close lifecycle events",
+    "commits_ahead_of_tracked_evidence": 50,
     "source_evidence": {
       "advertised_and_routed_count": 267,
       "advertised_method_count": 270,
