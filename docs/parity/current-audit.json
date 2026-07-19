@@ -30,11 +30,11 @@
       "v2_method": 309
     },
     "by_status": {
-      "implemented_unverified": 268,
-      "missing": 226,
-      "verified": 9
+      "implemented_unverified": 264,
+      "missing": 225,
+      "verified": 14
     },
-    "strict_verified": 9,
+    "strict_verified": 14,
     "total": 503,
     "warning": "Rows mix CLI commands, socket methods, debug endpoints, and broad product umbrellas. They are neither deduplicated user capabilities nor effort-weighted."
   },
@@ -44,10 +44,10 @@
     "status": "not_measured"
   },
   "windows": {
-    "commit": "59024890f864cde9c180fbd753e6e1404b942a1e",
-    "commit_date": "2026-07-19T02:23:13-04:00",
-    "commit_subject": "fix(session): preserve restored surface reference order",
-    "commits_ahead_of_tracked_evidence": 84,
+    "commit": "99bd001c6eddaf91c3460dd1114ffda5093f82a4",
+    "commit_date": "2026-07-19T02:56:00-04:00",
+    "commit_subject": "fix(control): restore canonical startup payload defaults",
+    "commits_ahead_of_tracked_evidence": 89,
     "source_evidence": {
       "advertised_and_routed_count": 267,
       "advertised_method_count": 270,

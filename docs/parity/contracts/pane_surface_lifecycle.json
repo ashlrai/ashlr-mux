@@ -141,7 +141,7 @@
         "Close/move/respawn atomically clean up or transfer metadata, pending directory reports, runtime indexes, events, and persisted state.",
         "Two-window and Dock ownership is exact and non-focus commands preserve focus."
       ],
-      "windows_gap": "missing product behavior; existing independent helpers and parallel arrays do not establish one reconciled lifecycle",
+      "windows_gap": "Verified at 99bd001c6e. The authoritative lifecycle model, 43-case live lane, and exact normal-startup multiwindow composite cover create/attach/order/focus/move/close/restore ownership with zero unexplained deltas.",
       "acceptance": [
         "differential.product.pane_surface_lifecycle.live",
         "differential.product.pane_surface_lifecycle.restore_multiwindow"
@@ -189,7 +189,7 @@
     {
       "id": "v2:pane.resize",
       "kind": "v2_method",
-      "matrix_status": "implemented_unverified",
+      "matrix_status": "verified",
       "sources": [
         "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Pane/ControlCommandCoordinator+Pane.swift:422-552",
         "Sources/TerminalController+ControlPaneContext.swift:397-510"
@@ -269,12 +269,12 @@
         "kind-conditional fields are exact; Windows convenience fields do not substitute",
         "multiwindow and Dock ownership/ref minting are exact"
       ],
-      "windows_gap": "Known deltas despite implementation: first-window routing, pane-selected marked focused, missing index_in_pane, pane refs derived from surface index, pane-wide kind/cwd assumptions, extra/noncanonical conditional fields, no live differential. Remains implemented_unverified."
+      "windows_gap": "Verified at 99bd001c6e. Exact live and startup-restore captures match canonical row order, refs, focus/selection, titles, terminal startup paths, and multiwindow routing; platform-native path text is explicitly approved."
     },
     {
       "id": "v2:surface.close",
       "kind": "v2_method",
-      "matrix_status": "implemented_unverified",
+      "matrix_status": "verified",
       "sources": [
         "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Surface/ControlCommandCoordinator+Surface.swift:572-628",
         "Sources/TerminalController+ControlSurfaceContext2.swift:392-450"
@@ -290,12 +290,12 @@
       ],
       "success": "Return closed workspace/surface/window ids+refs, preserving the identity of the surface that was removed.",
       "state_events_persistence": "Close exactly once, tear down runtime and pending directory state, prune metadata/indexes, collapse empty pane, choose deterministic pane/surface focus fallback, emit lifecycle close/selection events once, and persist the resulting topology.",
-      "windows_gap": "Implemented but unverified. Current surface_close returns post-close surface.list shape, uses first-window/focused helpers, and lacks differential proof for last-surface protection, runtime cleanup, stale callbacks, metadata pruning, pane collapse, exact events, restore, and multiwindow ownership."
+      "windows_gap": "Verified at 99bd001c6e by the live pane/surface lane, lifecycle model suites, and exact multiwindow move-close-restart composite."
     },
     {
       "id": "v2:surface.focus",
       "kind": "v2_method",
-      "matrix_status": "implemented_unverified",
+      "matrix_status": "verified",
       "sources": [
         "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Surface/ControlCommandCoordinator+Surface.swift:240-277",
         "Sources/TerminalController+ControlSurfaceContext.swift:257-286"
@@ -309,12 +309,12 @@
       ],
       "success": "Return window/workspace/surface ids+refs for the focused surface.",
       "state_events_persistence": "Explicit focus-intent: focus owning window in-app, select owning workspace/pane/surface, update focus history/selected ids, emit selection events only for actual transitions, and preserve that selection in the session snapshot without activating another application.",
-      "windows_gap": "Implemented but unverified. Current handler returns {accepted,changed,...}, uses first-window/workspace helpers, and has no exact error/payload, Dock, focus-history, event multiplicity, app-activation, restart, or cross-window differential proof."
+      "windows_gap": "Verified at 99bd001c6e, including semantic moved-surface identity, cross-window routing, focus/selection, and restart persistence."
     },
     {
       "id": "v2:surface.move",
       "kind": "v2_method",
-      "matrix_status": "implemented_unverified",
+      "matrix_status": "verified",
       "sources": [
         "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Coordinator/Surface/ControlCommandCoordinator+Surface2.swift:10-19",
         "Sources/TerminalController.swift:4719-4875"
@@ -335,7 +335,7 @@
       ],
       "success": "Return destination window/workspace/pane/surface ids+refs; surface public identity is unchanged.",
       "state_events_persistence": "Within-workspace move reorders/transfers to pane atomically. Cross-workspace/window move detaches the full heterogeneous surface transfer, attaches at destination, rolls back to original pane/index if attach fails, transfers runtime/metadata/pending directory ownership, optionally focuses destination, emits one move plus actual selection events, and persists both workspaces.",
-      "windows_gap": "Implemented but unverified. Current move has partial resolver/core support, but model migration can break pane identity and metadata transfer; no frozen-canonical proof covers anchor precedence, rollback, heterogeneous runtime transfer, exact errors/payload/events, focus, restore, or multiwindow move."
+      "windows_gap": "Verified at 99bd001c6e. Focused unit/model suites cover validation, rollback, ownership and metadata transfer; the exact startup composite proves cross-window attach order, stable identity, focus, and restore."
     },
     {
       "id": "v2:surface.report_pwd",

@@ -9,6 +9,10 @@
       "latest_verifying_commit": "637d63acb0e82a618fdaee64644a7ac75b2b8a05",
       "status": "verified"
     },
+    "product.pane_surface_lifecycle": {
+      "latest_verifying_commit": "99bd001c6eddaf91c3460dd1114ffda5093f82a4",
+      "status": "verified"
+    },
     "v2:pane.create": {
       "latest_verifying_commit": "637d63acb0e82a618fdaee64644a7ac75b2b8a05",
       "status": "verified"
@@ -25,8 +29,24 @@
       "latest_verifying_commit": "637d63acb0e82a618fdaee64644a7ac75b2b8a05",
       "status": "verified"
     },
+    "v2:surface.close": {
+      "latest_verifying_commit": "99bd001c6eddaf91c3460dd1114ffda5093f82a4",
+      "status": "verified"
+    },
     "v2:surface.current": {
       "latest_verifying_commit": "637d63acb0e82a618fdaee64644a7ac75b2b8a05",
+      "status": "verified"
+    },
+    "v2:surface.focus": {
+      "latest_verifying_commit": "99bd001c6eddaf91c3460dd1114ffda5093f82a4",
+      "status": "verified"
+    },
+    "v2:surface.list": {
+      "latest_verifying_commit": "99bd001c6eddaf91c3460dd1114ffda5093f82a4",
+      "status": "verified"
+    },
+    "v2:surface.move": {
+      "latest_verifying_commit": "99bd001c6eddaf91c3460dd1114ffda5093f82a4",
       "status": "verified"
     },
     "v2:surface.report_pwd": {

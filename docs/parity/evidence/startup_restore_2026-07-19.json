@@ -3,7 +3,7 @@
   "batch": "normal-startup-restore-multiwindow",
   "verification_date": "2026-07-19",
   "canonical_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
-  "windows_commit": "c520128265",
+  "windows_commit": "99bd001c6eddaf91c3460dd1114ffda5093f82a4",
   "scope": [
     "normal startup session restore",
     "v2:surface.list",
@@ -14,7 +14,7 @@
   ],
   "implementation": {
     "test_commit": "0b00778056",
-    "behavior_commit": "c520128265",
+    "behavior_commit": "99bd001c6eddaf91c3460dd1114ffda5093f82a4",
     "module": "apps/desktop/src-tauri/src/session/startup_restore.rs",
     "policy": "Restore on ordinary no-argument startup; skip explicit open intents, CMUX_DISABLE_SESSION_RESTORE, CMUX_UI_TEST_* environments, and XCTest environments.",
     "state_rules": "Load current with previous fallback, rotate the snapshot, prune nonrestorable/crash state, cap at 12 windows, normalize identities, create additional native windows, roll back on runtime failure, restore active selection, and persist the live result."
@@ -30,13 +30,16 @@
       "focused_workspace_ref": "workspace:4",
       "focused_surface_ref": "surface:6"
     },
-    "raw_capture_sha256": "810EC46CB9B4798D152ACEA9915F273CF17AB0E9D558A69652CD703BB06EA751",
-    "archived_capture_sha256": "A74A0E5139ACF27BF0160707E86118D9CB17FFD4E5EF92B13DF0F5DC1EBD7E21",
-    "archived_at": "parity/diff-lane@45bacaabec5ac791065626dbbb59a4c894e0ba57:docs/parity/differential/captures/startup_restore.windows.c520128265.ndjson",
+    "raw_capture_sha256": "22A93F1F2AA7CE7A6FEA309D309D3E14944CE76AE0283E908AB365AAB3E70142",
+    "archived_capture_sha256": "22A93F1F2AA7CE7A6FEA309D309D3E14944CE76AE0283E908AB365AAB3E70142",
+    "archived_at": "parity/diff-lane@215737999ac0579682b6b2a2d230d7a0d064a51d:docs/parity/differential/captures/startup_restore.windows.99bd001c6e.ndjson",
     "gates": [
       "cargo test -p cmux-desktop startup_restore --lib: 2 passed",
-      "cargo test -p cmux-desktop --test session_startup_restore_process: passed before and after simplification",
-      "cargo test -p cmux-desktop restore --lib: 56 passed",
+      "cargo test -p cmux-desktop --test session_startup_restore_process: passed twice after simplification",
+      "cargo test -p cmux-core --test pane_surface_lifecycle_model: 31 passed",
+      "cargo test -p cmux-desktop --lib control_socket::tests::pane_surface_lifecycle_red: 41 passed",
+      "cargo test -p cmux-desktop --lib control_socket::tests::window_lifecycle_red: 66 passed",
+      "cargo test -p cmux-desktop --lib session::restore_identity_graph_red: 13 passed",
       "cargo fmt --all -- --check: passed",
       "git diff --check: passed"
     ]
@@ -64,17 +67,13 @@
     "archived_at": "parity/diff-lane@0a45acb3ee3b263bbdab03012e45c6cc6ea6ca3f:docs/parity/differential/captures/startup_restore.canonical.e1825d40d.run-29674972316.ndjson"
   },
   "differential": {
-    "result": "delta",
-    "identical_cases": 0,
-    "delta_cases": 1,
-    "normalized_diff_sha256": "F253CC23C2CE98CC39DF59481A1EEDBEEBC7BF17281B9F53DC41A6024C2ECED3",
-    "archived_at": "parity/diff-lane@0a45acb3ee3b263bbdab03012e45c6cc6ea6ca3f:docs/parity/differential/captures/startup_restore.normalized-diff.e1825d40d-vs-c520128265.json",
-    "behavioral_deltas": [
-      "Canonical preserves the first restored window as window:1; Windows exposes it as window:3 in window.list.",
-      "The unscoped post-restore workspace.list routes to selected window:2 on canonical but window:1 on Windows.",
-      "Canonical target surface order is surface:5, surface:6, surface:4; Windows order is surface:4, surface:5, surface:6. Both focus surface:6.",
-      "The state lane also contains unapproved platform/runtime payload differences in working directories, terminal titles, and remote-detail fields."
-    ]
+    "result": "pass",
+    "identical_cases": 1,
+    "delta_cases": 0,
+    "normalized_diff_sha256": "963003FA19B1990B54F335E98A70B00F18C95CF7E233982881ADBFAD2DFA69D3",
+    "archived_at": "parity/diff-lane@215737999ac0579682b6b2a2d230d7a0d064a51d:docs/parity/differential/captures/startup_restore.normalized-diff.e1825d40d-vs-99bd001c6e.json",
+    "behavioral_deltas": [],
+    "approved_platform_equivalences": "Ten non-null workspace and terminal startup paths differ only in platform-native path text; every pointer and rationale is explicit in startup_restore.manifest.json."
   },
   "windows_remediation": {
     "test_commit": "39cdb1f69d",
@@ -92,7 +91,7 @@
       "cargo fmt --all -- --check: passed",
       "git diff --check: passed"
     ],
-    "remaining_delta": "The retained exact capture predates this routing remediation and the subsequent surface-reference-order remediation; defer promotion until a refreshed Windows capture is compared with the retained canonical capture."
+    "remaining_delta": "Closed by the exact 99bd001c6e capture and zero-delta normalized comparison."
   },
   "surface_order_remediation": {
     "test_commit": "2b615f26f5",
@@ -110,11 +109,31 @@
       "cargo fmt --all -- --check: passed",
       "git diff --check: passed"
     ],
-    "remaining_delta": "A new exact Windows capture is still required. The retained differential also contains unapproved platform/runtime payload differences in working directories, terminal titles, and remote-detail fields."
+    "remaining_delta": "Closed by the exact 99bd001c6e capture and zero-delta normalized comparison."
+  },
+  "final_remediation": {
+    "identity_test_commit": "4c70b1449a",
+    "identity_behavior_commit": "753e9feb8a",
+    "payload_test_commit": "bcb0e37c54",
+    "payload_behavior_commit": "99bd001c6eddaf91c3460dd1114ffda5093f82a4",
+    "verified_outcomes": [
+      "Cross-workspace attach preserves canonical registry identity independently from visual tab order.",
+      "The moved surface restores as surface:6, remains semantically identical across restart, and is focused and selected.",
+      "Fresh windows and terminals restore non-null platform-native working directories and canonical Terminal titles.",
+      "Disabled remote workspace summaries include the complete canonical daemon, SSH, and heartbeat shape.",
+      "The retained canonical and exact Windows captures compare as one identical case with zero unexplained deltas."
+    ]
   },
   "promotion_decision": {
-    "matrix_changes": 0,
-    "status": "implemented_unverified",
-    "reason": "The Windows process proof now matches the known window-ref, default-routing, and target-surface-ref semantics, but the retained exact capture predates those fixes and still contains unapproved platform/runtime payload differences."
+    "matrix_changes": 5,
+    "promoted": [
+      "product.pane_surface_lifecycle",
+      "v2:surface.list",
+      "v2:surface.close",
+      "v2:surface.focus",
+      "v2:surface.move"
+    ],
+    "status": "verified",
+    "reason": "The exact normal-startup composite now has zero unexplained canonical/Windows deltas, supplementing the existing 43-case live pane/surface differential and focused process/model suites."
   }
 }

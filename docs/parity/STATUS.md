@@ -4,9 +4,9 @@ Checkpoint commits:
 
 - Current canonical audit: `c9f2d8c4382e29db89a030d80d02d8174ef7f2ac`
 - Frozen differential canonical: `e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452`
-- Windows behavior: `c520128265` (normal-startup session restore)
-- Latest pushed Windows code checkpoint: `59024890f864cde9c180fbd753e6e1404b942a1e`
-- Latest strict differential checkpoint: `637d63acb0e82a618fdaee64644a7ac75b2b8a05`
+- Windows behavior: `99bd001c6eddaf91c3460dd1114ffda5093f82a4`
+- Latest Windows code checkpoint: `99bd001c6eddaf91c3460dd1114ffda5093f82a4`
+- Latest exact startup differential evidence: `parity/diff-lane@215737999ac0579682b6b2a2d230d7a0d064a51d`
 
 The Windows desktop and CLI build successfully. The broad desktop, web, IPC,
 workspace, parity, and contract suites passed on the Windows behavior commit.
@@ -19,8 +19,8 @@ lane are now strictly verified.
 
 The rolling catalog contains 503 rows: 159 public CLI commands, 16 internal CLI
 contracts, 263 release socket methods, 46 debug socket methods, and 19 coarse
-product umbrellas. It currently classifies 9 rows as verified, 268 as
-implemented but unverified, and 226 as missing.
+product umbrellas. It currently classifies 14 rows as verified, 264 as
+implemented but unverified, and 225 as missing.
 
 Those numbers are useful for finding API gaps. They are not a percentage of the
 user experience. The catalog still needs a deduplicated user-capability layer
@@ -33,36 +33,33 @@ before a defensible product-completion percentage exists. See
    fix that must await accepted-handler cancellation before integration.
 2. Implemented behavior needs evidence promotion in coherent capability batches;
    raw route or help-text presence is not verification.
-3. The normal-startup restore lane is not promotable yet. Hosted run
-   `29674972316` proved canonical normal-quit restore after the harness began
-   terminating the exact app PID through AppKit. Both platforms restore two
-   windows and focus `surface:6`, but the exact comparison still has one state
-   delta. The pushed `f132a7ac4c` remediation preserves canonical UUID
-   window identities and refs `window:1/2`, and routes unscoped workspace
-   commands through the restored active context. The pushed `59024890f8`
-   remediation separately preserves creation chronology for restored handle
-   refs while rendering surfaces in pane order; the Windows process proof now
-   matches canonical target refs `5,6,4`. The retained capture predates both
-   remediations, so no rows promote until one refreshed exact Windows capture
-   is compared with the retained canonical capture and the remaining
-   platform/runtime fields are adjudicated. See
-   `evidence/startup_restore_2026-07-19.json`.
+
+The normal-startup restore blocker is closed. Exact Windows capture
+`99bd001c6e` matches retained canonical run `29674972316` in all semantic
+fields: two-window ownership and routing, target refs `5,6,4`, moved-surface
+identity and focus on `surface:6`, default terminal titles, remote payload
+shape, and non-null restored directories. Ten filesystem strings are explicit
+platform-path equivalences. The normalized comparison is 1/1 identical with
+zero unexplained deltas, so `surface.list/close/focus/move` and
+`product.pane_surface_lifecycle` are now verified. See
+`evidence/startup_restore_2026-07-19.json`.
 
 ## Maintenance checkpoint
 
 - Historical root handoffs and reports now live under
   `docs/archive/windows-port-legacy/`; they are preserved evidence, not active
   instructions.
-- `control_socket.rs` fell from 23,219 to 4,171 measured lines, `session.rs`
-  from 12,059 to 5,896, and `CustomSidebarSurface.tsx` from 12,003 to 5,333.
-  Extracted modules retain the same public entry points.
-- `terminal.rs` fell from 5,709 to 5,312 measured lines. Process-tree
+- The previously monolithic files remain split: `control_socket.rs` is now
+  4,396 measured lines (from 23,219), `session.rs` is 6,284 (from 12,059), and
+  `CustomSidebarSurface.tsx` is 5,419 (from 12,003). Extracted modules retain
+  the same public entry points.
+- `terminal.rs` is now 5,672 measured lines (from 5,709). Process-tree
   snapshots, listening-port discovery, and terminal output pumping now live in
-  the 422-line `terminal/process_runtime.rs` child module; the Tauri command
+  the 454-line `terminal/process_runtime.rs` child module; the Tauri command
   entry point remains in `terminal.rs`.
-- `session_ops.rs` fell from 7,748 to 7,453 measured lines. Browser history,
+- `session_ops.rs` is now 7,923 measured lines. Browser history,
   navigation, developer-tools state, and zoom mutations now live behind the
-  unchanged public API in the 306-line `session_ops/browser.rs` child module.
+  unchanged public API in the 325-line `session_ops/browser.rs` child module.
 - Seventy source-text tests that asserted filenames, function spelling, or
   substring order were removed. The retained suites execute behavior.
 - CI now caps new Windows-owned Rust and TypeScript files at 1,500 lines and
@@ -75,10 +72,8 @@ before a defensible product-completion percentage exists. See
 
 ## Next efficient slice
 
-Refresh only the Windows normal-startup capture at `59024890f8` and compare it
-with the retained canonical capture; do not rebuild or recapture canonical.
-The process proof now pins both restored routing and target refs `5,6,4`, so
-the refresh should determine whether only platform/runtime payload fields
-remain. Promote surface.list, surface.close, surface.focus, surface.move, and
-the product lifecycle invariant only after every remaining field is either
-matched or documented as an approved platform equivalence.
+Select one priority-zero implemented-but-unverified capability that already has
+a retained canonical lane, and spend the next slice converting verification
+debt into a zero-delta promotion. Keep structural extraction separate; the next
+maintenance candidate is the largest still-frozen Windows-owned file whose
+coherent domain can be moved without changing behavior.

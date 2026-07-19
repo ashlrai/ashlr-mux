@@ -87,7 +87,7 @@
       "before_sha256": "55F83CBECCC6301D312E1F81D9E04EA9A9D5E21E5721263FF6D2EC1670F04A19",
       "result": "user session file byte hash, size, and modification time unchanged; task session-current.json written under the owned profile"
     },
-    "promotion_status": "verified on the exact pushed commit: pane.create, pane.resize, surface.action, surface.respawn, surface.report_pwd, surface.current, surface.create, cli:tab-action, cli:respawn-pane; surface.list/close/focus/move and product.pane_surface_lifecycle remain implemented_unverified because their broader restore/multiwindow acceptance surface is not fully covered by this 43-case lane"
+    "promotion_status": "This 43-case lane verified pane.create, pane.resize, surface.action, surface.respawn, surface.report_pwd, surface.current, surface.create, cli:tab-action, and cli:respawn-pane. The later exact normal-startup multiwindow lane at 99bd001c6e closed the broader restore/ownership boundary and promoted surface.list/close/focus/move plus product.pane_surface_lifecycle; see startup_restore_2026-07-19.json."
   },
   "known_open_items": [
     "R2/G10: backend respawn default cmd.exe vs CLI ComSpec resolution (accepted platform equivalence, watch in differential)",

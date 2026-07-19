@@ -25513,12 +25513,12 @@
       "family": "pane_surface_lifecycle",
       "id": "product.pane_surface_lifecycle",
       "kind": "product_behavior",
-      "latest_verifying_commit": null,
+      "latest_verifying_commit": "99bd001c6eddaf91c3460dd1114ffda5093f82a4",
       "metadata": {},
       "name": "Pane and surface create, focus, move, resize, close and persistence",
       "priority": 0,
       "rationale": null,
-      "status": "missing",
+      "status": "verified",
       "user_approval": null,
       "windows_sources": [
         {
@@ -44915,7 +44915,7 @@
       "family": "surface",
       "id": "v2:surface.close",
       "kind": "v2_method",
-      "latest_verifying_commit": null,
+      "latest_verifying_commit": "99bd001c6eddaf91c3460dd1114ffda5093f82a4",
       "metadata": {
         "availability": "release",
         "test_only": false,
@@ -45043,7 +45043,7 @@
       "name": "surface.close",
       "priority": 0,
       "rationale": null,
-      "status": "implemented_unverified",
+      "status": "verified",
       "user_approval": null,
       "windows_sources": [
         {
@@ -46157,7 +46157,7 @@
       "family": "surface",
       "id": "v2:surface.focus",
       "kind": "v2_method",
-      "latest_verifying_commit": null,
+      "latest_verifying_commit": "99bd001c6eddaf91c3460dd1114ffda5093f82a4",
       "metadata": {
         "availability": "release",
         "test_only": false,
@@ -46257,7 +46257,7 @@
       "name": "surface.focus",
       "priority": 0,
       "rationale": null,
-      "status": "implemented_unverified",
+      "status": "verified",
       "user_approval": null,
       "windows_sources": [
         {
@@ -47165,7 +47165,7 @@
       "family": "surface",
       "id": "v2:surface.list",
       "kind": "v2_method",
-      "latest_verifying_commit": null,
+      "latest_verifying_commit": "99bd001c6eddaf91c3460dd1114ffda5093f82a4",
       "metadata": {
         "availability": "release",
         "test_only": false,
@@ -47301,7 +47301,7 @@
       "name": "surface.list",
       "priority": 0,
       "rationale": null,
-      "status": "implemented_unverified",
+      "status": "verified",
       "user_approval": null,
       "windows_sources": [
         {
@@ -47530,7 +47530,7 @@
       "family": "surface",
       "id": "v2:surface.move",
       "kind": "v2_method",
-      "latest_verifying_commit": null,
+      "latest_verifying_commit": "99bd001c6eddaf91c3460dd1114ffda5093f82a4",
       "metadata": {
         "availability": "release",
         "test_only": false,
@@ -47614,7 +47614,7 @@
       "name": "surface.move",
       "priority": 0,
       "rationale": null,
-      "status": "implemented_unverified",
+      "status": "verified",
       "user_approval": null,
       "windows_sources": [
         {
@@ -62501,7 +62501,7 @@
         "verified": 3
       },
       "pane_surface": {
-        "missing": 1
+        "verified": 1
       },
       "remote": {
         "implemented_unverified": 3,
@@ -62524,9 +62524,9 @@
         "missing": 1
       },
       "surface": {
-        "implemented_unverified": 34,
+        "implemented_unverified": 30,
         "missing": 1,
-        "verified": 6
+        "verified": 10
       },
       "system": {
         "implemented_unverified": 10,
@@ -62567,9 +62567,9 @@
       "v2_method": 303
     },
     "by_status": {
-      "implemented_unverified": 265,
-      "missing": 222,
-      "verified": 9
+      "implemented_unverified": 261,
+      "missing": 221,
+      "verified": 14
     },
     "canonical_targets": {
       "debug_only_v2_methods": 42,
@@ -62579,20 +62579,20 @@
     },
     "completion_resolution": {
       "denominator": 496,
-      "numerator": 9,
-      "percentage": 1.8145
+      "numerator": 14,
+      "percentage": 2.8226
     },
     "core_local_workflow": {
       "denominator": 282,
-      "numerator": 9,
-      "percentage": 3.1915
+      "numerator": 14,
+      "percentage": 4.9645
     },
     "strict_parity": {
       "denominator": 496,
-      "numerator": 9,
-      "percentage": 1.8145
+      "numerator": 14,
+      "percentage": 2.8226
     },
     "total_entries": 496,
-    "unresolved_entries": 487
+    "unresolved_entries": 482
   }
 }
