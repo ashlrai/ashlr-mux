@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn pane_list_reference_fields_with(
+pub(in crate::control_socket) fn pane_list_reference_fields_with(
     pane: &SessionPaneLayoutSnapshot,
     pane_index: usize,
     workspace_surface_ids: &[String],
