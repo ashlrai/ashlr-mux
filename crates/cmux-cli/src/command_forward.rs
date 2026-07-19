@@ -406,8 +406,12 @@ pub fn control_command_for(
             "pane.last",
             workspace_window_scope_params(args)?,
         )),
-        "last-window" => Some(ControlCommand::new(
-            "workspace.last",
+        "last-window" | "next-window" | "previous-window" => Some(ControlCommand::new(
+            match command {
+                "next-window" => "workspace.next",
+                "previous-window" => "workspace.previous",
+                _ => "workspace.last",
+            },
             window_scope_params(args)?,
         )),
         "resize-pane" => Some(ControlCommand::new(
