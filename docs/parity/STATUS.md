@@ -5,7 +5,7 @@ Checkpoint commits:
 - Current canonical audit: `41756f7285a02d2592751438793647f7d4ba9b71`
 - Frozen differential canonical: `e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452`
 - Windows behavior captured: `a51ddd28763bad2549d3903de78bc7b59b988e36`
-- Latest Windows code checkpoint: `246172de0dbd3afd2fd4f61070eb107f83328966`
+- Latest Windows code checkpoint: `5bd9bdcc7995e89bd04b700faebd0af9e598bbc1`
 - Latest exact startup differential evidence: `parity/diff-lane@215737999ac0579682b6b2a2d230d7a0d064a51d`
 - Latest window harness checkpoint: `parity/diff-lane@9257db511b975335e2ee79bc4bb143c04bfa95f8`
 - Latest canonical window capture: workflow run `29686515273`
@@ -172,12 +172,17 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
   1,244 lines. That move is exactly net-zero: 3,678 additions and 3,678
   deletions. The 297 core tests pass before and twice after simplification,
   core Clippy is clean, and desktop/CLI dependent targets compile.
-- `command_forward.rs` is now 4,550 physical lines (from 7,026). Browser
-  routing and parameter construction live in the 1,211-line
+- `command_forward.rs` is now 3,599 physical lines (from 7,026). Browser
+  routing and parameter construction live in the 1,209-line
   `command_forward/browser.rs` child module; workspace routing, selectors,
   metadata, grouping, and environment parsing live in the 1,299-line
-  `command_forward/workspace.rs` child module. The 251-test CLI suite and
-  all-target compile check pass after each boundary.
+  `command_forward/workspace.rs` child module. Shared frozen-option parsing,
+  selector precedence, terminal startup/environment parsing, and `ParsedArgs`
+  now live in the 952-line `command_forward/arguments.rs` include. Expanding
+  the include reconstructs all 4,550 former lines exactly; the move is one net
+  ownership line with no visibility changes. The 251-test CLI suite passes
+  before the move and twice after it, and the full all-target matrix and compile
+  check are green.
 - CLI `main.rs` is now 3,081 physical lines (from 4,059). Control-result text,
   JSON projection, id formatting, and tmux-state pruning live in the 997-line
   `control_output.rs` child module with 11 explicit parent-visible functions.
@@ -201,13 +206,14 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
 - CI now caps new Windows-owned Rust and TypeScript files at 1,500 lines and
   freezes 39 existing oversized files at their current-or-smaller sizes.
 - The next structural priorities are
-  `crates/cmux-cli/src/command_forward.rs`, the remaining terminal
-  materialization/input domains, and the custom sidebar Swift parser. Split
-  them in isolated maintenance commits, not inside feature slices.
+  the 5,419-line custom-sidebar component, its 5,417-line Swift parser and
+  5,975-line test file, followed by the remaining session/control and terminal
+  domains. Split them in isolated maintenance commits, not inside feature
+  slices.
 
 ## Next efficient slice
 
-Extract the next coherent command domain from the 4,550-line CLI
-`command_forward.rs` in a behavior-neutral commit. Prove logical reconstruction
-and run the full CLI suite before and after; do not mix the move with parity
+Split one coherent parsing/runtime domain from the 5,417-line custom-sidebar
+Swift parser in a behavior-neutral commit. Run its focused Bun suite before and
+after, keep each new file below 1,500 lines, and do not mix the move with parity
 behavior changes.

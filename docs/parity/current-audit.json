@@ -45,10 +45,10 @@
     "status": "not_measured"
   },
   "windows": {
-    "commit": "246172de0dbd3afd2fd4f61070eb107f83328966",
-    "commit_date": "2026-07-19T09:42:51-04:00",
-    "commit_subject": "fix(desktop): preserve nonfocus surface selection",
-    "commits_ahead_of_tracked_evidence": 25,
+    "commit": "5bd9bdcc7995e89bd04b700faebd0af9e598bbc1",
+    "commit_date": "2026-07-19T09:49:13-04:00",
+    "commit_subject": "refactor(cli): extract shared argument parsing",
+    "commits_ahead_of_tracked_evidence": 27,
     "source_evidence": {
       "advertised_and_routed_count": 267,
       "advertised_method_count": 270,
