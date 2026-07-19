@@ -75,7 +75,16 @@
       "action": {"op": "restart"},
       "probes": {
         "state": [
-          {"op": "v2", "method": "window.list", "params": {}},
+          {
+            "op": "v2",
+            "method": "window.list",
+            "params": {},
+            "settle": {
+              "until_present": ["window:2"],
+              "timeout_s": 10,
+              "poll_interval_s": 0.25
+            }
+          },
           {"op": "v2", "method": "workspace.list", "params": {}},
           {
             "op": "v2",
