@@ -564,10 +564,11 @@ pub(super) fn handle_window_lifecycle_request(
         .try_state::<ControlActiveWindowState>()
         .map(|state| state.key_history())
         .unwrap_or_default();
-    let context = window_lifecycle::WindowLifecycleContext {
+    let mut context = window_lifecycle::WindowLifecycleContext {
         active_window_id,
         key_window_id,
         previous_key_window_id,
+        resume_approval: None,
         quit_confirmation_required: window_quit_confirmation_required(
             control_settings_store(app).as_ref(),
         ),
@@ -583,6 +584,18 @@ pub(super) fn handle_window_lifecycle_request(
     };
     let mut transition =
         window_lifecycle::dispatch_window_lifecycle_request(&current, method, &params, &context);
+    if method == "surface.resume.set" {
+        if let Some(decision) = super::resume_approval::promptless_cli_decision(
+            app,
+            &transition.snapshot,
+            &transition.result,
+        ) {
+            context.resume_approval = Some(decision);
+            transition = window_lifecycle::dispatch_window_lifecycle_request(
+                &current, method, &params, &context,
+            );
+        }
+    }
     decorate_lifecycle_result_refs(app, method, &mut transition.result);
     if matches!(transition.result, ControlCallResult::Err { .. }) {
         return transition.result;

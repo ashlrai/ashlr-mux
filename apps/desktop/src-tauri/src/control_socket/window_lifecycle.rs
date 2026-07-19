@@ -122,6 +122,7 @@ pub(super) struct WindowLifecycleContext {
     pub active_window_id: Option<String>,
     pub key_window_id: Option<String>,
     pub previous_key_window_id: Option<String>,
+    pub resume_approval: Option<ResumeApprovalDecision>,
     /// Canonical handleQuitShortcutWarning: quit-confirmation not required ->
     /// NSApp.terminate immediately; required -> async confirmation alert
     /// (AppDelegate.swift:12831-12856).
@@ -135,6 +136,13 @@ pub(super) struct WindowLifecycleContext {
     pub new_window_id: Option<String>,
     /// Production supplies the allocated initial panel id; `None` mints a UUID.
     pub new_surface_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct ResumeApprovalDecision {
+    pub auto_resume: bool,
+    pub approval_policy: String,
+    pub approval_record_id: Option<String>,
 }
 
 #[derive(Debug)]
@@ -659,7 +667,11 @@ enum ResumeOp {
 /// -> surface_id -> terminal_id -> tab_id, each rejected when present-non-null
 /// but unresolvable. Runs BEFORE routing (pinned:
 /// AppDelegateIssue2907RoutingTests.swift:587-640).
-fn resume_selector_validation_error(params: &Map<String, Value>) -> Option<String> {
+fn resume_selector_validation_error(
+    snapshot: &AppSessionSnapshot,
+    params: &Map<String, Value>,
+) -> Option<String> {
+    let surfaces = SurfaceLifecycleModel::from_app_session(snapshot).ok();
     for key in [
         "window_id",
         "workspace_id",
@@ -673,7 +685,26 @@ fn resume_selector_validation_error(params: &Map<String, Value>) -> Option<Strin
         if value.is_null() {
             continue;
         }
-        if valid_selector_id(value).is_none() {
+        let valid = valid_selector_id(value).is_some_and(|id| {
+            Uuid::parse_str(&id).is_ok()
+                || match key {
+                    "window_id" => snapshot
+                        .windows
+                        .iter()
+                        .any(|window| window.window_id.as_deref() == Some(&id)),
+                    "workspace_id" => snapshot.windows.iter().any(|window| {
+                        window
+                            .tab_manager
+                            .workspaces
+                            .iter()
+                            .any(|workspace| workspace.workspace_id.as_deref() == Some(&id))
+                    }),
+                    _ => surfaces
+                        .as_ref()
+                        .is_some_and(|model| model.owner_of_surface(&id).is_some()),
+                }
+        });
+        if !valid {
             return Some(format!("Missing or invalid {key}"));
         }
     }
@@ -873,7 +904,7 @@ fn surface_resume(
     op: ResumeOp,
 ) -> WindowLifecycleTransition {
     // Error order 1: selector validation BEFORE routing.
-    if let Some(message) = resume_selector_validation_error(params) {
+    if let Some(message) = resume_selector_validation_error(snapshot, params) {
         return error(snapshot, "invalid_params", &message, None);
     }
     // Error order 2: routing must resolve a TabManager — with the resume
@@ -931,7 +962,15 @@ fn surface_resume(
                 super::bool_param(params, &["auto_resume"]).unwrap_or(false);
             // auto_resume is HONORED ONLY when source=='agent-hook', else
             // forced false (:60; pinned CannotEnableAutoResumeFromSocket).
-            let auto_resume = requested_auto_resume && source.as_deref() == Some("agent-hook");
+            let agent_hook_auto_resume =
+                requested_auto_resume && source.as_deref() == Some("agent-hook");
+            let approval = context.resume_approval.as_ref();
+            let auto_resume = approval
+                .map(|decision| decision.auto_resume)
+                .unwrap_or(agent_hook_auto_resume);
+            let approval_policy = approval
+                .map(|decision| decision.approval_policy.clone())
+                .or_else(|| Some(if auto_resume { "auto" } else { "manual" }.to_owned()));
             let binding = SessionSurfaceResumeBindingSnapshot {
                 name: trimmed_string(params, "name"),
                 kind: trimmed_string(params, "kind"),
@@ -951,10 +990,9 @@ fn surface_resume(
                             .collect()
                     }),
                 auto_resume,
-                // Promptless path: no stored approval record. The blocking
-                // proposal alert is modeled as ResumeApprovalPrompt below.
-                approval_policy: None,
-                approval_record_id: None,
+                approval_policy,
+                approval_record_id: approval
+                    .and_then(|decision| decision.approval_record_id.clone()),
                 updated_at: context.now_epoch_seconds,
             };
             let mut next = snapshot.clone();

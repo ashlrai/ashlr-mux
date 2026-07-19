@@ -27,8 +27,10 @@ cmux-ipc = { path = "../../../crates/cmux-ipc" }
 cmux-markdown = { path = "../../../crates/cmux-markdown" }
 cmux-notify = { path = "../../../crates/cmux-notify" }
 cmux-process = { path = "../../../crates/cmux-process" }
+cmux-resume = { path = "../../../crates/cmux-resume" }
 cmux-ssh = { path = "../../../crates/cmux-ssh" }
 cmux-terminal = { path = "../../../crates/cmux-terminal" }
+cmux-tmux = { path = "../../../crates/cmux-tmux" }
 cmux-window-title = { path = "../../../crates/cmux-window-title" }
 cmux-workspaces = { path = "../../../crates/cmux-workspaces" }
 serde = { workspace = true }

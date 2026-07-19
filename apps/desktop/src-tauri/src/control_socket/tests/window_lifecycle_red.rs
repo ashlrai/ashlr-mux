@@ -40,6 +40,7 @@ fn test_context() -> WindowLifecycleContext {
         active_window_id: Some("window-1".to_string()),
         key_window_id: Some("window-1".to_string()),
         previous_key_window_id: None,
+        resume_approval: None,
         quit_confirmation_required: true,
         now_epoch_seconds: 1_700_000_000.5,
         new_window_id: Some("window-9".to_string()),
@@ -989,9 +990,7 @@ fn surface_refresh_dock_branch_wins_and_counts_dock_terminals() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // v2:surface.resume.set — selector validation + routing + target resolution
-// ---------------------------------------------------------------------------
 
 #[test]
 fn resume_selector_validation_runs_before_routing_in_fixed_key_order() {
@@ -1018,7 +1017,7 @@ fn resume_selector_validation_runs_before_routing_in_fixed_key_order() {
         let transition = dispatch(
             &snapshot,
             method,
-            json!({"window_id": "window-404", "workspace_id": 43, "command": "run"}),
+            json!({"window_id": "window-1", "workspace_id": 43, "command": "run"}),
         );
         let (_, message, _) = expect_error(&transition.result);
         assert_eq!(message, "Missing or invalid workspace_id", "{method}");
@@ -1067,7 +1066,7 @@ fn resume_unavailable_uses_the_window_unavailable_message() {
         let transition = dispatch(
             &snapshot,
             method,
-            json!({"window_id": "window-404", "command": "run"}),
+            json!({"window_id": "00000000-0000-0000-0000-000000000000", "command": "run"}),
         );
         let (code, message, _) = expect_error(&transition.result);
         assert_eq!(code, "unavailable", "{method}");
@@ -1092,7 +1091,7 @@ fn resume_set_missing_command_after_routing() {
     let transition = dispatch(
         &snapshot,
         "surface.resume.set",
-        json!({"window_id": "window-404"}),
+        json!({"window_id": "00000000-0000-0000-0000-000000000000"}),
     );
     let (code, message, _) = expect_error(&transition.result);
     assert_eq!(code, "unavailable");
@@ -1257,7 +1256,7 @@ fn resume_set_stores_and_echoes_the_full_binding_shape() {
     assert_eq!(binding["source"], json!("cli"));
     assert_eq!(binding["environment"], json!({"FOO": "bar"}));
     assert_eq!(binding["auto_resume"], json!(false));
-    assert_eq!(binding["approval_policy"], json!(null));
+    assert_eq!(binding["approval_policy"], json!("manual"));
     assert_eq!(binding["approval_record_id"], json!(null));
     assert_eq!(binding["updated_at"], json!(1_700_000_000.5));
     // Persisted in the session model + persistence effect.
@@ -1409,7 +1408,7 @@ fn resume_get_target_not_found() {
     let transition = dispatch(
         &snapshot,
         "surface.resume.get",
-        json!({"surface_id": "surface-404"}),
+        json!({"surface_id": "00000000-0000-0000-0000-000000000000"}),
     );
     let (code, message, _) = expect_error(&transition.result);
     assert_eq!(code, "not_found");
