@@ -967,10 +967,8 @@ pub(super) fn surface_split_off(
             let _ = crate::window::activate_control_window(app, &identity.label);
         }
     }
-    let surface_ref_value = surfaces_for_workspace(workspace)
-        .iter()
-        .position(|surface| surface.get("id").and_then(Value::as_str) == Some(panel_id.as_str()))
-        .map(surface_ref);
+    let surface_ref_value = surface_response_ref(app, &panel_id, 0);
+    let pane_ref_value = pane_response_ref(app, pane_id.as_deref(), pane_index);
     ok(json!({
         "window_id": window_id,
         "window_ref": window_ref,
@@ -979,7 +977,7 @@ pub(super) fn surface_split_off(
         "surface_id": panel_id,
         "surface_ref": surface_ref_value,
         "pane_id": pane_id,
-        "pane_ref": pane_ref(pane_index),
+        "pane_ref": pane_ref_value,
     }))
 }
 
@@ -1200,7 +1198,7 @@ pub(super) fn pane_focus(
         "workspace_id": workspace.workspace_id,
         "workspace_ref": workspace_ref(workspace_index),
         "pane_id": pane_id,
-        "pane_ref": pane_ref(pane_index),
+        "pane_ref": pane_response_ref(app, Some(&pane_id), pane_index),
     }))
 }
 
@@ -1388,12 +1386,10 @@ pub(super) fn pane_swap(
     };
     let window = &result.windows[window_index];
     let workspace = &window.tab_manager.workspaces[workspace_index];
-    let surface_ref_value = |panel_id: &str| {
-        surfaces_for_workspace(workspace)
-            .iter()
-            .position(|surface| surface.get("id").and_then(Value::as_str) == Some(panel_id))
-            .map(surface_ref)
-    };
+    let source_pane_ref = pane_response_ref(app, Some(&source_pane_id), source_pane_index);
+    let target_pane_ref = pane_response_ref(app, Some(&target_pane_id), target_pane_index);
+    let source_surface_ref = surface_response_ref(app, &swap.source_surface_id, 0);
+    let target_surface_ref = surface_response_ref(app, &swap.target_surface_id, 0);
     let window_identity = crate::window::control_window_summaries(app)
         .into_iter()
         .find(|summary| summary.identity.label == window.window_id.as_deref().unwrap_or("main"))
@@ -1410,13 +1406,13 @@ pub(super) fn pane_swap(
         "workspace_id": workspace.workspace_id,
         "workspace_ref": workspace_ref(workspace_index),
         "pane_id": source_pane_id,
-        "pane_ref": pane_ref(source_pane_index),
+        "pane_ref": source_pane_ref,
         "target_pane_id": target_pane_id,
-        "target_pane_ref": pane_ref(target_pane_index),
+        "target_pane_ref": target_pane_ref,
         "source_surface_id": swap.source_surface_id,
-        "source_surface_ref": surface_ref_value(&swap.source_surface_id),
+        "source_surface_ref": source_surface_ref,
         "target_surface_id": swap.target_surface_id,
-        "target_surface_ref": surface_ref_value(&swap.target_surface_id),
+        "target_surface_ref": target_surface_ref,
     }))
 }
 
@@ -1582,6 +1578,8 @@ pub(super) fn pane_break(
     let pane_id = surface_pane_details(workspace, &broken.surface_id)
         .and_then(|(_, pane_id, _)| pane_id)
         .expect("state layer mints destination pane ids");
+    let pane_ref_value = pane_response_ref(app, Some(&pane_id), 0);
+    let surface_ref_value = surface_response_ref(app, &broken.surface_id, 0);
     let window_identity = crate::window::control_window_summaries(app)
         .into_iter()
         .find(|summary| summary.identity.label == window.window_id.as_deref().unwrap_or("main"))
@@ -1598,9 +1596,9 @@ pub(super) fn pane_break(
         "workspace_id": workspace.workspace_id,
         "workspace_ref": workspace_ref(broken.workspace_index),
         "pane_id": pane_id,
-        "pane_ref": pane_ref(0),
+        "pane_ref": pane_ref_value,
         "surface_id": broken.surface_id,
-        "surface_ref": surface_ref(0),
+        "surface_ref": surface_ref_value,
     }))
 }
 
@@ -1800,20 +1798,19 @@ pub(super) fn pane_last(
     if let Some(identity) = window_identity.as_ref() {
         let _ = crate::window::activate_control_window(app, &identity.label);
     }
-    let surface_ref_value = focused.surface_id.as_deref().and_then(|surface_id| {
-        surfaces_for_workspace(workspace)
-            .iter()
-            .position(|surface| surface.get("id").and_then(Value::as_str) == Some(surface_id))
-            .map(surface_ref)
-    });
+    let surface_ref_value = focused
+        .surface_id
+        .as_deref()
+        .map(|surface_id| surface_response_ref(app, surface_id, 0));
     let pane_index = pane_index_by_id(workspace, &focused.pane_id).unwrap_or(0);
+    let pane_ref_value = pane_response_ref(app, Some(&focused.pane_id), pane_index);
     ok(json!({
         "window_id": window_id,
         "window_ref": window_ref,
         "workspace_id": workspace.workspace_id,
         "workspace_ref": workspace_ref(workspace_index),
         "pane_id": focused.pane_id,
-        "pane_ref": pane_ref(pane_index),
+        "pane_ref": pane_ref_value,
         "surface_id": focused.surface_id,
         "surface_ref": surface_ref_value,
     }))
@@ -2011,7 +2008,7 @@ pub(super) fn pane_resize(
         "workspace_id": workspace.workspace_id,
         "workspace_ref": workspace_ref(workspace_index),
         "pane_id": pane_id,
-        "pane_ref": pane_ref(pane_index),
+        "pane_ref": pane_response_ref(app, Some(&pane_id), pane_index),
         "split_id": resized.split_id,
         "old_divider_position": resized.old_divider_position,
         "new_divider_position": resized.new_divider_position,
@@ -2516,19 +2513,14 @@ pub(super) fn surface_move(
             data: None,
         };
     };
-    let surface_ref_value = surfaces_for_workspace(workspace)
-        .iter()
-        .position(|surface| {
-            surface.get("id").and_then(Value::as_str) == Some(resolution.panel_id.as_str())
-        })
-        .map(surface_ref);
+    let surface_ref_value = surface_response_ref(app, &resolution.panel_id, 0);
     ok(json!({
         "window_id": window.window_id,
         "window_ref": window.window_id.as_ref().map(|_| "window:1"),
         "workspace_id": workspace.workspace_id,
         "workspace_ref": workspace_ref(resolution.target_workspace_index),
         "pane_id": pane_id,
-        "pane_ref": pane_ref(pane_index),
+        "pane_ref": pane_response_ref(app, pane_id.as_deref(), pane_index),
         "surface_id": resolution.panel_id,
         "surface_ref": surface_ref_value,
     }))
@@ -2631,17 +2623,14 @@ pub(super) fn surface_reorder(
     };
     let window = &result.windows[0];
     let workspace = &window.tab_manager.workspaces[workspace_index];
-    let surface_ref_value = surfaces_for_workspace(workspace)
-        .iter()
-        .position(|surface| surface.get("id").and_then(Value::as_str) == Some(panel_id.as_str()))
-        .map(surface_ref);
+    let surface_ref_value = surface_response_ref(app, &panel_id, 0);
     ok(json!({
         "window_id": window.window_id,
         "window_ref": window.window_id.as_ref().map(|_| "window:1"),
         "workspace_id": workspace.workspace_id,
         "workspace_ref": workspace_ref(workspace_index),
         "pane_id": pane_id,
-        "pane_ref": pane_ref(pane_index),
+        "pane_ref": pane_response_ref(app, pane_id.as_deref(), pane_index),
         "surface_id": panel_id,
         "surface_ref": surface_ref_value,
     }))
