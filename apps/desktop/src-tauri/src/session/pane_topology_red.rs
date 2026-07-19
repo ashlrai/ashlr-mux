@@ -222,6 +222,64 @@ fn successful_topology_matrix_publishes_exact_results_metadata_focus_and_uuids()
     assert_publication(&publication, &break_committed);
 }
 
+#[test]
+fn break_surface_moves_persisted_owner_to_the_new_pane() {
+    let mut before = split();
+    let workspace = &mut before.windows[0].tab_manager.workspaces[0];
+    let mut source_panes = Vec::new();
+    pane_ids(workspace.layout.as_ref().unwrap(), &mut source_panes);
+    workspace.surfaces.get_or_insert_with(Vec::new).push(
+        serde_json::from_value(serde_json::json!({
+            "surface_id": "surface-2",
+            "pane_id": source_panes[1],
+            "generation": 1,
+            "kind": {"type": "terminal"},
+            "metadata": {}
+        }))
+        .expect("surface record"),
+    );
+    let authority = GatedSnapshot::new(before.clone());
+    let mut publication = RecordingPublication::new(&before);
+
+    let (broken, committed) = transact_pane_topology_snapshot(
+        &authority,
+        &mut publication,
+        |candidate| -> Result<_, session_ops::PaneBreakError> {
+            let result = session_ops::break_surface_to_new_workspace(
+                &mut candidate.windows[0].tab_manager,
+                0,
+                "surface-2",
+                true,
+            )?;
+            ensure_workspace_ids(candidate);
+            ensure_pane_ids(candidate);
+            Ok(result)
+        },
+    )
+    .unwrap();
+
+    let workspaces = &committed.windows[0].tab_manager.workspaces;
+    assert!(workspaces[0]
+        .surfaces
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .all(|surface| surface.surface_id != "surface-2"));
+    let destination = &workspaces[broken.workspace_index];
+    let mut destination_panes = Vec::new();
+    pane_ids(destination.layout.as_ref().unwrap(), &mut destination_panes);
+    let moved = destination
+        .surfaces
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .find(|surface| surface.surface_id == "surface-2")
+        .expect("moved surface record");
+    assert_eq!(moved.pane_id, destination_panes[0]);
+    cmux_core::surface_lifecycle::SurfaceLifecycleModel::from_app_session(&committed)
+        .expect("broken surface ownership remains valid");
+}
+
 fn assert_operation_error<E: Clone + std::fmt::Debug + PartialEq>(
     before: &AppSessionSnapshot,
     expected: E,
