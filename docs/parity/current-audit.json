@@ -44,10 +44,10 @@
     "status": "not_measured"
   },
   "windows": {
-    "commit": "3e7eed5035eeedb7a17c5c67d8ef31df9fb44aad",
-    "commit_date": "2026-07-19T03:45:54-04:00",
-    "commit_subject": "refactor(cli): extract workspace command mapping",
-    "commits_ahead_of_tracked_evidence": 95,
+    "commit": "39e71d0246e5913b2eaea4f1681c63cf6d85a43d",
+    "commit_date": "2026-07-19T05:03:59-04:00",
+    "commit_subject": "refactor: split control and workspace modules",
+    "commits_ahead_of_tracked_evidence": 98,
     "source_evidence": {
       "advertised_and_routed_count": 267,
       "advertised_method_count": 270,

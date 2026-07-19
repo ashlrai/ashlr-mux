@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "family": "window_lifecycle",
+  "status": "valid_captures_with_open_deltas",
+  "canonical": {
+    "source_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+    "harness_commit": "d309cf0ceb44cda59d755d557f91189848c98357",
+    "workflow_run": 29678884486,
+    "artifact": "canonical-capture-window_lifecycle",
+    "cases": 68,
+    "capture_errors": 0
+  },
+  "windows": {
+    "behavior_commit": "286b2d7b674710ae60573ca8250df60cfd4ebcfc",
+    "cases": 68,
+    "capture_errors": 0,
+    "profile_mode": "isolated",
+    "ui_test_mode": true
+  },
+  "comparison": {
+    "cases": 68,
+    "identical": 38,
+    "deltas": 30,
+    "delta_cases": [
+      "window_create.params_ignored_junk",
+      "window_create.created_window_usable_via_explicit_routing",
+      "window_close.happy_non_active_multiwindow",
+      "window_close.repeat_close_not_found_minted_ref",
+      "window_close.nonexistent_uuid_not_found_minted_ref",
+      "window_focus.happy_routes_selectorless_afterwards",
+      "window_focus.already_key_still_emits",
+      "window_focus.nonexistent_uuid_not_found_minted_ref",
+      "surface_refresh.workspace_terminal_count",
+      "surface_refresh.browser_only_workspace_count_zero",
+      "surface_resume.roundtrip_set_get_clear_get",
+      "surface_resume.malformed_surface_id_rejected_before_routing",
+      "surface_resume.selector_validation_key_order_window_first",
+      "surface_resume.cross_window_global_locate",
+      "surface_resume.checkpoint_guard_miss_cleared_false",
+      "surface_resume.clear_nothing_cleared_true",
+      "surface_resume.auto_resume_cli_source_forced_false",
+      "surface_resume.terminal_id_alias_targets_surface",
+      "surface_resume.surface_id_beats_terminal_id",
+      "surface_resume.checkpoint_camel_fallback",
+      "surface_resume.checkpoint_snake_beats_camel",
+      "cli.new_window_raw_ok",
+      "cli.new_window_json_flag_ignored",
+      "cli.focus_window_by_uuid",
+      "cli.focus_window_by_ref",
+      "cli.close_window_by_uuid",
+      "cli.surface_resume_set_argv_quoting",
+      "cli.surface_resume_set_shell",
+      "surface_resume.persists_across_restart",
+      "window_close.last_window_may_exit_ui_test_mode"
+    ]
+  },
+  "closed_capture_blockers": [
+    "The final canonical close may legitimately disconnect; the manifest now models it as the final may_disconnect case without an impossible post-close probe.",
+    "Windows control commits no longer synchronously query native window state while a child WebView is attached.",
+    "Selector-less routing uses the initialized active-window pointer without a redundant native focus query.",
+    "The 17-case browser/resume prefix passed twice after simplification, and the full 68-case Windows capture completed with zero capture errors."
+  ],
+  "test_gate": {
+    "desktop_library_excluding_known_baseline_failures": {
+      "passed": 1039,
+      "ignored": 1,
+      "excluded": 4,
+      "runs": 2
+    },
+    "desktop_all_targets_check_runs": 2,
+    "known_baseline_failures_reproduced_at": [
+      "0ea973d28d5efc34852fb16d8a6aa452512ec381",
+      "286b2d7b674710ae60573ca8250df60cfd4ebcfc"
+    ]
+  },
+  "promotion": {
+    "rows_promoted": [],
+    "reason": "Thirty semantic case deltas remain; complete captures are diagnostic evidence, not parity proof."
+  }
+}
