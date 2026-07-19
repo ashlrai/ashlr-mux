@@ -370,10 +370,8 @@ pub fn run() {
                 let _ =
                     session::session_snapshot(handle, window, app.state::<session::SessionState>());
             }
-            if !window::capture_windows_hidden() {
-                if let Some(window) = app.get_webview_window("main") {
-                    window.show()?;
-                }
+            if let Some(window) = app.get_webview_window("main") {
+                window::present_bootstrap_window(&window)?;
             }
             Ok(())
         })

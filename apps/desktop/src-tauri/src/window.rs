@@ -55,6 +55,18 @@ fn run_capture_window_hiding(
     }
 }
 
+fn run_bootstrap_window_presentation(
+    capture_windows_hidden: bool,
+    park: impl FnOnce() -> Result<(), String>,
+    show: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    if capture_windows_hidden {
+        park()
+    } else {
+        show()
+    }
+}
+
 fn park_capture_window(window: &WebviewWindow) -> Result<(), String> {
     window
         .set_position(PhysicalPosition::new(
@@ -72,6 +84,14 @@ pub(crate) fn hide_capture_windows_at_startup(app: &AppHandle) -> Result<(), Str
         }
         Ok(())
     })
+}
+
+pub(crate) fn present_bootstrap_window(window: &WebviewWindow) -> Result<(), String> {
+    run_bootstrap_window_presentation(
+        capture_windows_hidden(),
+        || park_capture_window(window),
+        || window.show().map_err(|error| error.to_string()),
+    )
 }
 
 fn capture_window_starts_focused(capture_windows_hidden: bool, requested: bool) -> bool {
@@ -683,7 +703,8 @@ pub fn window_open_task_manager() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        capture_window_starts_focused, capture_windows_hidden_for_value, run_capture_window_hiding,
+        capture_window_starts_focused, capture_windows_hidden_for_value,
+        run_bootstrap_window_presentation, run_capture_window_hiding,
         run_control_window_activation, task_manager_command, WindowStateSnapshot,
         AUX_WINDOW_LABEL_PREFIX,
     };
@@ -733,6 +754,28 @@ mod tests {
         })
         .expect("interactive startup leaves visibility to normal setup");
         assert_eq!(hide_count.get(), 1);
+    }
+
+    #[test]
+    fn capture_headless_mode_parks_then_renders_the_bootstrap_window() {
+        let park_count = Cell::new(0);
+        let show_count = Cell::new(0);
+
+        run_bootstrap_window_presentation(
+            true,
+            || {
+                park_count.set(park_count.get() + 1);
+                Ok(())
+            },
+            || {
+                show_count.set(show_count.get() + 1);
+                Ok(())
+            },
+        )
+        .expect("offscreen capture presentation succeeds");
+
+        assert_eq!(park_count.get(), 1);
+        assert_eq!(show_count.get(), 1);
     }
 
     #[test]
