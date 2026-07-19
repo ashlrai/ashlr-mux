@@ -66,9 +66,24 @@ function Get-OwnedSupervisorProcess([object]$state) {
     if ($null -eq $process) {
         return $null
     }
-    $actualPath = [System.IO.Path]::GetFullPath($process.Path)
+    try {
+        $actualPathValue = $process.Path
+        $actualStartTime = $process.StartTime
+        if ($null -eq $actualStartTime) {
+            return $null
+        }
+        $actualStart = $actualStartTime.ToUniversalTime().Ticks
+    } catch {
+        return $null
+    }
+    if ([string]::IsNullOrWhiteSpace($actualPathValue)) {
+        if ($process.HasExited) {
+            return $null
+        }
+        throw "PID $($state.supervisor_pid) no longer identifies the capture supervisor; refusing to stop it."
+    }
+    $actualPath = [System.IO.Path]::GetFullPath($actualPathValue)
     $expectedPath = [System.IO.Path]::GetFullPath([string]$state.supervisor_executable)
-    $actualStart = $process.StartTime.ToUniversalTime().Ticks
     if (-not $actualPath.Equals($expectedPath, [System.StringComparison]::OrdinalIgnoreCase) -or
         $actualStart -ne [int64]$state.supervisor_start_time_utc_ticks) {
         throw "PID $($state.supervisor_pid) no longer identifies the capture supervisor; refusing to stop it."
@@ -76,18 +91,71 @@ function Get-OwnedSupervisorProcess([object]$state) {
     return $process
 }
 
+function Get-OwnedProcessTree([System.Diagnostics.Process]$rootProcess) {
+    $snapshotTakenAtUtcTicks = [DateTime]::UtcNow.Ticks
+    $rootStartTimeUtcTicks = $rootProcess.StartTime.ToUniversalTime().Ticks
+    $processSnapshot = Get-CimInstance Win32_Process
+    $ownedIds = [System.Collections.Generic.HashSet[int]]::new()
+    $ownedIds.Add($rootProcess.Id) | Out-Null
+
+    $added = $true
+    while ($added) {
+        $added = $false
+        foreach ($candidate in $processSnapshot) {
+            if (-not $ownedIds.Contains([int]$candidate.ProcessId) -and
+                $ownedIds.Contains([int]$candidate.ParentProcessId)) {
+                $ownedIds.Add([int]$candidate.ProcessId) | Out-Null
+                $added = $true
+            }
+        }
+    }
+
+    $ownedProcesses = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
+    $ownedProcesses.Add($rootProcess)
+    foreach ($processId in $ownedIds) {
+        if ($processId -eq $rootProcess.Id) {
+            continue
+        }
+        $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
+        if ($null -eq $process) {
+            continue
+        }
+        try {
+            $startTime = $process.StartTime
+            if ($null -eq $startTime) {
+                continue
+            }
+            $startTimeUtcTicks = $startTime.ToUniversalTime().Ticks
+        } catch {
+            continue
+        }
+        if ($startTimeUtcTicks -ge $rootStartTimeUtcTicks -and
+            $startTimeUtcTicks -le $snapshotTakenAtUtcTicks) {
+            $ownedProcesses.Add($process)
+        }
+    }
+    return $ownedProcesses.ToArray()
+}
+
 function Stop-OwnedProcess {
     $state = Read-OwnedProcessState
     $process = Get-OwnedProcess $state
     if ($null -ne $process) {
-        Stop-Process -Id $process.Id -Force
+        $ownedProcesses = @(Get-OwnedProcessTree $process)
+        $ownedProcesses | Stop-Process -Force -ErrorAction SilentlyContinue
         $deadline = [DateTime]::UtcNow.AddSeconds(20)
-        while (-not $process.HasExited -and [DateTime]::UtcNow -lt $deadline) {
+        while ([DateTime]::UtcNow -lt $deadline) {
+            $runningProcesses = @($ownedProcesses | Where-Object { -not $_.HasExited })
+            if ($runningProcesses.Count -eq 0) {
+                break
+            }
             Start-Sleep -Milliseconds 100
-            $process.Refresh()
+            $runningProcesses | ForEach-Object { $_.Refresh() }
         }
-        if (-not $process.HasExited) {
-            throw "Capture-owned cmux-desktop PID $($process.Id) did not exit within 20 seconds."
+        $runningProcesses = @($ownedProcesses | Where-Object { -not $_.HasExited })
+        if ($runningProcesses.Count -gt 0) {
+            $runningIds = ($runningProcesses | ForEach-Object { $_.Id }) -join ', '
+            throw "Capture-owned process tree PIDs $runningIds did not exit within 20 seconds."
         }
     }
     $supervisor = Get-OwnedSupervisorProcess $state
