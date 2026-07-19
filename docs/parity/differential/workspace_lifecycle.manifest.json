@@ -61,6 +61,11 @@
   "cases": [
     {
       "id": "workspace_list.explicit_window",
+      "approved_differences": [
+        {"path": "/response/result/workspaces/0/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."},
+        {"path": "/response/result/workspaces/1/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."},
+        {"path": "/response/result/workspaces/2/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."}
+      ],
       "action": {
         "op": "v2",
         "method": "workspace.list",
@@ -71,6 +76,11 @@
     },
     {
       "id": "workspace_list.routes_by_nonselected_workspace",
+      "approved_differences": [
+        {"path": "/response/result/workspaces/0/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."},
+        {"path": "/response/result/workspaces/1/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."},
+        {"path": "/response/result/workspaces/2/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."}
+      ],
       "action": {
         "op": "v2",
         "method": "workspace.list",
@@ -92,6 +102,9 @@
     },
     {
       "id": "workspace_current.explicit_window",
+      "approved_differences": [
+        {"path": "/response/result/workspace/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."}
+      ],
       "action": {
         "op": "v2",
         "method": "workspace.current",
@@ -102,6 +115,9 @@
     },
     {
       "id": "workspace_current.routes_by_nonselected_workspace",
+      "approved_differences": [
+        {"path": "/response/result/workspace/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."}
+      ],
       "action": {
         "op": "v2",
         "method": "workspace.current",
@@ -123,6 +139,12 @@
     },
     {
       "id": "workspace_create.background_focus_is_suppressed",
+      "approved_differences": [
+        {"path": "/selectors/0/result/response/result/workspace/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."},
+        {"path": "/state/0/result/response/result/workspaces/0/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."},
+        {"path": "/state/0/result/response/result/workspaces/1/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."},
+        {"path": "/state/0/result/response/result/workspaces/2/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."}
+      ],
       "events": true,
       "action": {
         "op": "v2",
@@ -164,6 +186,11 @@
     },
     {
       "id": "workspace_create.invalid_cwd_fails_before_mutation",
+      "approved_differences": [
+        {"path": "/state/0/result/response/result/workspaces/0/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."},
+        {"path": "/state/0/result/response/result/workspaces/1/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."},
+        {"path": "/state/0/result/response/result/workspaces/2/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."}
+      ],
       "action": {
         "op": "v2",
         "method": "workspace.create",
@@ -186,6 +213,10 @@
     },
     {
       "id": "workspace_select.cross_window",
+      "approved_differences": [
+        {"path": "/state/0/result/response/result/workspace/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."},
+        {"path": "/events/4/payload/cwd", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."}
+      ],
       "events": true,
       "action": {
         "op": "v2",
@@ -238,6 +269,11 @@
     },
     {
       "id": "workspace_rename.background_workspace",
+      "approved_differences": [
+        {"path": "/state/0/result/response/result/workspaces/0/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."},
+        {"path": "/state/0/result/response/result/workspaces/1/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."},
+        {"path": "/state/0/result/response/result/workspaces/2/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."}
+      ],
       "events": true,
       "action": {
         "op": "v2",
@@ -262,6 +298,11 @@
     },
     {
       "id": "workspace_close.normal_workspace",
+      "approved_differences": [
+        {"path": "/state/0/result/response/result/workspaces/0/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."},
+        {"path": "/state/0/result/response/result/workspaces/1/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."},
+        {"path": "/state/0/result/response/result/workspaces/2/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."}
+      ],
       "setup": [
         {
           "op": "v2",
@@ -317,6 +358,12 @@
     },
     {
       "id": "cli_new_workspace.explicit_window",
+      "approved_differences": [
+        {"path": "/state/0/result/response/result/workspaces/0/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."},
+        {"path": "/state/0/result/response/result/workspaces/1/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."},
+        {"path": "/state/0/result/response/result/workspaces/2/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."},
+        {"path": "/state/0/result/response/result/workspaces/3/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."}
+      ],
       "action": {
         "op": "cli",
         "argv": [
@@ -345,6 +392,10 @@
     },
     {
       "id": "cli_select_workspace.explicit_window",
+      "approved_differences": [
+        {"path": "/state/0/result/response/result/workspace/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."},
+        {"path": "/events/4/payload/cwd", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."}
+      ],
       "setup": [
         {
           "op": "v2",
@@ -380,6 +431,14 @@
     },
     {
       "id": "cli_rename_workspace.explicit_target",
+      "approved_differences": [
+        {"path": "/state/0/result/response/result/workspaces/0/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."},
+        {"path": "/state/0/result/response/result/workspaces/1/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."},
+        {"path": "/state/0/result/response/result/workspaces/2/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."},
+        {"path": "/state/0/result/response/result/workspaces/3/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."},
+        {"path": "/state/0/result/response/result/workspaces/4/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."},
+        {"path": "/state/0/result/response/result/workspaces/5/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."}
+      ],
       "setup": [
         {
           "op": "v2",
@@ -416,6 +475,14 @@
     },
     {
       "id": "cli_close_workspace.explicit_window",
+      "approved_differences": [
+        {"path": "/state/0/result/response/result/workspaces/0/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."},
+        {"path": "/state/0/result/response/result/workspaces/1/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."},
+        {"path": "/state/0/result/response/result/workspaces/2/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."},
+        {"path": "/state/0/result/response/result/workspaces/3/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."},
+        {"path": "/state/0/result/response/result/workspaces/4/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."},
+        {"path": "/state/0/result/response/result/workspaces/5/current_directory", "rationale": "Native inherited directory: canonical macOS checkout versus Windows user home."}
+      ],
       "setup": [
         {
           "op": "v2",
