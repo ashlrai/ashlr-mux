@@ -5,7 +5,6 @@
 //! string below is transcribed from the contract's pinned sources, not
 //! paraphrased.
 //!
-//! Platform adaptations pinned here (documented, not silent):
 //! - Production session window ids are canonical UUIDs. Deterministic fixtures
 //!   use readable labels; selector rejection is therefore pinned as shape
 //!   validation (non-empty string that is not an unresolved `kind:N` ref).
@@ -41,6 +40,7 @@ const RESUME_UNAVAILABLE: &str = "cmux window is not available. Reopen the windo
 fn test_context() -> WindowLifecycleContext {
     WindowLifecycleContext {
         active_window_id: Some("window-1".to_string()),
+        key_window_id: Some("window-1".to_string()),
         quit_confirmation_required: true,
         now_epoch_seconds: 1_700_000_000.5,
         new_window_id: Some("window-9".to_string()),
@@ -293,8 +293,6 @@ fn window_create_success_payload_is_window_id_and_ref_only() {
 
 #[test]
 fn window_create_appends_a_window_with_one_initial_workspace() {
-    // createMainWindow: new TabManager with ONE initial workspace
-    // (AppDelegate.swift:8639-8645).
     let snapshot = test_snapshot();
     let transition = dispatch(&snapshot, "window.create", json!({}));
     assert!(transition.changed);
@@ -304,6 +302,8 @@ fn window_create_appends_a_window_with_one_initial_workspace() {
     assert_eq!(created.tab_manager.workspaces.len(), 1);
     assert_eq!(created.tab_manager.selected_workspace_index, Some(0));
     let workspace = &created.tab_manager.workspaces[0];
+    assert!(workspace.workspace_id.is_some());
+    assert_eq!(created.selected_workspace_id, workspace.workspace_id);
     assert_eq!(workspace.focused_panel_id.as_deref(), Some("surface-9"));
     let directory = workspace
         .current_directory
@@ -320,6 +320,7 @@ fn window_create_appends_a_window_with_one_initial_workspace() {
     let Some(SessionWorkspaceLayoutSnapshot::Pane(pane)) = workspace.layout.as_ref() else {
         panic!("created workspace must hold a single pane layout");
     };
+    assert!(pane.pane_id.as_deref().is_some_and(|id| !id.is_empty()));
     assert_eq!(pane.panel_ids, vec!["surface-9".to_string()]);
 }
 
@@ -352,11 +353,9 @@ fn window_create_is_order_front_only_and_moves_the_active_pointer() {
 #[test]
 fn window_create_emits_window_created_with_canonical_payload_keys() {
     // publishCmuxWindowLifecycle payload keys (CmuxLifecycleEventPublishing.swift:281-300);
-    // emission at AppDelegate.swift:8860 with origin=create.
     let snapshot = test_snapshot();
     let transition = dispatch(&snapshot, "window.create", json!({}));
-    assert_eq!(transition.events.len(), 1);
-    let event = &transition.events[0];
+    let event = transition.events.last().unwrap();
     assert_eq!(event.name, "window.created");
     assert_eq!(event.category, "window");
     assert_eq!(event.window_id.as_deref(), Some("window-9"));

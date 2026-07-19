@@ -349,6 +349,7 @@ pub struct ControlActiveWindowState {
 #[derive(Default)]
 struct ControlActiveWindow {
     current: Option<String>,
+    key: Option<String>,
     startup_fallback: Option<String>,
 }
 
@@ -358,6 +359,23 @@ impl ControlActiveWindowState {
             .lock()
             .expect("active window pointer mutex poisoned")
             .current = Some(window_id.to_owned());
+    }
+
+    pub(crate) fn set_key(&self, window_id: &str) {
+        let mut active = self
+            .inner
+            .lock()
+            .expect("active window pointer mutex poisoned");
+        active.current = Some(window_id.to_owned());
+        active.key = Some(window_id.to_owned());
+    }
+
+    pub(super) fn key(&self) -> Option<String> {
+        self.inner
+            .lock()
+            .expect("active window pointer mutex poisoned")
+            .key
+            .clone()
     }
 
     #[cfg(test)]
@@ -397,6 +415,7 @@ impl ControlActiveWindowState {
             .expect("active window pointer mutex poisoned");
         if let Some(startup_fallback) = active.startup_fallback.take() {
             active.current = focused_window_id.or(Some(startup_fallback));
+            active.key = active.current.clone();
         }
         active.current.clone()
     }
@@ -438,7 +457,7 @@ pub(crate) fn note_window_focused(app: &AppHandle, label: &str) {
     };
     let window_id =
         session_window_id_for_label(&snapshot(app), label).unwrap_or_else(|| label.to_owned());
-    state.set(&window_id);
+    state.set_key(&window_id);
 }
 
 /// The session window presented by a webview label: labels match session ids
@@ -525,8 +544,12 @@ pub(super) fn handle_window_lifecycle_request(
     let current = snapshot(app);
     normalize_window_identity_selector(app, &current, &mut params);
     let active_window_id = control_active_window_id(app);
+    let key_window_id = app
+        .try_state::<ControlActiveWindowState>()
+        .and_then(|state| state.key());
     let context = window_lifecycle::WindowLifecycleContext {
         active_window_id,
+        key_window_id,
         quit_confirmation_required: window_quit_confirmation_required(
             control_settings_store(app).as_ref(),
         ),
@@ -567,7 +590,9 @@ pub(super) fn handle_window_lifecycle_request(
         }
     }
     for effect in &transition.effects {
-        if let Err((code, message)) = apply_window_lifecycle_effect(app, &current, effect) {
+        if let Err((code, message)) =
+            apply_window_lifecycle_effect(app, &current, &transition.snapshot, effect)
+        {
             return ControlCallResult::Err {
                 code: code.into(),
                 message,
@@ -594,6 +619,7 @@ pub(super) fn handle_window_lifecycle_request(
 pub(super) fn apply_window_lifecycle_effect(
     app: &AppHandle,
     current: &AppSessionSnapshot,
+    next: &AppSessionSnapshot,
     effect: &window_lifecycle::WindowLifecycleEffect,
 ) -> Result<(), (&'static str, String)> {
     use window_lifecycle::WindowLifecycleEffect as Effect;
@@ -603,16 +629,45 @@ pub(super) fn apply_window_lifecycle_effect(
             failure_code,
             failure_message,
             ..
-        } => crate::window::create_socket_window(app, window_id).map_err(|error| {
-            // The wire message is byte-frozen ("Failed to create window");
-            // keep the detail on stderr only.
-            eprintln!("[control] window.create failed: {error}");
-            (*failure_code, (*failure_message).to_string())
-        }),
+        } => {
+            let Some(window) = next
+                .windows
+                .iter()
+                .find(|window| window.window_id.as_deref() == Some(window_id))
+            else {
+                return Err((
+                    "internal_error",
+                    "Created window snapshot is missing".into(),
+                ));
+            };
+            crate::window::create_socket_window(app, window).map_err(|error| {
+                // The wire message is byte-frozen ("Failed to create window");
+                // keep the detail on stderr only.
+                eprintln!("[control] window.create failed: {error}");
+                (*failure_code, (*failure_message).to_string())
+            })
+        }
         Effect::WindowCloseCommit { window_id } => {
             let label = webview_label_for_session_window(app, current, window_id);
+            let active_state = app.try_state::<ControlActiveWindowState>();
+            let was_key = active_state
+                .as_ref()
+                .and_then(|state| state.key())
+                .as_deref()
+                == Some(window_id);
             crate::window::close_socket_window(app, &label)
-                .map_err(|error| ("internal_error", error))
+                .map_err(|error| ("internal_error", error))?;
+            if was_key {
+                if let (Some(state), Some(next_window_id)) = (
+                    active_state,
+                    next.windows
+                        .first()
+                        .and_then(|window| window.window_id.as_deref()),
+                ) {
+                    state.set_key(next_window_id);
+                }
+            }
+            Ok(())
         }
         Effect::WindowFocus { window_id } => {
             // Best-effort platform focus: canonical focus() returns true on
@@ -621,6 +676,9 @@ pub(super) fn apply_window_lifecycle_effect(
             let label = webview_label_for_session_window(app, current, window_id);
             if let Err(error) = crate::window::focus_control_window(app, &label) {
                 eprintln!("[control] window.focus: {error}");
+            }
+            if let Some(state) = app.try_state::<ControlActiveWindowState>() {
+                state.set_key(window_id);
             }
             Ok(())
         }

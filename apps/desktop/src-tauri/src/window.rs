@@ -371,7 +371,7 @@ pub fn window_toggle_fullscreen(window: WebviewWindow) -> Result<WindowStateSnap
 #[tauri::command]
 pub async fn window_new(app: AppHandle, window: WebviewWindow) -> Result<String, String> {
     let label = next_window_label(&app);
-    create_window_for_label(&app, &label, window.title().ok().as_deref(), true)?;
+    create_window_for_label(&app, &label, window.title().ok().as_deref(), true, None)?;
     Ok(label)
 }
 
@@ -380,8 +380,15 @@ pub async fn window_new(app: AppHandle, window: WebviewWindow) -> Result<String,
 /// the Windows mapping of
 /// canonical orderFront-only socket window creation (window.create is not
 /// focus-intent: AppDelegate.swift:8862-8868 at pinned e1825d40d).
-pub(crate) fn create_socket_window(app: &AppHandle, label: &str) -> Result<(), String> {
-    create_window_for_label(app, label, None, false)
+pub(crate) fn create_socket_window(
+    app: &AppHandle,
+    snapshot: &cmux_core::session::SessionWindowSnapshot,
+) -> Result<(), String> {
+    let label = snapshot
+        .window_id
+        .as_deref()
+        .ok_or_else(|| "Socket window is missing its identity".to_string())?;
+    create_window_for_label(app, label, None, false, Some(snapshot))
 }
 
 /// Close a window on behalf of the control socket, keyed by webview label.
@@ -390,10 +397,70 @@ pub(crate) fn create_socket_window(app: &AppHandle, label: &str) -> Result<(), S
 pub(crate) fn close_socket_window(app: &AppHandle, label: &str) -> Result<(), String> {
     let Some(window) = app.get_webview_window(label) else {
         let state = app.state::<crate::session::SessionState>();
-        return crate::session::unregister_window_for_control(app, state.inner(), label)
-            .map(|_| ());
+        return crate::session::unregister_window_for_control_suppressing_events(
+            app,
+            state.inner(),
+            label,
+        )
+        .map(|_| ());
     };
-    window_close(window)
+    close_webview_window(window, true)
+}
+
+fn close_webview_window(
+    window: WebviewWindow,
+    suppress_derived_events: bool,
+) -> Result<(), String> {
+    let label = window.label().to_string();
+    let app = window.app_handle().clone();
+    if label == MAIN_WINDOW_LABEL {
+        return close_main_window(&window);
+    }
+    window.hide().map_err(|error| error.to_string())?;
+    let state = app.state::<crate::session::SessionState>();
+    let unregistration = if suppress_derived_events {
+        crate::session::unregister_window_for_control_suppressing_events(
+            &app,
+            state.inner(),
+            &label,
+        )
+    } else {
+        crate::session::unregister_window_for_control(&app, state.inner(), &label)
+    };
+    let outcome = match unregistration {
+        Ok(outcome) => outcome,
+        Err(message) => {
+            let failures = window
+                .show()
+                .err()
+                .map(|error| vec![error.to_string()])
+                .unwrap_or_default();
+            return Err(append_compensation_failures(message, failures));
+        }
+    };
+    let crate::session::UnregisterWindowOutcome::Removed { lease, .. } = outcome else {
+        return window.close().map_err(|error| {
+            let failures = window
+                .show()
+                .err()
+                .map(|show_error| vec![show_error.to_string()])
+                .unwrap_or_default();
+            append_compensation_failures(error.to_string(), failures)
+        });
+    };
+    if let Err(error) = window.close() {
+        let mut failures = Vec::new();
+        if let Err(error) =
+            crate::session::restore_removed_window_for_control(&app, state.inner(), &lease)
+        {
+            failures.push(error);
+        }
+        if let Err(error) = window.show() {
+            failures.push(error.to_string());
+        }
+        return Err(append_compensation_failures(error.to_string(), failures));
+    }
+    Ok(())
 }
 
 fn create_window_for_label(
@@ -401,13 +468,20 @@ fn create_window_for_label(
     label: &str,
     title: Option<&str>,
     focused: bool,
+    prepared_snapshot: Option<&cmux_core::session::SessionWindowSnapshot>,
 ) -> Result<(), String> {
     let new_window = build_hidden_window(app, label, focused)?;
     if let Some(title) = title {
         let _ = new_window.set_title(title);
     }
     let state = app.state::<crate::session::SessionState>();
-    if let Err(message) = crate::session::register_window_for_control(app, state.inner(), label) {
+    let registration = match prepared_snapshot {
+        Some(snapshot) => {
+            crate::session::register_prepared_window_for_control(app, state.inner(), snapshot)
+        }
+        None => crate::session::register_window_for_control(app, state.inner(), label),
+    };
+    if let Err(message) = registration {
         let failures = new_window
             .close()
             .err()
@@ -418,7 +492,16 @@ fn create_window_for_label(
     install_window_state_listener(&new_window);
     if let Err(error) = new_window.show() {
         let mut failures = Vec::new();
-        match crate::session::unregister_window_for_control(app, state.inner(), label) {
+        let unregistration = if prepared_snapshot.is_some() {
+            crate::session::unregister_window_for_control_suppressing_events(
+                app,
+                state.inner(),
+                label,
+            )
+        } else {
+            crate::session::unregister_window_for_control(app, state.inner(), label)
+        };
+        match unregistration {
             Ok(crate::session::UnregisterWindowOutcome::Removed { .. }) => {}
             Ok(crate::session::UnregisterWindowOutcome::Unchanged(_)) => {
                 failures.push(format!("registered window model {label} was not removed"))
@@ -483,50 +566,7 @@ pub(crate) fn activate_restored_window(app: &AppHandle, label: &str) -> Result<(
 
 #[tauri::command]
 pub fn window_close(window: WebviewWindow) -> Result<(), String> {
-    let label = window.label().to_string();
-    let app = window.app_handle().clone();
-    if label == MAIN_WINDOW_LABEL {
-        return close_main_window(&window);
-    }
-    window.hide().map_err(|error| error.to_string())?;
-    let state = app.state::<crate::session::SessionState>();
-    let outcome = match crate::session::unregister_window_for_control(&app, state.inner(), &label) {
-        Ok(outcome) => outcome,
-        Err(message) => {
-            let failures = window
-                .show()
-                .err()
-                .map(|error| vec![error.to_string()])
-                .unwrap_or_default();
-            return Err(append_compensation_failures(message, failures));
-        }
-    };
-    let crate::session::UnregisterWindowOutcome::Removed { lease, .. } = outcome else {
-        return match window.close() {
-            Ok(()) => Ok(()),
-            Err(error) => {
-                let failures = window
-                    .show()
-                    .err()
-                    .map(|error| vec![error.to_string()])
-                    .unwrap_or_default();
-                Err(append_compensation_failures(error.to_string(), failures))
-            }
-        };
-    };
-    if let Err(error) = window.close() {
-        let mut failures = Vec::new();
-        if let Err(error) =
-            crate::session::restore_removed_window_for_control(&app, state.inner(), &lease)
-        {
-            failures.push(error);
-        }
-        if let Err(error) = window.show() {
-            failures.push(error.to_string());
-        }
-        return Err(append_compensation_failures(error.to_string(), failures));
-    }
-    Ok(())
+    close_webview_window(window, false)
 }
 
 #[cfg(target_os = "windows")]

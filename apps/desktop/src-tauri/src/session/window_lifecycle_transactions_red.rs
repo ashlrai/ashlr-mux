@@ -1,5 +1,6 @@
 //! Durable model and OS ordering for auxiliary-window lifecycle operations.
 
+use super::control_window_registration::transact_register_prepared_window;
 use super::*;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -263,6 +264,31 @@ fn production_missing_main_repairs_first_window_without_allocating() {
     assert_eq!(committed.windows[0].window_id.as_deref(), Some("main"));
     assert_eq!(publication.calls, ["persist", "baseline", "emit"]);
     assert_eq!(next_panel.load(Ordering::Relaxed), 8);
+}
+
+#[test]
+fn production_prepared_registration_preserves_transition_identities() {
+    let before = initial();
+    let authority = GatedSnapshot::new(before.clone());
+    let next_panel = AtomicU64::new(8);
+    let mut publication = RecordingPublication::new(&before);
+    let mut prepared = aux_window("prepared-window", "prepared-surface");
+    let mut prepared_snapshot = before.clone();
+    prepared_snapshot.windows.push(prepared.clone());
+    ensure_workspace_ids(&mut prepared_snapshot);
+    ensure_pane_ids(&mut prepared_snapshot);
+    prepared = prepared_snapshot.windows.pop().unwrap();
+    prepared.selected_workspace_id = prepared.tab_manager.workspaces[0].workspace_id.clone();
+
+    let RegisterWindowOutcome::Registered(committed) =
+        transact_register_prepared_window(&authority, &next_panel, &mut publication, &prepared)
+            .unwrap()
+    else {
+        panic!("prepared window registered")
+    };
+    assert_eq!(committed.windows[1], prepared);
+    assert_eq!(publication.events, [committed]);
+    assert_eq!(next_panel.load(Ordering::Relaxed), 9);
 }
 
 #[test]

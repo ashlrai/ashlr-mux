@@ -2,7 +2,7 @@
 # Format: max_lines<TAB>relative path
 # New files may not exceed 1500 lines. Reduce entries as files shrink.
 6306	crates/cmux-core/src/session_ops.rs
-6234	apps/desktop/src-tauri/src/session.rs
+6204	apps/desktop/src-tauri/src/session.rs
 5975	apps/desktop/web/src/components/CustomSidebarSurface.test.tsx
 5672	apps/desktop/src-tauri/src/terminal.rs
 5419	apps/desktop/web/src/components/CustomSidebarSurface.tsx
@@ -32,7 +32,7 @@
 1843	crates/cmux-core/src/surface_lifecycle.rs
 1777	apps/desktop/web/src/palette/useCommandPalette.ts
 1775	apps/desktop/web/src/palette/commandCatalog.ts
-1757	apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs
+1756	apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs
 1732	apps/desktop/web/src/components/Workspace.tsx
 1728	apps/desktop/src-tauri/src/dock.rs
 1697	crates/cmux-core/src/session.rs

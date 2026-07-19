@@ -39,6 +39,12 @@ use cmux_workspaces::{WorkspaceBatchReorderError, WorkspaceReorderPlanItem};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use uuid::Uuid;
 
+mod control_window_registration;
+use control_window_registration::transact_register_window;
+pub(crate) use control_window_registration::{
+    register_prepared_window_for_control, unregister_window_for_control_suppressing_events,
+};
+
 /// Event carrying the full session snapshot after any structural change.
 const SESSION_CHANGED_EVENT: &str = "cmux://session-changed";
 const CURRENT_SESSION_SNAPSHOT_FILENAME: &str = "session-current.json";
@@ -2108,6 +2114,7 @@ pub(crate) enum MoveWorkspaceToWindowControlError {
 
 pub(crate) fn fresh_control_window_workspace(panel_id: &str) -> SessionWorkspaceSnapshot {
     let mut workspace = session_ops::fresh_terminal_workspace(panel_id);
+    workspace.workspace_id = Some(Uuid::new_v4().to_string());
     workspace.current_directory = default_workspace_directory();
     if let Some(SessionWorkspaceLayoutSnapshot::Pane(pane)) = workspace.layout.as_mut() {
         pane.pane_id = Some(Uuid::new_v4().to_string());
@@ -2117,54 +2124,17 @@ pub(crate) fn fresh_control_window_workspace(panel_id: &str) -> SessionWorkspace
 }
 
 fn auxiliary_window_snapshot(window_id: &str, panel_id: &str) -> SessionWindowSnapshot {
+    let workspace = fresh_control_window_workspace(panel_id);
     SessionWindowSnapshot {
         window_id: Some(window_id.to_string()),
-        selected_workspace_id: None,
+        selected_workspace_id: workspace.workspace_id.clone(),
         dock: None,
         tab_manager: SessionTabManagerSnapshot {
             selected_workspace_index: Some(0),
-            workspaces: vec![fresh_control_window_workspace(panel_id)],
+            workspaces: vec![workspace],
             workspace_groups: None,
         },
     }
-}
-
-fn transact_register_window(
-    authority: &GatedSnapshot,
-    next_panel: &AtomicU64,
-    publication: &mut impl SnapshotPublicationOperations,
-    window_id: &str,
-) -> Result<RegisterWindowOutcome, String> {
-    let _transaction_guard = authority.lock_gate();
-    let before = transaction_current_snapshot(authority)?;
-    if window_id.trim().is_empty() {
-        return Ok(RegisterWindowOutcome::Unchanged(before));
-    }
-    if before
-        .windows
-        .iter()
-        .any(|window| window.window_id.as_deref() == Some(window_id))
-    {
-        return Ok(RegisterWindowOutcome::Unchanged(before));
-    }
-    if window_id == "main" && !before.windows.is_empty() {
-        let mut candidate = before.clone();
-        candidate.windows[0].window_id = Some("main".to_string());
-        let committed =
-            publish_snapshot_transaction(authority, Some(&before), &candidate, publication)?;
-        return Ok(RegisterWindowOutcome::Registered(committed));
-    }
-    let panel_id = Uuid::new_v4().to_string();
-    let mut candidate = before.clone();
-    candidate
-        .windows
-        .push(auxiliary_window_snapshot(window_id, &panel_id));
-    ensure_workspace_ids(&mut candidate);
-    ensure_pane_ids(&mut candidate);
-    let committed =
-        publish_snapshot_transaction(authority, Some(&before), &candidate, publication)?;
-    next_panel.fetch_add(1, Ordering::Relaxed);
-    Ok(RegisterWindowOutcome::Registered(committed))
 }
 
 fn transact_unregister_window(

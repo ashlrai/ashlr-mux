@@ -13,12 +13,16 @@
 //! approval alert) are modeled as deterministic effects the executor layer
 //! honors — see the contract's `headless_impossibility_flags`.
 //!
-//! Windows adaptation (documented in the red suite): session window ids are
-//! labels ("window-N"), not UUIDs, so canonical's UUID-parse rejection maps
-//! to shape validation (non-empty string that is not an unresolved `kind:N`
-//! handle ref). Handle refs are resolved upstream by
+//! Production session window identities are canonical UUIDs. Deterministic
+//! tests use readable labels, so selector rejection is pinned as shape
+//! validation (non-empty string that is not an unresolved `kind:N` handle
+//! ref). Handle refs are resolved upstream by
 //! `resolve_request_handle_refs`; a surviving `kind:N` literal means the ref
 //! was unresolvable, which canonical rejects as invalid_params.
+
+mod events;
+use events::initial_workspace_events;
+pub(super) use events::window_lifecycle_event;
 
 use cmux_core::session::{
     AppSessionSnapshot, SessionSurfaceKindSnapshot, SessionSurfaceResumeBindingRecordSnapshot,
@@ -115,6 +119,7 @@ pub(super) enum WindowLifecycleEffect {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct WindowLifecycleContext {
     pub active_window_id: Option<String>,
+    pub key_window_id: Option<String>,
     /// Canonical handleQuitShortcutWarning: quit-confirmation not required ->
     /// NSApp.terminate immediately; required -> async confirmation alert
     /// (AppDelegate.swift:12831-12856).
@@ -264,48 +269,6 @@ fn is_terminal_kind(kind: &SessionSurfaceKindSnapshot) -> bool {
     )
 }
 
-/// Socket-normalized `publishCmuxWindowLifecycle` payload
-/// (Sources/CmuxLifecycleEventPublishing.swift:281-300): window/workspace
-/// identity, counts, selection, key/main state, and origin use the canonical
-/// snake_case event-stream keys. Headless `is_key` is derived from the
-/// injected active-window pointer; `is_main_window` mirrors it (real
-/// NSWindow key/main split is a platform_equivalent).
-pub(super) fn window_lifecycle_event(
-    name: &'static str,
-    origin: &'static str,
-    window: &SessionWindowSnapshot,
-    window_id: &str,
-    is_key: bool,
-) -> LifecycleEvent {
-    let selected_index =
-        usize::try_from(window.tab_manager.selected_workspace_index.unwrap_or(0)).unwrap_or(0);
-    let workspace_id = window.selected_workspace_id.clone().or_else(|| {
-        window
-            .tab_manager
-            .workspaces
-            .get(selected_index)
-            .and_then(|workspace| workspace.workspace_id.clone())
-    });
-    LifecycleEvent {
-        name,
-        category: "window",
-        source: "window.lifecycle",
-        window_id: Some(window_id.to_owned()),
-        workspace_id: workspace_id.clone(),
-        pane_id: None,
-        surface_id: None,
-        payload: json!({
-            "window_id": window_id,
-            "workspace_id": workspace_id,
-            "workspace_count": window.tab_manager.workspaces.len(),
-            "selected_workspace_index": selected_index,
-            "is_key_window": is_key,
-            "is_main_window": is_key,
-            "origin": origin,
-        }),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // v2:window.create
 // ---------------------------------------------------------------------------
@@ -329,9 +292,10 @@ fn window_create(
         .unwrap_or_else(|| Uuid::new_v4().to_string());
     let mut next = snapshot.clone();
     let workspace = crate::session::fresh_control_window_workspace(&surface_id);
+    let selected_workspace_id = workspace.workspace_id.clone();
     next.windows.push(SessionWindowSnapshot {
         window_id: Some(window_id.clone()),
-        selected_workspace_id: None,
+        selected_workspace_id,
         dock: None,
         tab_manager: SessionTabManagerSnapshot {
             selected_workspace_index: Some(0),
@@ -343,13 +307,14 @@ fn window_create(
     // Emitted after registerMainWindow with origin=create (AppDelegate.swift:8860).
     // Activation is suppressed for every socket command and window.create is
     // not focus-intent, so no key transfer happens (is_key_window false).
-    let events = vec![window_lifecycle_event(
+    let mut events = initial_workspace_events(created);
+    events.push(window_lifecycle_event(
         "window.created",
         "create",
         created,
         &window_id,
         false,
-    )];
+    ));
     // orderFront-only + defensive setActiveTabManager; persistence happens on
     // the NEXT session snapshot save, not immediately (contract
     // state_events_persistence for v2:window.create).
@@ -413,7 +378,7 @@ fn window_close(
     }
     let mut next = snapshot.clone();
     let closed = next.windows.remove(index);
-    let was_key = context.active_window_id.as_deref() == Some(window_id.as_str());
+    let was_key = context.key_window_id.as_deref() == Some(window_id.as_str());
     // unregisterMainWindow sequence (AppDelegate.swift:16241-16305): closed
     // history, geometry persist, window.closed publish, remote detach,
     // active-pointer repoint (key window else first remaining), session save.
