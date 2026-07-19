@@ -72,6 +72,50 @@ fn workspace_rename_event_spec_matches_the_canonical_socket_payload() {
 }
 
 #[test]
+fn workspace_close_event_specs_match_the_canonical_lifecycle_payloads() {
+    let snapshot = test_snapshot();
+
+    let events = workspace_close_event_specs(&snapshot, 0, 0).unwrap();
+
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].name, "surface.closed");
+    assert_eq!(events[0].category, "surface");
+    assert_eq!(events[0].source, "workspace.lifecycle");
+    assert_eq!(events[0].window_id, None);
+    assert_eq!(events[0].workspace_id.as_deref(), Some("workspace-1"));
+    assert_eq!(events[0].surface_id.as_deref(), Some("surface-1"));
+    assert_eq!(
+        events[0].payload,
+        json!({
+            "kind": "terminal",
+            "origin": "workspace_teardown",
+            "pane_id": "pane-1",
+            "surface_id": "surface-1",
+        })
+    );
+
+    assert_eq!(events[1].name, "workspace.closed");
+    assert_eq!(events[1].category, "workspace");
+    assert_eq!(events[1].source, "workspace.lifecycle");
+    assert_eq!(events[1].window_id, None);
+    assert_eq!(events[1].workspace_id.as_deref(), Some("workspace-1"));
+    assert_eq!(events[1].surface_id, None);
+    assert_eq!(
+        events[1].payload,
+        json!({
+            "workspace_id": "workspace-1",
+            "title": "Phoenix",
+            "custom_title": "Phoenix",
+            "cwd": "C:/repo",
+            "index": null,
+            "selected": false,
+            "tab_count": 1,
+            "previous_workspace_id": null,
+        })
+    );
+}
+
+#[test]
 fn notification_removal_lifecycle_events_match_canonical_read_and_clear_shapes() {
     let row = |id: &str, surface_id: &str| cmux_core::notifications::TerminalNotification {
         id: id.into(),
