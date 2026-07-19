@@ -4101,6 +4101,9 @@ mod pane_surface_lifecycle_red;
 #[path = "tests/window_lifecycle_red.rs"]
 mod window_lifecycle_red;
 
+#[path = "tests/control_worker_native_query_red.rs"]
+mod control_worker_native_query_red;
+
 #[path = "tests/differential_remediation_red.rs"]
 mod differential_remediation_red;
 
