@@ -2,13 +2,14 @@
 
 Checkpoint commits:
 
-- Current canonical audit: `41756f7285a02d2592751438793647f7d4ba9b71`
+- Current canonical audit: `ecebdbb64b3532b0308650280ae4b83f30becf2a`
 - Frozen differential canonical: `e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452`
 - Latest complete window behavior captured: `a51ddd28763bad2549d3903de78bc7b59b988e36`
 - Latest workspace behavior captured: `4cfbc03030967813dcd23a1637ec2832c363e46a`
 - Latest workspace-navigation behavior captured: `aa3f74c799079290f25441e950761c67c3c56026`
 - Latest workspace-ordering behavior captured: `46f4cedf1a77fda23baff9b73b5d8ef7b96eb187`
-- Latest Windows code checkpoint: `46f4cedf1a77fda23baff9b73b5d8ef7b96eb187`
+- Latest workspace-group behavior captured: `357ebc0c662df446b93d842b3a7d24964e993dfa`
+- Latest Windows code checkpoint: `357ebc0c662df446b93d842b3a7d24964e993dfa`
 - Latest exact startup differential evidence: `parity/diff-lane@215737999ac0579682b6b2a2d230d7a0d064a51d`
 - Latest window harness checkpoint: `parity/diff-lane@9257db511b975335e2ee79bc4bb143c04bfa95f8`
 - Latest canonical window capture: workflow run `29686515273`
@@ -18,6 +19,8 @@ Checkpoint commits:
 - Latest canonical navigation capture: workflow run `29694877733`
 - Latest ordering evidence: `parity/diff-lane@1e7a5e0a662a0c20f67aaa80cbdd5ddc6e232da3`
 - Latest canonical ordering capture: workflow run `29696270467`
+- Latest workspace-group evidence: `parity/diff-lane@32dd8da8256e35dd1ae42e41fa267c3753634833`
+- Latest canonical workspace-group capture: workflow run `29697573532`
 
 The Windows desktop and CLI build successfully. The retained pane/surface and
 startup-restore evidence remains valid. The exact environment-matched window
@@ -115,13 +118,25 @@ platform working directories, multiwindow probes, and lifecycle events are
 windows with zero visible windows before or after the cases. See
 `evidence/workspace_ordering_2026-07-19.json`.
 
+Workspace-group lifecycle behavior is now exact across twenty-four retained
+cases covering all seventeen public v2 methods and the `workspace-group` CLI
+entry point. The lane verifies list, create, rename, collapse/expand,
+pin/unpin, membership and anchor changes, new grouped workspaces, color/icon
+metadata, ordering, focus, ungroup, delete, canonical errors, CLI output,
+multiwindow routing, state, and exact lifecycle-event order. Both captures
+have zero errors, missing cases, or unsatisfied settles; the comparison is
+24/24 exact after reviewed platform-directory pointers. The isolated Windows
+run stayed headless, including the focus path that previously surfaced a
+development WebView at `localhost:1420`. See
+`evidence/workspace_group_lifecycle_2026-07-19.json`.
+
 ## What the current audit says
 
 The rolling catalog contains 503 rows: 159 public CLI commands, 16 internal CLI
 contracts, 263 release socket methods, 46 debug socket methods, and 19 coarse
-product umbrellas. It currently classifies 46 rows as verified, 3 as reviewed
-platform equivalents, 234 as implemented but unverified, and 220 as missing.
-The strict resolved count is 49.
+product umbrellas. It currently classifies 64 rows as verified, 3 as reviewed
+platform equivalents, 216 as implemented but unverified, and 220 as missing.
+The strict resolved count is 67.
 
 The zero-delta window lane promotes 11 entry-point rows. `window.create`,
 `window.close`, the three resume methods, their covered CLI commands, and
@@ -133,12 +148,14 @@ physical display move. These current decisions live in
 `current-overrides.json`; the frozen matrix and its 14 historical promotions
 remain unchanged.
 
-The zero-delta workspace lanes promote 24 exercised public entry points: the
+The zero-delta workspace lanes promote 42 exercised public entry points: the
 v2 and CLI list/current/create/select/rename/close pairs; next, previous, and
-last navigation; single and batch ordering; and cross-window movement. The
-broad `product.workspace_lifecycle` umbrella remains implemented but unverified
-because groups, restore, persistence, remote workspaces, and `workspace.action`
-semantics remain outside the retained families.
+last navigation; single and batch ordering; cross-window movement; all
+seventeen public workspace-group v2 methods; and the `workspace-group` CLI.
+The separate mobile-host `workspace.group.action` route remains unverified.
+The broad `product.workspace_lifecycle` umbrella remains implemented but
+unverified because restore, persistence, remote workspaces, and
+`workspace.action` semantics remain outside the retained families.
 
 Those numbers are useful for finding API gaps. They are not a percentage of the
 user experience. The catalog still needs a deduplicated user-capability layer

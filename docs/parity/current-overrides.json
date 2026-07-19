@@ -66,12 +66,16 @@
       "latest_verifying_commit": "a51ddd28763bad2549d3903de78bc7b59b988e36",
       "status": "verified"
     },
+    "cli:workspace-group": {
+      "latest_verifying_commit": "357ebc0c662df446b93d842b3a7d24964e993dfa",
+      "status": "verified"
+    },
     "product.window_lifecycle": {
       "rationale": "Creation, focus, close, events, and restore are implemented, but successful physical multi-display movement remains outside the retained headless differential evidence.",
       "status": "implemented_unverified"
     },
     "product.workspace_lifecycle": {
-      "rationale": "The basic list/current/create/select/rename/close, next/previous/last, ordering, and cross-window movement v2 and CLI entry points are exact across retained differentials. The broad umbrella still includes groups, restore, persistence, remote workspaces, and workspace.action semantics that these lanes do not yet verify.",
+      "rationale": "The basic list/current/create/select/rename/close, next/previous/last, ordering, cross-window movement, and public workspace-group v2 and CLI entry points are exact across retained differentials. The broad umbrella still includes restore, persistence, remote workspaces, and workspace.action semantics that these lanes do not yet verify.",
       "status": "implemented_unverified"
     },
     "v2:surface.refresh": {
@@ -114,6 +118,74 @@
     },
     "v2:workspace.current": {
       "latest_verifying_commit": "4cfbc03030967813dcd23a1637ec2832c363e46a",
+      "status": "verified"
+    },
+    "v2:workspace.group.add": {
+      "latest_verifying_commit": "357ebc0c662df446b93d842b3a7d24964e993dfa",
+      "status": "verified"
+    },
+    "v2:workspace.group.collapse": {
+      "latest_verifying_commit": "357ebc0c662df446b93d842b3a7d24964e993dfa",
+      "status": "verified"
+    },
+    "v2:workspace.group.create": {
+      "latest_verifying_commit": "357ebc0c662df446b93d842b3a7d24964e993dfa",
+      "status": "verified"
+    },
+    "v2:workspace.group.delete": {
+      "latest_verifying_commit": "357ebc0c662df446b93d842b3a7d24964e993dfa",
+      "status": "verified"
+    },
+    "v2:workspace.group.expand": {
+      "latest_verifying_commit": "357ebc0c662df446b93d842b3a7d24964e993dfa",
+      "status": "verified"
+    },
+    "v2:workspace.group.focus": {
+      "latest_verifying_commit": "357ebc0c662df446b93d842b3a7d24964e993dfa",
+      "status": "verified"
+    },
+    "v2:workspace.group.list": {
+      "latest_verifying_commit": "357ebc0c662df446b93d842b3a7d24964e993dfa",
+      "status": "verified"
+    },
+    "v2:workspace.group.move": {
+      "latest_verifying_commit": "357ebc0c662df446b93d842b3a7d24964e993dfa",
+      "status": "verified"
+    },
+    "v2:workspace.group.new_workspace": {
+      "latest_verifying_commit": "357ebc0c662df446b93d842b3a7d24964e993dfa",
+      "status": "verified"
+    },
+    "v2:workspace.group.pin": {
+      "latest_verifying_commit": "357ebc0c662df446b93d842b3a7d24964e993dfa",
+      "status": "verified"
+    },
+    "v2:workspace.group.remove": {
+      "latest_verifying_commit": "357ebc0c662df446b93d842b3a7d24964e993dfa",
+      "status": "verified"
+    },
+    "v2:workspace.group.rename": {
+      "latest_verifying_commit": "357ebc0c662df446b93d842b3a7d24964e993dfa",
+      "status": "verified"
+    },
+    "v2:workspace.group.set_anchor": {
+      "latest_verifying_commit": "357ebc0c662df446b93d842b3a7d24964e993dfa",
+      "status": "verified"
+    },
+    "v2:workspace.group.set_color": {
+      "latest_verifying_commit": "357ebc0c662df446b93d842b3a7d24964e993dfa",
+      "status": "verified"
+    },
+    "v2:workspace.group.set_icon": {
+      "latest_verifying_commit": "357ebc0c662df446b93d842b3a7d24964e993dfa",
+      "status": "verified"
+    },
+    "v2:workspace.group.ungroup": {
+      "latest_verifying_commit": "357ebc0c662df446b93d842b3a7d24964e993dfa",
+      "status": "verified"
+    },
+    "v2:workspace.group.unpin": {
+      "latest_verifying_commit": "357ebc0c662df446b93d842b3a7d24964e993dfa",
       "status": "verified"
     },
     "v2:workspace.list": {

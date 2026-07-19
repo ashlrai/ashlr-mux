@@ -10,10 +10,10 @@
       "v2:remote.tmux.test_perturb_divider"
     ],
     "catalog_rows_removed_since_baseline": [],
-    "commit": "41756f7285a02d2592751438793647f7d4ba9b71",
-    "commit_date": "2026-07-19T04:58:23-07:00",
-    "commit_subject": "feat(tui): support browser terminal backends (#8294)",
-    "commits_ahead_of_tracked_baseline": 366,
+    "commit": "ecebdbb64b3532b0308650280ae4b83f30becf2a",
+    "commit_date": "2026-07-18T23:29:47-07:00",
+    "commit_subject": "cmux-tui: TUI dead-band dimming for foreign-sized surfaces; move CmuxLite out of tree (#8305)",
+    "commits_ahead_of_tracked_baseline": 359,
     "counts": {
       "debug_only_v2_methods": 46,
       "hidden_or_internal_cli_commands": 16,
@@ -30,12 +30,12 @@
       "v2_method": 309
     },
     "by_status": {
-      "implemented_unverified": 234,
+      "implemented_unverified": 216,
       "missing": 220,
       "platform_equivalent": 3,
-      "verified": 46
+      "verified": 64
     },
-    "strict_verified": 49,
+    "strict_verified": 67,
     "total": 503,
     "warning": "Rows mix CLI commands, socket methods, debug endpoints, and broad product umbrellas. They are neither deduplicated user capabilities nor effort-weighted."
   },
@@ -45,10 +45,10 @@
     "status": "not_measured"
   },
   "windows": {
-    "commit": "46f4cedf1a77fda23baff9b73b5d8ef7b96eb187",
-    "commit_date": "2026-07-19T13:38:13-04:00",
-    "commit_subject": "fix(workspace): match routed ordering and movement",
-    "commits_ahead_of_tracked_evidence": 70,
+    "commit": "357ebc0c662df446b93d842b3a7d24964e993dfa",
+    "commit_date": "2026-07-19T14:37:31-04:00",
+    "commit_subject": "fix(workspace): match group lifecycle",
+    "commits_ahead_of_tracked_evidence": 73,
     "source_evidence": {
       "advertised_and_routed_count": 267,
       "advertised_method_count": 270,

@@ -1,0 +1,87 @@
+{
+  "schema_version": 2,
+  "family": "workspace_group_lifecycle",
+  "status": "valid_complete_capture",
+  "canonical": {
+    "source_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+    "workflow_run": 29697573532,
+    "artifact": "canonical-capture-workspace_lifecycle",
+    "sha256": "8F5E2562A2AB483EDB7AF58F5CB77137C10CD90847DFF54100B6BAEF26B5E62B",
+    "cases": 24,
+    "capture_errors": 0
+  },
+  "windows": {
+    "test_commit": "e711cd02da3e34436692fa4fafaaf8220b113aac",
+    "behavior_commit": "357ebc0c662df446b93d842b3a7d24964e993dfa",
+    "capture_support_commit": "dac88652f685c486a8ec7df2b9b3c8c1a5786c7d",
+    "sha256": "FF05411D254E3700C989332A701BF0499FE54BA1154531BDCBBDCE8B5DA6808E",
+    "cases": 24,
+    "capture_errors": 0,
+    "profile_mode": "isolated_headless"
+  },
+  "comparison": {
+    "harness_commit": "78d15c7e444feaafbb8446d98ebd3a9dfa4fe1fd",
+    "manifest_and_archive_commit": "32dd8da8256e35dd1ae42e41fa267c3753634833",
+    "sha256": "C539A4512F5E5CC48C55C4DB971067FB7F757B8C9242500A915698603E7CC506",
+    "cases": 24,
+    "identical": 24,
+    "deltas": 0,
+    "capture_integrity": {
+      "valid_for_promotion": true,
+      "canonical_capture_errors": [],
+      "windows_capture_errors": [],
+      "missing_cases": [],
+      "unsettled_cases": []
+    },
+    "archived_at": {
+      "canonical": "parity/diff-lane@32dd8da825:docs/parity/differential/captures/workspace_group_lifecycle.canonical.e1825d40d.run-29697573532.ndjson",
+      "windows": "parity/diff-lane@32dd8da825:docs/parity/differential/captures/workspace_group_lifecycle.windows.357ebc0c66.ndjson",
+      "normalized": "parity/diff-lane@32dd8da825:docs/parity/differential/captures/workspace_group_lifecycle.normalized-diff.e1825d40d-vs-357ebc0c66.json"
+    }
+  },
+  "platform_equivalences": {
+    "status": "reviewed_exact_json_pointers",
+    "category": "canonical macOS checkout directory versus isolated Windows profile home",
+    "strict_guards": "All responses, errors, CLI output, routing, mutation order, event names/order/origins/counts, identity relationships, multiwindow focus state, and non-approved fields remain strict."
+  },
+  "verification": {
+    "focused_workspace_group_tests": "21 passed, 0 failed",
+    "focused_window_focus_tests": "4 passed, 0 failed",
+    "desktop_library": "1077 passed, 1 ignored, 0 failed",
+    "workspace_group_cli_integration": "5 passed, 0 failed",
+    "workspace_all_targets_check_runs": 1,
+    "capture_harness_tests": 120,
+    "successful_full_capture_runs": 1,
+    "capture_process": "owned hidden process with CMUX_PARITY_CAPTURE_HEADLESS=1; no localhost WebView was surfaced",
+    "file_length_budget": "39 tracked oversized files; all frozen at current-or-smaller size"
+  },
+  "promotion": {
+    "latest_verifying_commit": "357ebc0c662df446b93d842b3a7d24964e993dfa",
+    "status": "verified",
+    "rows_promoted": [
+      "cli:workspace-group",
+      "v2:workspace.group.add",
+      "v2:workspace.group.collapse",
+      "v2:workspace.group.create",
+      "v2:workspace.group.delete",
+      "v2:workspace.group.expand",
+      "v2:workspace.group.focus",
+      "v2:workspace.group.list",
+      "v2:workspace.group.move",
+      "v2:workspace.group.new_workspace",
+      "v2:workspace.group.pin",
+      "v2:workspace.group.remove",
+      "v2:workspace.group.rename",
+      "v2:workspace.group.set_anchor",
+      "v2:workspace.group.set_color",
+      "v2:workspace.group.set_icon",
+      "v2:workspace.group.ungroup",
+      "v2:workspace.group.unpin"
+    ],
+    "rows_deferred": {
+      "v2:workspace.group.action": "The separate mobile-host action bridge is outside this public workspace-group lifecycle lane.",
+      "product.workspace_lifecycle": "The product umbrella additionally covers restore, persistence, remote workspaces, and workspace.action semantics outside the retained lifecycle, navigation, ordering, and group lanes."
+    },
+    "reason": "All eighteen exercised public entry points have retained exact behavioral evidence across routing, complete group mutation semantics, canonical errors and CLI output, ordering, state, focus, identity, and lifecycle events."
+  }
+}
