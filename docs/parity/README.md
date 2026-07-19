@@ -57,6 +57,9 @@ Behavioral or live differential evidence is required for `verified`.
 - `source/windows_evidence.json`: generated Windows routing extraction checkpoint.
 - `product_domains.json`: coarse cross-cutting product requirements.
 - `overrides.json`: reviewed evidence and status decisions.
+- `current-overrides.json`: reviewed decisions newer than the frozen snapshot;
+  the rolling audit layers these over `overrides.json` without rewriting the
+  historical matrix.
 - `parity-matrix.json`: generated join for the frozen acceptance snapshot.
 - `current-audit.json`: compact rolling scope and freshness audit.
 

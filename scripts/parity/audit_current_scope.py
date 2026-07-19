@@ -13,6 +13,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUTPUT = ROOT / "docs/parity/current-audit.json"
+FROZEN_OVERRIDES = ROOT / "docs/parity/overrides.json"
+CURRENT_OVERRIDES = ROOT / "docs/parity/current-overrides.json"
 
 
 def git(*args: str) -> str:
@@ -30,6 +32,16 @@ def run(*args: str) -> None:
 
 def load(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def merged_overrides(frozen: dict, current: dict) -> dict:
+    """Layer current evidence decisions over the reproducible frozen snapshot."""
+    entries = {
+        entry_id: dict(patch) for entry_id, patch in frozen.get("entries", {}).items()
+    }
+    for entry_id, patch in current.get("entries", {}).items():
+        entries.setdefault(entry_id, {}).update(patch)
+    return {**frozen, "entries": entries}
 
 
 def commit_metadata(commit: str) -> dict[str, str]:
@@ -70,6 +82,7 @@ def build_audit(canonical_commit: str, windows_commit: str) -> dict:
         windows_path = temporary / "windows-evidence.json"
         baseline_path = temporary / "baseline.json"
         matrix_path = temporary / "matrix.json"
+        overrides_path = temporary / "overrides.json"
 
         run(
             sys.executable,
@@ -114,6 +127,14 @@ def build_audit(canonical_commit: str, windows_commit: str) -> dict:
         baseline_path.write_text(
             json.dumps(temporary_baseline, indent=2) + "\n", encoding="utf-8"
         )
+        overrides_path.write_text(
+            json.dumps(
+                merged_overrides(load(FROZEN_OVERRIDES), load(CURRENT_OVERRIDES)),
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         run(
             sys.executable,
             "scripts/parity/build_matrix.py",
@@ -125,6 +146,8 @@ def build_audit(canonical_commit: str, windows_commit: str) -> dict:
             str(v2_path),
             "--windows",
             str(windows_path),
+            "--overrides",
+            str(overrides_path),
             "--output",
             str(matrix_path),
         )

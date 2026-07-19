@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "entries": {
+    "cli:close-window": {
+      "latest_verifying_commit": "a51ddd28763bad2549d3903de78bc7b59b988e36",
+      "status": "verified"
+    },
+    "cli:focus-window": {
+      "latest_verifying_commit": "a51ddd28763bad2549d3903de78bc7b59b988e36",
+      "rationale": "CLI routing, selector normalization, output, and events are exact. Native key-window ownership follows the tested Win32 foreground equivalent documented by the retained differential manifest.",
+      "status": "platform_equivalent"
+    },
+    "cli:new-window": {
+      "latest_verifying_commit": "a51ddd28763bad2549d3903de78bc7b59b988e36",
+      "status": "verified"
+    },
+    "cli:surface-resume": {
+      "latest_verifying_commit": "a51ddd28763bad2549d3903de78bc7b59b988e36",
+      "status": "verified"
+    },
+    "product.window_lifecycle": {
+      "rationale": "Creation, focus, close, events, and restore are implemented, but successful physical multi-display movement remains outside the retained headless differential evidence.",
+      "status": "implemented_unverified"
+    },
+    "v2:surface.refresh": {
+      "latest_verifying_commit": "a51ddd28763bad2549d3903de78bc7b59b988e36",
+      "rationale": "Wire routing, terminal-only counts, payloads, and errors are exact; the xterm.js redraw is the tested Windows renderer equivalent of canonical forceRefresh.",
+      "status": "platform_equivalent"
+    },
+    "v2:surface.resume.clear": {
+      "latest_verifying_commit": "a51ddd28763bad2549d3903de78bc7b59b988e36",
+      "status": "verified"
+    },
+    "v2:surface.resume.get": {
+      "latest_verifying_commit": "a51ddd28763bad2549d3903de78bc7b59b988e36",
+      "status": "verified"
+    },
+    "v2:surface.resume.set": {
+      "latest_verifying_commit": "a51ddd28763bad2549d3903de78bc7b59b988e36",
+      "status": "verified"
+    },
+    "v2:window.close": {
+      "latest_verifying_commit": "a51ddd28763bad2549d3903de78bc7b59b988e36",
+      "status": "verified"
+    },
+    "v2:window.create": {
+      "latest_verifying_commit": "a51ddd28763bad2549d3903de78bc7b59b988e36",
+      "status": "verified"
+    },
+    "v2:window.focus": {
+      "latest_verifying_commit": "a51ddd28763bad2549d3903de78bc7b59b988e36",
+      "rationale": "Payloads, errors, active routing, and lifecycle events are exact. Native key-window ownership uses the tested Win32 foreground equivalent documented by the retained differential manifest.",
+      "status": "platform_equivalent"
+    }
+  }
+}

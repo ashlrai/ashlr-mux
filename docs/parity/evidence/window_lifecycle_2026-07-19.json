@@ -93,7 +93,29 @@
     "file_length_budget": "39 tracked oversized files; all frozen at current-or-smaller size"
   },
   "promotion": {
-    "rows_promoted": [],
-    "reason": "The family is valid zero-delta evidence. Map and promote its applicable catalog rows in a separate verification-only slice so the frozen matrix is not broadly regenerated."
+    "latest_verifying_commit": "a51ddd28763bad2549d3903de78bc7b59b988e36",
+    "rows_promoted": [
+      "cli:close-window",
+      "cli:focus-window",
+      "cli:new-window",
+      "cli:surface-resume",
+      "v2:surface.refresh",
+      "v2:surface.resume.clear",
+      "v2:surface.resume.get",
+      "v2:surface.resume.set",
+      "v2:window.close",
+      "v2:window.create",
+      "v2:window.focus"
+    ],
+    "platform_equivalent_rows": [
+      "cli:focus-window",
+      "v2:surface.refresh",
+      "v2:window.focus"
+    ],
+    "rows_deferred": {
+      "cli:window": "The retained harness covers parsing, help, display listing, failure paths, and default-display persistence, but not a successful physical display move.",
+      "product.window_lifecycle": "The broad umbrella includes physical multi-display movement; implemented behavior remains unverified until that live lane exists."
+    },
+    "reason": "Eleven rows have complete retained behavioral evidence. Eight are exact verified rows and three use the explicit tested Windows equivalents documented in the manifest. Current decisions are layered separately so the frozen acceptance snapshot remains reproducible."
   }
 }

@@ -77,8 +77,19 @@ resume delta came from comparing unlike environments and is not a product gap.
 
 The rolling catalog contains 503 rows: 159 public CLI commands, 16 internal CLI
 contracts, 263 release socket methods, 46 debug socket methods, and 19 coarse
-product umbrellas. It currently classifies 14 rows as verified, 264 as
-implemented but unverified, and 225 as missing.
+product umbrellas. It currently classifies 22 rows as verified, 3 as reviewed
+platform equivalents, 255 as implemented but unverified, and 223 as missing.
+The strict resolved count is 25.
+
+The zero-delta window lane promotes 11 entry-point rows. `window.create`,
+`window.close`, the three resume methods, their covered CLI commands, and
+`surface-resume` are exact. `window.focus`, `focus-window`, and
+`surface.refresh` use the contract's tested Win32 foreground/renderer
+equivalents. `cli:window` and the broad `product.window_lifecycle` umbrella stay
+unverified because the retained headless lane does not perform a successful
+physical display move. These current decisions live in
+`current-overrides.json`; the frozen matrix and its 14 historical promotions
+remain unchanged.
 
 Those numbers are useful for finding API gaps. They are not a percentage of the
 user experience. The catalog still needs a deduplicated user-capability layer
@@ -197,7 +208,6 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
 
 ## Next efficient slice
 
-Promote the window-lifecycle catalog rows supported by the zero-delta 68-case
-evidence in a verification-only slice, without regenerating the frozen matrix.
-Then reconcile the four pre-existing differential-remediation failures. Keep
-the next oversized-file split isolated from behavior changes.
+Reconcile the four pre-existing differential-remediation failures against
+canonical behavior, then restore the full desktop library gate. Keep the next
+oversized-file split isolated from behavior changes.

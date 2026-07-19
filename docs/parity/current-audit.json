@@ -30,11 +30,12 @@
       "v2_method": 309
     },
     "by_status": {
-      "implemented_unverified": 264,
-      "missing": 225,
-      "verified": 14
+      "implemented_unverified": 255,
+      "missing": 223,
+      "platform_equivalent": 3,
+      "verified": 22
     },
-    "strict_verified": 14,
+    "strict_verified": 25,
     "total": 503,
     "warning": "Rows mix CLI commands, socket methods, debug endpoints, and broad product umbrellas. They are neither deduplicated user capabilities nor effort-weighted."
   },
