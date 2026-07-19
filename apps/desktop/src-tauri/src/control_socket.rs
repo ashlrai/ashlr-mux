@@ -2888,9 +2888,7 @@ fn schedule_remote_window_reconciliation(
                         if remote.target == RemoteTmuxTarget::Window
                             && should_focus_window_after_remote_arrival(remote.focus, true)
                         {
-                            if let Some(window) = app.get_webview_window(&remote.window_id) {
-                                let _ = window.set_focus();
-                            }
+                            let _ = crate::window::activate_control_window(&app, &remote.window_id);
                         }
                         return;
                     }
@@ -3688,9 +3686,7 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
         for effect in &self.staged {
             match effect {
                 pane_surface_lifecycle::LifecycleEffect::ActivateWindow { window_id } => {
-                    if let Some(window) = self.app.get_webview_window(window_id) {
-                        let _ = window.set_focus();
-                    }
+                    let _ = crate::window::activate_control_window(self.app, window_id);
                 }
                 pane_surface_lifecycle::LifecycleEffect::RuntimeTeardown {
                     surface_id,
@@ -3832,9 +3828,7 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
                             .app
                             .emit(crate::right_sidebar::RIGHT_SIDEBAR_CHANGED_EVENT, change);
                     }
-                    if let Some(window) = self.app.get_webview_window(owner_id) {
-                        let _ = window.set_focus();
-                    }
+                    let _ = crate::window::activate_control_window(self.app, owner_id);
                 }
                 pane_surface_lifecycle::LifecycleEffect::DockChanged { owner_id, .. } => {
                     let snapshot = self

@@ -951,9 +951,7 @@ pub(super) fn surface_split_off(
         .map(|summary| summary.identity);
     if focus {
         if let Some(identity) = window_identity.as_ref() {
-            if let Some(window) = app.get_webview_window(&identity.label) {
-                let _ = window.set_focus();
-            }
+            let _ = crate::window::activate_control_window(app, &identity.label);
         }
     }
     let surface_ref_value = surfaces_for_workspace(workspace)
@@ -1181,9 +1179,7 @@ pub(super) fn pane_focus(
         .find(|summary| summary.identity.label == window_label)
         .map(|summary| summary.identity);
     if let Some(identity) = identity.as_ref() {
-        if let Some(window) = app.get_webview_window(&identity.label) {
-            let _ = window.set_focus();
-        }
+        let _ = crate::window::activate_control_window(app, &identity.label);
     }
     ok(json!({
         "window_id": identity.as_ref().map(|identity| identity.id.clone()),
@@ -1609,9 +1605,7 @@ pub(super) fn pane_swap(
         .map(|summary| summary.identity);
     if focus {
         if let Some(identity) = window_identity.as_ref() {
-            if let Some(window) = app.get_webview_window(&identity.label) {
-                let _ = window.set_focus();
-            }
+            let _ = crate::window::activate_control_window(app, &identity.label);
         }
     }
     ok(json!({
@@ -1798,9 +1792,7 @@ pub(super) fn pane_break(
         .map(|summary| summary.identity);
     if focus {
         if let Some(identity) = window_identity.as_ref() {
-            if let Some(window) = app.get_webview_window(&identity.label) {
-                let _ = window.set_focus();
-            }
+            let _ = crate::window::activate_control_window(app, &identity.label);
         }
     }
     ok(json!({
@@ -2008,9 +2000,7 @@ pub(super) fn pane_last(
         .find(|summary| summary.identity.label == window.window_id.as_deref().unwrap_or("main"))
         .map(|summary| summary.identity);
     if let Some(identity) = window_identity.as_ref() {
-        if let Some(window) = app.get_webview_window(&identity.label) {
-            let _ = window.set_focus();
-        }
+        let _ = crate::window::activate_control_window(app, &identity.label);
     }
     let surface_ref_value = focused.surface_id.as_deref().and_then(|surface_id| {
         surfaces_for_workspace(workspace)

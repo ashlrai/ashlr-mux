@@ -32,6 +32,26 @@ pub(crate) fn capture_windows_hidden() -> bool {
     capture_windows_hidden_for_value(std::env::var_os(CAPTURE_HEADLESS_ENV).as_deref())
 }
 
+fn run_control_window_activation(
+    capture_windows_hidden: bool,
+    activate: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    if capture_windows_hidden {
+        Ok(())
+    } else {
+        activate()
+    }
+}
+
+pub(crate) fn activate_control_window(app: &AppHandle, label: &str) -> Result<(), String> {
+    run_control_window_activation(capture_windows_hidden(), || {
+        if let Some(window) = app.get_webview_window(label) {
+            window.set_focus().map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowDisplayInfo {
     pub name: String,
@@ -179,12 +199,11 @@ pub fn focus_control_window(app: &AppHandle, selector: &str) -> Result<(), Strin
         .collect();
     let index = resolve_window_selector(&identities, selector)
         .ok_or_else(|| format!("Window not found: {selector}"))?;
-    if capture_windows_hidden() {
-        return Ok(());
-    }
     let window = &windows[index].1;
-    window.show().map_err(|error| error.to_string())?;
-    window.set_focus().map_err(|error| error.to_string())
+    run_control_window_activation(capture_windows_hidden(), || {
+        window.show().map_err(|error| error.to_string())?;
+        window.set_focus().map_err(|error| error.to_string())
+    })
 }
 
 fn ordered_control_windows(app: &AppHandle) -> Vec<(WindowControlIdentity, Window)> {
