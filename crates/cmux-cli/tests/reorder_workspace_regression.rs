@@ -341,7 +341,10 @@ fn executable_routes_focus_pane_and_formats_result() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(String::from_utf8(output.stdout).unwrap(), "OK pane:3\n");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "OK pane:3 workspace:2\n"
+    );
     let (method, params) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
     assert_eq!(method, "pane.focus");
     assert_eq!(

@@ -112,7 +112,16 @@ pub(super) fn format_control_result(method: &str, result: &serde_json::Value) ->
             control_handle(result, "window"),
         ),
         "pane.last" => format!("OK {}", control_handle(result, "pane")),
-        "pane.focus" => format!("OK {}", control_handle(result, "pane")),
+        "pane.focus" => format!(
+            "OK {} {}",
+            control_handle(result, "pane"),
+            control_handle(result, "workspace"),
+        ),
+        "surface.focus" => format!(
+            "OK {} {}",
+            control_handle(result, "surface"),
+            control_handle(result, "workspace"),
+        ),
         "workspace.last" | "workspace.next" | "workspace.previous" => {
             format!("OK {}", control_handle(result, "workspace"))
         }
