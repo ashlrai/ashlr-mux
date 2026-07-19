@@ -207,7 +207,17 @@
             "params": {}
           }
         ]
-      }
+      },
+      "approved_differences": [
+        {
+          "path": "/state/0/result/response/result/workspaces/0/current_directory",
+          "rationale": "the isolated test profile home is platform-specific; active-route identity and all non-path workspace fields stay strict"
+        },
+        {
+          "path": "/multiwindow/0/result/response/result/windows/0/key",
+          "rationale": "headless AppKit versus Win32 key-window status is platform_equivalent per contract; identity, visibility, and ordering stay strict"
+        }
+      ]
     },
     {
       "id": "window_close.repeat_close_not_found_minted_ref",
@@ -351,7 +361,37 @@
             }
           }
         ]
-      }
+      },
+      "approved_differences": [
+        {
+          "path": "/state/1/result/response/result/windows/0/key",
+          "rationale": "the cleanup close records the OS-selected fallback key; response, event order, identity, visibility, and routing stay strict"
+        },
+        {
+          "path": "/state/1/result/response/result/windows/2/key",
+          "rationale": "the cleanup close records the OS-selected fallback key; response, event order, identity, visibility, and routing stay strict"
+        },
+        {
+          "path": "/events/6/payload/window_id",
+          "rationale": "window.keyed ownership follows the OS-selected fallback key, which is platform_equivalent per contract; event name, order, origin, count, and non-owner payload stay strict"
+        },
+        {
+          "path": "/events/6/payload/workspace_id",
+          "rationale": "selected workspace identity derives from the platform-equivalent fallback key owner; every other event field stays strict"
+        },
+        {
+          "path": "/events/6/window_id",
+          "rationale": "window.keyed ownership follows the OS-selected fallback key, which is platform_equivalent per contract; event name, order, origin, count, and non-owner payload stay strict"
+        },
+        {
+          "path": "/events/6/workspace_id",
+          "rationale": "selected workspace identity derives from the platform-equivalent fallback key owner; every other event field stays strict"
+        },
+        {
+          "path": "/selectors/0/result/response/result/workspace/current_directory",
+          "rationale": "the isolated test profile home is platform-specific; focused workspace identity and every other selector field stay strict"
+        }
+      ]
     },
     {
       "id": "window_focus.already_key_still_emits",
@@ -403,7 +443,33 @@
             }
           }
         ]
-      }
+      },
+      "approved_differences": [
+        {
+          "path": "/state/1/result/response/result/windows/0/key",
+          "rationale": "the cleanup close records the OS-selected fallback key; response, event order, identity, visibility, and routing stay strict"
+        },
+        {
+          "path": "/state/1/result/response/result/windows/2/key",
+          "rationale": "the cleanup close records the OS-selected fallback key; response, event order, identity, visibility, and routing stay strict"
+        },
+        {
+          "path": "/events/4/payload/window_id",
+          "rationale": "window.keyed ownership follows the OS-selected fallback key, which is platform_equivalent per contract; event name, order, origin, count, and non-owner payload stay strict"
+        },
+        {
+          "path": "/events/4/payload/workspace_id",
+          "rationale": "selected workspace identity derives from the platform-equivalent fallback key owner; every other event field stays strict"
+        },
+        {
+          "path": "/events/4/window_id",
+          "rationale": "window.keyed ownership follows the OS-selected fallback key, which is platform_equivalent per contract; event name, order, origin, count, and non-owner payload stay strict"
+        },
+        {
+          "path": "/events/4/workspace_id",
+          "rationale": "selected workspace identity derives from the platform-equivalent fallback key owner; every other event field stays strict"
+        }
+      ]
     },
     {
       "id": "window_focus.missing_window_id",
