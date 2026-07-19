@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "batch": "normal-startup-restore-multiwindow",
+  "verification_date": "2026-07-19",
+  "canonical_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+  "windows_commit": "c520128265",
+  "scope": [
+    "normal startup session restore",
+    "v2:surface.list",
+    "v2:surface.close",
+    "v2:surface.focus",
+    "v2:surface.move",
+    "product.pane_surface_lifecycle"
+  ],
+  "implementation": {
+    "test_commit": "0b00778056",
+    "behavior_commit": "c520128265",
+    "module": "apps/desktop/src-tauri/src/session/startup_restore.rs",
+    "policy": "Restore on ordinary no-argument startup; skip explicit open intents, CMUX_DISABLE_SESSION_RESTORE, CMUX_UI_TEST_* environments, and XCTest environments.",
+    "state_rules": "Load current with previous fallback, rotate the snapshot, prune nonrestorable/crash state, cap at 12 windows, normalize identities, create additional native windows, roll back on runtime failure, restore active selection, and persist the live result."
+  },
+  "windows_verification": {
+    "result": "pass",
+    "process_test": "session_startup_restore_process",
+    "observed": {
+      "native_windows": 2,
+      "marker_workspaces_in_distinct_windows": true,
+      "source_surface_count": 1,
+      "target_surface_count": 3,
+      "focused_workspace_ref": "workspace:4",
+      "focused_surface_ref": "surface:6"
+    },
+    "raw_capture_sha256": "810EC46CB9B4798D152ACEA9915F273CF17AB0E9D558A69652CD703BB06EA751",
+    "archived_capture_sha256": "A74A0E5139ACF27BF0160707E86118D9CB17FFD4E5EF92B13DF0F5DC1EBD7E21",
+    "archived_at": "parity/diff-lane@45bacaabec5ac791065626dbbb59a4c894e0ba57:docs/parity/differential/captures/startup_restore.windows.c520128265.ndjson",
+    "gates": [
+      "cargo test -p cmux-desktop startup_restore --lib: 2 passed",
+      "cargo test -p cmux-desktop --test session_startup_restore_process: passed before and after simplification",
+      "cargo test -p cmux-desktop restore --lib: 56 passed",
+      "cargo fmt --all -- --check: passed",
+      "git diff --check: passed"
+    ]
+  },
+  "canonical_verification": {
+    "workflow_run": "https://github.com/ashlrai/ashlr-mux/actions/runs/29673585795",
+    "harness_commit": "f787fd6863798ce90c50cb1073c5302a96c26433",
+    "restore_mode": "normal",
+    "result": "inconclusive_for_parity",
+    "capture_sha256": "D0A1D69E3D5675B05D19803E00228A5C3E065E616022DFC5B2CB8B924945F408",
+    "archived_at": "parity/diff-lane@45bacaabec5ac791065626dbbb59a4c894e0ba57:docs/parity/differential/captures/startup_restore.canonical.e1825d40d.run-29673585795.ndjson",
+    "observed": "Canonical logged a two-window session.save immediately before restart, then registered one new window, saved a one-window session, and never logged session.restore.start during the bounded ten-second settle.",
+    "driver_error": "PlaceholderError: cannot resolve 'state.0.result.windows.1.ref' at token '1'",
+    "rerun_policy": "Do not repeat hosted builds until the restore precondition or persistence location is identified from the retained run evidence and canonical source."
+  },
+  "promotion_decision": {
+    "matrix_changes": 0,
+    "status": "implemented_unverified",
+    "reason": "Windows behavior is executable and passing, but the canonical run did not produce a post-restart two-window observation. No exact cross-platform comparison exists for the broader restore/multiwindow acceptance surface."
+  }
+}
