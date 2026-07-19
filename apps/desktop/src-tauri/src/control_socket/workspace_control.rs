@@ -161,7 +161,7 @@ pub(super) fn workspace_create(
         group_id.as_deref(),
         layout,
         group_insert_index,
-        false,
+        bool_param(params, &["focus"]).unwrap_or(false),
     ) {
         Ok(Some(created)) => created,
         Ok(None) => {
