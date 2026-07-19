@@ -210,7 +210,6 @@ fn error(
 /// active-window default matters for this family.
 fn routing_context(context: &WindowLifecycleContext) -> LifecycleDispatchContext {
     LifecycleDispatchContext {
-        viewport_size: None,
         browser_enabled: false,
         dock_available: false,
         active_window_id: context.active_window_id.clone(),

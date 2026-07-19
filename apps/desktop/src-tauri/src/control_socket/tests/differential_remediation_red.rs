@@ -15,7 +15,6 @@ use crate::dock::{DockCreateRequest, DockStore, DockSurfaceKind};
 
 fn remediation_context() -> LifecycleDispatchContext {
     LifecycleDispatchContext {
-        viewport_size: Some((1_000.0, 800.0)),
         browser_enabled: true,
         dock_available: true,
         active_window_id: None,

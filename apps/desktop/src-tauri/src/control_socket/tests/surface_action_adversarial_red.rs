@@ -24,7 +24,6 @@ const OTHER: &str = "40000000-0000-0000-0000-000000000004";
 
 fn context(browser_enabled: bool) -> LifecycleDispatchContext {
     LifecycleDispatchContext {
-        viewport_size: Some((1200.0, 800.0)),
         browser_enabled,
         dock_available: true,
         active_window_id: Some(W1.into()),

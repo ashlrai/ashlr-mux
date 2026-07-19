@@ -13,7 +13,6 @@ const W2: &str = "10000000-0000-0000-0000-000000000002";
 
 fn context() -> LifecycleDispatchContext {
     LifecycleDispatchContext {
-        viewport_size: Some((1_000.0, 800.0)),
         browser_enabled: true,
         dock_available: true,
         active_window_id: Some(W1.into()),

@@ -20,19 +20,12 @@ pub(super) fn handle_pane_surface_lifecycle_request_with_terminal_policy(
     terminal_create_runtime_policy: TerminalCreateRuntimePolicy,
 ) -> ControlCallResult {
     let current = snapshot(app);
-    let viewport_size = app.webview_windows().values().find_map(|window| {
-        window
-            .inner_size()
-            .ok()
-            .map(|size| (f64::from(size.width), f64::from(size.height)))
-    });
     let active_window_id = control_active_window_id(app);
     let mut transition = pane_surface_lifecycle::dispatch_lifecycle_request(
         &current,
         method,
         params,
         &pane_surface_lifecycle::LifecycleDispatchContext {
-            viewport_size,
             browser_enabled: app.try_state::<BrowserWebviewState>().is_some(),
             dock_available: app
                 .try_state::<crate::right_sidebar::RightSidebarState>()
@@ -383,6 +376,20 @@ impl ControlActiveWindowState {
             .startup_fallback = Some(window_id.to_owned());
     }
 
+    /// Return the authoritative pointer without consulting native window
+    /// state once startup focus resolution has completed.
+    pub(super) fn resolved_current(&self) -> Option<String> {
+        let active = self
+            .inner
+            .lock()
+            .expect("active window pointer mutex poisoned");
+        if active.startup_fallback.is_none() {
+            active.current.clone()
+        } else {
+            None
+        }
+    }
+
     pub(super) fn resolve_startup(&self, focused_window_id: Option<String>) -> Option<String> {
         let mut active = self
             .inner
@@ -407,14 +414,19 @@ pub(super) fn control_active_window_from(
 
 /// The active window id used by selector-less routing.
 pub(super) fn control_active_window_id(app: &AppHandle) -> Option<String> {
+    let active_state = app.try_state::<ControlActiveWindowState>();
+    if let Some(stored) = active_state
+        .as_ref()
+        .and_then(|state| state.resolved_current())
+    {
+        return Some(stored);
+    }
     let snapshot = snapshot(app);
     let focused = app.webview_windows().iter().find_map(|(label, window)| {
         (window.is_focused().ok() == Some(true)).then(|| label.clone())
     });
     let focused = focused.and_then(|label| session_window_id_for_label(&snapshot, &label));
-    let stored = app
-        .try_state::<ControlActiveWindowState>()
-        .and_then(|state| state.resolve_startup(focused.clone()));
+    let stored = active_state.and_then(|state| state.resolve_startup(focused.clone()));
     control_active_window_from(stored, focused)
 }
 

@@ -1209,6 +1209,24 @@ pub(crate) fn browser_has_webview_for_control(
         .map_err(|_| "browser webview state lock poisoned".to_string())
 }
 
+pub(crate) fn browser_has_any_webview_for_control(
+    state: &BrowserWebviewState,
+) -> Result<bool, String> {
+    let has_attached = !state
+        .webviews
+        .lock()
+        .map_err(|_| "browser webview state lock poisoned".to_string())?
+        .is_empty();
+    if has_attached {
+        return Ok(true);
+    }
+    state
+        .pending_cleanup_children
+        .lock()
+        .map(|pending| pending.values().any(|children| !children.is_empty()))
+        .map_err(|_| "browser pending cleanup state lock poisoned".to_string())
+}
+
 #[tauri::command]
 pub fn browser_webview_command(
     state: State<'_, BrowserWebviewState>,

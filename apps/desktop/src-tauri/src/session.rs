@@ -1550,6 +1550,7 @@ struct ProductionSnapshotPublicationOperations<'a> {
     state: &'a SessionState,
     derived_events: DerivedEventPolicy,
     reseed_next_panel: bool,
+    refresh_window_state: bool,
 }
 
 impl<'a> ProductionSnapshotPublicationOperations<'a> {
@@ -1563,6 +1564,7 @@ impl<'a> ProductionSnapshotPublicationOperations<'a> {
             state,
             derived_events,
             reseed_next_panel: true,
+            refresh_window_state: true,
         }
     }
 
@@ -1572,6 +1574,7 @@ impl<'a> ProductionSnapshotPublicationOperations<'a> {
             state,
             derived_events: DerivedEventPolicy::Record,
             reseed_next_panel: false,
+            refresh_window_state: true,
         }
     }
 
@@ -1581,6 +1584,7 @@ impl<'a> ProductionSnapshotPublicationOperations<'a> {
             state,
             derived_events: DerivedEventPolicy::Suppress,
             reseed_next_panel: false,
+            refresh_window_state: true,
         }
     }
 }
@@ -1610,7 +1614,9 @@ impl SnapshotPublicationOperations for ProductionSnapshotPublicationOperations<'
     fn emit(&mut self, candidate: &AppSessionSnapshot) -> Result<(), String> {
         emit_session_changed(self.app, candidate);
         crate::window_title::refresh_window_titles(self.app, candidate);
-        crate::window::emit_window_states(self.app);
+        if self.refresh_window_state {
+            crate::window::emit_window_states(self.app);
+        }
         Ok(())
     }
 }
@@ -2078,7 +2084,15 @@ pub(crate) fn commit_lifecycle_snapshot_for_control(
     candidate: &AppSessionSnapshot,
     record_derived_events: bool,
 ) -> Result<AppSessionSnapshot, String> {
-    commit_lifecycle_snapshot_for_control_inner(app, state, None, candidate, record_derived_events)
+    let refresh_window_state = control_snapshot_should_refresh_window_state(app)?;
+    commit_lifecycle_snapshot_for_control_inner(
+        app,
+        state,
+        None,
+        candidate,
+        record_derived_events,
+        refresh_window_state,
+    )
 }
 
 pub(crate) fn commit_lifecycle_snapshot_for_control_if_current(
@@ -2088,13 +2102,25 @@ pub(crate) fn commit_lifecycle_snapshot_for_control_if_current(
     candidate: &AppSessionSnapshot,
     record_derived_events: bool,
 ) -> Result<AppSessionSnapshot, String> {
+    let refresh_window_state = control_snapshot_should_refresh_window_state(app)?;
     commit_lifecycle_snapshot_for_control_inner(
         app,
         state,
         Some(expected),
         candidate,
         record_derived_events,
+        refresh_window_state,
     )
+}
+
+/// Native window queries from the control worker can deadlock inside WebView2
+/// while a child WebView is attached. Resize/focus listeners still publish
+/// window state, so control commits suppress only this redundant refresh.
+fn control_snapshot_should_refresh_window_state(app: &AppHandle) -> Result<bool, String> {
+    let Some(state) = app.try_state::<crate::browser::BrowserWebviewState>() else {
+        return Ok(true);
+    };
+    crate::browser::browser_has_any_webview_for_control(state.inner()).map(|has| !has)
 }
 
 pub(crate) fn ensure_lifecycle_snapshot_current(
@@ -2112,6 +2138,7 @@ fn commit_lifecycle_snapshot_for_control_inner(
     expected: Option<&AppSessionSnapshot>,
     candidate: &AppSessionSnapshot,
     record_derived_events: bool,
+    refresh_window_state: bool,
 ) -> Result<AppSessionSnapshot, String> {
     cmux_core::surface_lifecycle::SurfaceLifecycleModel::from_app_session(candidate)
         .and_then(|model| model.validate_indexes())
@@ -2126,6 +2153,7 @@ fn commit_lifecycle_snapshot_for_control_inner(
             DerivedEventPolicy::Suppress
         },
     );
+    operations.refresh_window_state = refresh_window_state;
     publish_snapshot_transaction(&state.snapshot, expected, candidate, &mut operations)
 }
 

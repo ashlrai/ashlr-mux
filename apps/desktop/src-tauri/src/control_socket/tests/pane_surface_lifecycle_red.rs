@@ -153,7 +153,6 @@ fn resizable_snapshot() -> AppSessionSnapshot {
 
 fn context() -> LifecycleDispatchContext {
     LifecycleDispatchContext {
-        viewport_size: Some((1_000.0, 800.0)),
         browser_enabled: true,
         dock_available: true,
         active_window_id: None,
@@ -221,7 +220,6 @@ fn main_dock_snapshot() -> (AppSessionSnapshot, String, String) {
 
 fn main_context(dock_available: bool, browser_enabled: bool) -> LifecycleDispatchContext {
     LifecycleDispatchContext {
-        viewport_size: Some((1_000.0, 800.0)),
         browser_enabled,
         dock_available,
         active_window_id: Some("main".into()),

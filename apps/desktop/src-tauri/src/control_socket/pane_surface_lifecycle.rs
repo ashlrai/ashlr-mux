@@ -162,7 +162,6 @@ pub(super) enum LifecycleEffect {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct LifecycleDispatchContext {
-    pub viewport_size: Option<(f64, f64)>,
     pub browser_enabled: bool,
     pub dock_available: bool,
     pub active_window_id: Option<String>,

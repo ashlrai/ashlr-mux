@@ -663,7 +663,6 @@ fn set_active_window_effect_repoints_selectorless_routing() {
         "surface.current",
         &serde_json::Map::new(),
         &LifecycleDispatchContext {
-            viewport_size: None,
             browser_enabled: false,
             dock_available: false,
             active_window_id: pointer.get(),
@@ -709,6 +708,27 @@ fn startup_fallback_ignores_expired_focus_but_honors_current_focus() {
         pointer.resolve_startup(Some("window-1".into())).as_deref(),
         Some("window-1"),
         "a window still focused at first routing must remain authoritative"
+    );
+}
+
+#[test]
+fn resolved_active_pointer_avoids_native_focus_fallback_after_startup() {
+    let pointer = ControlActiveWindowState::default();
+    pointer.set_startup_fallback("window-2");
+    pointer.set("window-1");
+    assert_eq!(
+        pointer.resolved_current(),
+        None,
+        "startup focus must be resolved before the stored pointer is authoritative"
+    );
+    assert_eq!(
+        pointer.resolve_startup(Some("window-1".into())).as_deref(),
+        Some("window-1")
+    );
+    assert_eq!(
+        pointer.resolved_current().as_deref(),
+        Some("window-1"),
+        "later routing must use the stored pointer without querying native focus"
     );
 }
 
@@ -1555,7 +1575,6 @@ fn surface_list_terminal_rows_render_the_stored_resume_binding() {
         "surface.list",
         &serde_json::Map::new(),
         &LifecycleDispatchContext {
-            viewport_size: None,
             browser_enabled: false,
             dock_available: false,
             active_window_id: Some("window-1".into()),
@@ -1584,7 +1603,6 @@ fn surface_list_rows_carry_the_plain_id_ref_index_keys() {
         "surface.list",
         &serde_json::Map::new(),
         &LifecycleDispatchContext {
-            viewport_size: None,
             browser_enabled: false,
             dock_available: false,
             active_window_id: Some("window-1".into()),

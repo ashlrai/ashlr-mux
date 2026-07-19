@@ -3772,7 +3772,6 @@ fn lifecycle_commit_failure_keeps_model_unpublished_and_compensates_resources() 
             .as_object()
             .unwrap(),
         &pane_surface_lifecycle::LifecycleDispatchContext {
-            viewport_size: Some((1_000.0, 800.0)),
             browser_enabled: true,
             dock_available: false,
             active_window_id: None,
@@ -3826,7 +3825,6 @@ fn lifecycle_routing_uses_active_window_and_group_manager_selected_workspace() {
     }]);
     snapshot.windows.push(second);
     let context = pane_surface_lifecycle::LifecycleDispatchContext {
-        viewport_size: None,
         browser_enabled: true,
         dock_available: false,
         active_window_id: Some("window-2".into()),
@@ -3855,7 +3853,6 @@ fn lifecycle_routing_uses_active_window_and_group_manager_selected_workspace() {
 #[test]
 fn lifecycle_surface_create_preserves_all_heterogeneous_kinds() {
     let context = pane_surface_lifecycle::LifecycleDispatchContext {
-        viewport_size: None,
         browser_enabled: true,
         dock_available: false,
         active_window_id: None,
