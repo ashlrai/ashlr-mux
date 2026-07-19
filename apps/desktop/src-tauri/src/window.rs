@@ -646,7 +646,8 @@ pub fn window_open_task_manager() -> Result<(), String> {
 mod tests {
     use super::{
         capture_window_starts_focused, capture_windows_hidden_for_value,
-        run_control_window_activation, task_manager_command, WindowStateSnapshot,
+        run_capture_window_hiding, run_control_window_activation, task_manager_command,
+        WindowStateSnapshot,
         AUX_WINDOW_LABEL_PREFIX,
     };
     use std::cell::Cell;
@@ -676,6 +677,25 @@ mod tests {
         })
         .expect("interactive activation executes the native action");
         assert_eq!(activation_count.get(), 1);
+    }
+
+    #[test]
+    fn capture_headless_mode_immediately_hides_the_bootstrap_window() {
+        let hide_count = Cell::new(0);
+
+        run_capture_window_hiding(true, || {
+            hide_count.set(hide_count.get() + 1);
+            Ok(())
+        })
+        .expect("headless startup hides the native window");
+        assert_eq!(hide_count.get(), 1);
+
+        run_capture_window_hiding(false, || {
+            hide_count.set(hide_count.get() + 1);
+            Ok(())
+        })
+        .expect("interactive startup leaves visibility to normal setup");
+        assert_eq!(hide_count.get(), 1);
     }
 
     #[test]
