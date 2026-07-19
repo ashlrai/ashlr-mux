@@ -101,7 +101,10 @@
       "id": "workspace_group.new_workspace_end",
       "events": true,
       "action": {"op": "v2", "method": "workspace.group.new_workspace", "params": {"window_id": "${session.0.result.window_id}", "group_id": "${session.9.result.group.id}", "placement": "end"}},
-      "probes": {"state": [{"op": "v2", "method": "workspace.group.list", "params": {"window_id": "${session.0.result.window_id}"}}]}
+      "probes": {"state": [{"op": "v2", "method": "workspace.group.list", "params": {"window_id": "${session.0.result.window_id}"}}]},
+      "approved_differences": [
+        {"path": "/events/4/payload/cwd", "rationale": "The isolated capture working directory is platform-specific."}
+      ]
     },
     {
       "id": "workspace_group.move_to_front",
@@ -113,13 +116,20 @@
       "id": "workspace_group.focus",
       "events": true,
       "action": {"op": "v2", "method": "workspace.group.focus", "params": {"window_id": "${session.0.result.window_id}", "group_id": "${session.9.result.group.id}"}},
-      "probes": {"state": [{"op": "v2", "method": "workspace.current", "params": {"window_id": "${session.0.result.window_id}"}}], "multiwindow": [{"op": "v2", "method": "window.current", "params": {}}]}
+      "probes": {"state": [{"op": "v2", "method": "workspace.current", "params": {"window_id": "${session.0.result.window_id}"}}], "multiwindow": [{"op": "v2", "method": "window.current", "params": {}}]},
+      "approved_differences": [
+        {"path": "/state/0/result/response/result/workspace/current_directory", "rationale": "The isolated capture working directory is platform-specific."},
+        {"path": "/events/4/payload/cwd", "rationale": "The isolated capture working directory is platform-specific."}
+      ]
     },
     {
       "id": "workspace_group.create_explicit_children",
       "events": true,
       "action": {"op": "v2", "method": "workspace.group.create", "params": {"window_id": "${session.0.result.window_id}", "name": "Delta", "child_workspace_ids": ["${session.7.result.workspace_id}", "${session.8.result.workspace_id}"]}},
-      "probes": {"state": [{"op": "v2", "method": "workspace.group.list", "params": {"window_id": "${session.0.result.window_id}"}}]}
+      "probes": {"state": [{"op": "v2", "method": "workspace.group.list", "params": {"window_id": "${session.0.result.window_id}"}}]},
+      "approved_differences": [
+        {"path": "/events/4/payload/cwd", "rationale": "The isolated capture working directory is platform-specific."}
+      ]
     },
     {
       "id": "workspace_group.create_rejects_malformed_children",
@@ -153,7 +163,22 @@
       "id": "workspace_group.delete",
       "events": true,
       "action": {"op": "v2", "method": "workspace.group.delete", "params": {"window_id": "${session.0.result.window_id}", "group_id": "${session.10.result.group.id}"}},
-      "probes": {"state": [{"op": "v2", "method": "workspace.group.list", "params": {"window_id": "${session.0.result.window_id}"}}, {"op": "v2", "method": "workspace.list", "params": {"window_id": "${session.0.result.window_id}"}}]}
+      "probes": {"state": [{"op": "v2", "method": "workspace.group.list", "params": {"window_id": "${session.0.result.window_id}"}}, {"op": "v2", "method": "workspace.list", "params": {"window_id": "${session.0.result.window_id}"}}]},
+      "approved_differences": [
+        {"path": "/state/1/result/response/result/workspaces/0/current_directory", "rationale": "The isolated capture working directory is platform-specific."},
+        {"path": "/state/1/result/response/result/workspaces/1/current_directory", "rationale": "The isolated capture working directory is platform-specific."},
+        {"path": "/state/1/result/response/result/workspaces/2/current_directory", "rationale": "The isolated capture working directory is platform-specific."},
+        {"path": "/state/1/result/response/result/workspaces/3/current_directory", "rationale": "The isolated capture working directory is platform-specific."},
+        {"path": "/state/1/result/response/result/workspaces/4/current_directory", "rationale": "The isolated capture working directory is platform-specific."},
+        {"path": "/state/1/result/response/result/workspaces/5/current_directory", "rationale": "The isolated capture working directory is platform-specific."},
+        {"path": "/state/1/result/response/result/workspaces/6/current_directory", "rationale": "The isolated capture working directory is platform-specific."},
+        {"path": "/state/1/result/response/result/workspaces/7/current_directory", "rationale": "The isolated capture working directory is platform-specific."},
+        {"path": "/state/1/result/response/result/workspaces/8/current_directory", "rationale": "The isolated capture working directory is platform-specific."},
+        {"path": "/state/1/result/response/result/workspaces/9/current_directory", "rationale": "The isolated capture working directory is platform-specific."},
+        {"path": "/events/2/payload/cwd", "rationale": "The isolated capture working directory is platform-specific."},
+        {"path": "/events/4/payload/cwd", "rationale": "The isolated capture working directory is platform-specific."},
+        {"path": "/events/6/payload/cwd", "rationale": "The isolated capture working directory is platform-specific."}
+      ]
     }
   ]
 }

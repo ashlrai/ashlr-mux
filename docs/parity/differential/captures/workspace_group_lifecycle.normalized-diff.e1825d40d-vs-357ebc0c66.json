@@ -1,0 +1,259 @@
+{
+  "capture_integrity": {
+    "capture_error_cases": {
+      "canonical": [],
+      "windows": []
+    },
+    "missing_cases": [],
+    "unsettled_cases": {
+      "canonical": [],
+      "windows": []
+    },
+    "valid_for_promotion": true
+  },
+  "cases": 24,
+  "deltas": 0,
+  "identical": 24,
+  "results": [
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_group.list_explicit_window",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_group.rename",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_group.collapse",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_group.expand",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_group.pin",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_group.unpin",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_group.set_color",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_group.clear_color",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_group.set_icon",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_group.clear_icon",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_group.add_end",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_group.set_anchor",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_group.remove",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_group.new_workspace_end",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_group.move_to_front",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_group.focus",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_group.create_explicit_children",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_group.create_rejects_malformed_children",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_group.add_rejects_invalid_placement",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_group.move_requires_target",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "cli_workspace_group.list",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "cli_workspace_group.rename",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_group.ungroup",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_group.delete",
+      "identical": true,
+      "mismatches": []
+    }
+  ]
+}
