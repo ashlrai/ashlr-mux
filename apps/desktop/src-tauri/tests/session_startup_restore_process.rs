@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 use support::{process_proof_log_dir, DesktopFixture, PipeRpc};
+use uuid::Uuid;
 
 const SOURCE_TITLE: &str = "startup-restore-source";
 const TARGET_TITLE: &str = "startup-restore-target";
@@ -93,8 +94,36 @@ async fn run_process_proof() -> Result<(), String> {
             windows.len()
         ));
     }
+    let window_refs = windows
+        .iter()
+        .map(|window| field(window, "ref"))
+        .collect::<Result<Vec<_>, _>>()?;
+    if window_refs != ["window:1", "window:2"] {
+        return Err(format!(
+            "restored window refs drifted: {window_refs:?}; windows={windows:?}"
+        ));
+    }
+    for window in &windows {
+        let id = field(window, "id")?;
+        Uuid::parse_str(&id)
+            .map_err(|error| format!("restored window id is not canonical UUID {id:?}: {error}"))?;
+    }
+
+    let default_workspaces = rows(&rpc.call("workspace.list", json!({})).await?, "workspaces")?;
+    if !default_workspaces
+        .iter()
+        .any(|row| row.get("title").and_then(Value::as_str) == Some(TARGET_TITLE))
+    {
+        return Err(format!(
+            "selectorless routing did not retain the last restored window: {default_workspaces:?}"
+        ));
+    }
     let workspace_sets = vec![
-        rows(&rpc.call("workspace.list", json!({})).await?, "workspaces")?,
+        rows(
+            &rpc.call("workspace.list", json!({"window_ref":"window:1"}))
+                .await?,
+            "workspaces",
+        )?,
         rows(
             &rpc.call("workspace.list", json!({"window_ref":"window:2"}))
                 .await?,
@@ -103,9 +132,9 @@ async fn run_process_proof() -> Result<(), String> {
     ];
     let (source_window, source) = row_with_title(&workspace_sets, SOURCE_TITLE)?;
     let (target_window, target) = row_with_title(&workspace_sets, TARGET_TITLE)?;
-    if source_window == target_window {
+    if (source_window, target_window) != (0, 1) {
         return Err(format!(
-            "cross-window ownership collapsed: source={source}, target={target}"
+            "restored window ownership/order drifted: source_window={source_window}, source={source}, target_window={target_window}, target={target}"
         ));
     }
 
