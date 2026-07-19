@@ -108,11 +108,11 @@ fn install_startup_snapshot(
     }
     if let Some(window_id) = snapshot
         .windows
-        .first()
+        .last()
         .and_then(|window| window.window_id.as_deref())
     {
         if let Some(active) = app.try_state::<crate::control_socket::ControlActiveWindowState>() {
-            active.set(window_id);
+            active.set_startup_fallback(window_id);
         }
     }
     true

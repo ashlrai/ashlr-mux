@@ -680,6 +680,27 @@ fn stored_active_pointer_wins_over_focused_webview_fallback() {
 }
 
 #[test]
+fn startup_fallback_ignores_expired_focus_but_honors_current_focus() {
+    let pointer = ControlActiveWindowState::default();
+    pointer.set_startup_fallback("window-2");
+    pointer.set("window-1");
+    assert_eq!(
+        pointer.resolve_startup(None).as_deref(),
+        Some("window-2"),
+        "an expired bootstrap focus must not replace the restored context"
+    );
+
+    let pointer = ControlActiveWindowState::default();
+    pointer.set_startup_fallback("window-2");
+    pointer.set("window-1");
+    assert_eq!(
+        pointer.resolve_startup(Some("window-1".into())).as_deref(),
+        Some("window-1"),
+        "a window still focused at first routing must remain authoritative"
+    );
+}
+
+#[test]
 fn session_window_id_for_label_maps_main_to_first_window() {
     let snapshot = two_window_snapshot();
     assert_eq!(

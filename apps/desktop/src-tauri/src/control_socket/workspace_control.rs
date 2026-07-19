@@ -5,7 +5,7 @@ pub(super) fn workspace_create(
     params: &serde_json::Map<String, Value>,
 ) -> ControlCallResult {
     let current = snapshot(app);
-    let Some(window_index) = workspace_routed_window_index(&current, params) else {
+    let Some(window_index) = workspace_routed_window_index_for_app(app, &current, params) else {
         return ControlCallResult::Err {
             code: "unavailable".to_string(),
             message: "TabManager not available".to_string(),
@@ -408,13 +408,16 @@ pub(super) fn window_list(app: &AppHandle) -> ControlCallResult {
             let selected_workspace_id = tab_manager
                 .and_then(|tab_manager| tab_manager.workspaces.get(selected_index))
                 .and_then(|workspace| workspace.workspace_id.clone());
-            let window_reference = control_handle_ref(app, "window", &window.identity.label);
+            let window_id = session_window
+                .and_then(|window| window.window_id.as_deref())
+                .unwrap_or(window.identity.id.as_str());
+            let window_reference = control_handle_ref(app, "window", window_id);
             let selected_workspace_reference = selected_workspace_id
                 .as_deref()
                 .map(|id| control_handle_ref(app, "workspace", id));
             json!({
                 "index": index,
-                "id": window.identity.id,
+                "id": window_id,
                 "ref": window_reference,
                 "key": window.is_key,
                 "visible": window.is_visible,
@@ -1057,7 +1060,7 @@ pub(super) fn workspace_close(
     params: &serde_json::Map<String, Value>,
 ) -> ControlCallResult {
     let current = snapshot(app);
-    let Some(window_index) = workspace_routed_window_index(&current, params) else {
+    let Some(window_index) = workspace_routed_window_index_for_app(app, &current, params) else {
         return ControlCallResult::Err {
             code: "unavailable".to_string(),
             message: "TabManager not available".to_string(),
@@ -1139,7 +1142,7 @@ pub(super) fn workspace_rename(
     params: &serde_json::Map<String, Value>,
 ) -> ControlCallResult {
     let current = snapshot(app);
-    let Some(window_index) = workspace_routed_window_index(&current, params) else {
+    let Some(window_index) = workspace_routed_window_index_for_app(app, &current, params) else {
         return ControlCallResult::Err {
             code: "unavailable".to_string(),
             message: "TabManager not available".to_string(),
@@ -1194,7 +1197,7 @@ pub(super) fn workspace_select(
     params: &serde_json::Map<String, Value>,
 ) -> ControlCallResult {
     let current = snapshot(app);
-    let Some(window_index) = workspace_routed_window_index(&current, params) else {
+    let Some(window_index) = workspace_routed_window_index_for_app(app, &current, params) else {
         return ControlCallResult::Err {
             code: "unavailable".to_string(),
             message: "TabManager not available".to_string(),
@@ -2867,7 +2870,7 @@ pub(super) fn workspace_group_list(
     current: &AppSessionSnapshot,
     params: &serde_json::Map<String, Value>,
 ) -> ControlCallResult {
-    let Some(window_index) = workspace_routed_window_index(current, params) else {
+    let Some(window_index) = workspace_routed_window_index_for_app(app, current, params) else {
         return workspace_group_error("unavailable", "TabManager not available", None);
     };
     let window = &current.windows[window_index];
@@ -2934,7 +2937,7 @@ pub(super) fn workspace_group_control(
     if method == "workspace.group.list" {
         return workspace_group_list(app, &current, params);
     }
-    let Some(window_index) = workspace_routed_window_index(&current, params) else {
+    let Some(window_index) = workspace_routed_window_index_for_app(app, &current, params) else {
         return workspace_group_error("unavailable", "TabManager not available", None);
     };
 

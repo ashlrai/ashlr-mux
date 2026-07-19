@@ -60,7 +60,7 @@ pub(super) fn workspace_list_from_params_for_app(
     snapshot: &AppSessionSnapshot,
     params: &serde_json::Map<String, Value>,
 ) -> ControlCallResult {
-    let Some(window_index) = workspace_routed_window_index(snapshot, params) else {
+    let Some(window_index) = workspace_routed_window_index_for_app(app, snapshot, params) else {
         return ControlCallResult::Err {
             code: "unavailable".to_string(),
             message: "TabManager not available".to_string(),
@@ -1390,7 +1390,17 @@ pub(super) fn workspace_current_from_params(
     snapshot: &AppSessionSnapshot,
     params: &serde_json::Map<String, Value>,
 ) -> ControlCallResult {
-    let Some(window_index) = workspace_routed_window_index(snapshot, params) else {
+    workspace_current_from_params_with_active_window(snapshot, params, None)
+}
+
+fn workspace_current_from_params_with_active_window(
+    snapshot: &AppSessionSnapshot,
+    params: &serde_json::Map<String, Value>,
+    active_window_id: Option<&str>,
+) -> ControlCallResult {
+    let Some(window_index) =
+        workspace_routed_window_index_with_active_window(snapshot, params, active_window_id)
+    else {
         return ControlCallResult::Err {
             code: "unavailable".to_string(),
             message: "TabManager not available".to_string(),
@@ -1436,7 +1446,12 @@ pub(super) fn workspace_current_from_params_for_app(
     snapshot: &AppSessionSnapshot,
     params: &serde_json::Map<String, Value>,
 ) -> ControlCallResult {
-    match workspace_current_from_params(snapshot, params) {
+    let active_window_id = control_active_window_id(app);
+    match workspace_current_from_params_with_active_window(
+        snapshot,
+        params,
+        active_window_id.as_deref(),
+    ) {
         ControlCallResult::Ok(value) => {
             let mut payload: Value = value.into();
             apply_workspace_handle_refs(app, &mut payload);
@@ -1571,9 +1586,27 @@ pub(super) fn window_ref(index: usize) -> String {
 /// Resolve the v2 routing selectors to a tab manager without changing focus.
 /// An explicit window selector is authoritative: an invalid value never falls
 /// through to a workspace/surface in another window.
+#[cfg(test)]
 pub(super) fn workspace_routed_window_index(
     snapshot: &AppSessionSnapshot,
     params: &serde_json::Map<String, Value>,
+) -> Option<usize> {
+    workspace_routed_window_index_with_active_window(snapshot, params, None)
+}
+
+pub(super) fn workspace_routed_window_index_for_app(
+    app: &AppHandle,
+    snapshot: &AppSessionSnapshot,
+    params: &serde_json::Map<String, Value>,
+) -> Option<usize> {
+    let active_window_id = control_active_window_id(app);
+    workspace_routed_window_index_with_active_window(snapshot, params, active_window_id.as_deref())
+}
+
+pub(super) fn workspace_routed_window_index_with_active_window(
+    snapshot: &AppSessionSnapshot,
+    params: &serde_json::Map<String, Value>,
+    active_window_id: Option<&str>,
 ) -> Option<usize> {
     let has_non_null_window_selector = params
         .get("window_id")
@@ -1638,7 +1671,14 @@ pub(super) fn workspace_routed_window_index(
         }
     }
 
-    (!snapshot.windows.is_empty()).then_some(0)
+    active_window_id
+        .and_then(|active_window_id| {
+            snapshot
+                .windows
+                .iter()
+                .position(|window| window.window_id.as_deref() == Some(active_window_id))
+        })
+        .or_else(|| (!snapshot.windows.is_empty()).then_some(0))
 }
 
 pub(super) fn canonical_workspace_target_index(

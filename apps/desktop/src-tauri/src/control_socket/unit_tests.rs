@@ -2895,6 +2895,15 @@ fn workspace_v2_routing_uses_canonical_selector_precedence() {
     snapshot.windows.push(background);
 
     assert_eq!(
+        workspace_routed_window_index_with_active_window(
+            &snapshot,
+            &serde_json::Map::new(),
+            Some("window-b"),
+        ),
+        Some(1),
+        "selectorless routing follows the active session window"
+    );
+    assert_eq!(
         workspace_routed_window_index(
             &snapshot,
             &serde_json::Map::from_iter([

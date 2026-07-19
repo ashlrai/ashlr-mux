@@ -350,22 +350,48 @@ pub(super) fn present_quit_confirmation_dialog(app: &AppHandle) {
 /// the focused webview is only the pre-first-write fallback.
 #[derive(Default)]
 pub struct ControlActiveWindowState {
-    inner: Mutex<Option<String>>,
+    inner: Mutex<ControlActiveWindow>,
+}
+
+#[derive(Default)]
+struct ControlActiveWindow {
+    current: Option<String>,
+    startup_fallback: Option<String>,
 }
 
 impl ControlActiveWindowState {
     pub(crate) fn set(&self, window_id: &str) {
-        *self
-            .inner
+        self.inner
             .lock()
-            .expect("active window pointer mutex poisoned") = Some(window_id.to_owned());
+            .expect("active window pointer mutex poisoned")
+            .current = Some(window_id.to_owned());
     }
 
+    #[cfg(test)]
     pub(crate) fn get(&self) -> Option<String> {
         self.inner
             .lock()
             .expect("active window pointer mutex poisoned")
+            .current
             .clone()
+    }
+
+    pub(crate) fn set_startup_fallback(&self, window_id: &str) {
+        self.inner
+            .lock()
+            .expect("active window pointer mutex poisoned")
+            .startup_fallback = Some(window_id.to_owned());
+    }
+
+    pub(super) fn resolve_startup(&self, focused_window_id: Option<String>) -> Option<String> {
+        let mut active = self
+            .inner
+            .lock()
+            .expect("active window pointer mutex poisoned");
+        if let Some(startup_fallback) = active.startup_fallback.take() {
+            active.current = focused_window_id.or(Some(startup_fallback));
+        }
+        active.current.clone()
     }
 }
 
@@ -381,12 +407,14 @@ pub(super) fn control_active_window_from(
 
 /// The active window id used by selector-less routing.
 pub(super) fn control_active_window_id(app: &AppHandle) -> Option<String> {
-    let stored = app
-        .try_state::<ControlActiveWindowState>()
-        .and_then(|state| state.get());
+    let snapshot = snapshot(app);
     let focused = app.webview_windows().iter().find_map(|(label, window)| {
         (window.is_focused().ok() == Some(true)).then(|| label.clone())
     });
+    let focused = focused.and_then(|label| session_window_id_for_label(&snapshot, &label));
+    let stored = app
+        .try_state::<ControlActiveWindowState>()
+        .and_then(|state| state.resolve_startup(focused.clone()));
     control_active_window_from(stored, focused)
 }
 
@@ -425,11 +453,11 @@ pub(super) fn session_window_id_for_label(
         })
 }
 
-/// window.list rows expose identity ids ("window-1" is the main label's id,
-/// cmux_core::window_display::ordered_window_identities) while the session
-/// model keys windows by webview label (register_window_for_control). Map an
-/// identity id/label selector onto the session window id so the pure
-/// transition layer resolves it.
+/// Native window utilities index webview labels ("main" is represented as
+/// "window-1" by cmux_core::window_display::ordered_window_identities), while
+/// public window rows expose the owning session UUID. Map a native identity
+/// id/label selector onto the session window id so the pure transition layer
+/// resolves it.
 pub(super) fn normalize_window_identity_selector(
     app: &AppHandle,
     snapshot: &AppSessionSnapshot,
