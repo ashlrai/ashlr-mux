@@ -50,11 +50,15 @@ before a defensible product-completion percentage exists. See
   snapshots, listening-port discovery, and terminal output pumping now live in
   the 422-line `terminal/process_runtime.rs` child module; the Tauri command
   entry point remains in `terminal.rs`.
+- `session_ops.rs` fell from 7,748 to 7,453 measured lines. Browser history,
+  navigation, developer-tools state, and zoom mutations now live behind the
+  unchanged public API in the 306-line `session_ops/browser.rs` child module.
 - Seventy source-text tests that asserted filenames, function spelling, or
   substring order were removed. The retained suites execute behavior.
 - CI now caps new Windows-owned Rust and TypeScript files at 1,500 lines and
   freezes 40 existing oversized files at their current-or-smaller sizes.
-- The next structural priorities are `crates/cmux-core/src/session_ops.rs`,
+- The next structural priorities are the remaining layout/workspace domains in
+  `crates/cmux-core/src/session_ops.rs`,
   `crates/cmux-cli/src/command_forward.rs`, the remaining terminal
   materialization/input domains, and the custom sidebar Swift parser. Split
   them in isolated maintenance commits, not inside feature slices.
