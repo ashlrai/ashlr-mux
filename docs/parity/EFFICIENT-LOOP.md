@@ -8,10 +8,13 @@ evidence rebaselines in one commit series.
 
 1. Refresh `current-audit.json` only when canonical scope or the audited Windows
    checkpoint changes materially.
-2. Choose the smallest capability batch that can earn behavioral evidence.
-3. Prefer verification debt over new implementation when working code can be
+2. Start from the earliest unexplained differential or an explicitly missing
+   user capability. A route count, filename, TODO, or speculative resemblance
+   is not enough to authorize production work.
+3. Choose the smallest capability batch that can earn behavioral evidence.
+4. Prefer verification debt over new implementation when working code can be
    promoted with an existing differential lane.
-4. Record the expected user-visible outcome and applicable observation lanes
+5. Record the expected user-visible outcome and applicable observation lanes
    before editing.
 
 ## Change discipline
@@ -21,6 +24,8 @@ evidence rebaselines in one commit series.
 - Avoid speculative adapters, duplicated fixtures, and source-text tests.
 - Treat more than 500 changed non-generated lines as a signal to split the
   iteration unless the work is a reviewed mechanical file move.
+- Do not rewrite a working subsystem to resemble canonical source structure.
+  Match observable behavior through the port's existing ownership boundaries.
 - Run `python scripts/windows_port_file_length_budget.py`; do not raise an
   oversized file's budget to make feature work fit.
 - Keep generated catalogs out of ordinary feature diffs. The rolling audit is
@@ -31,6 +36,9 @@ evidence rebaselines in one commit series.
 ## Churn accounting
 
 - Keep behavior changes and mechanical file moves in separate commits.
+- Inspect `git diff --numstat` before every commit. Explain any slice with more
+  than 500 additions plus deletions, and separate generated or mechanical churn
+  from semantic churn.
 - Before an extraction, record the parent size, named responsibility, expected
   destination, and focused behavior suite. Move one responsibility at a time.
 - Report mechanical moved lines separately from net new logic. A file split may
@@ -39,6 +47,20 @@ evidence rebaselines in one commit series.
   and push each verified boundary before selecting the next one.
 - Stop an iteration that is accumulating unrelated rewrites or generated
   output; preserve the smallest passing slice and discard no unknown work.
+
+## Orchestrator context
+
+- Keep active context to the current capability, its contract, the failing
+  evidence, and the files that own it. Query generated catalogs narrowly
+  instead of loading them wholesale.
+- Keep at most one implementation lane and one evidence/audit lane active.
+  Preserve quarantined or unknown worktrees without using them as scratch
+  space.
+- At each pushed checkpoint, write only durable facts to `STATUS.md`: commits,
+  exact test/case counts, evidence validity, remaining blocker, and next slice.
+- Compact immediately after the worktree is clean and the remote HEAD is
+  verified. Resume from the durable checkpoint instead of replaying old logs or
+  rediscovering completed work.
 
 ## Verification sequence
 

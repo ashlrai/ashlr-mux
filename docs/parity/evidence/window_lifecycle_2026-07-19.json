@@ -1,255 +1,121 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "family": "window_lifecycle",
-  "status": "complete_captures_invalid_for_promotion",
+  "status": "valid_complete_capture_with_residual_deltas",
   "canonical": {
     "source_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
-    "harness_commit": "d309cf0ceb44cda59d755d557f91189848c98357",
-    "workflow_run": 29678884486,
+    "harness_commit": "9f89ed01ee1db8a651d798d2f0a3727a0ea025a0",
+    "workflow_run": 29685067632,
     "artifact": "canonical-capture-window_lifecycle",
-    "cases": 68,
-    "capture_errors": 0
-  },
-  "windows": {
-    "behavior_commit": "4e6e2fc6dc9b71bdc4c2847d3eea7eefc6aa365e",
-    "previous_behavior_commit": "eb33086f7ab5a0f423061e069a07b6b2d5f2b638",
-    "code_checkpoint": "cb94cf02e2aa326107e8fe8c931ef08521797b53",
+    "sha256": "99008569D893B125AA75E76D3667E2F0D4416CB572DCF5150CC2C21D6358FA84",
     "cases": 68,
     "capture_errors": 0,
+    "unsatisfied_settles": 0
+  },
+  "windows": {
+    "behavior_commit": "55f0afaf4e957a7fd56fe1e7a291492d039edf9f",
+    "sha256": "0FBC4E4B84220E0E66721C30163C6D70008B8F86C2C4DF2C096798210459FD44",
+    "cases": 68,
+    "capture_errors": 0,
+    "unsatisfied_settles": 0,
     "profile_mode": "isolated",
     "ui_test_mode": true
   },
   "comparison": {
-    "comparator_commit": "b2e5ba3d83586bcfeab1bf0ef58260427fbe9fb2",
+    "comparator_commit": "9f89ed01ee1db8a651d798d2f0a3727a0ea025a0",
+    "sha256": "F91E99D8716C621FD12EFE1FCC8A6EE459F1E4C5A7824E4D1958BC932CD3983E",
     "cases": 68,
-    "identical": 40,
-    "deltas": 28,
-    "delta_cases": [
-      "window_create.params_ignored_junk",
-      "window_create.created_window_usable_via_explicit_routing",
-      "window_close.happy_non_active_multiwindow",
-      "window_close.repeat_close_not_found_minted_ref",
-      "window_close.nonexistent_uuid_not_found_minted_ref",
-      "window_focus.happy_routes_selectorless_afterwards",
-      "window_focus.already_key_still_emits",
-      "window_focus.nonexistent_uuid_not_found_minted_ref",
-      "surface_refresh.workspace_terminal_count",
-      "surface_refresh.browser_only_workspace_count_zero",
-      "surface_resume.roundtrip_set_get_clear_get",
-      "surface_resume.cross_window_global_locate",
-      "surface_resume.checkpoint_guard_miss_cleared_false",
-      "surface_resume.clear_nothing_cleared_true",
-      "surface_resume.auto_resume_cli_source_forced_false",
-      "surface_resume.terminal_id_alias_targets_surface",
-      "surface_resume.surface_id_beats_terminal_id",
-      "surface_resume.checkpoint_camel_fallback",
-      "surface_resume.checkpoint_snake_beats_camel",
-      "cli.new_window_raw_ok",
-      "cli.new_window_json_flag_ignored",
-      "cli.focus_window_by_uuid",
-      "cli.focus_window_by_ref",
-      "cli.close_window_by_uuid",
-      "cli.surface_resume_set_argv_quoting",
-      "cli.surface_resume_set_shell",
-      "surface_resume.persists_across_restart",
-      "window_close.last_window_may_exit_ui_test_mode"
-    ],
+    "identical": 57,
+    "deltas": 11,
     "capture_integrity": {
-      "valid_for_promotion": false,
-      "canonical_unsatisfied_settle_cases": [
-        "window_create.params_ignored_junk",
-        "window_create.created_window_usable_via_explicit_routing",
-        "window_close.happy_non_active_multiwindow",
-        "window_close.repeat_close_not_found_minted_ref",
-        "window_focus.happy_routes_selectorless_afterwards",
-        "window_focus.already_key_still_emits",
-        "cli.focus_window_by_uuid",
-        "cli.focus_window_by_ref",
-        "cli.close_window_by_uuid"
-      ],
-      "windows_unsatisfied_settle_cases": [],
-      "impact": "Canonical retained recoverable or zombie windows after bounded cleanup expired, so later shared-session window counts and global UUID numbering are contaminated. The 40/28 result is descriptive only and cannot promote or independently classify the 28 delta cases."
+      "valid_for_promotion": true,
+      "canonical_capture_errors": [],
+      "windows_capture_errors": [],
+      "canonical_unsatisfied_settles": [],
+      "windows_unsatisfied_settles": [],
+      "missing_cases": []
+    },
+    "delta_cases": {
+      "window_create.params_ignored_junk": ["state", "events", "selectors", "multiwindow"],
+      "window_create.created_window_usable_via_explicit_routing": ["state", "selectors"],
+      "window_close.happy_non_active_multiwindow": ["state", "multiwindow"],
+      "window_close.repeat_close_not_found_minted_ref": ["error", "response", "state"],
+      "window_focus.happy_routes_selectorless_afterwards": ["state", "events", "selectors"],
+      "window_focus.already_key_still_emits": ["state", "events"],
+      "cli.focus_window_by_uuid": ["state"],
+      "cli.focus_window_by_ref": ["state"],
+      "cli.close_window_by_uuid": ["state"],
+      "surface_resume.persists_across_restart": ["response", "persistence"],
+      "window_close.last_window_may_exit_ui_test_mode": ["error", "response", "events"]
     },
     "normalization": {
-      "window_list_order": "Valid v2:window.list probe rows are paired by stable numeric window ref and positional indices are recomputed. Every row identity and field remains strict; malformed or duplicate refs are not normalized.",
-      "reason": "Both native implementations enumerate unordered registries and the contract defines numeric list indices as positional and racy."
+      "window_list_order": "Valid window.list rows are paired by stable numeric ref and positional indices are recomputed. Every row identity and field remains strict; malformed or duplicate refs are not normalized.",
+      "reason": "Both native implementations enumerate unordered window registries; dictionary iteration order is not product behavior."
     }
   },
-  "identity_boundary": {
-    "status": "repaired_with_downstream_deltas_remaining",
-    "full_capture_runs": 2,
-    "post_simplification_prefix_runs": 2,
-    "cases_per_full_run": 68,
-    "capture_errors": 0,
-    "normalized_window_label_occurrences": {
-      "before": 153,
-      "after": 0
-    },
-    "cli_uuid_cases": {
-      "focus_before_lanes": [
-        "exit_status",
-        "stdout",
-        "stderr",
-        "state"
+  "closed_window_history": {
+    "status": "implemented_and_live_observed",
+    "behavior_commit": "55f0afaf4e957a7fd56fe1e7a291492d039edf9f",
+    "harness_commit": "9f89ed01ee1db8a651d798d2f0a3727a0ea025a0",
+    "behavior": [
+      "A successful close appends an invisible recoverable window.list row with stable window/workspace ids, refs, selection, and workspace count.",
+      "Live native rows precede recoverable rows and win identity collisions.",
+      "A failed native close discards staged history; successful close commits it atomically.",
+      "Restart clears the in-process recoverable history."
+    ],
+    "measurement_correction": "Canonical intentionally retains closed windows as invisible recoverable routes. The previous until_absent predicate incorrectly classified this product behavior as failed cleanup. until_window_not_visible now accepts visible:false or absence while keeping the final row payload strict.",
+    "result": "Both 68-case captures have zero unsatisfied settles. Against the corrected evidence, the descriptive result moved from invalid 40/28 to valid 57/11."
+  },
+  "residual_clusters": [
+    {
+      "name": "native_key_and_platform_path_equivalence",
+      "cases": [
+        "window_create.params_ignored_junk",
+        "window_create.created_window_usable_via_explicit_routing",
+        "window_focus.happy_routes_selectorless_afterwards",
+        "window_focus.already_key_still_emits"
       ],
-      "focus_after_lanes": [
-        "state"
-      ],
-      "close_before_lanes": [
-        "exit_status",
-        "stdout",
-        "stderr",
-        "state"
-      ],
-      "close_after_lanes": [
-        "state"
-      ]
+      "evidence": "Differences include isolated-profile home paths and AppKit versus noninteractive-Windows key-window choice. Exact UUID/event continuity remains strict. These are not product defects unless a non-platform leaf also differs."
     },
-    "overall_count_note": "The latest comparison is 40 identical and 28 delta cases. Identity-affected cases retain independent event, state, or payload mismatches."
-  },
-  "event_publication": {
-    "status": "canonical_sequence_exact_with_platform_path_equivalence",
-    "full_capture_runs": 2,
-    "cases_per_full_run": 68,
-    "capture_errors": 0,
-    "exercised_sequence": [
-      "ack",
-      "surface.selected",
-      "pane.focused",
-      "surface.focused",
-      "workspace.created",
-      "surface.created",
-      "workspace.selected",
-      "window.created",
-      "window.closed"
-    ],
-    "exact_fields": [
-      "event names and order",
-      "window, workspace, pane, and surface identities",
-      "payload keys and values",
-      "origins",
-      "key and main window flags"
-    ],
-    "platform_equivalences": [
-      "The workspace cwd is /Users/runner on canonical and the isolated Windows profile home on Windows."
-    ],
-    "publication_model": [
-      "The transition mints the prepared window, workspace, pane, and surface identities before publication.",
-      "The platform executor registers that exact prepared snapshot rather than generating a second model.",
-      "Socket-managed create and close suppress duplicate derived session events; normal UI operations retain derived publication."
-    ],
-    "lane_changes": {
-      "window_create.created_window_usable_via_explicit_routing": {
-        "removed": [
-          "response"
-        ],
-        "remaining": [
-          "state",
-          "selectors"
-        ]
-      },
-      "window_close.happy_non_active_multiwindow": {
-        "removed": [
-          "response"
-        ],
-        "remaining": [
-          "state",
-          "multiwindow"
-        ]
-      }
+    {
+      "name": "post_close_active_routing",
+      "cases": ["window_close.happy_non_active_multiwindow"],
+      "evidence": "After close settles non-visible, canonical selector-less workspace.list still reports the closed target while Windows reports its fallback window. Determine whether the retained TabManager route is contractual before changing production."
     },
-    "overall_count_note": "The latest comparison is 40 identical and 28 delta cases because the affected cases retain independent platform path, native teardown timing, window ordering/focus, or multiwindow state differences."
-  },
-  "key_transitions": {
-    "status": "canonical_sequences_with_native_key_identity_equivalence",
-    "post_simplification_prefix_runs": 2,
-    "prefix_cases": 10,
-    "full_capture_runs": 1,
-    "full_capture_cases": 68,
-    "capture_errors": 0,
-    "focus_transfer_sequence": [
-      "ack",
-      "window.unkeyed",
-      "window.keyed",
-      "window.focused",
-      "window.closed",
-      "window.unkeyed",
-      "window.keyed"
-    ],
-    "already_key_sequence": [
-      "ack",
-      "window.focused",
-      "window.closed",
-      "window.unkeyed",
-      "window.keyed"
-    ],
-    "exact_fields": [
-      "event names and order",
-      "event origins",
-      "key and main window flags",
-      "focused and closed target identity continuity"
-    ],
-    "platform_equivalences": [
-      "The retained AppKit capture chooses window:2 as the prior and fallback native key window; the isolated noninteractive Windows desktop chooses window:1.",
-      "The contract explicitly classifies real OS foregrounding and key-window transfer as platform-equivalent; strict event, state, and UUID-symbol lanes retain this native choice."
-    ],
-    "overall_count_note": "The latest full comparison is 40 identical and 28 delta cases. No row is promoted from sequence parity alone."
-  },
-  "resume_approval_and_validation": {
-    "status": "canonical_payload_leaves_with_upstream_identity_deltas_remaining",
-    "behavior_commit": "4e6e2fc6dc9b71bdc4c2847d3eea7eefc6aa365e",
-    "post_simplification_prefix_runs": 2,
-    "prefix_cases": 31,
-    "resume_cases": 15,
-    "full_capture_runs": 1,
-    "full_capture_cases": 68,
-    "capture_errors": 0,
-    "strict_comparison": {
-      "before": {"identical": 38, "deltas": 30},
-      "after": {"identical": 40, "deltas": 28},
-      "newly_identical": [
-        "surface_resume.malformed_surface_id_rejected_before_routing",
-        "surface_resume.selector_validation_key_order_window_first"
-      ]
+    {
+      "name": "immediate_repeat_close_race",
+      "cases": ["window_close.repeat_close_not_found_minted_ref"],
+      "evidence": "The fresh canonical action returned success because the immediate second performClose raced unregister; Windows returned not_found. The manifest must settle the first close before asserting deterministic repeat-close behavior."
     },
-    "payload_repairs": [
-      "CLI resume set writes or reuses a signed promptless manual approval record.",
-      "Responses and persisted bindings carry approval_policy=manual and approval_record_id.",
-      "Selector shape validation runs in canonical window/workspace/surface/terminal/tab order before routing."
-    ],
-    "store_observation": {
-      "records_written": 8,
-      "envelope_version": 1,
-      "signatures_present": true,
-      "persistent_secret_present": true,
-      "profile_mode": "isolated"
+    {
+      "name": "cumulative_window_topology",
+      "cases": ["cli.focus_window_by_uuid", "cli.focus_window_by_ref", "cli.close_window_by_uuid"],
+      "evidence": "All three cases share one upstream topology difference: canonical retains live window:2 while Windows no longer lists it before the CLI probes. Locate the earliest case that loses that live window; do not patch the three CLI commands independently."
     },
-    "residual_note": "Eight approval-bearing cases match every non-identity leaf. Nine resume cases remain strict response/state deltas because the retained fixture workspace, pane, surface, and approval UUID labels inherit an earlier one-position global normalization offset from native window topology. The no-binding clear case carries the same offset, demonstrating that this residual is upstream of approval serialization."
-  },
-  "closed_capture_blockers": [
-    "The final canonical close may legitimately disconnect; the manifest now models it as the final may_disconnect case without an impossible post-close probe.",
-    "Windows control commits no longer synchronously query native window state while a child WebView is attached.",
-    "Selector-less routing uses the initialized active-window pointer without a redundant native focus query.",
-    "The 17-case browser/resume prefix passed twice after simplification, and the full 68-case Windows capture completed with zero capture errors.",
-    "Socket-created windows now use UUID identities, selector-less window.current returns the active session UUID, and CLI focus/close-by-UUID reach the backend.",
-    "Socket-created windows publish the canonical initial workspace/pane/surface/window event sequence from one prepared identity snapshot without duplicate derived session events.",
-    "Resume CLI bindings now persist signed manual approval records and malformed selector cases match canonical validation order."
+    {
+      "name": "restart_resume_binding",
+      "cases": ["surface_resume.persists_across_restart"],
+      "evidence": "After restart canonical returns Surface not found for the original surface while Windows restores the binding and target. The approval-record UUID difference is downstream of this ownership mismatch."
+    },
+    {
+      "name": "last_window_close",
+      "cases": ["window_close.last_window_may_exit_ui_test_mode"],
+      "evidence": "Canonical disconnects during last-window close and emits one more lifecycle event; Windows replies success without exiting. This remains a product-semantic gap or an explicit platform-equivalence decision."
+    }
   ],
-  "test_gate": {
-    "desktop_library_excluding_known_baseline_failures": {
-      "passed": 1045,
-      "ignored": 1,
-      "excluded": 4,
-      "runs": 2
-    },
+  "verification": {
+    "closed_history_unit_tests": 3,
+    "window_list_unit_tests": 2,
+    "window_lifecycle_tests": 78,
+    "window_lifecycle_post_simplification_runs": 2,
     "desktop_all_targets_check_runs": 1,
-    "known_baseline_failures_reproduced_at": [
-      "0ea973d28d5efc34852fb16d8a6aa452512ec381",
-      "286b2d7b674710ae60573ca8250df60cfd4ebcfc"
-    ]
+    "desktop_and_cli_build_runs": 1,
+    "capture_harness_tests": 112,
+    "capture_harness_post_simplification_runs": 2,
+    "file_length_budget": "39 tracked oversized files; all frozen at current-or-smaller size"
   },
   "promotion": {
     "rows_promoted": [],
-    "reason": "Twenty-eight semantic case deltas remain; complete captures are diagnostic evidence, not parity proof."
+    "reason": "The capture pair is valid evidence, but eleven cases retain strict deltas. Promote only mapped capabilities whose applicable lanes are identical or explicitly platform-equivalent."
   }
 }

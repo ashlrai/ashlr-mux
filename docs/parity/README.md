@@ -60,6 +60,12 @@ Behavioral or live differential evidence is required for `verified`.
 - `parity-matrix.json`: generated join for the frozen acceptance snapshot.
 - `current-audit.json`: compact rolling scope and freshness audit.
 
+Contract files preserve the discovery checkpoint named by their
+`windows_audit_commit`. Their `matrix_status_at_audit` and `windows_gap` fields
+are historical inputs, not current claims. Current implementation and live
+verification status belongs in `STATUS.md`, `current-audit.json`, and
+`evidence/*.json`; do not rewrite canonical contracts after implementation.
+
 Do not hand-edit generated catalogs or matrices. Validate the frozen snapshot
 with:
 

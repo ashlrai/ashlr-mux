@@ -4,39 +4,44 @@ Checkpoint commits:
 
 - Current canonical audit: `ecebdbb64b3532b0308650280ae4b83f30becf2a`
 - Frozen differential canonical: `e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452`
-- Windows behavior: `4e6e2fc6dc9b71bdc4c2847d3eea7eefc6aa365e`
-- Latest Windows code checkpoint: `b52a274de133859ebf5f385a2c87bd5e6a23d800`
+- Windows behavior captured: `55f0afaf4e957a7fd56fe1e7a291492d039edf9f`
+- Latest Windows code checkpoint: `1df21ddaf6a1173de84cde12953f547eaacd799a`
 - Latest exact startup differential evidence: `parity/diff-lane@215737999ac0579682b6b2a2d230d7a0d064a51d`
-- Latest window harness checkpoint: `parity/diff-lane@b2e5ba3d83586bcfeab1bf0ef58260427fbe9fb2`
-- Latest canonical window capture: workflow run `29678884486`
+- Latest window harness checkpoint: `parity/diff-lane@9f89ed01ee1db8a651d798d2f0a3727a0ea025a0`
+- Latest canonical window capture: workflow run `29685067632`
 
 The Windows desktop and CLI build successfully. The retained pane/surface and
-startup-restore evidence remains valid. The latest window-family files each
-contain all 68 cases with zero transport capture errors, and their descriptive
-comparison is 40 identical / 28 delta cases. The canonical file exhausted nine
-bounded close-settle predicates, however, retaining recoverable/zombie windows
-that contaminate later shared-session identities. The comparator now reports
-this explicitly and marks the pair invalid for promotion. The 28 rows are not
-28 independent product defects. See `evidence/window_lifecycle_2026-07-19.json`.
+startup-restore evidence remains valid. The latest window-family capture pair
+contains all 68 cases with zero transport errors, zero missing cases, and zero
+unsatisfied settles. The normalized comparison is valid: 57 identical and 11
+delta cases. Those eleven cases collapse into six shared residual clusters and
+must not be reported as eleven independent product defects. See
+`evidence/window_lifecycle_2026-07-19.json` for hashes, lanes, and provenance.
+
+Closed windows now match canonical recoverable-route behavior. A successful
+close appends a strict `visible:false` `window.list` row with stable window and
+workspace identity; failed native closes discard staged history, live rows win
+identity collisions, and restart clears the in-process history. The harness now
+settles on non-visibility rather than incorrectly requiring row absence. This
+removed the evidence-integrity blocker and changed the authoritative result
+from invalid 40/28 to valid 57/11.
 
 The shared window identity boundary is now repaired. Socket-created windows
 use canonical UUID identities end to end, selector-less `window.current`
 returns the active session UUID, and CLI focus/close-by-UUID reach the backend
 instead of failing transport. Across two full Windows captures, normalized
-`window-N` identity occurrences fell from 153 to zero. The overall case count
-did not move because all affected cases also contain independent event, state,
-or payload deltas; it must not be used to erase this narrower verified gain.
+`window-N` identity occurrences fell from 153 to zero. The remaining CLI state
+deltas share one upstream topology loss (`window:2` disappears on Windows
+before those probes); they are not three separate CLI implementations to patch.
 
 Window creation now publishes the canonical initial lifecycle sequence from
 one prepared snapshot: `surface.selected`, `pane.focused`, `surface.focused`,
 `workspace.created`, `surface.created`, `workspace.selected`, and
 `window.created`, followed by `window.closed` in the exercised create/close
-case. Event names, ordering, identities, payloads, and key/main flags match the
-canonical capture exactly after normalizing only the platform home-directory
-path. Duplicate derived session events are suppressed for socket-managed
-create/close, while normal UI window operations retain them. The descriptive
-comparison remains 40 identical and 28 delta cases, but later topology and
-identity deltas are not promotable while canonical cleanup is unsettled.
+case. Duplicate derived session events are suppressed for socket-managed
+create/close, while normal UI window operations retain them. Residual event
+differences are limited to native fallback-key identity and platform home paths
+in the affected cases.
 
 Window focus and key-window close now publish the canonical AppKit lifecycle
 sequence. A focus transfer emits `window.unkeyed`, `window.keyed`, then
@@ -53,14 +58,10 @@ Resume bindings now use the signed approval store already shared with the
 canonical port. A successful CLI set writes or reuses a manual approval record,
 returns `approval_policy: "manual"` plus its UUID, and persists both fields in
 session state. Malformed resume selectors are rejected in canonical key order
-before routing. Two post-simplification 31-case runs were identical for all 15
-resume cases on Windows; the full differential moved from 38/30 to 40/28.
-Eight approval-bearing cases now match every non-identity leaf. Nine resume
-cases retain UUID-label deltas after failed canonical close settles leave extra
-recoverable windows in the shared capture session. The payload leaves match,
-but the contaminated global identity sequence cannot prove that the residuals
-are product defects or parity. This is an evidence-isolation blocker, not
-completed strict parity.
+before routing. The approval and selector payload repairs remain exact. The one
+residual resume case is now isolated to restart ownership: canonical reports
+the original surface missing, while Windows restores its binding and target.
+The differing approval UUID is downstream of that semantic mismatch.
 
 ## What the current audit says
 
@@ -80,13 +81,13 @@ baseline, not "222 of 496 complete" and not the rolling catalog.
 
 ## Known acceptance blockers
 
-1. The window-lifecycle transport, public UUID routing, resume approval fields,
-   and selector validation blockers are closed. The current 40/28 differential
-   is invalid for promotion because nine canonical close-settle predicates
-   failed and the shared session leaked those windows into later cases. Repair
-   case isolation and recapture canonical before classifying the residuals.
-   Window-list order is non-contractual on both implementations; the comparator
-   now pairs valid rows by stable ref while keeping every row field strict.
+1. The window capture is valid at 57/11. The immediate repeat-close case still
+   races canonical unregister and must settle the first close before asserting
+   `not_found`. Three CLI state deltas share an earlier loss of live `window:2`;
+   locate that first topology transition instead of editing each CLI route.
+   Restart binding ownership and last-window exit behavior are the remaining
+   clear semantic clusters. Native key choice and profile paths require exact
+   platform-equivalence pointers, not production hard-coding.
 2. Four differential-remediation unit tests fail unchanged at both pushed
    baseline `0ea973d28d` and behavior checkpoint `286b2d7b67`:
    `closing_an_unselected_tab_suppresses_the_noop_pair`,
@@ -154,6 +155,14 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
   metadata, grouping, and environment parsing live in the 1,299-line
   `command_forward/workspace.rs` child module. The 251-test CLI suite and
   all-target compile check pass after each boundary.
+- `workspace_control.rs` is now 3,180 physical lines (from 3,711 at this
+  checkpoint). Strict live/recoverable `window.list` projection lives in the
+  183-line `workspace_control/window_list.rs` child. Right-sidebar, feed, and
+  notification socket controls moved mechanically to the 495-line
+  `workspace_control/activity_controls.rs` child; 21 notification, 5 feed, and
+  5 right-sidebar tests pass twice after visibility simplification, and the
+  desktop all-target check is clean. The extraction commit is +500/-495: five
+  net ownership lines, no behavior rewrite.
 - Seventy source-text tests that asserted filenames, function spelling, or
   substring order were removed. The retained suites execute behavior.
 - CI now caps new Windows-owned Rust and TypeScript files at 1,500 lines and
@@ -165,10 +174,10 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
 
 ## Next efficient slice
 
-Repair the window differential's case isolation before changing production
-behavior. A failed cleanup settle must not poison later case identities, and
-the immediate repeat-close race must not be treated as a deterministic
-contract. Recapture canonical and Windows with zero capture errors and zero
-unsatisfied settles, then select the earliest remaining semantic delta. Keep
-native key-window choice and platform paths explicit; do not hard-code one
-dictionary iteration order or copy a contaminated canonical snapshot.
+Repair the immediate repeat-close case by settling the first close before the
+second request, then add the smallest diagnostic window-list checkpoint that
+locates where Windows first loses live `window:2` between the focus cases and
+the CLI cases. Reuse the valid 57/11 pair to classify exact platform path/key
+equivalences. Only then change the earliest demonstrated production owner.
+Keep native key-window choice and platform paths explicit; do not hard-code one
+dictionary iteration order or patch three downstream CLI probes independently.
