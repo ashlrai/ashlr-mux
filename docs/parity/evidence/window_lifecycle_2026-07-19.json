@@ -11,7 +11,9 @@
     "capture_errors": 0
   },
   "windows": {
-    "behavior_commit": "eb33086f7ab5a0f423061e069a07b6b2d5f2b638",
+    "behavior_commit": "4e6e2fc6dc9b71bdc4c2847d3eea7eefc6aa365e",
+    "previous_behavior_commit": "eb33086f7ab5a0f423061e069a07b6b2d5f2b638",
+    "code_checkpoint": "482debb406369546f51a29a2fe06c5c4787a504d",
     "cases": 68,
     "capture_errors": 0,
     "profile_mode": "isolated",
@@ -19,8 +21,8 @@
   },
   "comparison": {
     "cases": 68,
-    "identical": 38,
-    "deltas": 30,
+    "identical": 40,
+    "deltas": 28,
     "delta_cases": [
       "window_create.params_ignored_junk",
       "window_create.created_window_usable_via_explicit_routing",
@@ -33,8 +35,6 @@
       "surface_refresh.workspace_terminal_count",
       "surface_refresh.browser_only_workspace_count_zero",
       "surface_resume.roundtrip_set_get_clear_get",
-      "surface_resume.malformed_surface_id_rejected_before_routing",
-      "surface_resume.selector_validation_key_order_window_first",
       "surface_resume.cross_window_global_locate",
       "surface_resume.checkpoint_guard_miss_cleared_false",
       "surface_resume.clear_nothing_cleared_true",
@@ -84,7 +84,7 @@
         "state"
       ]
     },
-    "overall_count_note": "The comparison remains 38 identical and 30 delta cases because the identity-affected cases also retain independent event, state, or payload mismatches."
+    "overall_count_note": "The latest comparison is 40 identical and 28 delta cases. Identity-affected cases retain independent event, state, or payload mismatches."
   },
   "event_publication": {
     "status": "canonical_sequence_exact_with_platform_path_equivalence",
@@ -137,7 +137,7 @@
         ]
       }
     },
-    "overall_count_note": "The comparison remains 38 identical and 30 delta cases because the affected cases retain independent platform path, native teardown timing, window ordering/focus, or multiwindow state differences."
+    "overall_count_note": "The latest comparison is 40 identical and 28 delta cases because the affected cases retain independent platform path, native teardown timing, window ordering/focus, or multiwindow state differences."
   },
   "key_transitions": {
     "status": "canonical_sequences_with_native_key_identity_equivalence",
@@ -172,7 +172,38 @@
       "The retained AppKit capture chooses window:2 as the prior and fallback native key window; the isolated noninteractive Windows desktop chooses window:1.",
       "The contract explicitly classifies real OS foregrounding and key-window transfer as platform-equivalent; strict event, state, and UUID-symbol lanes retain this native choice."
     ],
-    "overall_count_note": "The full comparison remains 38 identical and 30 delta cases. No row is promoted from sequence parity alone."
+    "overall_count_note": "The latest full comparison is 40 identical and 28 delta cases. No row is promoted from sequence parity alone."
+  },
+  "resume_approval_and_validation": {
+    "status": "canonical_payload_leaves_with_upstream_identity_deltas_remaining",
+    "behavior_commit": "4e6e2fc6dc9b71bdc4c2847d3eea7eefc6aa365e",
+    "post_simplification_prefix_runs": 2,
+    "prefix_cases": 31,
+    "resume_cases": 15,
+    "full_capture_runs": 1,
+    "full_capture_cases": 68,
+    "capture_errors": 0,
+    "strict_comparison": {
+      "before": {"identical": 38, "deltas": 30},
+      "after": {"identical": 40, "deltas": 28},
+      "newly_identical": [
+        "surface_resume.malformed_surface_id_rejected_before_routing",
+        "surface_resume.selector_validation_key_order_window_first"
+      ]
+    },
+    "payload_repairs": [
+      "CLI resume set writes or reuses a signed promptless manual approval record.",
+      "Responses and persisted bindings carry approval_policy=manual and approval_record_id.",
+      "Selector shape validation runs in canonical window/workspace/surface/terminal/tab order before routing."
+    ],
+    "store_observation": {
+      "records_written": 8,
+      "envelope_version": 1,
+      "signatures_present": true,
+      "persistent_secret_present": true,
+      "profile_mode": "isolated"
+    },
+    "residual_note": "Eight approval-bearing cases match every non-identity leaf. Nine resume cases remain strict response/state deltas because the retained fixture workspace, pane, surface, and approval UUID labels inherit an earlier one-position global normalization offset from native window topology. The no-binding clear case carries the same offset, demonstrating that this residual is upstream of approval serialization."
   },
   "closed_capture_blockers": [
     "The final canonical close may legitimately disconnect; the manifest now models it as the final may_disconnect case without an impossible post-close probe.",
@@ -180,7 +211,8 @@
     "Selector-less routing uses the initialized active-window pointer without a redundant native focus query.",
     "The 17-case browser/resume prefix passed twice after simplification, and the full 68-case Windows capture completed with zero capture errors.",
     "Socket-created windows now use UUID identities, selector-less window.current returns the active session UUID, and CLI focus/close-by-UUID reach the backend.",
-    "Socket-created windows publish the canonical initial workspace/pane/surface/window event sequence from one prepared identity snapshot without duplicate derived session events."
+    "Socket-created windows publish the canonical initial workspace/pane/surface/window event sequence from one prepared identity snapshot without duplicate derived session events.",
+    "Resume CLI bindings now persist signed manual approval records and malformed selector cases match canonical validation order."
   ],
   "test_gate": {
     "desktop_library_excluding_known_baseline_failures": {
@@ -197,6 +229,6 @@
   },
   "promotion": {
     "rows_promoted": [],
-    "reason": "Thirty semantic case deltas remain; complete captures are diagnostic evidence, not parity proof."
+    "reason": "Twenty-eight semantic case deltas remain; complete captures are diagnostic evidence, not parity proof."
   }
 }

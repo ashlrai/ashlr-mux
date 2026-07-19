@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_from": {
-    "repository_commit": "eb33086f7ab5a0f423061e069a07b6b2d5f2b638",
+    "repository_commit": "482debb406369546f51a29a2fe06c5c4787a504d",
     "source_mode": "git cat-file source snapshot of pinned commit (not ambient worktree)",
     "platform": "windows-tauri",
     "extractor": "scripts/parity/extract_windows_evidence.py"
@@ -7176,7 +7176,7 @@
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/lifecycle_dispatch.rs",
-            "line": 982
+            "line": 996
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/pane_surface_lifecycle.rs",
@@ -7428,7 +7428,7 @@
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/lifecycle_dispatch.rs",
-            "line": 929
+            "line": 943
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/pane_surface_lifecycle.rs",
@@ -7687,7 +7687,7 @@
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
-            "line": 662
+            "line": 663
           }
         ]
       },
@@ -8549,7 +8549,7 @@
         "implementation_references": [
           {
             "path": "apps/desktop/src-tauri/src/control_socket/window_lifecycle.rs",
-            "line": 159
+            "line": 167
           }
         ],
         "test_references": [
@@ -8754,7 +8754,7 @@
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/lifecycle_dispatch.rs",
-            "line": 983
+            "line": 997
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/pane_surface_lifecycle.rs",
@@ -8980,7 +8980,7 @@
         "implementation_references": [
           {
             "path": "apps/desktop/src-tauri/src/control_socket/window_lifecycle.rs",
-            "line": 162
+            "line": 170
           }
         ],
         "test_references": [
@@ -9020,7 +9020,7 @@
         "implementation_references": [
           {
             "path": "apps/desktop/src-tauri/src/control_socket/window_lifecycle.rs",
-            "line": 161
+            "line": 169
           }
         ],
         "test_references": [
@@ -9060,7 +9060,7 @@
         "implementation_references": [
           {
             "path": "apps/desktop/src-tauri/src/control_socket/window_lifecycle.rs",
-            "line": 160
+            "line": 168
           }
         ],
         "test_references": [
@@ -9071,6 +9071,10 @@
           {
             "path": "apps/desktop/src-tauri/src/control_socket.rs",
             "line": 1333
+          },
+          {
+            "path": "apps/desktop/src-tauri/src/control_socket/lifecycle_dispatch.rs",
+            "line": 590
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
@@ -9829,7 +9833,7 @@
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/lifecycle_dispatch.rs",
-            "line": 982
+            "line": 996
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/pane_surface_lifecycle.rs",
@@ -10024,11 +10028,11 @@
         "implementation_references": [
           {
             "path": "apps/desktop/src-tauri/src/control_socket/window_lifecycle.rs",
-            "line": 157
+            "line": 165
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/window_lifecycle.rs",
-            "line": 1086
+            "line": 1124
           }
         ],
         "test_references": [
@@ -10042,7 +10046,7 @@
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/lifecycle_dispatch.rs",
-            "line": 987
+            "line": 1001
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
@@ -10050,23 +10054,19 @@
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
-            "line": 250
+            "line": 251
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
-            "line": 414
+            "line": 415
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
-            "line": 428
+            "line": 429
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
-            "line": 431
-          },
-          {
-            "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
-            "line": 449
+            "line": 432
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
@@ -10074,51 +10074,55 @@
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
-            "line": 469
+            "line": 451
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
-            "line": 512
+            "line": 470
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
-            "line": 557
+            "line": 513
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
-            "line": 570
+            "line": 558
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
-            "line": 581
+            "line": 571
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
-            "line": 599
+            "line": 582
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
-            "line": 624
+            "line": 600
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
-            "line": 769
+            "line": 625
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
-            "line": 773
+            "line": 770
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
-            "line": 786
+            "line": 774
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
-            "line": 1686
+            "line": 787
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
-            "line": 1731
+            "line": 1685
+          },
+          {
+            "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
+            "line": 1730
           }
         ]
       },
@@ -10144,11 +10148,11 @@
         "implementation_references": [
           {
             "path": "apps/desktop/src-tauri/src/control_socket/window_lifecycle.rs",
-            "line": 156
+            "line": 164
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/window_lifecycle.rs",
-            "line": 1084
+            "line": 1122
           }
         ],
         "test_references": [
@@ -10166,15 +10170,11 @@
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
-            "line": 258
+            "line": 259
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
-            "line": 275
-          },
-          {
-            "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
-            "line": 285
+            "line": 276
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
@@ -10182,19 +10182,19 @@
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
-            "line": 296
+            "line": 287
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
-            "line": 334
+            "line": 297
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
-            "line": 356
+            "line": 335
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
-            "line": 390
+            "line": 357
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
@@ -10202,15 +10202,19 @@
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
-            "line": 646
+            "line": 392
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
-            "line": 1674
+            "line": 647
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
-            "line": 1705
+            "line": 1673
+          },
+          {
+            "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
+            "line": 1704
           }
         ]
       },
@@ -10372,11 +10376,11 @@
         "implementation_references": [
           {
             "path": "apps/desktop/src-tauri/src/control_socket/window_lifecycle.rs",
-            "line": 158
+            "line": 166
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/window_lifecycle.rs",
-            "line": 1085
+            "line": 1123
           }
         ],
         "test_references": [
@@ -10390,7 +10394,7 @@
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/lifecycle_dispatch.rs",
-            "line": 987
+            "line": 1001
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
@@ -10398,23 +10402,23 @@
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
-            "line": 250
+            "line": 251
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
-            "line": 1680
+            "line": 1679
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
-            "line": 1723
+            "line": 1722
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
-            "line": 1740
+            "line": 1739
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
-            "line": 1748
+            "line": 1747
           }
         ]
       },
@@ -10454,7 +10458,7 @@
           },
           {
             "path": "apps/desktop/src-tauri/src/control_socket/tests/window_lifecycle_red.rs",
-            "line": 240
+            "line": 241
           },
           {
             "path": "crates/cmux-cli/src/command_forward.rs",
@@ -10484,7 +10488,7 @@
         "implementation_references": [
           {
             "path": "apps/desktop/src-tauri/src/control_socket/lifecycle_dispatch.rs",
-            "line": 265
+            "line": 268
           },
           {
             "path": "apps/desktop/src-tauri/src/workspace_action.rs",

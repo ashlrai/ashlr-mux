@@ -44,9 +44,9 @@
     "status": "not_measured"
   },
   "windows": {
-    "commit": "eb33086f7ab5a0f423061e069a07b6b2d5f2b638",
-    "commit_date": "2026-07-19T06:16:22-04:00",
-    "commit_subject": "fix(desktop): publish canonical window key transitions",
+    "commit": "482debb406369546f51a29a2fe06c5c4787a504d",
+    "commit_date": "2026-07-19T06:41:44-04:00",
+    "commit_subject": "refactor(desktop): scope resume approval to dispatch",
     "commits_ahead_of_tracked_evidence": 0,
     "source_evidence": {
       "advertised_and_routed_count": 267,
@@ -62,6 +62,6 @@
       "routed_not_advertised_count": 41,
       "top_level_cli_count": 193
     },
-    "tracked_evidence_commit": "eb33086f7ab5a0f423061e069a07b6b2d5f2b638"
+    "tracked_evidence_commit": "482debb406369546f51a29a2fe06c5c4787a504d"
   }
 }
