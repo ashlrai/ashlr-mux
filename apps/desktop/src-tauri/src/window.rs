@@ -221,13 +221,12 @@ pub fn control_window_summaries(app: &AppHandle) -> Vec<WindowControlSummary> {
     ordered_control_windows(app)
         .into_iter()
         .map(|(identity, window)| {
-            let (is_key, is_visible) = control_window_summary_state(
-                capture_windows_hidden,
-                || (
+            let (is_key, is_visible) = control_window_summary_state(capture_windows_hidden, || {
+                (
                     window.is_focused().unwrap_or(false),
                     window.is_visible().unwrap_or(false),
-                ),
-            );
+                )
+            });
             WindowControlSummary {
                 identity,
                 is_key,
@@ -238,10 +237,14 @@ pub fn control_window_summaries(app: &AppHandle) -> Vec<WindowControlSummary> {
 }
 
 fn control_window_summary_state(
-    _capture_windows_hidden: bool,
+    capture_windows_hidden: bool,
     native_state: impl FnOnce() -> (bool, bool),
 ) -> (bool, bool) {
-    native_state()
+    if capture_windows_hidden {
+        (false, false)
+    } else {
+        native_state()
+    }
 }
 
 pub fn current_control_window(
