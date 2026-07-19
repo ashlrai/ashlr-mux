@@ -5,7 +5,7 @@ Checkpoint commits:
 - Current canonical audit: `ecebdbb64b3532b0308650280ae4b83f30becf2a`
 - Frozen differential canonical: `e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452`
 - Windows behavior: `4e6e2fc6dc9b71bdc4c2847d3eea7eefc6aa365e`
-- Latest Windows code checkpoint: `cb94cf02e2aa326107e8fe8c931ef08521797b53`
+- Latest Windows code checkpoint: `b52a274de133859ebf5f385a2c87bd5e6a23d800`
 - Latest exact startup differential evidence: `parity/diff-lane@215737999ac0579682b6b2a2d230d7a0d064a51d`
 - Latest window harness checkpoint: `parity/diff-lane@b2e5ba3d83586bcfeab1bf0ef58260427fbe9fb2`
 - Latest canonical window capture: workflow run `29678884486`
@@ -133,8 +133,8 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
   snapshots, listening-port discovery, and terminal output pumping now live in
   the 454-line `terminal/process_runtime.rs` child module; the Tauri command
   entry point remains in `terminal.rs`.
-- `session_ops.rs` is now 4,991 physical lines (from 6,306 in the prior
-  checkpoint). Browser history,
+- `session_ops.rs` is now 1,316 physical lines (from 6,306 before its staged
+  extractions). Browser history,
   navigation, developer-tools state, and zoom mutations live behind the
   unchanged public API in the 325-line `session_ops/browser.rs` child module;
   canvas layout and persisted geometry mutations now live behind the same API
@@ -142,8 +142,11 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
   reorder operations now live in the 1,116-line
   `session_ops/workspace_ordering.rs` child module. Pane-tree mutation,
   resizing, surface-tab movement, and pane metadata transfer now live in the
-  1,320-line `session_ops/pane_layout.rs` child module. The latest extraction
-  is a behavior-preserving move with five net lines: 297 core tests pass twice,
+  1,320-line `session_ops/pane_layout.rs` child module. Its former 3,675-line
+  inline test module now keeps the same `session_ops::tests::*` namespace
+  through a four-line include host and four focused files ranging from 537 to
+  1,244 lines. That move is exactly net-zero: 3,678 additions and 3,678
+  deletions. The 297 core tests pass before and twice after simplification,
   core Clippy is clean, and desktop/CLI dependent targets compile.
 - `command_forward.rs` is now 4,550 physical lines (from 7,026). Browser
   routing and parameter construction live in the 1,211-line
@@ -154,9 +157,8 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
 - Seventy source-text tests that asserted filenames, function spelling, or
   substring order were removed. The retained suites execute behavior.
 - CI now caps new Windows-owned Rust and TypeScript files at 1,500 lines and
-  freezes 40 existing oversized files at their current-or-smaller sizes.
-- The next structural priorities are the large in-file test module in
-  `crates/cmux-core/src/session_ops.rs`,
+  freezes 39 existing oversized files at their current-or-smaller sizes.
+- The next structural priorities are
   `crates/cmux-cli/src/command_forward.rs`, the remaining terminal
   materialization/input domains, and the custom sidebar Swift parser. Split
   them in isolated maintenance commits, not inside feature slices.
