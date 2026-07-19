@@ -953,8 +953,7 @@ pub(super) fn surface_split_off(
         .into_iter()
         .find(|summary| summary.identity.label == window.window_id.as_deref().unwrap_or("main"))
         .map(|summary| summary.identity);
-    let (window_id, window_ref) =
-        pane_response_window_identity(window, window_index, window_identity.as_ref());
+    let (window_id, window_ref) = pane_response_window_identity(window, window_index);
     if focus {
         if let Some(identity) = window_identity.as_ref() {
             let _ = crate::window::activate_control_window(app, &identity.label);
@@ -1198,13 +1197,12 @@ pub(super) fn pane_focus(
 }
 
 pub(super) fn pane_response_window_identity(
-    _window: &SessionWindowSnapshot,
-    _window_index: usize,
-    native_identity: Option<&cmux_core::window_display::WindowControlIdentity>,
+    window: &SessionWindowSnapshot,
+    window_index: usize,
 ) -> (Option<String>, Option<String>) {
     (
-        native_identity.map(|identity| identity.id.clone()),
-        native_identity.map(|identity| identity.reference.clone()),
+        window.window_id.clone(),
+        window.window_id.as_ref().map(|_| window_ref(window_index)),
     )
 }
 
@@ -1347,13 +1345,7 @@ pub(super) fn pane_surfaces(
             })
         })
         .collect::<Vec<_>>();
-    let window_label = window.window_id.as_deref().unwrap_or("main");
-    let identity = crate::window::control_window_summaries(app)
-        .into_iter()
-        .find(|summary| summary.identity.label == window_label)
-        .map(|summary| summary.identity);
-    let (window_id, window_ref) =
-        pane_response_window_identity(window, window_index, identity.as_ref());
+    let (window_id, window_ref) = pane_response_window_identity(window, window_index);
     ok(json!({
         "workspace_id": workspace.workspace_id,
         "workspace_ref": workspace_ref(workspace_index),
@@ -1493,8 +1485,7 @@ pub(super) fn pane_swap(
         .into_iter()
         .find(|summary| summary.identity.label == window.window_id.as_deref().unwrap_or("main"))
         .map(|summary| summary.identity);
-    let (window_id, window_ref) =
-        pane_response_window_identity(window, window_index, window_identity.as_ref());
+    let (window_id, window_ref) = pane_response_window_identity(window, window_index);
     if focus {
         if let Some(identity) = window_identity.as_ref() {
             let _ = crate::window::activate_control_window(app, &identity.label);
@@ -1682,8 +1673,7 @@ pub(super) fn pane_break(
         .into_iter()
         .find(|summary| summary.identity.label == window.window_id.as_deref().unwrap_or("main"))
         .map(|summary| summary.identity);
-    let (window_id, window_ref) =
-        pane_response_window_identity(window, window_index, window_identity.as_ref());
+    let (window_id, window_ref) = pane_response_window_identity(window, window_index);
     if focus {
         if let Some(identity) = window_identity.as_ref() {
             let _ = crate::window::activate_control_window(app, &identity.label);
@@ -1893,8 +1883,7 @@ pub(super) fn pane_last(
         .into_iter()
         .find(|summary| summary.identity.label == window.window_id.as_deref().unwrap_or("main"))
         .map(|summary| summary.identity);
-    let (window_id, window_ref) =
-        pane_response_window_identity(window, window_index, window_identity.as_ref());
+    let (window_id, window_ref) = pane_response_window_identity(window, window_index);
     if let Some(identity) = window_identity.as_ref() {
         let _ = crate::window::activate_control_window(app, &identity.label);
     }

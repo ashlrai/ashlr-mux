@@ -115,12 +115,7 @@ pub(in crate::control_socket) fn pane_list(
             row
         })
         .collect::<Vec<_>>();
-    let window_identity = crate::window::control_window_summaries(app)
-        .into_iter()
-        .find(|summary| summary.identity.label == window_label)
-        .map(|summary| summary.identity);
-    let (window_id, window_ref) =
-        pane_response_window_identity(window, window_index, window_identity.as_ref());
+    let (window_id, window_ref) = pane_response_window_identity(window, window_index);
     ok(json!({
         "workspace_id": workspace.workspace_id,
         "workspace_ref": workspace_ref(workspace_index),
