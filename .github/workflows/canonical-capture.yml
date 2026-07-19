@@ -26,6 +26,7 @@ on:
         type: choice
         options:
           - pane_surface_lifecycle
+          - pane_management
           - startup_restore
           - workspace_lifecycle
           - window_lifecycle

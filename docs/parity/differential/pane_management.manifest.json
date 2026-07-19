@@ -1,0 +1,162 @@
+{
+  "family": "pane_management",
+  "canonical_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+  "notes": [
+    "Exercises the seven unverified public pane-management v2 methods and their pane-oriented CLI entry points through one shared multi-pane fixture.",
+    "The lane covers routing, list payloads, focus history, selected-surface swaps, break-to-workspace, join-to-pane, errors, CLI output, state, and lifecycle events.",
+    "No platform differences are pre-approved; classify exact capture pointers only after the first matched run."
+  ],
+  "session_setup": [
+    {"op": "v2", "method": "workspace.create", "params": {"title": "pane-management"}},
+    {"op": "v2", "method": "surface.create", "params": {"workspace_id": "${session.0.result.workspace_id}", "type": "terminal"}},
+    {"op": "v2", "method": "pane.create", "params": {"workspace_id": "${session.0.result.workspace_id}", "direction": "right", "focus": false}},
+    {"op": "v2", "method": "pane.create", "params": {"workspace_id": "${session.0.result.workspace_id}", "direction": "down", "focus": false}},
+    {"op": "v2", "method": "pane.list", "params": {"workspace_id": "${session.0.result.workspace_id}"}},
+    {"op": "v2", "method": "pane.create", "params": {"workspace_id": "${session.0.result.workspace_id}", "direction": "left", "focus": false}},
+    {"op": "v2", "method": "pane.create", "params": {"workspace_id": "${session.0.result.workspace_id}", "direction": "right", "focus": false}},
+    {"op": "v2", "method": "pane.create", "params": {"workspace_id": "${session.0.result.workspace_id}", "direction": "left", "focus": false}},
+    {"op": "v2", "method": "pane.create", "params": {"workspace_id": "${session.0.result.workspace_id}", "direction": "right", "focus": false}}
+  ],
+  "cases": [
+    {
+      "id": "pane.list_explicit_workspace",
+      "action": {"op": "v2", "method": "pane.list", "params": {"workspace_id": "${session.0.result.workspace_id}"}}
+    },
+    {
+      "id": "pane.surfaces_explicit_pane",
+      "action": {"op": "v2", "method": "pane.surfaces", "params": {"workspace_id": "${session.0.result.workspace_id}", "pane_id": "${session.4.result.panes.0.id}"}}
+    },
+    {
+      "id": "pane.focus",
+      "events": true,
+      "action": {"op": "v2", "method": "pane.focus", "params": {"workspace_id": "${session.0.result.workspace_id}", "pane_id": "${session.2.result.pane_id}"}},
+      "probes": {"state": [{"op": "v2", "method": "pane.list", "params": {"workspace_id": "${session.0.result.workspace_id}"}}]}
+    },
+    {
+      "id": "pane.last",
+      "events": true,
+      "action": {"op": "v2", "method": "pane.last", "params": {"workspace_id": "${session.0.result.workspace_id}"}},
+      "probes": {"state": [{"op": "v2", "method": "pane.list", "params": {"workspace_id": "${session.0.result.workspace_id}"}}]}
+    },
+    {
+      "id": "pane.swap_rejects_same_pane",
+      "action": {"op": "v2", "method": "pane.swap", "params": {"pane_id": "${session.4.result.panes.0.id}", "target_pane_id": "${session.4.result.panes.0.id}"}}
+    },
+    {
+      "id": "pane.focus_requires_pane",
+      "action": {"op": "v2", "method": "pane.focus", "params": {"workspace_id": "${session.0.result.workspace_id}"}}
+    },
+    {
+      "id": "pane.surfaces_missing_pane",
+      "action": {"op": "v2", "method": "pane.surfaces", "params": {"workspace_id": "${session.0.result.workspace_id}", "pane_id": "00000000-0000-0000-0000-000000000001"}}
+    },
+    {
+      "id": "cli.list_panes",
+      "action": {"op": "cli", "argv": ["list-panes", "--workspace", "${session.0.result.workspace_id}"]}
+    },
+    {
+      "id": "cli.list_pane_surfaces",
+      "action": {"op": "cli", "argv": ["list-pane-surfaces", "--workspace", "${session.0.result.workspace_id}", "--pane", "${session.4.result.panes.0.id}"]}
+    },
+    {
+      "id": "cli.list_panels",
+      "action": {"op": "cli", "argv": ["list-panels", "--workspace", "${session.0.result.workspace_id}"]}
+    },
+    {
+      "id": "cli.focus_pane",
+      "events": true,
+      "action": {"op": "cli", "argv": ["focus-pane", "--pane", "${session.3.result.pane_id}", "--workspace", "${session.0.result.workspace_id}"]},
+      "probes": {"state": [{"op": "v2", "method": "pane.list", "params": {"workspace_id": "${session.0.result.workspace_id}"}}]}
+    },
+    {
+      "id": "cli.focus_panel",
+      "events": true,
+      "action": {"op": "cli", "argv": ["focus-panel", "--panel", "${session.1.result.surface_id}", "--workspace", "${session.0.result.workspace_id}"]},
+      "probes": {"state": [{"op": "v2", "method": "pane.list", "params": {"workspace_id": "${session.0.result.workspace_id}"}}]}
+    },
+    {
+      "id": "cli.last_pane",
+      "events": true,
+      "action": {"op": "cli", "argv": ["last-pane", "--workspace", "${session.0.result.workspace_id}"]},
+      "probes": {"state": [{"op": "v2", "method": "pane.list", "params": {"workspace_id": "${session.0.result.workspace_id}"}}]}
+    },
+    {
+      "id": "cli.swap_pane_requires_target",
+      "action": {"op": "cli", "argv": ["swap-pane", "--pane", "${session.4.result.panes.0.id}"]}
+    },
+    {
+      "id": "pane.break",
+      "events": true,
+      "action": {"op": "v2", "method": "pane.break", "params": {"workspace_id": "${session.0.result.workspace_id}", "pane_id": "${session.5.result.pane_id}", "focus": false}},
+      "probes": {
+        "state": [
+          {"op": "v2", "method": "pane.list", "params": {"workspace_id": "${session.0.result.workspace_id}"}},
+          {"op": "v2", "method": "pane.list", "params": {"workspace_id": "${action.result.workspace_id}"}}
+        ]
+      }
+    },
+    {
+      "id": "pane.join",
+      "events": true,
+      "action": {"op": "v2", "method": "pane.join", "params": {"target_pane_id": "${session.4.result.panes.0.id}", "pane_id": "${session.6.result.pane_id}", "focus": false}},
+      "probes": {
+        "state": [
+          {"op": "v2", "method": "pane.surfaces", "params": {"pane_id": "${session.4.result.panes.0.id}"}},
+          {"op": "v2", "method": "pane.list", "params": {"workspace_id": "${session.0.result.workspace_id}"}}
+        ]
+      }
+    },
+    {
+      "id": "pane.join_requires_source",
+      "action": {"op": "v2", "method": "pane.join", "params": {"target_pane_id": "${session.4.result.panes.0.id}"}}
+    },
+    {
+      "id": "cli.break_pane",
+      "events": true,
+      "action": {"op": "cli", "argv": ["break-pane", "--workspace", "${session.0.result.workspace_id}", "--pane", "${session.7.result.pane_id}", "--no-focus"]},
+      "probes": {
+        "state": [
+          {"op": "v2", "method": "pane.list", "params": {"workspace_id": "${session.0.result.workspace_id}"}},
+          {"op": "v2", "method": "workspace.list", "params": {}}
+        ]
+      }
+    },
+    {
+      "id": "cli.join_pane",
+      "events": true,
+      "action": {"op": "cli", "argv": ["join-pane", "--target-pane", "${session.4.result.panes.0.id}", "--pane", "${session.8.result.pane_id}", "--no-focus"]},
+      "probes": {
+        "state": [
+          {"op": "v2", "method": "pane.surfaces", "params": {"pane_id": "${session.4.result.panes.0.id}"}},
+          {"op": "v2", "method": "pane.list", "params": {"workspace_id": "${session.0.result.workspace_id}"}}
+        ]
+      }
+    },
+    {
+      "id": "cli.join_pane_requires_target",
+      "action": {"op": "cli", "argv": ["join-pane", "--pane", "${session.4.result.panes.0.id}"]}
+    },
+    {
+      "id": "pane.swap",
+      "events": true,
+      "action": {"op": "v2", "method": "pane.swap", "params": {"pane_id": "${session.4.result.panes.0.id}", "target_pane_id": "${session.2.result.pane_id}", "focus": false}},
+      "probes": {
+        "state": [
+          {"op": "v2", "method": "pane.surfaces", "params": {"pane_id": "${session.4.result.panes.0.id}"}},
+          {"op": "v2", "method": "pane.surfaces", "params": {"pane_id": "${session.2.result.pane_id}"}}
+        ]
+      }
+    },
+    {
+      "id": "cli.swap_pane",
+      "events": true,
+      "action": {"op": "cli", "argv": ["swap-pane", "--pane", "${session.4.result.panes.0.id}", "--target-pane", "${session.3.result.pane_id}", "--focus", "false"]},
+      "probes": {
+        "state": [
+          {"op": "v2", "method": "pane.surfaces", "params": {"pane_id": "${session.4.result.panes.0.id}"}},
+          {"op": "v2", "method": "pane.surfaces", "params": {"pane_id": "${session.3.result.pane_id}"}}
+        ]
+      }
+    }
+  ]
+}
