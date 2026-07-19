@@ -18,8 +18,8 @@
       {
         "label": "main",
         "title": "cmux for Windows - bootstrap",
-        "width": 1280,
-        "height": 840,
+        "width": 1000,
+        "height": 700,
         "resizable": true,
         "decorations": false,
         "visible": false
