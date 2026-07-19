@@ -1,0 +1,209 @@
+{
+  "capture_integrity": {
+    "capture_error_cases": {
+      "canonical": [],
+      "windows": []
+    },
+    "missing_cases": [],
+    "unsettled_cases": {
+      "canonical": [],
+      "windows": []
+    },
+    "valid_for_promotion": true
+  },
+  "cases": 19,
+  "deltas": 0,
+  "identical": 19,
+  "results": [
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_list.explicit_window",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_list.routes_by_nonselected_workspace",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_list.invalid_window_does_not_fall_through",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_current.explicit_window",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_current.routes_by_nonselected_workspace",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_current.invalid_window_does_not_fall_through",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_create.background_focus_is_suppressed",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_create.invalid_cwd_fails_before_mutation",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_select.cross_window",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_select.already_selected",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_rename.background_workspace",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "workspace_close.normal_workspace",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "cli_list_workspaces.explicit_window",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "cli_current_workspace.explicit_window",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "cli_new_workspace.explicit_window",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "cli_select_workspace.explicit_window",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "cli_rename_workspace.explicit_target",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "cli_close_workspace.explicit_window",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "cli_select_workspace.requires_flag",
+      "identical": true,
+      "mismatches": []
+    }
+  ]
+}
