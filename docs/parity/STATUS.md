@@ -57,9 +57,11 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
   snapshots, listening-port discovery, and terminal output pumping now live in
   the 454-line `terminal/process_runtime.rs` child module; the Tauri command
   entry point remains in `terminal.rs`.
-- `session_ops.rs` is now 7,923 measured lines. Browser history,
-  navigation, developer-tools state, and zoom mutations now live behind the
-  unchanged public API in the 325-line `session_ops/browser.rs` child module.
+- `session_ops.rs` is now 7,410 measured lines. Browser history,
+  navigation, developer-tools state, and zoom mutations live behind the
+  unchanged public API in the 325-line `session_ops/browser.rs` child module;
+  canvas layout and persisted geometry mutations now live behind the same API
+  in the 526-line `session_ops/canvas.rs` child module.
 - Seventy source-text tests that asserted filenames, function spelling, or
   substring order were removed. The retained suites execute behavior.
 - CI now caps new Windows-owned Rust and TypeScript files at 1,500 lines and

@@ -1,7 +1,7 @@
 # Windows-port source file length budget.
 # Format: max_lines<TAB>relative path
 # New files may not exceed 1500 lines. Reduce entries as files shrink.
-7923	crates/cmux-core/src/session_ops.rs
+7410	crates/cmux-core/src/session_ops.rs
 7026	crates/cmux-cli/src/command_forward.rs
 6284	apps/desktop/src-tauri/src/session.rs
 5975	apps/desktop/web/src/components/CustomSidebarSurface.test.tsx
