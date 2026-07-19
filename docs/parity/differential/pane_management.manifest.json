@@ -30,7 +30,10 @@
       "id": "pane.focus",
       "events": true,
       "action": {"op": "v2", "method": "pane.focus", "params": {"workspace_id": "${session.0.result.workspace_id}", "pane_id": "${session.2.result.pane_id}"}},
-      "probes": {"state": [{"op": "v2", "method": "pane.list", "params": {"workspace_id": "${session.0.result.workspace_id}"}}]}
+      "probes": {"state": [{"op": "v2", "method": "pane.list", "params": {"workspace_id": "${session.0.result.workspace_id}"}}]},
+      "approved_differences": [
+        {"path": "/events/2/payload/cwd", "rationale": "The exact workspace.selected event carries the platform-specific isolated capture working directory."}
+      ]
     },
     {
       "id": "pane.last",
