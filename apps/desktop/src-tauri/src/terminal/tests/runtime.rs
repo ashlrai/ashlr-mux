@@ -1,5 +1,56 @@
 
     #[test]
+    fn grid_size_snapshot_never_waits_for_terminal_registry_contention() {
+        let state = Arc::new(TerminalState::default());
+        let registry = state.registry.lock().unwrap();
+        let worker_state = state.clone();
+        let (result_tx, result_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _ = result_tx.send(super::terminal_grid_size_for_panel(
+                &worker_state,
+                "panel",
+            ));
+        });
+
+        assert_eq!(
+            result_rx
+                .recv_timeout(Duration::from_millis(250))
+                .expect("grid size snapshot blocked on the terminal registry"),
+            None
+        );
+        drop(registry);
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn grid_size_snapshot_never_waits_for_terminal_grid_contention() {
+        let state = Arc::new(TerminalState::default());
+        state.registry.lock().unwrap().sessions.insert(
+            41,
+            test_session(test_process(false), test_transport(io::sink()), "panel"),
+        );
+        let grid = state.registry.lock().unwrap().sessions[&41].grid.clone();
+        let grid_guard = grid.lock().unwrap();
+        let worker_state = state.clone();
+        let (result_tx, result_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _ = result_tx.send(super::terminal_grid_size_for_panel(
+                &worker_state,
+                "panel",
+            ));
+        });
+
+        assert_eq!(
+            result_rx
+                .recv_timeout(Duration::from_millis(250))
+                .expect("grid size snapshot blocked on the terminal grid"),
+            None
+        );
+        drop(grid_guard);
+        worker.join().unwrap();
+    }
+
+    #[test]
     fn ui_attach_reuses_staged_panel_but_control_replace_reserves_a_new_session() {
         let staged = [(41_u32, Some("dock-surface")), (42, Some("other"))];
         assert_eq!(
