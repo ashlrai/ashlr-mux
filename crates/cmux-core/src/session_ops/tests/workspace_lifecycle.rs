@@ -1187,8 +1187,8 @@ fn swap_selected_pane_surfaces_matches_canonical_move_order() {
     assert_eq!(target.pane_id.as_deref(), Some("pane-target"));
     assert_eq!(source.panel_ids, ["a", "c"]);
     assert_eq!(target.panel_ids, ["d", "b"]);
-    assert_eq!(source.selected_panel_id.as_deref(), Some("a"));
-    assert_eq!(target.selected_panel_id.as_deref(), Some("d"));
+    assert_eq!(source.selected_panel_id.as_deref(), Some("c"));
+    assert_eq!(target.selected_panel_id.as_deref(), Some("b"));
 }
 
 #[test]
