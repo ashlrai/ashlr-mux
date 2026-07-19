@@ -104,3 +104,18 @@ fn pane_list_prefers_the_rendered_workspace_frame_over_the_native_window() {
         observed
     );
 }
+
+#[test]
+fn pane_list_container_size_uses_the_rendered_workspace_dimensions() {
+    let rendered = PanePixelFrame {
+        x: 240.0,
+        y: 28.0,
+        width: 760.0,
+        height: 672.0,
+    };
+
+    assert_eq!(
+        pane_surface_control::pane_list::pane_list_container_size(rendered, 1000.0, 700.0),
+        (760.0, 672.0)
+    );
+}

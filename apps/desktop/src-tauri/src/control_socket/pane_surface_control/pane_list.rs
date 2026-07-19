@@ -61,6 +61,14 @@ pub(in crate::control_socket) fn pane_list_root_frame(
     observed.unwrap_or(native_fallback)
 }
 
+pub(in crate::control_socket) fn pane_list_container_size(
+    _root_frame: PanePixelFrame,
+    native_width: f64,
+    native_height: f64,
+) -> (f64, f64) {
+    (native_width, native_height)
+}
+
 pub(in crate::control_socket) fn pane_list(
     app: &AppHandle,
     params: &serde_json::Map<String, Value>,
@@ -141,6 +149,7 @@ pub(in crate::control_socket) fn pane_list(
             height,
         },
     );
+    let container_size = pane_list_container_size(root_frame, width, height);
     pane_frames(layout, root_frame, &mut pane_rows);
     let terminal_state = app.state::<TerminalState>();
     let panes = pane_rows
@@ -196,6 +205,6 @@ pub(in crate::control_socket) fn pane_list(
         "panes": panes,
         "window_id": window_id,
         "window_ref": window_ref,
-        "container_frame": {"width": width, "height": height},
+        "container_frame": {"width": container_size.0, "height": container_size.1},
     }))
 }
