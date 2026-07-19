@@ -887,16 +887,14 @@ fn append_surface_to_pane(
         pane.panel_ids.len()
     };
     pane.panel_ids.insert(index, panel_id.to_string());
-    if pane.selected_panel_id.is_none() {
-        pane.selected_panel_id = Some(panel_id.to_string());
-    }
+    pane.selected_panel_id = Some(panel_id.to_string());
     true
 }
 
 /// Swap the selected surfaces of two panes while preserving both pane IDs.
 /// This directly models canonical's placeholder-assisted two-move sequence:
 /// selected tabs leave their panes, each enters the other pane at the end of
-/// its pin tier, and a singleton pane selects the arriving surface.
+/// its pin tier, and both panes select their arriving surface.
 pub fn swap_selected_pane_surfaces(
     workspace: &mut SessionWorkspaceSnapshot,
     source_pane_id: &str,
