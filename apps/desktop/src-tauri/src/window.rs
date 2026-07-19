@@ -619,9 +619,10 @@ pub fn window_open_task_manager() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        capture_windows_hidden_for_value, task_manager_command, WindowStateSnapshot,
-        AUX_WINDOW_LABEL_PREFIX,
+        capture_windows_hidden_for_value, run_control_window_activation, task_manager_command,
+        WindowStateSnapshot, AUX_WINDOW_LABEL_PREFIX,
     };
+    use std::cell::Cell;
     use std::ffi::OsStr;
 
     #[test]
@@ -629,6 +630,25 @@ mod tests {
         assert!(!capture_windows_hidden_for_value(None));
         assert!(!capture_windows_hidden_for_value(Some(OsStr::new("0"))));
         assert!(capture_windows_hidden_for_value(Some(OsStr::new("1"))));
+    }
+
+    #[test]
+    fn capture_headless_mode_suppresses_native_window_activation() {
+        let activation_count = Cell::new(0);
+
+        run_control_window_activation(true, || {
+            activation_count.set(activation_count.get() + 1);
+            Ok(())
+        })
+        .expect("headless activation is a successful no-op");
+        assert_eq!(activation_count.get(), 0);
+
+        run_control_window_activation(false, || {
+            activation_count.set(activation_count.get() + 1);
+            Ok(())
+        })
+        .expect("interactive activation executes the native action");
+        assert_eq!(activation_count.get(), 1);
     }
 
     #[test]
