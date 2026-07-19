@@ -5,7 +5,7 @@ Checkpoint commits:
 - Current canonical audit: `41756f7285a02d2592751438793647f7d4ba9b71`
 - Frozen differential canonical: `e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452`
 - Windows behavior captured: `a51ddd28763bad2549d3903de78bc7b59b988e36`
-- Latest Windows code checkpoint: `ad795a225ad5c0df525eb5d4154efed25816e750`
+- Latest Windows code checkpoint: `2c4a5650b383665441d8d916f7137eddb309a68e`
 - Latest exact startup differential evidence: `parity/diff-lane@215737999ac0579682b6b2a2d230d7a0d064a51d`
 - Latest window harness checkpoint: `parity/diff-lane@9257db511b975335e2ee79bc4bb143c04bfa95f8`
 - Latest canonical window capture: workflow run `29686515273`
@@ -133,7 +133,7 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
   instructions.
 - The previously monolithic files remain split: `control_socket.rs` is now
   4,396 measured lines (from 23,219), `session.rs` is 5,134 (from 12,059), and
-  `CustomSidebarSurface.tsx` is 5,419 (from 12,003). Extracted modules retain
+  `CustomSidebarSurface.tsx` is 4,795 (from 12,003). Extracted modules retain
   the same public entry points. The 84-line `session/control_snapshot.rs` owns
   control-worker lifecycle publication policy, and the 85-line
   `session/control_window_registration.rs` owns prepared window registration.
@@ -193,11 +193,15 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
   the full web suite passes 1,253 tests across 81 files, and typecheck, web
   production build, whitespace, and the 39-file Windows length budget are
   clean. No user-facing strings or localization resources changed.
-- `CustomSidebarSurface.tsx` is now 5,151 physical lines (from 5,419 at the
+- `CustomSidebarSurface.tsx` is now 4,795 physical lines (from 5,419 at the
   previous checkpoint). Its JSON block renderer, workspace filtering, row
   actions, and limits now live in the 278-line `CustomSidebarJsonView.tsx`
   child. All 266 moved implementation lines are exact after normalizing the
   child export; the parent change is one import and two retired type imports.
+  Its accessibility and Swift data-attribute projection now lives in the
+  360-line `SwiftAccessibilityProps.ts` child behind a type-only dependency;
+  all 358 moved implementation lines are exact after normalizing the exported
+  function and inferred presentation type boundary.
   The 92-test custom-sidebar suite passes before and twice after simplification,
   the full web suite passes 1,253 tests across 81 files, and typecheck, web
   production build, whitespace, and the 39-file Windows length budget are
@@ -226,16 +230,17 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
 - CI now caps new Windows-owned Rust and TypeScript files at 1,500 lines and
   freezes 39 existing oversized files at their current-or-smaller sizes.
 - The next structural priorities are
-  the 5,419-line custom-sidebar component, the remaining 5,152-line Swift
-  parser, and their 5,975-line test file, followed by the remaining
+  the remaining 5,152-line Swift parser, the 4,795-line custom-sidebar
+  component, and their 5,975-line test file, followed by the remaining
   session/control and terminal domains. Split one coherent responsibility per
   isolated maintenance commit; do not mix those moves with feature slices.
 
 ## Next efficient slice
 
-Extract the self-contained accessibility/data-attribute projection from the
-remaining 5,151-line custom-sidebar component in a behavior-neutral commit.
-Keep the new module below 1,500 lines, preserve the returned attribute mapping
-exactly, and run the focused Bun suite before and twice after simplification,
-then the full web suite, typecheck, build, and file-length gate. Do not mix the
-move with parity behavior changes or generated catalog churn.
+Map the remaining 5,152-line Swift parser methods and extract one coherent
+expression-evaluation responsibility in a behavior-neutral commit. Keep the
+new module below 1,500 lines, preserve moved bodies exactly apart from the
+smallest required visibility boundary, and run the focused Bun suite before
+and twice after simplification, then the full web suite, typecheck, build, and
+file-length gate. Do not mix the move with parity behavior changes or generated
+catalog churn.
