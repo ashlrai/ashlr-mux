@@ -44,10 +44,10 @@
     "status": "not_measured"
   },
   "windows": {
-    "commit": "1717704e09e47cca8aeb7b4671ecc7e4fc51be52",
-    "commit_date": "2026-07-19T08:30:07-04:00",
-    "commit_subject": "fix(desktop): enumerate native control windows",
-    "commits_ahead_of_tracked_evidence": 10,
+    "commit": "14953b82f8bc712f774196acf0a69271886c0b9f",
+    "commit_date": "2026-07-19T08:53:17-04:00",
+    "commit_subject": "fix(desktop): accept recoverable window reclose",
+    "commits_ahead_of_tracked_evidence": 14,
     "source_evidence": {
       "advertised_and_routed_count": 267,
       "advertised_method_count": 270,

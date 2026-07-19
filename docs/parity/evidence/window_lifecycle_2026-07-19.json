@@ -13,9 +13,9 @@
     "unsatisfied_settles": 0
   },
   "windows": {
-    "behavior_commit": "1717704e09e47cca8aeb7b4671ecc7e4fc51be52",
+    "behavior_commit": "14953b82f8bc712f774196acf0a69271886c0b9f",
     "harness_commit": "e23cd72b7807f700a5961b2d8ae44919c810911c",
-    "sha256": "56109C96FF29F1C75BED795AFD6200F6BF6E1E204966D1A415DB6538B8BD1009",
+    "sha256": "4650151D919970D0930F7D2A479EAFFF121897225CA6B3FC5B731D46ED2A64A8",
     "cases": 68,
     "capture_errors": 0,
     "unsatisfied_settles": 0,
@@ -24,7 +24,7 @@
   },
   "comparison": {
     "comparator_commit": "e23cd72b7807f700a5961b2d8ae44919c810911c",
-    "sha256": "6372C18F392B12A75188B0CFD57B173AB5FFC7808E767ED0A21DE7D9C6F4D517",
+    "sha256": "781A8FAAD4C4FF78B580CA89BC2E3831CDA393B3AD876052E6DB9EF3373A8CB7",
     "cases": 68,
     "identical": 58,
     "deltas": 10,
@@ -40,7 +40,7 @@
       "window_create.params_ignored_junk": ["state", "events", "selectors", "multiwindow"],
       "window_create.created_window_usable_via_explicit_routing": ["state", "selectors"],
       "window_close.happy_non_active_multiwindow": ["state", "multiwindow"],
-      "window_close.repeat_close_not_found_minted_ref": ["error", "response", "state"],
+      "window_close.repeat_close_not_found_minted_ref": ["state"],
       "window_focus.happy_routes_selectorless_afterwards": ["state", "events", "selectors"],
       "window_focus.already_key_still_emits": ["state", "events"],
       "cli.focus_window_by_uuid": ["state"],
@@ -55,12 +55,13 @@
   },
   "closed_window_history": {
     "status": "implemented_and_live_observed",
-    "behavior_commit": "55f0afaf4e957a7fd56fe1e7a291492d039edf9f",
+    "behavior_commit": "14953b82f8bc712f774196acf0a69271886c0b9f",
     "harness_commit": "e23cd72b7807f700a5961b2d8ae44919c810911c",
     "behavior": [
       "A close appends an invisible recoverable window.list row with stable window/workspace ids, refs, selection, and workspace count, including the matched CLI-created rows.",
       "Live native rows precede recoverable rows and win identity collisions.",
       "A failed native close discards staged history; successful close commits it atomically.",
+      "A repeated close of a committed recoverable route is idempotent and returns its stable window id/ref without another event or mutation.",
       "Restart clears the in-process recoverable history."
     ],
     "measurement_correction": "Canonical intentionally retains closed windows as invisible recoverable routes. The previous until_absent predicate incorrectly classified this product behavior as failed cleanup. until_window_not_visible now accepts visible:false or absence while keeping the final row payload strict.",
@@ -85,7 +86,7 @@
     {
       "name": "recoverable_repeat_close",
       "cases": ["window_close.repeat_close_not_found_minted_ref"],
-      "evidence": "After the first close settles to visible:false, canonical deterministically accepts a second close of the recoverable route while Windows returns not_found. This is no longer a timing race."
+      "evidence": "After the first close settles to visible:false, both platforms accept a second close with the same window id/ref and no additional event or mutation. The response and error lanes now match exactly; the case remains a state delta only because canonical marks live window:1 key while noninteractive Windows marks no live window key."
     },
     {
       "name": "cli_native_key_projection",
@@ -99,7 +100,7 @@
     }
   ],
   "verification": {
-    "closed_history_unit_tests": 3,
+    "closed_history_unit_tests": 4,
     "window_list_unit_tests": 2,
     "window_lifecycle_tests": 78,
     "window_lifecycle_post_simplification_runs": 2,
@@ -108,7 +109,8 @@
     "capture_harness_tests": 113,
     "capture_harness_post_simplification_runs": 2,
     "native_window_unit_tests": 3,
-    "native_window_full_capture_runs": 2,
+    "native_window_full_capture_runs": 3,
+    "recoverable_repeat_close_full_capture_runs": 1,
     "file_length_budget": "39 tracked oversized files; all frozen at current-or-smaller size"
   },
   "promotion": {

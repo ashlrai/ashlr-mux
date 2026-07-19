@@ -4,8 +4,8 @@ Checkpoint commits:
 
 - Current canonical audit: `ecebdbb64b3532b0308650280ae4b83f30becf2a`
 - Frozen differential canonical: `e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452`
-- Windows behavior captured: `1717704e09e47cca8aeb7b4671ecc7e4fc51be52`
-- Latest Windows code checkpoint: `1717704e09e47cca8aeb7b4671ecc7e4fc51be52`
+- Windows behavior captured: `14953b82f8bc712f774196acf0a69271886c0b9f`
+- Latest Windows code checkpoint: `14953b82f8bc712f774196acf0a69271886c0b9f`
 - Latest exact startup differential evidence: `parity/diff-lane@215737999ac0579682b6b2a2d230d7a0d064a51d`
 - Latest window harness checkpoint: `parity/diff-lane@e23cd72b7807f700a5961b2d8ae44919c810911c`
 - Latest canonical window capture: workflow run `29686515273`
@@ -23,6 +23,10 @@ workspace identity; failed native closes discard staged history, live rows win
 identity collisions, and restart clears the in-process history. The harness now
 settles on non-visibility rather than incorrectly requiring row absence. The
 matched CLI-created rows preserve their selected workspace identity and count.
+Repeated close of a committed recoverable route is now idempotent: it returns
+the same window id/ref with no duplicate state mutation or lifecycle event.
+The exact case's response and error lanes match canonical; only its separate
+native `key` state leaf remains different.
 
 The shared window identity boundary is now repaired. Socket-created windows
 use canonical UUID identities end to end, selector-less `window.current`
@@ -56,10 +60,9 @@ Resume bindings now use the signed approval store already shared with the
 canonical port. A successful CLI set writes or reuses a manual approval record,
 returns `approval_policy: "manual"` plus its UUID, and persists both fields in
 session state. Malformed resume selectors are rejected in canonical key order
-before routing. The approval and selector payload repairs remain exact. The one
-residual resume case is now isolated to restart ownership: canonical reports
-the original surface missing, while Windows restores its binding and target.
-The differing approval UUID is downstream of that semantic mismatch.
+before routing. The approval and selector payload repairs remain exact. Under
+matched UI-test mode, the restart case is also exact; the earlier apparent
+resume delta came from comparing unlike environments and is not a product gap.
 
 ## What the current audit says
 
@@ -83,9 +86,9 @@ baseline, not "222 of 496 complete" and not the rolling catalog.
    resume gap entirely. Browser child attachment was proven to remove live
    `window:2` from `webview_windows()` and is fixed at `1717704e09` by enumerating
    native windows; two full captures retain it. The three CLI cases now differ
-   only in native key selection. Canonical repeat-close
-   deterministically succeeds after `visible:false`, while Windows returns
-   `not_found`; last-window close still disconnects only on canonical.
+   only in native key selection. Recoverable repeat-close now matches in its
+   response and error lanes and retains only that same native `key` state leaf;
+   last-window close still disconnects only on canonical.
 2. Four differential-remediation unit tests fail unchanged at both pushed
    baseline `0ea973d28d` and behavior checkpoint `286b2d7b67`:
    `closing_an_unselected_tab_suppresses_the_noop_pair`,
@@ -185,8 +188,8 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
 
 ## Next efficient slice
 
-Determine whether the three CLI cases' native `key` leaf is an AppKit versus
-noninteractive-Windows platform equivalence; do not hard-code macOS key choice
-or patch the CLI commands independently. Then implement deterministic repeat
-close against recoverable routes. Keep the next oversized-file split isolated
-from that behavior change.
+Audit the exact native `key` pointers across create, focus, repeat-close, and
+CLI cases against the platform-equivalence contract; do not hard-code macOS key
+choice or patch commands independently. Then diagnose the post-close active
+routing case and the last-window close semantic. Keep the next oversized-file
+split isolated from behavior changes.
