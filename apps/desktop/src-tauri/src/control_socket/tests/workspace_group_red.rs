@@ -84,3 +84,17 @@ fn canonical_workspace_group_payload_has_exact_keys_ordered_members_and_nullable
         })
     );
 }
+
+#[test]
+fn workspace_group_remove_requires_only_the_workspace_id() {
+    let params = serde_json::Map::from_iter([(
+        "workspace_id".to_string(),
+        json!("22222222-2222-4222-8222-222222222222"),
+    )]);
+
+    assert_eq!(
+        workspace_group_required_param_error("workspace.group.remove", &params),
+        None,
+        "canonical workspace.group.remove resolves the owning group from workspace_id"
+    );
+}

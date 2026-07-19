@@ -2013,29 +2013,7 @@ pub(super) fn workspace_group_preflight(
         }
     }
 
-    let group_id = workspace_group_uuid_param(params, "group_id");
-    let workspace_id = workspace_group_uuid_param(params, "workspace_id");
-    let error = match method {
-        "workspace.group.list" => None,
-        "workspace.group.rename"
-            if group_id.is_none() || string_param(params, &["name"]).is_none() =>
-        {
-            Some("Missing group_id or name")
-        }
-        "workspace.group.add" | "workspace.group.set_anchor"
-            if group_id.is_none() || workspace_id.is_none() =>
-        {
-            Some("Missing group_id or workspace_id")
-        }
-        "workspace.group.remove" if workspace_id.is_none() => {
-            Some("Missing or invalid workspace_id")
-        }
-        _ if method != "workspace.group.create" && group_id.is_none() => {
-            Some("Missing or invalid group_id")
-        }
-        _ => None,
-    };
-    if let Some(message) = error {
+    if let Some(message) = workspace_group_required_param_error(method, params) {
         return Some(invalid_params(message));
     }
 
@@ -2059,6 +2037,34 @@ pub(super) fn workspace_group_preflight(
         }
     }
     None
+}
+
+pub(super) fn workspace_group_required_param_error(
+    method: &str,
+    params: &serde_json::Map<String, Value>,
+) -> Option<&'static str> {
+    let group_id = workspace_group_uuid_param(params, "group_id");
+    let workspace_id = workspace_group_uuid_param(params, "workspace_id");
+    match method {
+        "workspace.group.list" => None,
+        "workspace.group.rename"
+            if group_id.is_none() || string_param(params, &["name"]).is_none() =>
+        {
+            Some("Missing group_id or name")
+        }
+        "workspace.group.add" | "workspace.group.set_anchor"
+            if group_id.is_none() || workspace_id.is_none() =>
+        {
+            Some("Missing group_id or workspace_id")
+        }
+        "workspace.group.remove" if workspace_id.is_none() => {
+            Some("Missing or invalid workspace_id")
+        }
+        _ if method != "workspace.group.create" && group_id.is_none() => {
+            Some("Missing or invalid group_id")
+        }
+        _ => None,
+    }
 }
 
 pub(super) fn workspace_group_list(
