@@ -25,7 +25,6 @@ use cmux_core::session::{
     SessionSurfaceResumeBindingSnapshot, SessionTabManagerSnapshot, SessionWindowSnapshot,
     SessionWorkspaceSnapshot,
 };
-use cmux_core::session_ops;
 use cmux_core::surface_lifecycle::SurfaceLifecycleModel;
 use cmux_ipc::{ControlCallResult, JsonValue};
 use serde_json::{json, Map, Value};
@@ -330,13 +329,14 @@ fn window_create(
         .clone()
         .unwrap_or_else(|| Uuid::new_v4().to_string());
     let mut next = snapshot.clone();
+    let workspace = crate::session::fresh_control_window_workspace(&surface_id);
     next.windows.push(SessionWindowSnapshot {
         window_id: Some(window_id.clone()),
         selected_workspace_id: None,
         dock: None,
         tab_manager: SessionTabManagerSnapshot {
             selected_workspace_index: Some(0),
-            workspaces: vec![session_ops::fresh_terminal_workspace(&surface_id)],
+            workspaces: vec![workspace],
             workspace_groups: None,
         },
     });

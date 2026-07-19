@@ -2521,6 +2521,10 @@ pub(super) fn workspace_remote_payload(workspace: &SessionWorkspaceSnapshot) -> 
                 "daemon": {
                     "state": "unavailable",
                     "capabilities": [],
+                    "detail": Value::Null,
+                    "name": Value::Null,
+                    "remote_path": Value::Null,
+                    "version": Value::Null,
                 },
                 "detected_ports": [],
                 "forwarded_ports": [],
@@ -2531,6 +2535,13 @@ pub(super) fn workspace_remote_payload(workspace: &SessionWorkspaceSnapshot) -> 
                 "port": Value::Null,
                 "local_proxy_port": Value::Null,
                 "persistent_daemon_slot": Value::Null,
+                "has_identity_file": false,
+                "has_ssh_options": false,
+                "heartbeat": {
+                    "age_seconds": Value::Null,
+                    "count": 0,
+                    "last_seen_at": Value::Null,
+                },
                 "proxy": {
                     "state": "unavailable",
                     "host": Value::Null,

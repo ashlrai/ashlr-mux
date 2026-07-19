@@ -2156,6 +2156,16 @@ pub(crate) enum MoveWorkspaceToWindowControlError {
     Publication(String),
 }
 
+pub(crate) fn fresh_control_window_workspace(panel_id: &str) -> SessionWorkspaceSnapshot {
+    let mut workspace = session_ops::fresh_terminal_workspace(panel_id);
+    workspace.current_directory = default_workspace_directory();
+    if let Some(SessionWorkspaceLayoutSnapshot::Pane(pane)) = workspace.layout.as_mut() {
+        pane.pane_id = Some(Uuid::new_v4().to_string());
+    }
+    seed_initial_surface_record(&mut workspace);
+    workspace
+}
+
 fn auxiliary_window_snapshot(window_id: &str, panel_id: &str) -> SessionWindowSnapshot {
     SessionWindowSnapshot {
         window_id: Some(window_id.to_string()),
@@ -2163,7 +2173,7 @@ fn auxiliary_window_snapshot(window_id: &str, panel_id: &str) -> SessionWindowSn
         dock: None,
         tab_manager: SessionTabManagerSnapshot {
             selected_workspace_index: Some(0),
-            workspaces: vec![session_ops::fresh_terminal_workspace(panel_id)],
+            workspaces: vec![fresh_control_window_workspace(panel_id)],
             workspace_groups: None,
         },
     }

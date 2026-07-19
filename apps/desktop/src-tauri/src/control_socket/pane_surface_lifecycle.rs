@@ -15,7 +15,7 @@ use crate::dock::{
     DockCreateRequest, DockPlacement, DockRuntimeIntent, DockStore, DockSurfaceKind,
 };
 
-use super::payloads::surfaces_for_workspace;
+use super::payloads::{panel_title, surfaces_for_workspace};
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub(super) struct LifecycleEvent {
@@ -1451,11 +1451,25 @@ fn surface_list(
             })
             .unwrap_or(0);
         let selected = pane.is_some_and(|pane| pane.selected_surface_id == record.surface_id);
+        let title = record
+            .metadata
+            .custom_title
+            .clone()
+            .or_else(|| panel_title(&workspace.panel_titles, &record.surface_id))
+            .or_else(|| record.metadata.runtime_title.clone())
+            .or_else(|| {
+                matches!(
+                    record.kind,
+                    SessionSurfaceKindSnapshot::Terminal
+                        | SessionSurfaceKindSnapshot::RemoteTerminal { .. }
+                )
+                .then(|| "Terminal".to_owned())
+            });
         let mut row = json!({
             "id": record.surface_id,
             "index": index,
             "type": kind_name(&record.kind),
-            "title": record.metadata.custom_title,
+            "title": title,
             "focused": workspace.focused_panel_id.as_deref() == Some(record.surface_id.as_str()),
             "pane_id": owner.pane_id,
             "index_in_pane": index_in_pane,
@@ -1470,7 +1484,9 @@ fn surface_list(
                         json!(record
                             .terminal_startup
                             .as_ref()
-                            .and_then(|startup| startup.working_directory.clone())),
+                            .and_then(|startup| startup.working_directory.clone())
+                            .or_else(|| record.metadata.reported_directory.clone())
+                            .or_else(|| workspace.current_directory.clone())),
                     );
                     object.insert(
                         "initial_command".into(),
