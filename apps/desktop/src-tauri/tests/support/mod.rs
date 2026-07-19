@@ -35,6 +35,7 @@ impl PipeRpc {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn call_error(&mut self, method: &str, params: Value) -> Result<Value, String> {
         let envelope = self.exchange(method, params).await?;
         if envelope.get("ok").and_then(Value::as_bool) == Some(false) {
@@ -129,7 +130,11 @@ async fn read_json_frame(pipe: &mut NamedPipeClient, context: &str) -> Result<Va
 pub struct DesktopFixture {
     child: Child,
     _profile: TempDir,
+    desktop_exe: PathBuf,
+    log_dir: PathBuf,
+    pipe_base: String,
     pipe_path: String,
+    launch_index: u32,
     pub pid: u32,
 }
 
@@ -158,34 +163,47 @@ impl DesktopFixture {
         );
         let pipe_path = control_pipe_path(&pipe_base)
             .map_err(|error| format!("build unique control pipe path: {error}"))?;
-        std::fs::create_dir_all(log_dir)
-            .map_err(|error| format!("create process-proof log directory: {error}"))?;
-        let stdout = File::create(log_dir.join("terminal-create-input.stdout.log"))
-            .map_err(|error| format!("create desktop stdout log: {error}"))?;
-        let stderr = File::create(log_dir.join("terminal-create-input.stderr.log"))
-            .map_err(|error| format!("create desktop stderr log: {error}"))?;
-
-        let child = Command::new(desktop_exe)
-            .current_dir(profile.path())
-            .env("CMUX_CONTROL_PIPE_NAME", &pipe_base)
-            .env("CMUX_TEST_DISABLE_SINGLE_INSTANCE", "1")
-            .env("LOCALAPPDATA", &local_app_data)
-            .env("APPDATA", &roaming_app_data)
-            .env("USERPROFILE", &home)
-            .env("HOME", &home)
-            .env("RUST_BACKTRACE", "1")
-            .env_remove("CMUX_SOCKET_PASSWORD")
-            .stdout(Stdio::from(stdout))
-            .stderr(Stdio::from(stderr))
-            .spawn()
-            .map_err(|error| format!("launch {}: {error}", desktop_exe.display()))?;
+        let child = spawn_desktop(
+            desktop_exe,
+            log_dir,
+            profile.path(),
+            &pipe_base,
+            &home,
+            &local_app_data,
+            &roaming_app_data,
+            0,
+        )?;
         let pid = child.id();
         Ok(Self {
             child,
             _profile: profile,
+            desktop_exe: desktop_exe.to_path_buf(),
+            log_dir: log_dir.to_path_buf(),
+            pipe_base,
             pipe_path,
+            launch_index: 0,
             pid,
         })
+    }
+
+    pub fn restart(&mut self) -> Result<(), String> {
+        self.stop()?;
+        self.launch_index += 1;
+        let profile = self._profile.path();
+        let home = profile.join("profile");
+        let child = spawn_desktop(
+            &self.desktop_exe,
+            &self.log_dir,
+            profile,
+            &self.pipe_base,
+            &home,
+            &home.join("AppData").join("Local"),
+            &home.join("AppData").join("Roaming"),
+            self.launch_index,
+        )?;
+        self.pid = child.id();
+        self.child = child;
+        Ok(())
     }
 
     pub async fn connect(&mut self, wait: Duration) -> Result<PipeRpc, String> {
@@ -247,6 +265,38 @@ impl DesktopFixture {
             .map(|_| ())
             .map_err(|error| format!("wait for owned desktop {}: {error}", self.pid))
     }
+}
+
+fn spawn_desktop(
+    desktop_exe: &Path,
+    log_dir: &Path,
+    profile: &Path,
+    pipe_base: &str,
+    home: &Path,
+    local_app_data: &Path,
+    roaming_app_data: &Path,
+    launch_index: u32,
+) -> Result<Child, String> {
+    std::fs::create_dir_all(log_dir)
+        .map_err(|error| format!("create process-proof log directory: {error}"))?;
+    let stdout = File::create(log_dir.join(format!("desktop-{launch_index}.stdout.log")))
+        .map_err(|error| format!("create desktop stdout log: {error}"))?;
+    let stderr = File::create(log_dir.join(format!("desktop-{launch_index}.stderr.log")))
+        .map_err(|error| format!("create desktop stderr log: {error}"))?;
+    Command::new(desktop_exe)
+        .current_dir(profile)
+        .env("CMUX_CONTROL_PIPE_NAME", pipe_base)
+        .env("CMUX_TEST_DISABLE_SINGLE_INSTANCE", "1")
+        .env("LOCALAPPDATA", local_app_data)
+        .env("APPDATA", roaming_app_data)
+        .env("USERPROFILE", home)
+        .env("HOME", home)
+        .env("RUST_BACKTRACE", "1")
+        .env_remove("CMUX_SOCKET_PASSWORD")
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
+        .spawn()
+        .map_err(|error| format!("launch {}: {error}", desktop_exe.display()))
 }
 
 impl Drop for DesktopFixture {
