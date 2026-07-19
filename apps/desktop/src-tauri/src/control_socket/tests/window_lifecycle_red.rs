@@ -6,10 +6,10 @@
 //! paraphrased.
 //!
 //! Platform adaptations pinned here (documented, not silent):
-//! - Session window ids on the Windows port are labels ("window-N"), not
-//!   UUIDs; canonical's UUID-parse rejection maps to shape validation
-//!   (non-empty string that is not an unresolved `kind:N` handle ref).
-//! - OS key-window state is modeled deterministically: `isKeyWindow` in the
+//! - Production session window ids are canonical UUIDs. Deterministic fixtures
+//!   use readable labels; selector rejection is therefore pinned as shape
+//!   validation (non-empty string that is not an unresolved `kind:N` ref).
+//! - OS key-window state is modeled deterministically: `is_key_window` in the
 //!   lifecycle event payload reflects the injected `active_window_id`, and
 //!   real foregrounding/quit dialogs/redraws are pinned as effects (contract
 //!   `headless_impossibility_flags`).
@@ -363,22 +363,22 @@ fn window_create_emits_window_created_with_canonical_payload_keys() {
     assert_eq!(
         sorted_keys(&event.payload),
         [
-            "isKeyWindow",
-            "isMainWindow",
+            "is_key_window",
+            "is_main_window",
             "origin",
-            "selectedWorkspaceIndex",
-            "windowId",
-            "workspaceCount",
-            "workspaceId",
+            "selected_workspace_index",
+            "window_id",
+            "workspace_count",
+            "workspace_id",
         ]
     );
     assert_eq!(event.payload["origin"], json!("create"));
-    assert_eq!(event.payload["windowId"], json!("window-9"));
-    assert_eq!(event.payload["workspaceCount"], json!(1));
-    assert_eq!(event.payload["selectedWorkspaceIndex"], json!(0));
+    assert_eq!(event.payload["window_id"], json!("window-9"));
+    assert_eq!(event.payload["workspace_count"], json!(1));
+    assert_eq!(event.payload["selected_workspace_index"], json!(0));
     // No key-window transfer: activation is suppressed for socket create.
-    assert_eq!(event.payload["isKeyWindow"], json!(false));
-    assert_eq!(event.payload["isMainWindow"], json!(false));
+    assert_eq!(event.payload["is_key_window"], json!(false));
+    assert_eq!(event.payload["is_main_window"], json!(false));
 }
 
 #[test]
@@ -586,8 +586,8 @@ fn window_close_emits_window_closed_event() {
     assert_eq!(event.category, "window");
     assert_eq!(event.window_id.as_deref(), Some("window-2"));
     assert_eq!(event.payload["origin"], json!("appkit_close"));
-    assert_eq!(event.payload["windowId"], json!("window-2"));
-    assert_eq!(event.payload["workspaceId"], json!("workspace-2"));
+    assert_eq!(event.payload["window_id"], json!("window-2"));
+    assert_eq!(event.payload["workspace_id"], json!("workspace-2"));
 }
 
 #[test]
@@ -870,7 +870,7 @@ fn window_focus_emits_window_focused_even_when_already_key() {
     let event = &transition.events[0];
     assert_eq!(event.name, "window.focused");
     assert_eq!(event.payload["origin"], json!("focus_request"));
-    assert_eq!(event.payload["isKeyWindow"], json!(true));
+    assert_eq!(event.payload["is_key_window"], json!(true));
 }
 
 // ---------------------------------------------------------------------------

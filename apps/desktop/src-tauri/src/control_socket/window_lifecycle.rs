@@ -264,11 +264,11 @@ fn is_terminal_kind(kind: &SessionSurfaceKindSnapshot) -> bool {
     )
 }
 
-/// publishCmuxWindowLifecycle payload
-/// (Sources/CmuxLifecycleEventPublishing.swift:281-300): {windowId,
-/// workspaceId (selected), workspaceCount, selectedWorkspaceIndex,
-/// isKeyWindow, isMainWindow, origin}. Headless model: `is_key` is derived
-/// from the injected active-window pointer; `isMainWindow` mirrors it (real
+/// Socket-normalized `publishCmuxWindowLifecycle` payload
+/// (Sources/CmuxLifecycleEventPublishing.swift:281-300): window/workspace
+/// identity, counts, selection, key/main state, and origin use the canonical
+/// snake_case event-stream keys. Headless `is_key` is derived from the
+/// injected active-window pointer; `is_main_window` mirrors it (real
 /// NSWindow key/main split is a platform_equivalent).
 pub(super) fn window_lifecycle_event(
     name: &'static str,
@@ -295,12 +295,12 @@ pub(super) fn window_lifecycle_event(
         pane_id: None,
         surface_id: None,
         payload: json!({
-            "windowId": window_id,
-            "workspaceId": workspace_id,
-            "workspaceCount": window.tab_manager.workspaces.len(),
-            "selectedWorkspaceIndex": selected_index,
-            "isKeyWindow": is_key,
-            "isMainWindow": is_key,
+            "window_id": window_id,
+            "workspace_id": workspace_id,
+            "workspace_count": window.tab_manager.workspaces.len(),
+            "selected_workspace_index": selected_index,
+            "is_key_window": is_key,
+            "is_main_window": is_key,
             "origin": origin,
         }),
     }
@@ -342,7 +342,7 @@ fn window_create(
     let created = next.windows.last().expect("window just pushed");
     // Emitted after registerMainWindow with origin=create (AppDelegate.swift:8860).
     // Activation is suppressed for every socket command and window.create is
-    // not focus-intent, so no key transfer happens (isKeyWindow false).
+    // not focus-intent, so no key transfer happens (is_key_window false).
     let events = vec![window_lifecycle_event(
         "window.created",
         "create",
