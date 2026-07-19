@@ -1,20 +1,20 @@
 # Windows-port source file length budget.
 # Format: max_lines<TAB>relative path
 # New files may not exceed 1500 lines. Reduce entries as files shrink.
-5056	apps/desktop/src-tauri/src/session.rs
+5026	apps/desktop/src-tauri/src/session.rs
 5975	apps/desktop/web/src/components/CustomSidebarSurface.test.tsx
 2902	apps/desktop/src-tauri/src/terminal.rs
 4795	apps/desktop/web/src/components/CustomSidebarSurface.tsx
 3719	apps/desktop/web/src/components/customSidebarSwiftParser.ts
-4479	apps/desktop/src-tauri/src/control_socket/pane_surface_lifecycle.rs
+4484	apps/desktop/src-tauri/src/control_socket/pane_surface_lifecycle.rs
 3467	crates/cmux-cli/src/command_forward.rs
-3868	apps/desktop/src-tauri/src/control_socket.rs
-4087	apps/desktop/src-tauri/src/control_socket/unit_tests.rs
+3869	apps/desktop/src-tauri/src/control_socket.rs
+4053	apps/desktop/src-tauri/src/control_socket/unit_tests.rs
 3023	crates/cmux-cli/src/main.rs
 3997	crates/cmux-cli/src/hooks_installer.rs
 3922	crates/cmux-config/src/lib.rs
 2818	apps/desktop/src-tauri/src/control_socket/workspace_control.rs
-3196	apps/desktop/src-tauri/src/control_socket/pane_surface_control.rs
+3030	apps/desktop/src-tauri/src/control_socket/pane_surface_control.rs
 3412	apps/desktop/src-tauri/src/session/unit_tests.rs
 3284	apps/desktop/src-tauri/src/browser.rs
 3183	apps/desktop/src-tauri/src/control_socket/browser_control.rs

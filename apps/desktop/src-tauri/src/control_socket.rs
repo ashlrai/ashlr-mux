@@ -112,11 +112,11 @@ use crate::session::{
     set_workspace_sidebar_status_for_control, set_workspace_unread_for_control,
     show_browser_developer_tools_for_control, split_browser_for_control,
     split_off_surface_for_control, split_panel_for_control, start_direct_browser_proxy_for_control,
-    swap_panes_for_control, toggle_browser_developer_tools_for_control,
-    toggle_browser_focus_mode_for_control, toggle_browser_omnibar_for_control,
-    toggle_split_zoom_for_control, transact_value_if_changed_suppressing_derived_events,
-    BrowserPanelCreateError, DerivedEventPolicy, MoveWorkspaceToWindowControlError,
-    PaneFocusControlError, PaneLastControlError, PaneResizeControlError, PaneResizeControlIntent,
+    toggle_browser_developer_tools_for_control, toggle_browser_focus_mode_for_control,
+    toggle_browser_omnibar_for_control, toggle_split_zoom_for_control,
+    transact_value_if_changed_suppressing_derived_events, BrowserPanelCreateError,
+    DerivedEventPolicy, MoveWorkspaceToWindowControlError, PaneFocusControlError,
+    PaneLastControlError, PaneResizeControlError, PaneResizeControlIntent,
     PaneTopologyControlError, ReorderWorkspacesManyControlError, RestorePreviousLaunchOutcome,
     SessionState, SurfacePositionControlError, TerminalPanelCreateError, WorkspaceLastControlError,
     WorkspaceRemoteControlConfig, WorkspaceSelectControlError,
@@ -799,10 +799,12 @@ enum ControlRequestRoute {
 
 fn control_request_route_for_method(method: &str) -> ControlRequestRoute {
     match method {
-        "pane.create" | "pane.resize" | "pane.focus" | "pane.last" | "surface.action"
-        | "tab.action" | "surface.create" | "surface.current" | "surface.list"
-        | "surface.report_pwd" | "surface.respawn" | "surface.close" | "surface.focus"
-        | "surface.move" | "surface.split" => ControlRequestRoute::PaneSurfaceLifecycle,
+        "pane.create" | "pane.resize" | "pane.focus" | "pane.last" | "pane.swap"
+        | "surface.action" | "tab.action" | "surface.create" | "surface.current"
+        | "surface.list" | "surface.report_pwd" | "surface.respawn" | "surface.close"
+        | "surface.focus" | "surface.move" | "surface.split" => {
+            ControlRequestRoute::PaneSurfaceLifecycle
+        }
         "workspace.action" => ControlRequestRoute::WorkspaceAction,
         "window.create"
         | "window.close"
@@ -1153,7 +1155,6 @@ fn handle_control_request(app: &AppHandle, mut request: ControlRequest) -> Contr
         "surface.next" => surface_select_adjacent(app, &request.params, true),
         "surface.previous" => surface_select_adjacent(app, &request.params, false),
         "surface.toggle_split_zoom" => surface_toggle_split_zoom(app, &request.params),
-        "pane.swap" => pane_swap(app, &request.params),
         "pane.focus" => pane_focus(app, &request.params),
         "pane.list" => pane_list(app, &request.params),
         "pane.surfaces" => pane_surfaces(app, &request.params),

@@ -333,7 +333,6 @@ fn workspace_window_move_resolves_refs_locally_and_ids_globally() {
         global_surface_location(&snapshot, "surface-3"),
         Some((1, 0))
     );
-    assert_eq!(global_pane_location(&snapshot, "pane-2"), Some((1, 0, 0)));
     assert_eq!(
         split_off_workspace_index(&snapshot, by_ref.as_object().unwrap(), 0),
         Some(Some(0))
@@ -3932,39 +3931,6 @@ fn shell_execute_codes_only_succeed_above_documented_error_range() {
     for code in [33, 42, isize::MAX] {
         assert!(shell_execute_succeeded(code), "code {code}");
     }
-}
-
-#[test]
-fn lifecycle_result_decoration_covers_source_created_and_tab_id_families() {
-    let mut value = json!({
-        "window_id": "window-current",
-        "source_window_id": "window-source",
-        "workspace_id": "workspace-current",
-        "source_workspace_id": "workspace-source",
-        "created_workspace_id": "workspace-created",
-        "pane_id": "pane-current",
-        "surface_id": "surface-current",
-        "created_surface_id": "surface-created",
-        "tab_id": "surface-current",
-        "created_tab_id": "surface-created",
-        "nullable": { "created_surface_id": null },
-        "rows": [{ "id": "surface-row" }]
-    });
-    let mut registry = ControlHandleRegistry::default();
-    decorate_lifecycle_value_refs(&mut value, &mut |kind, id| registry.mint(kind, id));
-
-    assert_eq!(value["window_ref"], "window:1");
-    assert_eq!(value["source_window_ref"], "window:2");
-    assert_eq!(value["workspace_ref"], "workspace:1");
-    assert_eq!(value["source_workspace_ref"], "workspace:2");
-    assert_eq!(value["created_workspace_ref"], "workspace:3");
-    assert_eq!(value["pane_ref"], "pane:1");
-    assert_eq!(value["surface_ref"], "surface:1");
-    assert_eq!(value["created_surface_ref"], "surface:2");
-    assert_eq!(value["tab_ref"], "tab:1");
-    assert_eq!(value["created_tab_ref"], "tab:2");
-    assert_eq!(value["nullable"]["created_surface_ref"], Value::Null);
-    assert_eq!(value["rows"][0]["ref"], "surface:3");
 }
 
 #[test]

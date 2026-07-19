@@ -25,9 +25,13 @@ use pane_focus::pane_focus;
 mod pane_last;
 use pane_last::pane_last;
 
+#[path = "pane_surface_lifecycle/pane_swap.rs"]
+mod pane_swap;
+use pane_swap::pane_swap;
+
 #[path = "pane_surface_lifecycle/selection_events.rs"]
 mod selection_events;
-use selection_events::{focus_selection_events, selection_events};
+use selection_events::{focus_selection_events, focused_pane_events, selection_events};
 
 #[path = "pane_surface_lifecycle/surface_focus.rs"]
 mod surface_focus;
@@ -606,6 +610,7 @@ pub(super) fn dispatch_lifecycle_request(
         "pane.resize" => pane_resize(snapshot, params, context),
         "pane.focus" => pane_focus(snapshot, params, context),
         "pane.last" => pane_last(snapshot, params, context),
+        "pane.swap" => pane_swap(snapshot, params, context),
         "pane.create" | "surface.split" => pane_create(snapshot, method, params, context),
         _ => error(
             snapshot,

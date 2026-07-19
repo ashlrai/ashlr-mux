@@ -4217,36 +4217,6 @@ pub(crate) fn split_off_surface_for_control(
     transaction.map(|(_, snapshot)| snapshot)
 }
 
-pub(crate) fn swap_panes_for_control(
-    app: &AppHandle,
-    state: &SessionState,
-    window_index: usize,
-    workspace_index: usize,
-    source_pane_id: &str,
-    target_pane_id: &str,
-    focus: bool,
-) -> Result<
-    (session_ops::PaneSwapResult, AppSessionSnapshot),
-    PaneTopologyControlError<session_ops::PaneSwapError>,
-> {
-    state.transact_pane_topology(app, |snapshot| {
-        let workspace = snapshot
-            .windows
-            .get_mut(window_index)
-            .and_then(|window| window.tab_manager.workspaces.get_mut(workspace_index))
-            .ok_or(session_ops::PaneSwapError::SourcePaneNotFound)?;
-        let swap =
-            session_ops::swap_selected_pane_surfaces(workspace, source_pane_id, target_pane_id)?;
-        if focus {
-            snapshot.windows[window_index]
-                .tab_manager
-                .selected_workspace_index = Some(workspace_index as i64);
-            sync_window_selected_workspace_id(&mut snapshot.windows[window_index]);
-        }
-        Ok(swap)
-    })
-}
-
 #[derive(Debug)]
 pub(crate) enum PaneLastControlError {
     WorkspaceNotFound,

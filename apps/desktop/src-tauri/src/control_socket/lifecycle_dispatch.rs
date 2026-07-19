@@ -1014,14 +1014,17 @@ pub(super) fn runtime_arrival_event_semantics(
     }
 }
 
-pub(super) const LIFECYCLE_ID_REF_FIELDS: [(&str, &str, &str); 10] = [
+pub(super) const LIFECYCLE_ID_REF_FIELDS: [(&str, &str, &str); 13] = [
     ("window_id", "window_ref", "window"),
     ("source_window_id", "source_window_ref", "window"),
     ("workspace_id", "workspace_ref", "workspace"),
     ("source_workspace_id", "source_workspace_ref", "workspace"),
     ("created_workspace_id", "created_workspace_ref", "workspace"),
     ("pane_id", "pane_ref", "pane"),
+    ("target_pane_id", "target_pane_ref", "pane"),
     ("surface_id", "surface_ref", "surface"),
+    ("source_surface_id", "source_surface_ref", "surface"),
+    ("target_surface_id", "target_surface_ref", "surface"),
     ("created_surface_id", "created_surface_ref", "surface"),
     ("tab_id", "tab_ref", "surface"),
     ("created_tab_id", "created_tab_ref", "surface"),
