@@ -163,7 +163,9 @@ async fn run_process_proof() -> Result<(), String> {
         .iter()
         .map(|surface| field(surface, "ref"))
         .collect::<Result<Vec<_>, _>>()?;
-    if target_refs != ["surface:5", "surface:6", "surface:4"] {
+    // Cross-workspace moves append to the destination's workspace-level
+    // surface registry while bonsplit retains its independent visual order.
+    if target_refs != ["surface:4", "surface:6", "surface:5"] {
         return Err(format!(
             "restored surface ordering drifted: {target_refs:?}; target={target_surfaces:?}"
         ));
