@@ -44,10 +44,10 @@
     "status": "not_measured"
   },
   "windows": {
-    "commit": "f132a7ac4cb0feb678e55149c716b59d2884ae2f",
-    "commit_date": "2026-07-19T02:05:26-04:00",
-    "commit_subject": "fix(session): preserve restored window routing",
-    "commits_ahead_of_tracked_evidence": 81,
+    "commit": "59024890f864cde9c180fbd753e6e1404b942a1e",
+    "commit_date": "2026-07-19T02:23:13-04:00",
+    "commit_subject": "fix(session): preserve restored surface reference order",
+    "commits_ahead_of_tracked_evidence": 84,
     "source_evidence": {
       "advertised_and_routed_count": 267,
       "advertised_method_count": 270,

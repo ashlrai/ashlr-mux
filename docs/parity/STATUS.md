@@ -5,7 +5,7 @@ Checkpoint commits:
 - Current canonical audit: `c9f2d8c4382e29db89a030d80d02d8174ef7f2ac`
 - Frozen differential canonical: `e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452`
 - Windows behavior: `c520128265` (normal-startup session restore)
-- Latest pushed Windows code checkpoint: `f132a7ac4cb0feb678e55149c716b59d2884ae2f`
+- Latest pushed Windows code checkpoint: `59024890f864cde9c180fbd753e6e1404b942a1e`
 - Latest strict differential checkpoint: `637d63acb0e82a618fdaee64644a7ac75b2b8a05`
 
 The Windows desktop and CLI build successfully. The broad desktop, web, IPC,
@@ -37,12 +37,16 @@ before a defensible product-completion percentage exists. See
    `29674972316` proved canonical normal-quit restore after the harness began
    terminating the exact app PID through AppKit. Both platforms restore two
    windows and focus `surface:6`, but the exact comparison still has one state
-   delta. The pushed `f132a7ac4c` remediation now preserves canonical UUID
+   delta. The pushed `f132a7ac4c` remediation preserves canonical UUID
    window identities and refs `window:1/2`, and routes unscoped workspace
-   commands through the restored active context in the Windows process proof.
-   The retained differential still shows target surfaces restored as `4,5,6`
-   instead of canonical's `5,6,4`; no rows promote until a refreshed exact
-   comparison is clean. See `evidence/startup_restore_2026-07-19.json`.
+   commands through the restored active context. The pushed `59024890f8`
+   remediation separately preserves creation chronology for restored handle
+   refs while rendering surfaces in pane order; the Windows process proof now
+   matches canonical target refs `5,6,4`. The retained capture predates both
+   remediations, so no rows promote until one refreshed exact Windows capture
+   is compared with the retained canonical capture and the remaining
+   platform/runtime fields are adjudicated. See
+   `evidence/startup_restore_2026-07-19.json`.
 
 ## Maintenance checkpoint
 
@@ -71,10 +75,10 @@ before a defensible product-completion percentage exists. See
 
 ## Next efficient slice
 
-Fix restored surface ordering as the next isolated slice. Canonical retains the
-target pane as `surface:5, surface:6, surface:4`; Windows currently restores
-`surface:4, surface:5, surface:6`. Pin the move/close/focus ordering through the
-existing process proof, correct the shared restore model, simplify, and rerun
-the small startup manifest only after focused Windows tests pass twice. Promote
-surface.list, surface.close, surface.focus, surface.move, and the product
-lifecycle invariant only when the exact comparison has no unexplained deltas.
+Refresh only the Windows normal-startup capture at `59024890f8` and compare it
+with the retained canonical capture; do not rebuild or recapture canonical.
+The process proof now pins both restored routing and target refs `5,6,4`, so
+the refresh should determine whether only platform/runtime payload fields
+remain. Promote surface.list, surface.close, surface.focus, surface.move, and
+the product lifecycle invariant only after every remaining field is either
+matched or documented as an approved platform equivalence.

@@ -92,11 +92,29 @@
       "cargo fmt --all -- --check: passed",
       "git diff --check: passed"
     ],
-    "remaining_delta": "The retained exact capture still differs in restored target surface order; defer differential refresh and promotion until that known product gap is corrected."
+    "remaining_delta": "The retained exact capture predates this routing remediation and the subsequent surface-reference-order remediation; defer promotion until a refreshed Windows capture is compared with the retained canonical capture."
+  },
+  "surface_order_remediation": {
+    "test_commit": "2b615f26f5",
+    "behavior_commit": "59024890f864cde9c180fbd753e6e1404b942a1e",
+    "fixed_in_process_proof": [
+      "Surface creation chronology survives cross-window moves and startup identity normalization independently from pane display order.",
+      "The restored target surface list renders canonical refs surface:5, surface:6, surface:4 and retains focus on surface:6."
+    ],
+    "gates": [
+      "cargo test -p cmux-desktop --test session_startup_restore_process normal_restart_restores_multiwindow_surface_ownership_and_focus: passed twice after simplification",
+      "cargo test -p cmux-core --test pane_surface_lifecycle_model: 30 passed",
+      "cargo test -p cmux-desktop pane_surface_lifecycle_red --lib: 41 passed",
+      "cargo test -p cmux-desktop restore_identity_graph_red --lib: 13 passed",
+      "cargo check -p cmux-desktop --all-targets: passed",
+      "cargo fmt --all -- --check: passed",
+      "git diff --check: passed"
+    ],
+    "remaining_delta": "A new exact Windows capture is still required. The retained differential also contains unapproved platform/runtime payload differences in working directories, terminal titles, and remote-detail fields."
   },
   "promotion_decision": {
     "matrix_changes": 0,
     "status": "implemented_unverified",
-    "reason": "Both platforms restore the two-window fixture, but the exact comparison has one state-lane delta with unexplained window-ref continuity, default routing, and target surface-order differences."
+    "reason": "The Windows process proof now matches the known window-ref, default-routing, and target-surface-ref semantics, but the retained exact capture predates those fixes and still contains unapproved platform/runtime payload differences."
   }
 }
