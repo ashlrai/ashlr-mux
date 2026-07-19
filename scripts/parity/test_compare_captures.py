@@ -199,13 +199,16 @@ class CompareCapturesTests(unittest.TestCase):
         boot_c = "<uuid-1>"
         boot_w = "<uuid-8>"
 
-        def event(boot, seq, name):
-            return {
+        def event(boot, seq, name, pane_id=None):
+            frame = {
                 "boot_id": boot,
                 "id": f"{boot}-{seq}",
                 "name": name,
                 "occurred_at": f"2026-07-19T00:00:{seq:02d}Z",
             }
+            if pane_id is not None:
+                frame["pane_id"] = pane_id
+            return frame
 
         left = load_capture(
             capture_text(
@@ -213,10 +216,15 @@ class CompareCapturesTests(unittest.TestCase):
                     case_record(
                         "a",
                         observation(
-                            events=[event(boot_c, 1, "one"), event(boot_c, 2, "extra")]
+                            events=[
+                                event(boot_c, 1, "one"),
+                                event(boot_c, 2, "extra", "<uuid-2>"),
+                            ]
                         ),
                     ),
-                    case_record("b", observation(events=[event(boot_c, 3, "same")])),
+                    case_record(
+                        "b", observation(events=[event(boot_c, 3, "same", "<uuid-3>")])
+                    ),
                 ]
             ),
             "canonical",
@@ -225,7 +233,9 @@ class CompareCapturesTests(unittest.TestCase):
             capture_text(
                 [
                     case_record("a", observation(events=[event(boot_w, 1, "one")])),
-                    case_record("b", observation(events=[event(boot_w, 2, "same")])),
+                    case_record(
+                        "b", observation(events=[event(boot_w, 2, "same", "<uuid-9>")])
+                    ),
                 ]
             ),
             "windows",
