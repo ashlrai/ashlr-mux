@@ -78,4 +78,8 @@ fn pane_list_reports_logical_points_instead_of_physical_dpi_pixels() {
         pane_surface_control::pane_list::pane_list_logical_size(1600, 1050, 1.25),
         (1280.0, 840.0)
     );
+    assert_eq!(
+        pane_surface_control::pane_list::pane_list_logical_size(800, 600, f64::NAN),
+        (800.0, 600.0)
+    );
 }

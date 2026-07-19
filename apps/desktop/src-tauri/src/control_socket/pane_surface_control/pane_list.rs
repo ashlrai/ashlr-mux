@@ -40,9 +40,17 @@ pub(in crate::control_socket) fn pane_list_window_size_with(
 pub(in crate::control_socket) fn pane_list_logical_size(
     physical_width: u32,
     physical_height: u32,
-    _scale_factor: f64,
+    scale_factor: f64,
 ) -> (f64, f64) {
-    (f64::from(physical_width), f64::from(physical_height))
+    let scale_factor = if scale_factor.is_finite() && scale_factor > 0.0 {
+        scale_factor
+    } else {
+        1.0
+    };
+    (
+        f64::from(physical_width) / scale_factor,
+        f64::from(physical_height) / scale_factor,
+    )
 }
 
 pub(in crate::control_socket) fn pane_list(
