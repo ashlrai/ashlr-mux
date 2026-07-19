@@ -60,6 +60,7 @@ pub(super) fn format_control_result(method: &str, result: &serde_json::Value) ->
         }
         "pane.list" => format_pane_entries(result),
         "pane.surfaces" => format_pane_surface_entries(result),
+        "surface.list" => format_surface_entries(result),
         "window.displays" => format_display_entries(result),
         "window.display" => format_window_display_result(result),
         "window.current" => result
@@ -625,6 +626,39 @@ fn format_pane_surface_entries(result: &serde_json::Value) -> String {
                 entry_handle(surface),
                 title,
                 if selected { "  [selected]" } else { "" },
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn format_surface_entries(result: &serde_json::Value) -> String {
+    let Some(surfaces) = result
+        .get("surfaces")
+        .and_then(serde_json::Value::as_array)
+        .filter(|surfaces| !surfaces.is_empty())
+    else {
+        return "No panels".to_string();
+    };
+    surfaces
+        .iter()
+        .map(|surface| {
+            let focused = surface.get("focused").and_then(serde_json::Value::as_bool) == Some(true);
+            let surface_type = surface
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let title = surface
+                .get("title")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            format!(
+                "{}{}  {}{}  {}",
+                if focused { "* " } else { "  " },
+                entry_handle(surface),
+                surface_type,
+                if focused { "  [focused]" } else { "" },
+                serde_json::to_string(title).unwrap_or_else(|_| "\"\"".into()),
             )
         })
         .collect::<Vec<_>>()
