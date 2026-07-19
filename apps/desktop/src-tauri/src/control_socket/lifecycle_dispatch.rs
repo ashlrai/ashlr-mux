@@ -525,8 +525,6 @@ pub(super) fn handle_window_lifecycle_request(
     let current = snapshot(app);
     normalize_window_identity_selector(app, &current, &mut params);
     let active_window_id = control_active_window_id(app);
-    let new_window_id =
-        (method == "window.create").then(|| crate::window::next_control_window_label(app));
     let context = window_lifecycle::WindowLifecycleContext {
         active_window_id,
         quit_confirmation_required: window_quit_confirmation_required(
@@ -536,7 +534,10 @@ pub(super) fn handle_window_lifecycle_request(
             .duration_since(std::time::UNIX_EPOCH)
             .map(|elapsed| elapsed.as_secs_f64())
             .unwrap_or(0.0),
-        new_window_id,
+        // Canonical allocates a UUID for every socket-created window. UUIDs
+        // are valid Tauri labels, so the create effect can use the same value
+        // for the public session identity and the native auxiliary window.
+        new_window_id: None,
         new_surface_id: None,
     };
     let mut transition =

@@ -433,18 +433,18 @@ pub(super) fn window_current(
     app: &AppHandle,
     params: &serde_json::Map<String, Value>,
 ) -> ControlCallResult {
-    let selector = raw_string_param(params, &["window_id", "window_ref"]);
-    let Some(window) = crate::window::current_control_window(app, selector.as_deref()) else {
+    let session = snapshot(app);
+    let window_id = workspace_routed_window_index_for_app(app, &session, params)
+        .and_then(|index| session.windows[index].window_id.as_deref());
+    let Some(window_id) = window_id else {
         return ControlCallResult::Err {
             code: "not_found".to_string(),
             message: "Current window not found".to_string(),
             data: None,
         };
     };
-    ok(json!({
-        "window_id": window.id,
-        "window_ref": window.reference,
-    }))
+    let window_ref = control_handle_ref(app, "window", window_id);
+    ok(json!({"window_id": window_id, "window_ref": window_ref}))
 }
 
 pub(super) fn window_displays(app: &AppHandle) -> ControlCallResult {

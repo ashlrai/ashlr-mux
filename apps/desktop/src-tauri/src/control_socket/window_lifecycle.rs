@@ -122,9 +122,9 @@ pub(super) struct WindowLifecycleContext {
     /// Injected clock for `resume_binding.updated_at` (double epoch seconds,
     /// TerminalController+ControlSurfaceContext4.swift:170-179).
     pub now_epoch_seconds: f64,
-    /// Production supplies the pre-allocated window label; `None` mints a
-    /// fresh UUID (canonical availableWindowIdForNewMainWindow,
-    /// AppDelegate.swift:8637-8638).
+    /// Optional deterministic id injection for tests; production leaves this
+    /// unset so the transition mints a fresh UUID (canonical
+    /// availableWindowIdForNewMainWindow, AppDelegate.swift:8637-8638).
     pub new_window_id: Option<String>,
     /// Production supplies the allocated initial panel id; `None` mints a UUID.
     pub new_surface_id: Option<String>,

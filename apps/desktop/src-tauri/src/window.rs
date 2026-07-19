@@ -375,15 +375,9 @@ pub async fn window_new(app: AppHandle, window: WebviewWindow) -> Result<String,
     Ok(label)
 }
 
-/// The next auxiliary window label ("window-N"), exposed so the control
-/// socket can pre-allocate the id its transition layer replies with before
-/// the webview exists.
-pub(crate) fn next_control_window_label(app: &AppHandle) -> String {
-    next_window_label(app)
-}
-
 /// Create an auxiliary window on behalf of the control socket with a
-/// pre-allocated label, WITHOUT focusing it — the Windows mapping of
+/// UUID label allocated by the lifecycle transition, WITHOUT focusing it —
+/// the Windows mapping of
 /// canonical orderFront-only socket window creation (window.create is not
 /// focus-intent: AppDelegate.swift:8862-8868 at pinned e1825d40d).
 pub(crate) fn create_socket_window(app: &AppHandle, label: &str) -> Result<(), String> {
