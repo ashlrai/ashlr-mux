@@ -360,18 +360,21 @@ pub fn run() {
                     }
                 }
             });
-            if let Err(error) = control_socket::start_control_socket_listener(&handle) {
-                eprintln!("[control-socket] failed to start listener: {error}");
-            }
             if let Err(error) = config::start_config_file_watcher(&handle) {
                 eprintln!("[config] failed to start watcher: {error}");
             }
             if let Some(window) = app.get_webview_window("main") {
-                let _ =
-                    session::session_snapshot(handle, window, app.state::<session::SessionState>());
+                let _ = session::session_snapshot(
+                    handle.clone(),
+                    window,
+                    app.state::<session::SessionState>(),
+                );
             }
             if let Some(window) = app.get_webview_window("main") {
                 window::present_bootstrap_window(&window)?;
+            }
+            if let Err(error) = control_socket::start_control_socket_listener(&handle) {
+                eprintln!("[control-socket] failed to start listener: {error}");
             }
             Ok(())
         })
