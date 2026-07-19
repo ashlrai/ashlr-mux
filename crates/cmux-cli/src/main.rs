@@ -90,6 +90,8 @@ fn dispatch(
     command: &str,
     command_args: &[String],
 ) -> Result<(), CliError> {
+    print_legacy_workspace_alias_notice(command);
+
     let cwd = std::env::current_dir().unwrap_or_default();
     let path_exists = |path: &Path| path.exists();
     let env = ClassifyEnv {
@@ -277,6 +279,25 @@ fn dispatch(
         DispatchPlan::RunFeed(args) => run_feed_command(options, &args),
         DispatchPlan::Fail(error) => Err(error),
     }
+}
+
+#[cfg(windows)]
+fn print_legacy_workspace_alias_notice(command: &str) {
+    if std::env::var_os("CMUX_QUIET").is_some() {
+        return;
+    }
+    let replacement = match command {
+        "list-workspaces" => "workspace list",
+        "new-workspace" => "workspace create",
+        "close-workspace" => "workspace close",
+        "select-workspace" => "workspace select",
+        "rename-workspace" => "workspace rename",
+        _ => return,
+    };
+    eprintln!(
+        "cmux: '{command}' is now an alias for 'cmux {replacement}'. \
+         The legacy form keeps working indefinitely; set CMUX_QUIET=1 to silence this notice."
+    );
 }
 
 fn safe_stdout(arguments: std::fmt::Arguments<'_>, newline: bool) {
@@ -1382,20 +1403,6 @@ fn run_legacy_workspace_command(
     method: &str,
     params: &serde_json::Value,
 ) -> Result<(), CliError> {
-    if command != "current-workspace"
-        && command != "rename-window"
-        && std::env::var_os("CMUX_QUIET").is_none()
-    {
-        let replacement = match command {
-            "list-workspaces" => "workspace list",
-            "new-workspace" => "workspace create",
-            "close-workspace" => "workspace close",
-            "select-workspace" => "workspace select",
-            "rename-workspace" => "workspace rename",
-            _ => command,
-        };
-        eprintln!("Warning: `{command}` is deprecated; use `cmux {replacement}` instead.");
-    }
     let mut request_params = params.clone();
     let post_create_command = request_params
         .as_object_mut()

@@ -160,6 +160,25 @@ fn assert_failure(output: Output, expected_stderr: &str) {
     assert_eq!(String::from_utf8(output.stderr).unwrap(), expected_stderr);
 }
 
+#[test]
+fn legacy_workspace_alias_notice_precedes_argument_errors_and_honors_quiet() {
+    let expected_error = "Error: select-workspace requires --workspace\n";
+    assert_failure(
+        executable(None, &["select-workspace", "workspace:2"]),
+        &format!(
+            "cmux: 'select-workspace' is now an alias for 'cmux workspace select'. \
+             The legacy form keeps working indefinitely; set CMUX_QUIET=1 to silence this notice.\n\
+             {expected_error}"
+        ),
+    );
+
+    let mut quiet = base_command(None);
+    quiet
+        .env("CMUX_QUIET", "1")
+        .args(["select-workspace", "workspace:2"]);
+    assert_failure(quiet.output().unwrap(), expected_error);
+}
+
 fn window_list_result() -> Value {
     json!({
         "windows": [
