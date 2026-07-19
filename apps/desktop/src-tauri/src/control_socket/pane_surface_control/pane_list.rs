@@ -20,11 +20,21 @@ pub(in crate::control_socket) fn pane_list_reference_fields_with(
 }
 
 pub(in crate::control_socket) fn pane_list_window_size_with(
-    _snapshot: &AppSessionSnapshot,
+    snapshot: &AppSessionSnapshot,
     window_id: &str,
     mut inner_size_for_label: impl FnMut(&str) -> Option<(f64, f64)>,
 ) -> (f64, f64) {
-    inner_size_for_label(window_id).unwrap_or((1.0, 1.0))
+    let label = if snapshot
+        .windows
+        .first()
+        .and_then(|window| window.window_id.as_deref())
+        == Some(window_id)
+    {
+        "main"
+    } else {
+        window_id
+    };
+    inner_size_for_label(label).unwrap_or((1.0, 1.0))
 }
 
 pub(in crate::control_socket) fn pane_list(

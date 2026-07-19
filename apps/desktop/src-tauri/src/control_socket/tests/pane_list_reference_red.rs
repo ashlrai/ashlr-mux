@@ -58,4 +58,16 @@ fn pane_list_resolves_the_first_session_window_through_the_main_webview() {
 
     assert_eq!(requested_labels, ["main"]);
     assert_eq!(size, (1000.0, 700.0));
+
+    requested_labels.clear();
+    let auxiliary_size = pane_surface_control::pane_list::pane_list_window_size_with(
+        &snapshot,
+        "window-2",
+        |label| {
+            requested_labels.push(label.to_owned());
+            (label == "window-2").then_some((800.0, 600.0))
+        },
+    );
+    assert_eq!(requested_labels, ["window-2"]);
+    assert_eq!(auxiliary_size, (800.0, 600.0));
 }
