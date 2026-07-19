@@ -1,0 +1,74 @@
+{
+  "schema_version": 2,
+  "family": "workspace_ordering",
+  "status": "valid_complete_capture",
+  "canonical": {
+    "source_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+    "workflow_run": 29696270467,
+    "artifact": "canonical-capture-workspace_lifecycle",
+    "sha256": "6AF05BC942B506659C07362E90587805D1D07210D7A1063380288D500AD8173F",
+    "cases": 13,
+    "capture_errors": 0
+  },
+  "windows": {
+    "test_commit": "176bcf652d0c997c48edc3bb211e8b037b60953e",
+    "behavior_commit": "46f4cedf1a77fda23baff9b73b5d8ef7b96eb187",
+    "capture_support_commit": "dac88652f685c486a8ec7df2b9b3c8c1a5786c7d",
+    "sha256": "27A630A7E2F713B3A79DFF715B33AFE0580F522124F57C48D8B801FBC6AE3F69",
+    "cases": 13,
+    "capture_errors": 0,
+    "profile_mode": "isolated_headless",
+    "visible_tauri_windows": 0
+  },
+  "comparison": {
+    "harness_commit": "bc6a3165963768ddfd9c16e6ec55ebf408f4a23a",
+    "manifest_and_archive_commit": "1e7a5e0a662a0c20f67aaa80cbdd5ddc6e232da3",
+    "sha256": "22A76A3837C12CB4BAEEFA2D69C42BA752587C2B5A35ADE537996BEAD6E70A16",
+    "cases": 13,
+    "identical": 13,
+    "deltas": 0,
+    "capture_integrity": {
+      "valid_for_promotion": true,
+      "canonical_capture_errors": [],
+      "windows_capture_errors": [],
+      "missing_cases": [],
+      "unsettled_cases": []
+    },
+    "archived_at": {
+      "canonical": "parity/diff-lane@1e7a5e0a66:docs/parity/differential/captures/workspace_ordering.canonical.e1825d40d.run-29696270467.ndjson",
+      "windows": "parity/diff-lane@1e7a5e0a66:docs/parity/differential/captures/workspace_ordering.windows.46f4cedf1a.ndjson",
+      "normalized": "parity/diff-lane@1e7a5e0a66:docs/parity/differential/captures/workspace_ordering.normalized-diff.e1825d40d-vs-46f4cedf1a.json"
+    }
+  },
+  "platform_equivalences": {
+    "status": "reviewed_exact_json_pointers",
+    "category": "canonical macOS checkout directory versus isolated Windows profile home",
+    "strict_guards": "All responses, errors, CLI output, routing, mutation order, event names/order/origins/counts, identity relationships, multiwindow state, and non-approved fields remain strict."
+  },
+  "verification": {
+    "focused_ordering_and_output_tests": 5,
+    "desktop_library": "1073 passed, 1 ignored, 0 failed",
+    "workspace_all_targets_check_runs": 1,
+    "cli_library_and_integration_tests": "all passed",
+    "capture_harness_tests": 120,
+    "successful_full_capture_runs": 1,
+    "native_visibility_audit": "main plus four auxiliary Tauri windows created; zero visible before or after capture",
+    "file_length_budget": "39 tracked oversized files; all frozen at current-or-smaller size"
+  },
+  "promotion": {
+    "latest_verifying_commit": "46f4cedf1a77fda23baff9b73b5d8ef7b96eb187",
+    "status": "verified",
+    "rows_promoted": [
+      "cli:move-workspace-to-window",
+      "cli:reorder-workspace",
+      "cli:reorder-workspaces",
+      "v2:workspace.move_to_window",
+      "v2:workspace.reorder",
+      "v2:workspace.reorder_many"
+    ],
+    "rows_deferred": {
+      "product.workspace_lifecycle": "The product umbrella additionally covers groups, restore, persistence, remote workspaces, and workspace.action semantics outside the retained lifecycle, navigation, and ordering lanes."
+    },
+    "reason": "All six exercised public entry points have retained exact behavioral evidence across multiwindow routing, dry runs, atomic ordering, errors, state, CLI output, stable refs, focus intent, and lifecycle events."
+  }
+}

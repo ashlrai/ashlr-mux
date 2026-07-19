@@ -7,7 +7,8 @@ Checkpoint commits:
 - Latest complete window behavior captured: `a51ddd28763bad2549d3903de78bc7b59b988e36`
 - Latest workspace behavior captured: `4cfbc03030967813dcd23a1637ec2832c363e46a`
 - Latest workspace-navigation behavior captured: `aa3f74c799079290f25441e950761c67c3c56026`
-- Latest Windows code checkpoint: `6652c4971f27d325f246e670523fd596eaec4a8b`
+- Latest workspace-ordering behavior captured: `46f4cedf1a77fda23baff9b73b5d8ef7b96eb187`
+- Latest Windows code checkpoint: `46f4cedf1a77fda23baff9b73b5d8ef7b96eb187`
 - Latest exact startup differential evidence: `parity/diff-lane@215737999ac0579682b6b2a2d230d7a0d064a51d`
 - Latest window harness checkpoint: `parity/diff-lane@9257db511b975335e2ee79bc4bb143c04bfa95f8`
 - Latest canonical window capture: workflow run `29686515273`
@@ -15,6 +16,8 @@ Checkpoint commits:
 - Latest canonical workspace capture: workflow run `29690475786`
 - Latest navigation evidence: `parity/diff-lane@2ff911b7699ac07c3186cff37d3962a7caadfecd`
 - Latest canonical navigation capture: workflow run `29694877733`
+- Latest ordering evidence: `parity/diff-lane@1e7a5e0a662a0c20f67aaa80cbdd5ddc6e232da3`
+- Latest canonical ordering capture: workflow run `29696270467`
 
 The Windows desktop and CLI build successfully. The retained pane/surface and
 startup-restore evidence remains valid. The exact environment-matched window
@@ -102,13 +105,23 @@ three reviewed native-directory pointers. The Windows capture ran in isolated
 headless mode: four Tauri windows were created and none became visible. See
 `evidence/workspace_navigation_2026-07-19.json`.
 
+Workspace ordering and cross-window movement are now exact across thirteen
+retained v2 and CLI cases. The lane covers explicit-window and workspace-owner
+routing, dry-run plans, atomic batch ordering, duplicate and missing-order
+errors, no-op event suppression, stable refs, cross-window state, focus intent,
+and canonical CLI summaries. Responses, errors, state other than reviewed
+platform working directories, multiwindow probes, and lifecycle events are
+13/13 exact. The isolated capture created the main and four auxiliary Tauri
+windows with zero visible windows before or after the cases. See
+`evidence/workspace_ordering_2026-07-19.json`.
+
 ## What the current audit says
 
 The rolling catalog contains 503 rows: 159 public CLI commands, 16 internal CLI
 contracts, 263 release socket methods, 46 debug socket methods, and 19 coarse
-product umbrellas. It currently classifies 40 rows as verified, 3 as reviewed
-platform equivalents, 240 as implemented but unverified, and 220 as missing.
-The strict resolved count is 43.
+product umbrellas. It currently classifies 46 rows as verified, 3 as reviewed
+platform equivalents, 234 as implemented but unverified, and 220 as missing.
+The strict resolved count is 49.
 
 The zero-delta window lane promotes 11 entry-point rows. `window.create`,
 `window.close`, the three resume methods, their covered CLI commands, and
@@ -120,12 +133,12 @@ physical display move. These current decisions live in
 `current-overrides.json`; the frozen matrix and its 14 historical promotions
 remain unchanged.
 
-The zero-delta workspace lanes promote 18 exercised public entry points: the
-v2 and CLI list/current/create/select/rename/close pairs plus next, previous,
-and last navigation. The broad `product.workspace_lifecycle` umbrella remains
-implemented but unverified because ordering, groups, restore, persistence,
-remote workspaces, and `workspace.action` semantics remain outside the retained
-families.
+The zero-delta workspace lanes promote 24 exercised public entry points: the
+v2 and CLI list/current/create/select/rename/close pairs; next, previous, and
+last navigation; single and batch ordering; and cross-window movement. The
+broad `product.workspace_lifecycle` umbrella remains implemented but unverified
+because groups, restore, persistence, remote workspaces, and `workspace.action`
+semantics remain outside the retained families.
 
 Those numbers are useful for finding API gaps. They are not a percentage of the
 user experience. The catalog still needs a deduplicated user-capability layer
@@ -168,11 +181,15 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
   `docs/archive/windows-port-legacy/`; they are preserved evidence, not active
   instructions.
 - The previously monolithic files remain split: `control_socket.rs` is now
-  3,874 physical lines (from 23,219), `session.rs` is 5,121 (from 12,059), and
+  3,874 physical lines (from 23,219), `session.rs` is 5,079 (from 12,059), and
   `CustomSidebarSurface.tsx` is 4,795 (from 12,003). Extracted modules retain
   the same public entry points. The 106-line `session/control_snapshot.rs` owns
   control-worker lifecycle publication policy, and the 85-line
   `session/control_window_registration.rs` owns prepared window registration.
+  Workspace ordering now uses focused 175-line payload, 67-line request-parser,
+  and 75-line transaction modules. The tracked `payloads.rs` and
+  `workspace_control.rs` ceilings fell to 2,946 and 2,914 lines without raising
+  any file budget.
   The 1,076-line `session/commands.rs` now owns Tauri command adapters and URI
   routing; its moved body is byte-equivalent after four scope-preserving
   visibility annotations, and 308 session-scoped tests cover the unchanged API
@@ -184,9 +201,9 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
   before and twice after extraction; the full desktop library remains 1,059
   passed and 1 ignored, and the all-target check is green.
 - Workspace lifecycle event construction/publication now lives in the
-  294-line `control_socket/workspace_control/events.rs` child. This restores
+  366-line `control_socket/workspace_control/events.rs` child. This restores
   `event_stream.rs` to its 1,558-line ceiling and lowers
-  `workspace_control.rs` to 3,021 lines. Workspace selection's pure transaction
+  `workspace_control.rs` to 2,914 lines. Workspace selection's pure transaction
   candidate lives in the 25-line `session/workspace_selection.rs` child, and
   its payload test moved from the catch-all control-socket test root into the
   existing workspace-action suite. The focused selection tests pass twice,

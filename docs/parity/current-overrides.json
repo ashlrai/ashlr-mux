@@ -26,6 +26,10 @@
       "latest_verifying_commit": "4cfbc03030967813dcd23a1637ec2832c363e46a",
       "status": "verified"
     },
+    "cli:move-workspace-to-window": {
+      "latest_verifying_commit": "46f4cedf1a77fda23baff9b73b5d8ef7b96eb187",
+      "status": "verified"
+    },
     "cli:new-window": {
       "latest_verifying_commit": "a51ddd28763bad2549d3903de78bc7b59b988e36",
       "status": "verified"
@@ -40,6 +44,14 @@
     },
     "cli:previous-window": {
       "latest_verifying_commit": "aa3f74c799079290f25441e950761c67c3c56026",
+      "status": "verified"
+    },
+    "cli:reorder-workspace": {
+      "latest_verifying_commit": "46f4cedf1a77fda23baff9b73b5d8ef7b96eb187",
+      "status": "verified"
+    },
+    "cli:reorder-workspaces": {
+      "latest_verifying_commit": "46f4cedf1a77fda23baff9b73b5d8ef7b96eb187",
       "status": "verified"
     },
     "cli:rename-workspace": {
@@ -59,7 +71,7 @@
       "status": "implemented_unverified"
     },
     "product.workspace_lifecycle": {
-      "rationale": "The basic list/current/create/select/rename/close and next/previous/last v2 and CLI entry points are exact across retained differentials. The broad umbrella still includes ordering, groups, restore, persistence, remote workspaces, and workspace.action semantics that these lanes do not yet verify.",
+      "rationale": "The basic list/current/create/select/rename/close, next/previous/last, ordering, and cross-window movement v2 and CLI entry points are exact across retained differentials. The broad umbrella still includes groups, restore, persistence, remote workspaces, and workspace.action semantics that these lanes do not yet verify.",
       "status": "implemented_unverified"
     },
     "v2:surface.refresh": {
@@ -108,6 +120,10 @@
       "latest_verifying_commit": "4cfbc03030967813dcd23a1637ec2832c363e46a",
       "status": "verified"
     },
+    "v2:workspace.move_to_window": {
+      "latest_verifying_commit": "46f4cedf1a77fda23baff9b73b5d8ef7b96eb187",
+      "status": "verified"
+    },
     "v2:workspace.last": {
       "latest_verifying_commit": "aa3f74c799079290f25441e950761c67c3c56026",
       "status": "verified"
@@ -118,6 +134,14 @@
     },
     "v2:workspace.previous": {
       "latest_verifying_commit": "aa3f74c799079290f25441e950761c67c3c56026",
+      "status": "verified"
+    },
+    "v2:workspace.reorder": {
+      "latest_verifying_commit": "46f4cedf1a77fda23baff9b73b5d8ef7b96eb187",
+      "status": "verified"
+    },
+    "v2:workspace.reorder_many": {
+      "latest_verifying_commit": "46f4cedf1a77fda23baff9b73b5d8ef7b96eb187",
       "status": "verified"
     },
     "v2:workspace.rename": {
