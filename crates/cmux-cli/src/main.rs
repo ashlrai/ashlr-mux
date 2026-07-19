@@ -2551,6 +2551,20 @@ mod control_result_tests {
     }
 
     #[test]
+    fn panel_list_outputs_match_canonical_text_rows() {
+        assert_eq!(
+            format_control_result(
+                "surface.list",
+                &serde_json::json!({"surfaces":[
+                    {"id":"surface-a", "ref":"surface:6", "type":"terminal", "title":"Terminal", "focused":true},
+                    {"id":"surface-b", "ref":"surface:8", "type":"browser", "title":"Docs", "focused":false}
+                ]})
+            ),
+            "* surface:6  terminal  [focused]  \"Terminal\"\n  surface:8  browser  \"Docs\""
+        );
+    }
+
+    #[test]
     fn resize_pane_keeps_canonical_handle_summary() {
         assert_eq!(
             format_control_result("pane.resize", &serde_json::json!({"pane_ref": "pane:3"})),
