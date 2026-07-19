@@ -26,6 +26,7 @@ on:
         type: choice
         options:
           - pane_surface_lifecycle
+          - startup_restore
           - workspace_lifecycle
           - window_lifecycle
         default: pane_surface_lifecycle
@@ -56,6 +57,13 @@ on:
         description: Skip the in-build zig step (CMUX_SKIP_ZIG_BUILD=1); required on macos-26
         type: boolean
         default: false
+      restore_mode:
+        description: Launch policy for restart captures
+        type: choice
+        options:
+          - test
+          - normal
+        default: test
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -71,6 +79,7 @@ jobs:
       DERIVED_DATA: ${{ github.workspace }}/canonical-derived-data
       CAPTURE_SOCKET: /tmp/cmux-capture.sock
       APP_LOG: /tmp/cmux-capture-app.log
+      CAPTURE_RESTORE_MODE: ${{ inputs.restore_mode }}
     steps:
       - name: Checkout harness (dispatched ref)
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -258,11 +267,18 @@ jobs:
             sleep 0.5
           done
           rm -f "$CAPTURE_SOCKET"
-          CMUX_SOCKET_MODE=allowAll \
-          CMUX_UI_TEST_MODE=1 \
-          CMUX_ALLOW_SOCKET_OVERRIDE=1 \
-          CMUX_SOCKET_PATH="$CAPTURE_SOCKET" \
-            "$APP_BINARY" >> "$APP_LOG" 2>&1 &
+          if [ "$CAPTURE_RESTORE_MODE" = "normal" ]; then
+            CMUX_SOCKET_MODE=allowAll \
+            CMUX_ALLOW_SOCKET_OVERRIDE=1 \
+            CMUX_SOCKET_PATH="$CAPTURE_SOCKET" \
+              "$APP_BINARY" >> "$APP_LOG" 2>&1 &
+          else
+            CMUX_SOCKET_MODE=allowAll \
+            CMUX_UI_TEST_MODE=1 \
+            CMUX_ALLOW_SOCKET_OVERRIDE=1 \
+            CMUX_SOCKET_PATH="$CAPTURE_SOCKET" \
+              "$APP_BINARY" >> "$APP_LOG" 2>&1 &
+          fi
           APP_PID=$!
           echo "$APP_PID" > /tmp/cmux-capture-app.pid
           for i in $(seq 1 120); do

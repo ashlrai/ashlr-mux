@@ -1,0 +1,108 @@
+{
+  "family": "startup_restore",
+  "contract": "docs/parity/contracts/pane_surface_lifecycle.json",
+  "canonical_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+  "notes": [
+    "Run canonical capture with restore_mode=normal; canonical test mode intentionally disables startup restore.",
+    "The single composite pins normal-launch multiwindow restore after a cross-window move, close, and focus transition."
+  ],
+  "cases": [
+    {
+      "id": "startup_restore.multiwindow_move_close_focus",
+      "setup": [
+        {
+          "op": "v2",
+          "method": "workspace.create",
+          "params": {"title": "startup-restore-source"}
+        },
+        {
+          "op": "v2",
+          "method": "window.create",
+          "params": {}
+        },
+        {
+          "op": "v2",
+          "method": "workspace.create",
+          "params": {
+            "window_id": "${setup.1.result.window_id}",
+            "title": "startup-restore-target"
+          }
+        },
+        {
+          "op": "v2",
+          "method": "surface.create",
+          "params": {
+            "workspace_id": "${setup.0.result.workspace_id}",
+            "type": "terminal"
+          }
+        },
+        {
+          "op": "v2",
+          "method": "surface.create",
+          "params": {
+            "workspace_id": "${setup.2.result.workspace_id}",
+            "type": "terminal"
+          }
+        },
+        {
+          "op": "v2",
+          "method": "surface.move",
+          "params": {
+            "surface_id": "${setup.3.result.surface_id}",
+            "pane_id": "${setup.4.result.pane_id}",
+            "focus": true
+          }
+        },
+        {
+          "op": "v2",
+          "method": "surface.create",
+          "params": {
+            "workspace_id": "${setup.2.result.workspace_id}",
+            "type": "terminal"
+          }
+        },
+        {
+          "op": "v2",
+          "method": "surface.close",
+          "params": {"surface_id": "${setup.6.result.surface_id}"}
+        },
+        {
+          "op": "v2",
+          "method": "surface.focus",
+          "params": {"surface_id": "${setup.3.result.surface_id}"}
+        }
+      ],
+      "action": {"op": "restart"},
+      "probes": {
+        "multiwindow": [
+          {"op": "v2", "method": "window.list", "params": {}},
+          {"op": "v2", "method": "workspace.list", "params": {}},
+          {
+            "op": "v2",
+            "method": "workspace.list",
+            "params": {"window_ref": "window:2"}
+          }
+        ],
+        "state": [
+          {
+            "op": "v2",
+            "method": "surface.list",
+            "params": {"window_ref": "window:1", "workspace_ref": "workspace:2"}
+          },
+          {
+            "op": "v2",
+            "method": "surface.list",
+            "params": {"window_ref": "window:2", "workspace_ref": "workspace:2"}
+          }
+        ],
+        "selectors": [
+          {
+            "op": "v2",
+            "method": "surface.current",
+            "params": {"window_ref": "window:2", "workspace_ref": "workspace:2"}
+          }
+        ]
+      }
+    }
+  ]
+}
