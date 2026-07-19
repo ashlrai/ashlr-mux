@@ -27,7 +27,7 @@ const V2_LIFECYCLE_METHODS: [&str; 11] = [
     "surface.move",
 ];
 
-fn two_window_snapshot() -> AppSessionSnapshot {
+pub(super) fn two_window_snapshot() -> AppSessionSnapshot {
     let mut snapshot = test_snapshot();
     snapshot.windows[0].selected_workspace_id = Some("workspace-1".into());
     snapshot.windows[0].tab_manager.workspaces[0].focused_panel_id = Some("surface-1".into());
@@ -123,7 +123,7 @@ fn mixed_surface_snapshot() -> AppSessionSnapshot {
     serde_json::from_value(encoded).expect("decode mixed fixture")
 }
 
-fn resizable_snapshot() -> AppSessionSnapshot {
+pub(super) fn resizable_snapshot() -> AppSessionSnapshot {
     let mut snapshot = test_snapshot();
     let workspace = &mut snapshot.windows[0].tab_manager.workspaces[0];
     workspace.focused_panel_id = Some("surface-left".into());
@@ -997,14 +997,6 @@ fn pane_focus_and_surface_split_regressions_mutate_authoritative_records() {
         json!({"workspace_id": "workspace-1", "pane_id": "pane-right"}),
     );
     assert_eq!(
-        ok_value(&focused),
-        json!({
-            "window_id": "window-1",
-            "workspace_id": "workspace-1",
-            "pane_id": "pane-right",
-        })
-    );
-    assert_eq!(
         focused.snapshot.windows[0].tab_manager.workspaces[0]
             .focused_panel_id
             .as_deref(),
@@ -1029,27 +1021,6 @@ fn pane_focus_and_surface_split_regressions_mutate_authoritative_records() {
     ));
     assert_eq!(model.focused_surface("workspace-1"), Some(created_id));
     model.validate_indexes().unwrap();
-}
-
-#[test]
-fn pane_focus_rejects_a_pane_outside_the_resolved_scope() {
-    let snapshot = two_window_snapshot();
-    let focused = transition(
-        &snapshot,
-        "pane.focus",
-        json!({
-            "window_id": "window-1",
-            "workspace_id": "workspace-1",
-            "pane_id": "pane-2",
-        }),
-    );
-
-    assert_eq!(
-        assert_error(&focused, "not_found", "Pane not found"),
-        json!({"pane_id": "pane-2"})
-    );
-    assert_eq!(focused.snapshot, snapshot);
-    assert!(!focused.changed);
 }
 
 #[test]

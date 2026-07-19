@@ -17,6 +17,10 @@ use crate::dock::{
 
 use super::payloads::{panel_title, surfaces_for_workspace};
 
+#[path = "pane_surface_lifecycle/pane_focus.rs"]
+mod pane_focus;
+use pane_focus::pane_focus;
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub(super) struct LifecycleEvent {
     pub name: &'static str,
@@ -582,7 +586,7 @@ pub(super) fn dispatch_lifecycle_request(
         "surface.focus" => surface_focus(snapshot, params),
         "surface.move" => surface_move(snapshot, params, context),
         "pane.resize" => pane_resize(snapshot, params, context),
-        "pane.focus" => pane_focus(snapshot, params),
+        "pane.focus" => pane_focus(snapshot, params, context),
         "pane.create" | "surface.split" => pane_create(snapshot, method, params, context),
         _ => error(
             snapshot,
@@ -3912,55 +3916,6 @@ fn surface_move(
     }
     effects.push(LifecycleEffect::PersistSession);
     ok_transition(next, result, vec![completion], effects)
-}
-
-fn pane_focus(snapshot: &AppSessionSnapshot, params: &Map<String, Value>) -> LifecycleTransition {
-    let Some(pane_id) = params.get("pane_id").and_then(Value::as_str) else {
-        return error(
-            snapshot,
-            "invalid_params",
-            "Missing or invalid pane_id",
-            None,
-        );
-    };
-    let mut model = match SurfaceLifecycleModel::from_app_session(snapshot) {
-        Ok(model) => model,
-        Err(_) => {
-            return error(
-                snapshot,
-                "internal_error",
-                "Invalid surface lifecycle state",
-                None,
-            )
-        }
-    };
-    let Some(pane) = model.pane(pane_id).cloned() else {
-        return error(snapshot, "not_found", "Pane not found", None);
-    };
-    let selected = pane.selected_surface_id.clone();
-    if selected.is_empty() {
-        return error(snapshot, "not_found", "Pane has no surface", None);
-    }
-    let _ = model.focus_surface(&selected);
-    let next = model.to_app_session(snapshot).unwrap();
-    ok_transition(
-        next,
-        json!({"window_id":pane.window_id,"workspace_id":pane.workspace_id,"pane_id":pane_id,"surface_id":selected}),
-        vec![owned_event(
-            "pane.focused",
-            &pane.window_id,
-            &pane.workspace_id,
-            Some(pane_id),
-            Some(&selected),
-            json!({}),
-        )],
-        vec![
-            LifecycleEffect::ActivateWindow {
-                window_id: pane.window_id,
-            },
-            LifecycleEffect::PersistSession,
-        ],
-    )
 }
 
 fn pane_resize(

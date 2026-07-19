@@ -5,6 +5,7 @@ mod differential_remediation_red;
 mod dock_api_adversarial_red;
 mod dock_production_rollback_red;
 mod manual_restore_effects_red;
+mod pane_focus_red;
 mod pane_surface_lifecycle_red;
 mod remote_runtime_lifecycle_lease_red;
 mod surface_action_adversarial_red;
