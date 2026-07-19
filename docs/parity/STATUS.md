@@ -121,11 +121,15 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
   `docs/archive/windows-port-legacy/`; they are preserved evidence, not active
   instructions.
 - The previously monolithic files remain split: `control_socket.rs` is now
-  4,396 measured lines (from 23,219), `session.rs` is 6,204 (from 12,059), and
+  4,396 measured lines (from 23,219), `session.rs` is 5,134 (from 12,059), and
   `CustomSidebarSurface.tsx` is 5,419 (from 12,003). Extracted modules retain
   the same public entry points. The 84-line `session/control_snapshot.rs` owns
   control-worker lifecycle publication policy, and the 85-line
   `session/control_window_registration.rs` owns prepared window registration.
+  The 1,076-line `session/commands.rs` now owns Tauri command adapters and URI
+  routing; its moved body is byte-equivalent after four scope-preserving
+  visibility annotations, and 308 session-scoped tests cover the unchanged API
+  boundary.
 - Canonical window-event construction now lives in the 319-line
   `control_socket/window_lifecycle/events.rs` child module. The parent remains
   below its frozen file-length ceiling, and the production transition and
