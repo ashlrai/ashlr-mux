@@ -9,7 +9,7 @@ mod pane_response_refs;
 pub(super) use pane_response_refs::*;
 
 #[path = "pane_surface_control/pane_surfaces.rs"]
-mod pane_surfaces;
+pub(in crate::control_socket) mod pane_surfaces;
 pub(super) use pane_surfaces::pane_surfaces;
 
 pub(super) const TERMINAL_INPUT_QUEUE_FULL_MESSAGE: &str = "The terminal can't accept more input right now. Wait a moment and retry, or reopen the terminal if it stays unavailable.";
