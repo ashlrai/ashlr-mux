@@ -53,6 +53,13 @@ pub(in crate::control_socket) fn pane_list_logical_size(
     )
 }
 
+pub(in crate::control_socket) fn pane_list_root_frame(
+    _observed: Option<PanePixelFrame>,
+    native_fallback: PanePixelFrame,
+) -> PanePixelFrame {
+    native_fallback
+}
+
 pub(in crate::control_socket) fn pane_list(
     app: &AppHandle,
     params: &serde_json::Map<String, Value>,
@@ -114,16 +121,16 @@ pub(in crate::control_socket) fn pane_list(
         };
     };
     let mut pane_rows = Vec::new();
-    pane_frames(
-        layout,
+    let root_frame = pane_list_root_frame(
+        None,
         PanePixelFrame {
             x: 0.0,
             y: 0.0,
             width,
             height,
         },
-        &mut pane_rows,
     );
+    pane_frames(layout, root_frame, &mut pane_rows);
     let terminal_state = app.state::<TerminalState>();
     let panes = pane_rows
         .into_iter()

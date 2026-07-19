@@ -985,7 +985,7 @@ pub(super) fn surface_split_off(
     }))
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct PanePixelFrame {
     pub(super) x: f64,
     pub(super) y: f64,

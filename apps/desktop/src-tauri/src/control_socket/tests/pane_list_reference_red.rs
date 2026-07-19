@@ -83,3 +83,24 @@ fn pane_list_reports_logical_points_instead_of_physical_dpi_pixels() {
         (800.0, 600.0)
     );
 }
+
+#[test]
+fn pane_list_prefers_the_rendered_workspace_frame_over_the_native_window() {
+    let observed = PanePixelFrame {
+        x: 240.0,
+        y: 28.0,
+        width: 760.0,
+        height: 672.0,
+    };
+    let native_window = PanePixelFrame {
+        x: 0.0,
+        y: 0.0,
+        width: 1000.0,
+        height: 700.0,
+    };
+
+    assert_eq!(
+        pane_surface_control::pane_list::pane_list_root_frame(Some(observed), native_window),
+        observed
+    );
+}
