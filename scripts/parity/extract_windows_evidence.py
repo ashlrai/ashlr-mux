@@ -22,7 +22,7 @@ CLASSIFY = Path("crates/cmux-cli/src/classify.rs")
 FORWARD = Path("crates/cmux-cli/src/command_forward.rs")
 DISPATCH = Path("crates/cmux-cli/src/dispatch.rs")
 DEFAULT_OUTPUT = Path("docs/parity/source/windows_evidence.json")
-PINNED_WINDOWS_COMMIT = "73dacea41d6a38f75db36d696825aef7547838ce"
+PINNED_WINDOWS_COMMIT = "cb94cf02e2aa326107e8fe8c931ef08521797b53"
 SOURCE_ROOTS = (
     "apps/desktop/src-tauri/src",
     "apps/desktop/web/src",
