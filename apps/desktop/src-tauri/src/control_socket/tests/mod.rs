@@ -1,0 +1,17 @@
+use super::*;
+
+mod control_worker_native_query_red;
+mod differential_remediation_red;
+mod dock_api_adversarial_red;
+mod dock_production_rollback_red;
+mod manual_restore_effects_red;
+mod pane_surface_lifecycle_red;
+mod remote_runtime_lifecycle_lease_red;
+mod surface_action_adversarial_red;
+mod surface_action_exhaustive_red;
+mod terminal_create_input_red;
+mod terminal_set_font_red;
+mod window_lifecycle_red;
+mod workspace_action_red;
+mod workspace_group_red;
+mod workspace_navigation_red;

@@ -4083,47 +4083,5 @@ fn control_pipe_name_override_is_validated_with_default_fallback() {
     }
 }
 
-#[path = "tests/pane_surface_lifecycle_red.rs"]
-mod pane_surface_lifecycle_red;
-
-#[path = "tests/window_lifecycle_red.rs"]
-mod window_lifecycle_red;
-
-#[path = "tests/control_worker_native_query_red.rs"]
-mod control_worker_native_query_red;
-
-#[path = "tests/differential_remediation_red.rs"]
-mod differential_remediation_red;
-
-#[path = "tests/surface_action_exhaustive_red.rs"]
-mod surface_action_exhaustive_red;
-
-#[path = "tests/workspace_action_red.rs"]
-mod workspace_action_red;
-
-#[path = "tests/workspace_group_red.rs"]
-mod workspace_group_red;
-
-#[path = "tests/dock_api_adversarial_red.rs"]
-mod dock_api_adversarial_red;
-
-#[path = "tests/dock_production_rollback_red.rs"]
-mod dock_production_rollback_red;
-
-#[path = "tests/surface_action_adversarial_red.rs"]
-mod surface_action_adversarial_red;
-
-#[path = "tests/remote_runtime_lifecycle_lease_red.rs"]
-mod remote_runtime_lifecycle_lease_red;
-
-#[path = "tests/manual_restore_effects_red.rs"]
-mod manual_restore_effects_red;
-
-#[path = "tests/terminal_create_input_red.rs"]
-mod terminal_create_input_red;
-
-#[path = "tests/terminal_set_font_red.rs"]
-mod terminal_set_font_red;
-
-#[path = "tests/workspace_navigation_red.rs"]
-mod workspace_navigation_red;
+#[path = "tests/mod.rs"]
+mod regression_suites;
