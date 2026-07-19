@@ -11,7 +11,7 @@
     "capture_errors": 0
   },
   "windows": {
-    "behavior_commit": "2e280b9fb9b971ce0182b30bcfa7706c14c0b2e5",
+    "behavior_commit": "eb33086f7ab5a0f423061e069a07b6b2d5f2b638",
     "cases": 68,
     "capture_errors": 0,
     "profile_mode": "isolated",
@@ -139,6 +139,41 @@
     },
     "overall_count_note": "The comparison remains 38 identical and 30 delta cases because the affected cases retain independent platform path, native teardown timing, window ordering/focus, or multiwindow state differences."
   },
+  "key_transitions": {
+    "status": "canonical_sequences_with_native_key_identity_equivalence",
+    "post_simplification_prefix_runs": 2,
+    "prefix_cases": 10,
+    "full_capture_runs": 1,
+    "full_capture_cases": 68,
+    "capture_errors": 0,
+    "focus_transfer_sequence": [
+      "ack",
+      "window.unkeyed",
+      "window.keyed",
+      "window.focused",
+      "window.closed",
+      "window.unkeyed",
+      "window.keyed"
+    ],
+    "already_key_sequence": [
+      "ack",
+      "window.focused",
+      "window.closed",
+      "window.unkeyed",
+      "window.keyed"
+    ],
+    "exact_fields": [
+      "event names and order",
+      "event origins",
+      "key and main window flags",
+      "focused and closed target identity continuity"
+    ],
+    "platform_equivalences": [
+      "The retained AppKit capture chooses window:2 as the prior and fallback native key window; the isolated noninteractive Windows desktop chooses window:1.",
+      "The contract explicitly classifies real OS foregrounding and key-window transfer as platform-equivalent; strict event, state, and UUID-symbol lanes retain this native choice."
+    ],
+    "overall_count_note": "The full comparison remains 38 identical and 30 delta cases. No row is promoted from sequence parity alone."
+  },
   "closed_capture_blockers": [
     "The final canonical close may legitimately disconnect; the manifest now models it as the final may_disconnect case without an impossible post-close probe.",
     "Windows control commits no longer synchronously query native window state while a child WebView is attached.",
@@ -149,12 +184,12 @@
   ],
   "test_gate": {
     "desktop_library_excluding_known_baseline_failures": {
-      "passed": 1042,
+      "passed": 1045,
       "ignored": 1,
       "excluded": 4,
       "runs": 2
     },
-    "desktop_all_targets_check_runs": 2,
+    "desktop_all_targets_check_runs": 1,
     "known_baseline_failures_reproduced_at": [
       "0ea973d28d5efc34852fb16d8a6aa452512ec381",
       "286b2d7b674710ae60573ca8250df60cfd4ebcfc"
