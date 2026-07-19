@@ -1,3 +1,4 @@
+import ctypes
 import json
 import os
 import subprocess
@@ -8,6 +9,14 @@ from pathlib import Path
 
 
 SCRIPT = Path(__file__).with_name("windows-capture-process.ps1")
+
+
+def windows_process_exists(process_id: int) -> bool:
+    process = ctypes.windll.kernel32.OpenProcess(0x00100000, False, process_id)
+    if not process:
+        return False
+    ctypes.windll.kernel32.CloseHandle(process)
+    return True
 
 
 @unittest.skipUnless(os.name == "nt", "Windows process supervisor")
@@ -58,12 +67,16 @@ class WindowsCaptureProcessTests(unittest.TestCase):
                 result.stderr = stderr.read()
                 return result
 
-    def build_visible_window_fixture(self, directory: Path) -> Path:
-        executable = directory / "visible-capture-fixture.exe"
-        source = directory / "visible-capture-fixture.cs"
+    def build_visible_window_fixture(
+        self, directory: Path, *, show_delay_ms: int = 50
+    ) -> Path:
+        stem = f"visible-capture-fixture-{show_delay_ms}"
+        executable = directory / f"{stem}.exe"
+        source = directory / f"{stem}.cs"
         source.write_text(
             """
 using System;
+using System.Drawing;
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
@@ -84,75 +97,24 @@ internal static class Program
             PipeTransmissionMode.Byte,
             PipeOptions.Asynchronous))
         {
-        var form = new Form { Text = "cmux visible capture fixture" };
-        var timer = new Timer { Interval = 50 };
-        timer.Tick += (_, __) => ShowWindowAsync(form.Handle, 5);
-        timer.Start();
-        Application.Run(form);
-        }
-    }
-}
-""".strip(),
-            encoding="utf-8",
-        )
-        result = subprocess.run(
-            [
-                "powershell.exe",
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                (
-                    f"Add-Type -Path '{str(source).replace(chr(39), chr(39) * 2)}' "
-                    "-ReferencedAssemblies System.Windows.Forms,System.Drawing "
-                    f"-OutputAssembly '{str(executable).replace(chr(39), chr(39) * 2)}' "
-                    "-OutputType WindowsApplication"
-                ),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(executable.is_file())
-        return executable
-
-    def build_delayed_visible_window_fixture(self, directory: Path) -> Path:
-        executable = directory / "delayed-visible-capture-fixture.exe"
-        source = directory / "delayed-visible-capture-fixture.cs"
-        source.write_text(
-            """
-using System;
-using System.IO.Pipes;
-using System.Windows.Forms;
-
-internal static class Program
-{
-    [STAThread]
-    private static void Main()
-    {
-        Application.EnableVisualStyles();
-        using (var pipe = new NamedPipeServerStream(
-            Environment.GetEnvironmentVariable("CMUX_CONTROL_PIPE_NAME"),
-            PipeDirection.InOut,
-            1,
-            PipeTransmissionMode.Byte,
-            PipeOptions.Asynchronous))
-        {
-            var context = new ApplicationContext();
-            var timer = new Timer { Interval = 1500 };
+            var form = new Form
+            {
+                Text = "cmux visible capture fixture",
+                StartPosition = FormStartPosition.Manual,
+                Location = new Point(-32000, -32000)
+            };
+            var timer = new Timer { Interval = __SHOW_DELAY_MS__ };
             timer.Tick += (_, __) =>
             {
                 timer.Stop();
-                var form = new Form { Text = "cmux delayed visible capture fixture" };
-                form.FormClosed += (___, ____) => context.ExitThread();
-                form.Show();
+                ShowWindowAsync(form.Handle, 5);
             };
             timer.Start();
-            Application.Run(context);
+            Application.Run(form);
         }
     }
 }
-""".strip(),
+""".replace("__SHOW_DELAY_MS__", str(show_delay_ms)).strip(),
             encoding="utf-8",
         )
         result = subprocess.run(
@@ -247,7 +209,9 @@ internal static class Program
     def test_supervisor_rejects_a_window_exposed_after_startup(self):
         with tempfile.TemporaryDirectory() as directory:
             profile = Path(directory)
-            executable = self.build_delayed_visible_window_fixture(profile)
+            executable = self.build_visible_window_fixture(
+                profile, show_delay_ms=1500
+            )
             pipe_name = "cmux-delayed-visible-capture-test"
 
             try:
@@ -267,23 +231,12 @@ internal static class Program
                 )
                 process_id = int(state["pid"])
                 for _ in range(50):
-                    probe = subprocess.run(
-                        [
-                            "powershell.exe",
-                            "-NoProfile",
-                            "-NonInteractive",
-                            "-Command",
-                            f"if (Get-Process -Id {process_id} -ErrorAction SilentlyContinue) {{ exit 1 }}",
-                        ],
-                        timeout=5,
-                    )
-                    if probe.returncode == 0:
+                    if not windows_process_exists(process_id):
                         break
                     time.sleep(0.1)
 
-                self.assertEqual(
-                    probe.returncode,
-                    0,
+                self.assertFalse(
+                    windows_process_exists(process_id),
                     "capture process remained alive after exposing a delayed window",
                 )
             finally:

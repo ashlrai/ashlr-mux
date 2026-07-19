@@ -58,6 +58,24 @@ function Get-OwnedProcess([object]$state) {
     return $process
 }
 
+function Get-OwnedSupervisorProcess([object]$state) {
+    if ($null -eq $state -or $null -eq $state.supervisor_pid) {
+        return $null
+    }
+    $process = Get-Process -Id ([int]$state.supervisor_pid) -ErrorAction SilentlyContinue
+    if ($null -eq $process) {
+        return $null
+    }
+    $actualPath = [System.IO.Path]::GetFullPath($process.Path)
+    $expectedPath = [System.IO.Path]::GetFullPath([string]$state.supervisor_executable)
+    $actualStart = $process.StartTime.ToUniversalTime().Ticks
+    if (-not $actualPath.Equals($expectedPath, [System.StringComparison]::OrdinalIgnoreCase) -or
+        $actualStart -ne [int64]$state.supervisor_start_time_utc_ticks) {
+        throw "PID $($state.supervisor_pid) no longer identifies the capture supervisor; refusing to stop it."
+    }
+    return $process
+}
+
 function Stop-OwnedProcess {
     $state = Read-OwnedProcessState
     $process = Get-OwnedProcess $state
@@ -72,9 +90,43 @@ function Stop-OwnedProcess {
             throw "Capture-owned cmux-desktop PID $($process.Id) did not exit within 20 seconds."
         }
     }
+    $supervisor = Get-OwnedSupervisorProcess $state
+    if ($null -ne $supervisor) {
+        Stop-Process -Id $supervisor.Id -Force
+        $supervisor.WaitForExit(5000) | Out-Null
+    }
     if (Test-Path -LiteralPath $statePath -PathType Leaf) {
         Remove-Item -LiteralPath $statePath
     }
+}
+
+function Start-WindowSupervisor([System.Diagnostics.Process]$process, [hashtable]$state) {
+    $watchdogPath = Join-Path $PSScriptRoot 'windows-capture-window-watchdog.ps1'
+    $powershellPath = (Get-Command powershell.exe -ErrorAction Stop).Source
+    $watchdogStdoutPath = Join-Path $profilePath 'cmux-capture-window-watchdog.stdout.log'
+    $watchdogStderrPath = Join-Path $profilePath 'cmux-capture-window-watchdog.stderr.log'
+    $arguments = @(
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        "`"$watchdogPath`"",
+        '-TargetProcessId',
+        [string]$process.Id,
+        '-TargetStartTimeUtcTicks',
+        [string]$process.StartTime.ToUniversalTime().Ticks,
+        '-TargetExecutable',
+        "`"$($process.Path)`""
+    )
+    $supervisor = Start-Process -FilePath $powershellPath -ArgumentList $arguments -PassThru `
+        -WindowStyle Hidden -RedirectStandardOutput $watchdogStdoutPath `
+        -RedirectStandardError $watchdogStderrPath
+    $supervisor.Refresh()
+    $state.supervisor_pid = $supervisor.Id
+    $state.supervisor_start_time_utc_ticks = $supervisor.StartTime.ToUniversalTime().Ticks
+    $state.supervisor_executable = $powershellPath
+    $state | ConvertTo-Json | Set-Content -LiteralPath $statePath -Encoding UTF8
 }
 
 function Test-PipeReady {
@@ -194,6 +246,7 @@ function Start-OwnedProcess {
                 Assert-OwnedProcessHeadless $process
                 Start-Sleep -Milliseconds 50
             }
+            Start-WindowSupervisor $process $state
             return
         }
         Start-Sleep -Milliseconds 50
