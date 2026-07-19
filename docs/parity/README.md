@@ -52,9 +52,9 @@ Behavioral or live differential evidence is required for `verified`.
 
 ## Tracked artifacts
 
-- `source/canonical_cli.json`: generated from the frozen canonical commit.
-- `source/canonical_v2.json`: generated frozen socket-method inventory.
-- `source/windows_evidence.json`: generated frozen Windows routing evidence.
+- `source/canonical_cli.json`: generated canonical CLI extraction checkpoint.
+- `source/canonical_v2.json`: generated canonical socket-method extraction checkpoint.
+- `source/windows_evidence.json`: generated Windows routing extraction checkpoint.
 - `product_domains.json`: coarse cross-cutting product requirements.
 - `overrides.json`: reviewed evidence and status decisions.
 - `parity-matrix.json`: generated join for the frozen acceptance snapshot.
@@ -66,13 +66,17 @@ are historical inputs, not current claims. Current implementation and live
 verification status belongs in `STATUS.md`, `current-audit.json`, and
 `evidence/*.json`; do not rewrite canonical contracts after implementation.
 
-Do not hand-edit generated catalogs or matrices. Validate the frozen snapshot
-with:
+Do not hand-edit generated catalogs or matrices. The source catalogs have moved
+forward since the matrix freeze, so rebuilding from today's catalogs is expected
+to differ and would create thousands of misleading generated-line changes.
+Validate the matrix against the Git objects pinned inside each frozen row with:
 
 ```powershell
-python scripts/parity/build_matrix.py --check
 python scripts/parity/validate_matrix_sources.py
 ```
+
+Use `build_matrix.py` only when intentionally creating a separately reviewed
+acceptance snapshot from a coherent set of source catalogs.
 
 ## Differential protocol
 

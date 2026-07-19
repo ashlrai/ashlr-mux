@@ -7,24 +7,26 @@ Checkpoint commits:
 - Windows behavior captured: `55f0afaf4e957a7fd56fe1e7a291492d039edf9f`
 - Latest Windows code checkpoint: `1df21ddaf6a1173de84cde12953f547eaacd799a`
 - Latest exact startup differential evidence: `parity/diff-lane@215737999ac0579682b6b2a2d230d7a0d064a51d`
-- Latest window harness checkpoint: `parity/diff-lane@9f89ed01ee1db8a651d798d2f0a3727a0ea025a0`
-- Latest canonical window capture: workflow run `29685067632`
+- Latest window harness checkpoint: `parity/diff-lane@e23cd72b7807f700a5961b2d8ae44919c810911c`
+- Latest completed canonical window capture: workflow run `29685067632`
+- Matching replacement canonical capture: workflow run `29686515273` (pending)
 
 The Windows desktop and CLI build successfully. The retained pane/surface and
-startup-restore evidence remains valid. The latest window-family capture pair
-contains all 68 cases with zero transport errors, zero missing cases, and zero
-unsatisfied settles. The normalized comparison is valid: 57 identical and 11
-delta cases. Those eleven cases collapse into six shared residual clusters and
-must not be reported as eleven independent product defects. See
-`evidence/window_lifecycle_2026-07-19.json` for hashes, lanes, and provenance.
+startup-restore evidence remains valid. The published 57-identical/11-delta
+window comparison is diagnostic only: its canonical capture used UI test mode,
+but its Windows capture did not. It must not promote parity rows or drive
+platform-equivalence decisions. A matching UI-test Windows recapture at harness
+`e23cd72b78` completed all 68 cases twice with zero capture errors; exact
+canonical workflow run `29686515273` is pending. See
+`evidence/window_lifecycle_2026-07-19.json` for hashes and provenance.
 
 Closed windows now match canonical recoverable-route behavior. A successful
 close appends a strict `visible:false` `window.list` row with stable window and
 workspace identity; failed native closes discard staged history, live rows win
 identity collisions, and restart clears the in-process history. The harness now
 settles on non-visibility rather than incorrectly requiring row absence. This
-removed the evidence-integrity blocker and changed the authoritative result
-from invalid 40/28 to valid 57/11.
+removed the old 40/28 settle defect, but the resulting 57/11 pair remains
+non-authoritative because of the environment mismatch above.
 
 The shared window identity boundary is now repaired. Socket-created windows
 use canonical UUID identities end to end, selector-less `window.current`
@@ -81,13 +83,13 @@ baseline, not "222 of 496 complete" and not the rolling catalog.
 
 ## Known acceptance blockers
 
-1. The window capture is valid at 57/11. The immediate repeat-close case still
-   races canonical unregister and must settle the first close before asserting
-   `not_found`. Three CLI state deltas share an earlier loss of live `window:2`;
-   locate that first topology transition instead of editing each CLI route.
-   Restart binding ownership and last-window exit behavior are the remaining
-   clear semantic clusters. Native key choice and profile paths require exact
-   platform-equivalence pointers, not production hard-coding.
+1. The published window pair is not promotable because its UI-test modes differ.
+   The repeat-close manifest race is fixed at `65fe6a0242`, and event-reader
+   teardown no longer hangs the final Windows case at `e23cd72b78`. Wait for the
+   exact matching canonical capture, then regenerate the comparison. Diagnostic
+   prefixes locate the earliest live-`window:2` loss near browser-only refresh,
+   but that is not yet sufficient evidence for a production change. Restart
+   binding ownership and last-window behavior remain candidate semantic gaps.
 2. Four differential-remediation unit tests fail unchanged at both pushed
    baseline `0ea973d28d` and behavior checkpoint `286b2d7b67`:
    `closing_an_unselected_tab_suppresses_the_noop_pair`,
@@ -174,10 +176,10 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
 
 ## Next efficient slice
 
-Repair the immediate repeat-close case by settling the first close before the
-second request, then add the smallest diagnostic window-list checkpoint that
-locates where Windows first loses live `window:2` between the focus cases and
-the CLI cases. Reuse the valid 57/11 pair to classify exact platform path/key
-equivalences. Only then change the earliest demonstrated production owner.
-Keep native key-window choice and platform paths explicit; do not hard-code one
-dictionary iteration order or patch three downstream CLI probes independently.
+Finish exact environment-matched window evidence: retain the completed 68-case
+Windows UI-test capture, download canonical run `29686515273`, and regenerate
+the strict normalized comparison. Only then classify path/key equivalences and
+instrument the browser-only refresh boundary that first appears to lose live
+`window:2`. Change the earliest demonstrated production owner, not the three
+downstream CLI probes. Keep native key-window choice and platform paths explicit;
+do not hard-code dictionary iteration order.

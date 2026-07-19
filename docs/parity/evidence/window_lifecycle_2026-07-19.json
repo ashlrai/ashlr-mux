@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "family": "window_lifecycle",
-  "status": "valid_complete_capture_with_residual_deltas",
+  "status": "diagnostic_environment_mismatch_replacement_pending",
   "canonical": {
     "source_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
     "harness_commit": "9f89ed01ee1db8a651d798d2f0a3727a0ea025a0",
@@ -19,7 +19,7 @@
     "capture_errors": 0,
     "unsatisfied_settles": 0,
     "profile_mode": "isolated",
-    "ui_test_mode": true
+    "ui_test_mode": false
   },
   "comparison": {
     "comparator_commit": "9f89ed01ee1db8a651d798d2f0a3727a0ea025a0",
@@ -28,7 +28,8 @@
     "identical": 57,
     "deltas": 11,
     "capture_integrity": {
-      "valid_for_promotion": true,
+      "valid_for_promotion": false,
+      "invalid_reason": "Canonical used UI test mode while Windows did not; the 57/11 result is diagnostic only.",
       "canonical_capture_errors": [],
       "windows_capture_errors": [],
       "canonical_unsatisfied_settles": [],
@@ -53,6 +54,27 @@
       "reason": "Both native implementations enumerate unordered window registries; dictionary iteration order is not product behavior."
     }
   },
+  "matching_replacement": {
+    "harness_commit": "e23cd72b7807f700a5961b2d8ae44919c810911c",
+    "windows": {
+      "behavior_commit": "55f0afaf4e957a7fd56fe1e7a291492d039edf9f",
+      "sha256": "7C3F996B7EEC6A5A2B01547914007E8700E7C4E6F088DCD0EFA2224A38B42116",
+      "cases": 68,
+      "capture_errors": 0,
+      "unsatisfied_settles": 0,
+      "profile_mode": "isolated",
+      "ui_test_mode": true,
+      "post_simplification_runs": 2
+    },
+    "canonical": {
+      "workflow_run": 29686515273,
+      "status": "pending"
+    },
+    "comparison": {
+      "status": "blocked_until_canonical_capture_completes",
+      "valid_for_promotion": false
+    }
+  },
   "closed_window_history": {
     "status": "implemented_and_live_observed",
     "behavior_commit": "55f0afaf4e957a7fd56fe1e7a291492d039edf9f",
@@ -64,7 +86,7 @@
       "Restart clears the in-process recoverable history."
     ],
     "measurement_correction": "Canonical intentionally retains closed windows as invisible recoverable routes. The previous until_absent predicate incorrectly classified this product behavior as failed cleanup. until_window_not_visible now accepts visible:false or absence while keeping the final row payload strict.",
-    "result": "Both 68-case captures have zero unsatisfied settles. Against the corrected evidence, the descriptive result moved from invalid 40/28 to valid 57/11."
+    "result": "Both diagnostic captures have zero unsatisfied settles, but their different UI-test modes make the 57/11 comparison non-promotable."
   },
   "residual_clusters": [
     {
@@ -110,12 +132,12 @@
     "window_lifecycle_post_simplification_runs": 2,
     "desktop_all_targets_check_runs": 1,
     "desktop_and_cli_build_runs": 1,
-    "capture_harness_tests": 112,
+    "capture_harness_tests": 113,
     "capture_harness_post_simplification_runs": 2,
     "file_length_budget": "39 tracked oversized files; all frozen at current-or-smaller size"
   },
   "promotion": {
     "rows_promoted": [],
-    "reason": "The capture pair is valid evidence, but eleven cases retain strict deltas. Promote only mapped capabilities whose applicable lanes are identical or explicitly platform-equivalent."
+    "reason": "No window rows may be promoted from an environment-mismatched pair. Wait for matching canonical workflow run 29686515273 and regenerate the comparison."
   }
 }
