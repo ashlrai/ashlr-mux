@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,53 @@ from differential_harness import compare_observations, remove_pointer
 
 class CaptureFormatError(ValueError):
     """A capture file is structurally invalid."""
+
+
+_WINDOW_REF_RE = re.compile(r"window:(\d+)$")
+
+
+def normalize_racy_window_list_order(observation: dict[str, Any]) -> dict[str, Any]:
+    """Canonicalize valid ``v2:window.list`` probe rows by stable ref.
+
+    Both implementations enumerate an unordered native window registry, and
+    the contract explicitly calls numeric list indices positional and racy.
+    Row identity and contents remain strict: normalization is applied only
+    when every row has a unique numeric ref and a correct pre-normalization
+    positional index. Malformed lists therefore remain visible as deltas.
+    """
+    normalized = copy.deepcopy(observation)
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            if value.get("op") == "v2:window.list":
+                result = value.get("result")
+                response = result.get("response") if isinstance(result, dict) else None
+                payload = response.get("result") if isinstance(response, dict) else None
+                rows = payload.get("windows") if isinstance(payload, dict) else None
+                if isinstance(rows, list):
+                    keyed_rows: list[tuple[int, dict[str, Any]]] = []
+                    for position, row in enumerate(rows):
+                        if not isinstance(row, dict) or row.get("index") != position:
+                            break
+                        match = _WINDOW_REF_RE.fullmatch(str(row.get("ref", "")))
+                        if match is None:
+                            break
+                        keyed_rows.append((int(match.group(1)), row))
+                    else:
+                        refs = [key for key, _ in keyed_rows]
+                        if len(refs) == len(set(refs)):
+                            keyed_rows.sort(key=lambda item: item[0])
+                            payload["windows"] = [row for _, row in keyed_rows]
+                            for position, row in enumerate(payload["windows"]):
+                                row["index"] = position
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk(normalized)
+    return normalized
 
 
 def load_capture(text: str, label: str) -> dict[str, dict[str, Any]]:
@@ -114,6 +162,10 @@ def compare_captures(
         return record.get("approved_differences", [])
 
     for side in (canonical, windows):
+        for record in side.values():
+            record["observation"] = normalize_racy_window_list_order(
+                record["observation"]
+            )
         renumber = UuidRenumberer()
         for case_id in ordered_ids:
             record = side.get(case_id)

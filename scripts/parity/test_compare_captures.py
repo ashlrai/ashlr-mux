@@ -5,6 +5,7 @@ from compare_captures import (
     CaptureFormatError,
     compare_captures,
     load_capture,
+    normalize_racy_window_list_order,
     render_summary,
 )
 from differential_harness import OBSERVATION_KEYS
@@ -30,6 +31,30 @@ def case_record(case_id, obs=None, approved=None, capture_error=None):
 def capture_text(records):
     header = {"type": "session", "family": "f", "platform": "x", "driver_version": 1}
     return "\n".join(json.dumps(r) for r in [header, *records]) + "\n"
+
+
+def window_list_probe(rows):
+    return {
+        "op": "v2:window.list",
+        "result": {
+            "response": {"result": {"windows": rows}},
+        },
+    }
+
+
+def window_row(ref, index, window_id, **changes):
+    row = {
+        "id": window_id,
+        "index": index,
+        "key": False,
+        "ref": ref,
+        "selected_workspace_id": f"{window_id}-workspace",
+        "selected_workspace_ref": f"workspace:{ref.split(':')[1]}",
+        "visible": True,
+        "workspace_count": 1,
+    }
+    row.update(changes)
+    return row
 
 
 class LoadCaptureTests(unittest.TestCase):
@@ -194,6 +219,58 @@ class CompareCapturesTests(unittest.TestCase):
         }
         report = compare_captures(left, right)
         self.assertEqual(report["deltas"], 0)
+
+    def test_window_list_order_and_positional_indices_are_normalized_by_ref(self):
+        left_rows = [
+            window_row("window:3", 0, "<uuid-1>"),
+            window_row("window:1", 1, "<uuid-2>"),
+            window_row("window:2", 2, "<uuid-3>"),
+        ]
+        right_rows = [
+            window_row("window:1", 0, "<uuid-1>"),
+            window_row("window:2", 1, "<uuid-2>"),
+            window_row("window:3", 2, "<uuid-3>"),
+        ]
+        left = {"a": case_record("a", observation(multiwindow=[window_list_probe(left_rows)]))}
+        right = {"a": case_record("a", observation(multiwindow=[window_list_probe(right_rows)]))}
+
+        report = compare_captures(left, right)
+
+        self.assertEqual(report["deltas"], 0)
+
+    def test_window_list_normalization_keeps_row_fields_strict(self):
+        left_rows = [
+            window_row("window:2", 0, "<uuid-1>"),
+            window_row("window:1", 1, "<uuid-2>"),
+        ]
+        right_rows = [
+            window_row("window:1", 0, "<uuid-1>"),
+            window_row("window:2", 1, "<uuid-2>", workspace_count=2),
+        ]
+        left = {"a": case_record("a", observation(state=[window_list_probe(left_rows)]))}
+        right = {"a": case_record("a", observation(state=[window_list_probe(right_rows)]))}
+
+        report = compare_captures(left, right)
+
+        self.assertEqual(report["deltas"], 1)
+        self.assertEqual(report["results"][0]["mismatches"], ["state"])
+
+    def test_window_list_with_invalid_positional_index_is_not_normalized(self):
+        probe = window_list_probe(
+            [
+                window_row("window:2", 1, "<uuid-1>"),
+                window_row("window:1", 0, "<uuid-2>"),
+            ]
+        )
+
+        normalized = normalize_racy_window_list_order(
+            observation(multiwindow=[probe])
+        )
+
+        self.assertEqual(
+            normalized["multiwindow"][0]["result"]["response"]["result"]["windows"],
+            probe["result"]["response"]["result"]["windows"],
+        )
 
     def test_manifest_overrides_recorded_approved_differences(self):
         left = {"a": case_record("a", observation(response={"title": "zsh"}), approved=[])}
