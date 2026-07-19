@@ -15,6 +15,57 @@ pub(crate) fn window_list(app: &AppHandle) -> ControlCallResult {
     ok(json!({"windows": rows}))
 }
 
+pub(crate) fn workspace_list_with_recoverable_active(
+    app: &AppHandle,
+    session: &AppSessionSnapshot,
+    params: &serde_json::Map<String, Value>,
+) -> ControlCallResult {
+    let active_window_id = control_active_window_id(app);
+    let recoverable = app.state::<ControlClosedWindowHistoryState>().snapshots();
+    let projected =
+        recoverable_active_snapshot(session, params, active_window_id.as_deref(), &recoverable);
+    workspace_list_from_params_for_app(app, projected.as_ref().unwrap_or(session), params)
+}
+
+fn recoverable_active_snapshot(
+    session: &AppSessionSnapshot,
+    params: &serde_json::Map<String, Value>,
+    active_window_id: Option<&str>,
+    recoverable: &[SessionWindowSnapshot],
+) -> Option<AppSessionSnapshot> {
+    const ROUTING_KEYS: [&str; 9] = [
+        "window_id",
+        "window_ref",
+        "group_id",
+        "workspace_id",
+        "workspace_ref",
+        "surface_id",
+        "terminal_id",
+        "tab_id",
+        "pane_id",
+    ];
+    if ROUTING_KEYS
+        .iter()
+        .any(|key| params.get(*key).is_some_and(|value| !value.is_null()))
+    {
+        return None;
+    }
+    let active_window_id = active_window_id?;
+    if session
+        .windows
+        .iter()
+        .any(|window| window.window_id.as_deref() == Some(active_window_id))
+    {
+        return None;
+    }
+    let window = recoverable
+        .iter()
+        .find(|window| window.window_id.as_deref() == Some(active_window_id))?;
+    let mut projected = session.clone();
+    projected.windows = vec![window.clone()];
+    Some(projected)
+}
+
 fn window_list_rows(
     live: Vec<crate::window::WindowControlSummary>,
     session: &AppSessionSnapshot,
@@ -179,5 +230,38 @@ mod tests {
         let rows = window_list_rows(live, &session, &[window], |kind, id| format!("{kind}:{id}"));
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["visible"], true);
+    }
+
+    #[test]
+    fn selectorless_workspace_list_projects_the_recoverable_active_manager() {
+        let live = session_window("live-id", "live-workspace");
+        let closed = session_window("closed-id", "closed-workspace");
+        let session = AppSessionSnapshot {
+            windows: vec![live],
+            ..Default::default()
+        };
+        let empty = serde_json::Map::new();
+
+        let projected = recoverable_active_snapshot(
+            &session,
+            &empty,
+            Some("closed-id"),
+            std::slice::from_ref(&closed),
+        )
+        .expect("closed active manager remains routable");
+        assert_eq!(projected.windows, [closed]);
+
+        assert!(
+            recoverable_active_snapshot(&session, &empty, Some("live-id"), &projected.windows,)
+                .is_none()
+        );
+        let explicit = serde_json::Map::from_iter([("window_id".into(), json!("live-id"))]);
+        assert!(recoverable_active_snapshot(
+            &session,
+            &explicit,
+            Some("closed-id"),
+            &projected.windows,
+        )
+        .is_none());
     }
 }

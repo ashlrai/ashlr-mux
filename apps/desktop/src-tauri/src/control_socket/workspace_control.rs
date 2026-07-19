@@ -6,7 +6,7 @@ pub(super) use activity_controls::*;
 
 #[path = "workspace_control/window_list.rs"]
 mod window_list;
-pub(super) use window_list::window_list;
+pub(super) use window_list::{window_list, workspace_list_with_recoverable_active};
 
 pub(super) fn workspace_create(
     app: &AppHandle,

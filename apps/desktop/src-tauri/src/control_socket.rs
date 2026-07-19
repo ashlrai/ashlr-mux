@@ -1520,7 +1520,7 @@ fn handle_control_request(app: &AppHandle, mut request: ControlRequest) -> Contr
         "sidebar.reload" => sidebar_reload(app, &request.params),
         "sidebar.select" => sidebar_select(app, &request.params),
         "workspace.list" => {
-            workspace_list_from_params_for_app(app, &snapshot(app), &request.params)
+            workspace_list_with_recoverable_active(app, &snapshot(app), &request.params)
         }
         "workspace.current" => {
             workspace_current_from_params_for_app(app, &snapshot(app), &request.params)
