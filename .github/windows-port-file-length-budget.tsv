@@ -10,7 +10,7 @@
 3598	crates/cmux-cli/src/command_forward.rs
 3868	apps/desktop/src-tauri/src/control_socket.rs
 4087	apps/desktop/src-tauri/src/control_socket/unit_tests.rs
-3031	crates/cmux-cli/src/main.rs
+3023	crates/cmux-cli/src/main.rs
 3997	crates/cmux-cli/src/hooks_installer.rs
 3922	crates/cmux-config/src/lib.rs
 2818	apps/desktop/src-tauri/src/control_socket/workspace_control.rs

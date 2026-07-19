@@ -2508,14 +2508,6 @@ mod control_result_tests {
         );
     }
 
-    #[test]
-    fn focus_pane_keeps_canonical_handle_summary() {
-        assert_eq!(
-            format_control_result("pane.focus", &serde_json::json!({"pane_ref": "pane:2"})),
-            "OK pane:2"
-        );
-    }
-
     include!("control_result_navigation_tests.rs");
     include!("control_result_pane_tests.rs");
 

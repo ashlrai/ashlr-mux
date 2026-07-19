@@ -43,3 +43,24 @@ fn panel_list_outputs_match_canonical_text_rows() {
         "* surface:6  terminal  [focused]  \"Terminal\"\n  surface:8  browser  \"Docs\""
     );
 }
+
+#[test]
+fn pane_and_panel_focus_include_canonical_scope_handles() {
+    let pane = serde_json::json!({
+        "pane_ref": "pane:2",
+        "workspace_ref": "workspace:3",
+    });
+    assert_eq!(
+        format_control_result("pane.focus", &pane),
+        "OK pane:2 workspace:3"
+    );
+
+    let panel = serde_json::json!({
+        "surface_ref": "surface:4",
+        "workspace_ref": "workspace:3",
+    });
+    assert_eq!(
+        format_control_result("surface.focus", &panel),
+        "OK surface:4 workspace:3"
+    );
+}
