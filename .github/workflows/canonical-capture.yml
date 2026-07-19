@@ -269,11 +269,13 @@ jobs:
           rm -f "$CAPTURE_SOCKET"
           if [ "$CAPTURE_RESTORE_MODE" = "normal" ]; then
             CMUX_SOCKET_MODE=allowAll \
+            CMUX_TAG=parity-capture \
             CMUX_ALLOW_SOCKET_OVERRIDE=1 \
             CMUX_SOCKET_PATH="$CAPTURE_SOCKET" \
               "$APP_BINARY" >> "$APP_LOG" 2>&1 &
           else
             CMUX_SOCKET_MODE=allowAll \
+            CMUX_TAG=parity-capture \
             CMUX_UI_TEST_MODE=1 \
             CMUX_ALLOW_SOCKET_OVERRIDE=1 \
             CMUX_SOCKET_PATH="$CAPTURE_SOCKET" \
