@@ -2,10 +2,10 @@
 
 Checkpoint commits:
 
-- Current canonical audit: `c9f2d8c4382e29db89a030d80d02d8174ef7f2ac`
+- Current canonical audit: `ecebdbb64b3532b0308650280ae4b83f30becf2a`
 - Frozen differential canonical: `e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452`
 - Windows behavior: `99bd001c6eddaf91c3460dd1114ffda5093f82a4`
-- Latest Windows code checkpoint: `99bd001c6eddaf91c3460dd1114ffda5093f82a4`
+- Latest Windows code checkpoint: `d17b03aa08e6c66adea1cfe95f97c5bf5fff6bf7`
 - Latest exact startup differential evidence: `parity/diff-lane@215737999ac0579682b6b2a2d230d7a0d064a51d`
 
 The Windows desktop and CLI build successfully. The broad desktop, web, IPC,
@@ -27,11 +27,22 @@ user experience. The catalog still needs a deduplicated user-capability layer
 before a defensible product-completion percentage exists. See
 `current-audit.json` for exact provenance and upstream drift.
 
+The separate frozen snapshot still validates 496 entries against 222 pinned
+source blobs. That is the source-integrity result for the old acceptance
+baseline, not "222 of 496 complete" and not the rolling catalog.
+
 ## Known acceptance blockers
 
-1. Terminal and mobile-terminal viewport handling has a quarantined concurrency
-   fix that must await accepted-handler cancellation before integration.
-2. Implemented behavior needs evidence promotion in coherent capability batches;
+1. The 68-case window-lifecycle lane is not valid evidence yet. Canonical run
+   `29677718382` captured all 68 case rows but failed the final
+   `window_close.last_window_pin_ui_test_mode` case with `FileNotFoundError`.
+   The exact Windows run stalled while setting up case 14,
+   `surface_refresh.browser_only_workspace_count_zero`, during browser-surface
+   setup. Twelve window-family rows remain implemented but unverified.
+2. Unintegrated terminal/mobile viewport work remains quarantined and is not
+   counted as parity progress until its cancellation and runtime behavior are
+   re-audited on `windows-port`.
+3. Implemented behavior needs evidence promotion in coherent capability batches;
    raw route or help-text presence is not verification.
 
 The normal-startup restore blocker is closed. Exact Windows capture
@@ -62,6 +73,10 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
   unchanged public API in the 325-line `session_ops/browser.rs` child module;
   canvas layout and persisted geometry mutations now live behind the same API
   in the 526-line `session_ops/canvas.rs` child module.
+- `command_forward.rs` is now 5,830 physical lines (from 7,026). Its browser
+  command routing and parameter construction now live in the 1,211-line
+  `command_forward/browser.rs` child module. The parent-facing boundary is four
+  functions; the 251-test CLI suite and all-target compile check pass.
 - Seventy source-text tests that asserted filenames, function spelling, or
   substring order were removed. The retained suites execute behavior.
 - CI now caps new Windows-owned Rust and TypeScript files at 1,500 lines and
@@ -74,8 +89,10 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
 
 ## Next efficient slice
 
-Select one priority-zero implemented-but-unverified capability that already has
-a retained canonical lane, and spend the next slice converting verification
-debt into a zero-delta promotion. Keep structural extraction separate; the next
-maintenance candidate is the largest still-frozen Windows-owned file whose
-coherent domain can be moved without changing behavior.
+Repair the window-lifecycle capture boundary before changing its behavior:
+reproduce the canonical final-case restart failure and the Windows browser
+setup stall with bounded focused tests. Once both full captures are valid,
+compare all 68 cases and fix only proven deltas. Keep the next structural slice
+separate; the next CLI candidate is workspace parsing in
+`command_forward.rs`, while the next core candidate is the remaining
+layout/workspace domain in `session_ops.rs`.

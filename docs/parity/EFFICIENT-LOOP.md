@@ -28,6 +28,18 @@ evidence rebaselines in one commit series.
 - Never count added lines, deleted lines, commits, or matrix rows as progress.
   Progress is a newly passing observable capability with retained evidence.
 
+## Churn accounting
+
+- Keep behavior changes and mechanical file moves in separate commits.
+- Before an extraction, record the parent size, named responsibility, expected
+  destination, and focused behavior suite. Move one responsibility at a time.
+- Report mechanical moved lines separately from net new logic. A file split may
+  have a large add/delete stat, but its reviewed semantic change must be zero.
+- Do not combine several oversized-file splits into one iteration. Checkpoint
+  and push each verified boundary before selecting the next one.
+- Stop an iteration that is accumulating unrelated rewrites or generated
+  output; preserve the smallest passing slice and discard no unknown work.
+
 ## Verification sequence
 
 1. Run the focused failing test or differential.

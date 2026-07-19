@@ -12,6 +12,11 @@ percentage. Its rows mix public commands, internal commands, release methods,
 debug methods, and broad product umbrellas. Rows are not deduplicated user
 features and are not effort-weighted.
 
+At this checkpoint the frozen validator reports 496 matrix entries and 222
+pinned source blobs. Those are historical snapshot-integrity counts, not
+"features completed." Current scope and status always come from
+`current-audit.json`.
+
 ## Current status
 
 Read [STATUS.md](STATUS.md) for the engineering checkpoint and

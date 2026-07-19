@@ -10,10 +10,10 @@
       "v2:remote.tmux.test_perturb_divider"
     ],
     "catalog_rows_removed_since_baseline": [],
-    "commit": "c9f2d8c4382e29db89a030d80d02d8174ef7f2ac",
-    "commit_date": "2026-07-17T13:40:33-07:00",
-    "commit_subject": "Prevent detached replacements from displacing rearmed Dock portal hosts (#8310)",
-    "commits_ahead_of_tracked_baseline": 333,
+    "commit": "ecebdbb64b3532b0308650280ae4b83f30becf2a",
+    "commit_date": "2026-07-18T23:29:47-07:00",
+    "commit_subject": "cmux-tui: TUI dead-band dimming for foreign-sized surfaces; move CmuxLite out of tree (#8305)",
+    "commits_ahead_of_tracked_baseline": 359,
     "counts": {
       "debug_only_v2_methods": 46,
       "hidden_or_internal_cli_commands": 16,
@@ -44,10 +44,10 @@
     "status": "not_measured"
   },
   "windows": {
-    "commit": "99bd001c6eddaf91c3460dd1114ffda5093f82a4",
-    "commit_date": "2026-07-19T02:56:00-04:00",
-    "commit_subject": "fix(control): restore canonical startup payload defaults",
-    "commits_ahead_of_tracked_evidence": 89,
+    "commit": "d17b03aa08e6c66adea1cfe95f97c5bf5fff6bf7",
+    "commit_date": "2026-07-19T03:41:07-04:00",
+    "commit_subject": "refactor(cli): extract browser command mapping",
+    "commits_ahead_of_tracked_evidence": 93,
     "source_evidence": {
       "advertised_and_routed_count": 267,
       "advertised_method_count": 270,
