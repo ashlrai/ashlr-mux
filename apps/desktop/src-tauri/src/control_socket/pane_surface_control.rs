@@ -1,10 +1,8 @@
 use super::*;
 
 #[path = "pane_surface_control/pane_list.rs"]
-mod pane_list;
+pub(in crate::control_socket) mod pane_list;
 pub(super) use pane_list::pane_list;
-#[cfg(test)]
-pub(super) use pane_list::pane_list_reference_fields_with;
 
 pub(super) const TERMINAL_INPUT_QUEUE_FULL_MESSAGE: &str = "The terminal can't accept more input right now. Wait a moment and retry, or reopen the terminal if it stays unavailable.";
 pub(super) const TERMINAL_SURFACE_UNAVAILABLE_MESSAGE: &str =

@@ -24,13 +24,9 @@ fn pane_list_uses_stable_creation_refs_instead_of_current_visual_indices() {
     };
 
     assert_eq!(
-        pane_list_reference_fields_with(
+        pane_surface_control::pane_list::pane_list_reference_fields_with(
             &pane,
             0,
-            &[
-                "surface-created-third".into(),
-                "surface-created-sixth".into()
-            ],
             pane.selected_panel_id.as_deref(),
             &mut mint,
         ),

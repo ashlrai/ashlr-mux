@@ -3,24 +3,19 @@ use super::*;
 pub(in crate::control_socket) fn pane_list_reference_fields_with(
     pane: &SessionPaneLayoutSnapshot,
     pane_index: usize,
-    workspace_surface_ids: &[String],
     selected: Option<&str>,
-    _mint: &mut impl FnMut(&'static str, &str) -> String,
+    mint: &mut impl FnMut(&'static str, &str) -> String,
 ) -> (String, Vec<String>, Option<String>) {
     (
-        pane_ref(pane_index),
+        pane.pane_id
+            .as_deref()
+            .map(|pane_id| mint("pane", pane_id))
+            .unwrap_or_else(|| pane_ref(pane_index)),
         pane.panel_ids
             .iter()
-            .filter_map(|panel_id| {
-                workspace_surface_ids
-                    .iter()
-                    .position(|id| id == panel_id)
-                    .map(surface_ref)
-            })
+            .map(|panel_id| mint("surface", panel_id))
             .collect(),
-        selected
-            .and_then(|selected| workspace_surface_ids.iter().position(|id| id == selected))
-            .map(surface_ref),
+        selected.map(|selected| mint("surface", selected)),
     )
 }
 
@@ -91,15 +86,6 @@ pub(in crate::control_socket) fn pane_list(
         &mut pane_rows,
     );
     let terminal_state = app.state::<TerminalState>();
-    let workspace_surface_ids = surfaces_for_workspace(workspace)
-        .into_iter()
-        .filter_map(|surface| {
-            surface
-                .get("id")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        })
-        .collect::<Vec<_>>();
     let panes = pane_rows
         .into_iter()
         .enumerate()
@@ -112,7 +98,6 @@ pub(in crate::control_socket) fn pane_list(
                 pane_list_reference_fields_with(
                     &pane,
                     index,
-                    &workspace_surface_ids,
                     selected,
                     &mut |kind, id| control_handle_ref(app, kind, id),
                 );
