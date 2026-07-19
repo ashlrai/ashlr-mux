@@ -384,6 +384,7 @@ fn surface_focus_params(args: &[String]) -> Result<serde_json::Value, CliError> 
     let parsed = ParsedArgs::parse(args)?;
     let mut params = serde_json::Map::new();
     apply_workspace_scope_selector(&parsed, &mut params);
+    apply_window_scope_selector(&parsed, &mut params);
     apply_surface_selector_or_positional(&parsed, &mut params)?;
     if let Some(surface_id) = params.remove("panel_id") {
         params.insert("surface_id".to_string(), surface_id);
