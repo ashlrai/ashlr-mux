@@ -19,6 +19,7 @@ use cmux_cli::{
 };
 
 mod control_output;
+mod legacy_alias;
 
 use control_output::{
     format_control_result, format_legacy_workspace_text, format_lifecycle_text,
@@ -30,6 +31,7 @@ use control_output::{
     format_workspace_entries, prune_tmux_compat_workspace_state_at,
     prune_tmux_compat_workspace_value, workspace_handle,
 };
+use legacy_alias::print_legacy_workspace_alias_notice;
 
 macro_rules! print {
     ($($argument:tt)*) => {{
@@ -279,25 +281,6 @@ fn dispatch(
         DispatchPlan::RunFeed(args) => run_feed_command(options, &args),
         DispatchPlan::Fail(error) => Err(error),
     }
-}
-
-#[cfg(windows)]
-fn print_legacy_workspace_alias_notice(command: &str) {
-    if std::env::var_os("CMUX_QUIET").is_some() {
-        return;
-    }
-    let replacement = match command {
-        "list-workspaces" => "workspace list",
-        "new-workspace" => "workspace create",
-        "close-workspace" => "workspace close",
-        "select-workspace" => "workspace select",
-        "rename-workspace" => "workspace rename",
-        _ => return,
-    };
-    eprintln!(
-        "cmux: '{command}' is now an alias for 'cmux {replacement}'. \
-         The legacy form keeps working indefinitely; set CMUX_QUIET=1 to silence this notice."
-    );
 }
 
 fn safe_stdout(arguments: std::fmt::Arguments<'_>, newline: bool) {
