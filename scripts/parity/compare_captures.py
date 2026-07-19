@@ -159,16 +159,12 @@ def compare_captures(
     # Preserve canonical capture order, then any windows-only strays.
     ordered_ids = list(canonical) + [case_id for case_id in windows if case_id not in canonical]
 
-    # Renumber <uuid-N> symbols per capture by deterministic traversal order
-    # (case order, sorted dict keys) so symbol numbers are independent of
-    # non-contractual wire key order. CRITICAL: the tables are built from the
-    # NORMALIZED observations (approved-difference pointers removed) — an
-    # approved-away region (e.g. a whole probe blob) may legitimately contain
-    # different uuid sets per platform, and registering those would
-    # desynchronize the tables and cascade phantom offsets into every later
-    # case. Token renames only; values preserved; unknown tokens (appearing
-    # only inside approved regions) pass through untouched and are removed by
-    # the pointer normalization before comparison anyway.
+    # Renumber <uuid-N> symbols by deterministic traversal order so symbol
+    # numbers are independent of non-contractual wire key order. Response and
+    # probe identities remain global across the capture. Event-only identities
+    # are local to each subscription/case: registering them globally would let
+    # one known event-count delta cascade phantom UUID offsets into every later
+    # event case. Approved-away regions are excluded from both tables.
     def case_approved(case_id: str, record: dict[str, Any]) -> list[dict[str, Any]]:
         if approved_overrides is not None:
             return approved_overrides.get(case_id, [])
@@ -203,9 +199,22 @@ def compare_captures(
             normalized = copy.deepcopy(record["observation"])
             for difference in case_approved(case_id, record):
                 remove_pointer(normalized, difference["path"])
+            normalized.pop("events", None)
             renumber.register(normalized)
         for record in side.values():
             record["observation"] = renumber.apply(record["observation"])
+        for case_id in ordered_ids:
+            record = side.get(case_id)
+            if record is None:
+                continue
+            normalized = copy.deepcopy(record["observation"])
+            for difference in case_approved(case_id, record):
+                remove_pointer(normalized, difference["path"])
+            event_renumber = UuidRenumberer()
+            event_renumber.register(normalized.get("events"))
+            record["observation"]["events"] = event_renumber.apply(
+                record["observation"].get("events")
+            )
     for case_id in ordered_ids:
         left = canonical.get(case_id)
         right = windows.get(case_id)
