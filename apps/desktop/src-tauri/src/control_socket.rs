@@ -114,11 +114,11 @@ use crate::session::{
     split_off_surface_for_control, split_panel_for_control, start_direct_browser_proxy_for_control,
     swap_panes_for_control, toggle_browser_developer_tools_for_control,
     toggle_browser_focus_mode_for_control, toggle_browser_omnibar_for_control,
-    toggle_split_zoom_for_control, BrowserPanelCreateError, DerivedEventPolicy,
-    MoveWorkspaceToWindowControlError, PaneFocusControlError, PaneLastControlError,
-    PaneResizeControlError, PaneResizeControlIntent, PaneTopologyControlError,
-    ReorderWorkspacesManyControlError, RestorePreviousLaunchOutcome, SessionState,
-    SurfacePositionControlError, TerminalPanelCreateError, WorkspaceLastControlError,
+    toggle_split_zoom_for_control, transact_value_if_changed_suppressing_derived_events,
+    BrowserPanelCreateError, DerivedEventPolicy, MoveWorkspaceToWindowControlError,
+    PaneFocusControlError, PaneLastControlError, PaneResizeControlError, PaneResizeControlIntent,
+    PaneTopologyControlError, ReorderWorkspacesManyControlError, RestorePreviousLaunchOutcome,
+    SessionState, SurfacePositionControlError, TerminalPanelCreateError, WorkspaceLastControlError,
     WorkspaceRemoteControlConfig, WorkspaceSelectControlError,
 };
 use crate::terminal::{

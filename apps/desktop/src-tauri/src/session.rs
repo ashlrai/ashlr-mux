@@ -52,7 +52,7 @@ pub(crate) use control_window_registration::{
 };
 pub(crate) use workspace_ordering::{
     reorder_workspaces_in_window_for_control, reorder_workspaces_many_in_window_for_control,
-    ReorderWorkspacesManyControlError,
+    transact_value_if_changed_suppressing_derived_events, ReorderWorkspacesManyControlError,
 };
 
 /// Event carrying the full session snapshot after any structural change.
@@ -3834,7 +3834,7 @@ pub(crate) fn delete_workspace_group_for_control(
     group_id: &str,
 ) -> Result<Option<(AppSessionSnapshot, usize)>, String> {
     let mut publication =
-        ProductionSnapshotPublicationOperations::new(app, state, DerivedEventPolicy::Record);
+        ProductionSnapshotPublicationOperations::new(app, state, DerivedEventPolicy::Suppress);
     let result = transact_value_if_changed_snapshot_with_post_commit(
         &state.snapshot,
         &mut publication,

@@ -133,6 +133,51 @@ pub(in crate::control_socket) fn workspace_create_event_specs(
     selected: bool,
     previous_workspace_id: Option<&str>,
 ) -> Option<Vec<DerivedEventSpec>> {
+    workspace_create_event_specs_with_focus(
+        snapshot,
+        window_index,
+        workspace_index,
+        selected,
+        selected,
+        previous_workspace_id,
+    )
+}
+
+pub(in crate::control_socket) fn workspace_group_created_event_specs(
+    snapshot: &AppSessionSnapshot,
+    window_index: usize,
+    workspace_index: usize,
+) -> Option<Vec<DerivedEventSpec>> {
+    let mut events = workspace_create_event_specs_with_focus(
+        snapshot,
+        window_index,
+        workspace_index,
+        true,
+        false,
+        None,
+    )?;
+    let window = snapshot.windows.get(window_index)?;
+    let workspace = window.tab_manager.workspaces.get(workspace_index)?;
+    if workspace.custom_title.is_none() {
+        let title = format!("Terminal {}", window.tab_manager.workspaces.len());
+        if let Some(created) = events
+            .iter_mut()
+            .find(|event| event.name == "workspace.created")
+        {
+            created.payload["title"] = json!(title);
+        }
+    }
+    Some(events)
+}
+
+fn workspace_create_event_specs_with_focus(
+    snapshot: &AppSessionSnapshot,
+    window_index: usize,
+    workspace_index: usize,
+    focus_initial_surface: bool,
+    selected: bool,
+    previous_workspace_id: Option<&str>,
+) -> Option<Vec<DerivedEventSpec>> {
     let window = snapshot.windows.get(window_index)?;
     let workspace = window.tab_manager.workspaces.get(workspace_index)?;
     let workspace_id = workspace.workspace_id.clone()?;
@@ -153,7 +198,7 @@ pub(in crate::control_socket) fn workspace_create_event_specs(
         "previous_workspace_id": null,
     });
     let mut events = Vec::new();
-    if selected {
+    if focus_initial_surface {
         events.extend([
             DerivedEventSpec {
                 name: "surface.selected",

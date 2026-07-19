@@ -98,3 +98,78 @@ fn workspace_group_remove_requires_only_the_workspace_id() {
         "canonical workspace.group.remove resolves the owning group from workspace_id"
     );
 }
+
+#[test]
+fn workspace_group_reorder_members_follow_workspace_order() {
+    let mut snapshot = test_snapshot();
+    let group_id = Uuid::parse_str("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
+    snapshot.windows[0].tab_manager.workspaces[0].workspace_id =
+        Some("11111111-1111-4111-8111-111111111111".into());
+    snapshot.windows[0].tab_manager.workspaces[0].group_id = Some(group_id.to_string());
+    let mut second = snapshot.windows[0].tab_manager.workspaces[0].clone();
+    second.workspace_id = Some("22222222-2222-4222-8222-222222222222".into());
+    snapshot.windows[0].tab_manager.workspaces.push(second);
+
+    assert_eq!(
+        workspace_group_member_ids(&snapshot, 0, group_id),
+        [
+            "11111111-1111-4111-8111-111111111111",
+            "22222222-2222-4222-8222-222222222222",
+        ]
+    );
+}
+
+#[test]
+fn workspace_group_anchor_materialization_matches_canonical_event_order() {
+    let snapshot = test_snapshot();
+    let events = workspace_group_created_event_specs(&snapshot, 0, 0)
+        .expect("workspace with an initial terminal surface");
+    assert_eq!(
+        events.iter().map(|event| event.name).collect::<Vec<_>>(),
+        [
+            "surface.selected",
+            "pane.focused",
+            "surface.focused",
+            "workspace.created",
+            "surface.created",
+        ]
+    );
+    let created = events
+        .iter()
+        .find(|event| event.name == "workspace.created")
+        .unwrap();
+    assert_eq!(created.payload["selected"], json!(false));
+    let surface = events
+        .iter()
+        .find(|event| event.name == "surface.created")
+        .unwrap();
+    assert_eq!(surface.payload["focused"], json!(false));
+}
+
+#[test]
+fn workspace_group_delete_closes_non_anchor_members_before_the_anchor() {
+    let mut snapshot = test_snapshot();
+    let group_id = Uuid::parse_str("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
+    let anchor_id = "11111111-1111-4111-8111-111111111111";
+    let member_id = "22222222-2222-4222-8222-222222222222";
+    snapshot.windows[0].tab_manager.workspaces[0].workspace_id = Some(anchor_id.into());
+    snapshot.windows[0].tab_manager.workspaces[0].group_id = Some(group_id.to_string());
+    let mut member = snapshot.windows[0].tab_manager.workspaces[0].clone();
+    member.workspace_id = Some(member_id.into());
+    snapshot.windows[0].tab_manager.workspaces.push(member);
+    snapshot.windows[0].tab_manager.workspace_groups = Some(vec![SessionWorkspaceGroupSnapshot {
+        id: group_id.to_string(),
+        name: "Backend".into(),
+        is_collapsed: false,
+        anchor_workspace_id: Some(anchor_id.into()),
+        anchor_member_index: None,
+        is_pinned: Some(false),
+        custom_color: None,
+        icon_symbol: None,
+    }]);
+
+    assert_eq!(
+        workspace_group_delete_member_ids(&snapshot, 0, group_id),
+        [member_id, anchor_id]
+    );
+}

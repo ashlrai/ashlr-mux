@@ -14,13 +14,14 @@ pub(super) use create_params::{
 #[path = "workspace_control/events.rs"]
 mod events;
 use events::{
-    record_workspace_create_events, record_workspace_moved_event, record_workspace_reordered_event,
-    record_workspace_selected_event,
+    record_workspace_create_events, record_workspace_events, record_workspace_moved_event,
+    record_workspace_reordered_event, record_workspace_selected_event,
 };
+pub(super) use events::{workspace_close_event_specs, workspace_group_created_event_specs};
 #[cfg(test)]
 pub(super) use events::{
-    workspace_close_event_specs, workspace_create_event_specs, workspace_moved_event_spec,
-    workspace_rename_event_spec, workspace_reordered_event_spec, workspace_selected_event_spec,
+    workspace_create_event_specs, workspace_moved_event_spec, workspace_rename_event_spec,
+    workspace_reordered_event_spec, workspace_selected_event_spec,
 };
 
 #[path = "workspace_control/close.rs"]
@@ -1778,294 +1779,9 @@ pub(super) fn workspace_remote_status_from_snapshot(
     }))
 }
 
-pub(super) fn workspace_group_error(
-    code: &str,
-    message: &str,
-    data: Option<Value>,
-) -> ControlCallResult {
-    ControlCallResult::Err {
-        code: code.to_string(),
-        message: message.to_string(),
-        data: data.and_then(|value| value.try_into().ok()),
-    }
-}
-
-pub(super) fn workspace_group_payload(
-    app: &AppHandle,
-    window: &SessionWindowSnapshot,
-    group: &cmux_core::session::SessionWorkspaceGroupSnapshot,
-) -> Value {
-    workspace_group_payload_with(window, group, &mut |kind, id| {
-        control_handle_ref(app, kind, id)
-    })
-}
-
-pub(super) fn workspace_group_payload_with(
-    window: &SessionWindowSnapshot,
-    group: &cmux_core::session::SessionWorkspaceGroupSnapshot,
-    mint: &mut impl FnMut(&'static str, &str) -> String,
-) -> Value {
-    let members = window
-        .tab_manager
-        .workspaces
-        .iter()
-        .filter(|workspace| workspace.group_id.as_deref() == Some(group.id.as_str()))
-        .filter_map(|workspace| workspace.workspace_id.as_deref())
-        .collect::<Vec<_>>();
-    let anchor_workspace_id = group
-        .anchor_workspace_id
-        .as_deref()
-        .filter(|anchor| members.contains(anchor))
-        .or_else(|| {
-            group
-                .anchor_member_index
-                .and_then(|index| usize::try_from(index).ok())
-                .and_then(|index| members.get(index).copied())
-        })
-        .or_else(|| members.first().copied());
-    let member_workspace_ids = members.iter().map(|id| json!(id)).collect::<Vec<_>>();
-    let member_workspace_refs = members
-        .iter()
-        .map(|id| json!(mint("workspace", id)))
-        .collect::<Vec<_>>();
-    json!({
-        "id": group.id,
-        "ref": mint("workspace_group", &group.id),
-        "name": group.name,
-        "is_collapsed": group.is_collapsed,
-        "is_pinned": group.is_pinned.unwrap_or(false),
-        "anchor_workspace_id": anchor_workspace_id,
-        "anchor_workspace_ref": anchor_workspace_id.map(|id| mint("workspace", id)),
-        "custom_color": group.custom_color,
-        "icon_symbol": group.icon_symbol,
-        "member_workspace_ids": member_workspace_ids,
-        "member_workspace_refs": member_workspace_refs,
-        "member_count": members.len(),
-    })
-}
-
-pub(super) fn workspace_group_create_cwd(
-    tabs: &cmux_core::session::SessionTabManagerSnapshot,
-    explicit_cwd: Option<String>,
-    child_ids: &[Uuid],
-    other_anchor_ids: &HashSet<Uuid>,
-) -> Option<String> {
-    fn normalized(cwd: String) -> Option<String> {
-        let trimmed = cwd.trim();
-        if trimmed.is_empty() {
-            return None;
-        }
-        if trimmed.starts_with("file://") {
-            if let Ok(url) = url::Url::parse(trimmed) {
-                if let Ok(path) = url.to_file_path() {
-                    return Some(path.to_string_lossy().into_owned());
-                }
-            }
-        }
-        Some(trimmed.to_string())
-    }
-
-    if let Some(explicit_cwd) = explicit_cwd {
-        return normalized(explicit_cwd).or_else(default_workspace_directory);
-    }
-    let first_child = child_ids.iter().find_map(|child_id| {
-        tabs.workspaces.iter().find(|workspace| {
-            workspace
-                .workspace_id
-                .as_deref()
-                .and_then(|id| Uuid::parse_str(id).ok())
-                == Some(*child_id)
-                && workspace.is_pinned != Some(true)
-                && !other_anchor_ids.contains(child_id)
-        })
-    });
-    if let Some(child_cwd) = first_child.and_then(|workspace| workspace.current_directory.clone()) {
-        return normalized(child_cwd);
-    }
-    tabs.selected_workspace_index
-        .and_then(|index| usize::try_from(index).ok())
-        .and_then(|index| tabs.workspaces.get(index))
-        .and_then(|workspace| workspace.current_directory.clone())
-        .and_then(normalized)
-}
-
-pub(super) fn parse_workspace_group_placement(
-    raw: Option<&str>,
-) -> Option<session_ops::WorkspaceGroupPlacement> {
-    match raw?.trim().to_ascii_lowercase().as_str() {
-        "aftercurrent" | "after-current" | "after_current" => {
-            Some(session_ops::WorkspaceGroupPlacement::AfterCurrent)
-        }
-        "top" => Some(session_ops::WorkspaceGroupPlacement::Top),
-        "end" => Some(session_ops::WorkspaceGroupPlacement::End),
-        _ => None,
-    }
-}
-
-pub(super) fn workspace_group_move_index_param(
-    params: &serde_json::Map<String, Value>,
-) -> Option<i64> {
-    match params.get("to_index")? {
-        Value::Number(number) => number
-            .as_i64()
-            .or_else(|| number.as_f64().map(|value| value as i64)),
-        Value::Bool(value) => Some(i64::from(*value)),
-        Value::String(raw) => raw.parse::<i64>().ok(),
-        _ => None,
-    }
-}
-
-pub(super) const SF_SYMBOL_NAMES: &str = include_str!("../sf_symbols_v7.txt");
-
-pub(super) fn normalized_workspace_group_icon_symbol(raw: Option<&str>) -> Option<String> {
-    let symbol = raw?.trim();
-    (!symbol.is_empty() && SF_SYMBOL_NAMES.lines().any(|candidate| candidate == symbol))
-        .then(|| symbol.to_string())
-}
-
-pub(super) fn workspace_group_parameter_description(value: &Value) -> String {
-    fn nested(value: &Value) -> String {
-        match value {
-            Value::Null => "<null>".to_string(),
-            Value::Bool(value) => i32::from(*value).to_string(),
-            Value::Number(value) => value.to_string(),
-            Value::String(value) => serde_json::to_string(value).unwrap_or_default(),
-            Value::Array(values) => format!(
-                "[{}]",
-                values.iter().map(nested).collect::<Vec<_>>().join(", ")
-            ),
-            Value::Object(values) if values.is_empty() => "[:]".to_string(),
-            Value::Object(values) => format!(
-                "[{}]",
-                values
-                    .iter()
-                    .map(|(key, value)| format!(
-                        "{}: {}",
-                        serde_json::to_string(key).unwrap_or_default(),
-                        nested(value)
-                    ))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-        }
-    }
-
-    if let Value::String(value) = value {
-        value.clone()
-    } else {
-        nested(value)
-    }
-}
-
-pub(super) fn workspace_group_uuid_param(
-    params: &serde_json::Map<String, Value>,
-    key: &str,
-) -> Option<Uuid> {
-    params
-        .get(key)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .and_then(|value| Uuid::parse_str(value).ok())
-}
-
-pub(super) fn workspace_group_preflight(
-    app: &AppHandle,
-    method: &str,
-    params: &serde_json::Map<String, Value>,
-) -> Option<ControlCallResult> {
-    if method == "workspace.group.create" {
-        match params.get("child_workspace_ids") {
-            None | Some(Value::Null) => return None,
-            Some(Value::Array(values)) if values.iter().all(Value::is_string) => {
-                let unresolved = values
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .filter(|value| {
-                        Uuid::parse_str(value).is_err()
-                            && resolve_control_handle_ref(app, "workspace", value).is_none()
-                    })
-                    .map(str::to_string)
-                    .collect::<Vec<_>>();
-                if unresolved.is_empty() {
-                    return None;
-                }
-                return Some(workspace_group_error(
-                    "invalid_params",
-                    &format!(
-                        "Unresolved child workspace handles: {}",
-                        unresolved.join(", ")
-                    ),
-                    Some(json!({"unresolved": unresolved})),
-                ));
-            }
-            Some(value) => {
-                return Some(workspace_group_error(
-                    "invalid_params",
-                    "child_workspace_ids must be an array of workspace handles",
-                    Some(json!({
-                        "child_workspace_ids": workspace_group_parameter_description(value)
-                    })),
-                ));
-            }
-        }
-    }
-
-    if let Some(message) = workspace_group_required_param_error(method, params) {
-        return Some(invalid_params(message));
-    }
-
-    if method == "workspace.group.add" {
-        let placement = raw_string_param(params, &["placement"]);
-        if placement.as_deref().is_some_and(|raw| {
-            !raw.trim().is_empty() && parse_workspace_group_placement(Some(raw)).is_none()
-        }) {
-            return Some(workspace_group_error(
-                "invalid_params",
-                "Invalid placement",
-                Some(json!({"placement": placement})),
-            ));
-        }
-        if params
-            .get("reference_workspace_id")
-            .is_some_and(|value| !value.is_null())
-            && workspace_group_uuid_param(params, "reference_workspace_id").is_none()
-        {
-            return Some(invalid_params("Missing or invalid reference_workspace_id"));
-        }
-    }
-    None
-}
-
-pub(super) fn workspace_group_required_param_error(
-    method: &str,
-    params: &serde_json::Map<String, Value>,
-) -> Option<&'static str> {
-    let group_id = workspace_group_uuid_param(params, "group_id");
-    let workspace_id = workspace_group_uuid_param(params, "workspace_id");
-    match method {
-        "workspace.group.list" => None,
-        "workspace.group.rename"
-            if group_id.is_none() || string_param(params, &["name"]).is_none() =>
-        {
-            Some("Missing group_id or name")
-        }
-        "workspace.group.add" | "workspace.group.set_anchor"
-            if group_id.is_none() || workspace_id.is_none() =>
-        {
-            Some("Missing group_id or workspace_id")
-        }
-        "workspace.group.remove" if workspace_id.is_none() => {
-            Some("Missing or invalid workspace_id")
-        }
-        _ if method != "workspace.group.create" && group_id.is_none() => {
-            Some("Missing or invalid group_id")
-        }
-        _ => None,
-    }
-}
+#[path = "workspace_control/group_helpers.rs"]
+mod group_helpers;
+pub(super) use group_helpers::*;
 
 pub(super) fn workspace_group_list(
     app: &AppHandle,
@@ -2110,21 +1826,20 @@ pub(super) fn workspace_group_transaction(
         -> Result<(Value, bool), cmux_core::session_ops::WorkspaceGroupMutationError>,
 ) -> Result<(Value, AppSessionSnapshot), WorkspaceGroupTransactionError> {
     let state = app.state::<SessionState>();
-    state
-        .transact_value_if_changed(app, |candidate| {
-            let Some(window) = candidate.windows.get_mut(window_index) else {
-                return Err(cmux_core::session_ops::WorkspaceGroupMutationError::GroupNotFound);
-            };
-            mutation(&mut window.tab_manager)
-        })
-        .map_err(|error| match error {
-            PaneTopologyControlError::Operation(error) => {
-                WorkspaceGroupTransactionError::Mutation(error)
-            }
-            PaneTopologyControlError::Publication(message) => {
-                WorkspaceGroupTransactionError::Publication(message)
-            }
-        })
+    transact_value_if_changed_suppressing_derived_events(app, &state, |candidate| {
+        let Some(window) = candidate.windows.get_mut(window_index) else {
+            return Err(cmux_core::session_ops::WorkspaceGroupMutationError::GroupNotFound);
+        };
+        mutation(&mut window.tab_manager)
+    })
+    .map_err(|error| match error {
+        PaneTopologyControlError::Operation(error) => {
+            WorkspaceGroupTransactionError::Mutation(error)
+        }
+        PaneTopologyControlError::Publication(message) => {
+            WorkspaceGroupTransactionError::Publication(message)
+        }
+    })
 }
 
 pub(super) fn workspace_group_control(
@@ -2308,49 +2023,51 @@ pub(super) fn workspace_group_control(
             let panel_id = Uuid::new_v4().to_string();
             let pane_id = Uuid::new_v4().to_string();
             let state = app.state::<SessionState>();
-            let result = state.transact_value_if_changed(app, |candidate| {
-                let tabs = &mut candidate.windows[window_index].tab_manager;
-                let mut anchor = session_ops::fresh_terminal_workspace(&panel_id);
-                anchor.workspace_id = Some(anchor_workspace_id.to_string());
-                anchor.current_directory = cwd.clone();
-                if let Some(SessionWorkspaceLayoutSnapshot::Pane(pane)) = anchor.layout.as_mut() {
-                    pane.pane_id = Some(pane_id.clone());
-                }
-                anchor.surfaces = Some(vec![cmux_core::session::SessionSurfaceSnapshot {
-                    surface_id: panel_id.clone(),
-                    pane_id: pane_id.clone(),
-                    generation: 1,
-                    kind: cmux_core::session::SessionSurfaceKindSnapshot::Terminal,
-                    metadata: Default::default(),
-                    terminal_startup: cwd.clone().map(|directory| {
-                        cmux_core::session::SessionSurfaceTerminalStartupSnapshot {
-                            working_directory: Some(directory),
-                            ..Default::default()
-                        }
-                    }),
-                    scrollback: None,
-                }]);
-                tabs.workspaces.push(anchor);
-                let group = session_ops::create_workspace_group_snapshot(
-                    tabs,
-                    new_group_id,
-                    &name,
-                    anchor_workspace_id,
-                    &child_ids,
-                )?;
-                if let Some(anchor) = tabs.workspaces.iter_mut().find(|workspace| {
-                    workspace
-                        .workspace_id
-                        .as_deref()
-                        .and_then(|id| Uuid::parse_str(id).ok())
-                        == Some(anchor_workspace_id)
-                }) {
-                    anchor.process_title = group.name.clone();
-                    anchor.custom_title = None;
-                    anchor.custom_title_source = None;
-                }
-                Ok::<_, cmux_core::session_ops::WorkspaceGroupMutationError>((group, true))
-            });
+            let result =
+                transact_value_if_changed_suppressing_derived_events(app, &state, |candidate| {
+                    let tabs = &mut candidate.windows[window_index].tab_manager;
+                    let mut anchor = session_ops::fresh_terminal_workspace(&panel_id);
+                    anchor.workspace_id = Some(anchor_workspace_id.to_string());
+                    anchor.current_directory = cwd.clone();
+                    if let Some(SessionWorkspaceLayoutSnapshot::Pane(pane)) = anchor.layout.as_mut()
+                    {
+                        pane.pane_id = Some(pane_id.clone());
+                    }
+                    anchor.surfaces = Some(vec![cmux_core::session::SessionSurfaceSnapshot {
+                        surface_id: panel_id.clone(),
+                        pane_id: pane_id.clone(),
+                        generation: 1,
+                        kind: cmux_core::session::SessionSurfaceKindSnapshot::Terminal,
+                        metadata: Default::default(),
+                        terminal_startup: cwd.clone().map(|directory| {
+                            cmux_core::session::SessionSurfaceTerminalStartupSnapshot {
+                                working_directory: Some(directory),
+                                ..Default::default()
+                            }
+                        }),
+                        scrollback: None,
+                    }]);
+                    tabs.workspaces.push(anchor);
+                    let group = session_ops::create_workspace_group_snapshot(
+                        tabs,
+                        new_group_id,
+                        &name,
+                        anchor_workspace_id,
+                        &child_ids,
+                    )?;
+                    if let Some(anchor) = tabs.workspaces.iter_mut().find(|workspace| {
+                        workspace
+                            .workspace_id
+                            .as_deref()
+                            .and_then(|id| Uuid::parse_str(id).ok())
+                            == Some(anchor_workspace_id)
+                    }) {
+                        anchor.process_title = group.name.clone();
+                        anchor.custom_title = Some(group.name.clone());
+                        anchor.custom_title_source = None;
+                    }
+                    Ok::<_, cmux_core::session_ops::WorkspaceGroupMutationError>((group, true))
+                });
             let (_group, committed) = match result {
                 Ok(result) => result,
                 Err(PaneTopologyControlError::Operation(_)) => {
@@ -2372,7 +2089,39 @@ pub(super) fn workspace_group_control(
             else {
                 return workspace_group_error("not_created", "Group was not created", None);
             };
-            ok(json!({"group": workspace_group_payload(app, window, group)}))
+            let group_payload = workspace_group_payload(app, window, group);
+            let Some(anchor_index) = window.tab_manager.workspaces.iter().position(|workspace| {
+                workspace.workspace_id.as_deref() == Some(anchor_workspace_id.to_string().as_str())
+            }) else {
+                return workspace_group_error("not_created", "Group was not created", None);
+            };
+            if let Some(mut events) =
+                workspace_group_created_event_specs(&committed, window_index, anchor_index)
+            {
+                if let Some(created) = events
+                    .iter_mut()
+                    .find(|event| event.name == "workspace.created")
+                {
+                    created.payload["index"] = json!(0);
+                }
+                record_workspace_events(app, events);
+            }
+            let new_group_id_string = new_group_id.to_string();
+            let mut moved_workspace_ids = vec![anchor_workspace_id.to_string()];
+            moved_workspace_ids.extend(child_ids.iter().filter_map(|child_id| {
+                let child_id = child_id.to_string();
+                committed.windows[window_index]
+                    .tab_manager
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.workspace_id.as_deref() == Some(child_id.as_str()))
+                    .filter(|workspace| {
+                        workspace.group_id.as_deref() == Some(new_group_id_string.as_str())
+                    })
+                    .map(|_| child_id)
+            }));
+            record_workspace_reordered_event(app, &committed, window_index, &moved_workspace_ids);
+            ok(json!({"group": group_payload}))
         }
         "workspace.group.ungroup" => {
             let Some(group_id) = group_id() else {
@@ -2381,12 +2130,23 @@ pub(super) fn workspace_group_control(
             if !group_exists(group_id) {
                 return not_found_group(group_id);
             }
+            let moved_workspace_ids = workspace_group_member_ids(&current, window_index, group_id);
             let result = transaction(Box::new(move |tabs| {
                 session_ops::ungroup_workspace_group_snapshot(tabs, group_id)
                     .map(|_| (json!({"group_id": group_id}), true))
             }));
             match result {
-                Ok((payload, _)) => ok(payload),
+                Ok((payload, committed)) => {
+                    if committed != current {
+                        record_workspace_reordered_event(
+                            app,
+                            &committed,
+                            window_index,
+                            &moved_workspace_ids,
+                        );
+                    }
+                    ok(payload)
+                }
                 Err(WorkspaceGroupTransactionError::Publication(message)) => {
                     workspace_group_error("internal", &message, None)
                 }
@@ -2402,6 +2162,9 @@ pub(super) fn workspace_group_control(
             if !group_exists(group_id) {
                 return not_found_group(group_id);
             }
+            let close_workspace_ids =
+                workspace_group_delete_member_ids(&current, window_index, group_id);
+            let moved_workspace_ids = workspace_group_member_ids(&current, window_index, group_id);
             let state = app.state::<SessionState>();
             match delete_workspace_group_for_control(
                 app,
@@ -2409,10 +2172,42 @@ pub(super) fn workspace_group_control(
                 window_index,
                 &group_id.to_string(),
             ) {
-                Ok(Some((_snapshot, count))) => ok(json!({
-                    "group_id": group_id,
-                    "closed_workspace_count": count,
-                })),
+                Ok(Some((committed, count))) => {
+                    let mut event_snapshot = current.clone();
+                    let mut close_events = Vec::new();
+                    for workspace_id in &close_workspace_ids {
+                        let Some(index) = event_snapshot.windows[window_index]
+                            .tab_manager
+                            .workspaces
+                            .iter()
+                            .position(|workspace| {
+                                workspace.workspace_id.as_deref() == Some(workspace_id)
+                            })
+                        else {
+                            continue;
+                        };
+                        if let Some(events) =
+                            workspace_close_event_specs(&event_snapshot, window_index, index)
+                        {
+                            close_events.extend(events);
+                        }
+                        event_snapshot.windows[window_index]
+                            .tab_manager
+                            .workspaces
+                            .remove(index);
+                    }
+                    record_workspace_events(app, close_events);
+                    record_workspace_reordered_event(
+                        app,
+                        &committed,
+                        window_index,
+                        &moved_workspace_ids,
+                    );
+                    ok(json!({
+                        "group_id": group_id,
+                        "closed_workspace_count": count,
+                    }))
+                }
                 Ok(None) => not_found_group(group_id),
                 Err(message) => workspace_group_error("internal", &message, None),
             }
@@ -2482,7 +2277,19 @@ pub(super) fn workspace_group_control(
                 session_ops::set_workspace_group_pinned_snapshot(tabs, group_id, pinned)
                     .map(|changed| (json!({"group_id": group_id, "is_pinned": pinned}), changed))
             })) {
-                Ok((payload, _)) => ok(payload),
+                Ok((payload, committed)) => {
+                    if committed != current {
+                        let moved_workspace_ids =
+                            workspace_group_member_ids(&committed, window_index, group_id);
+                        record_workspace_reordered_event(
+                            app,
+                            &committed,
+                            window_index,
+                            &moved_workspace_ids,
+                        );
+                    }
+                    ok(payload)
+                }
                 Err(WorkspaceGroupTransactionError::Publication(message)) => {
                     workspace_group_error("internal", &message, None)
                 }
@@ -2544,7 +2351,17 @@ pub(super) fn workspace_group_control(
                     )
                 })
             })) {
-                Ok((payload, _)) => ok(payload),
+                Ok((payload, committed)) => {
+                    if committed != current {
+                        record_workspace_reordered_event(
+                            app,
+                            &committed,
+                            window_index,
+                            &[workspace_id.to_string()],
+                        );
+                    }
+                    ok(payload)
+                }
                 Err(WorkspaceGroupTransactionError::Mutation(cmux_core::session_ops::WorkspaceGroupMutationError::InvalidReferenceWorkspace)) => workspace_group_error(
                     "invalid_params",
                     "Reference workspace must be a member of the target group",
@@ -2573,7 +2390,17 @@ pub(super) fn workspace_group_control(
                 session_ops::remove_workspace_from_group_snapshot(tabs, workspace_id)
                     .map(|changed| (json!({"workspace_id": workspace_id}), changed))
             })) {
-                Ok((payload, _)) => ok(payload),
+                Ok((payload, committed)) => {
+                    if committed != current {
+                        record_workspace_reordered_event(
+                            app,
+                            &committed,
+                            window_index,
+                            &[workspace_id.to_string()],
+                        );
+                    }
+                    ok(payload)
+                }
                 Err(WorkspaceGroupTransactionError::Publication(message)) => {
                     workspace_group_error("internal", &message, None)
                 }
@@ -2598,7 +2425,19 @@ pub(super) fn workspace_group_control(
                     },
                 )
             })) {
-                Ok((payload, _)) => ok(payload),
+                Ok((payload, committed)) => {
+                    if committed != current {
+                        let moved_workspace_ids =
+                            workspace_group_member_ids(&committed, window_index, group_id);
+                        record_workspace_reordered_event(
+                            app,
+                            &committed,
+                            window_index,
+                            &moved_workspace_ids,
+                        );
+                    }
+                    ok(payload)
+                }
                 Err(WorkspaceGroupTransactionError::Publication(message)) => {
                     workspace_group_error("internal", &message, None)
                 }
@@ -2700,7 +2539,7 @@ pub(super) fn workspace_group_control(
                 None,
                 insert_index,
                 false,
-                DerivedEventPolicy::Record,
+                DerivedEventPolicy::Suppress,
             ) {
                 Ok(Some((committed, index))) => {
                     let workspace_id = committed.windows[window_index].tab_manager.workspaces
@@ -2708,11 +2547,23 @@ pub(super) fn workspace_group_control(
                         .workspace_id
                         .as_deref()
                         .expect("created workspace id");
-                    ok(json!({
+                    let payload = json!({
                         "group_id": group_id,
                         "workspace_id": workspace_id,
                         "workspace_ref": control_handle_ref(app, "workspace", workspace_id),
-                    }))
+                    });
+                    if let Some(events) =
+                        workspace_group_created_event_specs(&committed, window_index, index)
+                    {
+                        record_workspace_events(app, events);
+                    }
+                    record_workspace_reordered_event(
+                        app,
+                        &committed,
+                        window_index,
+                        &[workspace_id.to_string()],
+                    );
+                    ok(payload)
                 }
                 Ok(None) => not_found_group(group_id),
                 Err(message) => workspace_group_error("internal", &message, None),
@@ -2823,7 +2674,19 @@ pub(super) fn workspace_group_control(
                 session_ops::move_workspace_group_snapshot(tabs, group_id, target)
                     .map(|changed| (json!({"group_id": group_id}), changed))
             })) {
-                Ok((payload, _)) => ok(payload),
+                Ok((payload, committed)) => {
+                    if committed != current {
+                        let moved_workspace_ids =
+                            workspace_group_member_ids(&committed, window_index, group_id);
+                        record_workspace_reordered_event(
+                            app,
+                            &committed,
+                            window_index,
+                            &moved_workspace_ids,
+                        );
+                    }
+                    ok(payload)
+                }
                 Err(WorkspaceGroupTransactionError::Publication(message)) => {
                     workspace_group_error("internal", &message, None)
                 }
@@ -2871,8 +2734,33 @@ pub(super) fn workspace_group_control(
                     Some(json!({"group_id": group_id})),
                 );
             };
-            if let Some(window_id) = current.windows[window_index].window_id.as_deref() {
-                let _ = crate::window::focus_control_window(app, window_id);
+            let Some(window_id) = current.windows[window_index].window_id.as_deref() else {
+                return workspace_group_error("unavailable", "TabManager not available", None);
+            };
+            let previous_workspace_id = current.windows[window_index]
+                .tab_manager
+                .selected_workspace_index
+                .and_then(|index| usize::try_from(index).ok())
+                .and_then(|index| {
+                    current.windows[window_index]
+                        .tab_manager
+                        .workspaces
+                        .get(index)
+                })
+                .and_then(|workspace| workspace.workspace_id.clone());
+            let active_state = app.try_state::<ControlActiveWindowState>();
+            let key_window_id = active_state
+                .as_ref()
+                .and_then(|state| state.key_history().0);
+            let window_events = window_lifecycle::window_focus_event_specs(
+                &current,
+                window_id,
+                key_window_id.as_deref(),
+            )
+            .unwrap_or_default();
+            let _ = crate::window::focus_control_window(app, window_id);
+            if let Some(state) = active_state {
+                state.set_key(window_id);
             }
             let state = app.state::<SessionState>();
             match select_workspace_in_window_for_control(
@@ -2880,13 +2768,23 @@ pub(super) fn workspace_group_control(
                 &state,
                 window_index,
                 anchor_index,
-                DerivedEventPolicy::Record,
+                DerivedEventPolicy::Suppress,
             ) {
-                Ok(_) => ok(json!({
-                    "group_id": group_id,
-                    "anchor_workspace_id": anchor_id,
-                    "anchor_workspace_ref": control_handle_ref(app, "workspace", anchor_id),
-                })),
+                Ok(committed) => {
+                    publish_window_lifecycle_events(app, window_events);
+                    record_workspace_selected_event(
+                        app,
+                        &committed,
+                        window_index,
+                        anchor_index,
+                        previous_workspace_id.as_deref(),
+                    );
+                    ok(json!({
+                        "group_id": group_id,
+                        "anchor_workspace_id": anchor_id,
+                        "anchor_workspace_ref": control_handle_ref(app, "workspace", anchor_id),
+                    }))
+                }
                 Err(_) => workspace_group_error(
                     "not_found",
                     "Group or anchor not found",

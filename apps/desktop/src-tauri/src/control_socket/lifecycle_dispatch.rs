@@ -664,7 +664,7 @@ pub(super) fn handle_window_lifecycle_request(
     transition.result
 }
 
-fn publish_window_lifecycle_events(
+pub(super) fn publish_window_lifecycle_events(
     app: &AppHandle,
     events: impl IntoIterator<Item = pane_surface_lifecycle::LifecycleEvent>,
 ) {

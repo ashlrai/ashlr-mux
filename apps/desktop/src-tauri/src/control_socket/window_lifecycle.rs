@@ -509,23 +509,44 @@ fn window_focus(
             None,
         );
     };
-    let Some(index) = window_position(snapshot, &window_id) else {
+    if window_position(snapshot, &window_id).is_none() {
         return error(
             snapshot,
             "not_found",
             "Window not found",
             Some(json!({ "window_id": window_id })),
         );
-    };
+    }
     // window.focus IS in focusIntentV2Methods: the one window.* method allowed
     // to steal OS focus (TerminalController.swift:253-275). window.focused is
     // published whenever the id resolves, even when already key
     // (AppDelegate.swift:5693-5700). v2 does NOT move the active TabManager
     // pointer itself — it relies on becoming key (contract adversarial note).
-    let window = &snapshot.windows[index];
+    let events = window_focus_event_specs(snapshot, &window_id, context.key_window_id.as_deref())
+        .expect("resolved focus target");
+    let effects = vec![WindowLifecycleEffect::WindowFocus {
+        window_id: window_id.clone(),
+    }];
+    ok_transition(
+        snapshot.clone(),
+        json!({ "window_id": window_id }),
+        events,
+        effects,
+    )
+}
+
+pub(super) fn window_focus_event_specs(
+    snapshot: &AppSessionSnapshot,
+    window_id: &str,
+    key_window_id: Option<&str>,
+) -> Option<Vec<LifecycleEvent>> {
+    let window = snapshot
+        .windows
+        .iter()
+        .find(|window| window.window_id.as_deref() == Some(window_id))?;
     let mut events = Vec::new();
-    if context.key_window_id.as_deref() != Some(window_id.as_str()) {
-        if let Some(previous_key) = context.key_window_id.as_deref().and_then(|key_window_id| {
+    if key_window_id != Some(window_id) {
+        if let Some(previous_key) = key_window_id.and_then(|key_window_id| {
             snapshot
                 .windows
                 .iter()
@@ -548,7 +569,7 @@ fn window_focus(
             "window.keyed",
             "appkit_key",
             window,
-            &window_id,
+            window_id,
             true,
             false,
         ));
@@ -557,19 +578,11 @@ fn window_focus(
         "window.focused",
         "focus_request",
         window,
-        &window_id,
+        window_id,
         true,
         true,
     ));
-    let effects = vec![WindowLifecycleEffect::WindowFocus {
-        window_id: window_id.clone(),
-    }];
-    ok_transition(
-        snapshot.clone(),
-        json!({ "window_id": window_id }),
-        events,
-        effects,
-    )
+    Some(events)
 }
 
 // ---------------------------------------------------------------------------

@@ -1,5 +1,15 @@
 use super::*;
 
+pub(crate) fn transact_value_if_changed_suppressing_derived_events<R, E>(
+    app: &AppHandle,
+    state: &SessionState,
+    mutation: impl FnOnce(&mut AppSessionSnapshot) -> Result<(R, bool), E>,
+) -> Result<(R, AppSessionSnapshot), PaneTopologyControlError<E>> {
+    let mut publication =
+        ProductionSnapshotPublicationOperations::new(app, state, DerivedEventPolicy::Suppress);
+    transact_value_if_changed_snapshot(&state.snapshot, &mut publication, mutation)
+}
+
 pub(crate) fn reorder_workspaces_in_window_for_control(
     app: &AppHandle,
     state: &SessionState,
