@@ -1,4 +1,4 @@
-use super::events::{record_workspace_close_events, workspace_close_event_specs};
+use super::events::{record_workspace_events, workspace_close_event_specs};
 use super::*;
 
 pub(in crate::control_socket) fn workspace_close(
@@ -52,7 +52,7 @@ pub(in crate::control_socket) fn workspace_close(
         };
     };
     if changed {
-        record_workspace_close_events(app, events);
+        record_workspace_events(app, events);
     }
     ok(identity)
 }

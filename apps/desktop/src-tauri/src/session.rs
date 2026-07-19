@@ -3170,10 +3170,8 @@ fn transact_new_workspace_in_window(
             workspace.initial_terminal_command = None;
             workspace.initial_terminal_environment = None;
         }
-        // R1 (differential remediation): the workspace-birth initial surface
-        // must carry requested_working_directory like the create paths (D6);
-        // simple (layout-less) creations get their record seeded after the
-        // ids are minted below.
+        // The initial surface must carry its requested directory; layout-less
+        // creations are seeded after stable ids are minted below.
         if !focus {
             tabs.selected_workspace_index = previous_selected_id
                 .as_deref()
@@ -3217,9 +3215,10 @@ pub(crate) fn new_workspace_in_window_for_control(
     layout: Option<CmuxLayoutNode>,
     group_insert_index: Option<usize>,
     focus: bool,
+    event_policy: DerivedEventPolicy,
 ) -> Result<Option<(AppSessionSnapshot, usize)>, String> {
-    let mut publication =
-        ProductionSnapshotPublicationOperations::with_deferred_next_panel_reseed(app, state);
+    let mut publication = ProductionSnapshotPublicationOperations::new(app, state, event_policy);
+    publication.reseed_next_panel = false;
     transact_new_workspace_in_window(
         &state.snapshot,
         &state.next_panel,

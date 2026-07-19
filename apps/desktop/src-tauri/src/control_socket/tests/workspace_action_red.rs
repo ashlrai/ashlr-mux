@@ -203,6 +203,22 @@ fn workspace_create_event_specs_match_the_canonical_selected_sequence() {
 }
 
 #[test]
+fn workspace_create_event_specs_suppress_selection_for_background_creation() {
+    let snapshot = test_snapshot();
+
+    let events =
+        workspace_create_event_specs(&snapshot, 0, 0, false, Some("workspace-before")).unwrap();
+
+    assert_eq!(
+        events.iter().map(|event| event.name).collect::<Vec<_>>(),
+        ["workspace.created", "surface.created"]
+    );
+    assert_eq!(events[0].payload["selected"], json!(false));
+    assert_eq!(events[0].payload["previous_workspace_id"], Value::Null);
+    assert_eq!(events[1].payload["focused"], json!(false));
+}
+
+#[test]
 fn notification_removal_lifecycle_events_match_canonical_read_and_clear_shapes() {
     let row = |id: &str, surface_id: &str| cmux_core::notifications::TerminalNotification {
         id: id.into(),

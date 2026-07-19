@@ -4,9 +4,16 @@ use super::*;
 mod activity_controls;
 pub(super) use activity_controls::*;
 
+#[path = "workspace_control/create_params.rs"]
+mod create_params;
+pub(super) use create_params::{
+    canonical_layout_is_valid, workspace_create_cwd_param, workspace_create_initial_env,
+    workspace_create_workspace_env,
+};
+
 #[path = "workspace_control/events.rs"]
 mod events;
-use events::record_workspace_selected_event;
+use events::{record_workspace_create_events, record_workspace_selected_event};
 #[cfg(test)]
 pub(super) use events::{
     workspace_close_event_specs, workspace_create_event_specs, workspace_rename_event_spec,
@@ -157,6 +164,7 @@ pub(super) fn workspace_create(
             reference_index,
         )
     });
+    let focus = bool_param(params, &["focus"]).unwrap_or(false);
     let state = app.state::<SessionState>();
     let (result, created_index) = match new_workspace_in_window_for_control(
         app,
@@ -178,7 +186,8 @@ pub(super) fn workspace_create(
         group_id.as_deref(),
         layout,
         group_insert_index,
-        bool_param(params, &["focus"]).unwrap_or(false),
+        focus,
+        DerivedEventPolicy::Suppress,
     ) {
         Ok(Some(created)) => created,
         Ok(None) => {
@@ -196,6 +205,7 @@ pub(super) fn workspace_create(
             };
         }
     };
+    record_workspace_create_events(app, &current, &result, window_index, created_index, focus);
     let window = &result.windows[window_index];
     let workspace = &window.tab_manager.workspaces[created_index];
     let surface_id = surfaces_for_workspace(workspace)
@@ -213,77 +223,6 @@ pub(super) fn workspace_create(
         "surface_id": surface_id,
         "surface_ref": surface_id.as_str().map(|id| control_handle_ref(app, "surface", id)),
     }))
-}
-
-pub(super) fn workspace_create_cwd_param(
-    params: &serde_json::Map<String, Value>,
-    inherited: Option<&str>,
-) -> Result<Option<String>, ()> {
-    let working_directory = params
-        .get("working_directory")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-    if working_directory.is_some() {
-        return Ok(working_directory);
-    }
-    match params.get("cwd") {
-        Some(Value::String(value)) => Ok(Some(value.clone())),
-        Some(_) => Err(()),
-        None => Ok(inherited.map(str::to_string)),
-    }
-}
-
-pub(super) fn workspace_create_initial_env(
-    params: &serde_json::Map<String, Value>,
-) -> BTreeMap<String, String> {
-    raw_string_map_param(params, "initial_env")
-        .into_iter()
-        .filter_map(|(key, value)| {
-            let key = key.trim();
-            (!key.is_empty()).then(|| (key.to_string(), value))
-        })
-        .collect()
-}
-
-pub(super) fn workspace_create_workspace_env(
-    params: &serde_json::Map<String, Value>,
-) -> BTreeMap<String, String> {
-    raw_string_map_param(params, "workspace_env")
-        .into_iter()
-        .filter_map(|(key, value)| {
-            let key = key.trim();
-            (!key.is_empty()
-                && !value.is_empty()
-                && !key.contains('\0')
-                && !key.contains('=')
-                && !value.contains('\0'))
-            .then(|| (key.to_string(), value))
-        })
-        .collect()
-}
-
-pub(super) fn raw_string_map_param(
-    params: &serde_json::Map<String, Value>,
-    key: &str,
-) -> BTreeMap<String, String> {
-    params
-        .get(key)
-        .and_then(Value::as_object)
-        .into_iter()
-        .flatten()
-        .filter_map(|(key, value)| value.as_str().map(|value| (key.clone(), value.to_string())))
-        .collect()
-}
-
-pub(super) fn canonical_layout_is_valid(layout: &cmux_config::CmuxLayoutNode) -> bool {
-    match layout {
-        cmux_config::CmuxLayoutNode::Pane(pane) => !pane.surfaces.is_empty(),
-        cmux_config::CmuxLayoutNode::Split(split) => {
-            split.children.len() == 2 && split.children.iter().all(canonical_layout_is_valid)
-        }
-    }
 }
 
 pub(super) fn resolve_workspace_identity_in_window(
@@ -2862,6 +2801,7 @@ pub(super) fn workspace_group_control(
                 None,
                 insert_index,
                 false,
+                DerivedEventPolicy::Record,
             ) {
                 Ok(Some((committed, index))) => {
                     let workspace_id = committed.windows[window_index].tab_manager.workspaces

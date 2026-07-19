@@ -18,10 +18,149 @@ fn record_derived_event(app: &AppHandle, event: DerivedEventSpec) {
     );
 }
 
-pub(super) fn record_workspace_close_events(app: &AppHandle, events: Vec<DerivedEventSpec>) {
+pub(super) fn record_workspace_events(app: &AppHandle, events: Vec<DerivedEventSpec>) {
     for event in events {
         record_derived_event(app, event);
     }
+}
+
+pub(super) fn record_workspace_create_events(
+    app: &AppHandle,
+    previous: &AppSessionSnapshot,
+    current: &AppSessionSnapshot,
+    window_index: usize,
+    workspace_index: usize,
+    selected: bool,
+) {
+    let previous_workspace_id = previous.windows.get(window_index).and_then(|window| {
+        window.selected_workspace_id.clone().or_else(|| {
+            window
+                .tab_manager
+                .selected_workspace_index
+                .and_then(|index| usize::try_from(index).ok())
+                .and_then(|index| window.tab_manager.workspaces.get(index))
+                .and_then(|workspace| workspace.workspace_id.clone())
+        })
+    });
+    let Some(events) = workspace_create_event_specs(
+        current,
+        window_index,
+        workspace_index,
+        selected,
+        previous_workspace_id.as_deref(),
+    ) else {
+        return;
+    };
+    record_workspace_events(app, events);
+}
+
+pub(in crate::control_socket) fn workspace_create_event_specs(
+    snapshot: &AppSessionSnapshot,
+    window_index: usize,
+    workspace_index: usize,
+    selected: bool,
+    previous_workspace_id: Option<&str>,
+) -> Option<Vec<DerivedEventSpec>> {
+    let window = snapshot.windows.get(window_index)?;
+    let workspace = window.tab_manager.workspaces.get(workspace_index)?;
+    let workspace_id = workspace.workspace_id.clone()?;
+    let surface_id = workspace.focused_panel_id.as_deref()?;
+    let surface = surfaces_for_workspace(workspace)
+        .into_iter()
+        .find(|surface| surface.get("id").and_then(Value::as_str) == Some(surface_id))?;
+    let pane_id = surface.get("pane_id")?.as_str()?.to_owned();
+    let kind = surface.get("type")?.as_str()?.to_owned();
+    let workspace_created_payload = json!({
+        "workspace_id": workspace_id,
+        "title": workspace_display_name(workspace),
+        "custom_title": workspace.custom_title,
+        "cwd": workspace.current_directory,
+        "index": workspace_index,
+        "selected": selected,
+        "tab_count": window.tab_manager.workspaces.len(),
+        "previous_workspace_id": null,
+    });
+    let mut events = Vec::new();
+    if selected {
+        events.extend([
+            DerivedEventSpec {
+                name: "surface.selected",
+                category: "surface",
+                source: "workspace.lifecycle",
+                window_id: None,
+                workspace_id: Some(workspace_id.clone()),
+                surface_id: Some(surface_id.to_owned()),
+                payload: json!({
+                    "surface_id": surface_id,
+                    "pane_id": pane_id,
+                    "kind": kind,
+                    "focused": true,
+                    "previous_surface_id": null,
+                    "origin": "bonsplit_selection",
+                }),
+            },
+            DerivedEventSpec {
+                name: "pane.focused",
+                category: "pane",
+                source: "workspace.lifecycle",
+                window_id: None,
+                workspace_id: Some(workspace_id.clone()),
+                surface_id: Some(surface_id.to_owned()),
+                payload: json!({
+                    "pane_id": pane_id,
+                    "selected_surface_id": surface_id,
+                    "origin": "bonsplit_selection",
+                }),
+            },
+            DerivedEventSpec {
+                name: "surface.focused",
+                category: "surface",
+                source: "workspace.lifecycle",
+                window_id: None,
+                workspace_id: Some(workspace_id.clone()),
+                surface_id: Some(surface_id.to_owned()),
+                payload: json!({
+                    "surface_id": surface_id,
+                    "pane_id": pane_id,
+                    "kind": kind,
+                    "origin": "bonsplit_selection",
+                }),
+            },
+        ]);
+    }
+    events.push(DerivedEventSpec {
+        name: "workspace.created",
+        category: "workspace",
+        source: "workspace.lifecycle",
+        window_id: None,
+        workspace_id: Some(workspace_id.clone()),
+        surface_id: None,
+        payload: workspace_created_payload,
+    });
+    events.push(DerivedEventSpec {
+        name: "surface.created",
+        category: "surface",
+        source: "workspace.lifecycle",
+        window_id: None,
+        workspace_id: Some(workspace_id.clone()),
+        surface_id: Some(surface_id.to_owned()),
+        payload: json!({
+            "surface_id": surface_id,
+            "pane_id": pane_id,
+            "kind": kind,
+            "focused": selected,
+            "origin": "workspace_initial",
+        }),
+    });
+    if selected {
+        events.push(workspace_selected_event_spec(
+            snapshot,
+            window_index,
+            workspace_index,
+            previous_workspace_id,
+        )?);
+    }
+    Some(events)
 }
 
 pub(in crate::control_socket) fn workspace_close_event_specs(
