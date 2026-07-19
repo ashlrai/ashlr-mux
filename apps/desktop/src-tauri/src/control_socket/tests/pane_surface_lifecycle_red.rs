@@ -13,8 +13,9 @@ use cmux_core::{
     surface_lifecycle::ContainerKind,
 };
 
-const V2_LIFECYCLE_METHODS: [&str; 11] = [
+const V2_LIFECYCLE_METHODS: [&str; 12] = [
     "pane.create",
+    "pane.last",
     "pane.resize",
     "surface.action",
     "surface.create",
