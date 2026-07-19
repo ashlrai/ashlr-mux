@@ -1,0 +1,159 @@
+{
+  "family": "workspace_group_lifecycle",
+  "canonical_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+  "notes": [
+    "Exercises the shared workspace-group lifecycle through all seventeen public v2 methods plus the canonical CLI entry point.",
+    "One explicit auxiliary window makes routing, group order, membership, metadata, focus, state transitions, and emitted events observable.",
+    "No platform differences are pre-approved; classify exact capture pointers only after the first matched run."
+  ],
+  "session_setup": [
+    {"op": "v2", "method": "window.create", "params": {}},
+    {"op": "v2", "method": "workspace.list", "params": {"window_id": "${session.0.result.window_id}"}},
+    {"op": "v2", "method": "workspace.create", "params": {"window_id": "${session.0.result.window_id}", "title": "alpha-two", "focus": false}},
+    {"op": "v2", "method": "workspace.create", "params": {"window_id": "${session.0.result.window_id}", "title": "beta-one", "focus": false}},
+    {"op": "v2", "method": "workspace.create", "params": {"window_id": "${session.0.result.window_id}", "title": "beta-two", "focus": false}},
+    {"op": "v2", "method": "workspace.create", "params": {"window_id": "${session.0.result.window_id}", "title": "gamma-one", "focus": false}},
+    {"op": "v2", "method": "workspace.create", "params": {"window_id": "${session.0.result.window_id}", "title": "ungrouped-one", "focus": false}},
+    {"op": "v2", "method": "workspace.create", "params": {"window_id": "${session.0.result.window_id}", "title": "ungrouped-two", "focus": false}},
+    {"op": "v2", "method": "workspace.create", "params": {"window_id": "${session.0.result.window_id}", "title": "ungrouped-three", "focus": false}},
+    {"op": "v2", "method": "workspace.group.create", "params": {"window_id": "${session.0.result.window_id}", "name": "Alpha", "child_workspace_ids": ["${session.1.result.workspaces.0.id}", "${session.2.result.workspace_id}"]}},
+    {"op": "v2", "method": "workspace.group.create", "params": {"window_id": "${session.0.result.window_id}", "name": "Beta", "child_workspace_ids": ["${session.3.result.workspace_id}", "${session.4.result.workspace_id}"]}},
+    {"op": "v2", "method": "workspace.group.create", "params": {"window_id": "${session.0.result.window_id}", "name": "Gamma", "child_workspace_ids": ["${session.5.result.workspace_id}"]}}
+  ],
+  "cases": [
+    {
+      "id": "workspace_group.list_explicit_window",
+      "action": {"op": "v2", "method": "workspace.group.list", "params": {"window_id": "${session.0.result.window_id}"}}
+    },
+    {
+      "id": "workspace_group.rename",
+      "events": true,
+      "action": {"op": "v2", "method": "workspace.group.rename", "params": {"window_id": "${session.0.result.window_id}", "group_id": "${session.9.result.group.id}", "name": "Alpha Renamed"}},
+      "probes": {"state": [{"op": "v2", "method": "workspace.group.list", "params": {"window_id": "${session.0.result.window_id}"}}]}
+    },
+    {
+      "id": "workspace_group.collapse",
+      "events": true,
+      "action": {"op": "v2", "method": "workspace.group.collapse", "params": {"window_id": "${session.0.result.window_id}", "group_id": "${session.9.result.group.id}"}},
+      "probes": {"state": [{"op": "v2", "method": "workspace.group.list", "params": {"window_id": "${session.0.result.window_id}"}}]}
+    },
+    {
+      "id": "workspace_group.expand",
+      "events": true,
+      "action": {"op": "v2", "method": "workspace.group.expand", "params": {"window_id": "${session.0.result.window_id}", "group_id": "${session.9.result.group.id}"}},
+      "probes": {"state": [{"op": "v2", "method": "workspace.group.list", "params": {"window_id": "${session.0.result.window_id}"}}]}
+    },
+    {
+      "id": "workspace_group.pin",
+      "events": true,
+      "action": {"op": "v2", "method": "workspace.group.pin", "params": {"window_id": "${session.0.result.window_id}", "group_id": "${session.9.result.group.id}"}},
+      "probes": {"state": [{"op": "v2", "method": "workspace.group.list", "params": {"window_id": "${session.0.result.window_id}"}}]}
+    },
+    {
+      "id": "workspace_group.unpin",
+      "events": true,
+      "action": {"op": "v2", "method": "workspace.group.unpin", "params": {"window_id": "${session.0.result.window_id}", "group_id": "${session.9.result.group.id}"}},
+      "probes": {"state": [{"op": "v2", "method": "workspace.group.list", "params": {"window_id": "${session.0.result.window_id}"}}]}
+    },
+    {
+      "id": "workspace_group.set_color",
+      "events": true,
+      "action": {"op": "v2", "method": "workspace.group.set_color", "params": {"window_id": "${session.0.result.window_id}", "group_id": "${session.9.result.group.id}", "hex": " #123456 "}},
+      "probes": {"state": [{"op": "v2", "method": "workspace.group.list", "params": {"window_id": "${session.0.result.window_id}"}}]}
+    },
+    {
+      "id": "workspace_group.clear_color",
+      "events": true,
+      "action": {"op": "v2", "method": "workspace.group.set_color", "params": {"window_id": "${session.0.result.window_id}", "group_id": "${session.9.result.group.id}", "hex": null}},
+      "probes": {"state": [{"op": "v2", "method": "workspace.group.list", "params": {"window_id": "${session.0.result.window_id}"}}]}
+    },
+    {
+      "id": "workspace_group.set_icon",
+      "events": true,
+      "action": {"op": "v2", "method": "workspace.group.set_icon", "params": {"window_id": "${session.0.result.window_id}", "group_id": "${session.9.result.group.id}", "symbol": " hammer.fill "}},
+      "probes": {"state": [{"op": "v2", "method": "workspace.group.list", "params": {"window_id": "${session.0.result.window_id}"}}]}
+    },
+    {
+      "id": "workspace_group.clear_icon",
+      "events": true,
+      "action": {"op": "v2", "method": "workspace.group.set_icon", "params": {"window_id": "${session.0.result.window_id}", "group_id": "${session.9.result.group.id}", "symbol": null}},
+      "probes": {"state": [{"op": "v2", "method": "workspace.group.list", "params": {"window_id": "${session.0.result.window_id}"}}]}
+    },
+    {
+      "id": "workspace_group.add_end",
+      "events": true,
+      "action": {"op": "v2", "method": "workspace.group.add", "params": {"window_id": "${session.0.result.window_id}", "group_id": "${session.9.result.group.id}", "workspace_id": "${session.6.result.workspace_id}", "placement": "end"}},
+      "probes": {"state": [{"op": "v2", "method": "workspace.group.list", "params": {"window_id": "${session.0.result.window_id}"}}]}
+    },
+    {
+      "id": "workspace_group.set_anchor",
+      "events": true,
+      "action": {"op": "v2", "method": "workspace.group.set_anchor", "params": {"window_id": "${session.0.result.window_id}", "group_id": "${session.9.result.group.id}", "workspace_id": "${session.6.result.workspace_id}"}},
+      "probes": {"state": [{"op": "v2", "method": "workspace.group.list", "params": {"window_id": "${session.0.result.window_id}"}}]}
+    },
+    {
+      "id": "workspace_group.remove",
+      "events": true,
+      "action": {"op": "v2", "method": "workspace.group.remove", "params": {"window_id": "${session.0.result.window_id}", "workspace_id": "${session.2.result.workspace_id}"}},
+      "probes": {"state": [{"op": "v2", "method": "workspace.group.list", "params": {"window_id": "${session.0.result.window_id}"}}]}
+    },
+    {
+      "id": "workspace_group.new_workspace_end",
+      "events": true,
+      "action": {"op": "v2", "method": "workspace.group.new_workspace", "params": {"window_id": "${session.0.result.window_id}", "group_id": "${session.9.result.group.id}", "placement": "end"}},
+      "probes": {"state": [{"op": "v2", "method": "workspace.group.list", "params": {"window_id": "${session.0.result.window_id}"}}]}
+    },
+    {
+      "id": "workspace_group.move_to_front",
+      "events": true,
+      "action": {"op": "v2", "method": "workspace.group.move", "params": {"window_id": "${session.0.result.window_id}", "group_id": "${session.10.result.group.id}", "to_index": 0}},
+      "probes": {"state": [{"op": "v2", "method": "workspace.group.list", "params": {"window_id": "${session.0.result.window_id}"}}]}
+    },
+    {
+      "id": "workspace_group.focus",
+      "events": true,
+      "action": {"op": "v2", "method": "workspace.group.focus", "params": {"window_id": "${session.0.result.window_id}", "group_id": "${session.9.result.group.id}"}},
+      "probes": {"state": [{"op": "v2", "method": "workspace.current", "params": {"window_id": "${session.0.result.window_id}"}}], "multiwindow": [{"op": "v2", "method": "window.current", "params": {}}]}
+    },
+    {
+      "id": "workspace_group.create_explicit_children",
+      "events": true,
+      "action": {"op": "v2", "method": "workspace.group.create", "params": {"window_id": "${session.0.result.window_id}", "name": "Delta", "child_workspace_ids": ["${session.7.result.workspace_id}", "${session.8.result.workspace_id}"]}},
+      "probes": {"state": [{"op": "v2", "method": "workspace.group.list", "params": {"window_id": "${session.0.result.window_id}"}}]}
+    },
+    {
+      "id": "workspace_group.create_rejects_malformed_children",
+      "action": {"op": "v2", "method": "workspace.group.create", "params": {"window_id": "${session.0.result.window_id}", "name": "Invalid", "child_workspace_ids": "${session.7.result.workspace_id}"}}
+    },
+    {
+      "id": "workspace_group.add_rejects_invalid_placement",
+      "action": {"op": "v2", "method": "workspace.group.add", "params": {"window_id": "${session.0.result.window_id}", "group_id": "${session.9.result.group.id}", "workspace_id": "${session.2.result.workspace_id}", "placement": "middle"}}
+    },
+    {
+      "id": "workspace_group.move_requires_target",
+      "action": {"op": "v2", "method": "workspace.group.move", "params": {"window_id": "${session.0.result.window_id}", "group_id": "${session.9.result.group.id}"}}
+    },
+    {
+      "id": "cli_workspace_group.list",
+      "action": {"op": "cli", "argv": ["workspace-group", "list", "--window", "${session.0.result.window_id}"]}
+    },
+    {
+      "id": "cli_workspace_group.rename",
+      "events": true,
+      "action": {"op": "cli", "argv": ["workspace-group", "rename", "${session.11.result.group.id}", "--name", "Gamma CLI", "--window", "${session.0.result.window_id}"]},
+      "probes": {"state": [{"op": "v2", "method": "workspace.group.list", "params": {"window_id": "${session.0.result.window_id}"}}]}
+    },
+    {
+      "id": "workspace_group.ungroup",
+      "events": true,
+      "action": {"op": "v2", "method": "workspace.group.ungroup", "params": {"window_id": "${session.0.result.window_id}", "group_id": "${session.11.result.group.id}"}},
+      "probes": {"state": [{"op": "v2", "method": "workspace.group.list", "params": {"window_id": "${session.0.result.window_id}"}}]}
+    },
+    {
+      "id": "workspace_group.delete",
+      "events": true,
+      "action": {"op": "v2", "method": "workspace.group.delete", "params": {"window_id": "${session.0.result.window_id}", "group_id": "${session.10.result.group.id}"}},
+      "probes": {"state": [{"op": "v2", "method": "workspace.group.list", "params": {"window_id": "${session.0.result.window_id}"}}, {"op": "v2", "method": "workspace.list", "params": {"window_id": "${session.0.result.window_id}"}}]}
+    }
+  ]
+}
