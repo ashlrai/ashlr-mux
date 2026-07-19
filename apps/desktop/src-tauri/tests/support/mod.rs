@@ -291,6 +291,7 @@ fn spawn_desktop(
         .current_dir(profile)
         .env("CMUX_CONTROL_PIPE_NAME", pipe_base)
         .env("CMUX_TEST_DISABLE_SINGLE_INSTANCE", "1")
+        .env("CMUX_PARITY_CAPTURE_HEADLESS", "1")
         .env("LOCALAPPDATA", local_app_data)
         .env("APPDATA", roaming_app_data)
         .env("USERPROFILE", home)
