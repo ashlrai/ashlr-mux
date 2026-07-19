@@ -937,6 +937,15 @@ pub fn swap_selected_pane_surfaces(
     {
         return Err(PaneSwapError::BothPanesNeedSurface);
     }
+    if let Some(surfaces) = workspace.surfaces.as_mut() {
+        for surface in surfaces {
+            if surface.surface_id == source_surface_id {
+                surface.pane_id = target_pane_id.to_string();
+            } else if surface.surface_id == target_surface_id {
+                surface.pane_id = source_pane_id.to_string();
+            }
+        }
+    }
     workspace.layout = Some(next);
     Ok(PaneSwapResult {
         source_surface_id,

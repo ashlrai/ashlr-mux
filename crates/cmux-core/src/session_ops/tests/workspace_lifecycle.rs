@@ -1240,6 +1240,7 @@ fn swap_selected_pane_surfaces_moves_persisted_surface_ownership() {
     };
     target_pane.pane_id = Some("pane-target".into());
     let mut workspace = fresh_terminal_workspace("unused");
+    workspace.focused_panel_id = Some("a".into());
     workspace.layout = Some(split(
         SessionSplitOrientation::Vertical,
         0.5,
