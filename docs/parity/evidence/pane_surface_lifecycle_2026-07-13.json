@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "batch": "pane-surface-lifecycle-integration",
+  "latest_verification_date": "2026-07-18",
   "canonical_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
   "contract": "docs/parity/contracts/pane_surface_lifecycle.json",
   "integration": {
@@ -71,8 +72,22 @@
       "driver_failures": 0,
       "archived": "docs/parity/differential/captures/pane_surface_lifecycle.canonical.e1825d40d.ndjson (parity/diff-lane)"
     },
-    "windows_capture": "not yet run; CMUX_CONTROL_PIPE_NAME isolation override landed in a88607b33",
-    "promotion_status": "all batch entries remain implemented_unverified per contract differential_live_gate; verifier shortlist promotable once differential passes: pane.create, pane.resize, surface.action, surface.respawn, surface.report_pwd, surface.current, surface.create, cli:tab-action, cli:respawn-pane"
+    "windows_capture": {
+      "captured_from": "live Windows desktop at exact pushed commit 637d63acb0e82a618fdaee64644a7ac75b2b8a05",
+      "cases": 43,
+      "driver_failures": 0,
+      "isolated_profile": "task-owned APPDATA, LOCALAPPDATA, USERPROFILE, HOME, named pipe, and single-instance scope via scripts/parity/windows-capture-process.ps1",
+      "normalized_diff_sha256": "0D9BA176A97E1169F8BE6D0C13BDA7875E55E13936492DC7601AD9674CBE992C",
+      "raw_capture_sha256": "E4E2714CA215C8C27977897BA479CBDFFAB836F215F4F0CF949E810258E2B898",
+      "result": "43 identical, 0 deltas",
+      "runner_and_manifest": "parity/diff-lane at c4a0d9088fdd700ba5f789bd551a1de061630030"
+    },
+    "profile_pollution_check": {
+      "after_sha256": "55F83CBECCC6301D312E1F81D9E04EA9A9D5E21E5721263FF6D2EC1670F04A19",
+      "before_sha256": "55F83CBECCC6301D312E1F81D9E04EA9A9D5E21E5721263FF6D2EC1670F04A19",
+      "result": "user session file byte hash, size, and modification time unchanged; task session-current.json written under the owned profile"
+    },
+    "promotion_status": "verified on the exact pushed commit: pane.create, pane.resize, surface.action, surface.respawn, surface.report_pwd, surface.current, surface.create, cli:tab-action, cli:respawn-pane; surface.list/close/focus/move and product.pane_surface_lifecycle remain implemented_unverified because their broader restore/multiwindow acceptance surface is not fully covered by this 43-case lane"
   },
   "known_open_items": [
     "R2/G10: backend respawn default cmd.exe vs CLI ComSpec resolution (accepted platform equivalence, watch in differential)",

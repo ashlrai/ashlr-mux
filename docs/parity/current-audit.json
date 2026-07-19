@@ -30,10 +30,11 @@
       "v2_method": 309
     },
     "by_status": {
-      "implemented_unverified": 277,
-      "missing": 226
+      "implemented_unverified": 268,
+      "missing": 226,
+      "verified": 9
     },
-    "strict_verified": 0,
+    "strict_verified": 9,
     "total": 503,
     "warning": "Rows mix CLI commands, socket methods, debug endpoints, and broad product umbrellas. They are neither deduplicated user capabilities nor effort-weighted."
   },
@@ -43,10 +44,10 @@
     "status": "not_measured"
   },
   "windows": {
-    "commit": "758e80606a0ab1e8e2116844f5cf5993beefb78e",
-    "commit_date": "2026-07-17T16:56:18-04:00",
-    "commit_subject": "refactor(windows): split oversized parity modules",
-    "commits_ahead_of_tracked_evidence": 68,
+    "commit": "637d63acb0e82a618fdaee64644a7ac75b2b8a05",
+    "commit_date": "2026-07-18T23:26:32-04:00",
+    "commit_subject": "test(parity): isolate Windows differential profiles",
+    "commits_ahead_of_tracked_evidence": 70,
     "source_evidence": {
       "advertised_and_routed_count": 267,
       "advertised_method_count": 270,

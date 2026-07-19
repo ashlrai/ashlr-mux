@@ -1,4 +1,41 @@
 {
   "schema_version": 1,
-  "entries": {}
+  "entries": {
+    "cli:respawn-pane": {
+      "latest_verifying_commit": "637d63acb0e82a618fdaee64644a7ac75b2b8a05",
+      "status": "verified"
+    },
+    "cli:tab-action": {
+      "latest_verifying_commit": "637d63acb0e82a618fdaee64644a7ac75b2b8a05",
+      "status": "verified"
+    },
+    "v2:pane.create": {
+      "latest_verifying_commit": "637d63acb0e82a618fdaee64644a7ac75b2b8a05",
+      "status": "verified"
+    },
+    "v2:pane.resize": {
+      "latest_verifying_commit": "637d63acb0e82a618fdaee64644a7ac75b2b8a05",
+      "status": "verified"
+    },
+    "v2:surface.action": {
+      "latest_verifying_commit": "637d63acb0e82a618fdaee64644a7ac75b2b8a05",
+      "status": "verified"
+    },
+    "v2:surface.create": {
+      "latest_verifying_commit": "637d63acb0e82a618fdaee64644a7ac75b2b8a05",
+      "status": "verified"
+    },
+    "v2:surface.current": {
+      "latest_verifying_commit": "637d63acb0e82a618fdaee64644a7ac75b2b8a05",
+      "status": "verified"
+    },
+    "v2:surface.report_pwd": {
+      "latest_verifying_commit": "637d63acb0e82a618fdaee64644a7ac75b2b8a05",
+      "status": "verified"
+    },
+    "v2:surface.respawn": {
+      "latest_verifying_commit": "637d63acb0e82a618fdaee64644a7ac75b2b8a05",
+      "status": "verified"
+    }
+  }
 }

@@ -17888,7 +17888,7 @@
       "family": "pane",
       "id": "cli:respawn-pane",
       "kind": "cli_command",
-      "latest_verifying_commit": null,
+      "latest_verifying_commit": "637d63acb0e82a618fdaee64644a7ac75b2b8a05",
       "metadata": {
         "alias_expansion": null,
         "canonical_name": "respawn-pane",
@@ -17975,7 +17975,7 @@
       "name": "respawn-pane",
       "priority": 0,
       "rationale": null,
-      "status": "implemented_unverified",
+      "status": "verified",
       "user_approval": null,
       "windows_sources": [
         {
@@ -22652,7 +22652,7 @@
       "family": "surface",
       "id": "cli:tab-action",
       "kind": "cli_command",
-      "latest_verifying_commit": null,
+      "latest_verifying_commit": "637d63acb0e82a618fdaee64644a7ac75b2b8a05",
       "metadata": {
         "alias_expansion": null,
         "canonical_name": "tab-action",
@@ -22755,7 +22755,7 @@
       "name": "tab-action",
       "priority": 0,
       "rationale": null,
-      "status": "implemented_unverified",
+      "status": "verified",
       "user_approval": null,
       "windows_sources": [
         {
@@ -42169,7 +42169,7 @@
       "family": "pane",
       "id": "v2:pane.create",
       "kind": "v2_method",
-      "latest_verifying_commit": null,
+      "latest_verifying_commit": "637d63acb0e82a618fdaee64644a7ac75b2b8a05",
       "metadata": {
         "availability": "release",
         "test_only": false,
@@ -42332,7 +42332,7 @@
       "name": "pane.create",
       "priority": 0,
       "rationale": null,
-      "status": "implemented_unverified",
+      "status": "verified",
       "user_approval": null,
       "windows_sources": [
         {
@@ -43297,7 +43297,7 @@
       "family": "pane",
       "id": "v2:pane.resize",
       "kind": "v2_method",
-      "latest_verifying_commit": null,
+      "latest_verifying_commit": "637d63acb0e82a618fdaee64644a7ac75b2b8a05",
       "metadata": {
         "availability": "release",
         "test_only": false,
@@ -43389,7 +43389,7 @@
       "name": "pane.resize",
       "priority": 0,
       "rationale": null,
-      "status": "implemented_unverified",
+      "status": "verified",
       "user_approval": null,
       "windows_sources": [
         {
@@ -44378,7 +44378,7 @@
       "family": "surface",
       "id": "v2:surface.action",
       "kind": "v2_method",
-      "latest_verifying_commit": null,
+      "latest_verifying_commit": "637d63acb0e82a618fdaee64644a7ac75b2b8a05",
       "metadata": {
         "availability": "release",
         "test_only": false,
@@ -44537,7 +44537,7 @@
       "name": "surface.action",
       "priority": 0,
       "rationale": null,
-      "status": "implemented_unverified",
+      "status": "verified",
       "user_approval": null,
       "windows_sources": [
         {
@@ -45344,7 +45344,7 @@
       "family": "surface",
       "id": "v2:surface.create",
       "kind": "v2_method",
-      "latest_verifying_commit": null,
+      "latest_verifying_commit": "637d63acb0e82a618fdaee64644a7ac75b2b8a05",
       "metadata": {
         "availability": "release",
         "test_only": false,
@@ -45523,7 +45523,7 @@
       "name": "surface.create",
       "priority": 0,
       "rationale": null,
-      "status": "implemented_unverified",
+      "status": "verified",
       "user_approval": null,
       "windows_sources": [
         {
@@ -45866,7 +45866,7 @@
       "family": "surface",
       "id": "v2:surface.current",
       "kind": "v2_method",
-      "latest_verifying_commit": null,
+      "latest_verifying_commit": "637d63acb0e82a618fdaee64644a7ac75b2b8a05",
       "metadata": {
         "availability": "release",
         "test_only": false,
@@ -45925,7 +45925,7 @@
       "name": "surface.current",
       "priority": 0,
       "rationale": null,
-      "status": "implemented_unverified",
+      "status": "verified",
       "user_approval": null,
       "windows_sources": [
         {
@@ -48347,7 +48347,7 @@
       "family": "surface",
       "id": "v2:surface.report_pwd",
       "kind": "v2_method",
-      "latest_verifying_commit": null,
+      "latest_verifying_commit": "637d63acb0e82a618fdaee64644a7ac75b2b8a05",
       "metadata": {
         "availability": "release",
         "test_only": false,
@@ -48414,7 +48414,7 @@
       "name": "surface.report_pwd",
       "priority": 0,
       "rationale": null,
-      "status": "implemented_unverified",
+      "status": "verified",
       "user_approval": null,
       "windows_sources": [
         {
@@ -48779,7 +48779,7 @@
       "family": "surface",
       "id": "v2:surface.respawn",
       "kind": "v2_method",
-      "latest_verifying_commit": null,
+      "latest_verifying_commit": "637d63acb0e82a618fdaee64644a7ac75b2b8a05",
       "metadata": {
         "availability": "release",
         "test_only": false,
@@ -48875,7 +48875,7 @@
       "name": "surface.respawn",
       "priority": 0,
       "rationale": null,
-      "status": "implemented_unverified",
+      "status": "verified",
       "user_approval": null,
       "windows_sources": [
         {
@@ -62496,8 +62496,9 @@
         "missing": 1
       },
       "pane": {
-        "implemented_unverified": 26,
-        "missing": 1
+        "implemented_unverified": 23,
+        "missing": 1,
+        "verified": 3
       },
       "pane_surface": {
         "missing": 1
@@ -62523,8 +62524,9 @@
         "missing": 1
       },
       "surface": {
-        "implemented_unverified": 40,
-        "missing": 1
+        "implemented_unverified": 34,
+        "missing": 1,
+        "verified": 6
       },
       "system": {
         "implemented_unverified": 10,
@@ -62565,8 +62567,9 @@
       "v2_method": 303
     },
     "by_status": {
-      "implemented_unverified": 274,
-      "missing": 222
+      "implemented_unverified": 265,
+      "missing": 222,
+      "verified": 9
     },
     "canonical_targets": {
       "debug_only_v2_methods": 42,
@@ -62576,20 +62579,20 @@
     },
     "completion_resolution": {
       "denominator": 496,
-      "numerator": 0,
-      "percentage": 0.0
+      "numerator": 9,
+      "percentage": 1.8145
     },
     "core_local_workflow": {
       "denominator": 282,
-      "numerator": 0,
-      "percentage": 0.0
+      "numerator": 9,
+      "percentage": 3.1915
     },
     "strict_parity": {
       "denominator": 496,
-      "numerator": 0,
-      "percentage": 0.0
+      "numerator": 9,
+      "percentage": 1.8145
     },
     "total_entries": 496,
-    "unresolved_entries": 496
+    "unresolved_entries": 487
   }
 }

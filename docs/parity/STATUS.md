@@ -4,20 +4,21 @@ Checkpoint commits:
 
 - Canonical cmux: `c9f2d8c4382e29db89a030d80d02d8174ef7f2ac`
 - Windows behavior: `758e80606a0ab1e8e2116844f5cf5993beefb78e`
+- Latest pushed verification checkpoint: `637d63acb0e82a618fdaee64644a7ac75b2b8a05`
 
 The Windows desktop and CLI build successfully. The broad desktop, web, IPC,
 workspace, parity, and contract suites passed on the Windows behavior commit.
-A 43-case live pane/surface
-differential produced identical observations, but its matrix promotion was
-withheld because the desktop process wrote session state outside the test-owned
-profile.
+An isolated-profile live differential on the exact pushed verification commit
+produced 43 identical pane/surface observations with zero deltas. The user
+session file remained byte-for-byte unchanged, so nine entries covered by the
+lane are now strictly verified.
 
 ## What the current audit says
 
 The rolling catalog contains 503 rows: 159 public CLI commands, 16 internal CLI
 contracts, 263 release socket methods, 46 debug socket methods, and 19 coarse
-product umbrellas. Source inspection classifies 277 rows as implemented but
-unverified and 226 as missing.
+product umbrellas. It currently classifies 9 rows as verified, 268 as
+implemented but unverified, and 226 as missing.
 
 Those numbers are useful for finding API gaps. They are not a percentage of the
 user experience. The catalog still needs a deduplicated user-capability layer
@@ -26,11 +27,10 @@ before a defensible product-completion percentage exists. See
 
 ## Known acceptance blockers
 
-1. Automated desktop runs need an explicit task-owned session and app-data root.
-2. Terminal and mobile-terminal viewport handling has a quarantined concurrency
+1. Terminal and mobile-terminal viewport handling has a quarantined concurrency
    fix that must await accepted-handler cancellation before integration.
-3. Implemented behavior needs evidence promotion in coherent capability batches;
-raw route or help-text presence is not verification.
+2. Implemented behavior needs evidence promotion in coherent capability batches;
+   raw route or help-text presence is not verification.
 
 ## Maintenance checkpoint
 
@@ -51,6 +51,7 @@ raw route or help-text presence is not verification.
 
 ## Next efficient slice
 
-Fix session-root isolation, rerun the existing 43-case pane/surface differential,
-and promote only the independently supported capability claims. Keep that change
-separate from new feature implementation and structural refactors.
+Finish the pane/surface family without broadening scope: add the missing
+restore/multiwindow evidence for surface.list, surface.close, surface.focus,
+surface.move, and the product-level lifecycle invariant. Keep that evidence
+slice separate from terminal viewport integration and structural refactors.
