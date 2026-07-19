@@ -596,7 +596,25 @@ pub fn window_open_task_manager() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{task_manager_command, WindowStateSnapshot, AUX_WINDOW_LABEL_PREFIX};
+    use super::{
+        capture_windows_hidden_for_value, task_manager_command, WindowStateSnapshot,
+        AUX_WINDOW_LABEL_PREFIX,
+    };
+    use std::ffi::OsStr;
+
+    #[test]
+    fn capture_headless_mode_requires_an_explicit_one() {
+        assert!(!capture_windows_hidden_for_value(None));
+        assert!(!capture_windows_hidden_for_value(Some(OsStr::new("0"))));
+        assert!(capture_windows_hidden_for_value(Some(OsStr::new("1"))));
+    }
+
+    #[test]
+    fn configured_main_window_starts_hidden_until_setup() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("valid Tauri config");
+        assert_eq!(config["app"]["windows"][0]["visible"], false);
+    }
 
     #[test]
     fn window_state_snapshot_serializes_with_camel_case_keys() {
