@@ -2528,6 +2528,14 @@ mod control_result_tests {
     }
 
     #[test]
+    fn adjacent_window_commands_keep_canonical_handle_summary() {
+        let result = serde_json::json!({"workspace_ref":"workspace:2"});
+        for method in ["workspace.next", "workspace.previous"] {
+            assert_eq!(format_control_result(method, &result), "OK workspace:2");
+        }
+    }
+
+    #[test]
     fn pane_list_outputs_match_canonical_text_rows() {
         assert_eq!(
             format_control_result(
