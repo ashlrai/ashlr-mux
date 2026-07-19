@@ -194,8 +194,8 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
   `SwiftExpressionEvaluator.ts` base. Its 1,426 moved implementation lines are
   exact after normalizing `protected` back to `private`; eight explicit hooks
   retain the parser-owned view/function helpers, and seven obsolete parent type
-  imports were removed. The
-  92-test custom-sidebar suite passes before and twice after the extraction,
+  imports were removed. The 92-test custom-sidebar suite passes before and
+  twice after the extraction,
   the full web suite passes 1,253 tests across 81 files, and typecheck, web
   production build, whitespace, and the 39-file Windows length budget are
   clean. No user-facing strings or localization resources changed.
