@@ -32,6 +32,12 @@ pub(super) use window_list::{window_list, workspace_list_with_recoverable_active
 mod rename;
 pub(super) use rename::workspace_rename;
 
+#[path = "workspace_control/navigation.rs"]
+mod navigation;
+pub(super) use navigation::{workspace_last, workspace_select_relative};
+#[cfg(test)]
+pub(super) use navigation::{workspace_relative_target, WorkspaceNavigationTargetError};
+
 pub(super) fn workspace_create(
     app: &AppHandle,
     params: &serde_json::Map<String, Value>,
@@ -1006,92 +1012,6 @@ pub(super) fn workspace_reorder_many_order(
                 .map_err(|_| WorkspaceReorderManyOrderError::Invalid(raw.to_string()))
         })
         .collect()
-}
-
-pub(super) fn workspace_select_relative(app: &AppHandle, delta: i64) -> ControlCallResult {
-    let current = snapshot(app);
-    let Some(window) = current.windows.first() else {
-        return workspace_current(&current);
-    };
-    let count = window.tab_manager.workspaces.len();
-    if count == 0 {
-        return workspace_current(&current);
-    }
-    let selected = selected_workspace_index(&current).min(count - 1);
-    let next = (selected as i64 + delta).rem_euclid(count as i64);
-    let state = app.state::<SessionState>();
-    match select_workspace_for_control(app, &state, next) {
-        Ok(snapshot) => workspace_current(&snapshot),
-        Err(message) => ControlCallResult::Err {
-            code: "internal".to_string(),
-            message,
-            data: None,
-        },
-    }
-}
-
-pub(super) fn workspace_last(
-    app: &AppHandle,
-    params: &serde_json::Map<String, Value>,
-) -> ControlCallResult {
-    let current = snapshot(app);
-    let Some(requested_window) = split_off_window_index(app, &current, params) else {
-        return ControlCallResult::Err {
-            code: "unavailable".to_string(),
-            message: "TabManager not available".to_string(),
-            data: None,
-        };
-    };
-    let window_index = requested_window.unwrap_or_else(|| {
-        crate::window::current_control_window(app, None)
-            .and_then(|identity| {
-                current
-                    .windows
-                    .iter()
-                    .position(|window| window.window_id.as_deref() == Some(identity.label.as_str()))
-            })
-            .unwrap_or(0)
-    });
-    let state = app.state::<SessionState>();
-    let (workspace_id, result) = match select_last_workspace_for_control(app, &state, window_index)
-    {
-        Ok(result) => result,
-        Err(WorkspaceLastControlError::TabManagerUnavailable) => {
-            return ControlCallResult::Err {
-                code: "unavailable".to_string(),
-                message: "TabManager not available".to_string(),
-                data: None,
-            };
-        }
-        Err(WorkspaceLastControlError::NoPreviousWorkspace) => {
-            return ControlCallResult::Err {
-                code: "not_found".to_string(),
-                message: "No previous workspace in history".to_string(),
-                data: None,
-            };
-        }
-    };
-    let window = &result.windows[window_index];
-    let window_label = window.window_id.as_deref().unwrap_or("main");
-    let identity = crate::window::control_window_summaries(app)
-        .into_iter()
-        .find(|summary| summary.identity.label == window_label)
-        .map(|summary| summary.identity);
-    if let Some(window) = app.get_webview_window(window_label) {
-        let _ = window.set_focus();
-    }
-    let workspace_index = window
-        .tab_manager
-        .workspaces
-        .iter()
-        .position(|workspace| workspace.workspace_id.as_deref() == Some(workspace_id.as_str()))
-        .unwrap_or(0);
-    ok(json!({
-        "workspace_id": workspace_id,
-        "workspace_ref": workspace_ref(workspace_index),
-        "window_id": identity.as_ref().map(|identity| identity.id.clone()),
-        "window_ref": identity.as_ref().map(|identity| identity.reference.clone()),
-    }))
 }
 
 pub(super) fn workspace_equalize_splits(app: &AppHandle) -> ControlCallResult {

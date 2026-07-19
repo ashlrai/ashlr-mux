@@ -51,8 +51,7 @@ fn workspace_next_routes_to_explicit_window_and_wraps() {
 #[test]
 fn workspace_previous_routes_by_workspace_owner_before_active_window() {
     let snapshot = navigation_snapshot();
-    let params =
-        serde_json::Map::from_iter([("workspace_id".into(), json!("workspace-b1"))]);
+    let params = serde_json::Map::from_iter([("workspace_id".into(), json!("workspace-b1"))]);
 
     let target = workspace_relative_target(&snapshot, &params, Some("window-a"), -1)
         .expect("workspace owner must resolve");
@@ -65,13 +64,8 @@ fn workspace_previous_routes_by_workspace_owner_before_active_window() {
 #[test]
 fn workspace_navigation_uses_active_window_without_selectors() {
     let snapshot = navigation_snapshot();
-    let target = workspace_relative_target(
-        &snapshot,
-        &serde_json::Map::new(),
-        Some("window-b"),
-        1,
-    )
-    .expect("active window must resolve");
+    let target = workspace_relative_target(&snapshot, &serde_json::Map::new(), Some("window-b"), 1)
+        .expect("active window must resolve");
 
     assert_eq!(target.window_index, 1);
     assert_eq!(target.workspace_id, "workspace-b1");
@@ -80,8 +74,7 @@ fn workspace_navigation_uses_active_window_without_selectors() {
 #[test]
 fn workspace_navigation_distinguishes_unavailable_from_no_selection() {
     let mut snapshot = navigation_snapshot();
-    let invalid =
-        serde_json::Map::from_iter([("window_id".into(), json!("missing-window"))]);
+    let invalid = serde_json::Map::from_iter([("window_id".into(), json!("missing-window"))]);
     assert_eq!(
         workspace_relative_target(&snapshot, &invalid, Some("window-a"), 1),
         Err(WorkspaceNavigationTargetError::TabManagerUnavailable)
@@ -90,12 +83,7 @@ fn workspace_navigation_distinguishes_unavailable_from_no_selection() {
     snapshot.windows[1].tab_manager.selected_workspace_index = None;
     snapshot.windows[1].selected_workspace_id = None;
     assert_eq!(
-        workspace_relative_target(
-            &snapshot,
-            &serde_json::Map::new(),
-            Some("window-b"),
-            1,
-        ),
+        workspace_relative_target(&snapshot, &serde_json::Map::new(), Some("window-b"), 1,),
         Err(WorkspaceNavigationTargetError::NoWorkspaceSelected)
     );
 }
