@@ -1,4 +1,5 @@
 import json
+import threading
 import unittest
 
 from capture_driver import (
@@ -581,6 +582,31 @@ class RunCaptureTests(unittest.TestCase):
         for lane in ("exit_status", "stdout", "stderr", "events", "persistence"):
             self.assertIsNone(observation[lane])
         self.assertIsNone(record["capture_error"])
+
+    def test_event_collector_interrupts_reader_before_closing_connection(self):
+        from capture_driver import EventCollector
+
+        calls = []
+
+        class ConnectionStub:
+            def interrupt_read(self):
+                calls.append("interrupt")
+
+            def close(self):
+                calls.append("close")
+
+        class ThreadStub:
+            def join(self, timeout):
+                calls.append(("join", timeout))
+
+        collector = EventCollector.__new__(EventCollector)
+        collector._connection = ConnectionStub()
+        collector._thread = ThreadStub()
+        collector._lock = threading.Lock()
+        collector.frames = [{"name": "window.closed"}]
+
+        self.assertEqual(collector.stop(), [{"name": "window.closed"}])
+        self.assertEqual(calls, ["interrupt", ("join", 2), "close"])
 
     def test_run_capture_records_case_error_and_continues(self):
         from capture_driver import run_capture

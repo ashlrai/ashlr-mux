@@ -721,6 +721,18 @@ class Connection:
             text = text[:-1]
         return text
 
+    def interrupt_read(self) -> None:
+        """Wake a thread blocked in the transport's synchronous read."""
+        try:
+            if self._sock is not None:
+                import socket as socket_module
+
+                self._sock.shutdown(socket_module.SHUT_RDWR)
+            elif self._fd is not None:
+                _cancel_pending_io(self._fd)
+        except OSError:
+            pass
+
     def close(self) -> None:
         try:
             if self._sock is not None:
@@ -776,8 +788,12 @@ class EventCollector:
                     self.frames.append(frame)
 
     def stop(self) -> list[Any]:
-        self._connection.close()
+        # Closing a Windows named-pipe fd while the pump is inside synchronous
+        # ReadFile can wait behind that read. Cancel it first and let the pump
+        # leave before releasing the handle.
+        self._connection.interrupt_read()
         self._thread.join(timeout=2)
+        self._connection.close()
         with self._lock:
             return list(self.frames)
 
