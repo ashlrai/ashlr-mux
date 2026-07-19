@@ -251,7 +251,15 @@ jobs:
             exit 1
           fi
           echo "APP_BINARY=$BINARY" >> "$GITHUB_ENV"
+          echo "APP_BUNDLE=$APP" >> "$GITHUB_ENV"
           echo "CLI_PATH=$CLI" >> "$GITHUB_ENV"
+
+          # Normal termination is part of the restore contract: canonical
+          # forces a synchronous session write from applicationShouldTerminate,
+          # while SIGTERM/pkill can race the ordinary asynchronous autosave.
+          xcrun swiftc -framework AppKit \
+            harness/scripts/parity/terminate-macos-app.swift \
+            -o /tmp/terminate-canonical-app
 
           # Shared launch/relaunch script: also passed to the capture driver as
           # --restart-cmd so manifest `restart` ops (quit + relaunch restore
@@ -261,11 +269,13 @@ jobs:
           cat > /tmp/launch-canonical.sh <<'LAUNCH'
           #!/usr/bin/env bash
           set -euo pipefail
-          pkill -x "cmux DEV" 2>/dev/null || true
-          for _ in $(seq 1 20); do
-            pgrep -x "cmux DEV" >/dev/null 2>&1 || break
-            sleep 0.5
-          done
+          if [ -f /tmp/cmux-capture-app.pid ]; then
+            PREVIOUS_PID="$(cat /tmp/cmux-capture-app.pid)"
+            if kill -0 "$PREVIOUS_PID" 2>/dev/null; then
+              /tmp/terminate-canonical-app "$PREVIOUS_PID" "$APP_BUNDLE"
+            fi
+          fi
+          rm -f /tmp/cmux-capture-app.pid
           rm -f "$CAPTURE_SOCKET"
           if [ "$CAPTURE_RESTORE_MODE" = "normal" ]; then
             CMUX_SOCKET_MODE=allowAll \
@@ -335,7 +345,10 @@ jobs:
       - name: Stop app
         if: always()
         run: |
-          pkill -x "cmux DEV" 2>/dev/null || true
+          if [ -f /tmp/cmux-capture-app.pid ]; then
+            APP_PID="$(cat /tmp/cmux-capture-app.pid)"
+            kill "$APP_PID" 2>/dev/null || true
+          fi
           if [ -n "${VDISPLAY_PID:-}" ]; then
             kill "$VDISPLAY_PID" 2>/dev/null || true
           fi
