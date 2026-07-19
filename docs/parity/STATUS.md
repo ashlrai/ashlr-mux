@@ -157,6 +157,11 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
   metadata, grouping, and environment parsing live in the 1,299-line
   `command_forward/workspace.rs` child module. The 251-test CLI suite and
   all-target compile check pass after each boundary.
+- CLI `main.rs` is now 3,081 physical lines (from 4,059). Control-result text,
+  JSON projection, id formatting, and tmux-state pruning live in the 997-line
+  `control_output.rs` child module with 11 explicit parent-visible functions.
+  The move adds 19 net module/import/visibility lines; the full CLI all-target suite
+  passes before the move, after extraction, and after visibility tightening.
 - `workspace_control.rs` is now 3,180 physical lines (from 3,711 at this
   checkpoint). Strict live/recoverable `window.list` projection lives in the
   183-line `workspace_control/window_list.rs` child. Right-sidebar, feed, and
