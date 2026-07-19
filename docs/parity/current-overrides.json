@@ -5,13 +5,37 @@
       "latest_verifying_commit": "a51ddd28763bad2549d3903de78bc7b59b988e36",
       "status": "verified"
     },
+    "cli:close-workspace": {
+      "latest_verifying_commit": "4cfbc03030967813dcd23a1637ec2832c363e46a",
+      "status": "verified"
+    },
+    "cli:current-workspace": {
+      "latest_verifying_commit": "4cfbc03030967813dcd23a1637ec2832c363e46a",
+      "status": "verified"
+    },
     "cli:focus-window": {
       "latest_verifying_commit": "a51ddd28763bad2549d3903de78bc7b59b988e36",
       "rationale": "CLI routing, selector normalization, output, and events are exact. Native key-window ownership follows the tested Win32 foreground equivalent documented by the retained differential manifest.",
       "status": "platform_equivalent"
     },
+    "cli:list-workspaces": {
+      "latest_verifying_commit": "4cfbc03030967813dcd23a1637ec2832c363e46a",
+      "status": "verified"
+    },
     "cli:new-window": {
       "latest_verifying_commit": "a51ddd28763bad2549d3903de78bc7b59b988e36",
+      "status": "verified"
+    },
+    "cli:new-workspace": {
+      "latest_verifying_commit": "4cfbc03030967813dcd23a1637ec2832c363e46a",
+      "status": "verified"
+    },
+    "cli:rename-workspace": {
+      "latest_verifying_commit": "4cfbc03030967813dcd23a1637ec2832c363e46a",
+      "status": "verified"
+    },
+    "cli:select-workspace": {
+      "latest_verifying_commit": "4cfbc03030967813dcd23a1637ec2832c363e46a",
       "status": "verified"
     },
     "cli:surface-resume": {
@@ -20,6 +44,10 @@
     },
     "product.window_lifecycle": {
       "rationale": "Creation, focus, close, events, and restore are implemented, but successful physical multi-display movement remains outside the retained headless differential evidence.",
+      "status": "implemented_unverified"
+    },
+    "product.workspace_lifecycle": {
+      "rationale": "The basic list/current/create/select/rename/close v2 and CLI entry points are exact across the retained 19-case differential. The broad umbrella also includes navigation, ordering, groups, restore, persistence, remote workspaces, and workspace.action semantics that this lane does not yet verify.",
       "status": "implemented_unverified"
     },
     "v2:surface.refresh": {
@@ -51,6 +79,30 @@
       "latest_verifying_commit": "a51ddd28763bad2549d3903de78bc7b59b988e36",
       "rationale": "Payloads, errors, active routing, and lifecycle events are exact. Native key-window ownership uses the tested Win32 foreground equivalent documented by the retained differential manifest.",
       "status": "platform_equivalent"
+    },
+    "v2:workspace.close": {
+      "latest_verifying_commit": "4cfbc03030967813dcd23a1637ec2832c363e46a",
+      "status": "verified"
+    },
+    "v2:workspace.create": {
+      "latest_verifying_commit": "4cfbc03030967813dcd23a1637ec2832c363e46a",
+      "status": "verified"
+    },
+    "v2:workspace.current": {
+      "latest_verifying_commit": "4cfbc03030967813dcd23a1637ec2832c363e46a",
+      "status": "verified"
+    },
+    "v2:workspace.list": {
+      "latest_verifying_commit": "4cfbc03030967813dcd23a1637ec2832c363e46a",
+      "status": "verified"
+    },
+    "v2:workspace.rename": {
+      "latest_verifying_commit": "4cfbc03030967813dcd23a1637ec2832c363e46a",
+      "status": "verified"
+    },
+    "v2:workspace.select": {
+      "latest_verifying_commit": "4cfbc03030967813dcd23a1637ec2832c363e46a",
+      "status": "verified"
     }
   }
 }

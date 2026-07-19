@@ -30,12 +30,12 @@
       "v2_method": 309
     },
     "by_status": {
-      "implemented_unverified": 255,
-      "missing": 223,
+      "implemented_unverified": 244,
+      "missing": 222,
       "platform_equivalent": 3,
-      "verified": 22
+      "verified": 34
     },
-    "strict_verified": 25,
+    "strict_verified": 37,
     "total": 503,
     "warning": "Rows mix CLI commands, socket methods, debug endpoints, and broad product umbrellas. They are neither deduplicated user capabilities nor effort-weighted."
   },
@@ -45,10 +45,10 @@
     "status": "not_measured"
   },
   "windows": {
-    "commit": "4e14e0d7314223cec2ea4c5cedd2af54378af794",
-    "commit_date": "2026-07-19T11:39:56-04:00",
-    "commit_subject": "fix(workspace): match close lifecycle events",
-    "commits_ahead_of_tracked_evidence": 50,
+    "commit": "598eeb55d633e9d43a65116ff7c73f4ad3043872",
+    "commit_date": "2026-07-19T12:01:52-04:00",
+    "commit_subject": "fix(parity): align tracked Windows evidence pin",
+    "commits_ahead_of_tracked_evidence": 54,
     "source_evidence": {
       "advertised_and_routed_count": 267,
       "advertised_method_count": 270,

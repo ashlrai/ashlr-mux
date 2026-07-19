@@ -1,0 +1,84 @@
+{
+  "schema_version": 2,
+  "family": "workspace_lifecycle",
+  "status": "valid_complete_capture",
+  "canonical": {
+    "source_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+    "workflow_run": 29690475786,
+    "artifact": "canonical-capture-workspace_lifecycle",
+    "sha256": "B9E6B5896429FD54C2DB6DF5CF80923C47DD193ABCAE1C77B6EE078BCB562C5C",
+    "cases": 19,
+    "capture_errors": 0,
+    "unsatisfied_settles": 0
+  },
+  "windows": {
+    "test_commit": "4adaf32889",
+    "behavior_commit": "4cfbc03030967813dcd23a1637ec2832c363e46a",
+    "sha256": "D2180F84DE5D7B81D0723BF2A433EF7996AAFF0BAD98F7E1F5D77386B0D85A07",
+    "cases": 19,
+    "capture_errors": 0,
+    "unsatisfied_settles": 0,
+    "profile_mode": "isolated"
+  },
+  "comparison": {
+    "harness_commit": "3ff4aee606",
+    "manifest_commit": "ed8ab9fe0e4d060d912c048cc0ce7aaf2726463b",
+    "sha256": "B2E4E58CB02D900FDA57C2CACAB35EE82C2931E89031C63CD2CE5A913E2D95F0",
+    "cases": 19,
+    "identical": 19,
+    "deltas": 0,
+    "capture_integrity": {
+      "valid_for_promotion": true,
+      "canonical_capture_errors": [],
+      "windows_capture_errors": [],
+      "canonical_unsatisfied_settles": [],
+      "windows_unsatisfied_settles": [],
+      "missing_cases": []
+    },
+    "archived_at": {
+      "canonical": "parity/diff-lane@3ff4aee606:docs/parity/differential/captures/workspace_lifecycle.canonical.e1825d40d.run-29690475786.ndjson",
+      "windows": "parity/diff-lane@3ff4aee606:docs/parity/differential/captures/workspace_lifecycle.windows.4cfbc03030.ndjson",
+      "normalized": "parity/diff-lane@3ff4aee606:docs/parity/differential/captures/workspace_lifecycle.normalized-diff.e1825d40d-vs-4cfbc03030.json"
+    }
+  },
+  "platform_equivalences": {
+    "status": "reviewed_exact_json_pointers",
+    "category": "canonical macOS checkout directory versus isolated Windows profile home",
+    "strict_guards": "All responses, errors, event names/order/origins/counts, UUID/ref relationships, selector routing, mutations, and non-approved fields remain strict."
+  },
+  "verification": {
+    "focused_create_tests": 4,
+    "desktop_library": "1062 passed, 1 ignored, 0 failed",
+    "desktop_all_targets_check_runs": 1,
+    "desktop_and_cli_build_runs": 1,
+    "capture_harness_tests": 120,
+    "successful_full_capture_runs": 1,
+    "successful_diagnostic_prefix_runs": [10, 15, 18],
+    "successful_create_only_runs": 1,
+    "initial_orchestration_timeouts": 1,
+    "timeout_disposition": "The first full driver shell timed out without a capture record. The owned process was PID-verified and stopped; create-only, 10/15/18-case prefixes, and a fresh full 19-case run then completed in 2.2-6.2 seconds with no product or capture error.",
+    "file_length_budget": "39 tracked oversized files; all frozen at current-or-smaller size"
+  },
+  "promotion": {
+    "latest_verifying_commit": "4cfbc03030967813dcd23a1637ec2832c363e46a",
+    "status": "verified",
+    "rows_promoted": [
+      "cli:close-workspace",
+      "cli:current-workspace",
+      "cli:list-workspaces",
+      "cli:new-workspace",
+      "cli:rename-workspace",
+      "cli:select-workspace",
+      "v2:workspace.close",
+      "v2:workspace.create",
+      "v2:workspace.current",
+      "v2:workspace.list",
+      "v2:workspace.rename",
+      "v2:workspace.select"
+    ],
+    "rows_deferred": {
+      "product.workspace_lifecycle": "The product umbrella additionally covers navigation, ordering, groups, restore, persistence, remote workspaces, and workspace.action semantics outside this retained lane."
+    },
+    "reason": "All twelve exercised public entry points have complete retained behavioral evidence across responses, errors, state, selectors, multiwindow routing, CLI output, and lifecycle events."
+  }
+}
