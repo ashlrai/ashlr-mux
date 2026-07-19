@@ -88,6 +88,34 @@ class StaticReferenceLintTests(unittest.TestCase):
         self.assertEqual(len(findings), 1)
         self.assertIn("unknown section", findings[0])
 
+    def test_probe_may_reference_only_an_earlier_result_in_its_lane(self):
+        clean = manifest(
+            cases=[{
+                "id": "a",
+                "action": v2("window.list"),
+                "probes": {"state": [
+                    v2("workspace.list"),
+                    v2("surface.list", {"workspace_id": "${state.0.result.workspace_id}"}),
+                ]},
+            }]
+        )
+        self.assertEqual(lint_static_references(clean), [])
+
+        invalid = manifest(
+            cases=[{
+                "id": "a",
+                "action": v2("window.list"),
+                "probes": {
+                    "state": [v2("surface.list", {"id": "${state.0.result.id}"})],
+                    "selectors": [v2("surface.current", {"id": "${state.0.result.id}"})],
+                },
+            }]
+        )
+        findings = lint_static_references(invalid)
+        self.assertEqual(len(findings), 2)
+        self.assertIn("has not run yet", findings[0])
+        self.assertIn("not active", findings[1])
+
 
 class SettlePlaceholderLintTests(unittest.TestCase):
     def test_settle_needle_placeholders_are_linted(self):

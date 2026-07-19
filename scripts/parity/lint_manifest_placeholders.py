@@ -54,7 +54,14 @@ def lint_static_references(manifest: dict[str, Any]) -> list[str]:
     findings: list[str] = []
     session_len = len(manifest.get("session_setup", []))
 
-    def check(where: str, dotted: str, visible_setup: int, phase: str) -> None:
+    def check(
+        where: str,
+        dotted: str,
+        visible_setup: int,
+        phase: str,
+        lane: str | None = None,
+        visible_probes: int = 0,
+    ) -> None:
         tokens = dotted.split(".")
         section = tokens[0]
         if section == "session":
@@ -71,6 +78,16 @@ def lint_static_references(manifest: dict[str, Any]) -> list[str]:
         elif section == "action":
             if phase != "probe":
                 findings.append(f"{where}: '{dotted}' references the action before it has run")
+        elif section in ("state", "persistence", "selectors", "multiwindow"):
+            if phase != "probe" or section != lane:
+                findings.append(f"{where}: '{dotted}' references a probe lane that is not active")
+            elif len(tokens) < 2 or not tokens[1].isdigit():
+                findings.append(f"{where}: '{dotted}' has a non-numeric probe index")
+            elif int(tokens[1]) >= visible_probes:
+                findings.append(
+                    f"{where}: '{dotted}' references probe {tokens[1]} which has not run yet"
+                    f" (only {visible_probes} probe(s) precede this op in {lane})"
+                )
         else:
             findings.append(f"{where}: '{dotted}' references unknown section '{section}'")
 
@@ -92,7 +109,14 @@ def lint_static_references(manifest: dict[str, Any]) -> list[str]:
         for lane, lane_ops in case.get("probes", {}).items():
             for index, op in enumerate(lane_ops):
                 for dotted in _op_placeholders(op):
-                    check(f"{case['id']}.probes[{lane}][{index}]", dotted, len(setup), "probe")
+                    check(
+                        f"{case['id']}.probes[{lane}][{index}]",
+                        dotted,
+                        len(setup),
+                        "probe",
+                        lane,
+                        index,
+                    )
     return findings
 
 

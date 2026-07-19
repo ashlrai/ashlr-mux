@@ -74,32 +74,28 @@
       ],
       "action": {"op": "restart"},
       "probes": {
-        "multiwindow": [
+        "state": [
           {"op": "v2", "method": "window.list", "params": {}},
           {"op": "v2", "method": "workspace.list", "params": {}},
           {
             "op": "v2",
             "method": "workspace.list",
-            "params": {"window_ref": "window:2"}
-          }
-        ],
-        "state": [
-          {
-            "op": "v2",
-            "method": "surface.list",
-            "params": {"window_ref": "window:1", "workspace_ref": "workspace:2"}
+            "params": {"window_ref": "${state.0.result.windows.1.ref}"}
           },
           {
             "op": "v2",
             "method": "surface.list",
-            "params": {"window_ref": "window:2", "workspace_ref": "workspace:2"}
-          }
-        ],
-        "selectors": [
+            "params": {"workspace_id": "${state.1.result.workspaces.1.id}"}
+          },
+          {
+            "op": "v2",
+            "method": "surface.list",
+            "params": {"workspace_id": "${state.2.result.workspaces.1.id}"}
+          },
           {
             "op": "v2",
             "method": "surface.current",
-            "params": {"window_ref": "window:2", "workspace_ref": "workspace:2"}
+            "params": {"workspace_id": "${state.2.result.workspaces.1.id}"}
           }
         ]
       }

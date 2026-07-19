@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import queue
 import re
 import subprocess
@@ -966,16 +967,21 @@ class Driver:
             raise TransportError(
                 "manifest contains a restart op but --restart-cmd was not provided"
             )
+        output = (
+            {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+            if os.name == "nt"
+            else {"capture_output": True}
+        )
         completed = subprocess.run(
             self.restart_cmd,
             shell=True,
-            capture_output=True,
             text=True,
             timeout=max(self.op_timeout, 300),
+            **output,
         )
         if completed.returncode != 0:
             raise TransportError(
-                f"restart command failed ({completed.returncode}): {completed.stderr.strip()}"
+                f"restart command failed ({completed.returncode}): {(completed.stderr or '').strip()}"
             )
         # A relaunched app is a fresh backend: re-arm the responsiveness breaker.
         self._record_reply()
@@ -1066,9 +1072,11 @@ def run_capture(
             context["action"] = action_result
             for lane, ops in case.get("probes", {}).items():
                 lane_results: list[dict[str, Any]] = []
+                context[lane] = []
                 for op in ops:
                     result = driver.run_op(resolve_placeholders(op, context))
                     symbolizer.register(result)
+                    context[lane].append(result)
                     # Drop the "result" convenience projection (placeholder
                     # ergonomics only); the full reply envelope is already in
                     # "response", and duplicating it doubles diff surface.
