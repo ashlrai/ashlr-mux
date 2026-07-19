@@ -45,10 +45,10 @@
     "status": "not_measured"
   },
   "windows": {
-    "commit": "a51ddd28763bad2549d3903de78bc7b59b988e36",
-    "commit_date": "2026-07-19T09:30:12-04:00",
-    "commit_subject": "fix(desktop): stabilize recoverable window rows",
-    "commits_ahead_of_tracked_evidence": 22,
+    "commit": "246172de0dbd3afd2fd4f61070eb107f83328966",
+    "commit_date": "2026-07-19T09:42:51-04:00",
+    "commit_subject": "fix(desktop): preserve nonfocus surface selection",
+    "commits_ahead_of_tracked_evidence": 25,
     "source_evidence": {
       "advertised_and_routed_count": 267,
       "advertised_method_count": 270,

@@ -5,7 +5,7 @@ Checkpoint commits:
 - Current canonical audit: `41756f7285a02d2592751438793647f7d4ba9b71`
 - Frozen differential canonical: `e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452`
 - Windows behavior captured: `a51ddd28763bad2549d3903de78bc7b59b988e36`
-- Latest Windows code checkpoint: `a51ddd28763bad2549d3903de78bc7b59b988e36`
+- Latest Windows code checkpoint: `246172de0dbd3afd2fd4f61070eb107f83328966`
 - Latest exact startup differential evidence: `parity/diff-lane@215737999ac0579682b6b2a2d230d7a0d064a51d`
 - Latest window harness checkpoint: `parity/diff-lane@9257db511b975335e2ee79bc4bb143c04bfa95f8`
 - Latest canonical window capture: workflow run `29686515273`
@@ -102,20 +102,19 @@ baseline, not "222 of 496 complete" and not the rolling catalog.
 
 ## Known acceptance blockers
 
-1. Four differential-remediation unit tests fail unchanged at both pushed
-   baseline `0ea973d28d` and behavior checkpoint `286b2d7b67`:
-   `closing_an_unselected_tab_suppresses_the_noop_pair`,
-   `create_after_explicit_focus_keeps_the_new_tab_selected`,
-   `surface_create_without_focus_emits_the_canonical_selection_flip`, and
-   `surface_create_without_focus_preserves_pane_selection`. The remaining
-   desktop library gate is 1,045 passed, 1 ignored, and 4 explicitly excluded;
-   the full gate is red until these expectations and implementation are
-   reconciled.
-2. Unintegrated terminal/mobile viewport work remains quarantined and is not
+1. Unintegrated terminal/mobile viewport work remains quarantined and is not
    counted as parity progress until its cancellation and runtime behavior are
    re-audited on `windows-port`.
-3. Implemented behavior needs evidence promotion in coherent capability batches;
+2. Implemented behavior needs evidence promotion in coherent capability batches;
    raw route or help-text presence is not verification.
+
+The differential-remediation blocker is closed at `246172de0d`. Surface create
+now uses only canonical bonsplit `focusedPaneId` authority instead of inferring
+explicit pane focus from the workspace's selected surface. The same one-line
+predicate repair restores the non-focus select/revert event sequence, preserves
+the prior pane selection, and suppresses the later no-op close pair. All 47
+remediation tests pass twice; the full desktop library gate is 1,058 passed,
+1 ignored, and 0 failed.
 
 The normal-startup restore blocker is closed. Exact Windows capture
 `99bd001c6e` matches retained canonical run `29674972316` in all semantic
@@ -208,6 +207,7 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
 
 ## Next efficient slice
 
-Reconcile the four pre-existing differential-remediation failures against
-canonical behavior, then restore the full desktop library gate. Keep the next
-oversized-file split isolated from behavior changes.
+Extract the next coherent command domain from the 4,550-line CLI
+`command_forward.rs` in a behavior-neutral commit. Prove logical reconstruction
+and run the full CLI suite before and after; do not mix the move with parity
+behavior changes.

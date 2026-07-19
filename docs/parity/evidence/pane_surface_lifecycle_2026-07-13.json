@@ -89,6 +89,17 @@
     },
     "promotion_status": "This 43-case lane verified pane.create, pane.resize, surface.action, surface.respawn, surface.report_pwd, surface.current, surface.create, cli:tab-action, and cli:respawn-pane. The later exact normal-startup multiwindow lane at 99bd001c6e closed the broader restore/ownership boundary and promoted surface.list/close/focus/move plus product.pane_surface_lifecycle; see startup_restore_2026-07-19.json."
   },
+  "follow_up_gate": {
+    "behavior_commit": "246172de0dbd3afd2fd4f61070eb107f83328966",
+    "root_cause": "surface.create treated the workspace's selected surface as bonsplit focusedPaneId authority, so ordinary non-focus creates skipped canonical transient selection restoration",
+    "behavior_diff": "one predicate line replaces a six-line noncanonical fallback",
+    "differential_remediation_tests": "47 passed twice, 0 failed",
+    "desktop_lib_tests": "1058 passed, 0 failed, 1 ignored",
+    "desktop_all_targets_check": "clean",
+    "desktop_build": "clean",
+    "fmt": "clean",
+    "file_length_budget": "pane_surface_lifecycle.rs ceiling ratcheted from 4665 to 4660; 39 tracked oversized files remain"
+  },
   "known_open_items": [
     "R2/G10: backend respawn default cmd.exe vs CLI ComSpec resolution (accepted platform equivalence, watch in differential)",
     "R3: pane.create source filter 'UUID or existing surface id' marginally broader than canonical raw-UUID-only (test-fixture adaptation, unobservable with runtime UUIDv4 ids)",
