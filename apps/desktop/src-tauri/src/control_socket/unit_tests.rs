@@ -61,18 +61,6 @@ fn test_snapshot() -> AppSessionSnapshot {
     }
 }
 
-#[test]
-fn resolved_same_title_rename_still_produces_one_rename_event_spec() {
-    let snapshot = test_snapshot();
-
-    let event = resolved_workspace_rename_event_spec(&snapshot, 0, 0).unwrap();
-
-    assert_eq!(event.name, "workspace.renamed");
-    assert_eq!(event.workspace_id.as_deref(), Some("workspace-1"));
-    assert_eq!(event.payload["title"], json!("Phoenix"));
-    assert_eq!(event.payload["previous_title"], json!("Phoenix"));
-}
-
 fn surface_move_snapshot() -> AppSessionSnapshot {
     let mut snapshot = test_snapshot();
     let source = &mut snapshot.windows[0].tab_manager.workspaces[0];

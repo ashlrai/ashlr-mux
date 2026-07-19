@@ -9,7 +9,7 @@
 4660	apps/desktop/src-tauri/src/control_socket/pane_surface_lifecycle.rs
 3599	crates/cmux-cli/src/command_forward.rs
 3874	apps/desktop/src-tauri/src/control_socket.rs
-4138	apps/desktop/src-tauri/src/control_socket/unit_tests.rs
+4126	apps/desktop/src-tauri/src/control_socket/unit_tests.rs
 3071	crates/cmux-cli/src/main.rs
 3997	crates/cmux-cli/src/hooks_installer.rs
 3922	crates/cmux-config/src/lib.rs

@@ -44,6 +44,34 @@ fn workspace_selected_event_spec_matches_the_canonical_lifecycle_payload() {
 }
 
 #[test]
+fn workspace_rename_event_spec_matches_the_canonical_socket_payload() {
+    let params = json!({
+        "window_id": WINDOW,
+        "workspace_id": WORKSPACES[1],
+        "title": "renamed",
+    });
+    let result = json!({
+        "window_id": WINDOW,
+        "window_ref": "window:1",
+        "workspace_id": WORKSPACES[1],
+        "workspace_ref": "workspace:2",
+        "title": "renamed",
+    });
+
+    let event = workspace_rename_event_spec(params.as_object().unwrap(), &result).unwrap();
+
+    assert_eq!(event.name, "workspace.renamed");
+    assert_eq!(event.category, "workspace");
+    assert_eq!(event.source, "socket.v2");
+    assert_eq!(event.window_id.as_deref(), Some(WINDOW));
+    assert_eq!(event.workspace_id.as_deref(), Some(WORKSPACES[1]));
+    assert_eq!(
+        event.payload,
+        json!({"method": "workspace.rename", "params": params, "result": result})
+    );
+}
+
+#[test]
 fn notification_removal_lifecycle_events_match_canonical_read_and_clear_shapes() {
     let row = |id: &str, surface_id: &str| cmux_core::notifications::TerminalNotification {
         id: id.into(),

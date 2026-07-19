@@ -6,9 +6,9 @@ pub(super) use activity_controls::*;
 
 #[path = "workspace_control/events.rs"]
 mod events;
-use events::{record_resolved_workspace_rename_event, record_workspace_selected_event};
 #[cfg(test)]
-pub(super) use events::{resolved_workspace_rename_event_spec, workspace_selected_event_spec};
+pub(super) use events::workspace_selected_event_spec;
+use events::{record_resolved_workspace_rename_event, record_workspace_selected_event};
 
 #[path = "workspace_control/window_list.rs"]
 mod window_list;
