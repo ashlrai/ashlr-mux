@@ -24,10 +24,11 @@
   },
   "comparison": {
     "comparator_commit": "e23cd72b7807f700a5961b2d8ae44919c810911c",
-    "sha256": "781A8FAAD4C4FF78B580CA89BC2E3831CDA393B3AD876052E6DB9EF3373A8CB7",
+    "manifest_commit": "9257db511b975335e2ee79bc4bb143c04bfa95f8",
+    "sha256": "AF56DDF8DE729FE8CDF211BDFBAC7AFE74082A6AC5702A04ADB79A729266EAD4",
     "cases": 68,
-    "identical": 58,
-    "deltas": 10,
+    "identical": 66,
+    "deltas": 2,
     "capture_integrity": {
       "valid_for_promotion": true,
       "canonical_capture_errors": [],
@@ -37,21 +38,26 @@
       "missing_cases": []
     },
     "delta_cases": {
-      "window_create.params_ignored_junk": ["state", "events", "selectors", "multiwindow"],
-      "window_create.created_window_usable_via_explicit_routing": ["state", "selectors"],
-      "window_close.happy_non_active_multiwindow": ["state", "multiwindow"],
-      "window_close.repeat_close_not_found_minted_ref": ["state"],
-      "window_focus.happy_routes_selectorless_afterwards": ["state", "events", "selectors"],
-      "window_focus.already_key_still_emits": ["state", "events"],
-      "cli.focus_window_by_uuid": ["state"],
-      "cli.focus_window_by_ref": ["state"],
-      "cli.close_window_by_uuid": ["state"],
+      "window_close.happy_non_active_multiwindow": ["state"],
       "window_close.last_window_may_exit_ui_test_mode": ["error", "response", "events"]
     },
     "normalization": {
       "window_list_order": "Valid window.list rows are paired by stable numeric ref and positional indices are recomputed. Every row identity and field remains strict; malformed or duplicate refs are not normalized.",
       "reason": "Both native implementations enumerate unordered window registries; dictionary iteration order is not product behavior."
     }
+  },
+  "platform_equivalences": {
+    "status": "reviewed_exact_json_pointers",
+    "manifest_commit": "9257db511b975335e2ee79bc4bb143c04bfa95f8",
+    "cases_with_approved_pointers": 9,
+    "approved_pointer_count": 29,
+    "cases_made_equivalent": 8,
+    "categories": [
+      "AppKit versus noninteractive-Windows key-window booleans",
+      "window.keyed cleanup ownership derived from the OS-selected fallback key",
+      "isolated test-profile home/current-directory strings"
+    ],
+    "strict_guards": "Responses, errors, event names/order/origins/counts, UUID/ref identity, visibility, workspace linkage, selector routing, and all non-approved fields remain strict. The non-active close case retains its active-route identity delta."
   },
   "closed_window_history": {
     "status": "implemented_and_live_observed",
@@ -65,33 +71,13 @@
       "Restart clears the in-process recoverable history."
     ],
     "measurement_correction": "Canonical intentionally retains closed windows as invisible recoverable routes. The previous until_absent predicate incorrectly classified this product behavior as failed cleanup. until_window_not_visible now accepts visible:false or absence while keeping the final row payload strict.",
-    "result": "The environment-matched 68-case pair has zero unsatisfied settles and a valid 58-identical/10-delta comparison."
+    "result": "The environment-matched 68-case pair has zero unsatisfied settles and a valid 66-equivalent/2-delta comparison after exact platform-pointer review."
   },
   "residual_clusters": [
     {
-      "name": "native_key_and_platform_path_equivalence",
-      "cases": [
-        "window_create.params_ignored_junk",
-        "window_create.created_window_usable_via_explicit_routing",
-        "window_focus.happy_routes_selectorless_afterwards",
-        "window_focus.already_key_still_emits"
-      ],
-      "evidence": "Differences include isolated-profile home paths and AppKit versus noninteractive-Windows key-window choice. Exact UUID/event continuity remains strict. These are not product defects unless a non-platform leaf also differs."
-    },
-    {
       "name": "post_close_active_routing",
       "cases": ["window_close.happy_non_active_multiwindow"],
-      "evidence": "After close settles non-visible, canonical selector-less workspace.list still reports the closed target while Windows reports its fallback window. Determine whether the retained TabManager route is contractual before changing production."
-    },
-    {
-      "name": "recoverable_repeat_close",
-      "cases": ["window_close.repeat_close_not_found_minted_ref"],
-      "evidence": "After the first close settles to visible:false, both platforms accept a second close with the same window id/ref and no additional event or mutation. The response and error lanes now match exactly; the case remains a state delta only because canonical marks live window:1 key while noninteractive Windows marks no live window key."
-    },
-    {
-      "name": "cli_native_key_projection",
-      "cases": ["cli.focus_window_by_uuid", "cli.focus_window_by_ref", "cli.close_window_by_uuid"],
-      "evidence": "Native enumeration now retains live window:2 after browser child attachment. Recursive leaf comparison of the exact matched pair finds only the live native windows' key booleans in all three cases; recoverable workspace ids, refs, selection, counts, and ordering match. Determine whether this AppKit versus noninteractive-Windows key choice is a platform equivalence rather than patching CLI routes."
+      "evidence": "After close settles non-visible, canonical selector-less workspace.list reports the closed target (window:6/workspace:7) while Windows reports its live fallback (window:1/workspace:1). Platform path/key leaves are removed and this identity mismatch remains strict."
     },
     {
       "name": "last_window_close",
@@ -111,10 +97,11 @@
     "native_window_unit_tests": 3,
     "native_window_full_capture_runs": 3,
     "recoverable_repeat_close_full_capture_runs": 1,
+    "platform_equivalence_comparison_runs": 2,
     "file_length_budget": "39 tracked oversized files; all frozen at current-or-smaller size"
   },
   "promotion": {
     "rows_promoted": [],
-    "reason": "The pair is valid evidence, but ten cases retain strict deltas. Promote only mapped capabilities whose applicable lanes are identical or explicitly platform-equivalent."
+    "reason": "The pair is valid evidence, but two cases retain strict semantic deltas. Promote only mapped capabilities whose applicable lanes are identical or explicitly platform-equivalent."
   }
 }

@@ -7,14 +7,15 @@ Checkpoint commits:
 - Windows behavior captured: `14953b82f8bc712f774196acf0a69271886c0b9f`
 - Latest Windows code checkpoint: `14953b82f8bc712f774196acf0a69271886c0b9f`
 - Latest exact startup differential evidence: `parity/diff-lane@215737999ac0579682b6b2a2d230d7a0d064a51d`
-- Latest window harness checkpoint: `parity/diff-lane@e23cd72b7807f700a5961b2d8ae44919c810911c`
+- Latest window harness checkpoint: `parity/diff-lane@9257db511b975335e2ee79bc4bb143c04bfa95f8`
 - Latest canonical window capture: workflow run `29686515273`
 
 The Windows desktop and CLI build successfully. The retained pane/surface and
 startup-restore evidence remains valid. The exact environment-matched window
 pair contains all 68 cases with zero capture errors, zero missing cases, and
-zero unsatisfied settles. Its normalized comparison is valid: 58 identical and
-10 delta cases. See `evidence/window_lifecycle_2026-07-19.json` for hashes,
+zero unsatisfied settles. Its normalized comparison is valid: 66 exact or
+platform-equivalent and 2 strict delta cases. See
+`evidence/window_lifecycle_2026-07-19.json` for hashes,
 strict lanes, and provenance.
 
 Closed windows now retain canonical recoverable routes. A socket-managed close
@@ -25,16 +26,16 @@ settles on non-visibility rather than incorrectly requiring row absence. The
 matched CLI-created rows preserve their selected workspace identity and count.
 Repeated close of a committed recoverable route is now idempotent: it returns
 the same window id/ref with no duplicate state mutation or lifecycle event.
-The exact case's response and error lanes match canonical; only its separate
-native `key` state leaf remains different.
+The exact case's response and error lanes match canonical; its native `key`
+leaf is now an exact reviewed platform equivalence.
 
 The shared window identity boundary is now repaired. Socket-created windows
 use canonical UUID identities end to end, selector-less `window.current`
 returns the active session UUID, and CLI focus/close-by-UUID reach the backend
 instead of failing transport. Across two full Windows captures, normalized
-`window-N` identity occurrences fell from 153 to zero. The remaining CLI state
-deltas are not three separate CLI implementations to patch: their only exact
-leaf difference is which live native window is marked `key`.
+`window-N` identity occurrences fell from 153 to zero. The three CLI cases now
+match in every strict semantic field; their exact native `key` leaves are
+reviewed platform equivalences rather than three implementations to patch.
 
 Window creation now publishes the canonical initial lifecycle sequence from
 one prepared snapshot: `surface.selected`, `pane.focused`, `surface.focused`,
@@ -50,11 +51,11 @@ sequence. A focus transfer emits `window.unkeyed`, `window.keyed`, then
 `window.focused`; closing that key window emits `window.closed`,
 `window.unkeyed`, then `window.keyed` for the fallback. Focusing an already-key
 window still emits only `window.focused` before the cleanup-close sequence.
-Two 10-case prefixes and a full 68-case run reproduce the exact event names,
-order, origins, and key/main flags with zero capture errors. The strict event
-lane remains different because AppKit chooses `window:2` and the isolated
-Windows desktop chooses `window:1` as the native prior/fallback key window;
-real OS key selection is an explicit platform equivalence in the contract.
+Two 10-case prefixes and full 68-case runs reproduce the exact event names,
+order, origins, and key/main flags with zero capture errors. AppKit and the
+isolated Windows desktop choose different native fallback key owners; the
+contract explicitly classifies real OS key transfer and its keyed/unkeyed
+ownership as platform-equivalent, now encoded only at the exact JSON leaves.
 
 Resume bindings now use the signed approval store already shared with the
 canonical port. A successful CLI set writes or reuses a manual approval record,
@@ -82,13 +83,13 @@ baseline, not "222 of 496 complete" and not the rolling catalog.
 
 ## Known acceptance blockers
 
-1. The valid window pair is 58/10. UI-test matching removed the apparent restart
+1. The valid window pair is 66/2 after exact platform-pointer review. UI-test matching removed the apparent restart
    resume gap entirely. Browser child attachment was proven to remove live
    `window:2` from `webview_windows()` and is fixed at `1717704e09` by enumerating
    native windows; two full captures retain it. The three CLI cases now differ
-   only in native key selection. Recoverable repeat-close now matches in its
-   response and error lanes and retains only that same native `key` state leaf;
-   last-window close still disconnects only on canonical.
+   only in native key selection and are now platform-equivalent. Recoverable
+   repeat-close is exact. The two strict gaps are selector-less active routing
+   after non-active close and last-window close, which disconnects only on canonical.
 2. Four differential-remediation unit tests fail unchanged at both pushed
    baseline `0ea973d28d` and behavior checkpoint `286b2d7b67`:
    `closing_an_unselected_tab_suppresses_the_noop_pair`,
@@ -188,8 +189,8 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
 
 ## Next efficient slice
 
-Audit the exact native `key` pointers across create, focus, repeat-close, and
-CLI cases against the platform-equivalence contract; do not hard-code macOS key
-choice or patch commands independently. Then diagnose the post-close active
-routing case and the last-window close semantic. Keep the next oversized-file
-split isolated from behavior changes.
+Diagnose the post-close active-routing case: canonical retains selector-less
+routing to the closed recoverable TabManager while Windows repoints to a live
+fallback. Determine the contractual lifetime before changing production. Then
+address the last-window close semantic. Keep the next oversized-file split
+isolated from behavior changes.
