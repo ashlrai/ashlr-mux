@@ -119,7 +119,7 @@ use crate::session::{
     PaneResizeControlError, PaneResizeControlIntent, PaneTopologyControlError,
     ReorderWorkspacesManyControlError, RestorePreviousLaunchOutcome, SessionState,
     SurfacePositionControlError, TerminalPanelCreateError, WorkspaceLastControlError,
-    WorkspaceRemoteControlConfig, WorkspaceRenameResolution, WorkspaceSelectControlError,
+    WorkspaceRemoteControlConfig, WorkspaceSelectControlError,
 };
 use crate::terminal::{
     materialize_terminal_for_input, request_live_terminal_input, request_terminal_materialization,

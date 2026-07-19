@@ -212,6 +212,7 @@ mod startup_restore;
 mod tests;
 mod workspace_selection;
 
+use control_snapshot::notify_session_changed_with_event_policy;
 pub(crate) use control_snapshot::{
     commit_lifecycle_snapshot_for_control, commit_lifecycle_snapshot_for_control_if_current,
     ensure_lifecycle_snapshot_current,
@@ -909,7 +910,7 @@ fn apply_workspace_close_teardown(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum WorkspaceRenameResolution {
+enum WorkspaceRenameResolution {
     ResolvedChanged,
     ResolvedUnchanged,
     NotFound,
@@ -1547,14 +1548,7 @@ fn emit_session_changed(app: &AppHandle, snapshot: &AppSessionSnapshot) {
 }
 
 fn notify_session_changed(app: &AppHandle, snapshot: &AppSessionSnapshot) {
-    if let Some(state) = app.try_state::<SessionState>() {
-        record_workspace_focus_history(state.inner(), snapshot);
-    }
-    let _ = persist_current_snapshot(app, snapshot);
-    crate::control_socket::record_session_changed_event(app, snapshot);
-    emit_session_changed(app, snapshot);
-    crate::window_title::refresh_window_titles(app, snapshot);
-    crate::window::emit_window_states(app);
+    notify_session_changed_with_event_policy(app, snapshot, DerivedEventPolicy::Record);
 }
 
 #[derive(Clone, Copy)]
@@ -4082,7 +4076,8 @@ pub(crate) fn rename_workspace_in_window_for_control(
     window_index: usize,
     workspace_index: usize,
     title: &str,
-) -> Result<Option<(AppSessionSnapshot, WorkspaceRenameResolution)>, String> {
+    event_policy: DerivedEventPolicy,
+) -> Result<Option<AppSessionSnapshot>, String> {
     let remote_request = {
         let guard = state
             .snapshot
@@ -4113,12 +4108,12 @@ pub(crate) fn rename_workspace_in_window_for_control(
         return Ok(None);
     }
     if resolution == WorkspaceRenameResolution::ResolvedChanged {
-        notify_session_changed(app, &snapshot);
+        notify_session_changed_with_event_policy(app, &snapshot, event_policy);
         if let Some(request) = remote_request {
             state.defer_remote_workspace_rename(request);
         }
     }
-    Ok(Some((snapshot, resolution)))
+    Ok(Some(snapshot))
 }
 
 #[derive(Debug)]

@@ -18,43 +18,36 @@ fn record_derived_event(app: &AppHandle, event: DerivedEventSpec) {
     );
 }
 
-pub(super) fn record_resolved_workspace_rename_event(
+pub(super) fn record_workspace_rename_event(
     app: &AppHandle,
-    snapshot: &AppSessionSnapshot,
-    window_index: usize,
-    workspace_index: usize,
+    params: &serde_json::Map<String, Value>,
+    result: &Value,
 ) {
-    let Some(event) = resolved_workspace_rename_event_spec(snapshot, window_index, workspace_index)
-    else {
+    let Some(event) = workspace_rename_event_spec(params, result) else {
         return;
     };
     record_derived_event(app, event);
 }
 
-pub(in crate::control_socket) fn resolved_workspace_rename_event_spec(
-    snapshot: &AppSessionSnapshot,
-    window_index: usize,
-    workspace_index: usize,
+pub(in crate::control_socket) fn workspace_rename_event_spec(
+    params: &serde_json::Map<String, Value>,
+    result: &Value,
 ) -> Option<DerivedEventSpec> {
-    let Some(window) = snapshot.windows.get(window_index) else {
-        return None;
-    };
-    let summaries = session_event_summaries(snapshot);
-    let key = window
-        .window_id
-        .clone()
-        .unwrap_or_else(|| format!("window-{window_index}"));
-    let Some(current) = summaries.get(&key) else {
-        return None;
-    };
-    let Some(workspace) = current.workspaces.get(workspace_index) else {
-        return None;
-    };
-    Some(workspace_renamed_event_spec(
-        current,
-        workspace,
-        &workspace.title,
-    ))
+    let window_id = result.get("window_id")?.as_str()?.to_owned();
+    let workspace_id = result.get("workspace_id")?.as_str()?.to_owned();
+    Some(DerivedEventSpec {
+        name: "workspace.renamed",
+        category: "workspace",
+        source: "socket.v2",
+        window_id: Some(window_id),
+        workspace_id: Some(workspace_id),
+        surface_id: None,
+        payload: json!({
+            "method": "workspace.rename",
+            "params": params,
+            "result": result,
+        }),
+    })
 }
 
 pub(in crate::control_socket) fn workspace_selected_event_spec(

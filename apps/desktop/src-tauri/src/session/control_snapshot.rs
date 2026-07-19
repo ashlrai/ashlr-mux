@@ -1,5 +1,27 @@
 use super::*;
 
+pub(super) fn notify_session_changed_with_event_policy(
+    app: &AppHandle,
+    snapshot: &AppSessionSnapshot,
+    event_policy: DerivedEventPolicy,
+) {
+    if let Some(state) = app.try_state::<SessionState>() {
+        record_workspace_focus_history(state.inner(), snapshot);
+    }
+    let _ = persist_current_snapshot(app, snapshot);
+    match event_policy {
+        DerivedEventPolicy::Record => {
+            crate::control_socket::record_session_changed_event(app, snapshot)
+        }
+        DerivedEventPolicy::Suppress => {
+            crate::control_socket::replace_session_event_baseline(app, snapshot)
+        }
+    }
+    emit_session_changed(app, snapshot);
+    crate::window_title::refresh_window_titles(app, snapshot);
+    crate::window::emit_window_states(app);
+}
+
 /// Atomically publish one already-validated application-wide lifecycle
 /// snapshot. Persistence is prepared and installed before the in-memory
 /// authority changes, so a filesystem failure cannot leave the live model and
