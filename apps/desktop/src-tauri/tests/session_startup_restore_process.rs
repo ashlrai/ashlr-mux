@@ -147,6 +147,15 @@ async fn run_process_proof() -> Result<(), String> {
             "moved/closed state drifted: source={source_surfaces:?}, target={target_surfaces:?}"
         ));
     }
+    let target_refs = target_surfaces
+        .iter()
+        .map(|surface| field(surface, "ref"))
+        .collect::<Result<Vec<_>, _>>()?;
+    if target_refs != ["surface:5", "surface:6", "surface:4"] {
+        return Err(format!(
+            "restored surface ordering drifted: {target_refs:?}; target={target_surfaces:?}"
+        ));
+    }
     let current = rpc
         .call("surface.current", json!({"workspace_id":target_id}))
         .await?;
