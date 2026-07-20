@@ -1,0 +1,73 @@
+{
+  "schema_version": 2,
+  "family": "pane_management",
+  "status": "valid_complete_capture",
+  "canonical": {
+    "source_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+    "workflow_run": 29715304196,
+    "artifact": "canonical-capture-pane_management",
+    "sha256": "FD195EF8581B781004C26BE53D3D4867409A12EB6206BB7915EE72F3155787BF",
+    "cases": 30,
+    "capture_errors": 0
+  },
+  "windows": {
+    "test_commit": "372e07f5f0e307f4f9e725590bf0f93db9e149f8",
+    "behavior_commit": "72be49b35300bec3c359650231e210ed00db38c5",
+    "capture_support_commit": "597e3abb9d09da040a8523afb5aa64a7ff904159",
+    "sha256": "40AA467570DD1770621EF993F6F6B80676C88D647F52A47F5318827DD464B10D",
+    "cases": 30,
+    "capture_errors": 0,
+    "profile_mode": "isolated_headless_guarded"
+  },
+  "comparison": {
+    "manifest_and_archive_commit": "6cf4b270e2ed390c61225f89eb2ef6e7c445480e",
+    "sha256": "A2A430BDB953A16E32E71D070B0967FF35A36189B292E6B4C985876B6140B0D0",
+    "cases": 30,
+    "identical_or_reviewed_equivalent": 30,
+    "strict_deltas": 0,
+    "capture_integrity": {
+      "valid_for_promotion": true,
+      "canonical_capture_errors": [],
+      "windows_capture_errors": [],
+      "missing_cases": [],
+      "unsettled_cases": []
+    },
+    "archived_at": {
+      "canonical": "parity/diff-lane@6cf4b270e2:docs/parity/differential/captures/pane_management.canonical.e1825d40d.run-29715304196.ndjson",
+      "windows": "parity/diff-lane@6cf4b270e2:docs/parity/differential/captures/pane_management.windows.72be49b353.ndjson",
+      "normalized": "parity/diff-lane@6cf4b270e2:docs/parity/differential/captures/pane_management.normalized-diff.e1825d40d-vs-72be49b353.json"
+    }
+  },
+  "platform_equivalences": {
+    "status": "reviewed_exact_json_pointers",
+    "categories": [
+      "An unfocused Windows ConPTY terminal is eagerly materialized and exposes four optional grid fields before canonical activates its background view.",
+      "The equivalent 49.5-point pane width has a platform floating-point serialization tail on canonical."
+    ],
+    "strict_guards": "All CLI output, responses, errors, routing, topology, identities, focus, browser behavior, resize math, event order, and non-approved state fields remain strict."
+  },
+  "verification": {
+    "focused_pane_tests": "60 passed, 0 failed, repeated twice after simplification",
+    "desktop_library": "1124 passed, 1 ignored, 0 failed",
+    "cli_suite": "410 passed, 0 failed",
+    "workspace_all_targets_check_runs": 1,
+    "repository_parity_tests": "21 non-GUI tests passed",
+    "differential_lane_tests": 120,
+    "successful_full_capture_runs": 1,
+    "capture_process": "Owned hidden process with a pre-armed descendant-window watchdog; no visible-window violation; desktop, Vite, listener, and port 1420 stopped.",
+    "file_length_budget": "38 tracked oversized files, all frozen at current-or-smaller size"
+  },
+  "promotion": {
+    "latest_verifying_commit": "72be49b35300bec3c359650231e210ed00db38c5",
+    "status": "verified",
+    "rows_promoted": [
+      "cli:new-pane",
+      "cli:resize-pane"
+    ],
+    "already_verified_rows_exercised": [
+      "v2:pane.create",
+      "v2:pane.resize"
+    ],
+    "reason": "Both CLI entry points have retained behavioral evidence for exact parsing, help, output, routing, terminal and browser creation, ambient scope, invalid input, rendered resize units, topology, geometry, grid projection, and lifecycle events."
+  }
+}

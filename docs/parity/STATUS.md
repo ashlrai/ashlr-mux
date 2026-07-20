@@ -9,7 +9,7 @@ Checkpoint commits:
 - Latest workspace-navigation behavior captured: `aa3f74c799079290f25441e950761c67c3c56026`
 - Latest workspace-ordering behavior captured: `46f4cedf1a77fda23baff9b73b5d8ef7b96eb187`
 - Latest workspace-group behavior captured: `357ebc0c662df446b93d842b3a7d24964e993dfa`
-- Latest Windows code checkpoint: `4e3114a3519ebbd405a32bb45b3a3e7a1a309926`
+- Latest Windows code checkpoint: `72be49b35300bec3c359650231e210ed00db38c5`
 - Latest terminal-title behavior checkpoint: `ece79b413abe1298f2160223920c47176fdc741e`
 - Latest exact startup differential evidence: `parity/diff-lane@215737999ac0579682b6b2a2d230d7a0d064a51d`
 - Latest window harness checkpoint: `parity/diff-lane@9257db511b975335e2ee79bc4bb143c04bfa95f8`
@@ -22,8 +22,8 @@ Checkpoint commits:
 - Latest canonical ordering capture: workflow run `29696270467`
 - Latest workspace-group evidence: `parity/diff-lane@32dd8da8256e35dd1ae42e41fa267c3753634833`
 - Latest canonical workspace-group capture: workflow run `29697573532`
-- Latest pane-management evidence: `parity/diff-lane@751d9c6e360402ec0435c449d0acbc218aa700aa`
-- Latest canonical pane-management capture: workflow run `29699851933`
+- Latest pane-management evidence: `parity/diff-lane@6cf4b270e2ed390c61225f89eb2ef6e7c445480e`
+- Latest canonical pane-management capture: workflow run `29715304196`
 
 The Windows desktop and CLI build successfully. The retained pane/surface and
 startup-restore evidence remains valid. The exact environment-matched window
@@ -45,15 +45,27 @@ parity harness passed 30 tests. A headless real-app probe focused and booted the
 PowerShell pane, swapped it, and observed `Terminal` rather than the executable
 path with zero capture or visible-window errors.
 
-The 22-case pane-management family is promoted at
-`parity/diff-lane@751d9c6e36`. Both captures have zero capture errors, missing
-cases, or unsatisfied settles. The final isolated Windows run stayed headless,
-left no capture process or named-pipe state, and reported no visible-window
-violation. All 22 cases are exact after four reviewed `current_directory`
-leaves identify the platform-specific isolated capture home. The lane covers
-v2 and CLI list, surface-list, focus, last, swap, break, and join behavior,
-including payloads, errors, state, refs, geometry, terminal grid metrics, and
-lifecycle-event order.
+The pane-management family is promoted at `parity/diff-lane@6cf4b270e2`.
+Both captures have zero capture errors, missing cases, or unsatisfied settles.
+The final guarded Windows run stayed headless, left no capture process or
+named-pipe state, closed port 1420, and reported no visible-window violation.
+All 30 cases are exact after reviewed pointers isolate native working
+directories, eager background ConPTY grid materialization, and an equivalent
+49.5-point floating serialization tail. The lane covers v2 and CLI list,
+surface-list, focus, last, swap, break, join, creation, and resizing behavior,
+including help, output, ambient scope, terminal/browser creation, payloads,
+errors, state, refs, rendered geometry, grid metrics, and lifecycle-event
+order. `cli:new-pane` and `cli:resize-pane` are now verified; their v2 methods
+were already verified.
+
+Pane resize now consumes the workspace's rendered portal geometry instead of
+the 1px pre-render fallback, so a two-pixel request moves the captured 95px
+split by exactly two pixels. Pane grid projection resolves the authoritative
+selected surface kind before legacy pane metadata and uses the captured 4px
+horizontal/32px vertical terminal chrome. Browser panes no longer expose
+terminal metrics. The implementation also moved dispatch context and the new
+projection regression into focused child modules; the affected oversized
+files are net 13 lines smaller and their budgets were ratcheted down.
 
 Windows now projects pane frames from the rendered workspace authority and
 publishes xterm-measured cell dimensions through the terminal resize boundary.
@@ -62,7 +74,7 @@ fresh projections outrank stale retained values, while moved panes retain the
 last confirmed grid across runtime handoff. Per-panel caches are pruned against
 the active model. The viewport state and resize command live in the 138-line
 `terminal/viewport_metrics.rs` child; `terminal.rs` fell from 2,902 to 2,895
-lines and `control_socket.rs` remains at its 3,867-line ceiling.
+lines and `control_socket.rs` remains at its 3,854-line ceiling.
 
 Closed windows now retain canonical recoverable routes. A socket-managed close
 appends a strict `visible:false` `window.list` row with stable window and
@@ -168,9 +180,9 @@ development WebView at `localhost:1420`. See
 
 The rolling catalog contains 503 rows: 159 public CLI commands, 16 internal CLI
 contracts, 263 release socket methods, 46 debug socket methods, and 19 coarse
-product umbrellas. It currently classifies 80 rows as verified, 3 as reviewed
-platform equivalents, 199 as implemented but unverified, and 221 as missing.
-The strict resolved count is 83. These are entry-point rows, not a user-facing
+product umbrellas. It currently classifies 82 rows as verified, 3 as reviewed
+platform equivalents, 197 as implemented but unverified, and 221 as missing.
+The strict resolved count is 85. These are entry-point rows, not a user-facing
 completion percentage.
 
 The zero-delta window lane promotes 11 entry-point rows. `window.create`,
@@ -375,10 +387,10 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
 - Seventy source-text tests that asserted filenames, function spelling, or
   substring order were removed. The retained suites execute behavior.
 - CI now caps new Windows-owned Rust and TypeScript files at 1,500 lines and
-  freezes 39 existing oversized files at their current-or-smaller sizes.
+  freezes 38 existing oversized files at their current-or-smaller sizes.
 - The next structural priorities are
-  the 5,975-line custom-sidebar test file, 5,121-line session root,
-  4,795-line custom-sidebar component, and 4,357-line pane/surface lifecycle
+  the 5,975-line custom-sidebar test file, 5,026-line session root,
+  4,795-line custom-sidebar component, and 4,349-line pane/surface lifecycle
   module. The Swift parser is now 3,719 lines. Split one coherent
   responsibility per isolated maintenance commit only when it unblocks feature
   work; do not turn structural cleanup into the parity metric.
@@ -397,7 +409,7 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
   `65e48faddf`: `surface_move` is now a 142-line child, manual-restore event
   projection is a 29-line child, `pane_surface_control.rs` fell from 3,030 to
   2,840 lines, `pane_surface_lifecycle.rs` from 4,494 to 4,357, and
-  `event_stream.rs` from 1,561 to 1,537. The 39-file Windows length budget is
+  `event_stream.rs` from 1,561 to 1,537. The 39-file Windows length budget was
   fully green. Verification is 5/5 break/join tests, 9/9 move tests, 10/10
   restore tests, 1,117 passed plus 1 ignored desktop library tests, all three
   desktop process tests, 30/30 repository parity tests, and 120/120
@@ -405,10 +417,11 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
 
 ## Next efficient slice
 
-Extend the retained pane lane to the adjacent implemented-but-unverified
-creation and resizing entry points: `v2:pane.create`, `v2:pane.resize`,
-`cli:new-pane`, and `cli:resize-pane`. Capture payload/error precedence,
-inherited directory, split orientation, absolute/relative sizing, clamping,
-state, geometry, and lifecycle events. Reuse the now-authoritative viewport
-projection and existing pane transaction paths; do not reopen the exact
-list/focus/swap/break/join behavior or add case-specific output adapters.
+Build one retained notification-family lane covering the seven implemented
+v2 methods and their seven CLI entry points: create/notify, list, mark-read,
+dismiss, clear, open, and jump-to-unread. This promotes up to fourteen rows in
+one fixture and exercises shared routing, target identity, unread state,
+ordering, mutation events, canonical errors, and CLI output. Keep the three
+specialized create variants and reconcile route outside the lane until their
+currently missing implementations are addressed; do not infer their behavior
+from the covered public methods.

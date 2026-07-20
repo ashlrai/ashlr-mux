@@ -33,6 +33,14 @@
       "latest_verifying_commit": "be72d45961a96c7d800f7804c5b8e5854645cd66",
       "status": "verified"
     },
+    "cli:new-pane": {
+      "latest_verifying_commit": "72be49b35300bec3c359650231e210ed00db38c5",
+      "status": "verified"
+    },
+    "cli:resize-pane": {
+      "latest_verifying_commit": "72be49b35300bec3c359650231e210ed00db38c5",
+      "status": "verified"
+    },
     "cli:swap-pane": {
       "latest_verifying_commit": "be72d45961a96c7d800f7804c5b8e5854645cd66",
       "status": "verified"
