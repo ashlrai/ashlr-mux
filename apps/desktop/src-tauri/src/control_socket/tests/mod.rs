@@ -7,6 +7,7 @@ mod dock_api_adversarial_red;
 mod dock_production_rollback_red;
 mod lifecycle_ref_decoration;
 mod manual_restore_effects_red;
+mod pane_break_join_events_red;
 mod pane_focus_red;
 mod pane_last_red;
 mod pane_list_reference_red;
