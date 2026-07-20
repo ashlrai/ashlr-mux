@@ -1,5 +1,9 @@
 use super::*;
 
+#[path = "event_stream/manual_restore.rs"]
+mod manual_restore;
+pub(crate) use manual_restore::record_manual_restore_window_created;
+
 pub(crate) fn record_session_changed_event(app: &AppHandle, snapshot: &AppSessionSnapshot) {
     record_session_changed_event_suppressing(app, snapshot, &HashSet::new());
 }
@@ -13,34 +17,6 @@ pub(crate) fn replace_session_event_baseline(app: &AppHandle, snapshot: &AppSess
         .lock()
         .expect("control event log mutex poisoned")
         .last_session_summaries = session_event_summaries(snapshot);
-}
-
-pub(crate) fn record_manual_restore_window_created(
-    app: &AppHandle,
-    window: &SessionWindowSnapshot,
-) {
-    let Some(window_id) = window.window_id.as_deref() else {
-        return;
-    };
-    let event = window_lifecycle::window_lifecycle_event(
-        "window.created",
-        "create",
-        window,
-        window_id,
-        false,
-        false,
-    );
-    record_event(
-        app,
-        event.name,
-        event.category,
-        event.source,
-        event.window_id,
-        event.workspace_id,
-        event.pane_id,
-        event.surface_id,
-        event.payload,
-    );
 }
 
 pub(super) fn record_session_changed_event_suppressing(
