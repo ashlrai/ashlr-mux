@@ -214,6 +214,14 @@ export function shouldOpenTerminalLinkInCmuxBrowser(
   return event.ctrlKey || event.metaKey;
 }
 
+export function terminalShouldClaimFocus(
+  isActive: boolean,
+  findVisible: boolean,
+  textBoxVisible: boolean,
+): boolean {
+  return isActive && !findVisible && !textBoxVisible;
+}
+
 /** Decode base64 (the Rust output bridge) into the raw bytes xterm expects. */
 function decodeBase64(data: string): Uint8Array {
   const binary = atob(data);
@@ -285,6 +293,8 @@ export function TerminalSurface({
   textBoxDraftRef.current = textBoxDraft;
   const [textBoxStatus, setTextBoxStatus] = useState("");
   const [terminalStarting, setTerminalStarting] = useState(true);
+  const focusEligibilityRef = useRef({ isActive, findVisible, textBoxVisible });
+  focusEligibilityRef.current = { isActive, findVisible, textBoxVisible };
 
   const runFind = (direction: "next" | "previous", query = findDraftRef.current): void => {
     const term = terminalRef.current;
@@ -375,7 +385,7 @@ export function TerminalSurface({
   };
 
   useEffect(() => {
-    if (!isActive || findVisible || textBoxVisible) {
+    if (!terminalShouldClaimFocus(isActive, findVisible, textBoxVisible)) {
       return;
     }
     const timer = window.setTimeout(() => {
@@ -617,7 +627,16 @@ export function TerminalSurface({
       observer.observe(mount);
       cleanups.push(() => observer.disconnect());
 
-      term.focus();
+      const focusEligibility = focusEligibilityRef.current;
+      if (
+        terminalShouldClaimFocus(
+          focusEligibility.isActive,
+          focusEligibility.findVisible,
+          focusEligibility.textBoxVisible,
+        )
+      ) {
+        term.focus();
+      }
     }
 
     boot(container).catch((error) => {
