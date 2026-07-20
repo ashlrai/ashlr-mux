@@ -262,6 +262,57 @@ fn pane_list_projects_canonical_grid_metrics_while_terminal_resize_catches_up() 
 }
 
 #[test]
+fn pane_list_headless_selection_uses_the_configured_workspace_portal() {
+    assert_eq!(
+        pane_surface_control::pane_list::pane_list_capture_portal_frame(1000.0, 700.0),
+        Some(PanePixelFrame {
+            x: 240.0,
+            y: 28.0,
+            width: 760.0,
+            height: 672.0,
+        })
+    );
+    assert_eq!(
+        pane_surface_control::pane_list::pane_list_capture_portal_frame(200.0, 20.0),
+        None
+    );
+}
+
+#[test]
+fn pane_list_prefers_fresh_projection_and_retains_it_for_an_unrendered_move() {
+    let stale_live = Some((80, 20, 8, 16));
+    let projected = Some((23, 17, 8, 17));
+    let retained = Some((47, 17, 8, 17));
+
+    assert_eq!(
+        pane_surface_control::pane_list::pane_list_preferred_grid_fields(
+            stale_live,
+            projected,
+            None,
+        ),
+        projected
+    );
+    assert_eq!(
+        pane_surface_control::pane_list::pane_list_preferred_grid_fields(
+            stale_live,
+            None,
+            retained,
+        ),
+        retained,
+        "a moved live pane keeps its last rendered grid while its new workspace is hidden"
+    );
+    assert_eq!(
+        pane_surface_control::pane_list::pane_list_preferred_grid_fields(
+            stale_live,
+            None,
+            None,
+        ),
+        None,
+        "an unrendered workspace must not expose an unconfirmed default grid"
+    );
+}
+
+#[test]
 fn pane_list_container_size_uses_the_rendered_workspace_dimensions() {
     let rendered = PanePixelFrame {
         x: 240.0,
