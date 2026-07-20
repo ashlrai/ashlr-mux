@@ -857,6 +857,30 @@ class EventCollector:
                 with self._lock:
                     self.frames.append(frame)
 
+    def reset_after_setup(
+        self, quiet_seconds: float = 0.2, timeout_seconds: float = 2.0
+    ) -> None:
+        """Drain setup events after the stream has remained quiet, retaining its ack."""
+        deadline = time.monotonic() + timeout_seconds
+        quiet_since = time.monotonic()
+        previous_count = -1
+        while True:
+            with self._lock:
+                count = len(self.frames)
+            now = time.monotonic()
+            if count != previous_count:
+                previous_count = count
+                quiet_since = now
+            if now - quiet_since >= quiet_seconds or now >= deadline:
+                break
+            time.sleep(min(0.01, max(0.0, deadline - now)))
+        with self._lock:
+            self.frames = [
+                frame
+                for frame in self.frames
+                if isinstance(frame, dict) and frame.get("type") == "ack"
+            ]
+
     def stop(self) -> list[Any]:
         # Closing a Windows named-pipe fd while the pump is inside synchronous
         # ReadFile can wait behind that read. Cancel it first and let the pump
@@ -1183,10 +1207,6 @@ def run_capture(
         probe_results: dict[str, list[dict[str, Any]]] = {}
         events: list[Any] | None = None
         try:
-            for op in case.get("setup", []):
-                result = driver.run_op(resolve_placeholders(op, context))
-                symbolizer.register(result)
-                context["setup"].append(result)
             if case.get("events"):
                 collector = EventCollector(
                     driver.socket_address,
@@ -1195,6 +1215,12 @@ def run_capture(
                     driver.op_timeout,
                 )
                 time.sleep(0.2)
+            for op in case.get("setup", []):
+                result = driver.run_op(resolve_placeholders(op, context))
+                symbolizer.register(result)
+                context["setup"].append(result)
+            if collector is not None:
+                collector.reset_after_setup()
             action_result = driver.run_op(resolve_placeholders(case["action"], context))
             symbolizer.register(action_result)
             context["action"] = action_result
