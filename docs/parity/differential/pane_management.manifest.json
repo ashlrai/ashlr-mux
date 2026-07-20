@@ -182,7 +182,13 @@
         "state": [
           {"op": "v2", "method": "pane.list", "params": {"workspace_id": "${session.0.result.workspace_id}"}}
         ]
-      }
+      },
+      "approved_differences": [
+        {"path": "/state/0/result/response/result/panes/1/cell_height_px", "rationale": "Windows eagerly materializes the unfocused ConPTY runtime; canonical defers optional grid metrics until the background pane view activates."},
+        {"path": "/state/0/result/response/result/panes/1/cell_width_px", "rationale": "Windows eagerly materializes the unfocused ConPTY runtime; canonical defers optional grid metrics until the background pane view activates."},
+        {"path": "/state/0/result/response/result/panes/1/columns", "rationale": "Windows eagerly materializes the unfocused ConPTY runtime; canonical defers optional grid metrics until the background pane view activates."},
+        {"path": "/state/0/result/response/result/panes/1/rows", "rationale": "Windows eagerly materializes the unfocused ConPTY runtime; canonical defers optional grid metrics until the background pane view activates."}
+      ]
     },
     {
       "id": "cli.new_pane_browser_background",
@@ -216,7 +222,10 @@
         "state": [
           {"op": "v2", "method": "pane.list", "params": {"workspace_id": "${session.0.result.workspace_id}"}}
         ]
-      }
+      },
+      "approved_differences": [
+        {"path": "/state/0/result/response/result/panes/1/pixel_frame/width", "rationale": "The equivalent 49.5-point width serializes as 49.50000000000001 on canonical and 49.5 on Windows."}
+      ]
     },
     {
       "id": "cli.resize_pane_defaults",
