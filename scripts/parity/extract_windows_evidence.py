@@ -373,10 +373,12 @@ def extract_cli_mappings(text: str) -> dict[str, dict]:
     return result
 
 
-def extract_help(text: str) -> dict[str, dict]:
-    fn_start, fn_end = function_body(text, "mapped_subcommand_usage")
+def extract_help_match(path: Path, text: str, function_name: str) -> dict[str, dict]:
+    fn_start, fn_end = function_body(text, function_name)
     masked = rust_mask(text)
     marker = masked.find("match command", fn_start, fn_end)
+    if marker < 0:
+        return {}
     opening = masked.find("{", marker, fn_end)
     start, end = opening + 1, matching_brace(masked, opening)
     result: dict[str, dict] = {}
@@ -392,10 +394,24 @@ def extract_help(text: str) -> dict[str, dict]:
         summary = usage.splitlines()[1].strip() if usage and len(usage.splitlines()) > 1 else None
         for command in commands:
             result[command] = {
-                "source": loc(DISPATCH, text, offset),
+                "source": loc(path, text, offset),
                 "usage_summary": summary,
                 "aliases_in_same_arm": sorted(value for value in commands if value != command),
             }
+    return result
+
+
+def extract_help(root: Path, text: str) -> dict[str, dict]:
+    result = extract_help_match(DISPATCH, text, "mapped_subcommand_usage")
+    fn_start, fn_end = function_body(text, "mapped_subcommand_usage")
+    function_text = text[fn_start:fn_end]
+    for module in sorted(set(re.findall(r"\b([a-zA-Z_][a-zA-Z0-9_]*)::usage\s*\(\s*command\s*\)", function_text))):
+        module_path = DISPATCH.parent / "dispatch" / f"{module}.rs"
+        absolute_path = root / module_path
+        if not absolute_path.is_file():
+            continue
+        module_text = absolute_path.read_text(encoding="utf-8")
+        result.update(extract_help_match(module_path, module_text, "usage"))
     return result
 
 
@@ -500,7 +516,7 @@ def build(root: Path) -> dict:
     top = {value: loc(CLASSIFY, classify_text, offset) for value, offset in top_values}
     usage = {value: loc(CLASSIFY, classify_text, offset) for value, offset in usage_values}
     mappings = extract_cli_mappings(forward_text)
-    helps = extract_help(dispatch_text)
+    helps = extract_help(root, dispatch_text)
     cli_references = reference_index(root, [Path("crates/cmux-cli")])
     cli_rows = []
     reachable_commands = sorted(set(top) | set(mappings) | set(SPECIAL_EXECUTORS))

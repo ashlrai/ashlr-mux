@@ -180,8 +180,8 @@ development WebView at `localhost:1420`. See
 
 The rolling catalog contains 503 rows: 159 public CLI commands, 16 internal CLI
 contracts, 263 release socket methods, 46 debug socket methods, and 19 coarse
-product umbrellas. It currently classifies 82 rows as verified, 3 as reviewed
-platform equivalents, 197 as implemented but unverified, and 221 as missing.
+product umbrellas. It currently classifies 96 rows as verified, 3 as reviewed
+platform equivalents, 183 as implemented but unverified, and 221 as missing.
 The strict resolved count is 85. These are entry-point rows, not a user-facing
 completion percentage.
 
@@ -414,14 +414,28 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
   restore tests, 1,117 passed plus 1 ignored desktop library tests, all three
   desktop process tests, 30/30 repository parity tests, and 120/120
   differential-lane tests.
+- The notification lifecycle slice is verified at `34337b8605`, with retained
+  evidence at `parity/diff-lane@60e3a6a1b7`. Its 31-case lane has no missing,
+  capture-error, unsettled, or unexplained cases and promotes exactly fourteen
+  rows: the seven public notification v2 methods plus their seven CLI entry
+  points. Two platform bootstrap values are isolated to exact JSON pointers;
+  all notification responses, errors, state, target identity, event order, CLI
+  help, and output remain strict. Notification creation now honors the
+  canonical reorder-on-notification policy and event payload, list output
+  safely encodes its trailing title field, and the mixed controller was split
+  into 160-, 355-, and 176-line responsibility modules. The full Cargo
+  workspace, focused core/CLI/desktop suites, formatting, and 123 differential
+  harness tests are green after simplification. The specialized create
+  variants, reconcile, delivery/persistence, and `product.notifications`
+  remain unverified or missing and were not promoted.
 
 ## Next efficient slice
 
-Build one retained notification-family lane covering the seven implemented
-v2 methods and their seven CLI entry points: create/notify, list, mark-read,
-dismiss, clear, open, and jump-to-unread. This promotes up to fourteen rows in
-one fixture and exercises shared routing, target identity, unread state,
-ordering, mutation events, canonical errors, and CLI output. Keep the three
-specialized create variants and reconcile route outside the lane until their
-currently missing implementations are addressed; do not infer their behavior
-from the covered public methods.
+Close the remaining notification socket family in one contract-first slice:
+`notification.create_for_caller`, `notification.create_for_surface`,
+`notification.create_for_target`, and `notification.reconcile`. Extend the
+retained notification fixture only after each canonical selector/default/error
+contract is pinned. Reuse the verified store, event, and navigation seams; do
+not rebuild them. Keep native delivery, restart persistence, and the broad
+`product.notifications` umbrella separate until a dedicated live acceptance
+lane covers those product behaviors.
