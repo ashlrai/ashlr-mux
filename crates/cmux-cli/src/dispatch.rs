@@ -1117,6 +1117,7 @@ mod tests {
     }
 
     include!("dispatch/mapped_help_tests.rs");
+    include!("dispatch/notification_help_red.rs");
 
     #[test]
     fn browser_help_advertises_network_observability_fields() {

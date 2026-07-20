@@ -860,6 +860,8 @@ mod tests {
         }
     }
 
+    include!("notifications/control_contract_red.rs");
+
     /// Canonical unregisterMainWindow clearing scope (AppDelegate.swift:
     /// 16274-16280 at pinned e1825d40d): the window id row and each workspace
     /// row go; unrelated workspaces survive.
