@@ -199,6 +199,14 @@ pub(in crate::control_socket) fn pane_list_preferred_grid_fields(
     }
 }
 
+pub(in crate::control_socket) fn pane_list_capture_activation_bootstrap(
+    workspace_is_selected: bool,
+    workspace_has_rendered_geometry: bool,
+    capture_portal_available: bool,
+) -> bool {
+    workspace_is_selected && !workspace_has_rendered_geometry && capture_portal_available
+}
+
 pub(in crate::control_socket) fn pane_list(
     app: &AppHandle,
     params: &serde_json::Map<String, Value>,
@@ -279,10 +287,11 @@ pub(in crate::control_socket) fn pane_list(
             pane_geometry_state.authority_for(window_label, workspace_id)
         });
     let latest_geometry = pane_geometry_state.latest_for_window(window_label);
-    let capture_activation_bootstrap = workspace_is_selected
-        && !matches!(geometry_authority, PaneGeometryAuthority::Rendered(_))
-        && latest_geometry.is_none()
-        && capture_portal.is_some();
+    let capture_activation_bootstrap = pane_list_capture_activation_bootstrap(
+        workspace_is_selected,
+        matches!(geometry_authority, PaneGeometryAuthority::Rendered(_)),
+        capture_portal.is_some(),
+    );
     if workspace_is_selected && !matches!(geometry_authority, PaneGeometryAuthority::Rendered(_)) {
         if let Some(fallback) = latest_geometry
             .map(|geometry| PanePixelFrame {
