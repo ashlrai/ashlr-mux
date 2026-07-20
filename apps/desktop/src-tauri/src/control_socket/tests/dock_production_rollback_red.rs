@@ -187,11 +187,7 @@ impl LifecycleEffectExecutor for ProductionDockFaultHarness {
 }
 
 fn context() -> LifecycleDispatchContext {
-    LifecycleDispatchContext {
-        browser_enabled: true,
-        dock_available: true,
-        active_window_id: None,
-    }
+    LifecycleDispatchContext::new(true, true, None)
 }
 
 fn owner(snapshot: &AppSessionSnapshot) -> String {

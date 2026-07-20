@@ -11,11 +11,7 @@ fn transition(method: &str, snapshot: &AppSessionSnapshot, params: Value) -> Lif
         snapshot,
         method,
         params.as_object().expect("decoded params object"),
-        &LifecycleDispatchContext {
-            browser_enabled: true,
-            dock_available: true,
-            active_window_id: None,
-        },
+        &LifecycleDispatchContext::new(true, true, None),
     )
 }
 

@@ -28,18 +28,32 @@ pub(super) fn handle_pane_surface_lifecycle_request_with_terminal_policy(
 ) -> ControlCallResult {
     let current = snapshot(app);
     let active_window_id = control_active_window_id(app);
-    let mut transition = pane_surface_lifecycle::dispatch_lifecycle_request(
-        &current,
-        method,
-        params,
-        &pane_surface_lifecycle::LifecycleDispatchContext {
-            browser_enabled: app.try_state::<BrowserWebviewState>().is_some(),
-            dock_available: app
-                .try_state::<crate::right_sidebar::RightSidebarState>()
-                .is_some_and(|state| state.beta_settings().dock_enabled),
-            active_window_id,
-        },
+    let mut context = pane_surface_lifecycle::LifecycleDispatchContext::new(
+        app.try_state::<BrowserWebviewState>().is_some(),
+        app.try_state::<crate::right_sidebar::RightSidebarState>()
+            .is_some_and(|state| state.beta_settings().dock_enabled),
+        active_window_id,
     );
+    if method == "pane.resize" {
+        if let (Ok(scope), Some(geometry_state)) = (
+            pane_surface_lifecycle::scope(&current, params, &context),
+            app.try_state::<crate::pane_geometry::PaneGeometryState>(),
+        ) {
+            let window_id = current.windows[scope.window_index]
+                .window_id
+                .as_deref()
+                .unwrap_or("main");
+            let window_label =
+                pane_surface_control::pane_list::pane_list_window_label(&current, window_id);
+            if let crate::pane_geometry::PaneGeometryAuthority::Rendered(geometry) =
+                geometry_state.authority_for(window_label, &scope.workspace_id)
+            {
+                context.rendered_pane_size = Some((geometry.width, geometry.height));
+            }
+        }
+    }
+    let mut transition =
+        pane_surface_lifecycle::dispatch_lifecycle_request(&current, method, params, &context);
     // R5: forget closed/respawned entities BEFORE decoration so the response
     // echo mints fresh refs like canonical.
     forget_recreated_lifecycle_handles(app, method, &current, &transition);

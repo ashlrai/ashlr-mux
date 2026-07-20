@@ -14,11 +14,7 @@ use super::*;
 use crate::dock::{DockCreateRequest, DockStore, DockSurfaceKind};
 
 fn remediation_context() -> LifecycleDispatchContext {
-    LifecycleDispatchContext {
-        browser_enabled: true,
-        dock_available: true,
-        active_window_id: None,
-    }
+    LifecycleDispatchContext::new(true, true, None).with_rendered_pane_size(100.0, 100.0)
 }
 
 fn transition(snapshot: &AppSessionSnapshot, method: &str, params: Value) -> LifecycleTransition {
@@ -108,9 +104,8 @@ fn pane_resize_relative_uses_canonical_frame_pixel_math() {
 }
 
 #[test]
-fn pane_resize_high_divider_clamps_to_floor_like_the_capture() {
-    // Capture oracle: pane_create.divider_clamped_high state probe — amount 1
-    // from 0.9 lands on the 0.1 clamp floor (delta = amount with axisPixels 1).
+fn pane_resize_high_divider_uses_rendered_axis_without_clamping() {
+    // One pixel across the rendered 100px axis moves the divider by 0.01.
     let mut snapshot = resizable_snapshot();
     let SessionWorkspaceLayoutSnapshot::Split(split) = snapshot.windows[0].tab_manager.workspaces
         [0]
@@ -127,7 +122,7 @@ fn pane_resize_high_divider_clamps_to_floor_like_the_capture() {
     );
     let value = ok_value(&resized);
     assert_eq!(value["old_divider_position"], json!(0.9));
-    assert_eq!(value["new_divider_position"], json!(0.1));
+    assert_eq!(value["new_divider_position"], json!(0.89));
     assert_eq!(value["amount"], json!(1));
 }
 

@@ -17,6 +17,10 @@ use crate::dock::{
 
 use super::payloads::{panel_title, surfaces_for_workspace, workspace_display_name};
 
+#[path = "pane_surface_lifecycle/context.rs"]
+mod context;
+pub(in crate::control_socket) use context::LifecycleDispatchContext;
+
 #[path = "pane_surface_lifecycle/pane_focus.rs"]
 mod pane_focus;
 use pane_focus::pane_focus;
@@ -196,13 +200,6 @@ pub(super) enum LifecycleEffect {
         window_id: String,
     },
     PersistSession,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(super) struct LifecycleDispatchContext {
-    pub browser_enabled: bool,
-    pub dock_available: bool,
-    pub active_window_id: Option<String>,
 }
 
 #[derive(Debug)]
@@ -3687,15 +3684,10 @@ fn pane_resize(
     let Some(pane_id) = pane_id else {
         return error(snapshot, "not_found", "No focused pane", None);
     };
-    // Canonical divides by the split's RENDERED axis pixels
-    // (TerminalControllerPaneResizeSupport.swift:84-92 axisPixels =
-    // max(frameUnion, 1); ControlPaneContext.swift:530-532). This port tracks
-    // no rendered frames — the same state the live canonical capture ran in
-    // (zero frames => axisPixels 1), so pass zero extents and let the core's
-    // max(1.0) fallback reproduce the capture-pinned step math
-    // (REMEDIATION.md divergence 4; capture: 0.5->0.1 amount 2, 0.9->0.1
-    // amount 1). The webview viewport is NOT a substitute for frame pixels.
-    let (width, height) = (0.0, 0.0);
+    // Canonical divides by the split's rendered portal axis. Use the geometry
+    // last reported by the pane tree; only fall back to the canonical 1px
+    // minimum before that workspace has rendered.
+    let (width, height) = context.rendered_pane_size.unwrap_or((0.0, 0.0));
     let mut echo = serde_json::Map::new();
     let result = if absolute {
         let axis = match params.get("absolute_axis").and_then(Value::as_str) {

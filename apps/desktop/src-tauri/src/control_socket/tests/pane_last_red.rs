@@ -10,11 +10,7 @@ fn transition(snapshot: &AppSessionSnapshot, params: Value) -> LifecycleTransiti
         snapshot,
         "pane.last",
         params.as_object().expect("decoded params object"),
-        &LifecycleDispatchContext {
-            browser_enabled: true,
-            dock_available: true,
-            active_window_id: None,
-        },
+        &LifecycleDispatchContext::new(true, true, None),
     )
 }
 

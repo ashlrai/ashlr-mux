@@ -43,11 +43,7 @@ const SUPPORTED_ACTIONS: [&str; 17] = [
 ];
 
 fn context(browser_enabled: bool) -> LifecycleDispatchContext {
-    LifecycleDispatchContext {
-        browser_enabled,
-        dock_available: true,
-        active_window_id: Some(WINDOW.into()),
-    }
+    LifecycleDispatchContext::new(browser_enabled, true, Some(WINDOW.into()))
 }
 
 fn action_snapshot() -> AppSessionSnapshot {

@@ -10,6 +10,7 @@ mod manual_restore_effects_red;
 mod pane_break_join_events_red;
 mod pane_focus_red;
 mod pane_last_red;
+mod pane_list_projection_red;
 mod pane_list_reference_red;
 mod pane_response_identity_red;
 mod pane_surface_lifecycle_red;

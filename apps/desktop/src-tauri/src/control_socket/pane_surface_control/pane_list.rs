@@ -207,6 +207,34 @@ pub(in crate::control_socket) fn pane_list_capture_activation_bootstrap(
     workspace_is_selected && !workspace_has_rendered_geometry && capture_portal_available
 }
 
+pub(in crate::control_socket) fn pane_list_selected_surface_is_terminal(
+    workspace: &SessionWorkspaceSnapshot,
+    pane: &SessionPaneLayoutSnapshot,
+    selected: Option<&str>,
+) -> bool {
+    selected
+        .and_then(|surface_id| {
+            workspace
+                .surfaces
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .find(|surface| surface.surface_id == surface_id)
+        })
+        .map(|surface| {
+            matches!(
+                surface.kind,
+                SessionSurfaceKindSnapshot::Terminal
+                    | SessionSurfaceKindSnapshot::RemoteTerminal { .. }
+            )
+        })
+        .unwrap_or_else(|| {
+            pane.surface_kind
+                .as_deref()
+                .is_none_or(|kind| kind == "terminal" || kind == "remote-terminal")
+        })
+}
+
 pub(in crate::control_socket) fn pane_list(
     app: &AppHandle,
     params: &serde_json::Map<String, Value>,
@@ -370,10 +398,7 @@ pub(in crate::control_socket) fn pane_list(
                 "surface_count": pane.panel_ids.len(),
                 "pixel_frame": {"x": frame.x, "y": frame.y, "width": frame.width, "height": frame.height},
             });
-            let grid_fields = pane
-                .surface_kind
-                .as_deref()
-                .is_none_or(|kind| kind == "terminal")
+            let grid_fields = pane_list_selected_surface_is_terminal(workspace, &pane, selected)
                 .then(|| {
                     let projected = workspace_is_selected
                         .then(|| pane_list_provisional_grid_fields(frame, root_frame))

@@ -10,11 +10,7 @@ fn transition(params: Value) -> LifecycleTransition {
         &resizable_snapshot(),
         "pane.swap",
         params.as_object().expect("decoded params object"),
-        &LifecycleDispatchContext {
-            browser_enabled: true,
-            dock_available: true,
-            active_window_id: None,
-        },
+        &LifecycleDispatchContext::new(true, true, None),
     )
 }
 

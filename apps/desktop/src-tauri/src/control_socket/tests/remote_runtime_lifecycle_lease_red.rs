@@ -370,11 +370,7 @@ fn remote_snapshot_with_second_slot() -> AppSessionSnapshot {
 }
 
 fn context() -> LifecycleDispatchContext {
-    LifecycleDispatchContext {
-        browser_enabled: true,
-        dock_available: true,
-        active_window_id: Some(WINDOW.into()),
-    }
+    LifecycleDispatchContext::new(true, true, Some(WINDOW.into()))
 }
 
 fn remote_snapshot_with_dock() -> (AppSessionSnapshot, String) {

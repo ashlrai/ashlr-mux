@@ -12,11 +12,7 @@ const W1: &str = "10000000-0000-0000-0000-000000000001";
 const W2: &str = "10000000-0000-0000-0000-000000000002";
 
 fn context() -> LifecycleDispatchContext {
-    LifecycleDispatchContext {
-        browser_enabled: true,
-        dock_available: true,
-        active_window_id: Some(W1.into()),
-    }
+    LifecycleDispatchContext::new(true, true, Some(W1.into()))
 }
 
 fn windows() -> AppSessionSnapshot {

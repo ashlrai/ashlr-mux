@@ -152,11 +152,7 @@ pub(super) fn resizable_snapshot() -> AppSessionSnapshot {
 }
 
 fn context() -> LifecycleDispatchContext {
-    LifecycleDispatchContext {
-        browser_enabled: true,
-        dock_available: true,
-        active_window_id: None,
-    }
+    LifecycleDispatchContext::new(true, true, None)
 }
 
 fn transition(snapshot: &AppSessionSnapshot, method: &str, params: Value) -> LifecycleTransition {
@@ -219,11 +215,7 @@ fn main_dock_snapshot() -> (AppSessionSnapshot, String, String) {
 }
 
 fn main_context(dock_available: bool, browser_enabled: bool) -> LifecycleDispatchContext {
-    LifecycleDispatchContext {
-        browser_enabled,
-        dock_available,
-        active_window_id: Some("main".into()),
-    }
+    LifecycleDispatchContext::new(browser_enabled, dock_available, Some("main".into()))
 }
 
 fn main_transition(

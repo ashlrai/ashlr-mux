@@ -23,11 +23,7 @@ const C: &str = "40000000-0000-0000-0000-000000000003";
 const OTHER: &str = "40000000-0000-0000-0000-000000000004";
 
 fn context(browser_enabled: bool) -> LifecycleDispatchContext {
-    LifecycleDispatchContext {
-        browser_enabled,
-        dock_available: true,
-        active_window_id: Some(W1.into()),
-    }
+    LifecycleDispatchContext::new(browser_enabled, true, Some(W1.into()))
 }
 
 fn surface(id: &str, pane_id: &str, kind: SessionSurfaceKindSnapshot) -> SessionSurfaceSnapshot {

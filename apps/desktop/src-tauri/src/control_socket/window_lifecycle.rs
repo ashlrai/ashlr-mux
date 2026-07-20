@@ -224,11 +224,7 @@ fn error(
 /// Routing context for the shared pane/window resolution walk. Only the
 /// active-window default matters for this family.
 fn routing_context(context: &WindowLifecycleContext) -> LifecycleDispatchContext {
-    LifecycleDispatchContext {
-        browser_enabled: false,
-        dock_available: false,
-        active_window_id: context.active_window_id.clone(),
-    }
+    LifecycleDispatchContext::new(false, false, context.active_window_id.clone())
 }
 
 const KNOWN_REF_KINDS: [&str; 7] = [

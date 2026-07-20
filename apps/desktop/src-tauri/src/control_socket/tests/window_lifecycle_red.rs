@@ -660,11 +660,7 @@ fn set_active_window_effect_repoints_selectorless_routing() {
         &create.snapshot,
         "surface.current",
         &serde_json::Map::new(),
-        &LifecycleDispatchContext {
-            browser_enabled: false,
-            dock_available: false,
-            active_window_id: pointer.get(),
-        },
+        &LifecycleDispatchContext::new(false, false, pointer.get()),
     );
     let payload = expect_ok(&current.result);
     assert_eq!(payload["window_id"], json!("window-9"));
@@ -1550,11 +1546,7 @@ fn surface_list_terminal_rows_render_the_stored_resume_binding() {
         &snapshot,
         "surface.list",
         &serde_json::Map::new(),
-        &LifecycleDispatchContext {
-            browser_enabled: false,
-            dock_available: false,
-            active_window_id: Some("window-1".into()),
-        },
+        &LifecycleDispatchContext::new(false, false, Some("window-1".into())),
     );
     let payload = expect_ok(&transition.result);
     let row = payload["surfaces"]
@@ -1578,11 +1570,7 @@ fn surface_list_rows_carry_the_plain_id_ref_index_keys() {
         &snapshot,
         "surface.list",
         &serde_json::Map::new(),
-        &LifecycleDispatchContext {
-            browser_enabled: false,
-            dock_available: false,
-            active_window_id: Some("window-1".into()),
-        },
+        &LifecycleDispatchContext::new(false, false, Some("window-1".into())),
     );
     decorate_lifecycle_result_refs_with("surface.list", &mut transition.result, &mut |kind, id| {
         format!("{kind}:ref:{id}")
