@@ -316,21 +316,21 @@ fn decode_settings_config(raw: &Value) -> Result<Config, String> {
 /// the agent-session `app.context` copy fixture) also need a cheap non-command
 /// read. Any filesystem or decode problem falls back to the schema default,
 /// matching the Settings UI's "system" default rather than failing the caller.
+fn current_app_config() -> AppConfig {
+    config_file_path()
+        .and_then(|path| load_raw_config(&path))
+        .and_then(|raw| decode_settings_config(&raw))
+        .ok()
+        .and_then(|config| config.app)
+        .unwrap_or_default()
+}
+
 pub(crate) fn current_app_language() -> String {
-    let default_language = AppConfig::default().language;
-    let Ok(path) = config_file_path() else {
-        return default_language;
-    };
-    let Ok(raw) = load_raw_config(&path) else {
-        return default_language;
-    };
-    let Ok(config) = decode_settings_config(&raw) else {
-        return default_language;
-    };
-    config
-        .app
-        .map(|app| app.language)
-        .unwrap_or(default_language)
+    current_app_config().language
+}
+
+pub(crate) fn reorder_on_notification_enabled() -> bool {
+    current_app_config().reorder_on_notification
 }
 
 /// Best-effort effective workspace color palette for control-socket actions.

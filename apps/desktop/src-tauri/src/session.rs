@@ -53,7 +53,8 @@ pub(crate) use control_window_registration::{
 };
 pub(crate) use pane_topology::finalize_broken_pane_snapshot;
 pub(crate) use workspace_ordering::{
-    reorder_workspaces_in_window_for_control, reorder_workspaces_many_in_window_for_control,
+    move_workspace_to_top_for_notification_for_control, reorder_workspaces_in_window_for_control,
+    reorder_workspaces_many_in_window_for_control,
     transact_value_if_changed_suppressing_derived_events, ReorderWorkspacesManyControlError,
 };
 

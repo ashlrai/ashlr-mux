@@ -4,6 +4,14 @@ use super::*;
 mod activity_controls;
 pub(super) use activity_controls::*;
 
+#[path = "workspace_control/notification_controls.rs"]
+mod notification_controls;
+pub(super) use notification_controls::*;
+
+#[path = "workspace_control/notification_events.rs"]
+mod notification_events;
+pub(super) use notification_events::*;
+
 #[path = "workspace_control/create_params.rs"]
 mod create_params;
 pub(super) use create_params::{
@@ -17,11 +25,13 @@ use events::{
     record_workspace_create_events, record_workspace_events, record_workspace_moved_event,
     record_workspace_reordered_event, record_workspace_selected_event,
 };
-pub(super) use events::{workspace_close_event_specs, workspace_group_created_event_specs};
+pub(super) use events::{
+    workspace_close_event_specs, workspace_group_created_event_specs, workspace_selected_event_spec,
+};
 #[cfg(test)]
 pub(super) use events::{
     workspace_create_event_specs, workspace_moved_event_spec, workspace_rename_event_spec,
-    workspace_reordered_event_spec, workspace_selected_event_spec,
+    workspace_reordered_event_spec,
 };
 
 #[path = "workspace_control/close.rs"]

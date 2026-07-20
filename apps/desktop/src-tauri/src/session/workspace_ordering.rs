@@ -1,5 +1,37 @@
 use super::*;
 
+pub(crate) fn move_workspace_to_top_for_notification_for_control(
+    app: &AppHandle,
+    state: &SessionState,
+    workspace_id: &str,
+) -> Result<(bool, AppSessionSnapshot, usize), String> {
+    let result =
+        transact_value_if_changed_suppressing_derived_events(
+            app,
+            state,
+            |snapshot| -> Result<((bool, usize), bool), std::convert::Infallible> {
+                for (window_index, window) in snapshot.windows.iter_mut().enumerate() {
+                    let Some(index) = window.tab_manager.workspaces.iter().position(|workspace| {
+                        workspace.workspace_id.as_deref() == Some(workspace_id)
+                    }) else {
+                        continue;
+                    };
+                    let changed = session_ops::move_workspace_to_top_for_notification(
+                        &mut window.tab_manager,
+                        index as i64,
+                    );
+                    return Ok(((changed, window_index), changed));
+                }
+                Ok(((false, 0), false))
+            },
+        );
+    match result {
+        Ok(((changed, window_index), snapshot)) => Ok((changed, snapshot, window_index)),
+        Err(PaneTopologyControlError::Publication(message)) => Err(message),
+        Err(PaneTopologyControlError::Operation(error)) => match error {},
+    }
+}
+
 pub(crate) fn transact_value_if_changed_suppressing_derived_events<R, E>(
     app: &AppHandle,
     state: &SessionState,

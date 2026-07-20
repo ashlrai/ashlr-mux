@@ -25,7 +25,15 @@ use cmux_notify::{
     delivery_plan, parse_activation_uri, NotificationActivation, NotificationAppIdentity,
     NotificationDelivery,
 };
+
+mod control_contract;
 use cmux_process::{JobObjectSupervisor, ProcessSupervisor, SpawnSpec};
+pub(crate) use control_contract::{
+    notification_clear_for_control, notification_create_for_control,
+    notification_dismiss_for_control, notification_list_for_control,
+    notification_mark_read_for_control, notification_open_target_for_control,
+    ControlNotificationDismissOutcome, ControlNotificationSnapshot,
+};
 use tauri::{AppHandle, State};
 
 const ENV_TITLE: &str = "CMUX_NOTIFICATION_TITLE";
@@ -209,58 +217,6 @@ pub fn notification_list(
     with_notification_store(state.inner(), |store| notification_center_reply(store))
 }
 
-pub(crate) fn notification_list_for_control(
-    state: &NotificationCommandState,
-) -> Result<NotificationCenterReply, String> {
-    with_notification_store(state, |store| notification_center_reply(store))
-}
-
-pub(crate) fn notification_dismiss_for_control(
-    state: &NotificationCommandState,
-    id: Option<&str>,
-    all_read: bool,
-) -> Result<NotificationCenterReply, String> {
-    with_notification_store(state, |store| {
-        if let Some(id) = id {
-            store.remove(id);
-        } else if all_read {
-            let ids = store
-                .notifications()
-                .iter()
-                .filter(|item| item.is_read)
-                .map(|item| item.id.clone())
-                .collect::<Vec<_>>();
-            for id in ids {
-                store.remove(&id);
-            }
-        }
-        notification_center_reply(store)
-    })
-}
-
-pub(crate) fn notification_mark_read_for_control(
-    state: &NotificationCommandState,
-    id: Option<&str>,
-    workspace_id: Option<&str>,
-    surface_id: Option<&str>,
-    all: bool,
-) -> Result<NotificationCenterReply, String> {
-    with_notification_store(state, |store| {
-        if let Some(id) = id {
-            store.mark_read(id);
-        } else if let Some(workspace_id) = workspace_id {
-            if surface_id.is_some() {
-                store.mark_read_for_tab_surface(workspace_id, surface_id);
-            } else {
-                store.mark_read_for_tab(workspace_id);
-            }
-        } else if all {
-            store.mark_all_read();
-        }
-        notification_center_reply(store)
-    })
-}
-
 pub(crate) fn set_workspace_unread_in_store(
     store: &mut NotificationStore,
     workspace_id: &str,
@@ -336,20 +292,6 @@ fn clear_native_notification_rows(notifications: &[TerminalNotification]) {
 #[cfg(not(windows))]
 fn clear_native_notification_rows(_notifications: &[TerminalNotification]) {}
 
-pub(crate) fn notification_clear_for_control(
-    state: &NotificationCommandState,
-    workspace_id: Option<&str>,
-) -> Result<NotificationCenterReply, String> {
-    with_notification_store(state, |store| {
-        if let Some(workspace_id) = workspace_id {
-            store.clear_for_tab(workspace_id);
-        } else {
-            store.clear_all();
-        }
-        notification_center_reply(store)
-    })
-}
-
 /// Canonical unregisterMainWindow drops stale notifications for the closing
 /// window and each of its workspaces (AppDelegate.swift:16274-16280 at pinned
 /// e1825d40d: clearNotifications(forTabId: removed.windowId), then one
@@ -365,60 +307,6 @@ pub(crate) fn notification_clear_window_for_control(
             store.clear_for_tab(workspace_id);
         }
     })
-}
-
-pub(crate) fn notification_open_target_for_control(
-    state: &NotificationCommandState,
-    id: Option<&str>,
-) -> Result<Option<TerminalNotification>, String> {
-    with_notification_store(state, |store| {
-        let target_id = match id {
-            Some(id) => store
-                .notifications()
-                .iter()
-                .find(|item| item.id == id)
-                .map(|item| item.id.clone()),
-            None => store
-                .notifications()
-                .iter()
-                .find(|item| !item.is_read)
-                .map(|item| item.id.clone()),
-        }?;
-        store.mark_read(&target_id);
-        store
-            .notifications()
-            .iter()
-            .find(|item| item.id == target_id)
-            .cloned()
-    })
-}
-
-pub(crate) fn notification_create_for_control(
-    state: &NotificationCommandState,
-    workspace_id: String,
-    surface_id: String,
-    title: String,
-    subtitle: String,
-    body: String,
-) -> Result<TerminalNotification, String> {
-    let notification = TerminalNotification {
-        id: uuid::Uuid::new_v4().to_string(),
-        tab_id: workspace_id,
-        surface_id: Some(surface_id.clone()),
-        panel_id: Some(surface_id),
-        title,
-        subtitle,
-        body,
-        created_at: current_unix_timestamp_seconds(),
-        is_read: false,
-        pane_flash: true,
-        click_action: None,
-    };
-    with_notification_store(state, |store| {
-        store.record(notification.clone(), false);
-    })?;
-    deliver_control_notification(&notification)?;
-    Ok(notification)
 }
 
 #[cfg(windows)]

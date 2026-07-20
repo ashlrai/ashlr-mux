@@ -2597,7 +2597,7 @@ mod control_result_tests {
 
     #[test]
     fn notification_list_keeps_canonical_plain_text() {
-        let result = serde_json::json!([{
+        let result = serde_json::json!({"notifications": [{
             "id": "notification-1",
             "workspace_id": "workspace-1",
             "surface_id": "surface-1",
@@ -2606,11 +2606,11 @@ mod control_result_tests {
             "subtitle": "Agent",
             "body": "Needs input",
             "created_at": 42,
-            "tab_title": "API"
-        }]);
+            "tab_title": "API|50%\nrun\r"
+        }]});
         assert_eq!(
             format_control_result("notification.list", &result),
-            "0:notification-1|workspace-1|surface-1|unread|Build|Agent|Needs input|42|API"
+            "0:notification-1|workspace-1|surface-1|unread|Build|Agent|Needs input|42|pct:API%7C50%25%0Arun%0D"
         );
     }
 
@@ -2638,7 +2638,7 @@ mod control_result_tests {
         });
         assert_eq!(
             format_control_result("notification.open", &opened),
-            "OK workspace:2 surface:3"
+            "OK surface:3 workspace:2"
         );
         assert_eq!(
             format_control_result(

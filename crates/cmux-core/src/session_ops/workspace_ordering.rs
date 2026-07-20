@@ -981,6 +981,35 @@ pub fn move_workspace_to_top(tabs: &mut SessionTabManagerSnapshot, index: i64) -
     true
 }
 
+/// Move an unpinned workspace (or its unpinned group) to the top of the
+/// unpinned tier after a notification. Pinned top-level rows are deliberately
+/// untouched, matching canonical `moveTabToTopForNotification`.
+pub fn move_workspace_to_top_for_notification(
+    tabs: &mut SessionTabManagerSnapshot,
+    index: i64,
+) -> bool {
+    if index < 0 || index as usize >= tabs.workspaces.len() {
+        return false;
+    }
+    let (rows, groups) = workspace_mirror(tabs);
+    let selected = rows[index as usize];
+    let is_pinned = if groups.is_empty() {
+        selected.is_pinned
+    } else {
+        let Some(top_level_id) = top_level_workspace_ids(&[selected], &groups)
+            .first()
+            .copied()
+        else {
+            return false;
+        };
+        sidebar_top_level_pinned_workspace_ids(&rows, &groups).contains(&top_level_id)
+    };
+    if is_pinned {
+        return false;
+    }
+    move_workspace_to_top(tabs, index)
+}
+
 /// Atomically reorder a requested leading subset within pinned and unpinned
 /// tiers, returning canonical pre-application plan indexes. A dry run validates
 /// and plans without touching the snapshot. Applying rebuilds the full row

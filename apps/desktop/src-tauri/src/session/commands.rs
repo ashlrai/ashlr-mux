@@ -266,7 +266,24 @@ pub(crate) fn select_workspace_surface(
     workspace_id: &str,
     panel_id: &str,
 ) -> Result<(bool, AppSessionSnapshot), PaneTopologyControlError<std::convert::Infallible>> {
-    state.transact_value_if_changed(app, |snapshot| {
+    select_workspace_surface_with_event_policy(
+        app,
+        state,
+        workspace_id,
+        panel_id,
+        DerivedEventPolicy::Record,
+    )
+}
+
+pub(crate) fn select_workspace_surface_with_event_policy(
+    app: &AppHandle,
+    state: &SessionState,
+    workspace_id: &str,
+    panel_id: &str,
+    event_policy: DerivedEventPolicy,
+) -> Result<(bool, AppSessionSnapshot), PaneTopologyControlError<std::convert::Infallible>> {
+    let mut publication = ProductionSnapshotPublicationOperations::new(app, state, event_policy);
+    transact_value_if_changed_snapshot(&state.snapshot, &mut publication, |snapshot| {
         let changed = apply_select_workspace_surface(snapshot, workspace_id, panel_id);
         Ok((changed, changed))
     })

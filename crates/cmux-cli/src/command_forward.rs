@@ -167,8 +167,9 @@ pub fn control_command_for(
             "notification.mark_read",
             mark_notification_read_params(args)?,
         )),
-        "clear-notifications" => Some(ControlCommand::new(
+        "clear-notifications" => Some(ControlCommand::from_cli(
             "notification.clear",
+            "clear_notifications",
             clear_notifications_params(args)?,
         )),
         "open-notification" => Some(ControlCommand::new(
@@ -1541,11 +1542,14 @@ mod tests {
         );
         assert_eq!(
             mapped("clear-notifications", &["--workspace", "workspace:2"]).params,
-            serde_json::json!({"workspace_ref": "workspace:2"})
+            serde_json::json!({
+                "workspace_ref": "workspace:2",
+                "__cmux_cli_command": "clear_notifications"
+            })
         );
         assert_eq!(
             mapped("clear-notifications", &[]).params,
-            serde_json::json!({})
+            serde_json::json!({"__cmux_cli_command": "clear_notifications"})
         );
         assert_eq!(
             mapped("open-notification", &["--id", "notification-1"]).params,

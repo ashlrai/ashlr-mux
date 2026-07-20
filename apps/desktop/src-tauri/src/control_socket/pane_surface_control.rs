@@ -368,9 +368,8 @@ pub(super) fn terminal_mobile_workspace_list(
             let terminals =
                 terminal_rows_for_mobile(workspace, requested_terminal_id, &mut is_ready);
             let latest = workspace.workspace_id.as_deref().and_then(|workspace_id| {
-                notifications.as_ref().and_then(|center| {
-                    center
-                        .notifications
+                notifications.as_ref().and_then(|notifications| {
+                    notifications
                         .iter()
                         .filter(|notification| notification.workspace_id == workspace_id)
                         .max_by_key(|notification| notification.created_at)

@@ -28,6 +28,8 @@ use crate::classify::PreSocketAction;
 use crate::command_forward::{control_command_for, ControlCommand};
 use crate::invocation::CliError;
 use crate::ssh::SSH_USAGE_TEXT;
+
+mod notification_help;
 use crate::window_lifecycle::{window_lifecycle_command_for, WindowLifecycleCommand};
 
 /// How `main` should carry out a classified command. Pure data — the executor
@@ -357,6 +359,9 @@ pub fn subcommand_help_text(command: &str) -> String {
 }
 
 fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
+    if let Some(usage) = notification_help::usage(command) {
+        return Some(usage);
+    }
     match command {
         "config" => Some(crate::config::CONFIG_USAGE),
         "docs" => Some(crate::docs::DOCS_USAGE),
@@ -418,27 +423,6 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
         ),
         "current-window" => Some(
             "Usage:\n  cmux current-window\n\nPrints the active desktop window ID.",
-        ),
-        "list-notifications" => Some(
-            "Usage:\n  cmux list-notifications\n\nLists retained desktop notifications.",
-        ),
-        "dismiss-notification" => Some(
-            "Usage:\n  cmux dismiss-notification (--id ID | --all-read)\n\nDismisses one notification or all read notifications.",
-        ),
-        "mark-notification-read" => Some(
-            "Usage:\n  cmux mark-notification-read (--id ID | --workspace WORKSPACE [--surface SURFACE] | --all)\n\nMarks matching notifications read.",
-        ),
-        "clear-notifications" => Some(
-            "Usage:\n  cmux clear-notifications [--workspace WORKSPACE]\n\nClears all notifications or those for one workspace.",
-        ),
-        "open-notification" => Some(
-            "Usage:\n  cmux open-notification --id ID\n\nOpens the workspace and surface targeted by a notification.",
-        ),
-        "jump-to-unread" => Some(
-            "Usage:\n  cmux jump-to-unread\n\nOpens the latest unread notification target.",
-        ),
-        "notify" => Some(
-            "Usage:\n  cmux notify [--title TITLE] [--subtitle SUBTITLE] [--body BODY] [--workspace WORKSPACE] [--surface SURFACE]\n\nCreates and delivers a notification for the selected target.",
         ),
         "right-sidebar" => Some(
             "Usage:\n  cmux right-sidebar <toggle|show|hide|focus|set|mode|files|find|vault|sessions|feed|dock> [--workspace WORKSPACE] [--window WINDOW] [--no-focus]\n\nControls right-sidebar visibility, mode, and focus. The mode command prints its current state.",

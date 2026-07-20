@@ -43,12 +43,12 @@ pub use browser::{
 use workspace_ordering::normalize_workspace_groups_in_snapshot;
 pub use workspace_ordering::{
     add_workspace_to_group_snapshot, create_workspace_group_snapshot,
-    move_workspace_group_snapshot, move_workspace_to_top, remove_workspace_from_group_snapshot,
-    rename_workspace_group_snapshot, reorder_workspaces, reorder_workspaces_many,
-    reorder_workspaces_with_mode, set_group_collapsed, set_workspace_group_anchor_snapshot,
-    set_workspace_group_color_snapshot, set_workspace_group_icon_snapshot,
-    set_workspace_group_pinned_snapshot, ungroup_workspace_group_snapshot,
-    WorkspaceGroupMutationError, WorkspaceGroupPlacement,
+    move_workspace_group_snapshot, move_workspace_to_top, move_workspace_to_top_for_notification,
+    remove_workspace_from_group_snapshot, rename_workspace_group_snapshot, reorder_workspaces,
+    reorder_workspaces_many, reorder_workspaces_with_mode, set_group_collapsed,
+    set_workspace_group_anchor_snapshot, set_workspace_group_color_snapshot,
+    set_workspace_group_icon_snapshot, set_workspace_group_pinned_snapshot,
+    ungroup_workspace_group_snapshot, WorkspaceGroupMutationError, WorkspaceGroupPlacement,
 };
 
 /// Single production adapter for mutations of the authoritative persisted

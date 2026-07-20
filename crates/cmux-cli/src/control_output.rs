@@ -785,7 +785,11 @@ fn format_window_entries(result: &serde_json::Value) -> String {
 }
 
 fn format_notification_entries(result: &serde_json::Value) -> String {
-    let Some(rows) = result.as_array() else {
+    let Some(rows) = result
+        .get("notifications")
+        .and_then(serde_json::Value::as_array)
+        .or_else(|| result.as_array())
+    else {
         return "No notifications".to_string();
     };
     if rows.is_empty() {
@@ -823,11 +827,22 @@ fn format_notification_entries(result: &serde_json::Value) -> String {
                 string_field(row, "title"),
                 string_field(row, "subtitle"),
                 string_field(row, "body"),
-                string_field(row, "tab_title")
+                notification_list_trailing_field(&string_field(row, "tab_title"))
             )
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn notification_list_trailing_field(value: &str) -> String {
+    format!(
+        "pct:{}",
+        value
+            .replace('%', "%25")
+            .replace('|', "%7C")
+            .replace('\n', "%0A")
+            .replace('\r', "%0D")
+    )
 }
 
 fn format_notification_navigation(result: &serde_json::Value) -> String {
@@ -836,8 +851,8 @@ fn format_notification_navigation(result: &serde_json::Value) -> String {
     }
     let mut parts = vec!["OK".to_string()];
     for (reference, id) in [
-        ("workspace_ref", "workspace_id"),
         ("surface_ref", "surface_id"),
+        ("workspace_ref", "workspace_id"),
     ] {
         if let Some(handle) = result
             .get(reference)

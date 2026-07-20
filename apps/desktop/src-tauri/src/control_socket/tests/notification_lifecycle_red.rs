@@ -20,7 +20,10 @@ fn notification_store_events_match_canonical_redaction_and_identity() {
     assert_eq!(created.name, "notification.created");
     assert_eq!(created.category, "notification");
     assert_eq!(created.source, "notification.store");
-    assert_eq!(created.workspace_id.as_deref(), Some(notification.workspace_id.as_str()));
+    assert_eq!(
+        created.workspace_id.as_deref(),
+        Some(notification.workspace_id.as_str())
+    );
     assert_eq!(created.surface_id, notification.surface_id);
     assert_eq!(
         created.payload,
