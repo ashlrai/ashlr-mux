@@ -4,26 +4,26 @@
   "status": "valid_complete_capture",
   "canonical": {
     "source_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
-    "workflow_run": 29717177418,
+    "workflow_run": 29720568737,
     "artifact": "canonical-capture-notification_lifecycle",
-    "artifact_digest_sha256": "0BE8BB43D0EAB5AE8811E11F79687A1CED01E06DA9F46E10FF6310CE6959DA5B",
-    "capture_sha256": "2F64E28C4ED85B87E545E90F6F983668AC4925F6B599336E56E68C29CAED9C8B",
-    "cases": 31,
+    "artifact_digest_sha256": "F1AEF3FBE3626976085B47199D92C278BC6FCBABE399783DD2ADB1CB91EA9862",
+    "capture_sha256": "9A8CE31B813407ED1AF3A3DAC9F6190F4C01BD5AB6A87F5214C757FE13BBD954",
+    "cases": 44,
     "capture_errors": 0
   },
   "windows": {
-    "behavior_commit": "34337b8605747f33ad1763bbe10ff80e67688c07",
-    "capture_sha256": "6E396FE9C7E75885112CEE2C171554B85661C7EF1C143C855115A8E0C78BD4C9",
-    "cases": 31,
+    "behavior_commit": "2c2c831b154c3769daaa451bf481b5c42b0dec06",
+    "capture_sha256": "5FF231D5F0F7E212129C45E71FC38666FACE5866E1D08867AE2F11AB961C1BA1",
+    "cases": 44,
     "capture_errors": 0,
     "profile_mode": "isolated_headless_guarded",
     "visible_window_violation": false
   },
   "comparison": {
-    "manifest_and_archive_commit": "60e3a6a1b785da792f8dccb1c70af6c3ba610ff2",
-    "sha256": "81B6E30E686B13F4F85AA84D43EFE87DF4A5DF83661C643BAA580DB67CABBF75",
-    "cases": 31,
-    "identical_or_reviewed_equivalent": 31,
+    "manifest_and_archive_commit": "95285012a88e97daa492d831ce2a5670346a28bb",
+    "sha256": "82FF79469BC21D381166883CD15443BA65A96439434CAF9CD2F9ABDE1A2D1980",
+    "cases": 44,
+    "identical_or_reviewed_equivalent": 44,
     "strict_deltas": 0,
     "capture_integrity": {
       "valid_for_promotion": true,
@@ -33,9 +33,9 @@
       "unsettled_cases": []
     },
     "archived_at": {
-      "canonical": "parity/diff-lane@60e3a6a1b7:docs/parity/differential/captures/notification_lifecycle.canonical.e1825d40d.run-29717177418.ndjson",
-      "windows": "parity/diff-lane@60e3a6a1b7:docs/parity/differential/captures/notification_lifecycle.windows.34337b8605.ndjson",
-      "normalized": "parity/diff-lane@60e3a6a1b7:docs/parity/differential/captures/notification_lifecycle.normalized-diff.e1825d40d-vs-34337b8605.json"
+      "canonical": "parity/diff-lane@95285012a8:docs/parity/differential/captures/notification_lifecycle.canonical.e1825d40d.run-29720568737.ndjson",
+      "windows": "parity/diff-lane@95285012a8:docs/parity/differential/captures/notification_lifecycle.windows.2c2c831b15.ndjson",
+      "normalized": "parity/diff-lane@95285012a8:docs/parity/differential/captures/notification_lifecycle.normalized-diff.e1825d40d-vs-2c2c831b15.json"
     }
   },
   "platform_equivalences": {
@@ -44,25 +44,25 @@
       "The workspace.selected event carries the platform-specific isolated capture working directory.",
       "The canonical bootstrap surface uses a UUID while the Windows bootstrap surface retains the stable legacy id surface-1."
     ],
-    "strict_guards": "Only /events/1/payload/cwd and /events/2/payload/previous_surface_id in notification.open_target are approved. Responses, errors, selectors, notification state, target identity, ordering, event names and order, CLI help, CLI output, and every other field remain strict."
+    "strict_guards": "Only the two retained notification.open_target pointers and seven exact bootstrap-surface pointers in the two default-caller cases are approved. Responses, errors, selectors, notification state, target identity, ordering, event names and order, CLI help, CLI output, and every other field remain strict."
   },
   "verification": {
     "core_suite": "303 passed, 0 failed",
     "cli_unit_suite": "259 passed, 0 failed, plus all CLI integration suites",
-    "desktop_library": "1128 passed, 1 ignored, 0 failed",
-    "workspace_suite": "cargo test --workspace passed after simplification",
-    "differential_lane_tests": "123 passed twice, 0 failed",
-    "differential_comparison": "31 of 31 cases exact after pointer-scoped normalization, repeated twice",
+    "desktop_library": "1132 passed, 1 ignored, 0 failed",
+    "workspace_suite": "cargo test --workspace passed twice after simplification and the final event-context fix",
+    "differential_lane_tests": "124 passed twice, 0 failed",
+    "differential_comparison": "44 of 44 cases exact after pointer-scoped normalization, repeated twice",
     "format_and_whitespace": "cargo fmt --all -- --check and git diff --check passed",
-    "capture_process": "Owned hidden process with a pre-armed descendant-window watchdog; no visible-window violation and all owned app, watchdog, Vite, listener, and port-1420 processes stopped."
+    "capture_process": "Owned hidden process with a pre-armed descendant-window watchdog; no visible-window violation, empty app/watchdog logs, and all owned app, watchdog, Cargo, listener, and capture processes stopped."
   },
   "organization": {
-    "largest_notification_controller_lines": 355,
-    "controller_modules_lines": [160, 355, 176],
-    "result": "The former mixed activity controller no longer owns notification mutations or navigation; notification events, store wire contracts, CLI help, mutations, and navigation have bounded responsibility modules."
+    "largest_notification_controller_lines": 326,
+    "controller_modules_lines": [174, 254, 176, 326, 207],
+    "result": "Notification creation and caller targeting now have bounded modules; the former mixed mutation module dropped from 355 to 254 lines while the shared creation module remains below it at 326 lines."
   },
   "promotion": {
-    "latest_verifying_commit": "34337b8605747f33ad1763bbe10ff80e67688c07",
+    "latest_verifying_commit": "2c2c831b154c3769daaa451bf481b5c42b0dec06",
     "status": "verified",
     "rows_promoted": [
       "cli:clear-notifications",
@@ -74,6 +74,9 @@
       "cli:open-notification",
       "v2:notification.clear",
       "v2:notification.create",
+      "v2:notification.create_for_caller",
+      "v2:notification.create_for_surface",
+      "v2:notification.create_for_target",
       "v2:notification.dismiss",
       "v2:notification.jump_to_unread",
       "v2:notification.list",
@@ -81,12 +84,9 @@
       "v2:notification.open"
     ],
     "excluded_rows": [
-      "v2:notification.create_for_caller",
-      "v2:notification.create_for_surface",
-      "v2:notification.create_for_target",
       "v2:notification.reconcile",
       "product.notifications"
     ],
-    "reason": "The fourteen public entry points have retained exact behavioral evidence for help and parsing, defaults, validation, errors, list formatting, target navigation, unread mutations, workspace reorder-on-notification, lifecycle events, and state probes. Specialized create variants, reconcile, delivery/persistence, and the broad product umbrella remain outside this lane and are not promoted."
+    "reason": "The seventeen public desktop and CLI entry points retain exact behavioral evidence for help and parsing, defaults, validation, errors, caller TTY/preference/fallback routing, rich target identity, list formatting, navigation, unread mutations, workspace reorder-on-notification, lifecycle events, and state probes. Reconcile remains a separate authenticated mobile-host RPC; delivery, persistence, and the broad product umbrella remain outside this lane."
   }
 }

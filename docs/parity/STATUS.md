@@ -180,9 +180,9 @@ development WebView at `localhost:1420`. See
 
 The rolling catalog contains 503 rows: 159 public CLI commands, 16 internal CLI
 contracts, 263 release socket methods, 46 debug socket methods, and 19 coarse
-product umbrellas. It currently classifies 96 rows as verified, 3 as reviewed
-platform equivalents, 183 as implemented but unverified, and 221 as missing.
-The strict resolved count is 85. These are entry-point rows, not a user-facing
+product umbrellas. It currently classifies 99 rows as verified, 3 as reviewed
+platform equivalents, 183 as implemented but unverified, and 218 as missing.
+The strict resolved count is 102. These are entry-point rows, not a user-facing
 completion percentage.
 
 The zero-delta window lane promotes 11 entry-point rows. `window.create`,
@@ -203,6 +203,12 @@ The separate mobile-host `workspace.group.action` route remains unverified.
 The broad `product.workspace_lifecycle` umbrella remains implemented but
 unverified because restore, persistence, remote workspaces, and
 `workspace.action` semantics remain outside the retained families.
+
+The zero-delta notification lane promotes 17 exercised public entry points:
+ten desktop v2 methods and seven CLI commands. The authenticated mobile-host
+`notification.reconcile` RPC is deliberately not advertised on the desktop
+socket and remains outside this lane, as do native delivery, restart
+persistence, and the broad `product.notifications` umbrella.
 
 Those numbers are useful for finding API gaps. They are not a percentage of the
 user experience. The catalog still needs a deduplicated user-capability layer
@@ -414,28 +420,28 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
   restore tests, 1,117 passed plus 1 ignored desktop library tests, all three
   desktop process tests, 30/30 repository parity tests, and 120/120
   differential-lane tests.
-- The notification lifecycle slice is verified at `34337b8605`, with retained
-  evidence at `parity/diff-lane@60e3a6a1b7`. Its 31-case lane has no missing,
-  capture-error, unsettled, or unexplained cases and promotes exactly fourteen
-  rows: the seven public notification v2 methods plus their seven CLI entry
-  points. Two platform bootstrap values are isolated to exact JSON pointers;
-  all notification responses, errors, state, target identity, event order, CLI
-  help, and output remain strict. Notification creation now honors the
-  canonical reorder-on-notification policy and event payload, list output
-  safely encodes its trailing title field, and the mixed controller was split
-  into 160-, 355-, and 176-line responsibility modules. The full Cargo
-  workspace, focused core/CLI/desktop suites, formatting, and 123 differential
-  harness tests are green after simplification. The specialized create
-  variants, reconcile, delivery/persistence, and `product.notifications`
-  remain unverified or missing and were not promoted.
+- The notification lifecycle slice is verified at `2c2c831b15`, with retained
+  evidence at `parity/diff-lane@95285012a8`. Its 44-case lane has no missing,
+  capture-error, unsettled, or unexplained cases and promotes exactly 17 rows:
+  the ten public desktop notification v2 methods plus seven CLI entry points.
+  Two platform bootstrap categories are isolated to nine exact JSON pointers;
+  all other responses, errors, state, selector precedence, target and window
+  identity, event order, CLI help, and output remain strict. Specialized
+  creation now covers explicit surface/target routing plus caller TTY,
+  preferred-workspace, preferred-surface, and selected fallbacks. The capture
+  harness now subscribes before setup and drains setup events after quiescence,
+  removing a cross-platform timing race. Notification responsibilities are
+  bounded in 174-, 254-, 176-, 326-, and 207-line modules. The full Cargo
+  workspace passed twice, focused core/CLI/desktop suites and formatting are
+  green, and all 124 differential-harness tests plus the 44-case comparison
+  passed twice after simplification. The mobile-host reconcile route, native
+  delivery/persistence, and `product.notifications` remain unverified.
 
 ## Next efficient slice
 
-Close the remaining notification socket family in one contract-first slice:
-`notification.create_for_caller`, `notification.create_for_surface`,
-`notification.create_for_target`, and `notification.reconcile`. Extend the
-retained notification fixture only after each canonical selector/default/error
-contract is pinned. Reuse the verified store, event, and navigation seams; do
-not rebuild them. Keep native delivery, restart persistence, and the broad
-`product.notifications` umbrella separate until a dedicated live acceptance
-lane covers those product behaviors.
+Close the remaining notification product behavior without fabricating another
+desktop method. Pin the authenticated mobile-host `notification.reconcile`
+transport, delivered-ID classification, tombstones, and reload persistence,
+then add retained restart and native Windows-delivery acceptance. Reuse the
+verified store/event seams and keep `product.notifications` unpromoted until
+those mobile-host, persistence, and delivery behaviors all have live evidence.

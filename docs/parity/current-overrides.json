@@ -2,31 +2,31 @@
   "schema_version": 1,
   "entries": {
     "cli:clear-notifications": {
-      "latest_verifying_commit": "34337b8605747f33ad1763bbe10ff80e67688c07",
+      "latest_verifying_commit": "2c2c831b154c3769daaa451bf481b5c42b0dec06",
       "status": "verified"
     },
     "cli:dismiss-notification": {
-      "latest_verifying_commit": "34337b8605747f33ad1763bbe10ff80e67688c07",
+      "latest_verifying_commit": "2c2c831b154c3769daaa451bf481b5c42b0dec06",
       "status": "verified"
     },
     "cli:jump-to-unread": {
-      "latest_verifying_commit": "34337b8605747f33ad1763bbe10ff80e67688c07",
+      "latest_verifying_commit": "2c2c831b154c3769daaa451bf481b5c42b0dec06",
       "status": "verified"
     },
     "cli:list-notifications": {
-      "latest_verifying_commit": "34337b8605747f33ad1763bbe10ff80e67688c07",
+      "latest_verifying_commit": "2c2c831b154c3769daaa451bf481b5c42b0dec06",
       "status": "verified"
     },
     "cli:mark-notification-read": {
-      "latest_verifying_commit": "34337b8605747f33ad1763bbe10ff80e67688c07",
+      "latest_verifying_commit": "2c2c831b154c3769daaa451bf481b5c42b0dec06",
       "status": "verified"
     },
     "cli:notify": {
-      "latest_verifying_commit": "34337b8605747f33ad1763bbe10ff80e67688c07",
+      "latest_verifying_commit": "2c2c831b154c3769daaa451bf481b5c42b0dec06",
       "status": "verified"
     },
     "cli:open-notification": {
-      "latest_verifying_commit": "34337b8605747f33ad1763bbe10ff80e67688c07",
+      "latest_verifying_commit": "2c2c831b154c3769daaa451bf481b5c42b0dec06",
       "status": "verified"
     },
     "cli:break-pane": {
@@ -289,31 +289,43 @@
       "status": "verified"
     },
     "v2:notification.clear": {
-      "latest_verifying_commit": "34337b8605747f33ad1763bbe10ff80e67688c07",
+      "latest_verifying_commit": "2c2c831b154c3769daaa451bf481b5c42b0dec06",
       "status": "verified"
     },
     "v2:notification.create": {
-      "latest_verifying_commit": "34337b8605747f33ad1763bbe10ff80e67688c07",
+      "latest_verifying_commit": "2c2c831b154c3769daaa451bf481b5c42b0dec06",
+      "status": "verified"
+    },
+    "v2:notification.create_for_caller": {
+      "latest_verifying_commit": "2c2c831b154c3769daaa451bf481b5c42b0dec06",
+      "status": "verified"
+    },
+    "v2:notification.create_for_surface": {
+      "latest_verifying_commit": "2c2c831b154c3769daaa451bf481b5c42b0dec06",
+      "status": "verified"
+    },
+    "v2:notification.create_for_target": {
+      "latest_verifying_commit": "2c2c831b154c3769daaa451bf481b5c42b0dec06",
       "status": "verified"
     },
     "v2:notification.dismiss": {
-      "latest_verifying_commit": "34337b8605747f33ad1763bbe10ff80e67688c07",
+      "latest_verifying_commit": "2c2c831b154c3769daaa451bf481b5c42b0dec06",
       "status": "verified"
     },
     "v2:notification.jump_to_unread": {
-      "latest_verifying_commit": "34337b8605747f33ad1763bbe10ff80e67688c07",
+      "latest_verifying_commit": "2c2c831b154c3769daaa451bf481b5c42b0dec06",
       "status": "verified"
     },
     "v2:notification.list": {
-      "latest_verifying_commit": "34337b8605747f33ad1763bbe10ff80e67688c07",
+      "latest_verifying_commit": "2c2c831b154c3769daaa451bf481b5c42b0dec06",
       "status": "verified"
     },
     "v2:notification.mark_read": {
-      "latest_verifying_commit": "34337b8605747f33ad1763bbe10ff80e67688c07",
+      "latest_verifying_commit": "2c2c831b154c3769daaa451bf481b5c42b0dec06",
       "status": "verified"
     },
     "v2:notification.open": {
-      "latest_verifying_commit": "34337b8605747f33ad1763bbe10ff80e67688c07",
+      "latest_verifying_commit": "2c2c831b154c3769daaa451bf481b5c42b0dec06",
       "status": "verified"
     },
     "v2:workspace.list": {

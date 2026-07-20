@@ -31,11 +31,11 @@
     },
     "by_status": {
       "implemented_unverified": 183,
-      "missing": 221,
+      "missing": 218,
       "platform_equivalent": 3,
-      "verified": 96
+      "verified": 99
     },
-    "strict_verified": 99,
+    "strict_verified": 102,
     "total": 503,
     "warning": "Rows mix CLI commands, socket methods, debug endpoints, and broad product umbrellas. They are neither deduplicated user capabilities nor effort-weighted."
   },
@@ -45,13 +45,13 @@
     "status": "not_measured"
   },
   "windows": {
-    "commit": "34337b8605747f33ad1763bbe10ff80e67688c07",
-    "commit_date": "2026-07-20T01:33:04-04:00",
-    "commit_subject": "fix(notification): match canonical lifecycle behavior",
-    "commits_ahead_of_tracked_evidence": 210,
+    "commit": "2c2c831b154c3769daaa451bf481b5c42b0dec06",
+    "commit_date": "2026-07-20T02:24:48-04:00",
+    "commit_subject": "fix(notification): add specialized creation routes",
+    "commits_ahead_of_tracked_evidence": 214,
     "source_evidence": {
-      "advertised_and_routed_count": 257,
-      "advertised_method_count": 270,
+      "advertised_and_routed_count": 260,
+      "advertised_method_count": 273,
       "advertised_only_count": 13,
       "cli_any_control_mapping_count": 123,
       "cli_concrete_help_count": 121,
@@ -59,7 +59,7 @@
       "cli_explicit_socket_not_ported_count": 51,
       "explicit_not_supported_method_count": 12,
       "guarded_not_supported_path_count": 1,
-      "routed_method_count": 298,
+      "routed_method_count": 301,
       "routed_not_advertised_count": 41,
       "top_level_cli_count": 193
     },
