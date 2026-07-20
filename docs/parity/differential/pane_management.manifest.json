@@ -122,7 +122,13 @@
           {"op": "v2", "method": "pane.list", "params": {"workspace_id": "${session.0.result.workspace_id}"}},
           {"op": "v2", "method": "workspace.list", "params": {}}
         ]
-      }
+      },
+      "approved_differences": [
+        {"path": "/state/1/result/response/result/workspaces/0/current_directory", "rationale": "The exact workspace list carries the platform-specific isolated capture working directory."},
+        {"path": "/state/1/result/response/result/workspaces/1/current_directory", "rationale": "The exact workspace list carries the platform-specific isolated capture working directory."},
+        {"path": "/state/1/result/response/result/workspaces/2/current_directory", "rationale": "The exact workspace list carries the platform-specific isolated capture working directory."},
+        {"path": "/state/1/result/response/result/workspaces/3/current_directory", "rationale": "The exact workspace list carries the platform-specific isolated capture working directory."}
+      ]
     },
     {
       "id": "cli.join_pane",
