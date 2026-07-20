@@ -66,9 +66,14 @@ pub(crate) fn commit_lifecycle_snapshot_for_control_if_current(
 /// window state, so control commits suppress only this redundant refresh.
 fn control_snapshot_should_refresh_window_state(app: &AppHandle) -> Result<bool, String> {
     let Some(state) = app.try_state::<crate::browser::BrowserWebviewState>() else {
-        return Ok(true);
+        return Ok(control_snapshot_refreshes_native_window_state(false));
     };
-    crate::browser::browser_has_any_webview_for_control(state.inner()).map(|has| !has)
+    crate::browser::browser_has_any_webview_for_control(state.inner())
+        .map(control_snapshot_refreshes_native_window_state)
+}
+
+fn control_snapshot_refreshes_native_window_state(has_browser_webview: bool) -> bool {
+    !has_browser_webview
 }
 
 pub(crate) fn ensure_lifecycle_snapshot_current(
@@ -103,4 +108,15 @@ fn commit_lifecycle_snapshot_for_control_inner(
     );
     operations.refresh_window_state = refresh_window_state;
     publish_snapshot_transaction(&state.snapshot, expected, candidate, &mut operations)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::control_snapshot_refreshes_native_window_state;
+
+    #[test]
+    fn control_snapshot_publication_never_reenters_native_window_observation() {
+        assert!(!control_snapshot_refreshes_native_window_state(false));
+        assert!(!control_snapshot_refreshes_native_window_state(true));
+    }
 }
