@@ -9,7 +9,7 @@ Checkpoint commits:
 - Latest workspace-navigation behavior captured: `aa3f74c799079290f25441e950761c67c3c56026`
 - Latest workspace-ordering behavior captured: `46f4cedf1a77fda23baff9b73b5d8ef7b96eb187`
 - Latest workspace-group behavior captured: `357ebc0c662df446b93d842b3a7d24964e993dfa`
-- Latest Windows code checkpoint: `ece79b413abe1298f2160223920c47176fdc741e`
+- Latest Windows code checkpoint: `543b8b7db4eb7d55fac18cd899a97e6898da79db`
 - Latest terminal-title behavior checkpoint: `ece79b413abe1298f2160223920c47176fdc741e`
 - Latest exact startup differential evidence: `parity/diff-lane@215737999ac0579682b6b2a2d230d7a0d064a51d`
 - Latest window harness checkpoint: `parity/diff-lane@9257db511b975335e2ee79bc4bb143c04bfa95f8`
@@ -43,15 +43,22 @@ parity harness passed 30 tests. A headless real-app probe focused and booted the
 PowerShell pane, swapped it, and observed `Terminal` rather than the executable
 path with zero capture or visible-window errors.
 
-The 22-case pane-management family is not promoted at this checkpoint. One
-fresh run was valid before the final predicate simplification; two subsequent
-runs reproduced an intermittent named-pipe listener wedge at different CLI
-mutations (`cli.focus_pane` and `cli.break_pane`) and were rejected. Repairing
-that listener/capture instability, then retaining a valid final-head full-lane
-comparison, is the next evidence task. The file-length budget also remains red
-at the already-pushed `cb648b6fb2` baseline: `event_stream.rs` is three physical
-lines over its ceiling and `unit_tests.rs` is sixteen over. This title slice
-changes neither file and does not raise either budget.
+The 22-case pane-management family now completes reliably but is not yet
+promoted: the final-head capture completed 22/22 cases with zero capture
+errors, zero visible-window violations, and no residual process or listener.
+Its strict comparison has 12 exact cases and 10 semantic deltas. Two traced
+full-process reproductions proved that the apparent named-pipe wedge was a
+control worker deadlocking in redundant native `emit_window_states`
+observation after persistence and authority commit, while still holding the
+global mutation gate. RED `c246946a79` freezes the no-native-observation
+contract; fix `543b8b7db4` suppresses that redundant control-path refresh and
+removes the obsolete browser-presence query (10 additions, 40 deletions).
+Focused policy and pane-swap tests passed twice; all 334 core tests, 1,118
+executed desktop tests (one ignored), 1,255 frontend tests, TypeScript,
+production web build, and 120 parity-harness tests passed. The file-length
+budget remains red only at the inherited baseline: `event_stream.rs` is three
+physical lines over its ceiling and `unit_tests.rs` is sixteen over. This slice
+changes neither file and ratchets `browser.rs` from 3,284 to 3,282 lines.
 
 Closed windows now retain canonical recoverable routes. A socket-managed close
 appends a strict `visible:false` `window.list` row with stable window and
@@ -373,9 +380,9 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
 
 ## Next efficient slice
 
-Expand workspace behavioral evidence to the next coherent public cluster:
-`workspace.next/previous/last`, `workspace.reorder/reorder_many`,
-`workspace.move/move_to_window`, and the shared `workspace.action` navigation
-surface. Pin canonical responses, errors, selection/order state, multiwindow
-routing, and lifecycle events before changing implementation. Keep group and
-remote-workspace semantics in later families.
+Close the remaining pane-management semantic deltas now that the lane is
+stable. Start with the shared `pane.break` / `pane.join` state-and-event
+projection used by four direct/CLI cases, then the shared focus/last state
+projection used by five cases, and finally the isolated `pane.list` response
+delta. Pin each cluster against the frozen canonical capture, keep RED and fix
+commits separate, and rerun the full 22-case lane after each cluster.

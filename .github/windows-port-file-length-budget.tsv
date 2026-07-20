@@ -16,7 +16,7 @@
 2818	apps/desktop/src-tauri/src/control_socket/workspace_control.rs
 3030	apps/desktop/src-tauri/src/control_socket/pane_surface_control.rs
 3412	apps/desktop/src-tauri/src/session/unit_tests.rs
-3284	apps/desktop/src-tauri/src/browser.rs
+3282	apps/desktop/src-tauri/src/browser.rs
 3183	apps/desktop/src-tauri/src/control_socket/browser_control.rs
 2946	apps/desktop/src-tauri/src/control_socket/payloads.rs
 3056	apps/desktop/web/src/components/SettingsPane.tsx
