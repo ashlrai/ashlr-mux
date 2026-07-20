@@ -9,6 +9,7 @@ import {
   findTerminalLineIndex,
   shouldOpenTerminalLinkInCmuxBrowser,
   TerminalSurface,
+  terminalShouldClaimFocus,
   terminalDropPayloadFromDataTransfer,
   terminalDropPathsFromDataTransfer,
   terminalUrlLinksForLine,
@@ -45,6 +46,13 @@ describe("TerminalSurface", () => {
     expect(markup).toContain('role="status"');
     expect(markup).toContain("Starting terminal...");
     expect(markup).toContain("cmux-terminal-loading-spinner");
+  });
+
+  test("only the active terminal claims focus after boot", () => {
+    expect(terminalShouldClaimFocus(true, false, false)).toBe(true);
+    expect(terminalShouldClaimFocus(false, false, false)).toBe(false);
+    expect(terminalShouldClaimFocus(true, true, false)).toBe(false);
+    expect(terminalShouldClaimFocus(true, false, true)).toBe(false);
   });
 });
 
