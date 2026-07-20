@@ -1,5 +1,6 @@
 import json
 import threading
+import time
 import unittest
 
 from capture_driver import (
@@ -733,6 +734,26 @@ class DriverHardeningTests(unittest.TestCase):
         driver._record_timeout()
         driver._record_timeout()
         self.assertEqual(driver._consecutive_timeouts, 2)
+
+    def test_v2_reader_stops_pumping_after_the_first_complete_frame(self):
+        from capture_driver import _read_with_timeout
+
+        chunks = iter((b'{"ok":true}\n', b''))
+        calls = 0
+
+        def read_chunk():
+            nonlocal calls
+            calls += 1
+            return next(chunks)
+
+        reply = _read_with_timeout(
+            read_chunk,
+            time.monotonic() + 1,
+            until_eof=False,
+        )
+
+        self.assertEqual(reply, b'{"ok":true}\n')
+        self.assertEqual(calls, 1)
 
     def test_session_setup_failure_marks_every_case_and_writes_output(self):
         from capture_driver import run_capture
