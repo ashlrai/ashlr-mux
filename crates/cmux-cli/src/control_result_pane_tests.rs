@@ -64,3 +64,16 @@ fn pane_and_panel_focus_include_canonical_scope_handles() {
         "OK surface:4 workspace:3"
     );
 }
+
+#[test]
+fn new_pane_uses_the_canonical_creation_summary() {
+    let result = serde_json::json!({
+        "surface_ref": "surface:4",
+        "pane_ref": "pane:2",
+        "workspace_ref": "workspace:3",
+    });
+    assert_eq!(
+        format_control_result("pane.create", &result),
+        "OK surface:4 pane:2 workspace:3"
+    );
+}
