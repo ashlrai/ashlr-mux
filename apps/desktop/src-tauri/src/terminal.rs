@@ -25,7 +25,7 @@ use tauri::{AppHandle, State};
 use crate::session;
 
 mod process_runtime;
-mod viewport_metrics;
+pub(crate) mod viewport_metrics;
 
 #[cfg(test)]
 use process_runtime::{
@@ -36,12 +36,7 @@ use process_runtime::{
     terminal_runtime_snapshot_from_processes,
 };
 pub(crate) use process_runtime::{scan_listening_ports_for_root_pid, scan_panel_listening_ports};
-use viewport_metrics::{
-    parse_terminal_cell_dimensions, record_terminal_cell_dimensions, TerminalCellDimensions,
-};
-pub(crate) use viewport_metrics::{
-    terminal_pane_grid_fields_for_panel, terminal_remember_pane_grid_fields,
-};
+use viewport_metrics::TerminalViewportMetrics;
 
 /// Event carrying a chunk of terminal output to the webview.
 const TERMINAL_OUTPUT_EVENT: &str = "cmux://terminal-output";
@@ -351,8 +346,7 @@ struct TerminalSession {
     pty: Arc<Mutex<Box<dyn TerminalProcess>>>,
     input: Arc<TerminalInputTransport>,
     grid: Arc<Mutex<TerminalGrid>>,
-    cell_dimensions: Arc<Mutex<Option<TerminalCellDimensions>>>,
-    pane_grid_fields: Arc<Mutex<Option<(u64, u64, u64, u64)>>>,
+    viewport_metrics: Arc<TerminalViewportMetrics>,
     title_parser: Arc<Mutex<TerminalTitleParser>>,
     operations: Arc<TerminalOperationGate>,
     pump_activation: Arc<TerminalPumpActivation>,
@@ -1802,8 +1796,7 @@ fn spawn_terminal_session(
         pty: process,
         input: Arc::new(TerminalInputTransport::new(writer)),
         grid,
-        cell_dimensions: Arc::new(Mutex::new(None)),
-        pane_grid_fields: Arc::new(Mutex::new(None)),
+        viewport_metrics: Arc::new(TerminalViewportMetrics::default()),
         title_parser,
         operations: Arc::new(TerminalOperationGate::default()),
         pump_activation,
@@ -2790,21 +2783,6 @@ pub(crate) fn terminal_grid_size_for_panel(
         .clone();
     drop(registry);
     grid.try_lock().ok().map(|grid| grid.size())
-}
-
-/// Resize a session's pseudo console (the explicit Windows analogue of SIGWINCH).
-#[tauri::command]
-pub fn terminal_resize(
-    state: State<'_, TerminalState>,
-    id: u32,
-    cols: u16,
-    rows: u16,
-    cell_width_px: Option<u16>,
-    cell_height_px: Option<u16>,
-) -> Result<(), String> {
-    let dimensions = parse_terminal_cell_dimensions(cell_width_px, cell_height_px)?;
-    terminal_resize_id_for_control(state.inner(), id, cols, rows)?;
-    record_terminal_cell_dimensions(state.inner(), id, dimensions)
 }
 
 fn terminal_resize_id_for_control(

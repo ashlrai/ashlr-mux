@@ -379,7 +379,10 @@ pub(in crate::control_socket) fn pane_list(
                         .then(|| pane_list_provisional_grid_fields(frame, root_frame))
                         .flatten();
                     let retained = selected.and_then(|panel_id| {
-                        terminal_pane_grid_fields_for_panel(terminal_state.inner(), panel_id)
+                        crate::terminal::viewport_metrics::terminal_pane_grid_fields_for_panel(
+                            terminal_state.inner(),
+                            panel_id,
+                        )
                             .or_else(|| pane_geometry_state.grid_fields_for_panel(panel_id))
                     });
                     let fields = pane_list_preferred_grid_fields(
@@ -388,7 +391,7 @@ pub(in crate::control_socket) fn pane_list(
                         capture_activation_bootstrap,
                     );
                     if let (Some(panel_id), Some(projected)) = (selected, projected) {
-                        terminal_remember_pane_grid_fields(
+                        crate::terminal::viewport_metrics::terminal_remember_pane_grid_fields(
                             terminal_state.inner(),
                             panel_id,
                             projected,

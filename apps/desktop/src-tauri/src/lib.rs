@@ -409,7 +409,7 @@ pub fn run() {
             updater_status::updater_status,
             terminal::terminal_open,
             terminal::terminal_write,
-            terminal::terminal_resize,
+            terminal::viewport_metrics::terminal_resize,
             terminal::terminal_close,
             terminal::terminal_scan_listening_ports,
             session::session_snapshot,

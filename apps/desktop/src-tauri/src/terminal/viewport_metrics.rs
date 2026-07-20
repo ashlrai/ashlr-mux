@@ -1,4 +1,14 @@
-use super::TerminalState;
+use std::sync::Mutex;
+
+use tauri::State;
+
+use super::{terminal_resize_id_for_control, TerminalState};
+
+#[derive(Default)]
+pub(super) struct TerminalViewportMetrics {
+    cell_dimensions: Mutex<Option<TerminalCellDimensions>>,
+    pane_grid_fields: Mutex<Option<(u64, u64, u64, u64)>>,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct TerminalCellDimensions {
@@ -22,7 +32,7 @@ pub(super) fn parse_terminal_cell_dimensions(
     }
 }
 
-pub(super) fn record_terminal_cell_dimensions(
+fn record_terminal_cell_dimensions(
     state: &TerminalState,
     id: u32,
     dimensions: Option<TerminalCellDimensions>,
@@ -35,18 +45,19 @@ pub(super) fn record_terminal_cell_dimensions(
         .sessions
         .get(&id)
         .ok_or_else(|| format!("unknown terminal session {id}"))?;
-    let cell_dimensions = session.cell_dimensions.clone();
+    let viewport_metrics = session.viewport_metrics.clone();
     let grid = session.grid.clone();
-    let pane_grid_fields = session.pane_grid_fields.clone();
     drop(registry);
-    *cell_dimensions
+    *viewport_metrics
+        .cell_dimensions
         .lock()
         .map_err(|_| "terminal cell dimensions mutex poisoned".to_string())? = Some(dimensions);
     let size = grid
         .lock()
         .map_err(|_| "terminal grid mutex poisoned".to_string())?
         .size();
-    *pane_grid_fields
+    *viewport_metrics
+        .pane_grid_fields
         .lock()
         .map_err(|_| "terminal pane grid mutex poisoned".to_string())? = Some((
         size.columns as u64,
@@ -57,19 +68,34 @@ pub(super) fn record_terminal_cell_dimensions(
     Ok(())
 }
 
+/// Resize a session's pseudo console (the explicit Windows analogue of SIGWINCH).
+#[tauri::command]
+pub fn terminal_resize(
+    state: State<'_, TerminalState>,
+    id: u32,
+    cols: u16,
+    rows: u16,
+    cell_width_px: Option<u16>,
+    cell_height_px: Option<u16>,
+) -> Result<(), String> {
+    let dimensions = parse_terminal_cell_dimensions(cell_width_px, cell_height_px)?;
+    terminal_resize_id_for_control(state.inner(), id, cols, rows)?;
+    record_terminal_cell_dimensions(state.inner(), id, dimensions)
+}
+
 pub(crate) fn terminal_pane_grid_fields_for_panel(
     state: &TerminalState,
     panel_id: &str,
 ) -> Option<(u64, u64, u64, u64)> {
     let registry = state.registry.lock().ok()?;
-    let fields = registry
+    let viewport_metrics = registry
         .sessions
         .values()
         .find(|session| session.panel_id.as_deref() == Some(panel_id))?
-        .pane_grid_fields
+        .viewport_metrics
         .clone();
     drop(registry);
-    let retained = *fields.lock().ok()?;
+    let retained = *viewport_metrics.pane_grid_fields.lock().ok()?;
     retained
 }
 
@@ -78,16 +104,16 @@ pub(crate) fn terminal_remember_pane_grid_fields(
     panel_id: &str,
     fields: (u64, u64, u64, u64),
 ) {
-    let Some(cache) = state.registry.lock().ok().and_then(|registry| {
+    let Some(viewport_metrics) = state.registry.lock().ok().and_then(|registry| {
         registry
             .sessions
             .values()
             .find(|session| session.panel_id.as_deref() == Some(panel_id))
-            .map(|session| session.pane_grid_fields.clone())
+            .map(|session| session.viewport_metrics.clone())
     }) else {
         return;
     };
-    if let Ok(mut cache) = cache.lock() {
+    if let Ok(mut cache) = viewport_metrics.pane_grid_fields.lock() {
         *cache = Some(fields);
     };
 }
