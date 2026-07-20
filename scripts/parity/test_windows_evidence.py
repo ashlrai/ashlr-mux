@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from extract_windows_evidence import PINNED_WINDOWS_COMMIT, validate
+from extract_windows_evidence import PINNED_WINDOWS_COMMIT, build, validate
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -78,6 +78,24 @@ class WindowsEvidenceTests(unittest.TestCase):
         self.assertTrue(
             all(row["handler"] == "workspace_group_control" for row in workspace_group.values())
         )
+
+    def test_current_split_help_modules_remain_cataloged(self) -> None:
+        rows = {row["command"]: row for row in build(ROOT)["cli_commands"]}
+        for command in (
+            "clear-notifications",
+            "dismiss-notification",
+            "jump-to-unread",
+            "list-notifications",
+            "mark-notification-read",
+            "notify",
+            "open-notification",
+        ):
+            with self.subTest(command=command):
+                self.assertTrue(rows[command]["has_concrete_help"])
+                self.assertIn(
+                    "crates/cmux-cli/src/dispatch/notification_help.rs",
+                    rows[command]["source_locations"]["concrete_help"]["path"],
+                )
 
 
 if __name__ == "__main__":
