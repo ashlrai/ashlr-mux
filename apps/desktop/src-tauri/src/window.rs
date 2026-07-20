@@ -57,17 +57,14 @@ fn run_capture_window_hiding(
 
 fn run_bootstrap_window_presentation(
     capture_windows_hidden: bool,
-    mut park: impl FnMut() -> Result<(), String>,
+    park: impl FnOnce() -> Result<(), String>,
     show: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), String> {
     if capture_windows_hidden {
-        park()?;
+        park()
+    } else {
+        show()
     }
-    show()?;
-    if capture_windows_hidden {
-        park()?;
-    }
-    Ok(())
 }
 
 fn park_capture_window(window: &WebviewWindow) -> Result<(), String> {
