@@ -611,7 +611,7 @@ fn mapped_subcommand_usage(command: &str) -> Option<&'static str> {
             "Usage:\n  cmux new-split [--panel PANEL] [--direction right|down|left|up]\n\nSplits a pane and creates a terminal surface.",
         ),
         "new-pane" => Some(
-            "Usage:\n  cmux new-pane [--panel PANEL] [--direction right|down|left|up]\n\nSplits a pane and creates a terminal surface.",
+            "Usage:\n  cmux new-pane [flags]\n\nCreate a new pane in the workspace.\n\nFlags:\n  --type <terminal|browser>           Pane type (default: terminal)\n  --direction <left|right|up|down>    Split direction (default: right)\n  --placement <workspace|dock>        Target container (default: workspace).\n                                      dock splits the right-sidebar Dock.\n  --workspace <id|ref|index>          Target workspace (default: $CMUX_WORKSPACE_ID)\n  --window <id|ref|index>             Window context for workspace refs and indexes\n  --url <url>                         URL for browser panes\n  --focus <true|false>                Focus the new pane (default: false)\n\nExample:\n  cmux new-pane\n  cmux new-pane --type browser --direction down --url https://example.com\n  cmux new-pane --type browser --placement dock --url https://example.com",
         ),
         "new-surface" => Some(
             "Usage:\n  cmux new-surface [--panel PANEL] [--command CMD] [--input TEXT] [--env KEY=VALUE]\n\nCreates a terminal tab in the selected pane.",

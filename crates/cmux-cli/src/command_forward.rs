@@ -23,6 +23,7 @@ pub const CMUX_SURFACE_ID_ENV: &str = "CMUX_SURFACE_ID";
 
 fn workspace_scoped_method(method: &str) -> bool {
     method.starts_with("workspace.group.")
+        || method.starts_with("pane.")
         || matches!(
             method,
             "workspace.current"
@@ -58,9 +59,6 @@ fn workspace_scoped_method(method: &str) -> bool {
                 | "workspace.sidebar_state"
                 | "workspace.set_unread"
                 | "workspace.set_pinned"
-                | "pane.focus"
-                | "pane.list"
-                | "pane.surfaces"
                 | "surface.list"
                 | "surface.split"
                 | "surface.new_terminal_tab"
@@ -414,8 +412,8 @@ pub fn control_command_for(
             surface_split_params(args)?,
         )),
         "new-pane" => Some(ControlCommand::new(
-            "surface.split",
-            surface_split_params(args)?,
+            "pane.create",
+            pane_create_params(args)?,
         )),
         "new-surface" => Some(ControlCommand::new(
             "surface.new_terminal_tab",
@@ -2767,7 +2765,7 @@ mod tests {
                 "window_ref": "window:1",
             })
         );
-        assert_eq!(mapped("new-pane", &[]).method, "surface.split");
+        assert_eq!(mapped("new-pane", &[]).method, "pane.create");
         assert_eq!(
             mapped("new-surface", &[]).method,
             "surface.new_terminal_tab"

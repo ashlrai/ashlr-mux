@@ -292,6 +292,34 @@ fn surface_split_params(args: &[String]) -> Result<serde_json::Value, CliError> 
     Ok(serde_json::Value::Object(params))
 }
 
+fn pane_create_params(args: &[String]) -> Result<serde_json::Value, CliError> {
+    let parsed = ParsedArgs::parse(args)?;
+    let mut params = serde_json::Map::new();
+    apply_window_scope_selector(&parsed, &mut params);
+    apply_workspace_scope_selector(&parsed, &mut params);
+    params.insert(
+        "direction".to_string(),
+        serde_json::json!(parsed.value(&["--direction"]).map_or("right", String::as_str)),
+    );
+    for (flag, key) in [
+        ("--type", "type"),
+        ("--url", "url"),
+        ("--placement", "placement"),
+    ] {
+        if let Some(value) = parsed.value(&[flag]) {
+            params.insert(key.to_string(), serde_json::json!(value));
+        }
+    }
+    params.insert(
+        "focus".to_string(),
+        serde_json::json!(
+            parse_optional_bool(parsed.value(&["--focus"]).map(String::as_str), "--focus")?
+                .unwrap_or(false)
+        ),
+    );
+    Ok(serde_json::Value::Object(params))
+}
+
 fn surface_terminal_tab_params(args: &[String]) -> Result<serde_json::Value, CliError> {
     let parsed = ParsedArgs::parse(args)?;
     let mut params = serde_json::Map::new();

@@ -58,6 +58,7 @@ pub(super) fn format_control_result(method: &str, result: &serde_json::Value) ->
         "workspace.create" | "workspace.close" | "workspace.select" | "workspace.rename" => {
             format!("OK {}", control_handle(result, "workspace"))
         }
+        "pane.create" => format_creation_result(result),
         "pane.list" => format_pane_entries(result),
         "pane.surfaces" => format_pane_surface_entries(result),
         "surface.list" => format_surface_entries(result),
@@ -127,6 +128,28 @@ pub(super) fn format_control_result(method: &str, result: &serde_json::Value) ->
         }
         "pane.resize" => format!("OK {}", control_handle(result, "pane")),
         _ => serde_json::to_string(result).unwrap_or_default(),
+    }
+}
+
+fn format_creation_result(result: &serde_json::Value) -> String {
+    if result.get("accepted").and_then(serde_json::Value::as_bool) == Some(true) {
+        let workspace = optional_control_handle(result, "workspace");
+        return format!(
+            "OK accepted{} (routed to remote tmux; the new pane arrives asynchronously)",
+            workspace
+                .map(|workspace| format!(" {workspace}"))
+                .unwrap_or_default()
+        );
+    }
+    let handles = ["surface", "pane", "dock_surface", "dock_pane", "workspace"]
+        .into_iter()
+        .filter_map(|kind| optional_control_handle(result, kind))
+        .collect::<Vec<_>>()
+        .join(" ");
+    if handles.is_empty() {
+        "OK".to_string()
+    } else {
+        format!("OK {handles}")
     }
 }
 
@@ -553,6 +576,10 @@ fn format_workspace_reorder_items(result: &serde_json::Value) -> String {
 }
 
 fn control_handle<'a>(result: &'a serde_json::Value, kind: &str) -> &'a str {
+    optional_control_handle(result, kind).unwrap_or("unknown")
+}
+
+fn optional_control_handle<'a>(result: &'a serde_json::Value, kind: &str) -> Option<&'a str> {
     result
         .get(format!("{kind}_ref"))
         .and_then(serde_json::Value::as_str)
@@ -561,7 +588,6 @@ fn control_handle<'a>(result: &'a serde_json::Value, kind: &str) -> &'a str {
                 .get(format!("{kind}_id"))
                 .and_then(serde_json::Value::as_str)
         })
-        .unwrap_or("unknown")
 }
 
 fn control_index(result: &serde_json::Value) -> String {
