@@ -160,7 +160,9 @@ function Stop-OwnedProcess {
     }
     $supervisor = Get-OwnedSupervisorProcess $state
     if ($null -ne $supervisor) {
-        Stop-Process -Id $supervisor.Id -Force
+        # The watchdog exits on its own as soon as the root process is gone.
+        # Treat that exact lookup-to-stop race as successful teardown.
+        Stop-Process -Id $supervisor.Id -Force -ErrorAction SilentlyContinue
         $supervisor.WaitForExit(5000) | Out-Null
     }
     if (Test-Path -LiteralPath $statePath -PathType Leaf) {
