@@ -242,8 +242,12 @@ fn new_pane_uses_the_ambient_workspace_when_no_scope_is_explicit() {
 #[test]
 fn new_pane_help_describes_the_public_canonical_contract() {
     let help = crate::dispatch::subcommand_help_text("new-pane");
+    assert_eq!(
+        help,
+        "cmux new-pane\n\nUsage: cmux new-pane [flags]\n\nCreate a new pane in the workspace.\n\nFlags:\n  --type <terminal|browser>           Pane type (default: terminal)\n  --direction <left|right|up|down>    Split direction (default: right)\n  --placement <workspace|dock>        Target container (default: workspace).\n                                      dock splits the right-sidebar Dock.\n  --workspace <id|ref|index>          Target workspace (default: $CMUX_WORKSPACE_ID)\n  --window <id|ref|index>             Window context for workspace refs and indexes\n  --url <url>                         URL for browser panes\n  --focus <true|false>                Focus the new pane (default: false)\n\nExample:\n  cmux new-pane\n  cmux new-pane --type browser --direction down --url https://example.com\n  cmux new-pane --type browser --placement dock --url https://example.com"
+    );
     for expected in [
-        "Usage:\n  cmux new-pane [flags]",
+        "Usage: cmux new-pane [flags]",
         "--type <terminal|browser>",
         "--placement <workspace|dock>",
         "--workspace <id|ref|index>",
@@ -254,4 +258,12 @@ fn new_pane_help_describes_the_public_canonical_contract() {
         assert!(help.contains(expected), "missing {expected:?} in {help:?}");
     }
     assert!(!help.contains("--panel"));
+}
+
+#[test]
+fn resize_pane_help_matches_the_canonical_contract() {
+    assert_eq!(
+        crate::dispatch::subcommand_help_text("resize-pane"),
+        "cmux resize-pane\n\nUsage: cmux resize-pane [--pane <id|ref|index>] [--workspace <id|ref|index>] [--window <id|ref|index>] [-L|-R|-U|-D] [--amount <n>]\n\ntmux-compatible pane resize command.\n\nFlags:\n  --pane <id|ref|index>        Pane to resize (default: focused pane)\n  --workspace <id|ref|index>   Workspace context (default: $CMUX_WORKSPACE_ID)\n  --window <id|ref|index>      Window context for workspace/pane refs and indexes\n  -L|-R|-U|-D            Direction (default: -R)\n  --amount <n>           Resize amount (default: 1)"
+    );
 }
