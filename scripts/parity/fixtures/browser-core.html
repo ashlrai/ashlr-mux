@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Parity Browser</title>
+  <style>
+    :root { color-scheme: light; }
+    body { margin: 0; font: 16px/1.4 sans-serif; }
+    #fixture { padding: 24px; }
+    #hover-target { width: 120px; height: 32px; }
+    #hidden { display: none; }
+    #scroll-spacer { height: 1400px; }
+    #scroll-target { height: 32px; }
+  </style>
+</head>
+<body data-clicks="0" data-doubles="0" data-hovered="false">
+  <main id="fixture">
+    <section id="snapshot-root" aria-label="Parity controls">
+      <h1 id="heading" data-kind="headline">Hello parity</h1>
+      <p><span id="locator-text">Locator needle</span></p>
+
+      <label for="name">Display name</label>
+      <input id="name" name="name" placeholder="Your name" value="start">
+
+      <button id="activate" type="button" title="Primary action" data-testid="activate-control">Activate parity</button>
+      <button id="disabled" type="button" disabled>Disabled action</button>
+      <button id="hover-target" type="button">Hover target</button>
+
+      <label><input id="check" type="checkbox"> Enable parity</label>
+      <label for="choice">Parity choice</label>
+      <select id="choice">
+        <option value="alpha">Alpha</option>
+        <option value="beta">Beta</option>
+      </select>
+
+      <input id="key-target" aria-label="Keyboard target" value="">
+      <img id="logo" alt="Parity logo" title="Parity image" width="1" height="1"
+           src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">
+      <output id="status" role="status">ready</output>
+      <div id="hidden">not visible</div>
+
+      <ul id="items">
+        <li class="item">First item</li>
+        <li class="item">Second item</li>
+        <li class="item">Third item</li>
+      </ul>
+    </section>
+
+    <div id="scroll-spacer"></div>
+    <div id="scroll-target" tabindex="-1">Scroll destination</div>
+  </main>
+  <script>
+    (() => {
+      const body = document.body;
+      const status = document.getElementById('status');
+      const activate = document.getElementById('activate');
+      const hoverTarget = document.getElementById('hover-target');
+      const keyTarget = document.getElementById('key-target');
+
+      activate.addEventListener('click', () => {
+        body.dataset.clicks = String(Number(body.dataset.clicks) + 1);
+        status.textContent = `clicked:${body.dataset.clicks}`;
+      });
+      activate.addEventListener('dblclick', () => {
+        body.dataset.doubles = String(Number(body.dataset.doubles) + 1);
+        status.textContent = `double:${body.dataset.doubles}`;
+      });
+      hoverTarget.addEventListener('mouseover', () => {
+        body.dataset.hovered = 'true';
+      });
+      keyTarget.addEventListener('keydown', (event) => {
+        body.dataset.keydown = event.key;
+      });
+      keyTarget.addEventListener('keyup', (event) => {
+        body.dataset.keyup = event.key;
+      });
+    })();
+  </script>
+</body>
+</html>

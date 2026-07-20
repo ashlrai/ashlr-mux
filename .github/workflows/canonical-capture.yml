@@ -28,6 +28,7 @@ on:
           - pane_surface_lifecycle
           - pane_management
           - notification_lifecycle
+          - browser_core
           - startup_restore
           - workspace_lifecycle
           - window_lifecycle
@@ -329,6 +330,25 @@ jobs:
           LAUNCH
           chmod +x /tmp/launch-canonical.sh
 
+      - name: Start deterministic browser fixture
+        if: ${{ inputs.family == 'browser_core' }}
+        run: |
+          set -euo pipefail
+          nohup python3 -m http.server 43123 --bind 127.0.0.1 \
+            --directory harness/scripts/parity \
+            > /tmp/browser-core-fixture.log 2>&1 &
+          echo "BROWSER_FIXTURE_PID=$!" >> "$GITHUB_ENV"
+          for i in $(seq 1 30); do
+            if curl --fail --silent --show-error \
+              http://127.0.0.1:43123/fixtures/browser-core.html >/dev/null; then
+              exit 0
+            fi
+            sleep 0.2
+          done
+          echo "Browser fixture did not become ready" >&2
+          cat /tmp/browser-core-fixture.log >&2 || true
+          exit 1
+
       - name: Launch canonical app
         run: /tmp/launch-canonical.sh
 
@@ -354,6 +374,9 @@ jobs:
           if [ -n "${VDISPLAY_PID:-}" ]; then
             kill "$VDISPLAY_PID" 2>/dev/null || true
           fi
+          if [ -n "${BROWSER_FIXTURE_PID:-}" ]; then
+            kill "$BROWSER_FIXTURE_PID" 2>/dev/null || true
+          fi
 
       - name: Collect logs
         if: always()
@@ -361,6 +384,7 @@ jobs:
           mkdir -p capture-logs
           cp -f "$APP_LOG" capture-logs/ 2>/dev/null || true
           cp -f /tmp/cmux-debug*.log capture-logs/ 2>/dev/null || true
+          cp -f /tmp/browser-core-fixture.log capture-logs/ 2>/dev/null || true
           ls -la /tmp/cmux-* 2>/dev/null > capture-logs/tmp-listing.txt || true
 
       - name: Upload canonical capture
