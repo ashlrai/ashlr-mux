@@ -2650,6 +2650,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn capture_headless_mode_suppresses_native_browser_visibility() {
+        assert!(!browser_runtime_visibility(true, true));
+        assert!(!browser_runtime_visibility(false, true));
+    }
+
+    #[test]
+    fn interactive_mode_preserves_requested_browser_visibility() {
+        assert!(browser_runtime_visibility(true, false));
+        assert!(!browser_runtime_visibility(false, false));
+    }
+
+    #[test]
     fn browser_webview_label_sanitizes_for_tauri() {
         assert_eq!(
             browser_webview_label("pane 1!*"),
