@@ -1,0 +1,459 @@
+{
+  "capture_integrity": {
+    "capture_error_cases": {
+      "canonical": [],
+      "windows": []
+    },
+    "missing_cases": [],
+    "unsettled_cases": {
+      "canonical": [],
+      "windows": []
+    },
+    "valid_for_promotion": true
+  },
+  "cases": 44,
+  "deltas": 0,
+  "identical": 44,
+  "results": [
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.url.get",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.get.title",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.get.text",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.get.html",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.get.value",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.get.attr",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.get.count",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.is.visible_true",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.is.visible_false",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.is.enabled_true",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.is.enabled_false",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.is.checked_false",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.eval",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.wait_selector",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.snapshot_interactive",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.find.role",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.find.text",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.find.label",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.find.placeholder",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.find.alt",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.find.title",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.find.testid",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.find.first",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.find.last",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.find.nth",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.click",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.dblclick",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.hover",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.focus",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.fill",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.type",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.check",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.uncheck",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.select",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.press",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.keydown",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.keyup",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.scroll",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.scroll_into_view",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.highlight",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.addscript",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.addstyle",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.get.styles",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "browser.addinitscript",
+      "identical": true,
+      "mismatches": []
+    }
+  ]
+}

@@ -28,7 +28,16 @@
     {"id": "browser.is.checked_false", "action": {"op": "v2", "method": "browser.is.checked", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "selector": "#check"}}},
     {"id": "browser.eval", "action": {"op": "v2", "method": "browser.eval", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "script": "document.title"}}},
     {"id": "browser.wait_selector", "action": {"op": "v2", "method": "browser.wait", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "selector": "#heading", "timeout_ms": 1000}}},
-    {"id": "browser.snapshot_interactive", "action": {"op": "v2", "method": "browser.snapshot", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "selector": "#snapshot-root", "interactive": true, "compact": true, "max_depth": 3}}},
+    {
+      "id": "browser.snapshot_interactive",
+      "action": {"op": "v2", "method": "browser.snapshot", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "selector": "#snapshot-root", "interactive": true, "compact": true, "max_depth": 3}},
+      "approved_differences": [
+        {
+          "path": "/response/result/page/text",
+          "rationale": "WKWebView and WebView2 serialize body.innerText whitespace and select-option line breaks differently; the scoped accessibility snapshot, refs, page HTML, title, URL, ready state, locator behavior, and all DOM mutations remain exact."
+        }
+      ]
+    },
 
     {"id": "browser.find.role", "action": {"op": "v2", "method": "browser.find.role", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "role": "button", "name": "Activate parity", "exact": true}}},
     {"id": "browser.find.text", "action": {"op": "v2", "method": "browser.find.text", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "text": "Locator needle", "exact": true}}},
