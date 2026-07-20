@@ -2512,11 +2512,15 @@ fn now_ms() -> u64 {
 }
 
 fn apply_visibility(webview: &tauri::Webview, visible: bool) -> Result<(), String> {
-    if visible {
+    if browser_runtime_visibility(visible, crate::window::capture_windows_hidden()) {
         webview.show().map_err(|error| error.to_string())
     } else {
         webview.hide().map_err(|error| error.to_string())
     }
+}
+
+fn browser_runtime_visibility(requested_visible: bool, capture_headless: bool) -> bool {
+    requested_visible && !capture_headless
 }
 
 fn normalize_child_url(url: Option<&str>) -> Result<String, String> {
