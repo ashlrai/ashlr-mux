@@ -152,9 +152,11 @@ pub(in crate::control_socket) fn pane_list_provisional_grid_fields(
     // workspace becomes selected; measured runtime metrics replace it afterward.
     const CELL_WIDTH_PX: u64 = 8;
     const CELL_HEIGHT_PX: u64 = 17;
-    // The canonical live grid excludes two terminal-chrome rows. The outer
-    // WebView scrollbar similarly consumes one column at the portal's right edge.
-    const TERMINAL_VERTICAL_CHROME_ROWS: u64 = 2;
+    // Captured terminal content excludes fixed pane padding before cell
+    // division. The outer WebView scrollbar consumes one additional column at
+    // the portal's right edge.
+    const TERMINAL_HORIZONTAL_CHROME_PX: f64 = 4.0;
+    const TERMINAL_VERTICAL_CHROME_PX: f64 = 32.0;
 
     if ![
         frame.x,
@@ -176,14 +178,16 @@ pub(in crate::control_socket) fn pane_list_provisional_grid_fields(
         return None;
     }
 
-    let mut columns = (frame.width / CELL_WIDTH_PX as f64).floor() as u64;
+    let mut columns = ((frame.width - TERMINAL_HORIZONTAL_CHROME_PX).max(0.0)
+        / CELL_WIDTH_PX as f64)
+        .floor() as u64;
     let touches_right_edge =
         ((frame.x + frame.width) - (root_frame.x + root_frame.width)).abs() < 0.5;
     if touches_right_edge {
         columns = columns.saturating_sub(1);
     }
-    let rows = ((frame.height / CELL_HEIGHT_PX as f64).floor() as u64)
-        .saturating_sub(TERMINAL_VERTICAL_CHROME_ROWS);
+    let rows = ((frame.height - TERMINAL_VERTICAL_CHROME_PX).max(0.0) / CELL_HEIGHT_PX as f64)
+        .floor() as u64;
     (columns > 0 && rows > 0).then_some((columns, rows, CELL_WIDTH_PX, CELL_HEIGHT_PX))
 }
 
