@@ -194,6 +194,17 @@ jobs:
           path: ${{ env.DERIVED_DATA }}
           key: capture-dd-${{ inputs.runner_image }}-${{ env.XCODE_VER }}-${{ env.CANONICAL_COMMIT }}-${{ env.GHOSTTY_SHA }}
 
+      - name: Sanitize DerivedData module caches
+        run: |
+          set -euo pipefail
+          # GitHub can refresh an SDK in-place without changing the Xcode
+          # version string used by the cache key. Clang then rejects restored
+          # PCM files whose SDK module-map mtimes no longer match. Preserve the
+          # expensive build products, but always regenerate SDK-bound caches.
+          rm -rf \
+            "$DERIVED_DATA/ModuleCache.noindex" \
+            "$DERIVED_DATA/SDKStatCaches.noindex"
+
       - name: Resolve Swift packages
         working-directory: canonical
         run: |
