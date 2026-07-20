@@ -59,6 +59,30 @@ fn set_process_title_reports_no_change_when_identical() {
 }
 
 #[test]
+fn set_process_title_ignores_the_default_powershell_bootstrap_title() {
+    let mut tabs = one_workspace_tabs("surface-1");
+
+    assert!(!set_process_title(
+        &mut tabs,
+        "surface-1",
+        r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+    ));
+    assert_eq!(tabs.workspaces[0].process_title, "Terminal");
+    assert_eq!(runtime_title(&tabs, "surface-1"), None);
+
+    assert!(set_process_title(&mut tabs, "surface-1", "repo shell"));
+    assert!(set_process_title(
+        &mut tabs,
+        "surface-1",
+        r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+    ));
+    assert_eq!(
+        runtime_title(&tabs, "surface-1").as_deref(),
+        Some(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
+    );
+}
+
+#[test]
 fn set_process_title_targets_only_the_workspace_owning_the_panel() {
     // surface-0..surface-2 each in their own workspace.
     let mut tabs = tabs_with(3, 0, 0);
