@@ -1,6 +1,42 @@
 {
   "schema_version": 1,
   "entries": {
+    "cli:break-pane": {
+      "latest_verifying_commit": "be72d45961a96c7d800f7804c5b8e5854645cd66",
+      "status": "verified"
+    },
+    "cli:focus-pane": {
+      "latest_verifying_commit": "be72d45961a96c7d800f7804c5b8e5854645cd66",
+      "status": "verified"
+    },
+    "cli:focus-panel": {
+      "latest_verifying_commit": "be72d45961a96c7d800f7804c5b8e5854645cd66",
+      "status": "verified"
+    },
+    "cli:join-pane": {
+      "latest_verifying_commit": "be72d45961a96c7d800f7804c5b8e5854645cd66",
+      "status": "verified"
+    },
+    "cli:last-pane": {
+      "latest_verifying_commit": "be72d45961a96c7d800f7804c5b8e5854645cd66",
+      "status": "verified"
+    },
+    "cli:list-pane-surfaces": {
+      "latest_verifying_commit": "be72d45961a96c7d800f7804c5b8e5854645cd66",
+      "status": "verified"
+    },
+    "cli:list-panels": {
+      "latest_verifying_commit": "be72d45961a96c7d800f7804c5b8e5854645cd66",
+      "status": "verified"
+    },
+    "cli:list-panes": {
+      "latest_verifying_commit": "be72d45961a96c7d800f7804c5b8e5854645cd66",
+      "status": "verified"
+    },
+    "cli:swap-pane": {
+      "latest_verifying_commit": "be72d45961a96c7d800f7804c5b8e5854645cd66",
+      "status": "verified"
+    },
     "cli:close-window": {
       "latest_verifying_commit": "a51ddd28763bad2549d3903de78bc7b59b988e36",
       "status": "verified"
@@ -77,6 +113,34 @@
     "product.workspace_lifecycle": {
       "rationale": "The basic list/current/create/select/rename/close, next/previous/last, ordering, cross-window movement, and public workspace-group v2 and CLI entry points are exact across retained differentials. The broad umbrella still includes restore, persistence, remote workspaces, and workspace.action semantics that these lanes do not yet verify.",
       "status": "implemented_unverified"
+    },
+    "v2:pane.break": {
+      "latest_verifying_commit": "be72d45961a96c7d800f7804c5b8e5854645cd66",
+      "status": "verified"
+    },
+    "v2:pane.focus": {
+      "latest_verifying_commit": "be72d45961a96c7d800f7804c5b8e5854645cd66",
+      "status": "verified"
+    },
+    "v2:pane.join": {
+      "latest_verifying_commit": "be72d45961a96c7d800f7804c5b8e5854645cd66",
+      "status": "verified"
+    },
+    "v2:pane.last": {
+      "latest_verifying_commit": "be72d45961a96c7d800f7804c5b8e5854645cd66",
+      "status": "verified"
+    },
+    "v2:pane.list": {
+      "latest_verifying_commit": "be72d45961a96c7d800f7804c5b8e5854645cd66",
+      "status": "verified"
+    },
+    "v2:pane.surfaces": {
+      "latest_verifying_commit": "be72d45961a96c7d800f7804c5b8e5854645cd66",
+      "status": "verified"
+    },
+    "v2:pane.swap": {
+      "latest_verifying_commit": "be72d45961a96c7d800f7804c5b8e5854645cd66",
+      "status": "verified"
     },
     "v2:surface.refresh": {
       "latest_verifying_commit": "a51ddd28763bad2549d3903de78bc7b59b988e36",

@@ -30,12 +30,12 @@
       "v2_method": 309
     },
     "by_status": {
-      "implemented_unverified": 216,
-      "missing": 220,
+      "implemented_unverified": 199,
+      "missing": 221,
       "platform_equivalent": 3,
-      "verified": 64
+      "verified": 80
     },
-    "strict_verified": 67,
+    "strict_verified": 83,
     "total": 503,
     "warning": "Rows mix CLI commands, socket methods, debug endpoints, and broad product umbrellas. They are neither deduplicated user capabilities nor effort-weighted."
   },
@@ -45,21 +45,21 @@
     "status": "not_measured"
   },
   "windows": {
-    "commit": "357ebc0c662df446b93d842b3a7d24964e993dfa",
-    "commit_date": "2026-07-19T14:37:31-04:00",
-    "commit_subject": "fix(workspace): match group lifecycle",
-    "commits_ahead_of_tracked_evidence": 73,
+    "commit": "4e3114a3519ebbd405a32bb45b3a3e7a1a309926",
+    "commit_date": "2026-07-19T23:04:55-04:00",
+    "commit_subject": "refactor(terminal): isolate viewport state",
+    "commits_ahead_of_tracked_evidence": 189,
     "source_evidence": {
-      "advertised_and_routed_count": 267,
+      "advertised_and_routed_count": 257,
       "advertised_method_count": 270,
-      "advertised_only_count": 3,
+      "advertised_only_count": 13,
       "cli_any_control_mapping_count": 123,
       "cli_concrete_help_count": 121,
-      "cli_direct_control_mapped_count": 109,
+      "cli_direct_control_mapped_count": 106,
       "cli_explicit_socket_not_ported_count": 51,
       "explicit_not_supported_method_count": 12,
       "guarded_not_supported_path_count": 1,
-      "routed_method_count": 308,
+      "routed_method_count": 298,
       "routed_not_advertised_count": 41,
       "top_level_cli_count": 193
     },

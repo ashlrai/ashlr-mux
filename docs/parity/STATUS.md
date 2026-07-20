@@ -9,7 +9,7 @@ Checkpoint commits:
 - Latest workspace-navigation behavior captured: `aa3f74c799079290f25441e950761c67c3c56026`
 - Latest workspace-ordering behavior captured: `46f4cedf1a77fda23baff9b73b5d8ef7b96eb187`
 - Latest workspace-group behavior captured: `357ebc0c662df446b93d842b3a7d24964e993dfa`
-- Latest Windows code checkpoint: `543b8b7db4eb7d55fac18cd899a97e6898da79db`
+- Latest Windows code checkpoint: `4e3114a3519ebbd405a32bb45b3a3e7a1a309926`
 - Latest terminal-title behavior checkpoint: `ece79b413abe1298f2160223920c47176fdc741e`
 - Latest exact startup differential evidence: `parity/diff-lane@215737999ac0579682b6b2a2d230d7a0d064a51d`
 - Latest window harness checkpoint: `parity/diff-lane@9257db511b975335e2ee79bc4bb143c04bfa95f8`
@@ -22,6 +22,8 @@ Checkpoint commits:
 - Latest canonical ordering capture: workflow run `29696270467`
 - Latest workspace-group evidence: `parity/diff-lane@32dd8da8256e35dd1ae42e41fa267c3753634833`
 - Latest canonical workspace-group capture: workflow run `29697573532`
+- Latest pane-management evidence: `parity/diff-lane@751d9c6e360402ec0435c449d0acbc218aa700aa`
+- Latest canonical pane-management capture: workflow run `29699851933`
 
 The Windows desktop and CLI build successfully. The retained pane/surface and
 startup-restore evidence remains valid. The exact environment-matched window
@@ -43,22 +45,24 @@ parity harness passed 30 tests. A headless real-app probe focused and booted the
 PowerShell pane, swapped it, and observed `Terminal` rather than the executable
 path with zero capture or visible-window errors.
 
-The 22-case pane-management family now completes reliably but is not yet
-promoted: the final-head capture completed 22/22 cases with zero capture
-errors, zero visible-window violations, and no residual process or listener.
-Its strict comparison has 12 exact cases and 10 semantic deltas. Two traced
-full-process reproductions proved that the apparent named-pipe wedge was a
-control worker deadlocking in redundant native `emit_window_states`
-observation after persistence and authority commit, while still holding the
-global mutation gate. RED `c246946a79` freezes the no-native-observation
-contract; fix `543b8b7db4` suppresses that redundant control-path refresh and
-removes the obsolete browser-presence query (10 additions, 40 deletions).
-Focused policy and pane-swap tests passed twice; all 334 core tests, 1,118
-executed desktop tests (one ignored), 1,255 frontend tests, TypeScript,
-production web build, and 120 parity-harness tests passed. The file-length
-budget remains red only at the inherited baseline: `event_stream.rs` is three
-physical lines over its ceiling and `unit_tests.rs` is sixteen over. This slice
-changes neither file and ratchets `browser.rs` from 3,284 to 3,282 lines.
+The 22-case pane-management family is promoted at
+`parity/diff-lane@751d9c6e36`. Both captures have zero capture errors, missing
+cases, or unsatisfied settles. The final isolated Windows run stayed headless,
+left no capture process or named-pipe state, and reported no visible-window
+violation. All 22 cases are exact after four reviewed `current_directory`
+leaves identify the platform-specific isolated capture home. The lane covers
+v2 and CLI list, surface-list, focus, last, swap, break, and join behavior,
+including payloads, errors, state, refs, geometry, terminal grid metrics, and
+lifecycle-event order.
+
+Windows now projects pane frames from the rendered workspace authority and
+publishes xterm-measured cell dimensions through the terminal resize boundary.
+Headless first activation suppresses grid fields until canonical exposes them;
+fresh projections outrank stale retained values, while moved panes retain the
+last confirmed grid across runtime handoff. Per-panel caches are pruned against
+the active model. The viewport state and resize command live in the 138-line
+`terminal/viewport_metrics.rs` child; `terminal.rs` fell from 2,902 to 2,895
+lines and `control_socket.rs` remains at its 3,867-line ceiling.
 
 Closed windows now retain canonical recoverable routes. A socket-managed close
 appends a strict `visible:false` `window.list` row with stable window and
@@ -164,9 +168,10 @@ development WebView at `localhost:1420`. See
 
 The rolling catalog contains 503 rows: 159 public CLI commands, 16 internal CLI
 contracts, 263 release socket methods, 46 debug socket methods, and 19 coarse
-product umbrellas. It currently classifies 64 rows as verified, 3 as reviewed
-platform equivalents, 216 as implemented but unverified, and 220 as missing.
-The strict resolved count is 67.
+product umbrellas. It currently classifies 80 rows as verified, 3 as reviewed
+platform equivalents, 199 as implemented but unverified, and 221 as missing.
+The strict resolved count is 83. These are entry-point rows, not a user-facing
+completion percentage.
 
 The zero-delta window lane promotes 11 entry-point rows. `window.create`,
 `window.close`, the three resume methods, their covered CLI commands, and
@@ -283,16 +288,16 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
   publication executor share prepared window identities and key history.
 - `browser.rs` is now 3,284 physical lines. Its control-runtime presence checks
   live in the 37-line `browser/control_state.rs` child module.
-- `terminal.rs` is now 2,902 measured lines (from 5,672 at the previous
+- `terminal.rs` is now 2,895 measured lines (from 5,672 at the previous
   checkpoint). Its unchanged 2,772-line inline test body now remains in the
   same `terminal::tests::*` namespace through two include files of 1,425 and
   1,347 lines. Logical reconstruction matches the former file exactly; the
   68-test terminal-filtered run passes before and three times after the move,
-  and the desktop all-target check is clean. The commit is +2 net ownership
-  lines, with no behavior rewrite. Process-tree snapshots, listening-port
+  and the desktop all-target check is clean. Process-tree snapshots, listening-port
   discovery, and terminal output pumping already live in the 454-line
-  `terminal/process_runtime.rs` child module; the Tauri command entry point
-  remains in `terminal.rs`.
+  `terminal/process_runtime.rs` child module. Viewport measurement, retained
+  pane-grid state, and the resize command now live in the 138-line
+  `terminal/viewport_metrics.rs` child module.
 - `session_ops.rs` is now 1,316 physical lines (from 6,306 before its staged
   extractions). Browser history,
   navigation, developer-tools state, and zoom mutations live behind the
@@ -400,11 +405,10 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
 
 ## Next efficient slice
 
-Close the one shared viewport/geometry freshness defect behind all 10 remaining
-pane-management deltas. Windows sometimes publishes fallback cell metrics that
-canonical omits, and sometimes misses canonical `cell_height_px`,
-`cell_width_px`, `columns`, and `rows`; `pane.focus` also briefly exposes zero
-container/pixel geometry. Pin those exact paths against the frozen canonical
-capture, repair the authoritative viewport-to-pane projection once, and rerun
-the full 22-case lane. Do not reopen the now-exact break/join event path or
-special-case individual cases.
+Extend the retained pane lane to the adjacent implemented-but-unverified
+creation and resizing entry points: `v2:pane.create`, `v2:pane.resize`,
+`cli:new-pane`, and `cli:resize-pane`. Capture payload/error precedence,
+inherited directory, split orientation, absolute/relative sizing, clamping,
+state, geometry, and lifecycle events. Reuse the now-authoritative viewport
+projection and existing pane transaction paths; do not reopen the exact
+list/focus/swap/break/join behavior or add case-specific output adapters.
