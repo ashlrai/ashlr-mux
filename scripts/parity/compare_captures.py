@@ -31,6 +31,47 @@ class CaptureFormatError(ValueError):
 
 
 _WINDOW_REF_RE = re.compile(r"window:(\d+)$")
+_ISO_8601_WALL_CLOCK_RE = re.compile(
+    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})"
+)
+_PIPE_DELIMITED_WALL_CLOCK_RE = re.compile(
+    rf"(?<=\|){_ISO_8601_WALL_CLOCK_RE.pattern}(?=\|[^|\r\n]*$)", re.MULTILINE
+)
+
+
+def normalize_wall_clock_fields(observation: dict[str, Any]) -> dict[str, Any]:
+    """Symbolize generated notification wall clocks without hiding user text.
+
+    Notification ``created_at`` values necessarily differ between independent
+    canonical and Windows captures.  The plain-text CLI renders that same
+    generated field as a pipe-delimited column.  Only those two contract
+    positions are normalized; arbitrary ISO-looking titles, bodies, errors,
+    and other strings remain strict.
+    """
+    normalized = copy.deepcopy(observation)
+
+    def walk(value: Any) -> Any:
+        if isinstance(value, dict):
+            mapped: dict[str, Any] = {}
+            for key, item in value.items():
+                if (
+                    key == "created_at"
+                    and isinstance(item, str)
+                    and _ISO_8601_WALL_CLOCK_RE.fullmatch(item)
+                ):
+                    mapped[key] = "<wall-clock>"
+                elif key == "stdout" and isinstance(item, str):
+                    mapped[key] = _PIPE_DELIMITED_WALL_CLOCK_RE.sub(
+                        "<wall-clock>", item
+                    )
+                else:
+                    mapped[key] = walk(item)
+            return mapped
+        if isinstance(value, list):
+            return [walk(item) for item in value]
+        return value
+
+    return walk(normalized)
 
 
 def normalize_racy_window_list_order(observation: dict[str, Any]) -> dict[str, Any]:
@@ -124,6 +165,7 @@ def load_capture(text: str, label: str) -> dict[str, dict[str, Any]]:
         record["observation"]["events"] = TimingSymbolizer().apply(
             record["observation"].get("events")
         )
+        record["observation"] = normalize_wall_clock_fields(record["observation"])
         cases[case_id] = record
     return cases
 

@@ -253,6 +253,46 @@ class CompareCapturesTests(unittest.TestCase):
 
         self.assertEqual(compare_captures(left, right)["deltas"], 0)
 
+    def test_wall_clock_symbolization_keeps_iso_looking_user_text_strict(self):
+        left = load_capture(
+            capture_text(
+                [
+                    case_record(
+                        "a",
+                        observation(
+                            stdout=(
+                                "0:id|workspace|surface|unread|"
+                                "2026-07-19T12:00:00Z|subtitle|body|"
+                                "2026-07-19T12:01:00Z|tab\n"
+                            )
+                        ),
+                    )
+                ]
+            ),
+            "canonical",
+        )
+        right = load_capture(
+            capture_text(
+                [
+                    case_record(
+                        "a",
+                        observation(
+                            stdout=(
+                                "0:id|workspace|surface|unread|"
+                                "2026-07-19T12:00:01Z|subtitle|body|"
+                                "2026-07-19T12:02:00Z|tab\n"
+                            )
+                        ),
+                    )
+                ]
+            ),
+            "windows",
+        )
+
+        report = compare_captures(left, right)
+        self.assertEqual(report["deltas"], 1)
+        self.assertEqual(report["results"][0]["mismatches"], ["stdout"])
+
     def test_timing_symbolization_keeps_count_and_name_divergences_strict(self):
         frame = {
             "boot_id": "<uuid-1>",
