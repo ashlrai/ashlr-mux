@@ -20,6 +20,35 @@ pub(in crate::control_socket) fn pane_list_reference_fields_with(
     )
 }
 
+fn pane_list_collect_panel_ids(
+    layout: &SessionWorkspaceLayoutSnapshot,
+    panel_ids: &mut std::collections::HashSet<String>,
+) {
+    match layout {
+        SessionWorkspaceLayoutSnapshot::Pane(pane) => {
+            panel_ids.extend(pane.panel_ids.iter().cloned());
+        }
+        SessionWorkspaceLayoutSnapshot::Split(split) => {
+            pane_list_collect_panel_ids(&split.first, panel_ids);
+            pane_list_collect_panel_ids(&split.second, panel_ids);
+        }
+    }
+}
+
+fn pane_list_active_panel_ids(snapshot: &AppSessionSnapshot) -> std::collections::HashSet<String> {
+    let mut panel_ids = std::collections::HashSet::new();
+    for workspace in snapshot
+        .windows
+        .iter()
+        .flat_map(|window| &window.tab_manager.workspaces)
+    {
+        if let Some(layout) = workspace.layout.as_ref() {
+            pane_list_collect_panel_ids(layout, &mut panel_ids);
+        }
+    }
+    panel_ids
+}
+
 pub(in crate::control_socket) fn pane_list_window_size_with(
     snapshot: &AppSessionSnapshot,
     window_id: &str,
@@ -161,8 +190,13 @@ pub(in crate::control_socket) fn pane_list_provisional_grid_fields(
 pub(in crate::control_socket) fn pane_list_preferred_grid_fields(
     projected: Option<(u64, u64, u64, u64)>,
     retained: Option<(u64, u64, u64, u64)>,
+    suppress_first_projection: bool,
 ) -> Option<(u64, u64, u64, u64)> {
-    projected.or(retained)
+    if suppress_first_projection && retained.is_none() {
+        None
+    } else {
+        projected.or(retained)
+    }
 }
 
 pub(in crate::control_socket) fn pane_list(
@@ -224,6 +258,7 @@ pub(in crate::control_socket) fn pane_list(
     };
     let mut pane_rows = Vec::new();
     let pane_geometry_state = app.state::<PaneGeometryState>();
+    pane_geometry_state.retain_grid_fields(&pane_list_active_panel_ids(&current));
     let capture_headless = crate::window::capture_windows_hidden();
     let capture_portal = capture_headless
         .then(|| {
@@ -243,9 +278,13 @@ pub(in crate::control_socket) fn pane_list(
         .map_or(PaneGeometryAuthority::Uninitialized, |workspace_id| {
             pane_geometry_state.authority_for(window_label, workspace_id)
         });
+    let latest_geometry = pane_geometry_state.latest_for_window(window_label);
+    let capture_activation_bootstrap = workspace_is_selected
+        && !matches!(geometry_authority, PaneGeometryAuthority::Rendered(_))
+        && latest_geometry.is_none()
+        && capture_portal.is_some();
     if workspace_is_selected && !matches!(geometry_authority, PaneGeometryAuthority::Rendered(_)) {
-        if let Some(fallback) = pane_geometry_state
-            .latest_for_window(window_label)
+        if let Some(fallback) = latest_geometry
             .map(|geometry| PanePixelFrame {
                 x: geometry.x,
                 y: geometry.y,
@@ -327,14 +366,20 @@ pub(in crate::control_socket) fn pane_list(
                         .flatten();
                     let retained = selected.and_then(|panel_id| {
                         terminal_pane_grid_fields_for_panel(terminal_state.inner(), panel_id)
+                            .or_else(|| pane_geometry_state.grid_fields_for_panel(panel_id))
                     });
-                    let fields = pane_list_preferred_grid_fields(projected, retained);
+                    let fields = pane_list_preferred_grid_fields(
+                        projected,
+                        retained,
+                        capture_activation_bootstrap,
+                    );
                     if let (Some(panel_id), Some(projected)) = (selected, projected) {
                         terminal_remember_pane_grid_fields(
                             terminal_state.inner(),
                             panel_id,
                             projected,
                         );
+                        pane_geometry_state.remember_grid_fields(panel_id, projected);
                     }
                     fields
                 })

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
 use tauri::{State, WebviewWindow};
@@ -22,6 +22,7 @@ pub(crate) enum PaneGeometryAuthority {
 struct PaneGeometryRegistry {
     by_window: HashMap<String, HashMap<String, WorkspacePaneGeometry>>,
     latest_by_window: HashMap<String, WorkspacePaneGeometry>,
+    grid_by_panel: HashMap<String, (u64, u64, u64, u64)>,
 }
 
 #[derive(Default)]
@@ -86,6 +87,31 @@ impl PaneGeometryState {
             .latest_by_window
             .get(window_label)
             .copied()
+    }
+
+    pub(crate) fn remember_grid_fields(&self, panel_id: &str, fields: (u64, u64, u64, u64)) {
+        self.registry
+            .lock()
+            .expect("pane geometry mutex poisoned")
+            .grid_by_panel
+            .insert(panel_id.to_string(), fields);
+    }
+
+    pub(crate) fn grid_fields_for_panel(&self, panel_id: &str) -> Option<(u64, u64, u64, u64)> {
+        self.registry
+            .lock()
+            .expect("pane geometry mutex poisoned")
+            .grid_by_panel
+            .get(panel_id)
+            .copied()
+    }
+
+    pub(crate) fn retain_grid_fields(&self, active_panel_ids: &HashSet<String>) {
+        self.registry
+            .lock()
+            .expect("pane geometry mutex poisoned")
+            .grid_by_panel
+            .retain(|panel_id, _| active_panel_ids.contains(panel_id));
     }
 }
 

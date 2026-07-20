@@ -303,9 +303,7 @@ fn pane_list_prefers_fresh_projection_and_retains_it_for_an_unrendered_move() {
         "an unrendered workspace must not expose an unconfirmed default grid"
     );
     assert_eq!(
-        pane_surface_control::pane_list::pane_list_preferred_grid_fields(
-            projected, None, true,
-        ),
+        pane_surface_control::pane_list::pane_list_preferred_grid_fields(projected, None, true,),
         None,
         "the first activation read exposes geometry before its terminal grid is live"
     );
