@@ -1,0 +1,211 @@
+{
+  "family": "notification_lifecycle",
+  "canonical_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+  "notes": [
+    "Exercises the seven implemented-but-unverified public notification v2 methods and their seven CLI entry points against one deterministic workspace/surface fixture.",
+    "Each id-targeted case clears and reseeds the notification store before resolving the generated notification UUID from notification.list, avoiding assumptions about UUIDs or retained ordering.",
+    "The lane covers payloads, defaults, selector validation, not-found behavior, read/dismiss/clear mutations, target navigation, CLI help and output, state probes, and lifecycle events.",
+    "No platform differences are pre-approved; classify exact capture pointers only after the first matched run."
+  ],
+  "session_setup": [
+    {"op": "v2", "method": "workspace.create", "params": {"title": "notification-lifecycle"}},
+    {"op": "v2", "method": "surface.create", "params": {"workspace_id": "${session.0.result.workspace_id}", "type": "terminal"}}
+  ],
+  "cases": [
+    {
+      "id": "notification.list_empty",
+      "setup": [{"op": "v2", "method": "notification.clear", "params": {}}],
+      "action": {"op": "v2", "method": "notification.list", "params": {}}
+    },
+    {
+      "id": "notification.create_explicit_target",
+      "setup": [{"op": "v2", "method": "notification.clear", "params": {}}],
+      "events": true,
+      "action": {"op": "v2", "method": "notification.create", "params": {"workspace_id": "${session.0.result.workspace_id}", "surface_id": "${session.1.result.surface_id}", "title": "Build complete", "subtitle": "Parity", "body": "All checks passed"}},
+      "probes": {"state": [{"op": "v2", "method": "notification.list", "params": {}}]}
+    },
+    {
+      "id": "notification.create_defaults",
+      "setup": [{"op": "v2", "method": "notification.clear", "params": {}}],
+      "action": {"op": "v2", "method": "notification.create", "params": {"workspace_id": "${session.0.result.workspace_id}", "surface_id": "${session.1.result.surface_id}"}},
+      "probes": {"state": [{"op": "v2", "method": "notification.list", "params": {}}]}
+    },
+    {
+      "id": "notification.create_rejects_missing_workspace",
+      "action": {"op": "v2", "method": "notification.create", "params": {"workspace_id": "00000000-0000-0000-0000-000000000001", "surface_id": "${session.1.result.surface_id}"}}
+    },
+    {
+      "id": "notification.dismiss_requires_one_selector",
+      "action": {"op": "v2", "method": "notification.dismiss", "params": {}}
+    },
+    {
+      "id": "notification.dismiss_rejects_unknown_id",
+      "action": {"op": "v2", "method": "notification.dismiss", "params": {"id": "00000000-0000-0000-0000-000000000002"}}
+    },
+    {
+      "id": "notification.dismiss_by_id",
+      "setup": [
+        {"op": "v2", "method": "notification.clear", "params": {}},
+        {"op": "v2", "method": "notification.create", "params": {"workspace_id": "${session.0.result.workspace_id}", "surface_id": "${session.1.result.surface_id}", "title": "Dismiss me"}},
+        {"op": "v2", "method": "notification.list", "params": {}}
+      ],
+      "events": true,
+      "action": {"op": "v2", "method": "notification.dismiss", "params": {"id": "${setup.2.result.notifications.0.id}"}},
+      "probes": {"state": [{"op": "v2", "method": "notification.list", "params": {}}]}
+    },
+    {
+      "id": "notification.dismiss_all_read",
+      "setup": [
+        {"op": "v2", "method": "notification.clear", "params": {}},
+        {"op": "v2", "method": "notification.create", "params": {"workspace_id": "${session.0.result.workspace_id}", "surface_id": "${session.1.result.surface_id}", "title": "Read row"}},
+        {"op": "v2", "method": "notification.list", "params": {}},
+        {"op": "v2", "method": "notification.mark_read", "params": {"id": "${setup.2.result.notifications.0.id}"}},
+        {"op": "v2", "method": "notification.create", "params": {"workspace_id": "${session.0.result.workspace_id}", "surface_id": "${session.1.result.surface_id}", "title": "Unread row"}}
+      ],
+      "events": true,
+      "action": {"op": "v2", "method": "notification.dismiss", "params": {"all_read": true}},
+      "probes": {"state": [{"op": "v2", "method": "notification.list", "params": {}}]}
+    },
+    {
+      "id": "notification.mark_read_requires_one_selector",
+      "action": {"op": "v2", "method": "notification.mark_read", "params": {}}
+    },
+    {
+      "id": "notification.mark_read_rejects_surface_without_workspace",
+      "action": {"op": "v2", "method": "notification.mark_read", "params": {"surface_id": "${session.1.result.surface_id}", "all": true}}
+    },
+    {
+      "id": "notification.mark_read_by_id",
+      "setup": [
+        {"op": "v2", "method": "notification.clear", "params": {}},
+        {"op": "v2", "method": "notification.create", "params": {"workspace_id": "${session.0.result.workspace_id}", "surface_id": "${session.1.result.surface_id}", "title": "Mark read"}},
+        {"op": "v2", "method": "notification.list", "params": {}}
+      ],
+      "events": true,
+      "action": {"op": "v2", "method": "notification.mark_read", "params": {"id": "${setup.2.result.notifications.0.id}"}},
+      "probes": {"state": [{"op": "v2", "method": "notification.list", "params": {}}]}
+    },
+    {
+      "id": "notification.mark_read_workspace_surface",
+      "setup": [
+        {"op": "v2", "method": "notification.clear", "params": {}},
+        {"op": "v2", "method": "notification.create", "params": {"workspace_id": "${session.0.result.workspace_id}", "surface_id": "${session.1.result.surface_id}", "title": "Scoped read"}}
+      ],
+      "action": {"op": "v2", "method": "notification.mark_read", "params": {"workspace_id": "${session.0.result.workspace_id}", "surface_id": "${session.1.result.surface_id}"}},
+      "probes": {"state": [{"op": "v2", "method": "notification.list", "params": {}}]}
+    },
+    {
+      "id": "notification.open_requires_id",
+      "action": {"op": "v2", "method": "notification.open", "params": {}}
+    },
+    {
+      "id": "notification.open_target",
+      "setup": [
+        {"op": "v2", "method": "notification.clear", "params": {}},
+        {"op": "v2", "method": "notification.create", "params": {"workspace_id": "${session.0.result.workspace_id}", "surface_id": "${session.1.result.surface_id}", "title": "Open me"}},
+        {"op": "v2", "method": "notification.list", "params": {}}
+      ],
+      "events": true,
+      "action": {"op": "v2", "method": "notification.open", "params": {"id": "${setup.2.result.notifications.0.id}"}},
+      "probes": {"state": [{"op": "v2", "method": "notification.list", "params": {}}]}
+    },
+    {
+      "id": "notification.jump_to_unread_empty",
+      "setup": [{"op": "v2", "method": "notification.clear", "params": {}}],
+      "action": {"op": "v2", "method": "notification.jump_to_unread", "params": {}}
+    },
+    {
+      "id": "notification.jump_to_unread_target",
+      "setup": [
+        {"op": "v2", "method": "notification.clear", "params": {}},
+        {"op": "v2", "method": "notification.create", "params": {"workspace_id": "${session.0.result.workspace_id}", "surface_id": "${session.1.result.surface_id}", "title": "Jump to me"}}
+      ],
+      "events": true,
+      "action": {"op": "v2", "method": "notification.jump_to_unread", "params": {}},
+      "probes": {"state": [{"op": "v2", "method": "notification.list", "params": {}}]}
+    },
+    {
+      "id": "notification.clear_all",
+      "setup": [
+        {"op": "v2", "method": "notification.clear", "params": {}},
+        {"op": "v2", "method": "notification.create", "params": {"workspace_id": "${session.0.result.workspace_id}", "surface_id": "${session.1.result.surface_id}", "title": "Clear me"}}
+      ],
+      "events": true,
+      "action": {"op": "v2", "method": "notification.clear", "params": {}},
+      "probes": {"state": [{"op": "v2", "method": "notification.list", "params": {}}]}
+    },
+    {"id": "cli.notify_help", "action": {"op": "cli", "argv": ["notify", "--help"]}},
+    {"id": "cli.list_notifications_help", "action": {"op": "cli", "argv": ["list-notifications", "--help"]}},
+    {"id": "cli.dismiss_notification_help", "action": {"op": "cli", "argv": ["dismiss-notification", "--help"]}},
+    {"id": "cli.mark_notification_read_help", "action": {"op": "cli", "argv": ["mark-notification-read", "--help"]}},
+    {"id": "cli.open_notification_help", "action": {"op": "cli", "argv": ["open-notification", "--help"]}},
+    {"id": "cli.jump_to_unread_help", "action": {"op": "cli", "argv": ["jump-to-unread", "--help"]}},
+    {"id": "cli.clear_notifications_help", "action": {"op": "cli", "argv": ["clear-notifications", "--help"]}},
+    {
+      "id": "cli.notify_explicit_target",
+      "setup": [{"op": "v2", "method": "notification.clear", "params": {}}],
+      "events": true,
+      "action": {"op": "cli", "argv": ["notify", "--workspace", "${session.0.result.workspace_id}", "--surface", "${session.1.result.surface_id}", "--title", "CLI build", "--subtitle", "Parity", "--body", "Done"]},
+      "probes": {"state": [{"op": "v2", "method": "notification.list", "params": {}}]}
+    },
+    {
+      "id": "cli.list_notifications",
+      "setup": [
+        {"op": "v2", "method": "notification.clear", "params": {}},
+        {"op": "v2", "method": "notification.create", "params": {"workspace_id": "${session.0.result.workspace_id}", "surface_id": "${session.1.result.surface_id}", "title": "Listed", "subtitle": "CLI", "body": "Row"}}
+      ],
+      "action": {"op": "cli", "argv": ["list-notifications"]}
+    },
+    {
+      "id": "cli.mark_notification_read",
+      "setup": [
+        {"op": "v2", "method": "notification.clear", "params": {}},
+        {"op": "v2", "method": "notification.create", "params": {"workspace_id": "${session.0.result.workspace_id}", "surface_id": "${session.1.result.surface_id}", "title": "CLI read"}},
+        {"op": "v2", "method": "notification.list", "params": {}}
+      ],
+      "action": {"op": "cli", "argv": ["mark-notification-read", "--id", "${setup.2.result.notifications.0.id}"]},
+      "probes": {"state": [{"op": "v2", "method": "notification.list", "params": {}}]}
+    },
+    {
+      "id": "cli.open_notification",
+      "setup": [
+        {"op": "v2", "method": "notification.clear", "params": {}},
+        {"op": "v2", "method": "notification.create", "params": {"workspace_id": "${session.0.result.workspace_id}", "surface_id": "${session.1.result.surface_id}", "title": "CLI open"}},
+        {"op": "v2", "method": "notification.list", "params": {}}
+      ],
+      "events": true,
+      "action": {"op": "cli", "argv": ["open-notification", "--id", "${setup.2.result.notifications.0.id}"]},
+      "probes": {"state": [{"op": "v2", "method": "notification.list", "params": {}}]}
+    },
+    {
+      "id": "cli.jump_to_unread",
+      "setup": [
+        {"op": "v2", "method": "notification.clear", "params": {}},
+        {"op": "v2", "method": "notification.create", "params": {"workspace_id": "${session.0.result.workspace_id}", "surface_id": "${session.1.result.surface_id}", "title": "CLI jump"}}
+      ],
+      "action": {"op": "cli", "argv": ["jump-to-unread"]},
+      "probes": {"state": [{"op": "v2", "method": "notification.list", "params": {}}]}
+    },
+    {
+      "id": "cli.dismiss_notification",
+      "setup": [
+        {"op": "v2", "method": "notification.clear", "params": {}},
+        {"op": "v2", "method": "notification.create", "params": {"workspace_id": "${session.0.result.workspace_id}", "surface_id": "${session.1.result.surface_id}", "title": "CLI dismiss"}},
+        {"op": "v2", "method": "notification.list", "params": {}}
+      ],
+      "events": true,
+      "action": {"op": "cli", "argv": ["dismiss-notification", "--id", "${setup.2.result.notifications.0.id}"]},
+      "probes": {"state": [{"op": "v2", "method": "notification.list", "params": {}}]}
+    },
+    {
+      "id": "cli.clear_notifications",
+      "setup": [
+        {"op": "v2", "method": "notification.clear", "params": {}},
+        {"op": "v2", "method": "notification.create", "params": {"workspace_id": "${session.0.result.workspace_id}", "surface_id": "${session.1.result.surface_id}", "title": "CLI clear"}}
+      ],
+      "events": true,
+      "action": {"op": "cli", "argv": ["clear-notifications"]},
+      "probes": {"state": [{"op": "v2", "method": "notification.list", "params": {}}]}
+    }
+  ]
+}

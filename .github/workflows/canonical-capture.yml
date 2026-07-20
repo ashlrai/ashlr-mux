@@ -27,6 +27,7 @@ on:
         options:
           - pane_surface_lifecycle
           - pane_management
+          - notification_lifecycle
           - startup_restore
           - workspace_lifecycle
           - window_lifecycle
