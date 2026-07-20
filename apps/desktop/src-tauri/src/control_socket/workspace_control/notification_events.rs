@@ -118,11 +118,15 @@ pub(in crate::control_socket) fn notification_v2_request_event_spec(
     workspace_id: Option<&str>,
     surface_id: Option<&str>,
 ) -> DerivedEventSpec {
+    let window_id = result
+        .get("window_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     DerivedEventSpec {
         name,
         category: "notification",
         source: "socket.v2",
-        window_id: None,
+        window_id,
         workspace_id: workspace_id.map(str::to_owned),
         surface_id: surface_id.map(str::to_owned),
         payload: json!({"method": method, "params": params, "result": result}),

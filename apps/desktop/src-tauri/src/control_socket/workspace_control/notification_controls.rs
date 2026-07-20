@@ -3,7 +3,21 @@ use super::*;
 #[path = "notification_controls/mutations.rs"]
 mod mutations;
 pub(in crate::control_socket) use mutations::{
-    notification_clear, notification_create, notification_dismiss, notification_mark_read,
+    notification_clear, notification_dismiss, notification_mark_read,
+};
+
+#[path = "notification_controls/create.rs"]
+mod create;
+pub(in crate::control_socket) use create::{
+    notification_create, notification_create_for_caller, notification_create_for_surface,
+    notification_create_for_target,
+};
+
+#[path = "notification_controls/targeting.rs"]
+mod targeting;
+#[cfg(test)]
+pub(in crate::control_socket) use targeting::{
+    normalized_notification_tty, resolve_caller_notification_target,
 };
 
 #[path = "notification_controls/navigation.rs"]
