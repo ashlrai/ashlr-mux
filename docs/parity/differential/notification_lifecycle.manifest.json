@@ -5,7 +5,7 @@
     "Exercises the seven implemented-but-unverified public notification v2 methods and their seven CLI entry points against one deterministic workspace/surface fixture.",
     "Each id-targeted case clears and reseeds the notification store before resolving the generated notification UUID from notification.list, avoiding assumptions about UUIDs or retained ordering.",
     "The lane covers payloads, defaults, selector validation, not-found behavior, read/dismiss/clear mutations, target navigation, CLI help and output, state probes, and lifecycle events.",
-    "No platform differences are pre-approved; classify exact capture pointers only after the first matched run."
+    "The first matched run classified only two platform bootstrap values in notification.open_target; all notification behavior and remaining event fields stay strict."
   ],
   "session_setup": [
     {"op": "v2", "method": "workspace.create", "params": {"title": "notification-lifecycle"}},
@@ -107,6 +107,16 @@
       ],
       "events": true,
       "action": {"op": "v2", "method": "notification.open", "params": {"id": "${setup.2.result.notifications.0.id}"}},
+      "approved_differences": [
+        {
+          "path": "/events/1/payload/cwd",
+          "rationale": "The exact workspace.selected event carries the platform-specific isolated capture working directory; navigation identity, index, title, selection, event order, and all non-path fields stay strict."
+        },
+        {
+          "path": "/events/2/payload/previous_surface_id",
+          "rationale": "The pre-navigation boot surface is a canonical UUID but the Windows bootstrap surface retains the stable legacy id surface-1; target surface and workspace identity, pane identity, focus semantics, event order, and all subsequent notification fields stay strict."
+        }
+      ],
       "probes": {"state": [{"op": "v2", "method": "notification.list", "params": {}}]}
     },
     {
