@@ -780,7 +780,7 @@ mod tests {
     }
 
     #[test]
-    fn capture_headless_mode_keeps_the_rendered_bootstrap_window_parked() {
+    fn capture_headless_mode_never_shows_the_bootstrap_window() {
         let actions = RefCell::new(Vec::new());
 
         run_bootstrap_window_presentation(
@@ -796,7 +796,7 @@ mod tests {
         )
         .expect("offscreen capture presentation succeeds");
 
-        assert_eq!(*actions.borrow(), ["park", "show", "park"]);
+        assert_eq!(*actions.borrow(), ["park"]);
     }
 
     #[test]
