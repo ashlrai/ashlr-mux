@@ -173,6 +173,9 @@
     },
     {
       "id": "cli.new_pane_terminal_background",
+      "setup": [
+        {"op": "v2", "method": "pane.focus", "params": {"workspace_id": "${session.0.result.workspace_id}", "pane_id": "${session.4.result.panes.0.id}"}}
+      ],
       "events": true,
       "action": {"op": "cli", "argv": ["new-pane", "--workspace", "${session.0.result.workspace_id}", "--type", "terminal", "--direction", "right", "--focus", "false"]},
       "probes": {
@@ -183,6 +186,9 @@
     },
     {
       "id": "cli.new_pane_browser_background",
+      "setup": [
+        {"op": "v2", "method": "pane.focus", "params": {"workspace_id": "${session.0.result.workspace_id}", "pane_id": "${session.4.result.panes.0.id}"}}
+      ],
       "events": true,
       "action": {"op": "cli", "argv": ["new-pane", "--workspace", "${session.0.result.workspace_id}", "--type", "browser", "--url", "https://example.com/parity-pane", "--direction", "down", "--focus", "false"]},
       "probes": {
@@ -202,9 +208,10 @@
     {
       "id": "cli.resize_pane_relative",
       "setup": [
+        {"op": "v2", "method": "pane.focus", "params": {"workspace_id": "${session.0.result.workspace_id}", "pane_id": "${session.4.result.panes.0.id}"}},
         {"op": "v2", "method": "pane.create", "params": {"workspace_id": "${session.0.result.workspace_id}", "direction": "right"}}
       ],
-      "action": {"op": "cli", "argv": ["resize-pane", "--workspace", "${session.0.result.workspace_id}", "--pane", "${setup.0.result.pane_id}", "-L", "--amount", "2"]},
+      "action": {"op": "cli", "argv": ["resize-pane", "--workspace", "${session.0.result.workspace_id}", "--pane", "${setup.1.result.pane_id}", "-L", "--amount", "2"]},
       "probes": {
         "state": [
           {"op": "v2", "method": "pane.list", "params": {"workspace_id": "${session.0.result.workspace_id}"}}
