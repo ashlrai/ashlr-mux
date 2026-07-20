@@ -166,6 +166,61 @@
           {"op": "v2", "method": "pane.surfaces", "params": {"pane_id": "${session.3.result.pane_id}"}}
         ]
       }
+    },
+    {
+      "id": "cli.new_pane_help",
+      "action": {"op": "cli", "argv": ["new-pane", "--help"]}
+    },
+    {
+      "id": "cli.new_pane_terminal_background",
+      "events": true,
+      "action": {"op": "cli", "argv": ["new-pane", "--workspace", "${session.0.result.workspace_id}", "--type", "terminal", "--direction", "right", "--focus", "false"]},
+      "probes": {
+        "state": [
+          {"op": "v2", "method": "pane.list", "params": {"workspace_id": "${session.0.result.workspace_id}"}}
+        ]
+      }
+    },
+    {
+      "id": "cli.new_pane_browser_background",
+      "events": true,
+      "action": {"op": "cli", "argv": ["new-pane", "--workspace", "${session.0.result.workspace_id}", "--type", "browser", "--url", "https://example.com/parity-pane", "--direction", "down", "--focus", "false"]},
+      "probes": {
+        "state": [
+          {"op": "v2", "method": "pane.list", "params": {"workspace_id": "${session.0.result.workspace_id}"}}
+        ]
+      }
+    },
+    {
+      "id": "cli.new_pane_invalid_type",
+      "action": {"op": "cli", "argv": ["new-pane", "--workspace", "${session.0.result.workspace_id}", "--type", "hologram", "--direction", "right"]}
+    },
+    {
+      "id": "cli.resize_pane_help",
+      "action": {"op": "cli", "argv": ["resize-pane", "--help"]}
+    },
+    {
+      "id": "cli.resize_pane_relative",
+      "setup": [
+        {"op": "v2", "method": "pane.create", "params": {"workspace_id": "${session.0.result.workspace_id}", "direction": "right"}}
+      ],
+      "action": {"op": "cli", "argv": ["resize-pane", "--workspace", "${session.0.result.workspace_id}", "--pane", "${setup.0.result.pane_id}", "-L", "--amount", "2"]},
+      "probes": {
+        "state": [
+          {"op": "v2", "method": "pane.list", "params": {"workspace_id": "${session.0.result.workspace_id}"}}
+        ]
+      }
+    },
+    {
+      "id": "cli.resize_pane_defaults",
+      "setup": [
+        {"op": "v2", "method": "pane.create", "params": {"workspace_id": "${session.0.result.workspace_id}", "direction": "right"}}
+      ],
+      "action": {"op": "cli", "argv": ["resize-pane", "--workspace", "${session.0.result.workspace_id}", "--pane", "${setup.0.result.pane_id}"]}
+    },
+    {
+      "id": "cli.resize_pane_rejects_zero",
+      "action": {"op": "cli", "argv": ["resize-pane", "--workspace", "${session.0.result.workspace_id}", "--pane", "${session.4.result.panes.0.id}", "-R", "--amount", "0"]}
     }
   ]
 }
