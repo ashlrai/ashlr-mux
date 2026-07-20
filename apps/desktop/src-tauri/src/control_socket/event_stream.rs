@@ -207,6 +207,9 @@ pub(super) fn derived_session_event_specs(
     previous: Option<&SessionEventSummary>,
     current: &SessionEventSummary,
 ) -> Vec<DerivedEventSpec> {
+    if previous == Some(current) {
+        return Vec::new();
+    }
     let mut events = vec![session_changed_event_spec(current)];
     match previous {
         Some(previous) => {
