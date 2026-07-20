@@ -66,8 +66,8 @@ use crate::browser::{
     browser_add_init_script_for_control, browser_attach_webview_for_control,
     browser_clear_network_requests_for_control, browser_close_webview_strict_for_control,
     browser_eval_for_control, browser_has_webview_for_control,
-    browser_network_requests_for_control, browser_webview_command_for_control,
-    BrowserNetworkRequestsQuery, BrowserWebviewState,
+    browser_init_script_count_for_control, browser_network_requests_for_control,
+    browser_webview_command_for_control, BrowserNetworkRequestsQuery, BrowserWebviewState,
 };
 use crate::diff::DiffState;
 use crate::dock::{

@@ -1,5 +1,8 @@
 use super::*;
 
+mod core_scripts;
+pub(super) use core_scripts::browser_snapshot_script;
+
 pub(super) fn browser_open_split(
     app: &AppHandle,
     params: &serde_json::Map<String, Value>,
@@ -351,10 +354,22 @@ pub(super) fn browser_url_get(
     if !surface_is_browser(&current, workspace_index, &panel_id) {
         return invalid_params("browser.url.get requires a browser surface");
     }
-    match browser_surface_payload(&current, workspace_index, &panel_id) {
-        Some(payload) => ok(payload),
-        None => invalid_params("Missing or invalid surface selector"),
-    }
+    let Some(payload) = browser_surface_payload(&current, workspace_index, &panel_id) else {
+        return invalid_params("Missing or invalid surface selector");
+    };
+    let Some(workspace_id) = current
+        .windows
+        .first()
+        .and_then(|window| window.tab_manager.workspaces.get(workspace_index))
+        .and_then(|workspace| workspace.workspace_id.as_deref())
+    else {
+        return invalid_params("Missing or invalid workspace selector");
+    };
+    ok(json!({
+        "workspace_id": workspace_id,
+        "surface_id": panel_id,
+        "url": payload.get("url").cloned().unwrap_or(Value::Null),
+    }))
 }
 
 pub(super) fn browser_focus_webview(
@@ -525,6 +540,50 @@ pub(super) enum BrowserDialogAction {
     Dismiss,
 }
 
+fn browser_identity_payload(
+    app: &AppHandle,
+    _params: &serde_json::Map<String, Value>,
+    panel_id: &str,
+) -> serde_json::Map<String, Value> {
+    let current = snapshot(app);
+    let workspace_id = global_surface_location(&current, panel_id)
+        .and_then(|(window_index, workspace_index)| {
+            current
+                .windows
+                .get(window_index)
+                .and_then(|window| window.tab_manager.workspaces.get(workspace_index))
+        })
+        .and_then(|workspace| workspace.workspace_id.as_deref());
+
+    let mut payload = serde_json::Map::new();
+    if let Some(workspace_id) = workspace_id {
+        payload.insert("workspace_id".to_string(), json!(workspace_id));
+        payload.insert(
+            "workspace_ref".to_string(),
+            json!(control_handle_ref(app, "workspace", workspace_id)),
+        );
+    }
+    payload.insert("surface_id".to_string(), json!(panel_id));
+    payload.insert(
+        "surface_ref".to_string(),
+        json!(control_handle_ref(app, "surface", panel_id)),
+    );
+    payload
+}
+
+fn browser_payload_with_identity(
+    app: &AppHandle,
+    params: &serde_json::Map<String, Value>,
+    panel_id: &str,
+    value: Value,
+) -> Value {
+    let mut payload = browser_identity_payload(app, params, panel_id);
+    if let Value::Object(fields) = value {
+        payload.extend(fields);
+    }
+    Value::Object(payload)
+}
+
 pub(super) fn browser_snapshot(
     app: &AppHandle,
     params: &serde_json::Map<String, Value>,
@@ -532,22 +591,9 @@ pub(super) fn browser_snapshot(
     let Some(panel_id) = browser_automation_panel_id(app, params, "browser.snapshot") else {
         return invalid_params("browser.snapshot requires a browser surface");
     };
-    match run_browser_eval_script(app, &panel_id, browser_snapshot_script()) {
+    match run_browser_eval_script(app, &panel_id, &browser_snapshot_script(params)) {
         Ok(value) => match unwrap_browser_eval_result(value) {
-            Ok(value) => {
-                let snapshot = value
-                    .get("snapshot")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                let refs = value.get("refs").cloned().unwrap_or_else(|| json!({}));
-                ok(json!({
-                    "surface_id": panel_id,
-                    "panel_id": panel_id,
-                    "snapshot": snapshot,
-                    "refs": refs,
-                }))
-            }
+            Ok(value) => ok(browser_payload_with_identity(app, params, &panel_id, value)),
             Err(message) => ControlCallResult::Err {
                 code: "javascript_error".to_string(),
                 message,
@@ -651,11 +697,12 @@ pub(super) fn browser_eval(
     let wrapped_script = browser_eval_wrapper_script(&script);
     match run_browser_eval_script(app, &panel_id, &wrapped_script) {
         Ok(value) => match unwrap_browser_eval_result(value) {
-            Ok(value) => ok(json!({
-                "surface_id": panel_id,
-                "panel_id": panel_id,
-                "value": value,
-            })),
+            Ok(value) => ok(browser_payload_with_identity(
+                app,
+                params,
+                &panel_id,
+                json!({"value": value}),
+            )),
             Err(message) => ControlCallResult::Err {
                 code: "javascript_error".to_string(),
                 message,
@@ -682,12 +729,20 @@ pub(super) fn browser_add_init_script(
     };
     let browser_state = app.state::<BrowserWebviewState>();
     match browser_add_init_script_for_control(app, browser_state.inner(), &panel_id, &script) {
-        Ok(reply) => ok(json!({
-            "surface_id": panel_id,
-            "panel_id": panel_id,
-            "added": true,
-            "webview": reply,
-        })),
+        Ok(_reply) => match browser_init_script_count_for_control(browser_state.inner(), &panel_id)
+        {
+            Ok(count) => ok(browser_payload_with_identity(
+                app,
+                params,
+                &panel_id,
+                json!({"scripts": count}),
+            )),
+            Err(message) => ControlCallResult::Err {
+                code: "internal".to_string(),
+                message,
+                data: None,
+            },
+        },
         Err(message) => ControlCallResult::Err {
             code: "surface_unavailable".to_string(),
             message,
@@ -728,11 +783,12 @@ pub(super) fn browser_wait(
         match run_browser_eval_script(app, &panel_id, &condition) {
             Ok(value) => match unwrap_browser_eval_result(value) {
                 Ok(value) if value.as_bool().unwrap_or(false) => {
-                    return ok(json!({
-                        "surface_id": panel_id,
-                        "panel_id": panel_id,
-                        "value": true,
-                    }));
+                    return ok(browser_payload_with_identity(
+                        app,
+                        params,
+                        &panel_id,
+                        json!({"waited": true}),
+                    ));
                 }
                 Ok(_) => {}
                 Err(message) => last_error = message,
@@ -786,19 +842,25 @@ pub(super) fn browser_action(
     match run_browser_eval_script(app, &panel_id, &script) {
         Ok(value) => match unwrap_browser_eval_result(value) {
             Ok(value) => {
-                let mut payload = serde_json::Map::new();
-                payload.insert("surface_id".to_string(), json!(panel_id));
-                payload.insert("panel_id".to_string(), json!(panel_id));
-                payload.insert("value".to_string(), value);
+                let mut payload = match browser_action_result_payload(action) {
+                    Value::Object(payload) => payload,
+                    _ => unreachable!("browser action payload is always an object"),
+                };
                 if bool_param(params, &["snapshot_after", "snapshotAfter"]).unwrap_or(false) {
                     if let Ok(snapshot) =
-                        run_browser_eval_script(app, &panel_id, browser_snapshot_script())
+                        run_browser_eval_script(app, &panel_id, &browser_snapshot_script(params))
                             .and_then(unwrap_browser_eval_result)
                     {
                         payload.insert("post_action_snapshot".to_string(), snapshot);
                     }
                 }
-                ok(Value::Object(payload))
+                let _ = value;
+                ok(browser_payload_with_identity(
+                    app,
+                    params,
+                    &panel_id,
+                    Value::Object(payload),
+                ))
             }
             Err(message) => ControlCallResult::Err {
                 code: if message.contains("No element matches selector") {
@@ -842,7 +904,64 @@ pub(super) fn browser_find(
     };
     match run_browser_eval_script(app, &panel_id, &script) {
         Ok(value) => match unwrap_browser_eval_result(value) {
-            Ok(value) => ok(browser_locator_payload(&panel_id, value)),
+            Ok(value) => {
+                let mut payload = match browser_locator_payload(&panel_id, value) {
+                    Value::Object(payload) => payload,
+                    _ => unreachable!("browser locator payload is always an object"),
+                };
+                if matches!(
+                    locator,
+                    BrowserLocator::First | BrowserLocator::Last | BrowserLocator::Nth
+                ) {
+                    payload.remove("tag");
+                } else {
+                    payload.insert(
+                        "action".to_string(),
+                        json!(browser_locator_method(locator).trim_start_matches("browser.")),
+                    );
+                    if locator != BrowserLocator::TestId {
+                        payload.insert(
+                            "exact".to_string(),
+                            json!(bool_param(params, &["exact"]).unwrap_or(false)),
+                        );
+                    }
+                    let mut add_metadata = |key: &str, aliases: &[&str]| {
+                        if let Some(value) = string_param(params, aliases) {
+                            let value = if locator == BrowserLocator::TestId {
+                                value
+                            } else {
+                                value.to_lowercase()
+                            };
+                            payload.insert(key.to_string(), json!(value));
+                        }
+                    };
+                    match locator {
+                        BrowserLocator::Role => {
+                            add_metadata("role", &["role"]);
+                            add_metadata("name", &["name"]);
+                        }
+                        BrowserLocator::Label => add_metadata("label", &["label", "text"]),
+                        BrowserLocator::Placeholder => {
+                            add_metadata("placeholder", &["placeholder"])
+                        }
+                        BrowserLocator::Alt => add_metadata("alt", &["alt", "text"]),
+                        BrowserLocator::Title => add_metadata("title", &["title"]),
+                        BrowserLocator::TestId => {
+                            add_metadata("testid", &["testid", "test_id", "testId"])
+                        }
+                        BrowserLocator::Text
+                        | BrowserLocator::First
+                        | BrowserLocator::Last
+                        | BrowserLocator::Nth => {}
+                    };
+                }
+                ok(browser_payload_with_identity(
+                    app,
+                    params,
+                    &panel_id,
+                    Value::Object(payload),
+                ))
+            }
             Err(message) => ControlCallResult::Err {
                 code: "not_found".to_string(),
                 message: browser_not_found_message(&message),
@@ -995,11 +1114,12 @@ pub(super) fn browser_addscript(
     };
     match run_browser_eval_script(app, &panel_id, &browser_eval_wrapper_script(&script)) {
         Ok(value) => match unwrap_browser_eval_result(value) {
-            Ok(value) => ok(json!({
-                "surface_id": panel_id,
-                "panel_id": panel_id,
-                "value": value,
-            })),
+            Ok(value) => ok(browser_payload_with_identity(
+                app,
+                params,
+                &panel_id,
+                json!({"value": value}),
+            )),
             Err(message) => ControlCallResult::Err {
                 code: "javascript_error".to_string(),
                 message,
@@ -1026,12 +1146,12 @@ pub(super) fn browser_addstyle(
     };
     match run_browser_eval_script(app, &panel_id, &browser_addstyle_script(&css)) {
         Ok(value) => match unwrap_browser_eval_result(value) {
-            Ok(value) => ok(json!({
-                "surface_id": panel_id,
-                "panel_id": panel_id,
-                "value": value,
-                "added": value.as_bool().unwrap_or(true),
-            })),
+            Ok(value) => ok(browser_payload_with_identity(
+                app,
+                params,
+                &panel_id,
+                json!({"styles": value.as_u64().unwrap_or(1)}),
+            )),
             Err(message) => ControlCallResult::Err {
                 code: "javascript_error".to_string(),
                 message,
@@ -1399,12 +1519,12 @@ pub(super) fn browser_highlight(
     };
     match run_browser_eval_script(app, &panel_id, &browser_highlight_script(&selector)) {
         Ok(value) => match unwrap_browser_eval_result(value) {
-            Ok(value) => ok(json!({
-                "surface_id": panel_id,
-                "panel_id": panel_id,
-                "highlighted": value.as_bool().unwrap_or(true),
-                "value": value,
-            })),
+            Ok(_value) => ok(browser_payload_with_identity(
+                app,
+                params,
+                &panel_id,
+                json!({"action": "highlight", "attempts": 1}),
+            )),
             Err(message) => ControlCallResult::Err {
                 code: "not_found".to_string(),
                 message: browser_not_found_message(&message),
@@ -1473,7 +1593,12 @@ pub(super) fn browser_get_selector_value(
     let script = browser_getter_script(getter, selector.as_deref(), attr.as_deref());
     match run_browser_eval_script(app, &panel_id, &script) {
         Ok(value) => match unwrap_browser_eval_result(value) {
-            Ok(value) => ok(browser_getter_payload(&panel_id, getter, value)),
+            Ok(value) => ok(browser_payload_with_identity(
+                app,
+                params,
+                &panel_id,
+                browser_getter_payload(&panel_id, getter, value),
+            )),
             Err(message) => ControlCallResult::Err {
                 code: if message.contains("No element matches selector") {
                     "not_found".to_string()
@@ -1646,54 +1771,6 @@ pub(super) fn browser_dialog_script(action: BrowserDialogAction, text: Option<&s
     )
 }
 
-pub(super) fn browser_snapshot_script() -> &'static str {
-    r#"(() => {
-  try {
-    const refs = {};
-    const lines = ['- document ' + JSON.stringify(document.title || '')];
-    const cssPath = (element) => {
-      if (!element || element.nodeType !== 1) { return ''; }
-      if (element.id) { return '#' + CSS.escape(element.id); }
-      const parts = [];
-      let current = element;
-      while (current && current.nodeType === 1 && current !== document.documentElement) {
-        let part = current.tagName.toLowerCase();
-        if (current.classList && current.classList.length) {
-          part += '.' + Array.from(current.classList).slice(0, 2).map((name) => CSS.escape(name)).join('.');
-        }
-        const parent = current.parentElement;
-        if (parent) {
-          const siblings = Array.from(parent.children).filter((child) => child.tagName === current.tagName);
-          if (siblings.length > 1) {
-            part += `:nth-of-type(${siblings.indexOf(current) + 1})`;
-          }
-        }
-        parts.unshift(part);
-        current = parent;
-      }
-      return parts.join(' > ');
-    };
-    const describe = (element) => {
-      const tag = element.tagName.toLowerCase();
-      const id = element.id ? `#${element.id}` : '';
-      const label = element.getAttribute('aria-label') || element.getAttribute('title') || element.getAttribute('placeholder') || (element.innerText || element.value || '').trim();
-      return `${tag}${id}${label ? ' ' + JSON.stringify(label.slice(0, 80)) : ''}`;
-    };
-    let index = 1;
-    for (const element of Array.from(document.querySelectorAll('a,button,input,select,textarea,label,[role],[data-testid],h1,h2,h3,p,div,span')).slice(0, 120)) {
-      const ref = `e${index++}`;
-      const selector = cssPath(element);
-      refs[ref] = { selector, tag: element.tagName.toLowerCase(), text: (element.innerText || element.value || '').trim().slice(0, 200) };
-      lines.push(`  - ${ref} ${describe(element)}`);
-    }
-    window.__cmuxSnapshotRefs = refs;
-    return { ok: true, value: { snapshot: lines.join('\n'), refs } };
-  } catch (error) {
-    return { ok: false, error: String((error && (error.stack || error.message)) || error) };
-  }
-})()"#
-}
-
 pub(super) fn browser_locator_script(
     locator: BrowserLocator,
     params: &serde_json::Map<String, Value>,
@@ -1775,6 +1852,11 @@ pub(super) fn browser_locator_script(
         serde_json::to_string(&primary).expect("locator value JSON is infallible");
     let encoded_secondary =
         serde_json::to_string(&secondary).expect("locator secondary JSON is infallible");
+    let encoded_exact = if bool_param(params, &["exact"]).unwrap_or(false) {
+        "true"
+    } else {
+        "false"
+    };
     Ok(format!(
         r#"(() => {{
   {context}
@@ -1782,9 +1864,14 @@ pub(super) fn browser_locator_script(
   const primary = {encoded_primary};
   const secondary = {encoded_secondary};
   const nthIndex = {index};
+  const __exact = {encoded_exact};
   try {{
-    const normalize = (value) => String(value || '').trim().toLowerCase();
-    const includes = (value, needle) => normalize(value).includes(normalize(needle));
+    const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const matches = (value, needle) => {{
+      const v = normalize(value);
+      const __target = normalize(needle);
+      return __exact ? (v === __target) : v.includes(__target);
+    }};
     const cssPath = (element) => {{
       if (!element || element.nodeType !== 1) {{ return ''; }}
       if (element.id) {{ return '#' + CSS.escape(element.id); }}
@@ -1792,6 +1879,11 @@ pub(super) fn browser_locator_script(
       let current = element;
       while (current && current.nodeType === 1 && current !== document.documentElement) {{
         let part = current.tagName.toLowerCase();
+        if (current.id) {{
+          part += '#' + CSS.escape(current.id);
+          parts.unshift(part);
+          break;
+        }}
         const parent = current.parentElement;
         if (parent) {{
           const siblings = Array.from(parent.children).filter((child) => child.tagName === current.tagName);
@@ -1837,19 +1929,19 @@ pub(super) fn browser_locator_script(
     if (kind === 'role') {{
       candidates = Array.from(document.querySelectorAll('*')).filter((element) => {{
         if (implicitRole(element) !== normalize(primary)) {{ return false; }}
-        return !secondary || includes(accessibleName(element), secondary);
+        return !secondary || matches(accessibleName(element), secondary);
       }});
     }} else if (kind === 'text') {{
-      candidates = Array.from(document.querySelectorAll('body *')).filter((element) => includes(element.innerText || element.textContent || '', primary));
+      candidates = Array.from(document.querySelectorAll('body *')).filter((element) => matches(element.innerText || element.textContent || '', primary));
     }} else if (kind === 'label') {{
-      const labels = Array.from(document.querySelectorAll('label')).filter((label) => includes(label.innerText || label.textContent || '', primary));
+      const labels = Array.from(document.querySelectorAll('label')).filter((label) => matches(label.innerText || label.textContent || '', primary));
       candidates = labels.map((label) => label.htmlFor ? document.getElementById(label.htmlFor) : label.querySelector('input,textarea,select,button')).filter(Boolean);
     }} else if (kind === 'placeholder') {{
-      candidates = Array.from(document.querySelectorAll('[placeholder]')).filter((element) => includes(element.getAttribute('placeholder'), primary));
+      candidates = Array.from(document.querySelectorAll('[placeholder]')).filter((element) => matches(element.getAttribute('placeholder'), primary));
     }} else if (kind === 'alt') {{
-      candidates = Array.from(document.querySelectorAll('[alt]')).filter((element) => includes(element.getAttribute('alt'), primary));
+      candidates = Array.from(document.querySelectorAll('[alt]')).filter((element) => matches(element.getAttribute('alt'), primary));
     }} else if (kind === 'title') {{
-      candidates = Array.from(document.querySelectorAll('[title]')).filter((element) => includes(element.getAttribute('title'), primary));
+      candidates = Array.from(document.querySelectorAll('[title]')).filter((element) => matches(element.getAttribute('title'), primary));
     }} else if (kind === 'testid') {{
       candidates = Array.from(document.querySelectorAll('[data-testid], [data-test-id], [data-test]')).filter((element) => [element.getAttribute('data-testid'), element.getAttribute('data-test-id'), element.getAttribute('data-test')].some((value) => normalize(value) === normalize(primary)));
     }} else if (kind === 'first' || kind === 'last' || kind === 'nth') {{
@@ -1859,9 +1951,16 @@ pub(super) fn browser_locator_script(
     if (!element) {{ throw new Error(`No element matches locator: ${{kind}} ${{primary}}`); }}
     window.__cmuxSnapshotRefs = window.__cmuxSnapshotRefs || {{}};
     const ref = `e${{Object.keys(window.__cmuxSnapshotRefs).length + 1}}`;
-    const selector = cssPath(element);
-    window.__cmuxSnapshotRefs[ref] = {{ selector, tag: element.tagName.toLowerCase(), text: (element.innerText || element.value || '').trim().slice(0, 200) }};
-    return {{ ok: true, value: {{ element_ref: '@' + ref, selector, ref, tag: element.tagName.toLowerCase(), text: (element.innerText || element.value || '').trim() }} }};
+    const selector = kind === 'first'
+      ? primary
+      : (kind === 'last' || kind === 'nth')
+        ? `${{primary}}:nth-of-type(${{candidates.indexOf(element) + 1}})`
+        : cssPath(element);
+    const text = String(element.textContent || '').trim();
+    window.__cmuxSnapshotRefs[ref] = {{ selector, tag: element.tagName.toLowerCase(), text }};
+    const result = {{ element_ref: '@' + ref, selector, ref: '@' + ref, tag: element.tagName.toLowerCase(), text }};
+    if (kind === 'nth') {{ result.index = nthIndex; }}
+    return {{ ok: true, value: result }};
   }} catch (error) {{
     return {{ ok: false, error: String((error && (error.stack || error.message)) || error) }};
   }}
@@ -1880,7 +1979,7 @@ pub(super) fn browser_addstyle_script(css: &str) -> String {
     style.setAttribute('data-cmux-added-style', 'true');
     style.textContent = css;
     (document.head || document.documentElement).appendChild(style);
-    return {{ ok: true, value: true }};
+    return {{ ok: true, value: document.querySelectorAll('style[data-cmux-added-style="true"]').length }};
   }} catch (error) {{
     return {{ ok: false, error: String((error && (error.stack || error.message)) || error) }};
   }}
@@ -2279,9 +2378,9 @@ pub(super) fn browser_action_script(
 ) -> String {
     let encoded_selector =
         serde_json::to_string(selector.unwrap_or_default()).expect("selector JSON is infallible");
-    let encoded_text = serde_json::to_string(text).expect("text JSON is infallible");
-    let encoded_value = serde_json::to_string(value).expect("value JSON is infallible");
-    let encoded_key = serde_json::to_string(key).expect("key JSON is infallible");
+    let encoded_text = serde_json::to_string(text.trim()).expect("text JSON is infallible");
+    let encoded_value = serde_json::to_string(value.trim()).expect("value JSON is infallible");
+    let encoded_key = serde_json::to_string(key.trim()).expect("key JSON is infallible");
     let body = match action {
         BrowserAction::Click => "element.click(); return { ok: true, value: true };",
         BrowserAction::DblClick => "element.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, view: window })); return { ok: true, value: true };",
@@ -2363,6 +2462,22 @@ pub(super) fn browser_action_method(action: BrowserAction) -> &'static str {
     }
 }
 
+pub(super) fn browser_action_result_payload(action: BrowserAction) -> Value {
+    if matches!(
+        action,
+        BrowserAction::Press
+            | BrowserAction::KeyDown
+            | BrowserAction::KeyUp
+            | BrowserAction::Scroll
+    ) {
+        return json!({});
+    }
+    json!({
+        "action": browser_action_method(action).trim_start_matches("browser."),
+        "attempts": 1,
+    })
+}
+
 pub(super) fn browser_locator_method(locator: BrowserLocator) -> &'static str {
     match locator {
         BrowserLocator::Role => "browser.find.role",
@@ -2381,16 +2496,26 @@ pub(super) fn browser_locator_method(locator: BrowserLocator) -> &'static str {
 pub(super) fn browser_locator_payload(panel_id: &str, value: Value) -> Value {
     let mut payload = serde_json::Map::new();
     payload.insert("surface_id".to_string(), json!(panel_id));
-    payload.insert("panel_id".to_string(), json!(panel_id));
     if let Some(object) = value.as_object() {
         for (key, value) in object {
             payload.insert(key.clone(), value.clone());
         }
-        if let Some(element_ref) = object
-            .get("element_ref")
-            .or_else(|| object.get("elementRef"))
-        {
-            payload.insert("elementRef".to_string(), element_ref.clone());
+        payload.remove("elementRef");
+        if let Some(reference) = payload.get("element_ref").and_then(Value::as_str) {
+            let reference = if reference.starts_with('@') {
+                reference.to_string()
+            } else {
+                format!("@{reference}")
+            };
+            payload.insert("element_ref".to_string(), json!(reference));
+        }
+        if let Some(reference) = payload.get("ref").and_then(Value::as_str) {
+            let reference = if reference.starts_with('@') {
+                reference.to_string()
+            } else {
+                format!("@{reference}")
+            };
+            payload.insert("ref".to_string(), json!(reference));
         }
     } else {
         payload.insert("value".to_string(), value);
@@ -2772,14 +2897,21 @@ pub(super) fn browser_getter_method(getter: BrowserGetter) -> &'static str {
 pub(super) fn browser_getter_payload(panel_id: &str, getter: BrowserGetter, value: Value) -> Value {
     let mut payload = serde_json::Map::new();
     payload.insert("surface_id".to_string(), json!(panel_id));
-    payload.insert("panel_id".to_string(), json!(panel_id));
-    payload.insert("value".to_string(), value.clone());
     match getter {
-        BrowserGetter::Text => {
-            payload.insert("text".to_string(), value);
-        }
-        BrowserGetter::Html => {
-            payload.insert("html".to_string(), value);
+        BrowserGetter::Text
+        | BrowserGetter::Html
+        | BrowserGetter::Value
+        | BrowserGetter::Attr
+        | BrowserGetter::Styles
+        | BrowserGetter::Visible
+        | BrowserGetter::Enabled
+        | BrowserGetter::Checked => {
+            payload.insert(
+                "action".to_string(),
+                json!(browser_getter_method(getter).trim_start_matches("browser.")),
+            );
+            payload.insert("attempts".to_string(), json!(1));
+            payload.insert("value".to_string(), value);
         }
         BrowserGetter::Title => {
             payload.insert("title".to_string(), value);
@@ -2790,14 +2922,6 @@ pub(super) fn browser_getter_payload(panel_id: &str, getter: BrowserGetter, valu
         BrowserGetter::Box => {
             payload.insert("box".to_string(), value);
         }
-        BrowserGetter::Styles => {
-            payload.insert("styles".to_string(), value);
-        }
-        BrowserGetter::Attr
-        | BrowserGetter::Value
-        | BrowserGetter::Visible
-        | BrowserGetter::Enabled
-        | BrowserGetter::Checked => {}
     }
     Value::Object(payload)
 }

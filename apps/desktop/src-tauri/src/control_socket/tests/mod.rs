@@ -1,7 +1,7 @@
 use super::*;
 
-mod cli_focus_events_red;
 mod browser_core_parity_red;
+mod cli_focus_events_red;
 mod control_worker_native_query_red;
 mod differential_remediation_red;
 mod dock_api_adversarial_red;

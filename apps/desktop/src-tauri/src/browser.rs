@@ -1433,6 +1433,18 @@ pub(crate) fn browser_add_init_script_for_control(
     }
 }
 
+pub(crate) fn browser_init_script_count_for_control(
+    state: &BrowserWebviewState,
+    panel_id: &str,
+) -> Result<usize, String> {
+    Ok(state
+        .init_scripts
+        .lock()
+        .map_err(|_| "browser init script state lock poisoned".to_string())?
+        .get(panel_id)
+        .map_or(0, Vec::len))
+}
+
 fn restore_browser_init_scripts(
     init_scripts: &mut HashMap<String, Vec<String>>,
     panel_id: &str,

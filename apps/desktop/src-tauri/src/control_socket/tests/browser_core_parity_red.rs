@@ -78,6 +78,23 @@ fn browser_text_locator_honors_exact_matching() {
 }
 
 #[test]
+fn browser_nth_locator_echoes_the_resolved_index() {
+    let params = json!({"selector": ".item", "index": 1});
+    let script = browser_locator_script(BrowserLocator::Nth, params.as_object().unwrap())
+        .expect("valid locator");
+
+    assert!(script.contains("result.index = nthIndex"));
+}
+
+#[test]
+fn browser_addstyle_reports_the_accumulated_style_count() {
+    let script = browser_addstyle_script(":root { --parity: ready; }");
+    assert!(script.contains("querySelectorAll"));
+    assert!(script.contains("data-cmux-added-style"));
+    assert!(script.contains(".length"));
+}
+
+#[test]
 fn browser_type_uses_canonical_trimmed_string_input() {
     let script = browser_action_script(
         BrowserAction::Type,
