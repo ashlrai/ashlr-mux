@@ -210,6 +210,21 @@ fn maps_canonical_new_pane_command_and_flags() {
 }
 
 #[test]
+fn new_pane_uses_the_ambient_workspace_when_no_scope_is_explicit() {
+    let created = mapped("new-pane", &[]).with_ambient_workspace_id(Some(" workspace-2 "));
+
+    assert_eq!(created.method, "pane.create");
+    assert_eq!(
+        created.params,
+        serde_json::json!({
+            "direction": "right",
+            "focus": false,
+            "workspace_id": "workspace-2",
+        })
+    );
+}
+
+#[test]
 fn new_pane_help_describes_the_public_canonical_contract() {
     let help = crate::dispatch::subcommand_help_text("new-pane");
     for expected in [
