@@ -29,6 +29,7 @@ on:
           - pane_management
           - notification_lifecycle
           - browser_core
+          - browser_navigation_tabs
           - startup_restore
           - workspace_lifecycle
           - window_lifecycle
@@ -342,7 +343,7 @@ jobs:
           chmod +x /tmp/launch-canonical.sh
 
       - name: Start deterministic browser fixture
-        if: ${{ inputs.family == 'browser_core' }}
+        if: ${{ inputs.family == 'browser_core' || inputs.family == 'browser_navigation_tabs' }}
         run: |
           set -euo pipefail
           nohup python3 -m http.server 43123 --bind 127.0.0.1 \

@@ -1,0 +1,191 @@
+{
+  "family": "browser_navigation_tabs",
+  "canonical_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
+  "notes": [
+    "Exercises browser navigation, history, reload, split creation, tab lifecycle, and their common CLI entry points against one deterministic localhost fixture.",
+    "Every navigation mutation has an exact URL, title, DOM, tab-list, or surface-list probe.",
+    "No platform differences are pre-approved; exact capture pointers may be classified only after frozen-canonical and Windows behavior have both been reviewed."
+  ],
+  "session_setup": [
+    {"op": "sleep", "seconds": 3},
+    {"op": "v2", "method": "workspace.create", "params": {"title": "browser-navigation-tabs"}},
+    {"op": "v2", "method": "surface.create", "params": {"workspace_id": "${session.1.result.workspace_id}", "type": "browser", "url": "http://127.0.0.1:43123/fixtures/browser-navigation.html?step=a"}},
+    {"op": "sleep", "seconds": 2},
+    {"op": "v2", "method": "browser.wait", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "selector": "#step", "timeout_ms": 5000}}
+  ],
+  "cases": [
+    {
+      "id": "browser.navigate",
+      "action": {"op": "v2", "method": "browser.navigate", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "url": "http://127.0.0.1:43123/fixtures/browser-navigation.html?step=b"}},
+      "probes": {"state": [
+        {"op": "v2", "method": "browser.wait", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "selector": "body[data-step='b']", "timeout_ms": 5000}},
+        {"op": "v2", "method": "browser.url.get", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}"}},
+        {"op": "v2", "method": "browser.get.title", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}"}}
+      ]}
+    },
+    {
+      "id": "browser.navigate_missing_url",
+      "action": {"op": "v2", "method": "browser.navigate", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}"}}
+    },
+    {
+      "id": "browser.back",
+      "setup": [
+        {"op": "v2", "method": "browser.navigate", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "url": "http://127.0.0.1:43123/fixtures/browser-navigation.html?step=b"}},
+        {"op": "v2", "method": "browser.wait", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "selector": "body[data-step='b']", "timeout_ms": 5000}},
+        {"op": "v2", "method": "browser.navigate", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "url": "http://127.0.0.1:43123/fixtures/browser-navigation.html?step=c"}},
+        {"op": "v2", "method": "browser.wait", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "selector": "body[data-step='c']", "timeout_ms": 5000}}
+      ],
+      "action": {"op": "v2", "method": "browser.back", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}"}},
+      "probes": {"state": [
+        {"op": "v2", "method": "browser.wait", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "selector": "body[data-step='b']", "timeout_ms": 5000}},
+        {"op": "v2", "method": "browser.url.get", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}"}}
+      ]}
+    },
+    {
+      "id": "browser.forward",
+      "setup": [
+        {"op": "v2", "method": "browser.navigate", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "url": "http://127.0.0.1:43123/fixtures/browser-navigation.html?step=b"}},
+        {"op": "v2", "method": "browser.wait", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "selector": "body[data-step='b']", "timeout_ms": 5000}},
+        {"op": "v2", "method": "browser.navigate", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "url": "http://127.0.0.1:43123/fixtures/browser-navigation.html?step=c"}},
+        {"op": "v2", "method": "browser.wait", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "selector": "body[data-step='c']", "timeout_ms": 5000}},
+        {"op": "v2", "method": "browser.back", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}"}},
+        {"op": "v2", "method": "browser.wait", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "selector": "body[data-step='b']", "timeout_ms": 5000}}
+      ],
+      "action": {"op": "v2", "method": "browser.forward", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}"}},
+      "probes": {"state": [
+        {"op": "v2", "method": "browser.wait", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "selector": "body[data-step='c']", "timeout_ms": 5000}},
+        {"op": "v2", "method": "browser.url.get", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}"}}
+      ]}
+    },
+    {
+      "id": "browser.reload",
+      "setup": [
+        {"op": "v2", "method": "browser.navigate", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "url": "http://127.0.0.1:43123/fixtures/browser-navigation.html?step=reload"}},
+        {"op": "v2", "method": "browser.wait", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "selector": "body[data-step='reload']", "timeout_ms": 5000}}
+      ],
+      "action": {"op": "v2", "method": "browser.reload", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}"}},
+      "probes": {"state": [
+        {"op": "v2", "method": "browser.wait", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "selector": "body[data-step='reload']", "timeout_ms": 5000}},
+        {"op": "v2", "method": "browser.get.title", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}"}}
+      ]}
+    },
+    {
+      "id": "browser.open_split",
+      "action": {"op": "v2", "method": "browser.open_split", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "url": "http://127.0.0.1:43123/fixtures/browser-navigation.html?step=split", "focus": false, "show_omnibar": false}},
+      "probes": {"state": [
+        {"op": "v2", "method": "surface.list", "params": {"workspace_id": "${session.1.result.workspace_id}"}},
+        {"op": "v2", "method": "browser.wait", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${action.result.surface_id}", "selector": "body[data-step='split']", "timeout_ms": 5000}}
+      ]}
+    },
+    {
+      "id": "browser.tab.list",
+      "action": {"op": "v2", "method": "browser.tab.list", "params": {"workspace_id": "${session.1.result.workspace_id}"}}
+    },
+    {
+      "id": "browser.tab.new",
+      "action": {"op": "v2", "method": "browser.tab.new", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "url": "http://127.0.0.1:43123/fixtures/browser-navigation.html?step=new"}},
+      "probes": {"state": [
+        {"op": "v2", "method": "browser.tab.list", "params": {"workspace_id": "${session.1.result.workspace_id}"}},
+        {"op": "v2", "method": "browser.wait", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${action.result.surface_id}", "selector": "body[data-step='new']", "timeout_ms": 5000}}
+      ]}
+    },
+    {
+      "id": "browser.tab.switch",
+      "setup": [
+        {"op": "v2", "method": "browser.tab.new", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "url": "http://127.0.0.1:43123/fixtures/browser-navigation.html?step=switch"}}
+      ],
+      "action": {"op": "v2", "method": "browser.tab.switch", "params": {"workspace_id": "${session.1.result.workspace_id}", "target_surface_id": "${session.2.result.surface_id}"}},
+      "probes": {"state": [
+        {"op": "v2", "method": "surface.current", "params": {"workspace_id": "${session.1.result.workspace_id}"}},
+        {"op": "v2", "method": "browser.tab.list", "params": {"workspace_id": "${session.1.result.workspace_id}"}}
+      ]}
+    },
+    {
+      "id": "browser.tab.switch_missing",
+      "action": {"op": "v2", "method": "browser.tab.switch", "params": {"workspace_id": "${session.1.result.workspace_id}", "target_surface_id": "00000000-0000-0000-0000-000000000001"}}
+    },
+    {
+      "id": "browser.tab.close",
+      "setup": [
+        {"op": "v2", "method": "browser.tab.new", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "url": "http://127.0.0.1:43123/fixtures/browser-navigation.html?step=close"}}
+      ],
+      "action": {"op": "v2", "method": "browser.tab.close", "params": {"workspace_id": "${session.1.result.workspace_id}", "target_surface_id": "${setup.0.result.surface_id}"}},
+      "probes": {"state": [
+        {"op": "v2", "method": "browser.tab.list", "params": {"workspace_id": "${session.1.result.workspace_id}"}},
+        {"op": "v2", "method": "surface.list", "params": {"workspace_id": "${session.1.result.workspace_id}"}}
+      ]}
+    },
+    {
+      "id": "cli.browser.navigate",
+      "action": {"op": "cli", "argv": ["browser", "--surface", "${session.2.result.surface_id}", "navigate", "http://127.0.0.1:43123/fixtures/browser-navigation.html?step=cli"]},
+      "probes": {"state": [
+        {"op": "v2", "method": "browser.wait", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "selector": "body[data-step='cli']", "timeout_ms": 5000}},
+        {"op": "v2", "method": "browser.url.get", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}"}}
+      ]}
+    },
+    {
+      "id": "cli.navigate_alias",
+      "action": {"op": "cli", "argv": ["navigate", "http://127.0.0.1:43123/fixtures/browser-navigation.html?step=alias", "--surface", "${session.2.result.surface_id}"]},
+      "probes": {"state": [
+        {"op": "v2", "method": "browser.wait", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "selector": "body[data-step='alias']", "timeout_ms": 5000}},
+        {"op": "v2", "method": "browser.url.get", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}"}}
+      ]}
+    },
+    {
+      "id": "cli.browser_back_alias",
+      "setup": [
+        {"op": "v2", "method": "browser.navigate", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "url": "http://127.0.0.1:43123/fixtures/browser-navigation.html?step=before-back"}},
+        {"op": "v2", "method": "browser.wait", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "selector": "body[data-step='before-back']", "timeout_ms": 5000}},
+        {"op": "v2", "method": "browser.navigate", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "url": "http://127.0.0.1:43123/fixtures/browser-navigation.html?step=after-back"}},
+        {"op": "v2", "method": "browser.wait", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "selector": "body[data-step='after-back']", "timeout_ms": 5000}}
+      ],
+      "action": {"op": "cli", "argv": ["browser-back", "--surface", "${session.2.result.surface_id}"]},
+      "probes": {"state": [
+        {"op": "v2", "method": "browser.wait", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "selector": "body[data-step='before-back']", "timeout_ms": 5000}},
+        {"op": "v2", "method": "browser.url.get", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}"}}
+      ]}
+    },
+    {
+      "id": "cli.browser_forward_alias",
+      "setup": [
+        {"op": "v2", "method": "browser.navigate", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "url": "http://127.0.0.1:43123/fixtures/browser-navigation.html?step=before-forward"}},
+        {"op": "v2", "method": "browser.wait", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "selector": "body[data-step='before-forward']", "timeout_ms": 5000}},
+        {"op": "v2", "method": "browser.navigate", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "url": "http://127.0.0.1:43123/fixtures/browser-navigation.html?step=after-forward"}},
+        {"op": "v2", "method": "browser.wait", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "selector": "body[data-step='after-forward']", "timeout_ms": 5000}},
+        {"op": "v2", "method": "browser.back", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}"}},
+        {"op": "v2", "method": "browser.wait", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "selector": "body[data-step='before-forward']", "timeout_ms": 5000}}
+      ],
+      "action": {"op": "cli", "argv": ["browser-forward", "--surface", "${session.2.result.surface_id}"]},
+      "probes": {"state": [
+        {"op": "v2", "method": "browser.wait", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "selector": "body[data-step='after-forward']", "timeout_ms": 5000}},
+        {"op": "v2", "method": "browser.url.get", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}"}}
+      ]}
+    },
+    {
+      "id": "cli.browser_reload_alias",
+      "action": {"op": "cli", "argv": ["browser-reload", "--surface", "${session.2.result.surface_id}"]},
+      "probes": {"state": [
+        {"op": "v2", "method": "browser.wait", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}", "selector": "#step", "timeout_ms": 5000}},
+        {"op": "v2", "method": "browser.url.get", "params": {"workspace_id": "${session.1.result.workspace_id}", "surface_id": "${session.2.result.surface_id}"}}
+      ]}
+    },
+    {
+      "id": "cli.get_url_alias",
+      "action": {"op": "cli", "argv": ["get-url", "--surface", "${session.2.result.surface_id}"]}
+    },
+    {
+      "id": "cli.browser_tab_list",
+      "action": {"op": "cli", "argv": ["browser", "--surface", "${session.2.result.surface_id}", "tab", "list"]},
+      "probes": {"state": [
+        {"op": "v2", "method": "browser.tab.list", "params": {"workspace_id": "${session.1.result.workspace_id}"}}
+      ]}
+    },
+    {
+      "id": "cli.browser_tab_new",
+      "action": {"op": "cli", "argv": ["browser", "--surface", "${session.2.result.surface_id}", "tab", "new", "http://127.0.0.1:43123/fixtures/browser-navigation.html?step=cli-tab"]},
+      "probes": {"state": [
+        {"op": "v2", "method": "browser.tab.list", "params": {"workspace_id": "${session.1.result.workspace_id}"}}
+      ]}
+    }
+  ]
+}

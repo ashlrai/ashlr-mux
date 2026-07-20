@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Browser navigation</title>
+  </head>
+  <body>
+    <main>
+      <h1 id="step">Browser navigation</h1>
+      <a id="next" href="?step=b">Next</a>
+    </main>
+    <script>
+      const step = new URLSearchParams(location.search).get("step") || "a";
+      document.title = `Browser navigation ${step}`;
+      document.querySelector("#step").textContent = `Step ${step}`;
+      document.body.dataset.step = step;
+    </script>
+  </body>
+</html>
