@@ -373,16 +373,38 @@ zero unexplained deltas, so `surface.list/close/focus/move` and
   freezes 39 existing oversized files at their current-or-smaller sizes.
 - The next structural priorities are
   the 5,975-line custom-sidebar test file, 5,121-line session root,
-  4,795-line custom-sidebar component, and 4,660-line pane/surface lifecycle
+  4,795-line custom-sidebar component, and 4,357-line pane/surface lifecycle
   module. The Swift parser is now 3,719 lines. Split one coherent
   responsibility per isolated maintenance commit only when it unblocks feature
   work; do not turn structural cleanup into the parity metric.
+- `pane.break` and `pane.join` now commit through the explicit pane/surface
+  lifecycle transaction instead of the legacy derived-session path
+  (`078b8f26c7`, `3dffa36a42`, `55b9503bf6`). Canonical detach/fallback/attach,
+  selection/focus, and socket completion events are pinned for both focused and
+  already-focused targets, including public refs and explicit surfaces. The
+  production cleanup at `6bec4dcc47` removed the unreachable legacy handlers:
+  390 deleted lines versus 36 added coverage lines. The 22-case live lane at
+  that checkpoint is valid (no missing, capture-error, or unsettled cases),
+  keeps 12 exact cases and 10 geometry-only deltas, and makes all four direct
+  and CLI break/join event lanes exact. The owned capture reported no visible
+  window violation; its desktop, Vite, listener, and port 1420 were stopped.
+- The same slice reduced the oversized roots without behavioral rewrites at
+  `65e48faddf`: `surface_move` is now a 142-line child, manual-restore event
+  projection is a 29-line child, `pane_surface_control.rs` fell from 3,030 to
+  2,840 lines, `pane_surface_lifecycle.rs` from 4,494 to 4,357, and
+  `event_stream.rs` from 1,561 to 1,537. The 39-file Windows length budget is
+  fully green. Verification is 5/5 break/join tests, 9/9 move tests, 10/10
+  restore tests, 1,117 passed plus 1 ignored desktop library tests, all three
+  desktop process tests, 30/30 repository parity tests, and 120/120
+  differential-lane tests.
 
 ## Next efficient slice
 
-Close the remaining pane-management semantic deltas now that the lane is
-stable. Start with the shared `pane.break` / `pane.join` state-and-event
-projection used by four direct/CLI cases, then the shared focus/last state
-projection used by five cases, and finally the isolated `pane.list` response
-delta. Pin each cluster against the frozen canonical capture, keep RED and fix
-commits separate, and rerun the full 22-case lane after each cluster.
+Close the one shared viewport/geometry freshness defect behind all 10 remaining
+pane-management deltas. Windows sometimes publishes fallback cell metrics that
+canonical omits, and sometimes misses canonical `cell_height_px`,
+`cell_width_px`, `columns`, and `rows`; `pane.focus` also briefly exposes zero
+container/pixel geometry. Pin those exact paths against the frozen canonical
+capture, repair the authoritative viewport-to-pane projection once, and rerun
+the full 22-case lane. Do not reopen the now-exact break/join event path or
+special-case individual cases.
