@@ -222,6 +222,31 @@ export function terminalShouldClaimFocus(
   return isActive && !findVisible && !textBoxVisible;
 }
 
+export function terminalCellDimensions(
+  screenWidth: number,
+  screenHeight: number,
+  columns: number,
+  rows: number,
+): { cellWidthPx: number; cellHeightPx: number } | null {
+  if (
+    !Number.isFinite(screenWidth) ||
+    !Number.isFinite(screenHeight) ||
+    screenWidth <= 0 ||
+    screenHeight <= 0 ||
+    !Number.isInteger(columns) ||
+    !Number.isInteger(rows) ||
+    columns <= 0 ||
+    rows <= 0
+  ) {
+    return null;
+  }
+  const cellWidthPx = Math.round(screenWidth / columns);
+  const cellHeightPx = Math.round(screenHeight / rows);
+  return cellWidthPx > 0 && cellHeightPx > 0
+    ? { cellWidthPx, cellHeightPx }
+    : null;
+}
+
 /** Decode base64 (the Rust output bridge) into the raw bytes xterm expects. */
 function decodeBase64(data: string): Uint8Array {
   const binary = atob(data);
@@ -614,10 +639,16 @@ export function TerminalSurface({
 
       const applyResize = (): void => {
         fitAddon.fit();
+        const screen = mount.querySelector<HTMLElement>(".xterm-screen");
+        const bounds = screen?.getBoundingClientRect();
+        const cells = bounds
+          ? terminalCellDimensions(bounds.width, bounds.height, term.cols, term.rows)
+          : null;
         void host.invoke("terminal_resize", {
           id: sessionId,
           cols: term.cols,
           rows: term.rows,
+          ...(cells ?? {}),
         });
       };
       window.addEventListener("resize", applyResize);

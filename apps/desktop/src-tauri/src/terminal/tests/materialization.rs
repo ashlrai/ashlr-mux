@@ -332,6 +332,7 @@
             pty: process,
             input,
             grid: Arc::new(Mutex::new(TerminalGrid::new(GridSize::new(80, 24)))),
+            cell_dimensions: Arc::new(Mutex::new(None)),
             title_parser: Arc::new(Mutex::new(TerminalTitleParser::default())),
             operations: Arc::new(super::TerminalOperationGate::default()),
             pump_activation: super::TerminalPumpActivation::active(),

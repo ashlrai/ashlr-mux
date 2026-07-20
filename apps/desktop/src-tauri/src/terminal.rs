@@ -25,6 +25,7 @@ use tauri::{AppHandle, State};
 use crate::session;
 
 mod process_runtime;
+mod viewport_metrics;
 
 #[cfg(test)]
 use process_runtime::{
@@ -35,6 +36,10 @@ use process_runtime::{
     terminal_runtime_snapshot_from_processes,
 };
 pub(crate) use process_runtime::{scan_listening_ports_for_root_pid, scan_panel_listening_ports};
+pub(crate) use viewport_metrics::terminal_grid_metrics_for_panel;
+use viewport_metrics::{
+    parse_terminal_cell_dimensions, record_terminal_cell_dimensions, TerminalCellDimensions,
+};
 
 /// Event carrying a chunk of terminal output to the webview.
 const TERMINAL_OUTPUT_EVENT: &str = "cmux://terminal-output";
@@ -344,6 +349,7 @@ struct TerminalSession {
     pty: Arc<Mutex<Box<dyn TerminalProcess>>>,
     input: Arc<TerminalInputTransport>,
     grid: Arc<Mutex<TerminalGrid>>,
+    cell_dimensions: Arc<Mutex<Option<TerminalCellDimensions>>>,
     title_parser: Arc<Mutex<TerminalTitleParser>>,
     operations: Arc<TerminalOperationGate>,
     pump_activation: Arc<TerminalPumpActivation>,
@@ -1793,6 +1799,7 @@ fn spawn_terminal_session(
         pty: process,
         input: Arc::new(TerminalInputTransport::new(writer)),
         grid,
+        cell_dimensions: Arc::new(Mutex::new(None)),
         title_parser,
         operations: Arc::new(TerminalOperationGate::default()),
         pump_activation,
@@ -2788,8 +2795,12 @@ pub fn terminal_resize(
     id: u32,
     cols: u16,
     rows: u16,
+    cell_width_px: Option<u16>,
+    cell_height_px: Option<u16>,
 ) -> Result<(), String> {
-    terminal_resize_id_for_control(state.inner(), id, cols, rows)
+    let dimensions = parse_terminal_cell_dimensions(cell_width_px, cell_height_px)?;
+    terminal_resize_id_for_control(state.inner(), id, cols, rows)?;
+    record_terminal_cell_dimensions(state.inner(), id, dimensions)
 }
 
 fn terminal_resize_id_for_control(

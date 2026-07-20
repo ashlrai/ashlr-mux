@@ -67,7 +67,13 @@ pub(in crate::control_socket) fn pane_list_root_frame(
     native_fallback: impl FnOnce() -> PanePixelFrame,
 ) -> PanePixelFrame {
     match authority {
-        PaneGeometryAuthority::Uninitialized => capture_fallback.unwrap_or_else(native_fallback),
+        PaneGeometryAuthority::Uninitialized if capture_fallback.is_some() => PanePixelFrame {
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            height: 0.0,
+        },
+        PaneGeometryAuthority::Uninitialized => native_fallback(),
         PaneGeometryAuthority::WorkspaceUnrendered => PanePixelFrame {
             x: 0.0,
             y: 0.0,
@@ -87,6 +93,50 @@ pub(in crate::control_socket) fn pane_list_container_size(
     root_frame: PanePixelFrame,
 ) -> (f64, f64) {
     (root_frame.width, root_frame.height)
+}
+
+pub(in crate::control_socket) fn pane_list_provisional_grid_fields(
+    frame: PanePixelFrame,
+    root_frame: PanePixelFrame,
+) -> Option<(u64, u64, u64, u64)> {
+    // TerminalSurface's fixed 14px Cascadia/Consolas stack measures 8x17 in
+    // WebView2. This projection only bridges the React resize callback after a
+    // workspace becomes selected; measured runtime metrics replace it afterward.
+    const CELL_WIDTH_PX: u64 = 8;
+    const CELL_HEIGHT_PX: u64 = 17;
+    // The canonical live grid excludes two terminal-chrome rows. The outer
+    // WebView scrollbar similarly consumes one column at the portal's right edge.
+    const TERMINAL_VERTICAL_CHROME_ROWS: u64 = 2;
+
+    if ![
+        frame.x,
+        frame.y,
+        frame.width,
+        frame.height,
+        root_frame.x,
+        root_frame.y,
+        root_frame.width,
+        root_frame.height,
+    ]
+    .into_iter()
+    .all(f64::is_finite)
+        || frame.width <= 0.0
+        || frame.height <= 0.0
+        || root_frame.width <= 0.0
+        || root_frame.height <= 0.0
+    {
+        return None;
+    }
+
+    let mut columns = (frame.width / CELL_WIDTH_PX as f64).floor() as u64;
+    let touches_right_edge =
+        ((frame.x + frame.width) - (root_frame.x + root_frame.width)).abs() < 0.5;
+    if touches_right_edge {
+        columns = columns.saturating_sub(1);
+    }
+    let rows = ((frame.height / CELL_HEIGHT_PX as f64).floor() as u64)
+        .saturating_sub(TERMINAL_VERTICAL_CHROME_ROWS);
+    (columns > 0 && rows > 0).then_some((columns, rows, CELL_WIDTH_PX, CELL_HEIGHT_PX))
 }
 
 pub(in crate::control_socket) fn pane_list(
@@ -124,6 +174,12 @@ pub(in crate::control_socket) fn pane_list(
             .and_then(|index| usize::try_from(index).ok())
             .unwrap_or(0)
     });
+    let workspace_is_selected = window
+        .tab_manager
+        .selected_workspace_index
+        .and_then(|index| usize::try_from(index).ok())
+        .unwrap_or(0)
+        == workspace_index;
     let Some(workspace) = window.tab_manager.workspaces.get(workspace_index) else {
         return ControlCallResult::Err {
             code: "not_found".to_string(),
@@ -141,33 +197,28 @@ pub(in crate::control_socket) fn pane_list(
         };
     };
     let mut pane_rows = Vec::new();
-    let geometry_authority = workspace.workspace_id.as_deref().map_or(
-        PaneGeometryAuthority::Uninitialized,
-        |workspace_id| {
-            app.state::<PaneGeometryState>()
-                .authority_for(window_label, workspace_id)
-        },
-    );
-    let capture_fallback = crate::window::capture_windows_hidden().then(|| {
-        let configured_windows = &app.config().app.windows;
-        let configured_window = configured_windows
-            .iter()
-            .find(|window| window.label == window_label)
-            .or_else(|| configured_windows.first());
-        configured_window.map_or(
-            PanePixelFrame {
-                x: 0.0,
-                y: 0.0,
-                width: 1.0,
-                height: 1.0,
-            },
-            |window| PanePixelFrame {
-                x: 0.0,
-                y: 0.0,
-                width: window.width,
-                height: window.height,
-            },
+    let pane_geometry_state = app.state::<PaneGeometryState>();
+    let mut geometry_authority = workspace
+        .workspace_id
+        .as_deref()
+        .map_or(PaneGeometryAuthority::Uninitialized, |workspace_id| {
+            pane_geometry_state.authority_for(window_label, workspace_id)
+        });
+    if workspace_is_selected
+        && matches!(
+            geometry_authority,
+            PaneGeometryAuthority::WorkspaceUnrendered
         )
+    {
+        if let Some(latest) = pane_geometry_state.latest_for_window(window_label) {
+            geometry_authority = PaneGeometryAuthority::Rendered(latest);
+        }
+    }
+    let capture_fallback = crate::window::capture_windows_hidden().then_some(PanePixelFrame {
+        x: 0.0,
+        y: 0.0,
+        width: 0.0,
+        height: 0.0,
     });
     let root_frame = pane_list_root_frame(geometry_authority, capture_fallback, || {
         let (width, height) = pane_list_window_size_with(&current, window_id, |label| {
@@ -217,20 +268,36 @@ pub(in crate::control_socket) fn pane_list(
                 "surface_count": pane.panel_ids.len(),
                 "pixel_frame": {"x": frame.x, "y": frame.y, "width": frame.width, "height": frame.height},
             });
-            if let Some(size) = selected.and_then(|panel_id| {
-                terminal_grid_size_for_panel(terminal_state.inner(), panel_id)
-            }) {
+            let grid_fields = pane
+                .surface_kind
+                .as_deref()
+                .is_none_or(|kind| kind == "terminal")
+                .then(|| {
+                    selected
+                        .and_then(|panel_id| {
+                            terminal_grid_metrics_for_panel(terminal_state.inner(), panel_id)
+                        })
+                        .map(|(columns, rows, cell_width_px, cell_height_px)| {
+                            (
+                                columns as u64,
+                                rows as u64,
+                                u64::from(cell_width_px),
+                                u64::from(cell_height_px),
+                            )
+                        })
+                        .or_else(|| {
+                            workspace_is_selected
+                                .then(|| pane_list_provisional_grid_fields(frame, root_frame))
+                                .flatten()
+                        })
+                })
+                .flatten();
+            if let Some((columns, rows, cell_width_px, cell_height_px)) = grid_fields {
                 if let Some(object) = row.as_object_mut() {
-                    object.insert("columns".to_string(), json!(size.columns));
-                    object.insert("rows".to_string(), json!(size.screen_lines));
-                    object.insert(
-                        "cell_width_px".to_string(),
-                        json!((frame.width / size.columns.max(1) as f64).round().max(1.0) as u64),
-                    );
-                    object.insert(
-                        "cell_height_px".to_string(),
-                        json!((frame.height / size.screen_lines.max(1) as f64).round().max(1.0) as u64),
-                    );
+                    object.insert("columns".to_string(), json!(columns));
+                    object.insert("rows".to_string(), json!(rows));
+                    object.insert("cell_width_px".to_string(), json!(cell_width_px));
+                    object.insert("cell_height_px".to_string(), json!(cell_height_px));
                 }
             }
             row

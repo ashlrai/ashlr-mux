@@ -19,8 +19,14 @@ pub(crate) enum PaneGeometryAuthority {
 }
 
 #[derive(Default)]
+struct PaneGeometryRegistry {
+    by_window: HashMap<String, HashMap<String, WorkspacePaneGeometry>>,
+    latest_by_window: HashMap<String, WorkspacePaneGeometry>,
+}
+
+#[derive(Default)]
 pub struct PaneGeometryState {
-    by_window: Mutex<HashMap<String, HashMap<String, WorkspacePaneGeometry>>>,
+    registry: Mutex<PaneGeometryRegistry>,
 }
 
 impl PaneGeometryState {
@@ -46,12 +52,15 @@ impl PaneGeometryState {
                 "pane geometry must contain finite coordinates and positive dimensions".to_string(),
             );
         }
-        self.by_window
-            .lock()
-            .expect("pane geometry mutex poisoned")
+        let mut registry = self.registry.lock().expect("pane geometry mutex poisoned");
+        registry
+            .by_window
             .entry(window_label.to_string())
             .or_default()
             .insert(workspace_id.to_string(), geometry);
+        registry
+            .latest_by_window
+            .insert(window_label.to_string(), geometry);
         Ok(())
     }
 
@@ -60,14 +69,23 @@ impl PaneGeometryState {
         window_label: &str,
         workspace_id: &str,
     ) -> PaneGeometryAuthority {
-        let by_window = self.by_window.lock().expect("pane geometry mutex poisoned");
-        let Some(by_workspace) = by_window.get(window_label) else {
+        let registry = self.registry.lock().expect("pane geometry mutex poisoned");
+        let Some(by_workspace) = registry.by_window.get(window_label) else {
             return PaneGeometryAuthority::Uninitialized;
         };
         by_workspace.get(workspace_id).copied().map_or(
             PaneGeometryAuthority::WorkspaceUnrendered,
             PaneGeometryAuthority::Rendered,
         )
+    }
+
+    pub(crate) fn latest_for_window(&self, window_label: &str) -> Option<WorkspacePaneGeometry> {
+        self.registry
+            .lock()
+            .expect("pane geometry mutex poisoned")
+            .latest_by_window
+            .get(window_label)
+            .copied()
     }
 }
 
@@ -117,6 +135,7 @@ mod tests {
             state.authority_for("main", "first"),
             PaneGeometryAuthority::Rendered(geometry(800.0))
         );
+        assert_eq!(state.latest_for_window("main"), Some(geometry(800.0)));
         assert_eq!(
             state.authority_for("aux", "first"),
             PaneGeometryAuthority::Rendered(geometry(500.0))
