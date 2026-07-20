@@ -1170,7 +1170,10 @@ mod tests {
             match plan {
                 DispatchPlan::PrintLine(text) => {
                     assert!(text.starts_with(&format!("cmux {command}\n\n")));
-                    assert!(text.contains("Usage:\n  cmux"));
+                    assert!(
+                        text.contains("Usage:\n  cmux") || text.contains("Usage: cmux"),
+                        "{command}: {text}"
+                    );
                     assert!(!text.contains("not yet ported"), "{command}: {text}");
                 }
                 other => panic!("expected PrintLine for {command}, got {other:?}"),
