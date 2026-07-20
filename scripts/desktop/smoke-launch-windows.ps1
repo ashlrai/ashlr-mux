@@ -2,6 +2,7 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$AppPath,
+    [switch]$Headless,
     [int]$TimeoutSeconds = 20
 )
 
@@ -11,7 +12,28 @@ if (-not (Test-Path $AppPath)) {
     throw "App bundle entrypoint does not exist: $AppPath"
 }
 
-$process = Start-Process -FilePath $AppPath -PassThru
+$captureHeadlessVariable = 'CMUX_PARITY_CAPTURE_HEADLESS'
+$previousCaptureHeadless = [Environment]::GetEnvironmentVariable($captureHeadlessVariable, 'Process')
+try {
+    if ($Headless) {
+        [Environment]::SetEnvironmentVariable($captureHeadlessVariable, '1', 'Process')
+    }
+    $startParameters = @{
+        FilePath = $AppPath
+        PassThru = $true
+    }
+    if ($Headless) {
+        $startParameters.WindowStyle = 'Hidden'
+    }
+    $process = Start-Process @startParameters
+}
+finally {
+    [Environment]::SetEnvironmentVariable(
+        $captureHeadlessVariable,
+        $previousCaptureHeadless,
+        'Process'
+    )
+}
 try {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     do {
@@ -23,7 +45,7 @@ try {
     } until ($process.MainWindowHandle -ne 0 -or (Get-Date) -ge $deadline)
 
     if ($process.MainWindowHandle -eq 0) {
-        throw "Desktop smoke launch timed out waiting for a visible window."
+        throw "Desktop smoke launch timed out waiting for a native window."
     }
 
     Write-Host "PASS: desktop bootstrap launched (PID=$($process.Id))"
@@ -33,4 +55,3 @@ finally {
         Stop-Process -Id $process.Id -Force
     }
 }
-
