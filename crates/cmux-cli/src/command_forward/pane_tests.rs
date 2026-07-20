@@ -164,6 +164,21 @@ fn maps_canonical_resize_pane_command_and_direction_precedence() {
 }
 
 #[test]
+fn resize_pane_uses_the_ambient_workspace_when_no_scope_is_explicit() {
+    let resized = mapped("resize-pane", &[]).with_ambient_workspace_id(Some(" workspace-3 "));
+
+    assert_eq!(resized.method, "pane.resize");
+    assert_eq!(
+        resized.params,
+        serde_json::json!({
+            "amount": 1,
+            "direction": "right",
+            "workspace_id": "workspace-3",
+        })
+    );
+}
+
+#[test]
 fn maps_canonical_new_pane_command_and_flags() {
     let created = mapped(
         "new-pane",
