@@ -25,6 +25,10 @@ use pane_focus::pane_focus;
 mod pane_last;
 use pane_last::pane_last;
 
+#[path = "pane_surface_lifecycle/pane_break.rs"]
+mod pane_break;
+use pane_break::pane_break;
+
 #[path = "pane_surface_lifecycle/pane_join.rs"]
 mod pane_join;
 use pane_join::pane_join;
@@ -611,6 +615,7 @@ pub(super) fn dispatch_lifecycle_request(
         "surface.close" => surface_close(snapshot, params, context),
         "surface.focus" => surface_focus(snapshot, params),
         "surface.move" => surface_move(snapshot, params, context),
+        "pane.break" => pane_break(snapshot, params, context),
         "pane.join" => pane_join(snapshot, params, context),
         "pane.resize" => pane_resize(snapshot, params, context),
         "pane.focus" => pane_focus(snapshot, params, context),

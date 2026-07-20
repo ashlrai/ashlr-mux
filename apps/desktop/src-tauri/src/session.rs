@@ -51,7 +51,7 @@ use control_window_registration::transact_register_window;
 pub(crate) use control_window_registration::{
     register_prepared_window_for_control, unregister_window_for_control_suppressing_events,
 };
-pub(crate) use pane_topology::break_pane_for_control;
+pub(crate) use pane_topology::{break_pane_for_control, finalize_broken_pane_snapshot};
 pub(crate) use workspace_ordering::{
     reorder_workspaces_in_window_for_control, reorder_workspaces_many_in_window_for_control,
     transact_value_if_changed_suppressing_derived_events, ReorderWorkspacesManyControlError,
