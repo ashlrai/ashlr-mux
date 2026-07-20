@@ -249,6 +249,19 @@ fn pane_list_projects_canonical_grid_metrics_while_terminal_resize_catches_up() 
     assert_eq!(
         pane_surface_control::pane_list::pane_list_provisional_grid_fields(
             PanePixelFrame {
+                x: 285.5,
+                y: 28.0,
+                width: 49.5,
+                height: 168.0,
+            },
+            root,
+        ),
+        Some((5, 8, 8, 17)),
+        "captured terminal chrome consumes 4 horizontal and 32 vertical pixels"
+    );
+    assert_eq!(
+        pane_surface_control::pane_list::pane_list_provisional_grid_fields(
+            PanePixelFrame {
                 x: 0.0,
                 y: 0.0,
                 width: 0.0,
