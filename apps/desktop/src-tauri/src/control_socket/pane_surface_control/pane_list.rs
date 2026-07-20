@@ -192,7 +192,7 @@ pub(in crate::control_socket) fn pane_list_preferred_grid_fields(
     retained: Option<(u64, u64, u64, u64)>,
     suppress_first_projection: bool,
 ) -> Option<(u64, u64, u64, u64)> {
-    if suppress_first_projection && retained.is_none() {
+    if suppress_first_projection {
         None
     } else {
         projected.or(retained)
@@ -293,13 +293,18 @@ pub(in crate::control_socket) fn pane_list(
             })
             .or(capture_portal)
         {
-            geometry_authority =
-                PaneGeometryAuthority::Rendered(crate::pane_geometry::WorkspacePaneGeometry {
-                    x: fallback.x,
-                    y: fallback.y,
-                    width: fallback.width,
-                    height: fallback.height,
-                });
+            let geometry = crate::pane_geometry::WorkspacePaneGeometry {
+                x: fallback.x,
+                y: fallback.y,
+                width: fallback.width,
+                height: fallback.height,
+            };
+            if capture_activation_bootstrap {
+                if let Some(workspace_id) = workspace.workspace_id.as_deref() {
+                    let _ = pane_geometry_state.report(window_label, workspace_id, geometry);
+                }
+            }
+            geometry_authority = PaneGeometryAuthority::Rendered(geometry);
         }
     }
     let capture_fallback = capture_headless.then_some(PanePixelFrame {

@@ -31,7 +31,7 @@ pub struct PaneGeometryState {
 }
 
 impl PaneGeometryState {
-    fn report(
+    pub(crate) fn report(
         &self,
         window_label: &str,
         workspace_id: &str,
