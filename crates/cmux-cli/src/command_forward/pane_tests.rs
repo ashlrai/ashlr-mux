@@ -162,3 +162,66 @@ fn maps_canonical_resize_pane_command_and_direction_precedence() {
         "--amount must be greater than 0"
     );
 }
+
+#[test]
+fn maps_canonical_new_pane_command_and_flags() {
+    let created = mapped(
+        "new-pane",
+        &[
+            "--workspace",
+            "workspace:2",
+            "--window",
+            "window:1",
+            "--type",
+            "browser",
+            "--direction",
+            "down",
+            "--placement",
+            "dock",
+            "--url",
+            "https://example.com/parity-pane",
+            "--focus",
+            "false",
+        ],
+    );
+    assert_eq!(created.method, "pane.create");
+    assert_eq!(
+        created.params,
+        serde_json::json!({
+            "workspace_ref": "workspace:2",
+            "window_ref": "window:1",
+            "type": "browser",
+            "direction": "down",
+            "placement": "dock",
+            "url": "https://example.com/parity-pane",
+            "focus": false,
+        })
+    );
+    assert_eq!(
+        mapped("new-pane", &[]).params,
+        serde_json::json!({"direction": "right", "focus": false})
+    );
+    assert_eq!(
+        control_command_for("new-pane", &args(&["--focus", "maybe"]))
+            .unwrap_err()
+            .message,
+        "--focus must be true|false"
+    );
+}
+
+#[test]
+fn new_pane_help_describes_the_public_canonical_contract() {
+    let help = crate::dispatch::subcommand_help_text("new-pane");
+    for expected in [
+        "Usage:\n  cmux new-pane [flags]",
+        "--type <terminal|browser>",
+        "--placement <workspace|dock>",
+        "--workspace <id|ref|index>",
+        "--window <id|ref|index>",
+        "--url <url>",
+        "--focus <true|false>",
+    ] {
+        assert!(help.contains(expected), "missing {expected:?} in {help:?}");
+    }
+    assert!(!help.contains("--panel"));
+}
