@@ -2,9 +2,10 @@
   "family": "notification_lifecycle",
   "canonical_commit": "e1825d40d52b4ae4f4bcb0b7e0dfc744dd20a452",
   "notes": [
-    "Exercises the seven implemented-but-unverified public notification v2 methods and their seven CLI entry points against one deterministic workspace/surface fixture.",
+    "Exercises the ten public desktop-socket notification v2 methods and seven CLI entry points against one deterministic workspace/surface fixture.",
     "Each id-targeted case clears and reseeds the notification store before resolving the generated notification UUID from notification.list, avoiding assumptions about UUIDs or retained ordering.",
-    "The lane covers payloads, defaults, selector validation, not-found behavior, read/dismiss/clear mutations, target navigation, CLI help and output, state probes, and lifecycle events.",
+    "The lane covers payloads, defaults, selector validation, caller preference and fallback routing, targeted delivery identity, not-found behavior, read/dismiss/clear mutations, target navigation, CLI help and output, state probes, and lifecycle events.",
+    "notification.reconcile is intentionally excluded because canonical exposes it through the authenticated mobile-host RPC rather than the desktop control socket.",
     "The first matched run classified only two platform bootstrap values in notification.open_target; all notification behavior and remaining event fields stay strict."
   ],
   "session_setup": [
@@ -33,6 +34,74 @@
     {
       "id": "notification.create_rejects_missing_workspace",
       "action": {"op": "v2", "method": "notification.create", "params": {"workspace_id": "00000000-0000-0000-0000-000000000001", "surface_id": "${session.1.result.surface_id}"}}
+    },
+    {
+      "id": "notification.create_for_surface_requires_surface",
+      "action": {"op": "v2", "method": "notification.create_for_surface", "params": {}}
+    },
+    {
+      "id": "notification.create_for_surface_rejects_unknown_workspace",
+      "action": {"op": "v2", "method": "notification.create_for_surface", "params": {"workspace_id": "00000000-0000-0000-0000-000000000001", "surface_id": "${session.1.result.surface_id}"}}
+    },
+    {
+      "id": "notification.create_for_surface_rejects_unknown_surface",
+      "action": {"op": "v2", "method": "notification.create_for_surface", "params": {"workspace_id": "${session.0.result.workspace_id}", "surface_id": "00000000-0000-0000-0000-000000000002"}}
+    },
+    {
+      "id": "notification.create_for_surface_target",
+      "setup": [{"op": "v2", "method": "notification.clear", "params": {}}],
+      "events": true,
+      "action": {"op": "v2", "method": "notification.create_for_surface", "params": {"workspace_id": "${session.0.result.workspace_id}", "surface_id": "${session.1.result.surface_id}", "title": "Surface build", "subtitle": "Parity", "body": "Delivered"}},
+      "probes": {"state": [{"op": "v2", "method": "notification.list", "params": {}}]}
+    },
+    {
+      "id": "notification.create_for_target_requires_workspace_first",
+      "action": {"op": "v2", "method": "notification.create_for_target", "params": {}}
+    },
+    {
+      "id": "notification.create_for_target_requires_surface_second",
+      "action": {"op": "v2", "method": "notification.create_for_target", "params": {"workspace_id": "${session.0.result.workspace_id}"}}
+    },
+    {
+      "id": "notification.create_for_target_rejects_unknown_workspace",
+      "action": {"op": "v2", "method": "notification.create_for_target", "params": {"workspace_id": "00000000-0000-0000-0000-000000000001", "surface_id": "${session.1.result.surface_id}"}}
+    },
+    {
+      "id": "notification.create_for_target_rejects_unknown_surface",
+      "action": {"op": "v2", "method": "notification.create_for_target", "params": {"workspace_id": "${session.0.result.workspace_id}", "surface_id": "00000000-0000-0000-0000-000000000002"}}
+    },
+    {
+      "id": "notification.create_for_target_target",
+      "setup": [{"op": "v2", "method": "notification.clear", "params": {}}],
+      "events": true,
+      "action": {"op": "v2", "method": "notification.create_for_target", "params": {"workspace_id": "${session.0.result.workspace_id}", "surface_id": "${session.1.result.surface_id}", "title": "Target build", "subtitle": "Parity", "body": "Delivered"}},
+      "probes": {"state": [{"op": "v2", "method": "notification.list", "params": {}}]}
+    },
+    {
+      "id": "notification.create_for_caller_defaults_to_selected",
+      "setup": [{"op": "v2", "method": "notification.clear", "params": {}}],
+      "events": true,
+      "action": {"op": "v2", "method": "notification.create_for_caller", "params": {"title": "Caller default"}},
+      "probes": {"state": [{"op": "v2", "method": "notification.list", "params": {}}]}
+    },
+    {
+      "id": "notification.create_for_caller_prefers_workspace_surface",
+      "setup": [{"op": "v2", "method": "notification.clear", "params": {}}],
+      "events": true,
+      "action": {"op": "v2", "method": "notification.create_for_caller", "params": {"preferred_workspace_id": "${session.0.result.workspace_id}", "preferred_surface_id": "${session.1.result.surface_id}", "title": "Caller preferred", "subtitle": "Parity", "body": "Delivered"}},
+      "probes": {"state": [{"op": "v2", "method": "notification.list", "params": {}}]}
+    },
+    {
+      "id": "notification.create_for_caller_stale_workspace_uses_surface",
+      "setup": [{"op": "v2", "method": "notification.clear", "params": {}}],
+      "events": true,
+      "action": {"op": "v2", "method": "notification.create_for_caller", "params": {"preferred_workspace_id": "00000000-0000-0000-0000-000000000001", "preferred_surface_id": "${session.1.result.surface_id}", "title": "Caller surface"}},
+      "probes": {"state": [{"op": "v2", "method": "notification.list", "params": {}}]}
+    },
+    {
+      "id": "notification.create_for_caller_invalid_preferences_fall_back",
+      "setup": [{"op": "v2", "method": "notification.clear", "params": {}}],
+      "action": {"op": "v2", "method": "notification.create_for_caller", "params": {"preferred_workspace_id": "not-a-workspace", "preferred_surface_id": "not-a-surface", "prefer_tty": "not-a-bool", "caller_tty": "not a tty"}}
     },
     {
       "id": "notification.dismiss_requires_one_selector",
