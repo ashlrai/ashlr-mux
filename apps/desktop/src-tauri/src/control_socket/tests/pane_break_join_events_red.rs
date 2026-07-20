@@ -287,3 +287,36 @@ fn pane_join_omits_redundant_pane_focus_when_target_pane_was_already_focused() {
         ["surface.selected", "surface.focused", "pane.joined"]
     );
 }
+
+#[test]
+fn pane_break_and_join_resolve_public_refs_and_explicit_surfaces_on_the_pure_path() {
+    let snapshot = resizable_snapshot();
+    let broken = transition(
+        "pane.break",
+        &snapshot,
+        json!({
+            "workspace_id": "workspace-1",
+            "pane_ref": "pane:2",
+        }),
+    );
+    assert_eq!(ok_value(&broken)["surface_id"], json!("surface-right"));
+
+    let joined = transition(
+        "pane.join",
+        &snapshot,
+        json!({
+            "workspace_id": "workspace-1",
+            "surface_id": "surface-right",
+            "target_pane_ref": "pane:1",
+        }),
+    );
+    assert_eq!(
+        ok_value(&joined),
+        json!({
+            "window_id": "window-1",
+            "workspace_id": "workspace-1",
+            "pane_id": "pane-left",
+            "surface_id": "surface-right",
+        })
+    );
+}

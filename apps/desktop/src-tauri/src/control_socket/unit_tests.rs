@@ -140,40 +140,6 @@ fn surface_move_resolver_matches_canonical_destination_precedence() {
 }
 
 #[test]
-fn pane_join_source_resolves_explicit_surface_or_selected_pane_surface() {
-    let snapshot = surface_move_snapshot();
-    let direct = serde_json::json!({"surface_id": "surface-2"});
-    assert_eq!(
-        resolve_pane_join_source(&snapshot, direct.as_object().unwrap()),
-        Ok("surface-2".to_string())
-    );
-    let by_pane = serde_json::json!({"pane_id": "pane-2"});
-    assert_eq!(
-        resolve_pane_join_source(&snapshot, by_pane.as_object().unwrap()),
-        Ok("surface-3".to_string())
-    );
-    let by_ref = serde_json::json!({
-        "workspace_ref": "workspace:2",
-        "pane_ref": "pane:1",
-    });
-    assert_eq!(
-        resolve_pane_join_source(&snapshot, by_ref.as_object().unwrap()),
-        Ok("surface-3".to_string())
-    );
-    assert_eq!(
-        resolve_pane_join_source(&snapshot, &serde_json::Map::new()),
-        Err(PaneJoinSourceError::Missing)
-    );
-    let missing = serde_json::json!({"pane_id": "missing"});
-    assert_eq!(
-        resolve_pane_join_source(&snapshot, missing.as_object().unwrap()),
-        Err(PaneJoinSourceError::SourcePaneUnresolved(
-            "missing".to_string()
-        ))
-    );
-}
-
-#[test]
 fn resize_pane_resolves_id_ref_or_persisted_focus() {
     let mut snapshot = test_snapshot();
     let workspace = &mut snapshot.windows[0].tab_manager.workspaces[0];

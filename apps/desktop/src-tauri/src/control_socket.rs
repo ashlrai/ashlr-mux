@@ -78,8 +78,8 @@ use crate::dock::{
 use crate::remote_proxy as proxy_runtime;
 use crate::session::{
     append_workspace_sidebar_log_for_control, apply_workspace_action_for_control,
-    apply_workspace_action_for_control_with_post_commit, break_pane_for_control,
-    browser_go_back_for_control, browser_go_forward_for_control, clear_browser_history_for_control,
+    apply_workspace_action_for_control_with_post_commit, browser_go_back_for_control,
+    browser_go_forward_for_control, clear_browser_history_for_control,
     clear_workspace_agent_pid_for_control, clear_workspace_panel_pull_request_for_control,
     clear_workspace_remote_for_control, clear_workspace_sidebar_log_for_control,
     clear_workspace_sidebar_metadata_block_for_control,
@@ -1158,8 +1158,6 @@ fn handle_control_request(app: &AppHandle, mut request: ControlRequest) -> Contr
         "pane.focus" => pane_focus(app, &request.params),
         "pane.list" => pane_list(app, &request.params),
         "pane.surfaces" => pane_surfaces(app, &request.params),
-        "pane.break" => pane_break(app, &request.params),
-        "pane.join" => pane_join(app, &request.params),
         "pane.last" => pane_last(app, &request.params),
         "pane.resize" => pane_resize(app, &request.params),
         "browser.navigate" => browser_navigate(app, &request.params),
