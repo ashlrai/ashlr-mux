@@ -1,0 +1,459 @@
+{
+  "capture_integrity": {
+    "capture_error_cases": {
+      "canonical": [],
+      "windows": []
+    },
+    "missing_cases": [],
+    "unsettled_cases": {
+      "canonical": [],
+      "windows": []
+    },
+    "valid_for_promotion": true
+  },
+  "cases": 44,
+  "deltas": 0,
+  "identical": 44,
+  "results": [
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "notification.list_empty",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "notification.create_explicit_target",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "notification.create_defaults",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "notification.create_rejects_missing_workspace",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "notification.create_for_surface_requires_surface",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "notification.create_for_surface_rejects_unknown_workspace",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "notification.create_for_surface_rejects_unknown_surface",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "notification.create_for_surface_target",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "notification.create_for_target_requires_workspace_first",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "notification.create_for_target_requires_surface_second",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "notification.create_for_target_rejects_unknown_workspace",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "notification.create_for_target_rejects_unknown_surface",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "notification.create_for_target_target",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "notification.create_for_caller_defaults_to_selected",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "notification.create_for_caller_prefers_workspace_surface",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "notification.create_for_caller_stale_workspace_uses_surface",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "notification.create_for_caller_invalid_preferences_fall_back",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "notification.dismiss_requires_one_selector",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "notification.dismiss_rejects_unknown_id",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "notification.dismiss_by_id",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "notification.dismiss_all_read",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "notification.mark_read_requires_one_selector",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "notification.mark_read_rejects_surface_without_workspace",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "notification.mark_read_by_id",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "notification.mark_read_workspace_surface",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "notification.open_requires_id",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "notification.open_target",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "notification.jump_to_unread_empty",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "notification.jump_to_unread_target",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "notification.clear_all",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "cli.notify_help",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "cli.list_notifications_help",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "cli.dismiss_notification_help",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "cli.mark_notification_read_help",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "cli.open_notification_help",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "cli.jump_to_unread_help",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "cli.clear_notifications_help",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "cli.notify_explicit_target",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "cli.list_notifications",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "cli.mark_notification_read",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "cli.open_notification",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "cli.jump_to_unread",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "cli.dismiss_notification",
+      "identical": true,
+      "mismatches": []
+    },
+    {
+      "capture_errors": {
+        "canonical": null,
+        "windows": null
+      },
+      "detail": {},
+      "id": "cli.clear_notifications",
+      "identical": true,
+      "mismatches": []
+    }
+  ]
+}

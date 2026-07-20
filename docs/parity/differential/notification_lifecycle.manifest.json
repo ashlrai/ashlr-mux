@@ -6,7 +6,7 @@
     "Each id-targeted case clears and reseeds the notification store before resolving the generated notification UUID from notification.list, avoiding assumptions about UUIDs or retained ordering.",
     "The lane covers payloads, defaults, selector validation, caller preference and fallback routing, targeted delivery identity, not-found behavior, read/dismiss/clear mutations, target navigation, CLI help and output, state probes, and lifecycle events.",
     "notification.reconcile is intentionally excluded because canonical exposes it through the authenticated mobile-host RPC rather than the desktop control socket.",
-    "The first matched run classified only two platform bootstrap values in notification.open_target; all notification behavior and remaining event fields stay strict."
+    "Pointer-scoped equivalences cover only the isolated capture working directory and the pre-existing selected bootstrap surface, whose canonical UUID maps to the stable Windows legacy id surface-1; all notification behavior and remaining fields stay strict."
   ],
   "session_setup": [
     {"op": "v2", "method": "workspace.create", "params": {"title": "notification-lifecycle"}},
@@ -82,6 +82,14 @@
       "setup": [{"op": "v2", "method": "notification.clear", "params": {}}],
       "events": true,
       "action": {"op": "v2", "method": "notification.create_for_caller", "params": {"title": "Caller default"}},
+      "approved_differences": [
+        {"path": "/response/result/surface_id", "rationale": "The selected bootstrap terminal surface is a canonical UUID but Windows retains the stable legacy id surface-1; default-selection routing and every other response field stay strict."},
+        {"path": "/state/0/result/response/result/notifications/0/surface_id", "rationale": "The selected bootstrap terminal surface is a canonical UUID but Windows retains the stable legacy id surface-1; stored notification identity and every other state field stay strict."},
+        {"path": "/events/2/payload/surface_id", "rationale": "The selected bootstrap terminal surface is a canonical UUID but Windows retains the stable legacy id surface-1; the created-event payload and every other event field stay strict."},
+        {"path": "/events/2/surface_id", "rationale": "The selected bootstrap terminal surface is a canonical UUID but Windows retains the stable legacy id surface-1; created-event routing and every other event field stay strict."},
+        {"path": "/events/3/payload/result/surface_id", "rationale": "The selected bootstrap terminal surface is a canonical UUID but Windows retains the stable legacy id surface-1; requested-event result identity and every other event field stay strict."},
+        {"path": "/events/3/surface_id", "rationale": "The selected bootstrap terminal surface is a canonical UUID but Windows retains the stable legacy id surface-1; requested-event routing and every other event field stay strict."}
+      ],
       "probes": {"state": [{"op": "v2", "method": "notification.list", "params": {}}]}
     },
     {
@@ -101,7 +109,10 @@
     {
       "id": "notification.create_for_caller_invalid_preferences_fall_back",
       "setup": [{"op": "v2", "method": "notification.clear", "params": {}}],
-      "action": {"op": "v2", "method": "notification.create_for_caller", "params": {"preferred_workspace_id": "not-a-workspace", "preferred_surface_id": "not-a-surface", "prefer_tty": "not-a-bool", "caller_tty": "not a tty"}}
+      "action": {"op": "v2", "method": "notification.create_for_caller", "params": {"preferred_workspace_id": "not-a-workspace", "preferred_surface_id": "not-a-surface", "prefer_tty": "not-a-bool", "caller_tty": "not a tty"}},
+      "approved_differences": [
+        {"path": "/response/result/surface_id", "rationale": "The selected bootstrap terminal surface is a canonical UUID but Windows retains the stable legacy id surface-1; invalid-preference fallback routing and every other response field stay strict."}
+      ]
     },
     {
       "id": "notification.dismiss_requires_one_selector",
