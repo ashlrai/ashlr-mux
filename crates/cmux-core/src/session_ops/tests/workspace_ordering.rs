@@ -44,6 +44,57 @@ fn uuid(raw: &str) -> Uuid {
 }
 
 #[test]
+fn notification_reorder_moves_unpinned_workspace_to_its_tier_boundary() {
+    let mut tabs = reorder_tabs(
+        &[
+            (R_W1, None, true),
+            (R_W2, None, false),
+            (R_W3, None, false),
+        ],
+        Some(0),
+    );
+
+    assert!(move_workspace_to_top_for_notification(&mut tabs, 2));
+    assert_eq!(ws_id_order(&tabs), [R_W1, R_W3, R_W2]);
+    assert_eq!(tabs.selected_workspace_index, Some(0));
+}
+
+#[test]
+fn notification_reorder_is_a_no_op_for_pinned_and_boundary_workspaces() {
+    let mut tabs = reorder_tabs(
+        &[
+            (R_W1, None, true),
+            (R_W2, None, false),
+            (R_W3, None, false),
+        ],
+        Some(2),
+    );
+    let before = serde_json::to_string(&tabs).unwrap();
+
+    assert!(!move_workspace_to_top_for_notification(&mut tabs, 0));
+    assert!(!move_workspace_to_top_for_notification(&mut tabs, 1));
+    assert_eq!(serde_json::to_string(&tabs).unwrap(), before);
+}
+
+#[test]
+fn notification_reorder_hoists_an_unpinned_group_as_one_top_level_row() {
+    let mut tabs = reorder_tabs(
+        &[
+            (R_W1, None, true),
+            (R_W4, None, false),
+            (R_W2, Some(R_G1), false),
+            (R_W3, Some(R_G1), false),
+        ],
+        Some(1),
+    );
+    tabs.workspace_groups = Some(vec![reorder_group(R_G1, R_W2, false)]);
+
+    assert!(move_workspace_to_top_for_notification(&mut tabs, 3));
+    assert_eq!(ws_id_order(&tabs), [R_W1, R_W2, R_W3, R_W4]);
+    assert_eq!(tabs.selected_workspace_index, Some(3));
+}
+
+#[test]
 fn create_workspace_group_adopts_eligible_children_at_first_child_slot() {
     let mut tabs = reorder_tabs(
         &[
