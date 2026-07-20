@@ -176,7 +176,7 @@ fn pane_list_uses_zero_frames_only_after_the_window_has_rendered_another_workspa
 }
 
 #[test]
-fn pane_list_headless_capture_uses_configured_geometry_without_a_native_read() {
+fn pane_list_headless_capture_does_not_invent_geometry_before_a_workspace_renders() {
     use crate::pane_geometry::PaneGeometryAuthority;
     use std::cell::Cell;
 
@@ -185,6 +185,12 @@ fn pane_list_headless_capture_uses_configured_geometry_without_a_native_read() {
         y: 0.0,
         width: 1000.0,
         height: 700.0,
+    };
+    let zero = PanePixelFrame {
+        x: 0.0,
+        y: 0.0,
+        width: 0.0,
+        height: 0.0,
     };
     let native_reads = Cell::new(0);
 
@@ -197,12 +203,61 @@ fn pane_list_headless_capture_uses_configured_geometry_without_a_native_read() {
                 configured
             },
         ),
-        configured
+        zero
     );
     assert_eq!(
         native_reads.get(),
         0,
         "headless capture must not enter the native window actor"
+    );
+}
+
+#[test]
+fn pane_list_projects_canonical_grid_metrics_while_terminal_resize_catches_up() {
+    let root = PanePixelFrame {
+        x: 240.0,
+        y: 28.0,
+        width: 760.0,
+        height: 672.0,
+    };
+
+    assert_eq!(
+        pane_surface_control::pane_list::pane_list_provisional_grid_fields(
+            PanePixelFrame {
+                x: 240.0,
+                y: 28.0,
+                width: 190.0,
+                height: 336.0,
+            },
+            root,
+        ),
+        Some((23, 17, 8, 17))
+    );
+    assert_eq!(
+        pane_surface_control::pane_list::pane_list_provisional_grid_fields(
+            PanePixelFrame {
+                x: 620.0,
+                y: 28.0,
+                width: 380.0,
+                height: 672.0,
+            },
+            root,
+        ),
+        Some((46, 37, 8, 17)),
+        "the outer terminal scrollbar consumes one cell at the right edge"
+    );
+    assert_eq!(
+        pane_surface_control::pane_list::pane_list_provisional_grid_fields(
+            PanePixelFrame {
+                x: 0.0,
+                y: 0.0,
+                width: 0.0,
+                height: 0.0,
+            },
+            root,
+        ),
+        None,
+        "an unrendered workspace must not fabricate live terminal metrics"
     );
 }
 

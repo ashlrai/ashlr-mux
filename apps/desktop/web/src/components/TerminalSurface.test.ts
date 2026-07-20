@@ -9,6 +9,7 @@ import {
   findTerminalLineIndex,
   shouldOpenTerminalLinkInCmuxBrowser,
   TerminalSurface,
+  terminalCellDimensions,
   terminalShouldClaimFocus,
   terminalDropPayloadFromDataTransfer,
   terminalDropPathsFromDataTransfer,
@@ -53,6 +54,18 @@ describe("TerminalSurface", () => {
     expect(terminalShouldClaimFocus(false, false, false)).toBe(false);
     expect(terminalShouldClaimFocus(true, true, false)).toBe(false);
     expect(terminalShouldClaimFocus(true, false, true)).toBe(false);
+  });
+});
+
+describe("terminalCellDimensions", () => {
+  test("reports measured xterm cells and rejects hidden or invalid surfaces", () => {
+    expect(terminalCellDimensions(184, 289, 23, 17)).toEqual({
+      cellWidthPx: 8,
+      cellHeightPx: 17,
+    });
+    expect(terminalCellDimensions(0, 289, 23, 17)).toBeNull();
+    expect(terminalCellDimensions(184, 289, 0, 17)).toBeNull();
+    expect(terminalCellDimensions(Number.NaN, 289, 23, 17)).toBeNull();
   });
 });
 
