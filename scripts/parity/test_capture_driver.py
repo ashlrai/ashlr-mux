@@ -657,6 +657,23 @@ class RunCaptureTests(unittest.TestCase):
         self.assertEqual(collector.stop(), [{"name": "window.closed"}])
         self.assertEqual(calls, ["interrupt", ("join", 2), "close"])
 
+    def test_event_collector_discards_setup_events_but_preserves_subscription_ack(self):
+        from capture_driver import EventCollector
+
+        collector = EventCollector.__new__(EventCollector)
+        collector._lock = threading.Lock()
+        collector.frames = [
+            {"type": "ack", "protocol": "cmux-events"},
+            {"type": "event", "name": "notification.cleared"},
+        ]
+
+        collector.reset_after_setup(quiet_seconds=0.0)
+
+        self.assertEqual(
+            collector.frames,
+            [{"type": "ack", "protocol": "cmux-events"}],
+        )
+
     def test_run_capture_records_case_error_and_continues(self):
         from capture_driver import run_capture
 
