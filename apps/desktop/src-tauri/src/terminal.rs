@@ -36,9 +36,11 @@ use process_runtime::{
     terminal_runtime_snapshot_from_processes,
 };
 pub(crate) use process_runtime::{scan_listening_ports_for_root_pid, scan_panel_listening_ports};
-pub(crate) use viewport_metrics::terminal_grid_metrics_for_panel;
 use viewport_metrics::{
     parse_terminal_cell_dimensions, record_terminal_cell_dimensions, TerminalCellDimensions,
+};
+pub(crate) use viewport_metrics::{
+    terminal_pane_grid_fields_for_panel, terminal_remember_pane_grid_fields,
 };
 
 /// Event carrying a chunk of terminal output to the webview.
@@ -350,6 +352,7 @@ struct TerminalSession {
     input: Arc<TerminalInputTransport>,
     grid: Arc<Mutex<TerminalGrid>>,
     cell_dimensions: Arc<Mutex<Option<TerminalCellDimensions>>>,
+    pane_grid_fields: Arc<Mutex<Option<(u64, u64, u64, u64)>>>,
     title_parser: Arc<Mutex<TerminalTitleParser>>,
     operations: Arc<TerminalOperationGate>,
     pump_activation: Arc<TerminalPumpActivation>,
@@ -1800,6 +1803,7 @@ fn spawn_terminal_session(
         input: Arc::new(TerminalInputTransport::new(writer)),
         grid,
         cell_dimensions: Arc::new(Mutex::new(None)),
+        pane_grid_fields: Arc::new(Mutex::new(None)),
         title_parser,
         operations: Arc::new(TerminalOperationGate::default()),
         pump_activation,

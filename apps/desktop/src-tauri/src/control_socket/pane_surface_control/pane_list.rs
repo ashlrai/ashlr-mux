@@ -95,6 +95,25 @@ pub(in crate::control_socket) fn pane_list_container_size(
     (root_frame.width, root_frame.height)
 }
 
+pub(in crate::control_socket) fn pane_list_capture_portal_frame(
+    window_width: f64,
+    window_height: f64,
+) -> Option<PanePixelFrame> {
+    const SIDEBAR_WIDTH: f64 = 240.0;
+    const TITLEBAR_HEIGHT: f64 = 28.0;
+
+    (window_width.is_finite()
+        && window_height.is_finite()
+        && window_width > SIDEBAR_WIDTH
+        && window_height > TITLEBAR_HEIGHT)
+        .then_some(PanePixelFrame {
+            x: SIDEBAR_WIDTH,
+            y: TITLEBAR_HEIGHT,
+            width: window_width - SIDEBAR_WIDTH,
+            height: window_height - TITLEBAR_HEIGHT,
+        })
+}
+
 pub(in crate::control_socket) fn pane_list_provisional_grid_fields(
     frame: PanePixelFrame,
     root_frame: PanePixelFrame,
@@ -137,6 +156,13 @@ pub(in crate::control_socket) fn pane_list_provisional_grid_fields(
     let rows = ((frame.height / CELL_HEIGHT_PX as f64).floor() as u64)
         .saturating_sub(TERMINAL_VERTICAL_CHROME_ROWS);
     (columns > 0 && rows > 0).then_some((columns, rows, CELL_WIDTH_PX, CELL_HEIGHT_PX))
+}
+
+pub(in crate::control_socket) fn pane_list_preferred_grid_fields(
+    projected: Option<(u64, u64, u64, u64)>,
+    retained: Option<(u64, u64, u64, u64)>,
+) -> Option<(u64, u64, u64, u64)> {
+    projected.or(retained)
 }
 
 pub(in crate::control_socket) fn pane_list(
@@ -198,23 +224,46 @@ pub(in crate::control_socket) fn pane_list(
     };
     let mut pane_rows = Vec::new();
     let pane_geometry_state = app.state::<PaneGeometryState>();
+    let capture_headless = crate::window::capture_windows_hidden();
+    let capture_portal = capture_headless
+        .then(|| {
+            let configured_windows = &app.config().app.windows;
+            configured_windows
+                .iter()
+                .find(|configured| configured.label == window_label)
+                .or_else(|| configured_windows.first())
+                .and_then(|configured| {
+                    pane_list_capture_portal_frame(configured.width, configured.height)
+                })
+        })
+        .flatten();
     let mut geometry_authority = workspace
         .workspace_id
         .as_deref()
         .map_or(PaneGeometryAuthority::Uninitialized, |workspace_id| {
             pane_geometry_state.authority_for(window_label, workspace_id)
         });
-    if workspace_is_selected
-        && matches!(
-            geometry_authority,
-            PaneGeometryAuthority::WorkspaceUnrendered
-        )
-    {
-        if let Some(latest) = pane_geometry_state.latest_for_window(window_label) {
-            geometry_authority = PaneGeometryAuthority::Rendered(latest);
+    if workspace_is_selected && !matches!(geometry_authority, PaneGeometryAuthority::Rendered(_)) {
+        if let Some(fallback) = pane_geometry_state
+            .latest_for_window(window_label)
+            .map(|geometry| PanePixelFrame {
+                x: geometry.x,
+                y: geometry.y,
+                width: geometry.width,
+                height: geometry.height,
+            })
+            .or(capture_portal)
+        {
+            geometry_authority =
+                PaneGeometryAuthority::Rendered(crate::pane_geometry::WorkspacePaneGeometry {
+                    x: fallback.x,
+                    y: fallback.y,
+                    width: fallback.width,
+                    height: fallback.height,
+                });
         }
     }
-    let capture_fallback = crate::window::capture_windows_hidden().then_some(PanePixelFrame {
+    let capture_fallback = capture_headless.then_some(PanePixelFrame {
         x: 0.0,
         y: 0.0,
         width: 0.0,
@@ -273,23 +322,21 @@ pub(in crate::control_socket) fn pane_list(
                 .as_deref()
                 .is_none_or(|kind| kind == "terminal")
                 .then(|| {
-                    selected
-                        .and_then(|panel_id| {
-                            terminal_grid_metrics_for_panel(terminal_state.inner(), panel_id)
-                        })
-                        .map(|(columns, rows, cell_width_px, cell_height_px)| {
-                            (
-                                columns as u64,
-                                rows as u64,
-                                u64::from(cell_width_px),
-                                u64::from(cell_height_px),
-                            )
-                        })
-                        .or_else(|| {
-                            workspace_is_selected
-                                .then(|| pane_list_provisional_grid_fields(frame, root_frame))
-                                .flatten()
-                        })
+                    let projected = workspace_is_selected
+                        .then(|| pane_list_provisional_grid_fields(frame, root_frame))
+                        .flatten();
+                    let retained = selected.and_then(|panel_id| {
+                        terminal_pane_grid_fields_for_panel(terminal_state.inner(), panel_id)
+                    });
+                    let fields = pane_list_preferred_grid_fields(projected, retained);
+                    if let (Some(panel_id), Some(projected)) = (selected, projected) {
+                        terminal_remember_pane_grid_fields(
+                            terminal_state.inner(),
+                            panel_id,
+                            projected,
+                        );
+                    }
+                    fields
                 })
                 .flatten();
             if let Some((columns, rows, cell_width_px, cell_height_px)) = grid_fields {

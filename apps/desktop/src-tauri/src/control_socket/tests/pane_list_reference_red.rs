@@ -280,33 +280,21 @@ fn pane_list_headless_selection_uses_the_configured_workspace_portal() {
 
 #[test]
 fn pane_list_prefers_fresh_projection_and_retains_it_for_an_unrendered_move() {
-    let stale_live = Some((80, 20, 8, 16));
     let projected = Some((23, 17, 8, 17));
     let retained = Some((47, 17, 8, 17));
+    let stale_retained = Some((80, 20, 8, 16));
 
     assert_eq!(
-        pane_surface_control::pane_list::pane_list_preferred_grid_fields(
-            stale_live,
-            projected,
-            None,
-        ),
+        pane_surface_control::pane_list::pane_list_preferred_grid_fields(projected, stale_retained,),
         projected
     );
     assert_eq!(
-        pane_surface_control::pane_list::pane_list_preferred_grid_fields(
-            stale_live,
-            None,
-            retained,
-        ),
+        pane_surface_control::pane_list::pane_list_preferred_grid_fields(None, retained),
         retained,
         "a moved live pane keeps its last rendered grid while its new workspace is hidden"
     );
     assert_eq!(
-        pane_surface_control::pane_list::pane_list_preferred_grid_fields(
-            stale_live,
-            None,
-            None,
-        ),
+        pane_surface_control::pane_list::pane_list_preferred_grid_fields(None, None),
         None,
         "an unrendered workspace must not expose an unconfirmed default grid"
     );

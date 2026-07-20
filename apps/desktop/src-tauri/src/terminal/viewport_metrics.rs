@@ -35,37 +35,61 @@ pub(super) fn record_terminal_cell_dimensions(
         .sessions
         .get(&id)
         .ok_or_else(|| format!("unknown terminal session {id}"))?;
-    *session
-        .cell_dimensions
+    let cell_dimensions = session.cell_dimensions.clone();
+    let grid = session.grid.clone();
+    let pane_grid_fields = session.pane_grid_fields.clone();
+    drop(registry);
+    *cell_dimensions
         .lock()
         .map_err(|_| "terminal cell dimensions mutex poisoned".to_string())? = Some(dimensions);
+    let size = grid
+        .lock()
+        .map_err(|_| "terminal grid mutex poisoned".to_string())?
+        .size();
+    *pane_grid_fields
+        .lock()
+        .map_err(|_| "terminal pane grid mutex poisoned".to_string())? = Some((
+        size.columns as u64,
+        size.screen_lines as u64,
+        u64::from(dimensions.width_px),
+        u64::from(dimensions.height_px),
+    ));
     Ok(())
 }
 
-pub(crate) fn terminal_grid_metrics_for_panel(
+pub(crate) fn terminal_pane_grid_fields_for_panel(
     state: &TerminalState,
     panel_id: &str,
-) -> Option<(usize, usize, u16, u16)> {
+) -> Option<(u64, u64, u64, u64)> {
     let registry = state.registry.lock().ok()?;
-    if registry.reserved_panel_ids.contains(panel_id) {
-        return None;
-    }
-    let session = registry
+    let fields = registry
         .sessions
         .values()
-        .find(|session| session.panel_id.as_deref() == Some(panel_id))?;
-    let grid = session.grid.clone();
-    let cell_dimensions = session.cell_dimensions.clone();
+        .find(|session| session.panel_id.as_deref() == Some(panel_id))?
+        .pane_grid_fields
+        .clone();
     drop(registry);
+    let retained = *fields.lock().ok()?;
+    retained
+}
 
-    let size = grid.lock().ok()?.size();
-    let cells = (*cell_dimensions.lock().ok()?)?;
-    Some((
-        size.columns,
-        size.screen_lines,
-        cells.width_px,
-        cells.height_px,
-    ))
+pub(crate) fn terminal_remember_pane_grid_fields(
+    state: &TerminalState,
+    panel_id: &str,
+    fields: (u64, u64, u64, u64),
+) {
+    let Some(cache) = state.registry.lock().ok().and_then(|registry| {
+        registry
+            .sessions
+            .values()
+            .find(|session| session.panel_id.as_deref() == Some(panel_id))
+            .map(|session| session.pane_grid_fields.clone())
+    }) else {
+        return;
+    };
+    if let Ok(mut cache) = cache.lock() {
+        *cache = Some(fields);
+    };
 }
 
 #[cfg(test)]
