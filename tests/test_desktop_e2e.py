@@ -86,6 +86,7 @@ def test_native_desktop_smoke_launch() -> None:
             "scripts/desktop/smoke-launch-windows.ps1",
             "-AppPath",
             str(app_path),
+            "-Headless",
             "-TimeoutSeconds",
             "15",
         )
