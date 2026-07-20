@@ -285,19 +285,46 @@ fn pane_list_prefers_fresh_projection_and_retains_it_for_an_unrendered_move() {
     let stale_retained = Some((80, 20, 8, 16));
 
     assert_eq!(
-        pane_surface_control::pane_list::pane_list_preferred_grid_fields(projected, stale_retained,),
+        pane_surface_control::pane_list::pane_list_preferred_grid_fields(
+            projected,
+            stale_retained,
+            false,
+        ),
         projected
     );
     assert_eq!(
-        pane_surface_control::pane_list::pane_list_preferred_grid_fields(None, retained),
+        pane_surface_control::pane_list::pane_list_preferred_grid_fields(None, retained, false),
         retained,
         "a moved live pane keeps its last rendered grid while its new workspace is hidden"
     );
     assert_eq!(
-        pane_surface_control::pane_list::pane_list_preferred_grid_fields(None, None),
+        pane_surface_control::pane_list::pane_list_preferred_grid_fields(None, None, false),
         None,
         "an unrendered workspace must not expose an unconfirmed default grid"
     );
+    assert_eq!(
+        pane_surface_control::pane_list::pane_list_preferred_grid_fields(
+            projected, None, true,
+        ),
+        None,
+        "the first activation read exposes geometry before its terminal grid is live"
+    );
+}
+
+#[test]
+fn pane_grid_carryover_is_shared_across_runtime_handoffs_and_pruned_on_close() {
+    use crate::pane_geometry::PaneGeometryState;
+    use std::collections::HashSet;
+
+    let state = PaneGeometryState::default();
+    state.remember_grid_fields("surface-1", (23, 17, 8, 17));
+    assert_eq!(
+        state.grid_fields_for_panel("surface-1"),
+        Some((23, 17, 8, 17))
+    );
+
+    state.retain_grid_fields(&HashSet::from(["surface-2".to_string()]));
+    assert_eq!(state.grid_fields_for_panel("surface-1"), None);
 }
 
 #[test]
