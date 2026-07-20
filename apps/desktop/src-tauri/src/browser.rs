@@ -12,9 +12,7 @@ use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State, We
 use url::Url;
 
 mod control_state;
-pub(crate) use control_state::{
-    browser_has_any_webview_for_control, browser_has_webview_for_control,
-};
+pub(crate) use control_state::browser_has_webview_for_control;
 
 const BROWSER_NAVIGATED_EVENT: &str = "cmux://browser-webview-navigated";
 const DEFAULT_BROWSER_URL: &str = "about:blank";

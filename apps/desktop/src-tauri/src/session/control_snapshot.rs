@@ -32,14 +32,13 @@ pub(crate) fn commit_lifecycle_snapshot_for_control(
     candidate: &AppSessionSnapshot,
     record_derived_events: bool,
 ) -> Result<AppSessionSnapshot, String> {
-    let refresh_window_state = control_snapshot_should_refresh_window_state(app)?;
     commit_lifecycle_snapshot_for_control_inner(
         app,
         state,
         None,
         candidate,
         record_derived_events,
-        refresh_window_state,
+        control_snapshot_refreshes_native_window_state(),
     )
 }
 
@@ -50,30 +49,22 @@ pub(crate) fn commit_lifecycle_snapshot_for_control_if_current(
     candidate: &AppSessionSnapshot,
     record_derived_events: bool,
 ) -> Result<AppSessionSnapshot, String> {
-    let refresh_window_state = control_snapshot_should_refresh_window_state(app)?;
     commit_lifecycle_snapshot_for_control_inner(
         app,
         state,
         Some(expected),
         candidate,
         record_derived_events,
-        refresh_window_state,
+        control_snapshot_refreshes_native_window_state(),
     )
 }
 
-/// Native window queries from the control worker can deadlock inside WebView2
-/// while a child WebView is attached. Resize/focus listeners still publish
-/// window state, so control commits suppress only this redundant refresh.
-fn control_snapshot_should_refresh_window_state(app: &AppHandle) -> Result<bool, String> {
-    let Some(state) = app.try_state::<crate::browser::BrowserWebviewState>() else {
-        return Ok(control_snapshot_refreshes_native_window_state(false));
-    };
-    crate::browser::browser_has_any_webview_for_control(state.inner())
-        .map(control_snapshot_refreshes_native_window_state)
-}
-
-fn control_snapshot_refreshes_native_window_state(has_browser_webview: bool) -> bool {
-    !has_browser_webview
+/// Native window queries from a control worker can deadlock inside WebView2
+/// while the worker still holds the global mutation gate. Resize/focus
+/// listeners and explicit window commands already publish window state, so
+/// snapshot commits always suppress this redundant refresh.
+fn control_snapshot_refreshes_native_window_state() -> bool {
+    false
 }
 
 pub(crate) fn ensure_lifecycle_snapshot_current(
@@ -116,7 +107,6 @@ mod tests {
 
     #[test]
     fn control_snapshot_publication_never_reenters_native_window_observation() {
-        assert!(!control_snapshot_refreshes_native_window_state(false));
-        assert!(!control_snapshot_refreshes_native_window_state(true));
+        assert!(!control_snapshot_refreshes_native_window_state());
     }
 }
