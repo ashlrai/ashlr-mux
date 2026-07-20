@@ -693,6 +693,8 @@ def _read_with_timeout(read_chunk: Callable[[], bytes], deadline: float, until_e
             while True:
                 chunk = read_chunk()
                 frames.put(chunk)
+                if not until_eof and b"\n" in chunk:
+                    return
                 if not chunk:
                     return
         except OSError:
