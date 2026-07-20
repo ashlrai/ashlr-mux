@@ -61,6 +61,8 @@ fn set_process_title_reports_no_change_when_identical() {
 #[test]
 fn set_process_title_ignores_the_default_powershell_bootstrap_title() {
     let mut tabs = one_workspace_tabs("surface-1");
+    install_surface_records(&mut tabs, &["surface-1"]);
+    tabs.workspaces[0].custom_title = Some("pane-management".into());
 
     assert!(!set_process_title(
         &mut tabs,

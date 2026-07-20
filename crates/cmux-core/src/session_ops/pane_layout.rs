@@ -315,6 +315,13 @@ pub fn toggle_split_zoom(workspace: &mut SessionWorkspaceSnapshot, panel_id: &st
 /// NOTE (minor divergence): Swift trims with `.whitespacesAndNewlines`; this
 /// uses Rust `str::trim` (Unicode `White_Space`). The two differ only on exotic
 /// separators an OSC title never carries in practice.
+fn is_default_powershell_bootstrap_title(title: &str) -> bool {
+    title
+        .replace('/', "\\")
+        .to_ascii_lowercase()
+        .ends_with(r"\windows\system32\windowspowershell\v1.0\powershell.exe")
+}
+
 pub fn set_process_title(
     tabs: &mut SessionTabManagerSnapshot,
     panel_id: &str,
@@ -332,6 +339,15 @@ pub fn set_process_title(
         else {
             continue;
         };
+        let runtime_title = workspace.surfaces.as_ref().and_then(|surfaces| {
+            surfaces
+                .iter()
+                .find(|surface| surface.surface_id == panel_id)
+                .and_then(|surface| surface.metadata.runtime_title.as_deref())
+        });
+        if runtime_title.is_none() && is_default_powershell_bootstrap_title(trimmed) {
+            return false;
+        }
         let mut changed = false;
         if let Some(surface) = workspace
             .surfaces
