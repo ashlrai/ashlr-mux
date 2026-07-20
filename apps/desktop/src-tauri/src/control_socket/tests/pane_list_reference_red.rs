@@ -314,6 +314,22 @@ fn pane_list_prefers_fresh_projection_and_retains_it_for_an_unrendered_move() {
 }
 
 #[test]
+fn pane_list_suppresses_grid_on_first_capture_activation_despite_other_workspace_geometry() {
+    assert!(
+        pane_surface_control::pane_list::pane_list_capture_activation_bootstrap(
+            true, false, true,
+        ),
+        "another workspace's latest frame must not make this workspace look rendered"
+    );
+    assert!(!
+        pane_surface_control::pane_list::pane_list_capture_activation_bootstrap(
+            true, true, true,
+        ),
+        "a workspace with its own rendered geometry is no longer bootstrapping"
+    );
+}
+
+#[test]
 fn pane_grid_carryover_is_shared_across_runtime_handoffs_and_pruned_on_close() {
     use crate::pane_geometry::PaneGeometryState;
     use std::collections::HashSet;
