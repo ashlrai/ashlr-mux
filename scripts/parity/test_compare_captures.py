@@ -179,6 +179,80 @@ class CompareCapturesTests(unittest.TestCase):
         report = compare_captures(left, right)
         self.assertEqual(report["deltas"], 0)
 
+    def test_wall_clock_symbolization_covers_nested_notification_timestamps(self):
+        left = load_capture(
+            capture_text(
+                [
+                    case_record(
+                        "a",
+                        observation(
+                            response={
+                                "notifications": [
+                                    {
+                                        "id": "<uuid-1>",
+                                        "created_at": "2026-07-19T12:00:00.123Z",
+                                    }
+                                ]
+                            }
+                        ),
+                    )
+                ]
+            ),
+            "canonical",
+        )
+        right = load_capture(
+            capture_text(
+                [
+                    case_record(
+                        "a",
+                        observation(
+                            response={
+                                "notifications": [
+                                    {
+                                        "id": "<uuid-1>",
+                                        "created_at": "2026-07-19T12:05:59Z",
+                                    }
+                                ]
+                            }
+                        ),
+                    )
+                ]
+            ),
+            "windows",
+        )
+
+        self.assertEqual(compare_captures(left, right)["deltas"], 0)
+
+    def test_wall_clock_symbolization_covers_timestamp_inside_cli_output(self):
+        left = load_capture(
+            capture_text(
+                [
+                    case_record(
+                        "a",
+                        observation(
+                            stdout="row|2026-07-19T12:00:00.123Z|notification\n"
+                        ),
+                    )
+                ]
+            ),
+            "canonical",
+        )
+        right = load_capture(
+            capture_text(
+                [
+                    case_record(
+                        "a",
+                        observation(
+                            stdout="row|2026-07-19T12:05:59Z|notification\n"
+                        ),
+                    )
+                ]
+            ),
+            "windows",
+        )
+
+        self.assertEqual(compare_captures(left, right)["deltas"], 0)
+
     def test_timing_symbolization_keeps_count_and_name_divergences_strict(self):
         frame = {
             "boot_id": "<uuid-1>",
