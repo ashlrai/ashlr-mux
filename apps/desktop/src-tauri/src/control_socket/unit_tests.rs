@@ -1209,6 +1209,22 @@ fn derived_session_events_bootstrap_current_workspace_and_surface_state() {
 }
 
 #[test]
+fn derived_session_events_skip_semantically_unchanged_snapshots() {
+    let current = event_summary(
+        vec![event_workspace(
+            "workspace-1",
+            "Phoenix",
+            0,
+            &["surface-1"],
+            Some("surface-1"),
+        )],
+        0,
+    );
+
+    assert!(derived_session_event_specs(Some(&current), &current).is_empty());
+}
+
+#[test]
 fn derived_session_events_capture_workspace_and_surface_diffs() {
     let previous = event_summary(
         vec![
