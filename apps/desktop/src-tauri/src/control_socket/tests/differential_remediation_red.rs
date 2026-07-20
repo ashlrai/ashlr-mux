@@ -80,16 +80,15 @@ fn resizable_snapshot() -> AppSessionSnapshot {
 // Canonical relative resize divides amount by the split's RENDERED axis
 // pixels (v2PaneResizeCollectCandidates, TerminalControllerPaneResizeSupport
 // .swift:84-92: axisPixels = max(frameUnion, 1); ControlPaneContext.swift:
-// 530-532: delta = amount/axisPixels, clamp 0.1...0.9). This port tracks no
-// rendered frames — exactly the state the live canonical capture ran in
-// (frames zero => axisPixels 1), so delta = amount and every relative resize
-// clamps: capture pins 0.5 -> 0.1 (amount 2, left) and 0.9 -> 0.1 (amount 1,
-// up). The viewport must NOT be substituted for frame pixels.
+// 530-532: delta = amount/axisPixels, clamp 0.1...0.9). The pane-management
+// live capture pins the rendered path: a two-pixel resize moves a 95px split
+// by exactly two pixels instead of falling back to axisPixels=1 and clamping.
 
 #[test]
 fn pane_resize_relative_uses_canonical_frame_pixel_math() {
-    // Capture oracle: pane_resize.relative_happy — amount 2, direction left,
-    // 0.5 -> 0.1, with direction+amount echoed in the response.
+    // Simplified rendered-width oracle: amount 2 across 100px moves 0.5 to
+    // 0.48. The production pane-management capture exercises the same math
+    // across a nested 95px split (47.5px -> 45.5px).
     let snapshot = resizable_snapshot();
     let resized = transition(
         &snapshot,
@@ -98,7 +97,7 @@ fn pane_resize_relative_uses_canonical_frame_pixel_math() {
     );
     let value = ok_value(&resized);
     assert_eq!(value["old_divider_position"], json!(0.5));
-    assert_eq!(value["new_divider_position"], json!(0.1));
+    assert_eq!(value["new_divider_position"], json!(0.48));
     assert_eq!(
         value["direction"],
         json!("left"),
