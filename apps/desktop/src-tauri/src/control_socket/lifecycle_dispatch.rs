@@ -563,6 +563,28 @@ pub(super) fn webview_label_for_session_window(
     window_id.to_owned()
 }
 
+/// Resolve the native webview that owns a lifecycle-created surface. Public
+/// session window UUIDs are not Tauri labels for the first (`main`) window.
+pub(super) fn webview_label_for_surface_owner(
+    app: &AppHandle,
+    snapshot: Option<&AppSessionSnapshot>,
+    surface_id: &str,
+) -> String {
+    let Some(snapshot) = snapshot else {
+        return "main".to_owned();
+    };
+    let session_window_id =
+        cmux_core::surface_lifecycle::SurfaceLifecycleModel::from_app_session(snapshot)
+            .ok()
+            .and_then(|model| {
+                model
+                    .owner_of_surface(surface_id)
+                    .map(|owner| owner.window_id.clone())
+            })
+            .unwrap_or_else(|| "main".to_owned());
+    webview_label_for_session_window(app, snapshot, &session_window_id)
+}
+
 pub(super) fn handle_window_lifecycle_request(
     app: &AppHandle,
     method: &str,

@@ -3520,33 +3520,20 @@ impl pane_surface_lifecycle::LifecycleEffectExecutor for ProductionLifecycleExec
             pane_surface_lifecycle::LifecycleEffect::BrowserAttach {
                 surface_id, url, ..
             } => {
-                let window_id = self
-                    .candidate
-                    .as_ref()
-                    .and_then(|candidate| {
-                        cmux_core::surface_lifecycle::SurfaceLifecycleModel::from_app_session(
-                            candidate,
-                        )
-                        .ok()
-                    })
-                    .and_then(|model| {
-                        model
-                            .owner_of_surface(surface_id)
-                            .map(|owner| owner.window_id.clone())
-                    })
-                    .unwrap_or_else(|| "main".into());
+                let window_label =
+                    webview_label_for_surface_owner(self.app, self.candidate.as_ref(), surface_id);
                 let state = self.app.state::<BrowserWebviewState>();
                 browser_attach_webview_for_control(
                     self.app,
                     state.inner(),
-                    &window_id,
+                    &window_label,
                     surface_id,
                     url.as_deref(),
                     None,
                     false,
                 )?;
                 self.staged_browsers
-                    .push((window_id, surface_id.clone(), url.clone()));
+                    .push((window_label, surface_id.clone(), url.clone()));
             }
             pane_surface_lifecycle::LifecycleEffect::RuntimeTeardown {
                 surface_id,
