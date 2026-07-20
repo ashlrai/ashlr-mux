@@ -7,7 +7,7 @@
 4795	apps/desktop/web/src/components/CustomSidebarSurface.tsx
 3719	apps/desktop/web/src/components/customSidebarSwiftParser.ts
 4357	apps/desktop/src-tauri/src/control_socket/pane_surface_lifecycle.rs
-3467	crates/cmux-cli/src/command_forward.rs
+3303	crates/cmux-cli/src/command_forward.rs
 3867	apps/desktop/src-tauri/src/control_socket.rs
 4035	apps/desktop/src-tauri/src/control_socket/unit_tests.rs
 3023	crates/cmux-cli/src/main.rs
