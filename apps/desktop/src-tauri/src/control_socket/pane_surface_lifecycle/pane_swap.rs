@@ -1,6 +1,6 @@
 use super::*;
 
-fn pane_ids(layout: &SessionWorkspaceLayoutSnapshot, ids: &mut Vec<String>) {
+pub(super) fn pane_ids(layout: &SessionWorkspaceLayoutSnapshot, ids: &mut Vec<String>) {
     match layout {
         SessionWorkspaceLayoutSnapshot::Pane(pane) => {
             if let Some(pane_id) = &pane.pane_id {
@@ -14,7 +14,7 @@ fn pane_ids(layout: &SessionWorkspaceLayoutSnapshot, ids: &mut Vec<String>) {
     }
 }
 
-fn resolve_pane_id(
+pub(super) fn resolve_pane_id(
     workspace: &cmux_core::session::SessionWorkspaceSnapshot,
     params: &Map<String, Value>,
     id_key: &str,
